@@ -1,0 +1,549 @@
+<iframe title="Multi-Agent Workspace" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;&lt;script&gt;
+(function() {
+  var H = 920;
+
+  // Override window.innerHeight for JS that reads it to compute heights
+  try {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, get: function() { return H; } });
+  } catch(e) {}
+
+  function vhToPx(s) {
+    return s.replace(/([0-9.]+)(dvh|svh|lvh|vh)/g, function(_, n, unit) {
+      if (parseFloat(n) === 100) return n + unit;
+      return (parseFloat(n) * H / 100) + 'px';
+    });
+  }
+
+  // Patch CSS values (not selectors) recursively through @layer/@media/@supports
+  function patchRules(rules) {
+    try {
+      for (var i = 0; i &lt; rules.length; i++) {
+        var rule = rules[i];
+        if (rule.cssRules) patchRules(rule.cssRules); // recurse into at-rules
+        if (!rule.style) continue;
+        for (var j = 0; j &lt; rule.style.length; j++) {
+          var prop = rule.style[j];
+          var val = rule.style.getPropertyValue(prop);
+          if (val.indexOf('vh') === -1) continue;
+          rule.style.setProperty(prop, vhToPx(val), rule.style.getPropertyPriority(prop));
+        }
+      }
+    } catch(e) {}
+  }
+  function patchSheet(sheet) {
+    try { patchRules(sheet.cssRules || []); } catch(e) {}
+  }
+
+  try {
+    var _ins = CSSStyleSheet.prototype.insertRule;
+    CSSStyleSheet.prototype.insertRule = function(rule, index) {
+      var idx = _ins.call(this, rule, index);
+      try { if (this.cssRules &amp;&amp; this.cssRules[idx]) patchRules([this.cssRules[idx]]); } catch(e) {}
+      return idx;
+    };
+  } catch(e) {}
+
+  try {
+    var _rs = CSSStyleSheet.prototype.replaceSync;
+    if (_rs) {
+      CSSStyleSheet.prototype.replaceSync = function(text) {
+        _rs.call(this, text);
+        patchSheet(this);
+      };
+    }
+  } catch(e) {}
+
+  try {
+    var _r = CSSStyleSheet.prototype.replace;
+    if (_r) {
+      CSSStyleSheet.prototype.replace = function(text) {
+        var self = this;
+        return _r.call(this, text).then(function(sheet) { patchSheet(sheet || self); return sheet || self; });
+      };
+    }
+  } catch(e) {}
+
+  // ─── DOM-LEVEL FALLBACK (Tailwind v3 / plain &lt;style&gt; textContent updates) ─
+  function fixInlineVh(el) {
+    var s = el.getAttribute &amp;&amp; el.getAttribute('style');
+    if (s &amp;&amp; s.indexOf('vh') !== -1) el.setAttribute('style', vhToPx(s));
+  }
+
+  function watchStyleEl(el) {
+    if (!el || el.getAttribute('data-vh-fix') || el._vhWatched) return;
+    el._vhWatched = true;
+    if (el.sheet) patchSheet(el.sheet);
+    try {
+      new MutationObserver(function() { if (el.sheet) patchSheet(el.sheet); })
+        .observe(el, { childList: true, subtree: true, characterData: true });
+    } catch(e) {}
+  }
+
+  function applyFixes() {
+    document.documentElement.style.setProperty('--vh', (H / 100) + 'px');
+    document.querySelectorAll('[style]').forEach(fixInlineVh);
+    document.querySelectorAll('style').forEach(watchStyleEl);
+    try { (document.adoptedStyleSheets || []).forEach(patchSheet); } catch(e) {}
+    try {
+      new MutationObserver(function(muts) {
+        muts.forEach(function(m) {
+          m.addedNodes.forEach(function(node) {
+            if (node.nodeType !== 1) return;
+            if (node.tagName === 'STYLE') watchStyleEl(node);
+            fixInlineVh(node);
+            if (node.querySelectorAll) node.querySelectorAll('[style]').forEach(fixInlineVh);
+          });
+        });
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    } catch(e) {}
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyFixes);
+  else applyFixes();
+
+  window.addEventListener('load', function() {
+    document.querySelectorAll('style').forEach(watchStyleEl);
+    document.querySelectorAll('[style]').forEach(fixInlineVh);
+    try { (document.adoptedStyleSheets || []).forEach(patchSheet); } catch(e) {}
+  });
+})();
+&lt;/script&gt;
+    &lt;script&gt;
+        window.FontAwesomeConfig = {
+          autoReplaceSvg: 'nest'
+        };
+      &lt;/script&gt;
+    &lt;script src=&quot;https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js&quot; crossorigin=&quot;anonymous&quot; referrerpolicy=&quot;no-referrer&quot;&gt;&lt;/script&gt;
+    &lt;meta charset=&quot;UTF-8&quot;&gt;
+    &lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1.0&quot;&gt;
+    &lt;title&gt;Multi-Agent AI Workspace&lt;/title&gt;
+    &lt;script src=&quot;https://cdn.tailwindcss.com&quot;&gt;&lt;/script&gt;
+    &lt;link href=&quot;https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css&quot; rel=&quot;stylesheet&quot;&gt;
+    &lt;script&gt;
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0F1115',
+                            800: '#16181D',
+                            700: '#1E2128',
+                            600: '#2A2E35'
+                        },
+                        accent: {
+                            500: '#3B82F6',
+                            400: '#60A5FA'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    &lt;/script&gt;
+    &lt;style&gt;
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #2A2E35;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3B82F6;
+        }
+        body {
+            background-color: #0F1115;
+            color: #E5E7EB;
+        }
+        .glass-panel {
+            background: rgba(22, 24, 29, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .agent-status-idle { color: #9CA3AF; }
+        .agent-status-thinking { color: #FBBF24; animation: pulse 2s infinite; }
+        .agent-status-executing { color: #10B981; }
+        
+        #sidebar.mobile-hidden { transform: translateX(-100%); }
+        @media (min-width: 768px) {
+            #sidebar.mobile-hidden { transform: translateX(0); }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    &lt;/style&gt;
+&lt;/head&gt;
+&lt;body class=&quot;h-screen overflow-hidden flex font-sans bg-dark-900 text-gray-200&quot;&gt;
+
+    &lt;!-- Sidebar --&gt;
+    &lt;aside id=&quot;sidebar&quot; class=&quot;fixed inset-y-0 left-0 w-64 md:relative md:flex flex-col border-r border-dark-700 bg-dark-800 transition-transform duration-300 z-30 mobile-hidden&quot;&gt;
+        &lt;!-- Logo --&gt;
+        &lt;div class=&quot;h-16 flex items-center justify-between px-6 border-b border-dark-700&quot;&gt;
+            &lt;div class=&quot;flex items-center gap-3&quot;&gt;
+                &lt;div class=&quot;w-8 h-8 rounded-lg bg-gradient-to-br from-accent-400 to-accent-500 flex items-center justify-center text-white font-bold text-xl&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-layer-group&quot;&gt;&lt;/i&gt;
+                &lt;/div&gt;
+                &lt;span class=&quot;text-xl font-semibold tracking-wide text-white&quot;&gt;Nexus AI&lt;/span&gt;
+            &lt;/div&gt;
+            &lt;button onclick=&quot;toggleSidebar()&quot; class=&quot;md:hidden text-gray-400&quot;&gt;
+                &lt;i class=&quot;fa-solid fa-xmark text-xl&quot;&gt;&lt;/i&gt;
+            &lt;/button&gt;
+        &lt;/div&gt;
+
+        &lt;!-- Navigation --&gt;
+        &lt;nav class=&quot;flex-1 overflow-y-auto p-4 space-y-6&quot;&gt;
+            &lt;!-- Search --&gt;
+            &lt;div class=&quot;relative&quot;&gt;
+                &lt;i class=&quot;fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm&quot;&gt;&lt;/i&gt;
+                &lt;input type=&quot;text&quot; placeholder=&quot;Search rooms...&quot; class=&quot;w-full bg-dark-900 border border-dark-700 rounded-lg py-2 pl-9 pr-4 text-sm focus:outline-none focus:border-accent-500 text-gray-300 placeholder-gray-500 transition-colors&quot;&gt;
+            &lt;/div&gt;
+
+            &lt;!-- Main Links --&gt;
+            &lt;div class=&quot;space-y-1&quot;&gt;
+                &lt;a href=&quot;#&quot; class=&quot;flex items-center gap-3 px-3 py-2 rounded-lg bg-dark-700 text-white font-medium&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-house w-5 text-center&quot;&gt;&lt;/i&gt; Home
+                &lt;/a&gt;
+                &lt;a href=&quot;#&quot; class=&quot;flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-compass w-5 text-center&quot;&gt;&lt;/i&gt; Explore Agents
+                &lt;/a&gt;
+                &lt;a href=&quot;#&quot; class=&quot;flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-book w-5 text-center&quot;&gt;&lt;/i&gt; Templates
+                &lt;/a&gt;
+            &lt;/div&gt;
+
+            &lt;!-- Active Rooms --&gt;
+            &lt;div&gt;
+                &lt;h3 class=&quot;text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3&quot;&gt;Active Rooms&lt;/h3&gt;
+                &lt;div class=&quot;space-y-1&quot;&gt;
+                    &lt;a href=&quot;#&quot; class=&quot;flex items-center justify-between px-3 py-2 rounded-lg bg-dark-700 text-gray-300 group&quot;&gt;
+                        &lt;div class=&quot;flex items-center gap-3 truncate&quot;&gt;
+                            &lt;span class=&quot;w-2 h-2 rounded-full bg-green-500&quot;&gt;&lt;/span&gt;
+                            &lt;span class=&quot;truncate text-sm&quot;&gt;Dev Team Alpha&lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;span class=&quot;text-xs bg-dark-600 px-1.5 py-0.5 rounded text-gray-400&quot;&gt;3 AI&lt;/span&gt;
+                    &lt;/a&gt;
+                    &lt;a href=&quot;#&quot; class=&quot;flex items-center justify-between px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-gray-300 transition-colors group&quot;&gt;
+                        &lt;div class=&quot;flex items-center gap-3 truncate&quot;&gt;
+                            &lt;span class=&quot;w-2 h-2 rounded-full bg-gray-500&quot;&gt;&lt;/span&gt;
+                            &lt;span class=&quot;truncate text-sm&quot;&gt;Marketing Brainstorm&lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;span class=&quot;text-xs bg-dark-800 group-hover:bg-dark-600 px-1.5 py-0.5 rounded text-gray-500&quot;&gt;2 AI&lt;/span&gt;
+                    &lt;/a&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+        &lt;/nav&gt;
+
+        &lt;!-- User Profile --&gt;
+        &lt;div class=&quot;p-4 border-t border-dark-700&quot;&gt;
+            &lt;div class=&quot;flex items-center gap-3 cursor-pointer hover:bg-dark-700 p-2 rounded-lg transition-colors&quot;&gt;
+                &lt;img class=&quot;w-10 h-10 rounded-full border border-dark-600&quot; src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/03cb1388c3-7d67e189a41e19de05e4.png&quot; alt=&quot;professional male developer avatar, 3d render style, minimalist background&quot; /&gt;
+                &lt;div class=&quot;flex-1 min-w-0&quot;&gt;
+                    &lt;p class=&quot;text-sm font-medium text-white truncate&quot;&gt;Alex Developer&lt;/p&gt;
+                    &lt;p class=&quot;text-xs text-gray-500 truncate&quot;&gt;Pro Plan&lt;/p&gt;
+                &lt;/div&gt;
+                &lt;i class=&quot;fa-solid fa-chevron-up text-gray-500 text-xs&quot;&gt;&lt;/i&gt;
+            &lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/aside&gt;
+
+    &lt;!-- Main Content Area --&gt;
+    &lt;main class=&quot;flex-1 flex flex-col relative overflow-hidden&quot;&gt;
+        &lt;!-- Overlay for background --&gt;
+        &lt;div class=&quot;absolute inset-0 bg-dark-900/95 z-0&quot;&gt;&lt;/div&gt;
+
+        &lt;!-- Header --&gt;
+        &lt;header id=&quot;main-header&quot; class=&quot;h-16 flex items-center justify-between px-4 md:px-6 border-b border-dark-700/50 z-10 glass-panel&quot;&gt;
+            &lt;div class=&quot;flex items-center gap-3 md:gap-4&quot;&gt;
+                &lt;button onclick=&quot;toggleSidebar()&quot; class=&quot;md:hidden text-gray-400 hover:text-white p-2&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-bars text-xl&quot;&gt;&lt;/i&gt;
+                &lt;/button&gt;
+                &lt;div class=&quot;flex items-center gap-2&quot;&gt;
+                    &lt;h1 class=&quot;text-base md:text-lg font-semibold text-white truncate max-w-[120px] md:max-w-none&quot;&gt;Dev Team Alpha&lt;/h1&gt;
+                    &lt;span class=&quot;hidden sm:inline-block px-2 py-0.5 rounded text-xs font-medium bg-dark-700 text-gray-300 border border-dark-600&quot;&gt;Multi-Agent&lt;/span&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;div class=&quot;flex items-center gap-2 md:gap-4&quot;&gt;
+                &lt;button class=&quot;hidden sm:block text-gray-400 hover:text-white transition-colors&quot; title=&quot;View Logs&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-terminal&quot;&gt;&lt;/i&gt;
+                &lt;/button&gt;
+                &lt;button onclick=&quot;toggleLogs()&quot; class=&quot;lg:hidden text-gray-400 hover:text-white p-2&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-receipt&quot;&gt;&lt;/i&gt;
+                &lt;/button&gt;
+                &lt;button class=&quot;bg-accent-500 hover:bg-accent-400 text-white px-3 md:px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2&quot;&gt;
+                    &lt;i class=&quot;fa-solid fa-plus&quot;&gt;&lt;/i&gt; &lt;span class=&quot;hidden sm:inline&quot;&gt;Add Agent&lt;/span&gt;
+                &lt;/button&gt;
+            &lt;/div&gt;
+        &lt;/header&gt;
+
+        &lt;!-- Chat Area &amp; Side Panel Container --&gt;
+        &lt;div class=&quot;flex-1 flex overflow-hidden z-10&quot;&gt;
+            
+            &lt;!-- Chat Window --&gt;
+            &lt;div id=&quot;chat-container&quot; class=&quot;flex-1 flex flex-col relative w-full&quot;&gt;
+                
+                &lt;!-- Agent Status Bar --&gt;
+                &lt;div class=&quot;px-4 md:px-6 py-3 border-b border-dark-700/50 flex gap-3 md:gap-4 overflow-x-auto glass-panel no-scrollbar&quot;&gt;
+                    &lt;!-- Agent 1 --&gt;
+                    &lt;div class=&quot;flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600&quot;&gt;
+                        &lt;div class=&quot;relative&quot;&gt;
+                            &lt;img class=&quot;w-6 h-6 rounded-full&quot; src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/e55fb64339-3191d9d093ff615c735b.png&quot; alt=&quot;futuristic robot avatar head, sleek white and blue design, 3d render&quot; /&gt;
+                            &lt;span class=&quot;absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-circle text-[8px] agent-status-executing&quot;&gt;&lt;/i&gt;
+                            &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;span class=&quot;text-sm font-medium text-gray-300&quot;&gt;CodeMaster&lt;/span&gt;
+                        &lt;span class=&quot;text-xs text-gray-500 border-l border-dark-600 pl-2&quot;&gt;Executing&lt;/span&gt;
+                    &lt;/div&gt;
+                    
+                    &lt;!-- Agent 2 --&gt;
+                    &lt;div class=&quot;flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600&quot;&gt;
+                        &lt;div class=&quot;relative&quot;&gt;
+                            &lt;img class=&quot;w-6 h-6 rounded-full&quot; src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/99f38b5f01-eb5e11cd089b218489ec.png&quot; alt=&quot;cybernetic owl avatar, smart tech look, purple accents, 3d render&quot; /&gt;
+                            &lt;span class=&quot;absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-spinner text-[8px] agent-status-thinking&quot;&gt;&lt;/i&gt;
+                            &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;span class=&quot;text-sm font-medium text-gray-300&quot;&gt;ReviewBot&lt;/span&gt;
+                        &lt;span class=&quot;text-xs text-gray-500 border-l border-dark-600 pl-2&quot;&gt;Thinking&lt;/span&gt;
+                    &lt;/div&gt;
+
+                    &lt;!-- Agent 3 --&gt;
+                    &lt;div class=&quot;flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600&quot;&gt;
+                        &lt;div class=&quot;relative&quot;&gt;
+                            &lt;img class=&quot;w-6 h-6 rounded-full&quot; src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/c4f67e59b8-7c6a6866621fec975e97.png&quot; alt=&quot;abstract geometric ai avatar, gold and black, 3d render&quot; /&gt;
+                            &lt;span class=&quot;absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-moon text-[8px] agent-status-idle&quot;&gt;&lt;/i&gt;
+                            &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;span class=&quot;text-sm font-medium text-gray-300&quot;&gt;Architect&lt;/span&gt;
+                        &lt;span class=&quot;text-xs text-gray-500 border-l border-dark-600 pl-2&quot;&gt;Idle&lt;/span&gt;
+                    &lt;/div&gt;
+                &lt;/div&gt;
+
+                &lt;!-- Messages Area --&gt;
+                &lt;div class=&quot;flex-1 overflow-y-auto p-4 md:p-6 space-y-6&quot;&gt;
+                    &lt;!-- Intro Message --&gt;
+                    &lt;div class=&quot;text-center py-6 md:py-8&quot;&gt;
+                        &lt;div class=&quot;w-16 h-16 md:w-20 md:h-20 mx-auto rounded-full bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500 p-1 mb-4 shadow-lg shadow-accent-500/20&quot;&gt;
+                            &lt;div class=&quot;w-full h-full bg-dark-900 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-robot text-3xl text-white&quot;&gt;&lt;/i&gt;
+                            &lt;/div&gt;
+                        &lt;/div&gt;
+                        &lt;h2 class=&quot;text-xl md:text-2xl font-bold text-white mb-2&quot;&gt;Dev Team Alpha Initialized&lt;/h2&gt;
+                        &lt;p class=&quot;text-sm md:text-base text-gray-400 max-w-md mx-auto px-4&quot;&gt;I've assembled CodeMaster, ReviewBot, and Architect. What project are we working on today?&lt;/p&gt;
+                    &lt;/div&gt;
+
+                    &lt;!-- User Message --&gt;
+                    &lt;div class=&quot;flex gap-3 md:gap-4 justify-end&quot;&gt;
+                        &lt;div class=&quot;bg-accent-600 text-white px-4 md:px-5 py-2 md:py-3 rounded-2xl rounded-tr-sm max-w-[85%] md:max-w-[80%] shadow-md text-sm md:text-base&quot;&gt;
+                            &lt;p&gt;Let's create a new React component for a data table with sorting and filtering. &lt;span class=&quot;text-blue-200 font-semibold cursor-pointer&quot;&gt;@Architect&lt;/span&gt; please outline the structure, then &lt;span class=&quot;text-blue-200 font-semibold cursor-pointer&quot;&gt;@CodeMaster&lt;/span&gt; implement it.&lt;/p&gt;
+                        &lt;/div&gt;
+                        &lt;img src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-4.jpg&quot; class=&quot;w-8 h-8 rounded-full mt-auto&quot; alt=&quot;User&quot;&gt;
+                    &lt;/div&gt;
+
+                    &lt;!-- Agent Message (Architect) --&gt;
+                    &lt;div class=&quot;flex gap-4&quot;&gt;
+                        &lt;div class=&quot;relative mt-auto&quot;&gt;
+                            &lt;img src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-3.jpg&quot; class=&quot;w-8 h-8 rounded-full&quot; alt=&quot;Architect&quot;&gt;
+                            &lt;span class=&quot;absolute -top-1 -right-1 w-3 h-3 bg-dark-900 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-moon text-[8px] agent-status-idle&quot;&gt;&lt;/i&gt;
+                            &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;div class=&quot;bg-dark-700/80 border border-dark-600 text-gray-200 px-5 py-4 rounded-2xl rounded-tl-sm max-w-[80%] shadow-md&quot;&gt;
+                            &lt;div class=&quot;flex items-center gap-2 mb-2&quot;&gt;
+                                &lt;span class=&quot;font-semibold text-sm text-purple-400&quot;&gt;Architect&lt;/span&gt;
+                                &lt;span class=&quot;text-xs text-gray-500&quot;&gt;2 mins ago&lt;/span&gt;
+                            &lt;/div&gt;
+                            &lt;p class=&quot;mb-3&quot;&gt;I've analyzed the requirements. Here is the proposed structure for the React Data Table component:&lt;/p&gt;
+                            &lt;pre class=&quot;bg-dark-900 p-3 rounded-lg text-sm font-mono text-gray-300 overflow-x-auto border border-dark-600&quot;&gt;&lt;code&gt;src/
+  components/
+    DataTable/
+      index.tsx
+      TableHeader.tsx
+      TableBody.tsx
+      Pagination.tsx
+      useTableSort.ts
+      useTableFilter.ts&lt;/code&gt;&lt;/pre&gt;
+                            &lt;p class=&quot;mt-3&quot;&gt;&lt;span class=&quot;text-accent-400 font-semibold cursor-pointer&quot;&gt;@CodeMaster&lt;/span&gt; The architecture is ready. Please proceed with the implementation focusing on the main &lt;code&gt;index.tsx&lt;/code&gt; and custom hooks first.&lt;/p&gt;
+                        &lt;/div&gt;
+                    &lt;/div&gt;
+
+                    &lt;!-- Agent Message (CodeMaster) --&gt;
+                    &lt;div class=&quot;flex gap-4&quot;&gt;
+                        &lt;div class=&quot;relative mt-auto&quot;&gt;
+                            &lt;img src=&quot;https://storage.googleapis.com/uxpilot-auth.appspot.com/avatars/avatar-1.jpg&quot; class=&quot;w-8 h-8 rounded-full&quot; alt=&quot;CodeMaster&quot;&gt;
+                            &lt;span class=&quot;absolute -top-1 -right-1 w-3 h-3 bg-dark-900 rounded-full flex items-center justify-center&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-circle text-[8px] agent-status-executing&quot;&gt;&lt;/i&gt;
+                            &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;div class=&quot;bg-dark-700/80 border border-dark-600 text-gray-200 px-5 py-4 rounded-2xl rounded-tl-sm max-w-[80%] shadow-md&quot;&gt;
+                            &lt;div class=&quot;flex items-center gap-2 mb-2&quot;&gt;
+                                &lt;span class=&quot;font-semibold text-sm text-emerald-400&quot;&gt;CodeMaster&lt;/span&gt;
+                                &lt;span class=&quot;text-xs text-gray-500&quot;&gt;Just now&lt;/span&gt;
+                                &lt;span class=&quot;text-xs bg-dark-800 px-2 py-0.5 rounded border border-dark-600 text-emerald-500 flex items-center gap-1&quot;&gt;&lt;i class=&quot;fa-solid fa-cog fa-spin&quot;&gt;&lt;/i&gt; Generating code...&lt;/span&gt;
+                            &lt;/div&gt;
+                            &lt;p&gt;Understood. I'm starting with the custom hooks for state management and the main component structure.&lt;/p&gt;
+                            &lt;div class=&quot;mt-3 h-1 w-full bg-dark-800 rounded-full overflow-hidden&quot;&gt;
+                                &lt;div class=&quot;h-full bg-emerald-500 w-2/3 rounded-full&quot;&gt;&lt;/div&gt;
+                            &lt;/div&gt;
+                        &lt;/div&gt;
+                    &lt;/div&gt;
+                &lt;/div&gt;
+
+                &lt;!-- Input Area --&gt;
+                &lt;div class=&quot;p-4 bg-dark-900/80 border-t border-dark-700/50 backdrop-blur-md&quot;&gt;
+                    &lt;div class=&quot;max-w-4xl mx-auto&quot;&gt;
+                        &lt;!-- Command Hints --&gt;
+                        &lt;div class=&quot;flex gap-2 mb-2 px-2&quot;&gt;
+                            &lt;button class=&quot;text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-at text-gray-400 mr-1&quot;&gt;&lt;/i&gt; Mention Agent
+                            &lt;/button&gt;
+                            &lt;button class=&quot;text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-plus text-gray-400 mr-1&quot;&gt;&lt;/i&gt; Create Room
+                            &lt;/button&gt;
+                            &lt;button class=&quot;text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-terminal text-gray-400 mr-1&quot;&gt;&lt;/i&gt; Run Script
+                            &lt;/button&gt;
+                        &lt;/div&gt;
+                        
+                        &lt;!-- Input Box --&gt;
+                        &lt;div class=&quot;relative flex items-end gap-2 bg-dark-800 border border-dark-600 rounded-xl p-2 shadow-lg focus-within:border-accent-500 focus-within:ring-1 focus-within:ring-accent-500 transition-all&quot;&gt;
+                            &lt;button class=&quot;p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700&quot;&gt;
+                                &lt;i class=&quot;fa-solid fa-paperclip&quot;&gt;&lt;/i&gt;
+                            &lt;/button&gt;
+                            &lt;textarea rows=&quot;1&quot; class=&quot;w-full bg-transparent text-gray-200 placeholder-gray-500 resize-none outline-none py-2 max-h-32&quot; placeholder=&quot;Message room or @agent... Try 'Create a new room for SEO analysis'&quot;&gt;&lt;/textarea&gt;
+                            &lt;div class=&quot;flex gap-1&quot;&gt;
+                                &lt;button class=&quot;p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700&quot;&gt;
+                                    &lt;i class=&quot;fa-solid fa-microphone&quot;&gt;&lt;/i&gt;
+                                &lt;/button&gt;
+                                &lt;button class=&quot;p-2 bg-accent-500 hover:bg-accent-400 text-white transition-colors rounded-lg shadow-md&quot;&gt;
+                                    &lt;i class=&quot;fa-solid fa-paper-plane&quot;&gt;&lt;/i&gt;
+                                &lt;/button&gt;
+                            &lt;/div&gt;
+                        &lt;/div&gt;
+                    &lt;/div&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+
+            &lt;!-- Side Panel (Logs &amp; Config) --&gt;
+            &lt;div id=&quot;side-panel&quot; class=&quot;w-80 border-l border-dark-700/50 bg-dark-900/95 backdrop-blur-xl flex flex-col hidden lg:flex&quot;&gt;
+                &lt;!-- Panel Tabs --&gt;
+                &lt;div class=&quot;flex border-b border-dark-700&quot;&gt;
+                    &lt;button class=&quot;flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50&quot;&gt;
+                        &lt;i class=&quot;fa-solid fa-terminal mr-2&quot;&gt;&lt;/i&gt;Logs
+                    &lt;/button&gt;
+                    &lt;button class=&quot;flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors&quot;&gt;
+                        &lt;i class=&quot;fa-solid fa-sliders mr-2&quot;&gt;&lt;/i&gt;Config
+                    &lt;/button&gt;
+                &lt;/div&gt;
+
+                &lt;!-- Log Content --&gt;
+                &lt;div class=&quot;flex-1 overflow-y-auto p-4 font-mono text-xs space-y-2&quot;&gt;
+                    &lt;div class=&quot;text-gray-500&quot;&gt;System initialized at 10:42:01 UTC&lt;/div&gt;
+                    &lt;div class=&quot;text-blue-400&quot;&gt;[Room] Dev Team Alpha created. Model: GPT-4o&lt;/div&gt;
+                    &lt;div class=&quot;text-green-400&quot;&gt;[Agent:Architect] Loaded prompt template 'Software Architect v2'&lt;/div&gt;
+                    &lt;div class=&quot;text-green-400&quot;&gt;[Agent:CodeMaster] Loaded prompt template 'Senior React Dev'&lt;/div&gt;
+                    &lt;div class=&quot;text-green-400&quot;&gt;[Agent:ReviewBot] Loaded prompt template 'Code Reviewer'&lt;/div&gt;
+                    &lt;div class=&quot;text-gray-400&quot;&gt;[API] Requesting completion for Architect... &lt;span class=&quot;text-gray-600&quot;&gt;200 OK (1.2s)&lt;/span&gt;&lt;/div&gt;
+                    &lt;div class=&quot;text-gray-400&quot;&gt;[API] Requesting completion for CodeMaster... &lt;span class=&quot;text-yellow-500&quot;&gt;Pending&lt;/span&gt;&lt;/div&gt;
+                    
+                    &lt;!-- Live terminal effect --&gt;
+                    &lt;div class=&quot;flex items-center gap-2 mt-4 text-accent-400&quot;&gt;
+                        &lt;span&gt;&gt;&lt;/span&gt;
+                        &lt;span class=&quot;animate-pulse&quot;&gt;_&lt;/span&gt;
+                    &lt;/div&gt;
+                &lt;/div&gt;
+
+                &lt;!-- System Status --&gt;
+                &lt;div class=&quot;p-4 border-t border-dark-700 bg-dark-800/50&quot;&gt;
+                    &lt;h4 class=&quot;text-xs font-semibold text-gray-400 uppercase mb-3&quot;&gt;System Status&lt;/h4&gt;
+                    &lt;div class=&quot;space-y-3&quot;&gt;
+                        &lt;div&gt;
+                            &lt;div class=&quot;flex justify-between text-xs mb-1&quot;&gt;
+                                &lt;span class=&quot;text-gray-300&quot;&gt;API Usage (Tokens)&lt;/span&gt;
+                                &lt;span class=&quot;text-gray-400&quot;&gt;45k / 100k&lt;/span&gt;
+                            &lt;/div&gt;
+                            &lt;div class=&quot;h-1.5 w-full bg-dark-700 rounded-full overflow-hidden&quot;&gt;
+                                &lt;div class=&quot;h-full bg-blue-500 w-[45%] rounded-full&quot;&gt;&lt;/div&gt;
+                            &lt;/div&gt;
+                        &lt;/div&gt;
+                        &lt;div class=&quot;flex justify-between items-center text-xs&quot;&gt;
+                            &lt;span class=&quot;text-gray-300&quot;&gt;Backend Latency&lt;/span&gt;
+                            &lt;span class=&quot;text-green-400 flex items-center gap-1&quot;&gt;&lt;i class=&quot;fa-solid fa-circle text-[8px]&quot;&gt;&lt;/i&gt; 124ms&lt;/span&gt;
+                        &lt;/div&gt;
+                    &lt;/div&gt;
+                &lt;/div&gt;
+            &lt;/div&gt;
+
+        &lt;/div&gt;
+    &lt;/main&gt;
+
+    &lt;script&gt;
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('mobile-hidden');
+        }
+
+        function toggleLogs() {
+            const sidePanel = document.getElementById('side-panel');
+            sidePanel.classList.toggle('hidden');
+        }
+    &lt;/script&gt;
+
+
+  &lt;script&gt;
+    (function() {
+      // Block &lt;a href=&quot;…&quot;&gt; navigation unconditionally.
+      // ONLY e.preventDefault() — onclick handlers on anchors still fire so all
+      // JavaScript UI bindings (tabs, dropdowns, modals) work as expected.
+      document.addEventListener('click', function(e) {
+        var a = e.target &amp;&amp; e.target.closest ? e.target.closest('a[href]') : null;
+        if (!a) return;
+        e.preventDefault();
+      }, true);
+
+      // Block window.open
+      try { window.open = function() { return null; }; } catch (_) {}
+
+      // Block history navigation APIs
+      try {
+        history.pushState = function() {};
+        history.replaceState = function() {};
+      } catch (_) {}
+
+      // Block location.assign and location.replace
+      try {
+        if (window.location) {
+          window.location.assign = function() {};
+          window.location.replace = function() {};
+        }
+      } catch (_) {}
+
+      // Block window.location.href = '…' and location.href = '…' direct assignments.
+      // Override the href setter on Location.prototype (iframe-local, does not affect parent).
+      try {
+        var _locProto = Location.prototype;
+        var _hrefDesc = Object.getOwnPropertyDescriptor(_locProto, 'href');
+        if (_hrefDesc &amp;&amp; typeof _hrefDesc.set === 'function') {
+          Object.defineProperty(_locProto, 'href', {
+            get: _hrefDesc.get,
+            set: function() { /* navigation blocked — onclick already ran */ },
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      } catch (_) {}
+    })();
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;" draggable="false" style="height: 100%; width: 100%; overflow: hidden; display: block;"></iframe>
