@@ -10,11 +10,21 @@ from openai import AsyncOpenAI
 
 class LLMConfig(BaseModel):
     """LLM 配置"""
-    api_key: str = os.getenv("LLM_API_KEY", "")
-    base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    model: str = os.getenv("LLM_MODEL", "gpt-4")
+    api_key: str = ""
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4"
     temperature: float = 0.7
     max_tokens: int = 2000
+    
+    def __init__(self, **data):
+        # 从环境变量读取默认值
+        if 'api_key' not in data:
+            data['api_key'] = os.getenv("LLM_API_KEY", "")
+        if 'base_url' not in data:
+            data['base_url'] = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+        if 'model' not in data:
+            data['model'] = os.getenv("LLM_MODEL", "gpt-4")
+        super().__init__(**data)
 
 
 class LLMClient:
