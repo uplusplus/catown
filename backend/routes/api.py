@@ -21,8 +21,10 @@ router = APIRouter()
 # ==================== Agent 响应处理 ====================
 
 async def trigger_agent_response(chatroom_id: int, user_message: str):
-    """触发 Agent 处理消息并生成响应（使用独立数据库连接）"""
+    """触发 Agent 处理消息并生成响应（使用独立数据库连接，支持工具调用）"""
     from models.database import get_db
+    from tools import tool_registry
+    import json
     
     db = next(get_db())
     try:
@@ -84,11 +86,17 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         # 6. 构建消息上下文
         messages = []
         
-        # 系统提示
+        # 系统提示（包含工具说明）
         system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
         system_prompt += f"\n\nCurrent project: {project.name}"
         if project.description:
             system_prompt += f"\nProject description: {project.description}"
+        
+        # 添加可用工具说明
+        available_tools = tool_registry.list_tools()
+        if available_tools:
+            system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
+            system_prompt += "\nWhen you need to use a tool, the system will execute it for you."
         
         messages.append({
             "role": "system",
@@ -105,16 +113,50 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         print(f"[DEBUG] Context messages: {len(messages)} messages")
         
-        # 7. 调用 LLM 生成响应
-        print(f"[LLM] Calling LLM for agent: {target_agent.name}")
-        response_content = await llm_client.chat(messages)
+        # 7. 获取工具 schemas
+        tool_schemas = tool_registry.get_schemas()
+        
+        # 8. 调用 LLM 生成响应（支持工具调用）
+        print(f"[LLM] Calling LLM for agent: {target_agent.name} with {len(tool_schemas)} tools available")
+        
+        llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
+        
+        response_content = llm_response.get("content", "")
+        tool_calls = llm_response.get("tool_calls")
+        
         print(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
+        print(f"[LLM] Tool calls: {tool_calls}")
+        
+        # 9. 处理工具调用
+        if tool_calls:
+            tool_results_text = "\n\n### Tool Execution Results:\n"
+            
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                
+                print(f"[Tool] Executing: {tool_name} with args: {tool_args}")
+                
+                try:
+                    tool_result = await tool_registry.execute(tool_name, **tool_args)
+                    tool_results_text += f"\n**{tool_name}**:\n```\n{tool_result}\n```\n"
+                    print(f"[Tool] Result: {str(tool_result)[:100]}...")
+                except Exception as te:
+                    error_msg = f"Error executing {tool_name}: {str(te)}"
+                    tool_results_text += f"\n**{tool_name}** (Error): {error_msg}\n"
+                    print(f"[Tool] Error: {te}")
+            
+            # 将工具结果添加到响应
+            if response_content:
+                response_content += tool_results_text
+            else:
+                response_content = tool_results_text
         
         if not response_content:
             print(f"[ERROR] LLM returned empty response")
             return
         
-        # 8. 发送 Agent 响应
+        # 10. 发送 Agent 响应
         agent_response = await chatroom_manager.send_message(
             chatroom_id=chatroom_id,
             agent_id=target_agent.id,
@@ -125,7 +167,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         print(f"[DEBUG] Agent response saved: id={agent_response.id}")
         
-        # 9. 通过 WebSocket 广播
+        # 11. 通过 WebSocket 广播
         from routes.websocket import websocket_manager
         await websocket_manager.broadcast_to_room({
             "type": "message",
@@ -570,3 +612,35 @@ async def test_config(config: LLMConfigModel):
         return {"status": "success", "message": "Connection successful"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+
+
+# ==================== Tools 相关 ====================
+
+@router.get("/tools")
+async def list_tools():
+    """获取所有可用的工具列表"""
+    from tools import tool_registry
+    
+    tools = []
+    for name in tool_registry.list_tools():
+        tool = tool_registry.get(name)
+        if tool:
+            tools.append({
+                "name": tool.name,
+                "description": tool.description,
+                "schema": tool.get_schema()
+            })
+    
+    return {"tools": tools, "count": len(tools)}
+
+
+@router.post("/tools/{tool_name}/execute")
+async def execute_tool(tool_name: str, arguments: Dict[str, Any]):
+    """执行指定的工具"""
+    from tools import tool_registry
+    
+    try:
+        result = await tool_registry.execute(tool_name, **arguments)
+        return {"success": True, "result": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
