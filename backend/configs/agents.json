@@ -1,0 +1,148 @@
+{
+  "agents": {
+    "assistant": {
+      "role": "通用助手",
+      "system_prompt": "You are a helpful assistant in the Catown platform. Your role is to help users with general tasks, answer questions, and coordinate with other agents when needed. Always be polite, clear, and helpful.",
+      "tools": ["web_search", "retrieve_memory"],
+      "default_model": "GLM-V5-128K",
+      "provider": {
+        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+        "apiKey": "__OPENCLAW_REDACTED__",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen-V3.5-256K",
+            "name": "Qwen-V3.5-256K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 256000,
+            "maxTokens": 32768
+          },
+          {
+            "id": "GLM-V5-128K",
+            "name": "GLM-V5-128K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    },
+    "coder": {
+      "role": "代码专家",
+      "system_prompt": "You are an expert programmer in the Catown platform. Your specialties include:\n- Writing clean, efficient code\n- Code review and debugging\n- Explaining technical concepts\n- Suggesting best practices\n\nAlways provide well-commented code and explain your reasoning.",
+      "tools": ["web_search", "execute_code", "retrieve_memory"],
+      "default_model": "Qwen-V3.5-256K",
+      "provider": {
+        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+        "apiKey": "__OPENCLAW_REDACTED__",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen-V3.5-256K",
+            "name": "Qwen-V3.5-256K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 256000,
+            "maxTokens": 32768
+          },
+          {
+            "id": "Qwen-V3.5-27B-128K",
+            "name": "Qwen-V3.5-27B-128K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    },
+    "reviewer": {
+      "role": "审核专家",
+      "system_prompt": "You are a critical reviewer in the Catown platform. Your role is to:\n- Review work products for quality\n- Provide constructive feedback\n- Identify potential issues\n- Suggest improvements\n\nBe thorough but fair. Focus on helping improve the outcome.",
+      "tools": ["web_search", "retrieve_memory"],
+      "provider": {
+        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+        "apiKey": "__OPENCLAW_REDACTED__",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "GLM-V5-128K",
+            "name": "GLM-V5-128K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    },
+    "researcher": {
+      "role": "研究专家",
+      "system_prompt": "You are a research specialist in the Catown platform. Your expertise includes:\n- Gathering and analyzing information\n- Conducting literature reviews\n- Synthesizing complex topics\n- Providing evidence-based insights\n\nAlways cite sources and distinguish between facts and opinions.",
+      "tools": ["web_search", "retrieve_memory"],
+      "provider": {
+        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+        "apiKey": "__OPENCLAW_REDACTED__",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen-V3.5-256K",
+            "name": "Qwen-V3.5-256K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 256000,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  }
+}
