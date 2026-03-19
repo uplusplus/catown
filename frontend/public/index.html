@@ -749,6 +749,9 @@
                             <button id="status-tab-projects" onclick="switchStatusTab('projects')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-folder mr-2"></i>Projects
                             </button>
+                            <button id="status-tab-collab" onclick="switchStatusTab('collab')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-handshake mr-2"></i>Collab
+                            </button>
                             <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-gear mr-2"></i>Config
                             </button>
@@ -777,7 +780,7 @@
 
         function switchStatusTab(tab) {
             // Update tab styles
-            ['overview', 'agents', 'projects', 'config'].forEach(t => {
+            ['overview', 'agents', 'projects', 'collab', 'config'].forEach(t => {
                 const tabBtn = document.getElementById(`status-tab-${t}`);
                 if (tabBtn) {
                     if (t === tab) {
@@ -796,6 +799,8 @@
                 content.innerHTML = renderAgentsContent();
             } else if (tab === 'projects') {
                 content.innerHTML = renderProjectsContent();
+            } else if (tab === 'collab') {
+                content.innerHTML = renderCollabContent();
             } else if (tab === 'config') {
                 content.innerHTML = renderConfigContent();
             }
@@ -953,6 +958,88 @@
                     `).join('')}
                 </div>
             `;
+        }
+
+        function renderCollabContent() {
+            return `
+                <div class="space-y-4">
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-handshake mr-2"></i>Collaboration Status</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-accent-400" id="collab-agents-count">-</div>
+                                <div class="text-xs text-gray-400">Active Agents</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-emerald-400" id="collab-chatrooms-count">-</div>
+                                <div class="text-xs text-gray-400">Chatrooms</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-amber-400" id="collab-tasks-count">-</div>
+                                <div class="text-xs text-gray-400">Pending Tasks</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-purple-400" id="collab-status">-</div>
+                                <div class="text-xs text-gray-400">Status</div>
+                            </div>
+                        </div>
+                        <button onclick="refreshCollabStatus()" class="bg-dark-600 hover:bg-dark-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+                            <i class="fa-solid fa-refresh mr-1"></i>Refresh
+                        </button>
+                    </div>
+                    
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-tasks mr-2"></i>Collaboration Tools</h3>
+                        <div class="space-y-2 text-xs text-gray-300">
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-paper-plane text-accent-400"></i>
+                                <span><strong>delegate_task</strong> - Delegate task to another agent</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-broadcast-tower text-emerald-400"></i>
+                                <span><strong>broadcast_message</strong> - Send message to all agents</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-search text-amber-400"></i>
+                                <span><strong>check_task_status</strong> - Check delegated task status</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-users text-purple-400"></i>
+                                <span><strong>list_collaborators</strong> - List available agents</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-envelope text-rose-400"></i>
+                                <span><strong>send_direct_message</strong> - Direct message to agent</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-code mr-2"></i>Usage Example</h3>
+                        <div class="bg-dark-900 rounded-lg p-3 font-mono text-xs text-gray-300 overflow-x-auto">
+                            <pre>// Delegate task to coder agent
+@coder Please implement a REST API endpoint
+
+// Or use in conversation:
+"Can you ask @researcher to investigate this issue?"</pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function refreshCollabStatus() {
+            try {
+                const response = await fetch(API_BASE + '/api/collaboration/status');
+                const data = await response.json();
+                
+                document.getElementById('collab-agents-count').textContent = data.active_collaborators || 0;
+                document.getElementById('collab-chatrooms-count').textContent = data.chatrooms || 0;
+                document.getElementById('collab-tasks-count').textContent = data.pending_tasks || 0;
+                document.getElementById('collab-status').textContent = data.status || 'inactive';
+            } catch (e) {
+                console.error('Failed to fetch collaboration status:', e);
+            }
         }
 
         function renderConfigContent() {

@@ -644,3 +644,109 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]):
         return {"success": True, "result": result}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ==================== Collaboration 相关 ====================
+
+@router.get("/collaboration/status")
+async def get_collaboration_status():
+    """获取协作系统状态"""
+    from agents.collaboration import collaboration_coordinator
+    
+    return {
+        "active_collaborators": len(collaboration_coordinator.collaborators),
+        "chatrooms": len(collaboration_coordinator.chatroom_agents),
+        "pending_tasks": len(collaboration_coordinator.task_registry),
+        "status": "active"
+    }
+
+
+@router.get("/collaboration/chatrooms/{chatroom_id}/status")
+async def get_chatroom_collaboration_status(chatroom_id: int):
+    """获取聊天室的协作状态"""
+    from agents.collaboration import collaboration_coordinator
+    
+    status = collaboration_coordinator.get_chatroom_status(chatroom_id)
+    return status
+
+
+@router.get("/collaboration/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """获取任务状态"""
+    from agents.collaboration import collaboration_coordinator
+    
+    task = collaboration_coordinator.get_task_status(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "assigned_to": task.assigned_to_agent_id,
+        "result": task.result,
+        "created_at": task.created_at.isoformat(),
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None
+    }
+
+
+@router.post("/collaboration/delegate")
+async def delegate_task_to_agent(
+    target_agent_name: str,
+    task_title: str,
+    task_description: str,
+    chatroom_id: int,
+    db: Session = Depends(get_db)
+):
+    """委托任务给指定 Agent"""
+    from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus, uuid
+    from tools import tool_registry
+    
+    # 查找目标 Agent
+    target_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+    if not target_agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{target_agent_name}' not found")
+    
+    # 创建任务
+    task = CollaborationTask(
+        id=str(uuid.uuid4()),
+        title=task_title,
+        description=task_description,
+        status=TaskStatus.DELEGATED,
+        created_by_agent_id=0,  # User
+        assigned_to_agent_id=target_agent.id,
+        chatroom_id=chatroom_id
+    )
+    
+    collaboration_coordinator.task_registry[task.id] = task
+    
+    return {
+        "task_id": task.id,
+        "status": "delegated",
+        "assigned_to": target_agent_name
+    }
+
+
+@router.get("/collaboration/tasks")
+async def list_collaboration_tasks(chatroom_id: Optional[int] = None):
+    """列出协作任务"""
+    from agents.collaboration import collaboration_coordinator
+    
+    tasks = list(collaboration_coordinator.task_registry.values())
+    
+    if chatroom_id:
+        tasks = [t for t in tasks if t.chatroom_id == chatroom_id]
+    
+    return {
+        "tasks": [
+            {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "assigned_to": t.assigned_to_agent_id,
+                "created_at": t.created_at.isoformat()
+            }
+            for t in tasks
+        ],
+        "count": len(tasks)
+    }
