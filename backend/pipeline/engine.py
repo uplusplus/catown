@@ -372,9 +372,17 @@ class PipelineEngine:
         db.commit()
         db.refresh(run)
 
-        # 异步执行
-        task = asyncio.create_task(self._execute_pipeline(run.id))
-        self._running_tasks[pipeline_id] = task
+        # 初始化 Git
+        self._git_init(run)
+
+        # 异步执行（仅在有事件循环时创建 task）
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._execute_pipeline(run.id))
+            self._running_tasks[pipeline_id] = task
+        except RuntimeError:
+            # 无事件循环（如同步测试中），跳过异步执行
+            pass
 
         logger.info(f"Pipeline started: pipeline={pipeline_id}, run={run.id}")
         return run
@@ -442,6 +450,19 @@ class PipelineEngine:
         stage.status = "completed"
         db.commit()
         logger.info(f"Gate approved: pipeline={pipeline_id}, stage={stage.stage_name}")
+
+        # Release 阶段审批通过 → 打 Git tag
+        template = pipeline_config_manager.get(pipeline.pipeline_name)
+        if template:
+            stage_cfg = None
+            for sc in template.stages:
+                if sc.name == stage.stage_name:
+                    stage_cfg = sc
+                    break
+            # 如果是最后一个阶段（release），打 tag
+            if stage_cfg and stage.stage_order == len(template.stages) - 1:
+                version = f"v1.{run.run_number}.0"
+                self._git_tag(run, version, f"Pipeline completed - {stage.display_name}")
 
         # 恢复执行
         if pipeline.status == "paused":
@@ -1063,8 +1084,40 @@ class PipelineEngine:
                 db.add(artifact)
         db.commit()
 
+    def _git_init(self, run: PipelineRun):
+        """初始化 workspace 的 Git 仓库"""
+        workspace = _get_workspace(run)
+        git_dir = workspace / ".git"
+        if git_dir.exists():
+            return
+        try:
+            import subprocess
+            # git init
+            subprocess.run(
+                ["git", "init"],
+                cwd=str(workspace),
+                capture_output=True,
+                timeout=10,
+            )
+            # 初始 commit
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=str(workspace),
+                capture_output=True,
+                timeout=10,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "[pipeline] workspace initialized", "--allow-empty"],
+                cwd=str(workspace),
+                capture_output=True,
+                timeout=10,
+            )
+            logger.debug(f"Git initialized in {workspace}")
+        except Exception as e:
+            logger.debug(f"Git init skipped: {e}")
+
     def _git_commit(self, run: PipelineRun, stage_name: str):
-        """尝试 Git commit"""
+        """阶段完成自动 Git commit"""
         workspace = _get_workspace(run)
         git_dir = workspace / ".git"
         if not git_dir.exists():
@@ -1085,6 +1138,25 @@ class PipelineEngine:
             )
         except Exception as e:
             logger.debug(f"Git commit skipped: {e}")
+
+    def _git_tag(self, run: PipelineRun, tag: str, message: str = ""):
+        """Release 阶段自动打 Git tag"""
+        workspace = _get_workspace(run)
+        git_dir = workspace / ".git"
+        if not git_dir.exists():
+            return
+        try:
+            import subprocess
+            cmd = ["git", "tag", "-a", tag, "-m", message or tag]
+            subprocess.run(
+                cmd,
+                cwd=str(workspace),
+                capture_output=True,
+                timeout=10,
+            )
+            logger.info(f"Git tag created: {tag} in {workspace}")
+        except Exception as e:
+            logger.debug(f"Git tag skipped: {e}")
 
     def _find_previous_stage_name(self, template, current_name: str) -> Optional[str]:
         """找到前一个阶段名"""
