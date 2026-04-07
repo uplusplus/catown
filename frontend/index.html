@@ -1137,6 +1137,9 @@
                             <button id="status-tab-collab" onclick="switchStatusTab('collab')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-handshake mr-2"></i>Collab
                             </button>
+                            <button id="status-tab-pipeline" onclick="switchStatusTab('pipeline')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-diagram-project mr-2"></i>Pipeline
+                            </button>
                             <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-gear mr-2"></i>Config
                             </button>
@@ -1165,7 +1168,7 @@
 
         function switchStatusTab(tab) {
             // Update tab styles
-            ['overview', 'agents', 'projects', 'collab', 'config'].forEach(t => {
+            ['overview', 'agents', 'projects', 'collab', 'pipeline', 'config'].forEach(t => {
                 const tabBtn = document.getElementById(`status-tab-${t}`);
                 if (tabBtn) {
                     if (t === tab) {
@@ -1186,6 +1189,9 @@
                 content.innerHTML = renderProjectsContent();
             } else if (tab === 'collab') {
                 content.innerHTML = renderCollabContent();
+            } else if (tab === 'pipeline') {
+                content.innerHTML = renderPipelineContent();
+                loadPipelineData();
             } else if (tab === 'config') {
                 content.innerHTML = renderConfigContent();
             }
@@ -1992,6 +1998,471 @@
                 });
             }
         });
+
+        // ==================== Pipeline Dashboard ====================
+
+        let _pipelines = [];
+        let _currentPipelineDetail = null;
+        let _pipelineWs = null;
+
+        function renderPipelineContent() {
+            return `
+                <div id="pipeline-container">
+                    <!-- Top bar: create + select -->
+                    <div class="flex items-center gap-3 mb-6">
+                        <select id="pipeline-select" onchange="onPipelineSelect(this.value)"
+                            class="bg-dark-700 border border-dark-600 text-sm text-white rounded-lg px-3 py-2 flex-1 focus:outline-none focus:border-accent-500">
+                            <option value="">Select a pipeline...</option>
+                        </select>
+                        <button onclick="showCreatePipelineModal()"
+                            class="bg-accent-500 hover:bg-accent-400 text-white text-sm px-4 py-2 rounded-lg transition-colors whitespace-nowrap">
+                            <i class="fa-solid fa-plus mr-1"></i> New Pipeline
+                        </button>
+                    </div>
+                    <!-- Pipeline detail -->
+                    <div id="pipeline-detail">
+                        <div class="text-center text-gray-500 py-12">
+                            <i class="fa-solid fa-diagram-project text-4xl mb-3 block"></i>
+                            Select or create a pipeline to get started
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadPipelineData() {
+            try {
+                const resp = await fetch('/api/pipelines');
+                _pipelines = await resp.json();
+                renderPipelineList();
+            } catch (e) {
+                console.error('Failed to load pipelines:', e);
+            }
+        }
+
+        function renderPipelineList() {
+            const sel = document.getElementById('pipeline-select');
+            if (!sel) return;
+            sel.innerHTML = '<option value="">Select a pipeline...</option>';
+            _pipelines.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = `#${p.id} — ${p.pipeline_name} [${p.status}]`;
+                sel.appendChild(opt);
+            });
+        }
+
+        async function onPipelineSelect(id) {
+            if (!id) {
+                document.getElementById('pipeline-detail').innerHTML = `
+                    <div class="text-center text-gray-500 py-12">
+                        <i class="fa-solid fa-diagram-project text-4xl mb-3 block"></i>
+                        Select or create a pipeline to get started
+                    </div>`;
+                _currentPipelineDetail = null;
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/pipelines/${id}`);
+                _currentPipelineDetail = await resp.json();
+                renderPipelineDetail();
+                connectPipelineWs(id);
+            } catch (e) {
+                console.error('Failed to load pipeline detail:', e);
+            }
+        }
+
+        function renderPipelineDetail() {
+            const p = _currentPipelineDetail;
+            if (!p) return;
+            const container = document.getElementById('pipeline-detail');
+
+            const statusColors = {
+                pending: 'text-gray-400', running: 'text-emerald-400',
+                paused: 'text-yellow-400', completed: 'text-blue-400', failed: 'text-red-400'
+            };
+            const stageStatusIcons = {
+                pending: '⏳', running: '🔄', blocked: '🚧',
+                completed: '✅', failed: '❌', rejected: '⏪'
+            };
+
+            // Get latest run
+            const run = p.runs && p.runs.length ? p.runs[p.runs.length - 1] : null;
+            const stages = run ? run.stages : [];
+
+            let stagesHtml = stages.map((s, i) => {
+                const isActive = p.current_stage_index === i && p.status === 'running';
+                const borderColor = isActive ? 'border-accent-500' : 'border-dark-600';
+                const bgColor = isActive ? 'bg-dark-700/80' : 'bg-dark-700/40';
+                return `
+                    <div class="rounded-xl ${bgColor} border ${borderColor} p-4 ${isActive ? 'ring-1 ring-accent-500/30' : ''}">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-medium text-white">${stageStatusIcons[s.status] || '⏳'} ${s.display_name}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full ${s.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : s.status === 'failed' ? 'bg-red-500/20 text-red-400' : s.status === 'running' ? 'bg-blue-500/20 text-blue-400' : s.status === 'blocked' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-gray-500/20 text-gray-400'}">${s.status}</span>
+                        </div>
+                        <div class="text-xs text-gray-400">Agent: ${s.agent_name} · Gate: ${s.gate_type}</div>
+                        ${s.output_summary ? `<div class="mt-2 text-xs text-gray-300 bg-dark-800 rounded p-2 max-h-20 overflow-y-auto">${escapeHtml(s.output_summary.substring(0, 300))}</div>` : ''}
+                        ${s.error_message ? `<div class="mt-2 text-xs text-red-400 bg-red-500/10 rounded p-2">${escapeHtml(s.error_message)}</div>` : ''}
+                        ${s.retry_count > 0 ? `<div class="text-xs text-yellow-400 mt-1">Retries: ${s.retry_count}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+
+            // Action buttons
+            let actionsHtml = '';
+            if (p.status === 'pending' || p.status === 'completed' || p.status === 'failed') {
+                actionsHtml = `
+                    <button onclick="showStartPipelineModal()"
+                        class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                        <i class="fa-solid fa-play mr-1"></i> Start
+                    </button>`;
+            }
+            if (p.status === 'running') {
+                actionsHtml = `
+                    <button onclick="pausePipeline()"
+                        class="bg-yellow-600 hover:bg-yellow-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                        <i class="fa-solid fa-pause mr-1"></i> Pause
+                    </button>`;
+            }
+            if (p.status === 'paused') {
+                // Check if blocked at gate
+                const blockedStage = stages.find(s => s.status === 'blocked');
+                if (blockedStage) {
+                    actionsHtml = `
+                        <button onclick="approvePipeline()"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                            <i class="fa-solid fa-check mr-1"></i> Approve
+                        </button>
+                        <button onclick="rejectPipeline()"
+                            class="bg-red-600 hover:bg-red-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                            <i class="fa-solid fa-rotate-left mr-1"></i> Reject & Rollback
+                        </button>`;
+                } else {
+                    actionsHtml = `
+                        <button onclick="resumePipeline()"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+                            <i class="fa-solid fa-play mr-1"></i> Resume
+                        </button>`;
+                }
+            }
+            actionsHtml += `
+                <button onclick="showInstructModal()"
+                    class="bg-dark-600 hover:bg-dark-500 text-white text-sm px-4 py-2 rounded-lg transition-colors ml-2">
+                    <i class="fa-solid fa-paper-plane mr-1"></i> Instruct Agent
+                </button>`;
+
+            container.innerHTML = `
+                <!-- Header -->
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Pipeline #${p.id} — ${p.pipeline_name}</h3>
+                        <div class="text-xs text-gray-400 mt-1">
+                            Project: ${p.project_id} · Status:
+                            <span class="${statusColors[p.status] || 'text-gray-400'} font-medium">${p.status.toUpperCase()}</span>
+                            · Stage: ${p.current_stage_index + 1}/${stages.length}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        ${actionsHtml}
+                    </div>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="w-full bg-dark-700 rounded-full h-2 mb-6">
+                    <div class="h-2 rounded-full transition-all duration-500 ${
+                        p.status === 'failed' ? 'bg-red-500' :
+                        p.status === 'completed' ? 'bg-emerald-500' :
+                        'bg-accent-500'
+                    }" style="width: ${stages.length ? (p.current_stage_index / stages.length * 100) : 0}%"></div>
+                </div>
+
+                <!-- Stages -->
+                <div class="space-y-3 mb-6">${stagesHtml}</div>
+
+                <!-- Messages -->
+                <div class="bg-dark-700/40 rounded-xl border border-dark-600 p-4">
+                    <h4 class="text-sm font-medium text-white mb-3">
+                        <i class="fa-solid fa-comments mr-2"></i>Agent Messages
+                        <button onclick="loadPipelineMessages()" class="text-xs text-accent-400 hover:text-accent-300 ml-2">
+                            <i class="fa-solid fa-refresh"></i> Refresh
+                        </button>
+                    </h4>
+                    <div id="pipeline-messages" class="space-y-2 max-h-60 overflow-y-auto text-sm">
+                        <div class="text-gray-500 text-center py-4">No messages yet</div>
+                    </div>
+                </div>
+
+                <!-- Artifacts -->
+                <div class="bg-dark-700/40 rounded-xl border border-dark-600 p-4 mt-4">
+                    <h4 class="text-sm font-medium text-white mb-3">
+                        <i class="fa-solid fa-file-code mr-2"></i>Artifacts
+                        <button onclick="loadPipelineArtifacts()" class="text-xs text-accent-400 hover:text-accent-300 ml-2">
+                            <i class="fa-solid fa-refresh"></i> Refresh
+                        </button>
+                    </h4>
+                    <div id="pipeline-artifacts" class="space-y-1 max-h-40 overflow-y-auto text-sm">
+                        <div class="text-gray-500 text-center py-4">No artifacts yet</div>
+                    </div>
+                </div>
+            `;
+
+            // Auto-load messages + artifacts
+            loadPipelineMessages();
+            loadPipelineArtifacts();
+        }
+
+        async function loadPipelineMessages() {
+            if (!_currentPipelineDetail) return;
+            try {
+                const resp = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/messages`);
+                const msgs = await resp.json();
+                const container = document.getElementById('pipeline-messages');
+                if (!container) return;
+                if (!msgs.length) {
+                    container.innerHTML = '<div class="text-gray-500 text-center py-4">No messages yet</div>';
+                    return;
+                }
+                container.innerHTML = msgs.reverse().map(m => {
+                    const typeColors = {
+                        AGENT_OUTPUT: 'text-blue-300',
+                        STAGE_OUTPUT: 'text-emerald-300',
+                        AGENT_QUESTION: 'text-yellow-300',
+                        AGENT_REPLY: 'text-purple-300',
+                        HUMAN_INSTRUCT: 'text-orange-300'
+                    };
+                    return `
+                        <div class="bg-dark-800 rounded-lg p-2">
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="text-xs font-medium ${typeColors[m.message_type] || 'text-gray-400'}">${m.from_agent}</span>
+                                <span class="text-[10px] text-gray-600">${m.message_type}</span>
+                                ${m.to_agent ? `<span class="text-[10px] text-gray-600">→ ${m.to_agent}</span>` : ''}
+                                <span class="text-[10px] text-gray-600 ml-auto">${m.created_at ? new Date(m.created_at).toLocaleTimeString() : ''}</span>
+                            </div>
+                            <div class="text-xs text-gray-300">${escapeHtml(m.content.substring(0, 500))}</div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load messages:', e);
+            }
+        }
+
+        async function loadPipelineArtifacts() {
+            if (!_currentPipelineDetail) return;
+            try {
+                const resp = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/artifacts`);
+                const artifacts = await resp.json();
+                const container = document.getElementById('pipeline-artifacts');
+                if (!container) return;
+                if (!artifacts.length) {
+                    container.innerHTML = '<div class="text-gray-500 text-center py-4">No artifacts yet</div>';
+                    return;
+                }
+                container.innerHTML = artifacts.map(a => `
+                    <div class="flex items-center gap-2 bg-dark-800 rounded-lg p-2">
+                        <span class="text-xs ${a.artifact_type === 'directory' ? 'text-yellow-400' : 'text-blue-400'}">
+                            ${a.artifact_type === 'directory' ? '📁' : '📄'}
+                        </span>
+                        <span class="text-xs text-white font-mono">${a.file_path}</span>
+                        <span class="text-[10px] text-gray-600 ml-auto">${a.stage || ''}</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load artifacts:', e);
+            }
+        }
+
+        // ---- Pipeline Actions ----
+
+        async function pausePipeline() {
+            if (!_currentPipelineDetail) return;
+            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/pause`, { method: 'POST' });
+            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+        }
+
+        async function resumePipeline() {
+            if (!_currentPipelineDetail) return;
+            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/resume`, { method: 'POST' });
+            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+        }
+
+        async function approvePipeline() {
+            if (!_currentPipelineDetail) return;
+            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/approve`, { method: 'POST' });
+            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+        }
+
+        async function rejectPipeline() {
+            if (!_currentPipelineDetail) return;
+            const target = prompt('Rollback to stage name (e.g. "development"):');
+            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/reject`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rollback_to: target || null })
+            });
+            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+        }
+
+        // ---- Modals ----
+
+        function showCreatePipelineModal() {
+            const modal = document.createElement('div');
+            modal.id = 'pipeline-modal';
+            modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="absolute inset-0 bg-black/60" onclick="this.parentElement.remove()"></div>
+                <div class="relative bg-dark-800 rounded-2xl border border-dark-600 p-6 w-full max-w-md">
+                    <h3 class="text-lg font-semibold text-white mb-4">Create Pipeline</h3>
+                    <label class="block text-sm text-gray-400 mb-1">Project ID</label>
+                    <input id="modal-project-id" type="number" placeholder="1"
+                        class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-500">
+                    <label class="block text-sm text-gray-400 mb-1">Template</label>
+                    <select id="modal-template" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4">
+                        <option value="default">default — 标准软件开发流水线</option>
+                    </select>
+                    <div class="flex justify-end gap-2">
+                        <button onclick="this.closest('#pipeline-modal').remove()"
+                            class="text-sm text-gray-400 hover:text-white px-4 py-2">Cancel</button>
+                        <button onclick="createPipeline()"
+                            class="bg-accent-500 hover:bg-accent-400 text-white text-sm px-4 py-2 rounded-lg">Create</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function createPipeline() {
+            const projectId = document.getElementById('modal-project-id').value;
+            const template = document.getElementById('modal-template').value;
+            if (!projectId) return alert('Project ID is required');
+            try {
+                await fetch('/api/pipelines', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: parseInt(projectId), pipeline_name: template })
+                });
+                document.getElementById('pipeline-modal')?.remove();
+                await loadPipelineData();
+            } catch (e) {
+                alert('Failed to create pipeline: ' + e.message);
+            }
+        }
+
+        function showStartPipelineModal() {
+            if (!_currentPipelineDetail) return;
+            const modal = document.createElement('div');
+            modal.id = 'pipeline-modal';
+            modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="absolute inset-0 bg-black/60" onclick="this.parentElement.remove()"></div>
+                <div class="relative bg-dark-800 rounded-2xl border border-dark-600 p-6 w-full max-w-lg">
+                    <h3 class="text-lg font-semibold text-white mb-4">Start Pipeline</h3>
+                    <label class="block text-sm text-gray-400 mb-1">Requirement Description</label>
+                    <textarea id="modal-requirement" rows="6" placeholder="Describe what you want to build..."
+                        class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-500 font-mono"></textarea>
+                    <div class="flex justify-end gap-2">
+                        <button onclick="this.closest('#pipeline-modal').remove()"
+                            class="text-sm text-gray-400 hover:text-white px-4 py-2">Cancel</button>
+                        <button onclick="startPipeline()"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg">
+                            <i class="fa-solid fa-play mr-1"></i> Start
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function startPipeline() {
+            const req = document.getElementById('modal-requirement').value;
+            if (!req) return alert('Requirement is required');
+            try {
+                await fetch(`/api/pipelines/${_currentPipelineDetail.id}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requirement: req })
+                });
+                document.getElementById('pipeline-modal')?.remove();
+                setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+            } catch (e) {
+                alert('Failed to start: ' + e.message);
+            }
+        }
+
+        function showInstructModal() {
+            if (!_currentPipelineDetail) return;
+            const modal = document.createElement('div');
+            modal.id = 'pipeline-modal';
+            modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="absolute inset-0 bg-black/60" onclick="this.parentElement.remove()"></div>
+                <div class="relative bg-dark-800 rounded-2xl border border-dark-600 p-6 w-full max-w-lg">
+                    <h3 class="text-lg font-semibold text-white mb-4">Instruct Agent</h3>
+                    <label class="block text-sm text-gray-400 mb-1">Agent</label>
+                    <select id="modal-agent-name" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4">
+                        <option value="analyst">analyst</option>
+                        <option value="architect">architect</option>
+                        <option value="developer">developer</option>
+                        <option value="tester">tester</option>
+                        <option value="release">release</option>
+                    </select>
+                    <label class="block text-sm text-gray-400 mb-1">Message</label>
+                    <textarea id="modal-instruct-msg" rows="4" placeholder="Your instruction..."
+                        class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-500"></textarea>
+                    <div class="flex justify-end gap-2">
+                        <button onclick="this.closest('#pipeline-modal').remove()"
+                            class="text-sm text-gray-400 hover:text-white px-4 py-2">Cancel</button>
+                        <button onclick="sendInstruct()"
+                            class="bg-accent-500 hover:bg-accent-400 text-white text-sm px-4 py-2 rounded-lg">Send</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function sendInstruct() {
+            const agentName = document.getElementById('modal-agent-name').value;
+            const message = document.getElementById('modal-instruct-msg').value;
+            if (!message) return alert('Message is required');
+            try {
+                await fetch(`/api/pipelines/${_currentPipelineDetail.id}/instruct`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agent_name: agentName, message })
+                });
+                document.getElementById('pipeline-modal')?.remove();
+            } catch (e) {
+                alert('Failed to send: ' + e.message);
+            }
+        }
+
+        // ---- WebSocket ----
+
+        function connectPipelineWs(pipelineId) {
+            if (_pipelineWs) _pipelineWs.close();
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            _pipelineWs = new WebSocket(`${proto}//${location.host}/api/pipelines/ws`);
+            _pipelineWs.onopen = () => {
+                _pipelineWs.send(JSON.stringify({ type: 'subscribe', pipeline_id: parseInt(pipelineId) }));
+            };
+            _pipelineWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    // Refresh on any pipeline event
+                    if (data.pipeline_id === _currentPipelineDetail?.id) {
+                        onPipelineSelect(data.pipeline_id);
+                    }
+                } catch (e) {}
+            };
+            _pipelineWs.onclose = () => { _pipelineWs = null; };
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
     </script>
 </body>
 </html>
