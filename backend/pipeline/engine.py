@@ -289,13 +289,16 @@ event_bus = PipelineEventBus()
 # ==================== 引擎 ====================
 
 class PipelineEngine:
-    """Pipeline 引擎 — 管理 pipeline 的完整生命周期"""
+    """Pipeline 引擎 — 管理 pipeline 的完整生命周期，支持多项目并行"""
 
-    def __init__(self):
+    def __init__(self, max_concurrent: int = 3):
         # pipeline_id → asyncio.Task，用于跟踪正在运行的 pipeline
         self._running_tasks: Dict[int, asyncio.Task] = {}
         # pipeline_id → "pause" / "rollback:{target}" 指令
         self._pending_commands: Dict[int, str] = {}
+        # 并发控制
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
 
     # ---- 生命周期 ----
 
@@ -550,7 +553,12 @@ class PipelineEngine:
     # ---- 核心执行 ----
 
     async def _execute_pipeline(self, run_id: int):
-        """执行整个 Pipeline（在异步任务中运行）"""
+        """执行整个 Pipeline（在异步任务中运行，受并发信号量控制）"""
+        async with self._semaphore:
+            await self._do_execute_pipeline(run_id)
+
+    async def _do_execute_pipeline(self, run_id: int):
+        """Pipeline 执行逻辑（内部方法）"""
         db = SessionLocal()
         try:
             run = db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
@@ -1157,6 +1165,23 @@ class PipelineEngine:
             logger.info(f"Git tag created: {tag} in {workspace}")
         except Exception as e:
             logger.debug(f"Git tag skipped: {e}")
+
+    # ---- 并发管理 ----
+
+    def running_count(self) -> int:
+        """当前正在执行的 pipeline 数量"""
+        # 清理已完成的 task
+        done = [pid for pid, t in self._running_tasks.items() if t.done()]
+        for pid in done:
+            del self._running_tasks[pid]
+        return len(self._running_tasks)
+
+    def get_running_pipelines(self) -> List[int]:
+        """获取正在运行的 pipeline ID 列表"""
+        done = [pid for pid, t in self._running_tasks.items() if t.done()]
+        for pid in done:
+            del self._running_tasks[pid]
+        return list(self._running_tasks.keys())
 
     def _find_previous_stage_name(self, template, current_name: str) -> Optional[str]:
         """找到前一个阶段名"""

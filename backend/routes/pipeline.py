@@ -406,6 +406,16 @@ async def list_templates():
     ]
 
 
+@router.get("/engine/status")
+async def engine_status():
+    """引擎状态 — 并发数、运行中的 pipeline"""
+    return {
+        "max_concurrent": pipeline_engine._max_concurrent,
+        "running_count": pipeline_engine.running_count(),
+        "running_pipeline_ids": pipeline_engine.get_running_pipelines(),
+    }
+
+
 # ==================== WebSocket 实时推送 ====================
 
 @router.websocket("/ws")

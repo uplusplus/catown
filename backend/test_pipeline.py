@@ -404,6 +404,62 @@ class TestPipelineConfig:
         assert testing.rollback_target == "development"
 
 
+class TestParallelExecution:
+    """多项目并行测试"""
+
+    @pytest.mark.asyncio
+    async def test_two_pipelines_parallel(self, db, mock_llm_client):
+        """两个不同项目的 pipeline 并行执行"""
+        from pipeline.config import PipelineConfig, StageConfig
+
+        # 创建 auto 模板
+        auto_template = PipelineConfig(
+            name="test-auto", description="All auto",
+            stages=[
+                StageConfig(name="analysis", display_name="分析", agent="analyst", gate="auto",
+                            expected_artifacts=["PRD.md"], context_prompt="Write PRD"),
+                StageConfig(name="development", display_name="开发", agent="developer", gate="auto",
+                            expected_artifacts=["src/"], context_prompt="Write code"),
+            ],
+        )
+        pipeline_config_manager.configs["test-auto"] = auto_template
+
+        # 创建两个项目
+        p1 = Project(name="project-1", status="active")
+        p2 = Project(name="project-2", status="active")
+        db.add_all([p1, p2])
+        db.commit()
+
+        # 创建 pipeline
+        pl1 = pipeline_engine.create_pipeline(db, p1.id, "test-auto")
+        pl2 = pipeline_engine.create_pipeline(db, p2.id, "test-auto")
+
+        # 启动
+        run1 = pipeline_engine.start_pipeline(db, pl1.id, "Build app 1")
+        run2 = pipeline_engine.start_pipeline(db, pl2.id, "Build app 2")
+
+        # 并行执行
+        with patch("pipeline.engine.get_llm_client_for_agent", return_value=mock_llm_client):
+            await asyncio.gather(
+                pipeline_engine._execute_pipeline(run1.id),
+                pipeline_engine._execute_pipeline(run2.id),
+            )
+
+        db.refresh(pl1)
+        db.refresh(pl2)
+        assert pl1.status == "completed"
+        assert pl2.status == "completed"
+
+    def test_running_count(self, db, project):
+        """running_count 正确跟踪"""
+        assert pipeline_engine.running_count() == 0
+
+    def test_engine_status_api(self):
+        """引擎状态方法可用"""
+        assert pipeline_engine.running_count() >= 0
+        assert isinstance(pipeline_engine.get_running_pipelines(), list)
+
+
 # ==================== 运行 ====================
 
 if __name__ == "__main__":
