@@ -12,5 +12,6 @@ janus==1.0.0
 anyio==4.3.0
 psycopg2-binary>=2.9  # PostgreSQL driver (optional)
 alembic>=1.13  # Database migrations
+httpx>=0.25,<0.28  # starlette 0.35.x TestClient 需要 httpx<0.28
 pytest>=8.0
 pytest-asyncio>=0.23

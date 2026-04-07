@@ -788,6 +788,13 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # 清理子记录（模型未配置级联删除）
+    db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).delete()
+    chatroom = db.query(Chatroom).filter(Chatroom.project_id == project_id).first()
+    if chatroom:
+        db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
+        db.delete(chatroom)
+    
     # 删除项目
     db.delete(project)
     db.commit()
