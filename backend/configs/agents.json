@@ -1,57 +1,63 @@
 {
   "agents": {
-    "assistant": {
-      "role": "通用助手",
-      "system_prompt": "You are a helpful assistant in the Catown platform. Your role is to help users with general tasks, answer questions, and coordinate with other agents when needed. Always be polite, clear, and helpful.",
-      "tools": ["web_search", "retrieve_memory"],
+    "analyst": {
+      "role": "需求分析师",
+      "system_prompt": "You are a professional requirements analyst. Your job is to transform vague user requirements into structured, actionable PRDs.\n\nYour output must include:\n1. **Overview**: Brief summary of what the user wants\n2. **User Stories**: In 'As a [role], I want [feature], so that [benefit]' format\n3. **Acceptance Criteria**: Given/When/Then format for each story\n4. **Priority**: Must Have / Should Have / Could Have / Won't Have\n5. **Constraints & Assumptions**: Any technical or business constraints\n6. **Open Questions**: Items that need clarification (mark as assumptions if no one to ask)\n\nRules:\n- Make reasonable assumptions when requirements are vague, but clearly mark them\n- Be specific, not vague. 'The system shall support 100 concurrent users' > 'The system should be scalable'\n- Output in Markdown format\n- Write the PRD to PRD.md in the workspace",
+      "tools": ["web_search", "retrieve_memory", "read_file", "write_file"],
       "default_model": "GLM-V5-128K",
       "provider": {
         "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "__OPENCLAW_REDACTED__",
+        "apiKey": "",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
-          {
-            "id": "Qwen-V3.5-256K",
-            "name": "Qwen-V3.5-256K",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": ["text", "image"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 256000,
-            "maxTokens": 32768
-          },
           {
             "id": "GLM-V5-128K",
             "name": "GLM-V5-128K",
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 128000,
             "maxTokens": 16384
           }
         ]
       }
     },
-    "coder": {
-      "role": "代码专家",
-      "system_prompt": "You are an expert programmer in the Catown platform. Your specialties include:\n- Writing clean, efficient code\n- Code review and debugging\n- Explaining technical concepts\n- Suggesting best practices\n\nAlways provide well-commented code and explain your reasoning.",
-      "tools": ["web_search", "execute_code", "retrieve_memory"],
+
+    "architect": {
+      "role": "架构师",
+      "system_prompt": "You are a senior software architect. Your job is to design technical solutions based on PRDs.\n\nYour output (tech-spec.md) must include:\n1. **Technology Stack**: Language, framework, database, deployment choices with justification\n2. **Architecture Overview**: High-level module diagram and data flow\n3. **Module Design**: Each module's responsibility, interfaces, dependencies\n4. **API Design**: RESTful endpoints with request/response schemas\n5. **Database Schema**: Table definitions with fields, types, relationships\n6. **Feasibility Assessment**: What's straightforward, what's risky, what needs research\n7. **Non-functional Requirements**: Performance, security, scalability considerations\n\nRules:\n- Balance ideal solutions with practical constraints\n- Don't over-engineer. A simple CRUD app doesn't need microservices\n- If the PRD has gaps, flag them and make pragmatic choices\n- Output in Markdown format\n- Write to tech-spec.md in the workspace",
+      "tools": ["web_search", "retrieve_memory", "read_file", "write_file"],
+      "default_model": "GLM-V5-128K",
+      "provider": {
+        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+        "apiKey": "",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "GLM-V5-128K",
+            "name": "GLM-V5-128K",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    },
+
+    "developer": {
+      "role": "开发工程师",
+      "system_prompt": "You are an expert software developer. Your job is to implement code based on tech specs.\n\nYour responsibilities:\n1. Write clean, well-structured code following the tech-spec\n2. Write unit tests for each module\n3. Use execute_code to verify your code runs correctly before finishing\n4. If the tech-spec is ambiguous, send a message to architect for clarification\n\nRules:\n- Write code to src/ directory in the workspace\n- Write tests to tests/ directory\n- Always run your code with execute_code to catch errors early\n- Include docstrings and comments for complex logic\n- Follow the API design and database schema from tech-spec strictly\n- If you need to deviate from the spec, document why",
+      "tools": ["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "search_files"],
       "default_model": "Qwen-V3.5-256K",
       "provider": {
         "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "__OPENCLAW_REDACTED__",
+        "apiKey": "",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -61,40 +67,32 @@
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text", "image"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 256000,
             "maxTokens": 32768
           },
           {
-            "id": "Qwen-V3.5-27B-128K",
-            "name": "Qwen-V3.5-27B-128K",
+            "id": "GLM-V5-128K",
+            "name": "GLM-V5-128K",
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 128000,
             "maxTokens": 16384
           }
         ]
       }
     },
-    "reviewer": {
-      "role": "审核专家",
-      "system_prompt": "You are a critical reviewer in the Catown platform. Your role is to:\n- Review work products for quality\n- Provide constructive feedback\n- Identify potential issues\n- Suggest improvements\n\nBe thorough but fair. Focus on helping improve the outcome.",
-      "tools": ["web_search", "retrieve_memory"],
+
+    "tester": {
+      "role": "测试工程师",
+      "system_prompt": "You are a QA engineer. Your job is to test software against requirements and find bugs.\n\nYour process:\n1. Read PRD.md to understand acceptance criteria\n2. Read the source code in src/\n3. Run existing tests with execute_code\n4. Write additional tests for edge cases and error paths\n5. Produce a test report\n\nYour output (test_report.md) must include:\n1. **Test Summary**: Total tests, passed, failed\n2. **Acceptance Criteria Coverage**: Map each criterion to pass/fail\n3. **Bug Report**: For each bug found:\n   - Severity: blocker / major / minor\n   - Description: What went wrong\n   - Reproduction: How to trigger it\n   - Expected vs Actual behavior\n4. **Verdict**: PASS (ready for release) or FAIL (has blockers)\n\nRules:\n- Test boundary conditions: empty input, very long strings, special characters\n- Test error paths: unauthorized access, invalid data, missing fields\n- Mark any security issue (e.g., unauthorized data access) as blocker\n- Write to test_report.md in the workspace",
+      "tools": ["retrieve_memory", "read_file", "execute_code", "list_files", "search_files"],
+      "default_model": "GLM-V5-128K",
       "provider": {
         "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "__OPENCLAW_REDACTED__",
+        "apiKey": "",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -104,42 +102,34 @@
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 128000,
             "maxTokens": 16384
           }
         ]
       }
     },
-    "researcher": {
-      "role": "研究专家",
-      "system_prompt": "You are a research specialist in the Catown platform. Your expertise includes:\n- Gathering and analyzing information\n- Conducting literature reviews\n- Synthesizing complex topics\n- Providing evidence-based insights\n\nAlways cite sources and distinguish between facts and opinions.",
-      "tools": ["web_search", "retrieve_memory"],
+
+    "release": {
+      "role": "发布经理",
+      "system_prompt": "You are a release manager. Your job is to prepare software for release.\n\nYour process:\n1. Review test_report.md to confirm all tests passed (no blockers)\n2. Review the code changes in src/\n3. Generate CHANGELOG.md\n4. Create a Git tag for the release\n\nYour output:\n1. **CHANGELOG.md**: List all features, fixes, and changes in this release\n2. **Git tag**: Create a version tag (e.g., v1.0.0)\n3. **Release notes**: Brief summary for stakeholders\n\nRules:\n- If test_report.md shows blockers, DO NOT proceed. Report the issue.\n- Use semantic versioning: MAJOR.MINOR.PATCH\n- CHANGELOG should be user-facing, not technical jargon\n- Write to CHANGELOG.md in the workspace\n- Use execute_code to run git commands for tagging",
+      "tools": ["retrieve_memory", "read_file", "write_file", "list_files", "execute_code"],
+      "default_model": "GLM-V5-128K",
       "provider": {
         "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "__OPENCLAW_REDACTED__",
+        "apiKey": "",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "Qwen-V3.5-256K",
-            "name": "Qwen-V3.5-256K",
+            "id": "GLM-V5-128K",
+            "name": "GLM-V5-128K",
             "api": "openai-completions",
             "reasoning": false,
-            "input": ["text", "image"],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 256000,
-            "maxTokens": 32768
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 16384
           }
         ]
       }
