@@ -67,3 +67,9 @@ def get_llm_client() -> LLMClient:
     if _llm_client is None:
         _llm_client = LLMClient()
     return _llm_client
+
+
+def set_llm_client(client: LLMClient):
+    """设置全局 LLM 客户端（配置更新后调用）"""
+    global _llm_client
+    _llm_client = client

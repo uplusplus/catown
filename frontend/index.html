@@ -1099,20 +1099,24 @@
         }
 
         function renderConfigContent() {
+            // 加载当前配置
+            loadCurrentConfig();
+            
             return `
                 <div class="space-y-4">
+                    <!-- 全局 LLM 配置 -->
                     <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
-                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-robot mr-2"></i>LLM Configuration</h3>
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-robot mr-2"></i>Global LLM Configuration (.env)</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Base URL</label>
                                 <input type="text" id="config-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
-                                       placeholder="http://api.openai.rnd.huawei.com/v1">
+                                       placeholder="http://api.openai.com/v1">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Model</label>
                                 <input type="text" id="config-model" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
-                                       placeholder="xiaoluban">
+                                       placeholder="gpt-4">
                             </div>
                         </div>
                         <div class="mt-3">
@@ -1127,6 +1131,15 @@
                             <button onclick="testConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                                 <i class="fa-solid fa-plug mr-2"></i>Test Connection
                             </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 各 Agent 实际生效的 LLM 配置 -->
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-users-gear mr-2"></i>Per-Agent LLM Config (agents.json)</h3>
+                        <p class="text-xs text-gray-500 mb-3">These are the configs actually used by each agent, which may differ from the global config above.</p>
+                        <div id="agent-llm-configs" class="space-y-2">
+                            <p class="text-xs text-gray-500">Loading...</p>
                         </div>
                     </div>
                     
@@ -1151,6 +1164,75 @@
                     </div>
                 </div>
             `;
+        }
+
+        async function loadCurrentConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/config`);
+                const data = await res.json();
+                
+                // 填充全局配置输入框
+                const baseUrlInput = document.getElementById('config-base-url');
+                const modelInput = document.getElementById('config-model');
+                const apiKeyInput = document.getElementById('config-api-key');
+                
+                if (baseUrlInput) baseUrlInput.value = data.llm?.baseUrl || '';
+                if (modelInput) modelInput.value = data.llm?.model || '';
+                if (apiKeyInput) apiKeyInput.value = data.llm?.apiKey || '';
+                
+                // 渲染各 Agent 的 LLM 配置
+                const agentConfigsContainer = document.getElementById('agent-llm-configs');
+                if (agentConfigsContainer && data.agent_llm_configs) {
+                    const entries = Object.entries(data.agent_llm_configs);
+                    if (entries.length === 0) {
+                        agentConfigsContainer.innerHTML = '<p class="text-xs text-gray-500">No agent-specific configs found</p>';
+                    } else {
+                        agentConfigsContainer.innerHTML = entries.map(([name, cfg]) => {
+                            const globalUrl = data.llm?.baseUrl || '';
+                            const globalModel = data.llm?.model || '';
+                            const urlMismatch = cfg.baseUrl && cfg.baseUrl !== globalUrl;
+                            const modelMismatch = cfg.model && cfg.model !== globalModel;
+                            
+                            return `
+                                <div class="bg-dark-900 rounded-lg p-3 border ${urlMismatch || modelMismatch ? 'border-amber-500/50' : 'border-dark-600'}">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium text-white">${escapeHtml(name)}</span>
+                                        ${urlMismatch || modelMismatch ? 
+                                            '<span class="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Differs from global</span>' : 
+                                            '<span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded"><i class="fa-solid fa-check mr-1"></i>Synced</span>'
+                                        }
+                                    </div>
+                                    <div class="space-y-1 text-xs">
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Base URL</span>
+                                            <span class="${urlMismatch ? 'text-amber-300' : 'text-gray-300'} font-mono text-[11px] truncate max-w-[200px]" title="${escapeHtml(cfg.baseUrl)}">${escapeHtml(cfg.baseUrl || 'N/A')}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Model</span>
+                                            <span class="${modelMismatch ? 'text-amber-300' : 'text-gray-300'} font-mono">${escapeHtml(cfg.model || 'N/A')}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">API Key</span>
+                                            <span class="text-gray-300">${cfg.hasApiKey ? '<i class="fa-solid fa-lock text-emerald-400"></i> Set' : '<i class="fa-solid fa-unlock text-red-400"></i> Not set'}</span>
+                                        </div>
+                                        ${cfg.models && cfg.models.length > 0 ? `
+                                            <div class="flex justify-between">
+                                                <span class="text-gray-400">Available Models</span>
+                                                <span class="text-gray-300">${cfg.models.map(m => escapeHtml(m)).join(', ')}</span>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                } else if (agentConfigsContainer) {
+                    agentConfigsContainer.innerHTML = '<p class="text-xs text-gray-500">No agents.json config file found</p>';
+                }
+            } catch (e) {
+                console.error('Failed to load config:', e);
+                addLog('[Config] Failed to load current config', 'red');
+            }
         }
 
         async function viewAgentMemory(agentId) {

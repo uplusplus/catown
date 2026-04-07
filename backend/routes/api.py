@@ -539,12 +539,10 @@ async def health_check():
 
 @router.get("/config")
 async def get_config():
-    """获取前端配置信息"""
+    """获取前端配置信息（全局 + 各Agent实际生效配置）"""
     import os
     from pathlib import Path
     
-    # 读取 .env 文件
-    env_file = Path(".env")
     config = {
         "llm": {
             "apiKey": os.getenv("LLM_API_KEY", ""),
@@ -563,13 +561,29 @@ async def get_config():
         }
     }
     
-    # 如果有 agents.json 配置文件，也包含进来
+    # 加载 agents.json 中各 Agent 的实际 provider 配置
     agents_config_file = Path("configs/agents.json")
     if agents_config_file.exists():
         try:
             with open(agents_config_file, 'r', encoding='utf-8') as f:
                 agents_config = json.load(f)
-                config["agents"] = agents_config.get("agents", {})
+                agents_data = agents_config.get("agents", {})
+                config["agents"] = agents_data
+                
+                # 提取各 Agent 实际生效的 LLM 配置（方便前端对比显示）
+                agent_llm_configs = {}
+                for agent_name, agent_data in agents_data.items():
+                    provider = agent_data.get("provider", {})
+                    default_model = agent_data.get("default_model", "")
+                    models = provider.get("models", [])
+                    effective_model = default_model or (models[0]["id"] if models else "")
+                    agent_llm_configs[agent_name] = {
+                        "baseUrl": provider.get("baseUrl", ""),
+                        "model": effective_model,
+                        "hasApiKey": bool(provider.get("apiKey", "")),
+                        "models": [m["id"] for m in models]
+                    }
+                config["agent_llm_configs"] = agent_llm_configs
         except:
             pass
     
@@ -617,15 +631,14 @@ LOG_LEVEL=INFO
     os.environ["LLM_MODEL"] = config.model
     
     # 重新初始化LLM客户端
-    from llm.client import set_llm_client, LLMClient, LLMConfig
-    llm_config = LLMConfig(
-        api_key=config.api_key,
-        base_url=config.base_url,
-        model=config.model,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens
-    )
-    set_llm_client(LLMClient(llm_config))
+    from llm.client import set_llm_client, LLMClient
+    from config import settings
+    # 更新 settings 对象中的值（运行时生效）
+    settings.LLM_API_KEY = config.api_key
+    settings.LLM_BASE_URL = config.base_url
+    settings.LLM_MODEL = config.model
+    # 创建新的 LLM 客户端并替换
+    set_llm_client(LLMClient())
     
     return {"message": "Configuration updated successfully"}
 
