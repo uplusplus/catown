@@ -43,13 +43,6 @@ if [ ! -f "$BACKEND_DIR/.env" ]; then
     fi
 fi
 
-# === Check port ===
-
-if lsof -i :8000 &> /dev/null 2>&1; then
-    echo "[ERROR] Port 8000 already in use. Kill it first or change PORT in .env"
-    exit 1
-fi
-
 # === Start server ===
 
 echo ""
