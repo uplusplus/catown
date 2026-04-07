@@ -203,6 +203,9 @@
                 </div>
             </div>
             <div class="flex items-center gap-2 md:gap-4">
+                <button onclick="toggleMessageSearch()" class="text-gray-400 hover:text-white transition-colors" title="Search Messages">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                </button>
                 <button onclick="toggleLogs()" class="hidden sm:block text-gray-400 hover:text-white transition-colors" title="View Logs">
                     <i class="fa-solid fa-terminal"></i>
                 </button>
@@ -214,6 +217,19 @@
                 </button>
             </div>
         </header>
+
+        <!-- Message Search Bar -->
+        <div id="message-search-bar" class="hidden px-4 md:px-6 py-2 border-b border-dark-700/50 z-10 glass-panel">
+            <div class="flex items-center gap-3 max-w-4xl mx-auto">
+                <i class="fa-solid fa-magnifying-glass text-gray-400 text-sm"></i>
+                <input type="text" id="message-search-input" placeholder="Search messages in this room..."
+                    class="flex-1 bg-transparent text-sm text-gray-200 placeholder-gray-500 outline-none"
+                    oninput="filterMessages(this.value)">
+                <button onclick="toggleMessageSearch()" class="text-gray-400 hover:text-white text-sm">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        </div>
 
         <!-- Chat Area & Side Panel Container -->
         <div class="flex-1 flex overflow-hidden z-10">
@@ -353,7 +369,10 @@
             
             // Load data
             await Promise.all([loadProjects(), loadAgents()]);
-            
+
+            // Init room search
+            initRoomSearch();
+
             // Connect WebSocket
             connectWebSocket();
             
@@ -495,6 +514,7 @@
                                 messages[idx].agent_name = agentName;
                                 renderMessages();
                             }
+                            setAgentStatus(agentName, 'thinking');
                             addLog(`[SSE] ${agentName} responding...`, 'blue');
                         }
                         else if (data.type === 'content') {
@@ -503,14 +523,13 @@
                             if (idx !== -1) {
                                 messages[idx].content = fullContent;
                                 renderMessages();
-                                // Auto-scroll to bottom
-                                const msgContainer = document.getElementById('messages-container');
+                                const msgContainer = document.getElementById('messages-area');
                                 if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
                             }
                         }
                         else if (data.type === 'tool_start') {
+                            setAgentStatus(agentName || 'assistant', 'executing');
                             addLog(`[Tool] ${data.tool} executing...`, 'yellow');
-                            // Append tool indicator to message
                             fullContent += `\n\n🔧 *Executing ${data.tool}...*`;
                             const idx = messages.findIndex(x => x.id === streamMsgId);
                             if (idx !== -1) {
@@ -519,8 +538,8 @@
                             }
                         }
                         else if (data.type === 'tool_result') {
+                            setAgentStatus(agentName || 'assistant', 'thinking');
                             addLog(`[Tool] ${data.tool} done`, 'green');
-                            // Update: replace the "executing" indicator with result
                             fullContent = fullContent.replace(
                                 new RegExp(`🔧 \\*Executing ${data.tool}\\.\\.\\.\\*`),
                                 `✅ *${data.tool} completed*`
@@ -532,7 +551,7 @@
                             }
                         }
                         else if (data.type === 'done') {
-                            // Finalize - replace placeholder with real message
+                            setAgentStatus(agentName || data.agent_name || 'assistant', 'idle');
                             const idx = messages.findIndex(x => x.id === streamMsgId);
                             if (idx !== -1) {
                                 messages[idx].id = data.message_id || streamMsgId;
@@ -543,6 +562,7 @@
                             addLog('[SSE] Stream complete', 'green');
                         }
                         else if (data.type === 'error') {
+                            if (agentName) setAgentStatus(agentName, 'idle');
                             addLog(`[SSE] Error: ${data.error}`, 'red');
                             const idx = messages.findIndex(x => x.id === streamMsgId);
                             if (idx !== -1) {
@@ -663,24 +683,147 @@
                 container.innerHTML = '<p class="text-xs text-gray-500">No active agents</p>';
                 return;
             }
-            container.innerHTML = activeAgents.map(a => `
-                <div class="flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600">
+            const color = getAgentColor;
+            container.innerHTML = activeAgents.map(a => {
+                const c = color(a.name);
+                return `
+                <div class="agent-status-chip flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600 transition-all" data-agent="${escapeHtml(a.name)}">
                     <div class="relative">
-                        <div class="w-6 h-6 rounded-full bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold">
+                        <div class="w-6 h-6 rounded-full bg-gradient-to-br from-${c}-400 to-${c}-500 flex items-center justify-center text-white text-xs font-bold agent-avatar">
                             ${a.name.charAt(0).toUpperCase()}
                         </div>
-                        <span class="absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center">
+                        <span class="absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center agent-status-icon">
                             <i class="fa-solid fa-moon text-[8px] agent-status-idle"></i>
                         </span>
                     </div>
                     <span class="text-sm font-medium text-gray-300">${escapeHtml(a.name)}</span>
-                    <span class="text-xs text-gray-500 border-l border-dark-600 pl-2">Idle</span>
-                </div>
-            `).join('');
-            
+                    <span class="agent-status-label text-xs text-gray-500 border-l border-dark-600 pl-2">Idle</span>
+                </div>`;
+            }).join('');
+
             // Update status
             document.getElementById('agents-count').textContent = `${activeAgents.length} / ${agents.length}`;
             document.getElementById('agents-progress').style.width = `${(activeAgents.length / Math.max(agents.length, 1)) * 100}%`;
+        }
+
+        // Agent status management
+        function setAgentStatus(agentName, status) {
+            const chip = document.querySelector(`.agent-status-chip[data-agent="${agentName}"]`);
+            if (!chip) return;
+            const icon = chip.querySelector('.agent-status-icon i');
+            const label = chip.querySelector('.agent-status-label');
+            const avatar = chip.querySelector('.agent-avatar');
+
+            if (status === 'thinking') {
+                icon.className = 'fa-solid fa-spinner fa-spin text-[8px] text-yellow-400';
+                label.textContent = 'Thinking';
+                label.className = 'agent-status-label text-xs text-yellow-400 border-l border-dark-600 pl-2';
+                chip.classList.add('ring-1', 'ring-yellow-500/50');
+                avatar.classList.add('animate-pulse');
+            } else if (status === 'executing') {
+                icon.className = 'fa-solid fa-gear fa-spin text-[8px] text-green-400';
+                label.textContent = 'Working';
+                label.className = 'agent-status-label text-xs text-green-400 border-l border-dark-600 pl-2';
+                chip.classList.add('ring-1', 'ring-green-500/50');
+                avatar.classList.remove('animate-pulse');
+            } else {
+                // idle
+                icon.className = 'fa-solid fa-moon text-[8px] agent-status-idle';
+                label.textContent = 'Idle';
+                label.className = 'agent-status-label text-xs text-gray-500 border-l border-dark-600 pl-2';
+                chip.classList.remove('ring-1', 'ring-yellow-500/50', 'ring-green-500/50');
+                avatar.classList.remove('animate-pulse');
+            }
+        }
+
+        // Room search
+        function initRoomSearch() {
+            const input = document.getElementById('search-input');
+            if (!input) return;
+            input.addEventListener('input', () => {
+                const query = input.value.trim().toLowerCase();
+                const container = document.getElementById('rooms-list');
+                const filtered = query
+                    ? projects.filter(p => p.name.toLowerCase().includes(query) || (p.description || '').toLowerCase().includes(query))
+                    : projects;
+
+                if (filtered.length === 0) {
+                    container.innerHTML = `<p class="text-xs text-gray-500 px-3 py-2">No rooms match "${escapeHtml(input.value)}"</p>`;
+                    return;
+                }
+                container.innerHTML = filtered.map(p => {
+                    const isActive = currentProject?.id === p.id;
+                    const agentCount = p.agents?.length || 1;
+                    return `
+                        <a href="#" onclick="event.preventDefault(); selectProject(projects.find(x => x.id === ${p.id}))"
+                           class="flex items-center justify-between px-3 py-2 rounded-lg ${isActive ? 'bg-dark-700 text-gray-300' : 'text-gray-400 hover:bg-dark-700 hover:text-gray-300 transition-colors'} group">
+                            <div class="flex items-center gap-3 truncate">
+                                <span class="w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-500'}"></span>
+                                <span class="truncate text-sm">${escapeHtml(p.name)}</span>
+                            </div>
+                            <span class="text-xs ${isActive ? 'bg-dark-600' : 'bg-dark-800 group-hover:bg-dark-600'} px-1.5 py-0.5 rounded text-gray-400">${agentCount} AI</span>
+                        </a>
+                    `;
+                }).join('');
+            });
+        }
+
+        // Message search
+        let messageSearchActive = false;
+        function toggleMessageSearch() {
+            messageSearchActive = !messageSearchActive;
+            const bar = document.getElementById('message-search-bar');
+            if (messageSearchActive) {
+                bar.classList.remove('hidden');
+                bar.querySelector('input').focus();
+            } else {
+                bar.classList.add('hidden');
+                bar.querySelector('input').value = '';
+                renderMessages(); // restore full view
+            }
+        }
+
+        function filterMessages(query) {
+            if (!query) {
+                renderMessages();
+                return;
+            }
+            const q = query.toLowerCase();
+            const container = document.getElementById('messages-area');
+            const matched = messages.filter(m => (m.content || '').toLowerCase().includes(q));
+
+            let html = `<div class="text-center py-4">
+                <p class="text-sm text-gray-400">${matched.length} message${matched.length !== 1 ? 's' : ''} matching "<span class="text-accent-400">${escapeHtml(query)}</span>"</p>
+                <button onclick="toggleMessageSearch()" class="text-xs text-gray-500 hover:text-gray-300 mt-1">Clear search</button>
+            </div>`;
+
+            matched.forEach(m => {
+                const c = getAgentColor(m.agent_name || 'user');
+                // Highlight matching text
+                const highlighted = escapeHtml(m.content).replace(
+                    new RegExp(`(${escapeHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
+                    '<mark class="bg-yellow-500/30 text-yellow-200 rounded px-0.5">$1</mark>'
+                );
+                if (m.message_type === 'user' || !m.agent_name) {
+                    html += `<div class="flex gap-3 justify-end">
+                        <div class="bg-accent-600/80 text-white px-4 py-2 rounded-xl max-w-[80%] text-sm">${highlighted}</div>
+                        <div class="w-7 h-7 rounded-full mt-auto bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs">U</div>
+                    </div>`;
+                } else {
+                    html += `<div class="flex gap-3">
+                        <div class="w-7 h-7 rounded-full mt-auto bg-gradient-to-br from-${c}-400 to-${c}-500 flex items-center justify-center text-white text-xs font-bold">${m.agent_name.charAt(0).toUpperCase()}</div>
+                        <div class="bg-dark-700/80 border border-dark-600 text-gray-200 px-4 py-3 rounded-xl max-w-[80%]">
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="font-semibold text-xs text-${c}-400">${escapeHtml(m.agent_name)}</span>
+                                <span class="text-xs text-gray-500">${formatTime(m.created_at)}</span>
+                            </div>
+                            <div class="text-sm">${highlighted}</div>
+                        </div>
+                    </div>`;
+                }
+            });
+
+            container.innerHTML = html;
         }
 
         function renderMessages() {

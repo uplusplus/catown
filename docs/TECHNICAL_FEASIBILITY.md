@@ -206,9 +206,16 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
   - `llm/client.py` 新增 `chat_stream()` 方法（async generator）
   - `routes/api.py` 新增 `POST /chatrooms/{id}/messages/stream`（SSE endpoint）
   - `frontend/index.html` `sendUserMessage()` 改为流式消费 + 自动回退 sync
-- [ ] Agent 头像 / 状态实时指示
-- [ ] 聊天室搜索功能
-- [ ] 消息搜索 / 历史回溯
+- [x] Agent 头像 / 状态实时指示
+  - Agent 状态栏支持三种状态：Idle（灰色月亮）/ Thinking（黄色旋转）/ Working（绿色齿轮）
+  - SSE 事件自动驱动状态切换
+  - 头像支持 pulse 动画
+- [x] 聊天室搜索功能
+  - 侧边栏搜索框实时过滤项目列表
+  - 支持按名称和描述搜索
+- [x] 消息搜索 / 历史回溯
+  - Header 新增搜索按钮，展开搜索栏
+  - 实时过滤当前聊天室消息，高亮匹配文本
 
 #### P3-3：Agent 能力增强（3-5 天）
 - [ ] 记忆提取升级为 LLM 辅助（对话结束后自动总结重要信息）
