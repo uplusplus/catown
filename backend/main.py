@@ -109,6 +109,13 @@ init_database()
 logger.info(f"[Agent] Registering built-in agents")
 register_builtin_agents()
 
+# 初始化协作系统
+logger.info("[Collab] Initializing collaboration system...")
+from agents.collaboration import collaboration_coordinator
+from tools import init_collaboration_tools
+init_collaboration_tools(collaboration_coordinator)
+logger.info("[Collab] Collaboration tools connected to coordinator")
+
 # 包含 API 路由
 app.include_router(api_router, prefix="/api")
 

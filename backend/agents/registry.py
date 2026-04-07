@@ -1,11 +1,23 @@
+import logging
+logger = logging.getLogger("catown.registry")
 # -*- coding: utf-8 -*-
 """
 内置 Agent 注册表
+
+职责：
+1. 管理 Agent 配置（从 agents.json 或默认配置加载）
+2. 注册 Agent 到数据库
+3. 提供 Agent 列表查询
+
+注意：Agent 的工具绑定统一通过 tools/tool_registry 管理，
+本模块不再维护独立的工具注册逻辑。
 """
-from typing import Dict, List
+from typing import Dict, List, Union
 from agents.core import Agent, AgentConfig
+from agents.config_models import AgentConfigV2, create_agent_config_from_provider
 from models.database import SessionLocal, Agent as DBAgent
 import json
+import os
 
 
 class AgentRegistry:
@@ -13,164 +25,136 @@ class AgentRegistry:
     
     def __init__(self):
         self.agents: Dict[str, Agent] = {}
-        self.configs: Dict[str, AgentConfig] = {}
+        self.configs: Dict[str, Union[AgentConfig, AgentConfigV2]] = {}
     
-    def register(self, config: AgentConfig, agent: Agent):
+    def register(self, config: Union[AgentConfig, AgentConfigV2], agent: Agent):
         """注册 Agent"""
         self.agents[config.name] = agent
         self.configs[config.name] = config
     
     def get(self, name: str) -> Agent:
-        """获取 Agent"""
+        """获取 Agent 实例"""
         return self.agents.get(name)
     
-    def get_config(self, name: str) -> AgentConfig:
+    def get_config(self, name: str) -> Union[AgentConfig, AgentConfigV2, None]:
         """获取 Agent 配置"""
         return self.configs.get(name)
     
     def list_agents(self) -> List[str]:
-        """列出所有 Agent"""
+        """列出所有已注册 Agent 名称"""
         return list(self.agents.keys())
     
-    def create_agent(self, name: str, llm_client=None) -> Agent:
-        """根据名称创建 Agent 实例"""
-        config = self.configs.get(name)
-        if not config:
-            raise ValueError(f"Agent '{name}' not found")
-        
-        agent = Agent(config, llm_client)
-        
-        # 注册默认工具
-        self._register_default_tools(agent, name)
-        
-        return agent
-    
-    def _register_default_tools(self, agent: Agent, agent_name: str):
-        """注册默认工具"""
-        # Web 搜索工具
-        def web_search(query: str):
-            """执行网络搜索"""
-            # TODO: 实现实际的搜索逻辑
-            return f"Search results for: {query}"
-        
-        agent.register_tool(
-            "web_search",
-            web_search,
-            "Search the web for information"
-        )
-        
-        # 代码执行工具（仅对 coder Agent）
-        if agent_name == "coder":
-            def execute_code(code: str):
-                """执行代码"""
-                # TODO: 实现安全的代码执行
-                return f"Code executed: {code[:50]}..."
-            
-            agent.register_tool(
-                "execute_code",
-                execute_code,
-                "Execute code snippets"
-            )
-        
-        # 记忆检索工具
-        def retrieve_memory(query: str):
-            """检索记忆"""
-            return agent.get_memory_summary()
-        
-        agent.register_tool(
-            "retrieve_memory",
-            retrieve_memory,
-            "Retrieve information from memory"
-        )
+    def get_tools_for_agent(self, agent_name: str) -> List[str]:
+        """获取 Agent 配置中声明的工具列表"""
+        config = self.configs.get(agent_name)
+        if config:
+            return config.tools
+        return []
 
 
 # 全局注册表实例
 registry = AgentRegistry()
 
 
-def get_builtin_agent_configs() -> List[AgentConfig]:
+def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
     """获取内置 Agent 配置"""
+    
+    # 优先从配置文件加载
+    config_file = os.getenv("AGENT_CONFIG_FILE", "configs/agents.json")
+    if os.path.exists(config_file):
+        try:
+            from agents.config_manager import load_agent_configs
+            configs_dict = load_agent_configs(config_file)
+            return list(configs_dict.values())
+        except Exception as e:
+            logger.warning(f"Failed to load config from {config_file}: {e}")
+    
+    # 使用默认配置（从环境变量读取 LLM 连接信息）
+    default_provider = {
+        "baseUrl": os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
+        "apiKey": os.getenv("LLM_API_KEY", ""),
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+            {
+                "id": os.getenv("LLM_MODEL", "gpt-4"),
+                "name": os.getenv("LLM_MODEL", "gpt-4"),
+                "api": "openai-completions",
+                "reasoning": False,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 128000,
+                "maxTokens": 16384
+            }
+        ]
+    }
+    
     return [
-        AgentConfig(
-            name="assistant",
+        create_agent_config_from_provider(
+            agent_name="assistant",
             role="通用助手",
-            system_prompt="""You are a helpful assistant in the Catown platform. 
-Your role is to help users with general tasks, answer questions, and coordinate with other agents when needed.
-Always be polite, clear, and helpful.
-If a task requires specialized knowledge, suggest involving the appropriate agent.""",
+            system_prompt="You are a helpful assistant in the Catown platform. Help users with general tasks, answer questions, and coordinate with other agents when needed.",
+            provider_config=default_provider,
             tools=["web_search", "retrieve_memory"]
         ),
-        
-        AgentConfig(
-            name="coder",
+        create_agent_config_from_provider(
+            agent_name="coder",
             role="代码专家",
-            system_prompt="""You are an expert programmer in the Catown platform.
-Your specialties include:
-- Writing clean, efficient code
-- Code review and debugging
-- Explaining technical concepts
-- Suggesting best practices
-
-Always provide well-commented code and explain your reasoning.
-Ask clarifying questions if requirements are unclear.""",
+            system_prompt="You are an expert programmer. Write clean, efficient code. Review and debug code. Explain technical concepts clearly.",
+            provider_config=default_provider,
             tools=["web_search", "execute_code", "retrieve_memory"]
         ),
-        
-        AgentConfig(
-            name="reviewer",
+        create_agent_config_from_provider(
+            agent_name="reviewer",
             role="审核专家",
-            system_prompt="""You are a critical reviewer in the Catown platform.
-Your role is to:
-- Review work products for quality
-- Provide constructive feedback
-- Identify potential issues
-- Suggest improvements
-
-Be thorough but fair. Focus on helping improve the outcome.""",
+            system_prompt="You are a critical reviewer. Review work products for quality, provide constructive feedback, and suggest improvements.",
+            provider_config=default_provider,
             tools=["web_search", "retrieve_memory"]
         ),
-        
-        AgentConfig(
-            name="researcher",
+        create_agent_config_from_provider(
+            agent_name="researcher",
             role="研究专家",
-            system_prompt="""You are a research specialist in the Catown platform.
-Your expertise includes:
-- Gathering and analyzing information
-- Conducting literature reviews
-- Synthesizing complex topics
-- Providing evidence-based insights
-
-Always cite sources and distinguish between facts and opinions.""",
+            system_prompt="You are a research specialist. Gather and analyze information, synthesize complex topics, and provide evidence-based insights.",
+            provider_config=default_provider,
             tools=["web_search", "retrieve_memory"]
         )
     ]
 
 
-def register_builtin_agents(llm_client=None):
-    """注册内置 Agent"""
+def register_builtin_agents():
+    """
+    注册内置 Agent 到数据库和注册表
+    
+    Agent 的工具配置存储在 config.tools 列表中，
+    实际工具调用通过 routes/api.py 的 trigger_agent_response
+    从 tool_registry 获取 schema 并执行。
+    """
     configs = get_builtin_agent_configs()
     
     for config in configs:
-        agent = Agent(config, llm_client)
+        # 创建 Agent 实例（不传入 llm_client，实际调用走 routes/api.py）
+        agent = Agent(config)
         registry.register(config, agent)
         
-        # 保存到数据库
+        # 同步到数据库
         db = SessionLocal()
         try:
-            db_agent = DBAgent(
-                name=config.name,
-                role=config.role,
-                system_prompt=config.system_prompt,
-                tools=json.dumps(config.tools)
-            )
-            db.add(db_agent)
-            db.commit()
+            existing = db.query(DBAgent).filter(DBAgent.name == config.name).first()
+            if not existing:
+                db_agent = DBAgent(
+                    name=config.name,
+                    role=config.role,
+                    system_prompt=config.system_prompt,
+                    tools=json.dumps(config.tools)
+                )
+                db.add(db_agent)
+                db.commit()
         except Exception as e:
-            print(f"Warning: Could not save agent {config.name} to database: {e}")
+            logger.warning(f"Could not save agent {config.name} to database: {e}")
         finally:
             db.close()
     
-    print(f"✅ Registered {len(configs)} built-in agents")
+    logger.info(f"Registered {len(configs)} built-in agents: {', '.join(registry.list_agents())}")
 
 
 def get_registry() -> AgentRegistry:

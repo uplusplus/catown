@@ -2,7 +2,6 @@
 单元测试 - Agent 核心功能
 """
 import pytest
-import asyncio
 from agents.core import Agent, AgentConfig, MemoryItem
 
 
@@ -13,7 +12,7 @@ def sample_agent_config():
         name="test_agent",
         role="测试 Agent",
         system_prompt="You are a test agent.",
-        tools=[]
+        tools=["web_search", "retrieve_memory"]
     )
 
 
@@ -28,15 +27,19 @@ class TestAgentCreation:
     
     def test_agent_initialization(self, test_agent, sample_agent_config):
         """测试 Agent 初始化"""
-        assert test_agent.config.name == sample_agent_config.name
-        assert test_agent.config.role == sample_agent_config.role
+        assert test_agent.name == "test_agent"
+        assert test_agent.role == "测试 Agent"
+        assert test_agent.system_prompt == "You are a test agent."
+        assert test_agent.tools == ["web_search", "retrieve_memory"]
         assert len(test_agent.short_term_memory) == 0
         assert len(test_agent.long_term_memory) == 0
+        assert len(test_agent.conversation_history) == 0
     
-    def test_agent_system_message(self, test_agent):
-        """测试系统消息设置"""
-        assert test_agent.system_message.role == "system"
-        assert "test agent" in test_agent.system_message.content.lower()
+    def test_agent_properties(self, test_agent):
+        """测试 Agent 属性访问"""
+        assert test_agent.name == test_agent.config.name
+        assert test_agent.role == test_agent.config.role
+        assert test_agent.system_prompt == test_agent.config.system_prompt
 
 
 class TestAgentMemory:
@@ -44,156 +47,94 @@ class TestAgentMemory:
     
     def test_add_short_term_memory(self, test_agent):
         """测试添加短期记忆"""
-        memory = MemoryItem(
-            content="Test memory",
-            memory_type="short_term",
-            importance=5
-        )
-        test_agent._add_to_memory(memory)
+        test_agent.add_memory("Test memory", memory_type="short_term", importance=5)
         
         assert len(test_agent.short_term_memory) == 1
         assert test_agent.short_term_memory[0].content == "Test memory"
     
     def test_add_long_term_memory(self, test_agent):
         """测试添加长期记忆"""
-        memory = MemoryItem(
-            content="Important fact",
-            memory_type="long_term",
-            importance=8
-        )
-        test_agent._add_to_memory(memory)
+        test_agent.add_memory("Important fact", memory_type="long_term", importance=8)
         
         assert len(test_agent.long_term_memory) == 1
         assert test_agent.long_term_memory[0].importance == 8
     
     def test_short_term_memory_limit(self, test_agent):
-        """测试短期记忆数量限制"""
-        # 添加超过限制的記憶
+        """测试短期记忆数量限制（最多 20 条）"""
         for i in range(25):
-            memory = MemoryItem(
-                content=f"Memory {i}",
-                memory_type="short_term",
-                importance=5
-            )
-            test_agent._add_to_memory(memory)
+            test_agent.add_memory(f"Memory {i}", memory_type="short_term")
         
-        # 应该只保留最近的 20 条
         assert len(test_agent.short_term_memory) == 20
-
-
-class TestAgentTools:
-    """测试 Agent 工具功能"""
-    
-    def test_register_tool(self, test_agent):
-        """测试工具注册"""
-        def sample_tool():
-            return "tool result"
-        
-        test_agent.register_tool(
-            name="sample_tool",
-            func=sample_tool,
-            description="A sample tool"
-        )
-        
-        assert "sample_tool" in test_agent.available_tools
-        assert test_agent.available_tools["sample_tool"]["description"] == "A sample tool"
-    
-    def test_tool_execution(self, test_agent):
-        """测试工具执行"""
-        def add_numbers(a: int, b: int) -> int:
-            return a + b
-        
-        test_agent.register_tool(
-            name="add",
-            func=add_numbers,
-            description="Add two numbers"
-        )
-        
-        # 执行工具
-        result = test_agent.available_tools["add"]["function"](5, 3)
-        assert result == 8
-
-
-class TestAgentConversation:
-    """测试 Agent 对话功能"""
-    
-    def test_conversation_history(self, test_agent):
-        """测试对话历史记录"""
-        # 模拟对话
-        test_agent.conversation_history.append({
-            "role": "user",
-            "content": "Hello"
-        })
-        test_agent.conversation_history.append({
-            "role": "assistant",
-            "content": "Hi there!"
-        })
-        
-        assert len(test_agent.conversation_history) == 2
-    
-    def test_reset_conversation(self, test_agent):
-        """测试重置对话"""
-        # 添加一些对话
-        test_agent.conversation_history.append({"role": "user", "content": "Test"})
-        assert len(test_agent.conversation_history) == 1
-        
-        # 重置
-        test_agent.reset_conversation()
-        assert len(test_agent.conversation_history) == 0
+        # 应保留最后 20 条
+        assert test_agent.short_term_memory[0].content == "Memory 5"
     
     def test_memory_summary(self, test_agent):
         """测试记忆摘要"""
-        # 添加一些记忆
-        test_agent._add_to_memory(MemoryItem(
-            content="Short term",
-            memory_type="short_term",
-            importance=5
-        ))
-        
-        test_agent._add_to_memory(MemoryItem(
-            content="Long term",
-            memory_type="long_term",
-            importance=7
-        ))
+        test_agent.add_memory("Short term", memory_type="short_term")
+        test_agent.add_memory("Long term", memory_type="long_term")
         
         summary = test_agent.get_memory_summary()
-        
         assert summary["short_term_count"] == 1
         assert summary["long_term_count"] == 1
         assert summary["conversation_turns"] == 0
 
 
-class TestAgentContextBuilding:
-    """测试 Agent 上下文构建"""
+class TestAgentConversation:
+    """测试 Agent 对话功能"""
     
-    def test_build_conversation_context(self, test_agent):
-        """测试构建对话上下文"""
-        messages = test_agent._build_conversation_context(
-            user_message="Test message",
-            project_context=None
-        )
+    def test_add_conversation_turn(self, test_agent):
+        """测试添加对话记录"""
+        test_agent.add_conversation_turn("user", "Hello")
+        test_agent.add_conversation_turn("assistant", "Hi there!")
         
-        assert len(messages) > 0
-        assert messages[0]["role"] == "system"
-        assert messages[-1]["role"] == "user"
-        assert messages[-1]["content"] == "Test message"
+        assert len(test_agent.conversation_history) == 2
+        assert test_agent.conversation_history[0]["role"] == "user"
+        assert test_agent.conversation_history[1]["role"] == "assistant"
     
-    def test_build_enhanced_system_prompt(self, test_agent):
-        """测试构建增强系统提示"""
-        project_context = {
-            "name": "Test Project",
-            "description": "A test project",
-            "other_agents": [
-                {"name": "helper", "role": "Helper Agent"}
-            ]
-        }
+    def test_reset_conversation(self, test_agent):
+        """测试重置对话"""
+        test_agent.add_conversation_turn("user", "Test")
+        assert len(test_agent.conversation_history) == 1
         
-        prompt = test_agent._build_enhanced_system_prompt(project_context)
+        test_agent.reset_conversation()
+        assert len(test_agent.conversation_history) == 0
+    
+    def test_reset_preserves_memory(self, test_agent):
+        """测试重置对话不影响记忆"""
+        test_agent.add_memory("Remember this", memory_type="long_term", importance=8)
+        test_agent.add_conversation_turn("user", "Test")
         
-        assert "Test Project" in prompt
-        assert "helper" in prompt
+        test_agent.reset_conversation()
+        
+        assert len(test_agent.conversation_history) == 0
+        assert len(test_agent.long_term_memory) == 1
+
+
+class TestAgentModel:
+    """测试 Agent 模型管理"""
+    
+    def test_set_model(self, test_agent):
+        """测试设置当前模型"""
+        assert test_agent.current_model is None
+        
+        test_agent.set_model("gpt-4")
+        assert test_agent.current_model == "gpt-4"
+    
+    def test_get_effective_model_default(self, test_agent):
+        """测试获取默认模型"""
+        model = test_agent.get_effective_model()
+        assert model == "gpt-4"
+    
+    def test_get_effective_model_after_set(self, test_agent):
+        """测试设置后获取模型"""
+        test_agent.set_model("claude-3")
+        assert test_agent.get_effective_model() == "claude-3"
+    
+    def test_get_available_models_no_provider(self, test_agent):
+        """测试无 provider 时获取可用模型"""
+        models = test_agent.get_available_models()
+        assert models == []
 
 
 if __name__ == "__main__":
-    # 运行测试
     pytest.main([__file__, "-v"])

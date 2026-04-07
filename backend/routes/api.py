@@ -2,6 +2,7 @@
 """
 API 路由 - 主要端点
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
@@ -9,11 +10,12 @@ from pydantic import BaseModel
 import json
 
 from models.database import get_db, Agent, Project, Chatroom, AgentAssignment, Message, Base
-from agents.registry import get_registry, AgentConfig
+from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client
 
+logger = logging.getLogger("catown.api")
 
 router = APIRouter()
 
@@ -28,20 +30,20 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
     
     db = next(get_db())
     try:
-        print(f"[DEBUG] trigger_agent_response called: chatroom_id={chatroom_id}, message={user_message[:50]}...")
+        logger.debug(f"[ trigger_agent_response called: chatroom_id={chatroom_id}, message={user_message[:50]}...")
         
         # 1. 获取聊天室关联的项目
         chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
         if not chatroom or not chatroom.project_id:
-            print(f"[DEBUG] No chatroom or project_id found")
+            logger.debug(f"[ No chatroom or project_id found")
             return
         
         project = db.query(Project).filter(Project.id == chatroom.project_id).first()
         if not project:
-            print(f"[DEBUG] No project found")
+            logger.debug(f"[ No project found")
             return
         
-        print(f"[DEBUG] Found project: {project.name}")
+        logger.debug(f"[ Found project: {project.name}")
         
         # 2. 解析 @ 提及，确定目标 Agent
         target_agent_name = None
@@ -51,7 +53,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             if mentions:
                 target_agent_name = mentions[0]
         
-        print(f"[DEBUG] Target agent name: {target_agent_name}")
+        logger.debug(f"[ Target agent name: {target_agent_name}")
         
         # 3. 获取项目关联的 Agents
         assignments = db.query(AgentAssignment).filter(
@@ -60,7 +62,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         agent_ids = [a.agent_id for a in assignments]
         agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
         
-        print(f"[DEBUG] Found {len(agents)} agents for project")
+        logger.debug(f"[ Found {len(agents)} agents for project")
         
         # 4. 确定响应的 Agent
         target_agent = None
@@ -71,14 +73,25 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
         
         if not target_agent:
-            print(f"[DEBUG] No target agent found")
+            logger.debug(f"[ No target agent found")
             return
         
-        print(f"[DEBUG] Selected agent: {target_agent.name} (role: {target_agent.role})")
+        logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
+        
+        # 注册 Agent 为协作者（如果尚未注册）
+        from agents.collaboration import collaboration_coordinator, AgentCollaborator
+        if target_agent.id not in collaboration_coordinator.collaborators:
+            collaborator = AgentCollaborator(
+                agent_id=target_agent.id,
+                agent_name=target_agent.name,
+                chatroom_id=chatroom_id
+            )
+            collaboration_coordinator.register_collaborator(collaborator)
+            logger.info(f"[Collab] Auto-registered collaborator: {target_agent.name}")
         
         # 5. 获取 LLM 客户端
         llm_client = get_llm_client()
-        print(f"[DEBUG] LLM client obtained: {llm_client.client.base_url}")
+        logger.debug(f"[ LLM client obtained: {llm_client.client.base_url}")
         
         # 6. 构建消息上下文
         messages = []
@@ -126,32 +139,32 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         # 追加当前用户消息
         messages.append({"role": "user", "content": user_message})
         
-        print(f"[DEBUG] Context messages: {len(messages)} messages")
+        logger.debug(f"[ Context messages: {len(messages)} messages")
         
         # 7. 获取工具 schemas
         tool_schemas = tool_registry.get_schemas()
         
         # 8. 主循环：LLM → 执行工具 → 结果回传 LLM → 直到没有 tool_calls
-        print(f"[LLM] Calling LLM for agent: {target_agent.name} with {len(tool_schemas)} tools available")
+        logger.info(f"[LLM] Calling LLM for agent: {target_agent.name} with {len(tool_schemas)} tools available")
         
         max_tool_iterations = 5
         iteration = 0
         
         while iteration < max_tool_iterations:
             iteration += 1
-            print(f"[LLM] Loop iteration {iteration}")
+            logger.info(f"[LLM] Loop iteration {iteration}")
             
             llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
             
             response_content = llm_response.get("content", "")
             tool_calls = llm_response.get("tool_calls")
             
-            print(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
-            print(f"[LLM] Tool calls: {tool_calls}")
+            logger.info(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
+            logger.info(f"[LLM] Tool calls: {tool_calls}")
             
             if not tool_calls:
                 # 没有更多工具调用，结束循环
-                print(f"[LLM] No more tool calls, loop done after {iteration} iterations")
+                logger.info(f"[LLM] No more tool calls, loop done after {iteration} iterations")
                 break
             
             # 将 LLM 的 assistant 消息加入上下文（包含 tool_calls）
@@ -172,15 +185,15 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
                 tool_args = json.loads(tool_call.function.arguments)
                 tool_call_id = tool_call.id
                 
-                print(f"[Tool] Executing: {tool_name} with args: {tool_args}")
+                logger.debug(f"[Tool] Executing: {tool_name} with args: {tool_args}")
                 
                 try:
                     tool_result = await tool_registry.execute(tool_name, **tool_args)
                     result_str = str(tool_result) if tool_result is not None else "(no output)"
-                    print(f"[Tool] Result: {result_str[:150]}...")
+                    logger.debug(f"[Tool] Result: {result_str[:150]}...")
                 except Exception as te:
                     result_str = f"Error executing {tool_name}: {str(te)}"
-                    print(f"[Tool] Error: {te}")
+                    logger.debug(f"[Tool] Error: {te}")
                 
                 # 以 tool role 消息将结果回传 LLM
                 messages.append({
@@ -191,7 +204,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
                 })
         
         if not response_content:
-            print(f"[ERROR] LLM returned empty response after all tool iterations")
+            logger.error(f"[ LLM returned empty response after all tool iterations")
             return
         
         # 9. 发送 Agent 响应
@@ -203,7 +216,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             agent_name=target_agent.name
         )
         
-        print(f"[DEBUG] Agent response saved: id={agent_response.id}")
+        logger.debug(f"[ Agent response saved: id={agent_response.id}")
         
         # 10. 通过 WebSocket 广播
         from routes.websocket import websocket_manager
@@ -215,10 +228,10 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             "message_type": "text"
         }, chatroom_id)
         
-        print(f"[Agent] {target_agent.name} responded to message successfully")
+        logger.info(f"[Agent] {target_agent.name} responded to message successfully")
         
     except Exception as e:
-        print(f"[Error] Agent response failed: {str(e)}")
+        logger.error(f"[ Agent response failed: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:
@@ -470,7 +483,7 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
 @router.post("/chatrooms/{chatroom_id}/messages", response_model=MessageResponse)
 async def send_message(chatroom_id: int, message: MessageRequest, db: Session = Depends(get_db)):
     """发送消息到聊天室"""
-    print(f"[API] send_message called: chatroom_id={chatroom_id}, content={message.content[:50]}...")
+    logger.info(f"[API] send_message called: chatroom_id={chatroom_id}, content={message.content[:50]}...")
     
     # 发送用户消息
     response_msg = await chatroom_manager.send_message(
@@ -480,14 +493,14 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         message_type="text"
     )
     
-    print(f"[API] User message saved: id={response_msg.id}")
+    logger.info(f"[API] User message saved: id={response_msg.id}")
     
     # 触发 Agent 响应（同步等待，方便调试）
     try:
         await trigger_agent_response(chatroom_id, message.content)
-        print(f"[API] Agent response completed")
+        logger.info(f"[API] Agent response completed")
     except Exception as e:
-        print(f"[API] Agent response error: {e}")
+        logger.info(f"[API] Agent response error: {e}")
         import traceback
         traceback.print_exc()
     

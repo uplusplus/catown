@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger("catown.collaboration")
 # -*- coding: utf-8 -*-
 """
 Multi-Agent Collaboration Module
@@ -364,7 +366,7 @@ class CollaborationCoordinator:
             self.chatroom_agents[chatroom_id] = set()
         self.chatroom_agents[chatroom_id].add(collaborator.agent_id)
         
-        print(f"✅ Registered collaborator: {collaborator.agent_name} (ID: {collaborator.agent_id})")
+        logger.info(f"Registered collaborator: {collaborator.agent_name} (ID: {collaborator.agent_id})")
     
     def unregister_collaborator(self, agent_id: int):
         """Unregister an agent collaborator"""
@@ -376,7 +378,7 @@ class CollaborationCoordinator:
                 self.chatroom_agents[chatroom_id].discard(agent_id)
             
             del self.collaborators[agent_id]
-            print(f"❌ Unregistered collaborator: {collaborator.agent_name}")
+            logger.info(f"Unregistered collaborator: {collaborator.agent_name}")
     
     def add_message_handler(self, handler: callable):
         """Add a message handler (e.g., for WebSocket broadcast)"""
@@ -398,7 +400,7 @@ class CollaborationCoordinator:
             try:
                 await handler(message)
             except Exception as e:
-                print(f"Error in message handler: {e}")
+                logger.error(f"Error in message handler: {e}")
     
     async def _broadcast_to_chatroom(self, message: CollaborationMessage):
         """Broadcast message to all agents in chatroom"""
@@ -458,5 +460,5 @@ async def collaboration_loop():
             await collaboration_coordinator.process_all_outboxes()
             await asyncio.sleep(0.1)
         except Exception as e:
-            print(f"Error in collaboration loop: {e}")
+            logger.error(f"Error in collaboration loop: {e}")
             await asyncio.sleep(1)

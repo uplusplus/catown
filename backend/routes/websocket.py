@@ -2,9 +2,12 @@
 """
 WebSocket 管理器
 """
+import logging
 from typing import Dict, Set
 from fastapi import WebSocket
 import json
+
+logger = logging.getLogger("catown.websocket")
 
 
 class WebSocketManager:
@@ -18,7 +21,7 @@ class WebSocketManager:
         """接受 WebSocket 连接"""
         await websocket.accept()
         self.active_connections.add(websocket)
-        print(f"✅ WebSocket connected. Total: {len(self.active_connections)}")
+        logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
     
     async def disconnect(self, websocket: WebSocket):
         """处理 WebSocket 断开"""
@@ -28,7 +31,7 @@ class WebSocketManager:
         for room_connections in self.room_connections.values():
             room_connections.discard(websocket)
         
-        print(f"❌ WebSocket disconnected. Total: {len(self.active_connections)}")
+        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
     
     async def join_room(self, websocket: WebSocket, chatroom_id: int):
         """加入聊天室"""
@@ -88,7 +91,7 @@ class WebSocketManager:
                         }, chatroom_id)
                 
             except Exception as e:
-                print(f"WebSocket receive error: {e}")
+                logger.error(f"WebSocket receive error: {e}")
                 break
 
 
