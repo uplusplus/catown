@@ -5,6 +5,8 @@ API 路由 - 主要端点
 import logging
 import re
 import json
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
