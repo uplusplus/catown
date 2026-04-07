@@ -240,7 +240,9 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
   - TestCollaborationSystem: 协调器/协作者注册/策略/fallback
   - TestConfigValidation: 全字段校验（6 项）
   - TestLLMClient: 创建/单例
-- [ ] API 集成测试自动化
+- [x] API 集成测试（`tests/test_api_integration.py`）
+  - Health / Agents / Tools / Config / Projects CRUD / Collaboration
+  - 端到端消息发送 + Agent 响应验证
 - [ ] Playwright E2E 测试扩展
 - [ ] 测试 CI 集成
 
