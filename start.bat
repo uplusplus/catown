@@ -51,12 +51,9 @@ if not exist "%BACKEND_DIR%\.env" (
 
 REM === Check port ===
 
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
-    set "EXIST_PID=%%a"
-)
-
-if defined EXIST_PID (
-    echo [ERROR] Port 8000 already in use (PID: !EXIST_PID!)
+python -c "import socket; s=socket.socket(); r=s.connect_ex(('127.0.0.1',8000)); s.close(); exit(0 if r!=0 else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Port 8000 already in use
     echo         Kill it first or change PORT in .env
     pause
     exit /b 1
