@@ -120,22 +120,43 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
             system_prompt += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
         
-        # 注入长期记忆到上下文（2.3 记忆系统接入）
+        # 注入记忆到上下文（含跨 Agent 共享）
         from models.database import Memory
-        
-        recent_memories = (
+
+        # 自身记忆（最重要的 8 条）
+        own_memories = (
             db.query(Memory)
-            .filter(Memory.agent_id.in_([target_agent.id, target_agent.id]))  # agent-specific memories
+            .filter(Memory.agent_id == target_agent.id)
             .order_by(Memory.importance.desc(), Memory.created_at.desc())
-            .limit(10)
+            .limit(8)
             .all()
         )
-        if recent_memories:
-            system_prompt += "\n\nStored memories (context for your responses):"
-            for mem in recent_memories:
+        # 其他 Agent 的高重要性记忆（共享上下文，最多 5 条）
+        other_agent_ids = [a.id for a in agents if a.id != target_agent.id]
+        shared_memories = []
+        if other_agent_ids:
+            shared_memories = (
+                db.query(Memory)
+                .filter(Memory.agent_id.in_(other_agent_ids), Memory.importance >= 7)
+                .order_by(Memory.importance.desc(), Memory.created_at.desc())
+                .limit(5)
+                .all()
+            )
+
+        if own_memories:
+            system_prompt += "\n\nYour memories (context for your responses):"
+            for mem in own_memories:
                 ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
                 system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
-        
+
+        if shared_memories:
+            system_prompt += "\n\nShared context from other agents:"
+            for mem in shared_memories:
+                ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
+                source_agent = next((a for a in agents if a.id == mem.agent_id), None)
+                source_name = source_agent.name if source_agent else "unknown"
+                system_prompt += f"\n- [{ts}] [{source_name}] {mem.content[:200]}"
+
         messages.append({
             "role": "system",
             "content": system_prompt
@@ -243,13 +264,104 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         }, chatroom_id)
         
         logger.info(f"[Agent] {target_agent.name} responded to message successfully")
-        
+
+        # 11. 异步提取记忆（不阻塞响应）
+        if len(response_content) > 30:
+            asyncio.create_task(_extract_memories(
+                agent_id=target_agent.id,
+                agent_name=target_agent.name,
+                user_message=user_message,
+                agent_response=response_content
+            ))
+
     except Exception as e:
         logger.error(f"[ Agent response failed: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:
         db.close()
+
+
+async def _extract_memories(agent_id: int, agent_name: str, user_message: str, agent_response: str):
+    """
+    用 LLM 从对话中提取关键信息，存为 Agent 记忆
+
+    提取内容：事实、决策、用户偏好、重要上下文
+    跳过条件：简单问候、确认类回复
+    """
+    try:
+        from models.database import get_db as _get_db, Memory
+        from llm.client import get_llm_client
+
+        llm = get_llm_client()
+
+        extraction_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a memory extraction system. Analyze the conversation and extract "
+                    "important information worth remembering. Return a JSON array of objects with fields: "
+                    "'content' (the memory text, concise), 'type' (one of: fact, preference, decision, context), "
+                    "'importance' (1-10).\n\n"
+                    "Rules:\n"
+                    "- Extract factual information, user preferences, decisions made, and important context\n"
+                    "- Skip greetings, small talk, simple confirmations, and generic Q&A\n"
+                    "- Each memory should be self-contained and meaningful\n"
+                    "- Max 3 memories per extraction\n"
+                    "- If nothing worth remembering, return an empty array []\n"
+                    "- Return ONLY the JSON array, no explanation"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"User: {user_message[:500]}\n\nAgent {agent_name}: {agent_response[:800]}"
+            }
+        ]
+
+        result = await llm.chat(extraction_messages, temperature=0.3, max_tokens=500)
+
+        if not result:
+            return
+
+        # 解析 JSON
+        import json as _json
+        result = result.strip()
+        # 提取 JSON 数组
+        if result.startswith("```"):
+            result = result.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        memories = _json.loads(result)
+        if not isinstance(memories, list) or not memories:
+            return
+
+        # 保存记忆
+        db = next(_get_db())
+        try:
+            for mem in memories[:3]:  # 最多 3 条
+                content = mem.get("content", "").strip()
+                if not content or len(content) < 10:
+                    continue
+                mem_type = mem.get("type", "context")
+                importance = min(max(int(mem.get("importance", 5)), 1), 10)
+
+                db_memory = Memory(
+                    agent_id=agent_id,
+                    memory_type=mem_type,
+                    content=content,
+                    importance=importance
+                )
+                db.add(db_memory)
+
+            db.commit()
+            logger.info(f"[Memory] Extracted {len(memories)} memories for {agent_name}")
+        except Exception as e:
+            db.rollback()
+            logger.debug(f"[Memory] Save failed: {e}")
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.debug(f"[Memory] Extraction failed: {e}")
 
 
 # ==================== 数据模型 ====================
@@ -626,20 +738,37 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             if available_tools:
                 system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
 
-            # 注入记忆
+            # 注入记忆（含跨 Agent 共享）
             from models.database import Memory
-            recent_memories = (
+            own_memories = (
                 db.query(Memory)
                 .filter(Memory.agent_id == target_agent.id)
                 .order_by(Memory.importance.desc(), Memory.created_at.desc())
-                .limit(10)
+                .limit(8)
                 .all()
             )
-            if recent_memories:
-                system_prompt += "\n\nStored memories:"
-                for mem in recent_memories:
+            other_agent_ids = [a.id for a in agents if a.id != target_agent.id]
+            shared_memories = []
+            if other_agent_ids:
+                shared_memories = (
+                    db.query(Memory)
+                    .filter(Memory.agent_id.in_(other_agent_ids), Memory.importance >= 7)
+                    .order_by(Memory.importance.desc(), Memory.created_at.desc())
+                    .limit(5)
+                    .all()
+                )
+            if own_memories:
+                system_prompt += "\n\nYour memories (context for your responses):"
+                for mem in own_memories:
                     ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
                     system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
+            if shared_memories:
+                system_prompt += "\n\nShared context from other agents:"
+                for mem in shared_memories:
+                    ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
+                    source_agent = next((a for a in agents if a.id == mem.agent_id), None)
+                    source_name = source_agent.name if source_agent else "unknown"
+                    system_prompt += f"\n- [{ts}] [{source_name}] {mem.content[:200]}"
 
             messages.append({"role": "system", "content": system_prompt})
 
@@ -749,6 +878,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             }, chatroom_id)
 
             yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id})}\n\n"
+
+            # 异步提取记忆
+            if len(final_content) > 30:
+                asyncio.create_task(_extract_memories(
+                    agent_id=target_agent.id,
+                    agent_name=target_agent.name,
+                    user_message=message.content,
+                    agent_response=final_content
+                ))
 
         except Exception as e:
             logger.error(f"[SSE] Stream error: {e}")
