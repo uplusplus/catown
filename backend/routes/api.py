@@ -46,50 +46,62 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             return
         
         logger.debug(f"[ Found project: {project.name}")
-        
+
         # 2. 解析 @ 提及，确定目标 Agent
         target_agent_name = None
         if '@' in user_message:
-            import re
             mentions = re.findall(r'@(\w+)', user_message)
             if mentions:
                 target_agent_name = mentions[0]
-        
+
         logger.debug(f"[ Target agent name: {target_agent_name}")
-        
+
         # 3. 获取项目关联的 Agents
         assignments = db.query(AgentAssignment).filter(
             AgentAssignment.project_id == project.id
         ).all()
         agent_ids = [a.agent_id for a in assignments]
         agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-        
+
         logger.debug(f"[ Found {len(agents)} agents for project")
-        
+
         # 4. 确定响应的 Agent
         target_agent = None
         if target_agent_name:
             target_agent = next((a for a in agents if a.name == target_agent_name), None)
-        
+
+            # @mentioned agent 不在项目中 → 从全局注册表查找并自动分配
+            if not target_agent:
+                global_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+                if global_agent:
+                    logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
+                    assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
+                    db.add(assignment)
+                    db.commit()
+                    target_agent = global_agent
+                    agents.append(global_agent)
+
         if not target_agent:
             target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
-        
+
         if not target_agent:
             logger.debug(f"[ No target agent found")
             return
-        
+
         logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
-        
+
         # 注册 Agent 为协作者（如果尚未注册）
         from agents.collaboration import collaboration_coordinator, AgentCollaborator
-        if target_agent.id not in collaboration_coordinator.collaborators:
-            collaborator = AgentCollaborator(
-                agent_id=target_agent.id,
-                agent_name=target_agent.name,
-                chatroom_id=chatroom_id
-            )
-            collaboration_coordinator.register_collaborator(collaborator)
-            logger.info(f"[Collab] Auto-registered collaborator: {target_agent.name}")
+        # 同时注册项目中所有 agent 为协作者（让 list_collaborators 能看到它们）
+        for agent in agents:
+            if agent.id not in collaboration_coordinator.collaborators:
+                collaborator = AgentCollaborator(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    chatroom_id=chatroom_id
+                )
+                collaboration_coordinator.register_collaborator(collaborator)
+                logger.info(f"[Collab] Auto-registered collaborator: {agent.name}")
         
         # 5. 获取 LLM 客户端
         llm_client = get_llm_client()
@@ -574,21 +586,32 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             target_agent = None
             if target_agent_name:
                 target_agent = next((a for a in agents if a.name == target_agent_name), None)
+                # @mentioned agent 不在项目中 → 从全局查找并自动分配
+                if not target_agent:
+                    global_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+                    if global_agent:
+                        logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
+                        assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
+                        db.add(assignment)
+                        db.commit()
+                        target_agent = global_agent
+                        agents.append(global_agent)
             if not target_agent:
                 target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
             if not target_agent:
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'No agent available'})}\n\n"
                 return
 
-            # 注册协作者
+            # 注册项目中所有 agent 为协作者
             from agents.collaboration import collaboration_coordinator, AgentCollaborator
-            if target_agent.id not in collaboration_coordinator.collaborators:
-                collaborator = AgentCollaborator(
-                    agent_id=target_agent.id,
-                    agent_name=target_agent.name,
-                    chatroom_id=chatroom_id
-                )
-                collaboration_coordinator.register_collaborator(collaborator)
+            for agent in agents:
+                if agent.id not in collaboration_coordinator.collaborators:
+                    collaborator = AgentCollaborator(
+                        agent_id=agent.id,
+                        agent_name=agent.name,
+                        chatroom_id=chatroom_id
+                    )
+                    collaboration_coordinator.register_collaborator(collaborator)
 
             # 5. 构建消息上下文
             llm_client = get_llm_client()

@@ -54,13 +54,35 @@ class DelegateTaskTool(BaseTool):
                 if collab.agent_name == target_agent_name:
                     target_agent_id = aid
                     break
-        
+
         if not target_agent_id:
-            # Agent not found - return available agents
+            # 从全局数据库查找并自动注册为协作者
+            try:
+                from models.database import get_db, Agent as DBAgent
+                from agents.collaboration import AgentCollaborator
+                db = next(get_db())
+                try:
+                    db_agent = db.query(DBAgent).filter(
+                        DBAgent.name == target_agent_name,
+                        DBAgent.is_active == True
+                    ).first()
+                    if db_agent and self.coordinator:
+                        collaborator = AgentCollaborator(
+                            agent_id=db_agent.id,
+                            agent_name=db_agent.name,
+                            chatroom_id=chatroom_id
+                        )
+                        self.coordinator.register_collaborator(collaborator)
+                        target_agent_id = db_agent.id
+                finally:
+                    db.close()
+            except Exception:
+                pass
+
+        if not target_agent_id:
             available = []
             if self.coordinator:
                 available = [c.agent_name for c in self.coordinator.collaborators.values()]
-            
             return f"[Delegate Task] Error: Agent '{target_agent_name}' not found. Available agents: {available}"
         
         # Create task
@@ -258,29 +280,46 @@ class ListCollaboratorsTool(BaseTool):
     async def execute(self, **kwargs) -> str:
         """
         List available collaborators
-        
+
         Returns:
             List of available agents with their capabilities
         """
         chatroom_id = kwargs.get('chatroom_id', 0)
-        
+
         if not self.coordinator:
             return "[List Collaborators] Error: Collaboration coordinator not available"
-        
+
         agent_ids = self.coordinator.chatroom_agents.get(chatroom_id, set())
-        
+
+        # 如果聊天室没有注册的协作者，从全局数据库获取所有 Agent
         if not agent_ids:
+            try:
+                from models.database import get_db, Agent as DBAgent
+                db = next(get_db())
+                try:
+                    all_agents = db.query(DBAgent).filter(DBAgent.is_active == True).all()
+                    if all_agents:
+                        result = f"[List Collaborators] All available agents in the system:\n"
+                        for a in all_agents:
+                            tools = a.tools if isinstance(a.tools, str) else str(a.tools)
+                            result += f"  - **{a.name}** (role: {a.role}, tools: {tools})\n"
+                        result += "\nTip: Use @agent_name to directly invoke an agent, or delegate_task to assign work."
+                        return result
+                finally:
+                    db.close()
+            except Exception:
+                pass
             return "[List Collaborators] No other agents available in this chatroom"
-        
-        result = f"[List Collaborators] {len(agent_ids)} agent(s) available:\n"
-        
+
+        result = f"[List Collaborators] {len(agent_ids)} agent(s) in chatroom:\n"
+
         for aid in agent_ids:
             if aid in self.coordinator.collaborators:
                 collab = self.coordinator.collaborators[aid]
                 status = "🟢 active" if collab.is_active else "🔴 inactive"
                 pending = len(collab.assigned_tasks)
                 result += f"  - **{collab.agent_name}** (ID: {aid}): {status}, {pending} pending tasks\n"
-        
+
         return result
     
     def _get_parameters_schema(self) -> dict:
