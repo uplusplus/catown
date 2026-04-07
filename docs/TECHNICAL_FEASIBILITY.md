@@ -228,7 +228,13 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
 - [ ] 多 Agent 协作流程编排（并行、串行、条件分支）
 
 #### P3-4：测试与质量保障（2-3 天）
-- [ ] 核心链路单元测试（LLM mock + 工具执行）
+- [x] 核心链路单元测试（22/22 PASSED）
+  - TestToolRegistry: 工具注册/Schema/代码执行/Web搜索/文件操作
+  - TestAgentMemory: 记忆增删/摘要/短时记忆上限
+  - TestAgentConfig: V2配置/provider模型创建
+  - TestCollaborationSystem: 协调器/协作者注册/策略/fallback
+  - TestConfigValidation: 全字段校验（6 项）
+  - TestLLMClient: 创建/单例
 - [ ] API 集成测试自动化
 - [ ] Playwright E2E 测试扩展
 - [ ] 测试 CI 集成
