@@ -365,22 +365,41 @@
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
             addLog('System initializing...', 'gray');
-            addLog(`System initialized at ${new Date().toLocaleTimeString()} UTC`, 'gray');
-            
-            // Load data
-            await Promise.all([loadProjects(), loadAgents()]);
+
+            // Load data with retry (backend may not be ready yet)
+            await loadInitialData();
 
             // Init room search
             initRoomSearch();
 
             // Connect WebSocket
             connectWebSocket();
-            
+
             // Select first project if available
             if (projects.length > 0) {
                 selectProject(projects[0]);
             }
         });
+
+        async function loadInitialData() {
+            const maxRetries = 20;
+            const retryInterval = 1500; // ms
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const res = await fetch(`${API_BASE}/status`);
+                    if (res.ok) {
+                        addLog(`[API] Backend ready (attempt ${i + 1})`, 'green');
+                        await Promise.all([loadProjects(), loadAgents()]);
+                        return;
+                    }
+                } catch (e) {
+                    // backend not ready yet
+                }
+                if (i === 0) addLog('[API] Waiting for backend...', 'yellow');
+                await new Promise(r => setTimeout(r, retryInterval));
+            }
+            addLog('[API] Backend not reachable after retries — will retry on WebSocket connect', 'red');
+        }
 
         // Global error handler — suppress network noise from external CDNs
         window.addEventListener('error', (e) => {
@@ -646,6 +665,14 @@
                 ws.onopen = () => {
                     updateBackendStatus('connected');
                     addLog('[WS] Connected to server', 'green');
+                    // Re-fetch data if initial load failed or timed out
+                    if (projects.length === 0 || agents.length === 0) {
+                        Promise.all([loadProjects(), loadAgents()]).then(() => {
+                            if (projects.length > 0 && !currentProject) {
+                                selectProject(projects[0]);
+                            }
+                        });
+                    }
                 };
                 
                 ws.onclose = () => {
