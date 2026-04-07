@@ -3,14 +3,14 @@ setlocal enabledelayedexpansion
 
 echo ============================================
 echo   Catown - Multi-Agent Collaboration Platform
+echo   Dev Mode (hot reload enabled)
 echo ============================================
 echo.
 
 set "PROJECT_ROOT=%~dp0"
 set "BACKEND_DIR=%PROJECT_ROOT%backend"
-set "FRONTEND_DIR=%PROJECT_ROOT%frontend"
 
-REM === Pre-flight checks ===
+REM === Pre-flight: Python only ===
 
 where python >nul 2>&1
 if errorlevel 1 (
@@ -19,77 +19,63 @@ if errorlevel 1 (
     exit /b 1
 )
 
-where node >nul 2>&1
+for /f "tokens=2" %%v in ('python --version 2^>^&1') do set "PYVER=%%v"
+echo [INFO] Python %PYVER%
+
+REM === Install dependencies if needed ===
+
+cd /d "%BACKEND_DIR%"
+python -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Node.js not found, please install Node.js 18+
+    echo [INFO] Installing Python dependencies...
+    pip install -r requirements.txt
+    if errorlevel 1 (
+        echo [ERROR] Failed to install Python dependencies
+        pause
+        exit /b 1
+    )
+    echo [OK] Dependencies installed
+)
+
+REM === .env setup ===
+
+if not exist "%BACKEND_DIR%\.env" (
+    echo [WARN] .env not found, copying from .env.example...
+    if exist "%BACKEND_DIR%\.env.example" (
+        copy "%BACKEND_DIR%\.env.example" "%BACKEND_DIR%\.env" >nul
+        echo [OK] .env created — edit backend\.env to set your LLM_API_KEY
+    ) else (
+        echo [WARN] No .env.example found, using environment defaults
+    )
+)
+
+REM === Check port ===
+
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
+    set "EXIST_PID=%%a"
+)
+
+if defined EXIST_PID (
+    echo [ERROR] Port 8000 already in use (PID: !EXIST_PID!)
+    echo         Kill it first or change PORT in .env
     pause
     exit /b 1
 )
 
-REM === Backend check ===
-
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
-    set "BACKEND_PID=%%a"
-)
-
-if defined BACKEND_PID (
-    echo [INFO] Backend already running on port 8000 (PID: !BACKEND_PID!)
-    set "BACKEND_READY=true"
-) else (
-    echo [INFO] Port 8000 free, starting backend...
-    cd /d "%BACKEND_DIR%"
-    python -c "import fastapi" >nul 2>&1
-    if errorlevel 1 (
-        echo [INFO] Installing Python dependencies...
-        pip install -r requirements.txt
-        if errorlevel 1 (
-            echo [ERROR] Failed to install Python dependencies
-            pause
-            exit /b 1
-        )
-    )
-    if not exist "%BACKEND_DIR%\.env" (
-        echo [WARN] .env not found, copying from .env.example...
-        if exist "%BACKEND_DIR%\.env.example" (
-            copy "%BACKEND_DIR%\.env.example" "%BACKEND_DIR%\.env" >nul
-        ) else (
-            echo [WARN] No .env.example either, using defaults
-        )
-    )
-    start "Catown Backend" cmd /c "cd /d %BACKEND_DIR% && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
-    set "BACKEND_READY=true"
-    echo [OK] Backend started (http://localhost:8000)
-    echo      API Docs: http://localhost:8000/docs
-)
+REM === Start server ===
 
 echo.
-
-REM === Frontend check ===
-
-echo [INFO] Starting frontend...
-cd /d "%FRONTEND_DIR%"
-if not exist "%FRONTEND_DIR%\node_modules\.bin\vite.cmd" (
-    echo [INFO] vite not found, running npm install...
-    call npm install
-    if errorlevel 1 (
-        echo [ERROR] Failed to install frontend dependencies
-        pause
-        exit /b 1
-    )
-    echo [OK] Frontend dependencies installed
-)
-start "Catown Frontend" cmd /c "cd /d %FRONTEND_DIR% && npm run dev"
-echo [OK] Frontend started (http://localhost:3000)
+echo [INFO] Starting Catown...
 echo.
-
-REM === Done ===
-
-echo ============================================
-echo   Catown is running!
-echo.
-echo   Frontend:  http://localhost:3000
-echo   Backend:   http://localhost:8000
+echo   Frontend:  http://localhost:8000
 echo   API Docs:  http://localhost:8000/docs
 echo.
-echo   Close terminal windows to stop.
-echo ===========================================
+echo   - Python changes:  auto-reload (uvicorn --reload)
+echo   - Frontend changes: browser auto-refresh (WebSocket)
+echo.
+echo   Press Ctrl+C to stop.
+echo ============================================
+echo.
+
+cd /d "%BACKEND_DIR%"
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000

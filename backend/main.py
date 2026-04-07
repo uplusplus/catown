@@ -156,6 +156,19 @@ from tools import init_collaboration_tools
 init_collaboration_tools(collaboration_coordinator)
 logger.info("[Collab] Collaboration tools connected to coordinator")
 
+# 启动前端文件监听（开发热重载）
+import asyncio as _asyncio
+from routes.file_watcher import file_watcher
+
+@app.on_event("startup")
+async def _start_file_watcher():
+    loop = _asyncio.get_event_loop()
+    file_watcher.start(loop)
+
+@app.on_event("shutdown")
+async def _stop_file_watcher():
+    file_watcher.stop()
+
 # 包含 API 路由
 app.include_router(api_router, prefix="/api")
 

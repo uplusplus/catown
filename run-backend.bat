@@ -1,42 +1,32 @@
 @echo off
-REM Catown Backend Start Script for Windows
+REM Catown Backend Start Script - Windows
 
 echo ========================================
 echo Catown Backend Server
 echo ========================================
 echo.
 
-cd backend
+cd /d "%~dp0backend"
 
-REM Check Python3
-python3 --version >nul 2>&1
+python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python3 not found!
-    echo Please install Python 3.10 or higher.
+    echo [ERROR] Python not found! Install Python 3.10+
     pause
     exit /b 1
 )
 
-echo [Step 1] Running tests...
-python3 test_backend.py
-if errorlevel 1 (
-    echo.
-    echo [ERROR] Tests failed! Please check the errors above.
-    pause
-    exit /b 1
+if not exist ".env" (
+    if exist ".env.example" (
+        copy ".env.example" ".env" >nul
+        echo [OK] .env created
+    )
 )
 
+echo Backend:   http://localhost:8000
+echo API Docs:  http://localhost:8000/docs
 echo.
-echo [Step 2] Starting server...
-echo.
-echo Backend will be available at:
-echo   - API:      http://localhost:8000
-echo   - Docs:     http://localhost:8000/docs
-echo   - Config:   http://localhost:8000/api/config
-echo   - Status:   http://localhost:8000/api/status
-echo.
-echo Press Ctrl+C to stop the server.
+echo Press Ctrl+C to stop.
 echo ========================================
 echo.
 
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000

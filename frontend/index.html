@@ -708,6 +708,9 @@
                 renderMessages();
             } else if (data.type === 'agent_status') {
                 updateAgentStatus(data.agent_name, data.status);
+            } else if (data.type === 'reload') {
+                console.log('[HotReload] File changed:', data.files?.join(', '));
+                location.reload();
             }
         }
 
