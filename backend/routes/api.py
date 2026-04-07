@@ -47,13 +47,25 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         logger.debug(f"[ Found project: {project.name}")
 
-        # 2. 解析 @ 提及，确定目标 Agent
-        target_agent_name = None
+        # 2. 解析 @ 提及，检测多 Agent 协作
+        mentioned_names = []
         if '@' in user_message:
-            mentions = re.findall(r'@(\w+)', user_message)
-            if mentions:
-                target_agent_name = mentions[0]
+            mentioned_names = re.findall(r'@(\w+)', user_message)
 
+        # 多 Agent 协作：多个 @mention 或包含协作关键词
+        if len(mentioned_names) > 1:
+            logger.info(f"[Collab] Multi-agent pipeline triggered: {mentioned_names}")
+            await _run_multi_agent_pipeline(
+                chatroom_id=chatroom_id,
+                project=project,
+                agents=agents,
+                agent_names=mentioned_names,
+                user_message=user_message,
+                db=db
+            )
+            return
+
+        target_agent_name = mentioned_names[0] if mentioned_names else None
         logger.debug(f"[ Target agent name: {target_agent_name}")
 
         # 3. 获取项目关联的 Agents
@@ -362,6 +374,201 @@ async def _extract_memories(agent_id: int, agent_name: str, user_message: str, a
 
     except Exception as e:
         logger.debug(f"[Memory] Extraction failed: {e}")
+
+
+async def _run_single_agent_turn(
+    agent, chatroom_id, project, agents, user_message, extra_context, db
+):
+    """
+    执行单个 Agent 的一次响应（供多 Agent 流水线调用）
+
+    Returns: (response_content, agent_response_msg) 或 (None, None)
+    """
+    from tools import tool_registry
+    from agents.collaboration import collaboration_coordinator, AgentCollaborator
+    from models.database import Memory
+
+    llm_client = get_llm_client()
+
+    # 注册协作者
+    for a in agents:
+        if a.id not in collaboration_coordinator.collaborators:
+            collaboration_coordinator.register_collaborator(
+                AgentCollaborator(agent_id=a.id, agent_name=a.name, chatroom_id=chatroom_id)
+            )
+
+    # 构建 system prompt
+    system_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+    system_prompt += f"\n\nCurrent project: {project.name}"
+    if project.description:
+        system_prompt += f"\nProject description: {project.description}"
+
+    available_tools = tool_registry.list_tools()
+    if available_tools:
+        system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
+
+    # 记忆注入
+    own_memories = (
+        db.query(Memory).filter(Memory.agent_id == agent.id)
+        .order_by(Memory.importance.desc(), Memory.created_at.desc()).limit(8).all()
+    )
+    other_ids = [a.id for a in agents if a.id != agent.id]
+    shared = []
+    if other_ids:
+        shared = (
+            db.query(Memory).filter(Memory.agent_id.in_(other_ids), Memory.importance >= 7)
+            .order_by(Memory.importance.desc(), Memory.created_at.desc()).limit(5).all()
+        )
+    if own_memories:
+        system_prompt += "\n\nYour memories:"
+        for mem in own_memories:
+            ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
+            system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
+    if shared:
+        system_prompt += "\n\nShared context from other agents:"
+        for mem in shared:
+            ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
+            src = next((a.name for a in agents if a.id == mem.agent_id), "unknown")
+            system_prompt += f"\n- [{ts}] [{src}] {mem.content[:200]}"
+
+    # 如果有协作上下文（前一个 Agent 的回复），注入
+    if extra_context:
+        system_prompt += f"\n\nPrevious agent's work for you to build upon:\n{extra_context[:1500]}"
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # 近期对话
+    recent_msgs = await chatroom_manager.get_messages(chatroom_id, limit=6)
+    for msg in recent_msgs[-4:]:
+        a_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+        if msg.message_type == "user" or not a_name:
+            messages.append({"role": "user", "content": msg.content})
+        else:
+            messages.append({"role": "assistant", "content": msg.content})
+
+    messages.append({"role": "user", "content": user_message})
+
+    tool_schemas = tool_registry.get_schemas()
+    response_content = ""
+
+    # 工具调用循环
+    for iteration in range(5):
+        llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
+        response_content = llm_response.get("content", "") or ""
+        tool_calls = llm_response.get("tool_calls")
+
+        if not tool_calls:
+            break
+
+        assistant_msg = {
+            "role": "assistant", "content": response_content,
+            "tool_calls": [tc.model_dump() if hasattr(tc, 'model_dump') else {
+                "id": tc.id, "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+            } for tc in tool_calls]
+        }
+        messages.append(assistant_msg)
+
+        for tc in tool_calls:
+            tool_name = tc.function.name
+            tool_args = json.loads(tc.function.arguments)
+            try:
+                tool_result = await tool_registry.execute(tool_name, **tool_args)
+                result_str = str(tool_result) if tool_result else "(no output)"
+            except Exception as te:
+                result_str = f"Error: {te}"
+            if len(result_str) > 2000:
+                result_str = result_str[:2000]
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str, "name": tool_name})
+
+    if not response_content:
+        return None, None
+
+    # 保存到数据库
+    agent_msg = await chatroom_manager.send_message(
+        chatroom_id=chatroom_id, agent_id=agent.id,
+        content=response_content, message_type="text", agent_name=agent.name
+    )
+
+    # 异步提取记忆
+    if len(response_content) > 30:
+        asyncio.create_task(_extract_memories(agent.id, agent.name, user_message, response_content))
+
+    return response_content, agent_msg
+
+
+async def _run_multi_agent_pipeline(
+    chatroom_id, project, agents, agent_names, user_message, db
+):
+    """
+    多 Agent 协作流水线
+
+    流程：每个按序 @mention 的 Agent 依次响应，后一个看到前一个的输出。
+    最终通过 WebSocket 广播所有响应。
+    """
+    from routes.websocket import websocket_manager
+
+    resolved_agents = []
+    for name in agent_names:
+        agent = next((a for a in agents if a.name == name), None)
+        if not agent:
+            # 自动分配
+            global_agent = db.query(Agent).filter(Agent.name == name).first()
+            if global_agent:
+                assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
+                db.add(assignment)
+                db.commit()
+                agents.append(global_agent)
+                agent = global_agent
+        if agent and agent not in resolved_agents:
+            resolved_agents.append(agent)
+
+    if not resolved_agents:
+        logger.warning("[Collab] No valid agents found for multi-agent pipeline")
+        return
+
+    logger.info(f"[Collab] Pipeline: {' → '.join(a.name for a in resolved_agents)}")
+
+    previous_context = None
+    results = []
+
+    for i, agent in enumerate(resolved_agents):
+        logger.info(f"[Collab] Step {i+1}/{len(resolved_agents)}: {agent.name}")
+
+        # 为后续 Agent 注入前序上下文
+        extra_msg = user_message
+        if previous_context:
+            extra_msg = (
+                f"{user_message}\n\n"
+                f"[Context from previous agent ({resolved_agents[i-1].name})]:\n{previous_context}"
+            )
+
+        content, msg = await _run_single_agent_turn(
+            agent=agent,
+            chatroom_id=chatroom_id,
+            project=project,
+            agents=agents,
+            user_message=extra_msg,
+            extra_context=previous_context,
+            db=db
+        )
+
+        if content:
+            # WebSocket 广播
+            await websocket_manager.broadcast_to_room({
+                "type": "message",
+                "id": msg.id,
+                "content": content,
+                "agent_name": agent.name,
+                "message_type": "text"
+            }, chatroom_id)
+
+            results.append({"agent": agent.name, "content": content})
+            previous_context = content
+        else:
+            logger.warning(f"[Collab] {agent.name} returned empty response")
+
+    logger.info(f"[Collab] Pipeline complete: {len(results)}/{len(resolved_agents)} agents responded")
 
 
 # ==================== 数据模型 ====================
@@ -681,12 +888,123 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'No project found'})}\n\n"
                 return
 
-            # 3. 解析 @mention
-            target_agent_name = None
+            # 3. 解析 @mention（支持多 Agent 流水线）
+            mentioned_names = []
             if '@' in message.content:
-                mentions = re.findall(r'@(\w+)', message.content)
-                if mentions:
-                    target_agent_name = mentions[0]
+                mentioned_names = re.findall(r'@(\w+)', message.content)
+
+            # 多 Agent 模式：逐个流式输出
+            if len(mentioned_names) > 1:
+                yield f"data: {_json.dumps({'type': 'collab_start', 'agents': mentioned_names})}\n\n"
+
+                # 获取项目 Agents
+                assignments = db.query(AgentAssignment).filter(
+                    AgentAssignment.project_id == project.id
+                ).all()
+                agent_ids = [a.agent_id for a in assignments]
+                agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+
+                # 自动分配未在项目中的 agent
+                for name in mentioned_names:
+                    if not any(a.name == name for a in agents):
+                        ga = db.query(Agent).filter(Agent.name == name).first()
+                        if ga:
+                            db.add(AgentAssignment(project_id=project.id, agent_id=ga.id))
+                            db.commit()
+                            agents.append(ga)
+
+                # 注册协作者
+                from agents.collaboration import collaboration_coordinator, AgentCollaborator
+                for a in agents:
+                    if a.id not in collaboration_coordinator.collaborators:
+                        collaboration_coordinator.register_collaborator(
+                            AgentCollaborator(agent_id=a.id, agent_name=a.name, chatroom_id=chatroom_id)
+                        )
+
+                previous_context = None
+                for step_idx, agent_name in enumerate(mentioned_names):
+                    agent = next((a for a in agents if a.name == agent_name), None)
+                    if not agent:
+                        yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
+                        continue
+
+                    yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_name})}\n\n"
+
+                    # 构建消息（注入前序上下文）
+                    from tools import tool_registry
+                    from models.database import Memory
+                    llm_client = get_llm_client()
+
+                    sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+                    sys_prompt += f"\n\nCurrent project: {project.name}"
+                    if project.description:
+                        sys_prompt += f"\nProject description: {project.description}"
+                    if tool_registry.list_tools():
+                        sys_prompt += f"\n\nTools: {', '.join(tool_registry.list_tools())}"
+                    if previous_context:
+                        sys_prompt += f"\n\nPrevious agent ({mentioned_names[step_idx-1]}) output:\n{previous_context[:1500]}"
+
+                    msgs = [{"role": "system", "content": sys_prompt}]
+                    recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
+                    for msg in recent[-3:]:
+                        an = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                        if msg.message_type == "user" or not an:
+                            msgs.append({"role": "user", "content": msg.content})
+                        else:
+                            msgs.append({"role": "assistant", "content": msg.content})
+                    msgs.append({"role": "user", "content": message.content})
+
+                    # 流式输出
+                    step_content = ""
+                    tool_schemas = tool_registry.get_schemas()
+                    for iteration in range(5):
+                        tool_calls_found = False
+                        async for event in llm_client.chat_stream(msgs, tool_schemas or None):
+                            if event["type"] == "content":
+                                step_content += event["delta"]
+                                yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_name})}\n\n"
+                            elif event["type"] == "done":
+                                tc = event.get("tool_calls")
+                                if tc:
+                                    tool_calls_found = True
+                                    msgs.append({"role": "assistant", "content": event.get("full_content", ""), "tool_calls": tc})
+                                    for t in tc:
+                                        tname = t["function"]["name"]
+                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name})}\n\n"
+                                        try:
+                                            targs = json.loads(t["function"]["arguments"])
+                                            tres = await tool_registry.execute(tname, **targs)
+                                            tres_str = str(tres)[:2000] if tres else "(no output)"
+                                        except Exception as te:
+                                            tres_str = f"Error: {te}"
+                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name})}\n\n"
+                                        msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
+                            elif event["type"] == "error":
+                                yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
+                        if not tool_calls_found:
+                            break
+
+                    # 保存
+                    if step_content:
+                        saved = await chatroom_manager.send_message(
+                            chatroom_id=chatroom_id, agent_id=agent.id,
+                            content=step_content, message_type="text", agent_name=agent.name
+                        )
+                        await websocket_manager.broadcast_to_room({
+                            "type": "message", "id": saved.id, "content": step_content,
+                            "agent_name": agent.name, "message_type": "text"
+                        }, chatroom_id)
+                        if len(step_content) > 30:
+                            asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
+                        previous_context = step_content
+
+                    yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
+
+                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True})}\n\n"
+                return
+
+            # 单 Agent 模式（原有逻辑）
+            target_agent_name = mentioned_names[0] if mentioned_names else None
 
             # 4. 获取项目 Agents
             assignments = db.query(AgentAssignment).filter(

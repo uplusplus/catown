@@ -507,7 +507,33 @@
                         if (!line.startsWith('data: ')) continue;
                         const data = JSON.parse(line.slice(6));
 
-                        if (data.type === 'agent_start') {
+                        if (data.type === 'collab_start') {
+                            addLog(`[Collab] Multi-agent pipeline: ${data.agents.join(' → ')}`, 'cyan');
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content = `🔗 **Collaboration Pipeline**: ${data.agents.map(a => '`' + a + '`').join(' → ')}\n\n`;
+                                messages[idx].agent_name = 'Pipeline';
+                                renderMessages();
+                            }
+                        }
+                        else if (data.type === 'collab_step') {
+                            agentName = data.agent;
+                            setAgentStatus(agentName, 'thinking');
+                            addLog(`[Collab] Step ${data.step}/${data.total}: ${agentName}`, 'blue');
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content += `\n---\n### Step ${data.step}: ${agentName}\n\n`;
+                                renderMessages();
+                            }
+                        }
+                        else if (data.type === 'collab_step_done') {
+                            setAgentStatus(data.agent, 'idle');
+                            addLog(`[Collab] ${data.agent} done`, 'green');
+                        }
+                        else if (data.type === 'collab_skip') {
+                            addLog(`[Collab] Skipped ${data.agent}: ${data.reason}`, 'yellow');
+                        }
+                        else if (data.type === 'agent_start') {
                             agentName = data.agent_name;
                             const idx = messages.findIndex(x => x.id === streamMsgId);
                             if (idx !== -1) {
@@ -521,7 +547,12 @@
                             fullContent += data.delta;
                             const idx = messages.findIndex(x => x.id === streamMsgId);
                             if (idx !== -1) {
-                                messages[idx].content = fullContent;
+                                // 多 Agent 模式: 内容追加到 pipeline 消息
+                                if (data.agent) {
+                                    messages[idx].content += data.delta;
+                                } else {
+                                    messages[idx].content = fullContent;
+                                }
                                 renderMessages();
                                 const msgContainer = document.getElementById('messages-area');
                                 if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;

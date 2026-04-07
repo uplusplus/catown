@@ -225,7 +225,12 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
 - [x] Agent 间上下文共享机制增强
   - 自身记忆 8 条 + 其他 Agent 高重要性记忆（>=7）5 条
   - system prompt 分区展示，带来源标注
-- [ ] 多 Agent 协作流程编排（并行、串行、条件分支）
+- [x] 多 Agent 协作流程编排
+  - 多 @mention 触发流水线（如 `@coder @reviewer build a todo app`）
+  - 顺序执行：每个 Agent 看到前一个的输出作为上下文
+  - sync + SSE 双端点支持
+  - SSE 流式输出：collab_start → collab_step → content → collab_step_done → done
+  - 前端：Pipeline 可视化，步骤分隔线，每步标题
 
 #### P3-4：测试与质量保障（2-3 天）
 - [x] 核心链路单元测试（22/22 PASSED）
@@ -245,7 +250,10 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
   - docker-compose.yml: 环境变量注入 + 数据卷持久化
   - .dockerignore: 排除 .git/__pycache__/tests 等
   - HEALTHCHECK 内置
-- [ ] PostgreSQL 支持（通过 SQLAlchemy URL 切换）
+- [x] PostgreSQL 支持（通过 SQLAlchemy URL 切换）
+  - docker-compose 内置 PostgreSQL 16 服务
+  - `DATABASE_URL` 环境变量切换 SQLite/PostgreSQL
+  - `psycopg2-binary` 依赖已添加
 - [ ] Alembic 数据库版本管理
 - [ ] 错误追踪集成
 
