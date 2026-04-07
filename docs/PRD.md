@@ -594,8 +594,8 @@ backend/
 | 阶段 | 状态 | 完成日期 |
 |------|------|---------|
 | P0 — 数据模型与配置 | ✅ 已完成 | 2026-04-07 |
-| P1 — 引擎与 API | ⏳ 待开发 | — |
-| P1 — 前端 Dashboard | ⏳ 待开发 | — |
+| P1 — 引擎与 API | ✅ 已完成 | 2026-04-07 |
+| P1 — 前端 Dashboard | ✅ 已完成 | 2026-04-07 |
 | P2 — 增强 | ⏳ 待开发 | — |
 | P3 — 扩展 | ⏳ 待开发 | — |
 
@@ -620,17 +620,17 @@ backend/
 
 ### Phase 2: P1 — 引擎与 API
 
-| # | 任务 | 交付物 |
-|---|------|--------|
-| 4 | Pipeline 引擎 | `pipeline/engine.py` 阶段流转 + Gate + 错误恢复 |
-| 5 | Pipeline API | `routes/pipeline.py` REST 接口 |
-| 6 | Agent 间消息 | 消息持久化 + WebSocket 广播 |
+| # | 任务 | 交付物 | 状态 |
+|---|------|--------|------|
+| 4 | Pipeline 引擎 | `pipeline/engine.py` 阶段流转 + Gate + 错误恢复 | ✅ |
+| 5 | Pipeline API | `routes/pipeline.py` REST 接口 | ✅ |
+| 6 | Agent 间消息 | 消息持久化 + WebSocket 广播 | ✅ |
 
 ### Phase 3: P1 — 前端
 
-| # | 任务 | 交付物 |
-|---|------|--------|
-| 7 | Pipeline Dashboard | `frontend/index.html` 新增 Pipeline 页面 |
+| # | 任务 | 交付物 | 状态 |
+|---|------|--------|------|
+| 7 | Pipeline Dashboard | `frontend/index.html` 新增 Pipeline 页面 | ✅ |
 
 ### Phase 4: P2 — 增强
 
@@ -683,13 +683,13 @@ backend/
 | `configs/agents.json` | 改为 5 个 Pipeline 角色 | — | ✅ 完成 |
 | `configs/pipelines.json` | 新增，默认 5 阶段模板 | — | ✅ 完成 |
 | `pipeline/config.py` | 新增，配置加载器 | — | ✅ 完成 |
-| `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ⏳ P1 |
-| `routes/pipeline.py` | 新增，Pipeline API 路由 | 中 | ⏳ P1 |
+| `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ✅ 完成 |
+| `routes/pipeline.py` | 新增，Pipeline API 路由 | 中 | ✅ 完成 |
 | `agents/collaboration.py` | Agent 间消息路由，接入 Pipeline | 中 | ⏳ P1 |
 | `agents/registry.py` | 注册新角色（已由 agents.json 自动加载） | 小 | ✅ 完成 |
 | `agents/core.py` | Agent 基类不变 | 无 | — |
-| `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 | ⏳ P1 |
-| `frontend/index.html` | 新增 Pipeline Dashboard section | 中 | ⏳ P1 |
+| `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 | ✅ 完成 |
+| `frontend/index.html` | 新增 Pipeline Dashboard section | 中 | ✅ 完成 |
 
 ### B. 参考文档
 
