@@ -2204,6 +2204,19 @@
                         <div class="text-gray-500 text-center py-4">No artifacts yet</div>
                     </div>
                 </div>
+
+                <!-- File Browser -->
+                <div class="bg-dark-700/40 rounded-xl border border-dark-600 p-4 mt-4">
+                    <h4 class="text-sm font-medium text-white mb-3">
+                        <i class="fa-solid fa-folder-open mr-2"></i>Workspace Files
+                        <button onclick="browseFiles('.')" class="text-xs text-accent-400 hover:text-accent-300 ml-2">
+                            <i class="fa-solid fa-refresh"></i> Browse
+                        </button>
+                    </h4>
+                    <div id="file-browser" class="text-sm">
+                        <div class="text-gray-500 text-center py-4">Click Browse to load workspace files</div>
+                    </div>
+                </div>
             `;
 
             // Auto-load messages + artifacts
@@ -2461,6 +2474,101 @@
             const div = document.createElement('div');
             div.textContent = str;
             return div.innerHTML;
+        }
+
+        // ==================== File Browser ====================
+
+        async function browseFiles(dirPath) {
+            if (!_currentPipelineDetail) return;
+            const container = document.getElementById('file-browser');
+            container.innerHTML = '<div class="text-gray-500 py-2">Loading...</div>';
+            try {
+                const resp = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/files?path=${encodeURIComponent(dirPath)}`);
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    container.innerHTML = `<div class="text-red-400 py-2">${escapeHtml(err.detail || 'Error')}</div>`;
+                    return;
+                }
+                const data = await resp.json();
+                if (data.type === 'directory') {
+                    let html = `<div class="text-xs text-gray-400 mb-2 font-mono cursor-pointer hover:text-accent-400" onclick="browseFiles('.')">${escapeHtml(data.path)}</div>`;
+                    html += '<div class="space-y-1">';
+                    // Parent dir
+                    if (data.path !== '.') {
+                        const parent = data.path.split('/').slice(0, -1).join('/') || '.';
+                        html += `<div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-dark-600 cursor-pointer" onclick="browseFiles('${escapeHtml(parent)}')">
+                            <span class="text-gray-500">📁</span><span class="text-gray-400 text-xs">..</span></div>`;
+                    }
+                    data.entries.forEach(e => {
+                        const icon = e.type === 'directory' ? '📁' : '📄';
+                        const click = e.type === 'directory'
+                            ? `browseFiles('${escapeHtml(e.path)}')`
+                            : `viewFile('${escapeHtml(e.path)}')`;
+                        const size = e.size != null ? `<span class="text-[10px] text-gray-600 ml-auto">${formatBytes(e.size)}</span>` : '';
+                        html += `<div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-dark-600 cursor-pointer" onclick="${click}">
+                            <span>${icon}</span><span class="text-xs font-mono text-gray-300">${escapeHtml(e.name)}</span>${size}</div>`;
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    // Single file
+                    viewFile(dirPath);
+                }
+            } catch (e) {
+                container.innerHTML = `<div class="text-red-400 py-2">${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        async function viewFile(filePath) {
+            if (!_currentPipelineDetail) return;
+            const container = document.getElementById('file-browser');
+            container.innerHTML = '<div class="text-gray-500 py-2">Loading...</div>';
+            try {
+                const resp = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/files?path=${encodeURIComponent(filePath)}`);
+                const data = await resp.json();
+                if (data.type === 'directory') {
+                    browseFiles(filePath);
+                    return;
+                }
+                const parent = filePath.split('/').slice(0, -1).join('/') || '.';
+                container.innerHTML = `
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-xs text-gray-400 cursor-pointer hover:text-accent-400" onclick="browseFiles('${escapeHtml(parent)}')">
+                            <i class="fa-solid fa-arrow-left mr-1"></i>Back
+                        </span>
+                        <span class="text-xs font-mono text-white">${escapeHtml(filePath)}</span>
+                        <span class="text-[10px] text-gray-600 ml-auto">${formatBytes(data.size)}</span>
+                    </div>
+                    <textarea id="file-editor-content" class="w-full bg-dark-800 border border-dark-600 rounded-lg p-3 text-xs text-gray-300 font-mono focus:outline-none focus:border-accent-500" rows="16">${escapeHtml(data.content)}</textarea>
+                    <div class="flex justify-end gap-2 mt-2">
+                        <button onclick="browseFiles('${escapeHtml(parent)}')" class="text-xs text-gray-400 hover:text-white px-3 py-1">Cancel</button>
+                        <button onclick="saveFile('${escapeHtml(filePath)}')" class="bg-accent-500 hover:bg-accent-400 text-white text-xs px-3 py-1 rounded">Save</button>
+                    </div>
+                `;
+            } catch (e) {
+                container.innerHTML = `<div class="text-red-400 py-2">${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        async function saveFile(filePath) {
+            if (!_currentPipelineDetail) return;
+            const content = document.getElementById('file-editor-content').value;
+            try {
+                await fetch(`/api/pipelines/${_currentPipelineDetail.id}/files`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: filePath, content })
+                });
+                viewFile(filePath);
+            } catch (e) {
+                alert('Save failed: ' + e.message);
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
         }
 
     </script>

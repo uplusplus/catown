@@ -133,12 +133,18 @@ def _tool_web_search(workspace: Path, query: str) -> str:
     return f"[Web search placeholder] Query: {query}\n(Search not yet implemented in pipeline engine)"
 
 
+def _tool_send_message_placeholder(workspace: Path, **kwargs) -> str:
+    """占位 — 实际由 _execute_tool 特殊处理"""
+    return "Error: send_message not configured"
+
+
 TOOL_REGISTRY: Dict[str, Any] = {
     "read_file": {"fn": _tool_read_file, "params": ["file_path"], "desc": "Read a file from workspace"},
     "write_file": {"fn": _tool_write_file, "params": ["file_path", "content"], "desc": "Write content to a file in workspace"},
     "list_files": {"fn": _tool_list_files, "params": ["dir_path?"], "desc": "List files in workspace directory"},
     "execute_code": {"fn": _tool_execute_code, "params": ["code", "language?"], "desc": "Execute code (python)"},
     "web_search": {"fn": _tool_web_search, "params": ["query"], "desc": "Search the web"},
+    "send_message": {"fn": _tool_send_message_placeholder, "params": ["to_agent", "content", "message_type?"], "desc": "Send a message to another agent in this pipeline (e.g. ask architect for clarification)"},
 }
 
 
@@ -173,8 +179,12 @@ def _build_tools_for_agent(agent_name: str) -> List[Dict]:
     return tools
 
 
-async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str]) -> str:
+async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str], db=None, stage_id: int = None) -> str:
     """执行单个工具调用"""
+    # send_message 需要特殊处理（需要 db 访问）
+    if tool_name == "send_message":
+        return await _handle_send_message(agent_name, run, arguments, db, stage_id)
+
     info = TOOL_REGISTRY.get(tool_name)
     if not info:
         return f"Error: unknown tool: {tool_name}"
@@ -183,6 +193,72 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
         return info["fn"](workspace, **arguments)
     except Exception as e:
         return f"Tool error ({tool_name}): {e}"
+
+
+async def _handle_send_message(
+    from_agent: str,
+    run: PipelineRun,
+    arguments: Dict[str, str],
+    db=None,
+    stage_id: int = None,
+) -> str:
+    """处理 Agent 间消息发送"""
+    to_agent = arguments.get("to_agent", "")
+    content = arguments.get("content", "")
+    message_type = arguments.get("message_type", "AGENT_QUESTION")
+
+    if not to_agent or not content:
+        return "Error: send_message requires 'to_agent' and 'content'"
+
+    if db:
+        msg = PipelineMessage(
+            run_id=run.id,
+            stage_id=stage_id,
+            message_type=message_type,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            content=content,
+        )
+        db.add(msg)
+        db.commit()
+
+    # 加入待投递队列
+    _interagent_message_queue.append({
+        "run_id": run.id,
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "content": content,
+        "message_type": message_type,
+    })
+
+    # 广播事件
+    await event_bus.emit("agent_message", {
+        "run_id": run.id,
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "content": content[:500],
+    })
+
+    logger.info(f"Agent message: {from_agent} → {to_agent}: {content[:100]}")
+    return f"Message sent to {to_agent}"
+
+
+# Agent 间消息队列：run_id, from_agent, to_agent, content, message_type
+_interagent_message_queue: List[Dict[str, Any]] = []
+
+
+def _pop_messages_for_agent(run_id: int, agent_name: str) -> List[Dict[str, Any]]:
+    """取出并移除发给指定 Agent 的待投递消息"""
+    global _interagent_message_queue
+    messages = []
+    remaining = []
+    for msg in _interagent_message_queue:
+        if msg["run_id"] == run_id and msg["to_agent"] == agent_name:
+            messages.append(msg)
+        else:
+            remaining.append(msg)
+    _interagent_message_queue = remaining
+    return messages
 
 
 # ==================== 事件回调 ====================
@@ -761,6 +837,14 @@ class PipelineEngine:
             for instr in new_instr:
                 messages.append({"role": "user", "content": f"[BOSS Instruction]: {instr}"})
 
+            # 检查是否有来自其他 Agent 的消息
+            inter_msgs = _pop_messages_for_agent(run.id, stage_cfg.agent)
+            for im in inter_msgs:
+                messages.append({
+                    "role": "user",
+                    "content": f"[Message from {im['from_agent']}]: {im['content']}",
+                })
+
             # 调用 LLM
             response = await llm_client.chat_with_tools(messages, tools=tools if tools else None)
 
@@ -801,7 +885,7 @@ class PipelineEngine:
                     except json.JSONDecodeError:
                         fn_args = {}
 
-                    tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args)
+                    tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
 
                     messages.append({
                         "role": "tool",

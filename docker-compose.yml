@@ -7,9 +7,6 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4}
       - HOST=0.0.0.0
       - PORT=8000
       # SQLite (default): data/catown.db
@@ -19,10 +16,13 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-60}
       - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      # Agent 配置文件路径（所有 LLM 配置来源）
+      - AGENT_CONFIG_FILE=${AGENT_CONFIG_FILE:-configs/agents.json}
     volumes:
       - catown-data:/app/backend/data
       - catown-logs:/app/backend/logs
-      - ./configs:/app/backend/configs:ro
+      - catown-workspaces:/app/backend/data/workspaces
+      - ./backend/configs:/app/backend/configs:ro
     depends_on:
       db:
         condition: service_healthy
@@ -55,4 +55,5 @@ services:
 volumes:
   catown-data:
   catown-logs:
+  catown-workspaces:
   postgres-data:

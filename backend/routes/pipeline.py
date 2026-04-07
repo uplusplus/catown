@@ -297,6 +297,95 @@ async def get_stages(pipeline_id: int, db: Session = Depends(get_db)):
     )
 
 
+# ==================== 产出物文件查看/编辑 ====================
+
+@router.get("/{pipeline_id}/files")
+async def read_file(pipeline_id: int, path: str, db: Session = Depends(get_db)):
+    """读取 workspace 内的文件内容"""
+    from pathlib import Path
+    pipeline = db.query(Pipeline).filter(Pipeline.id == pipeline_id).first()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.pipeline_id == pipeline_id)
+        .order_by(PipelineRun.run_number.desc())
+        .first()
+    )
+    if not run or not run.workspace_path:
+        raise HTTPException(status_code=404, detail="No workspace found")
+
+    workspace = Path(run.workspace_path).resolve()
+    target = (workspace / path).resolve()
+
+    # 防止路径穿越
+    if not str(target).startswith(str(workspace)):
+        raise HTTPException(status_code=403, detail="Path traversal detected")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+
+    if target.is_dir():
+        entries = []
+        for p in sorted(target.iterdir()):
+            stat = p.stat()
+            entries.append({
+                "name": p.name,
+                "path": str(p.relative_to(workspace)),
+                "type": "directory" if p.is_dir() else "file",
+                "size": stat.st_size if p.is_file() else None,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        return {"type": "directory", "path": path, "entries": entries}
+
+    # 文件内容（限制 1MB）
+    if target.stat().st_size > 1_048_576:
+        raise HTTPException(status_code=413, detail="File too large (>1MB)")
+
+    content = target.read_text(encoding="utf-8", errors="replace")
+    return {
+        "type": "file",
+        "path": path,
+        "content": content,
+        "size": target.stat().st_size,
+    }
+
+
+@router.put("/{pipeline_id}/files")
+async def write_file(pipeline_id: int, body: dict, db: Session = Depends(get_db)):
+    """编辑 workspace 内的文件"""
+    from pathlib import Path
+    file_path = body.get("path")
+    content = body.get("content")
+    if not file_path or content is None:
+        raise HTTPException(status_code=400, detail="Missing 'path' or 'content'")
+
+    pipeline = db.query(Pipeline).filter(Pipeline.id == pipeline_id).first()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run = (
+        db.query(PipelineRun)
+        .filter(PipelineRun.pipeline_id == pipeline_id)
+        .order_by(PipelineRun.run_number.desc())
+        .first()
+    )
+    if not run or not run.workspace_path:
+        raise HTTPException(status_code=404, detail="No workspace found")
+
+    workspace = Path(run.workspace_path).resolve()
+    target = (workspace / file_path).resolve()
+
+    if not str(target).startswith(str(workspace)):
+        raise HTTPException(status_code=403, detail="Path traversal detected")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+    return {"status": "written", "path": file_path, "size": len(content)}
+
+
 # ==================== 配置 ====================
 
 @router.get("/config/templates")
