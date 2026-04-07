@@ -1,30 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-LLM 客户端封装（OpenAI 兼容）
+LLM 客户端封装
 
-配置来源：统一从 config 模块读取 Settings（.env → 环境变量）
+支持 per-Agent 独立 LLM 配置，所有配置来源为 agents.json。
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
 from openai import AsyncOpenAI
+import json
+import os
+import logging
 
 from config import settings
+
+logger = logging.getLogger("catown.llm")
+
+# 缓存已创建的客户端：agent_name → LLMClient
+_client_cache: Dict[str, "LLMClient"] = {}
 
 
 class LLMClient:
     """
-    LLM 客户端（支持 OpenAI 兼容接口）
-    
-    配置统一从 config.settings 读取，不再从环境变量直接硬编码。
+    LLM 客户端（OpenAI 兼容接口）
+
+    每个 Agent 可以有独立的 provider 配置（baseUrl, apiKey, model）。
     """
-    
-    def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL
-        )
-        self.model = settings.LLM_MODEL
-    
+
+    def __init__(self, base_url: str, api_key: str, model: str):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.model = model
+        self.base_url = base_url
+
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """发送聊天消息"""
         try:
@@ -37,7 +42,7 @@ class LLMClient:
             return response.choices[0].message.content
         except Exception as e:
             raise Exception(f"LLM API error: {str(e)}")
-    
+
     async def chat_with_tools(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         """支持工具调用的聊天"""
         try:
@@ -62,10 +67,7 @@ class LLMClient:
         流式聊天（SSE generator）
 
         Yields:
-            dict: {"type": "content"|"tool_call"|"done", ...}
-                - content: {"type": "content", "delta": "chunk text"}
-                - tool_call: {"type": "tool_call", "tool_calls": [...]}
-                - done: {"type": "done", "full_content": "...", "tool_calls": [...]}
+            dict: {"type": "content"|"tool_call"|"done"|"error", ...}
         """
         try:
             kwargs = {
@@ -87,16 +89,13 @@ class LLMClient:
 
                 delta = choice.delta
 
-                # 处理内容增量
                 if delta.content:
                     full_content += delta.content
                     yield {"type": "content", "delta": delta.content}
 
-                # 处理工具调用增量
                 if delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
-                        # 扩展列表以容纳新索引
                         while len(accumulated_tool_calls) <= idx:
                             accumulated_tool_calls.append({
                                 "id": "",
@@ -112,11 +111,9 @@ class LLMClient:
                             if tc_delta.function.arguments:
                                 accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
 
-                # 检查是否结束
                 if choice.finish_reason in ("stop", "tool_calls", "length"):
                     break
 
-            # 发送完成信号
             yield {
                 "type": "done",
                 "full_content": full_content,
@@ -127,18 +124,154 @@ class LLMClient:
             yield {"type": "error", "error": str(e)}
 
 
-_llm_client: Optional[LLMClient] = None
+def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
+    """
+    从 agents.json 加载指定 Agent 的 provider 配置
+
+    Returns: {"base_url": str, "api_key": str, "model": str} 或 None
+    """
+    config_file = settings.AGENT_CONFIG_FILE
+    if not os.path.exists(config_file):
+        return None
+
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        agents = data.get("agents", {})
+        agent_data = agents.get(agent_name)
+        if not agent_data:
+            return None
+
+        provider = agent_data.get("provider", {})
+        if not provider:
+            return None
+
+        base_url = provider.get("baseUrl", "")
+        api_key = provider.get("apiKey", "")
+
+        # 模型：优先用 default_model，否则取 models 列表第一个
+        model = agent_data.get("default_model", "")
+        if not model:
+            models = provider.get("models", [])
+            if models:
+                model = models[0].get("id", "")
+
+        if not base_url or not model:
+            return None
+
+        return {"base_url": base_url, "api_key": api_key, "model": model}
+
+    except Exception as e:
+        logger.warning(f"Failed to load provider config for agent '{agent_name}': {e}")
+        return None
+
+
+def get_llm_client_for_agent(agent_name: str) -> LLMClient:
+    """
+    获取指定 Agent 的 LLM 客户端（带缓存）
+
+    配置来源：agents.json → 该 Agent 的 provider 配置
+    """
+    # 命中缓存
+    if agent_name in _client_cache:
+        return _client_cache[agent_name]
+
+    # 从 agents.json 加载
+    provider = _load_agent_provider(agent_name)
+    if provider:
+        client = LLMClient(
+            base_url=provider["base_url"],
+            api_key=provider["api_key"],
+            model=provider["model"]
+        )
+        _client_cache[agent_name] = client
+        logger.info(f"Created LLM client for agent '{agent_name}': {provider['base_url']} / {provider['model']}")
+        return client
+
+    # fallback：使用 agents.json 中第一个有 provider 的 Agent 配置
+    fallback = _get_first_provider()
+    if fallback:
+        client = LLMClient(
+            base_url=fallback["base_url"],
+            api_key=fallback["api_key"],
+            model=fallback["model"]
+        )
+        _client_cache[agent_name] = client
+        logger.warning(f"Agent '{agent_name}' has no provider config, using fallback: {fallback['model']}")
+        return client
+
+    raise RuntimeError(
+        f"No LLM provider configured for agent '{agent_name}'. "
+        f"Please configure provider in {settings.AGENT_CONFIG_FILE}"
+    )
+
+
+def get_default_llm_client() -> LLMClient:
+    """
+    获取默认 LLM 客户端（用于无 Agent 上下文的场景，如记忆提取）
+
+    配置来源：agents.json 中第一个有 provider 的 Agent
+    """
+    # 尝试找一个已缓存的
+    if _client_cache:
+        return next(iter(_client_cache.values()))
+
+    fallback = _get_first_provider()
+    if fallback:
+        client = LLMClient(
+            base_url=fallback["base_url"],
+            api_key=fallback["api_key"],
+            model=fallback["model"]
+        )
+        return client
+
+    raise RuntimeError(
+        f"No LLM provider configured. Please configure at least one agent's provider in {settings.AGENT_CONFIG_FILE}"
+    )
 
 
 def get_llm_client() -> LLMClient:
-    """获取全局 LLM 客户端"""
-    global _llm_client
-    if _llm_client is None:
-        _llm_client = LLMClient()
-    return _llm_client
+    """
+    获取默认 LLM 客户端（向后兼容入口）
+
+    优先返回已缓存的客户端，否则从 agents.json 第一个 Agent 加载。
+    新代码建议使用 get_llm_client_for_agent(agent_name)。
+    """
+    return get_default_llm_client()
 
 
-def set_llm_client(client: LLMClient):
-    """设置全局 LLM 客户端（配置更新后调用）"""
-    global _llm_client
-    _llm_client = client
+def _get_first_provider() -> Optional[Dict[str, str]]:
+    """从 agents.json 获取第一个有 provider 配置的 Agent"""
+    config_file = settings.AGENT_CONFIG_FILE
+    if not os.path.exists(config_file):
+        return None
+
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        for agent_name, agent_data in data.get("agents", {}).items():
+            provider = agent_data.get("provider", {})
+            base_url = provider.get("baseUrl", "")
+            api_key = provider.get("apiKey", "")
+
+            model = agent_data.get("default_model", "")
+            if not model:
+                models = provider.get("models", [])
+                if models:
+                    model = models[0].get("id", "")
+
+            if base_url and model:
+                return {"base_url": base_url, "api_key": api_key, "model": model}
+
+    except Exception as e:
+        logger.warning(f"Failed to load first provider from agents.json: {e}")
+
+    return None
+
+
+def clear_client_cache():
+    """清空客户端缓存（配置更新后调用）"""
+    _client_cache.clear()
+    logger.info("LLM client cache cleared")

@@ -18,7 +18,8 @@ from fastapi.responses import HTMLResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from collections import defaultdict
 
-# 加载 .env 文件
+# 加载 .env 文件（仅基础设施配置：HOST, PORT, DATABASE_URL, LOG_LEVEL）
+# LLM 配置已迁移至 agents.json
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 

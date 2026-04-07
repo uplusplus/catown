@@ -15,7 +15,7 @@ from models.database import get_db, Agent, Project, Chatroom, AgentAssignment, M
 from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
-from llm.client import get_llm_client
+from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 
 logger = logging.getLogger("catown.api")
 
@@ -115,9 +115,9 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
                 collaboration_coordinator.register_collaborator(collaborator)
                 logger.info(f"[Collab] Auto-registered collaborator: {agent.name}")
         
-        # 5. 获取 LLM 客户端
-        llm_client = get_llm_client()
-        logger.debug(f"[ LLM client obtained: {llm_client.client.base_url}")
+        # 5. 获取该 Agent 的 LLM 客户端
+        llm_client = get_llm_client_for_agent(target_agent.name)
+        logger.debug(f"[ LLM client obtained for {target_agent.name}: {llm_client.base_url}")
         
         # 6. 构建消息上下文
         messages = []
@@ -303,9 +303,9 @@ async def _extract_memories(agent_id: int, agent_name: str, user_message: str, a
     """
     try:
         from models.database import get_db as _get_db, Memory
-        from llm.client import get_llm_client
+        from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 
-        llm = get_llm_client()
+        llm = get_llm_client_for_agent(agent_name)
 
         extraction_messages = [
             {
@@ -388,7 +388,7 @@ async def _run_single_agent_turn(
     from agents.collaboration import collaboration_coordinator, AgentCollaborator
     from models.database import Memory
 
-    llm_client = get_llm_client()
+    llm_client = get_llm_client_for_agent(agent.name)
 
     # 注册协作者
     for a in agents:
@@ -870,7 +870,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
     async def event_generator():
         from models.database import get_db as _get_db
         from tools import tool_registry
-        from llm.client import get_llm_client
+        from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 
         db = next(_get_db())
         try:
@@ -940,7 +940,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     # 构建消息（注入前序上下文）
                     from tools import tool_registry
                     from models.database import Memory
-                    llm_client = get_llm_client()
+                    llm_client = get_llm_client_for_agent(agent.name)
 
                     sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
                     sys_prompt += f"\n\nCurrent project: {project.name}"
@@ -1050,8 +1050,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     )
                     collaboration_coordinator.register_collaborator(collaborator)
 
-            # 5. 构建消息上下文
-            llm_client = get_llm_client()
+            # 5. 构建该 Agent 的消息上下文
+            llm_client = get_llm_client_for_agent(target_agent.name)
             messages = []
 
             system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
@@ -1268,20 +1268,20 @@ async def health_check():
 
 # ==================== 配置相关 ====================
 
-# ==================== 配置相关 ====================
-
 @router.get("/config")
 async def get_config():
-    """获取前端配置信息（全局 + 各Agent实际生效配置）"""
-    import os
+    """
+    获取配置信息（唯一来源：agents.json）
+
+    返回：
+    - agents: 各 Agent 的完整配置
+    - agent_llm_configs: 各 Agent 实际生效的 LLM 配置摘要
+    - server: 服务器配置
+    - features: 功能开关
+    """
     from pathlib import Path
-    
+
     config = {
-        "llm": {
-            "apiKey": os.getenv("LLM_API_KEY", ""),
-            "baseUrl": os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
-            "model": os.getenv("LLM_MODEL", "gpt-4")
-        },
         "server": {
             "host": os.getenv("HOST", "0.0.0.0"),
             "port": int(os.getenv("PORT", "8000"))
@@ -1291,145 +1291,88 @@ async def get_config():
             "websocket_enabled": True,
             "tools_enabled": True,
             "memory_enabled": True
-        }
+        },
+        "agents": {},
+        "agent_llm_configs": {}
     }
-    
-    # 加载 agents.json 中各 Agent 的实际 provider 配置
-    agents_config_file = Path("configs/agents.json")
+
+    # 从 agents.json 加载（唯一配置源）
+    agents_config_file = Path(settings.AGENT_CONFIG_FILE)
     if agents_config_file.exists():
         try:
             with open(agents_config_file, 'r', encoding='utf-8') as f:
                 agents_config = json.load(f)
-                agents_data = agents_config.get("agents", {})
-                config["agents"] = agents_data
-                
-                # 提取各 Agent 实际生效的 LLM 配置（方便前端对比显示）
-                agent_llm_configs = {}
-                for agent_name, agent_data in agents_data.items():
-                    provider = agent_data.get("provider", {})
-                    default_model = agent_data.get("default_model", "")
-                    models = provider.get("models", [])
-                    effective_model = default_model or (models[0]["id"] if models else "")
-                    agent_llm_configs[agent_name] = {
-                        "baseUrl": provider.get("baseUrl", ""),
-                        "model": effective_model,
-                        "hasApiKey": bool(provider.get("apiKey", "")),
-                        "models": [m["id"] for m in models]
-                    }
-                config["agent_llm_configs"] = agent_llm_configs
-        except:
-            pass
-    
+
+            agents_data = agents_config.get("agents", {})
+            config["agents"] = agents_data
+
+            # 提取各 Agent 实际生效的 LLM 配置摘要
+            for agent_name, agent_data in agents_data.items():
+                provider = agent_data.get("provider", {})
+                default_model = agent_data.get("default_model", "")
+                models = provider.get("models", [])
+                effective_model = default_model or (models[0]["id"] if models else "")
+                config["agent_llm_configs"][agent_name] = {
+                    "baseUrl": provider.get("baseUrl", ""),
+                    "model": effective_model,
+                    "hasApiKey": bool(provider.get("apiKey", "")),
+                    "models": [m["id"] for m in models]
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load agents.json: {e}")
+
     return config
 
 
-class LLMConfigModel(BaseModel):
-    api_key: str
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4"
-    temperature: float = 0.7
-    max_tokens: int = 2000
+@router.post("/config/reload")
+async def reload_config():
+    """
+    重新加载 agents.json 配置（清空 LLM 客户端缓存）
 
-    @field_validator("api_key")
-    @classmethod
-    def validate_api_key(cls, v):
-        if not v or not v.strip():
-            raise ValueError("API key cannot be empty")
-        return v.strip()
+    用于外部修改 agents.json 后通知服务生效，无需重启。
+    """
+    clear_client_cache()
 
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, v):
-        v = v.strip().rstrip("/")
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("Base URL must start with http:// or https://")
-        return v
+    # 重新注册 Agent
+    from agents.registry import register_builtin_agents
+    register_builtin_agents()
 
-    @field_validator("model")
-    @classmethod
-    def validate_model(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Model name cannot be empty")
-        return v.strip()
-
-    @field_validator("temperature")
-    @classmethod
-    def validate_temperature(cls, v):
-        if not 0.0 <= v <= 2.0:
-            raise ValueError("Temperature must be between 0.0 and 2.0")
-        return v
-
-    @field_validator("max_tokens")
-    @classmethod
-    def validate_max_tokens(cls, v):
-        if not 1 <= v <= 128000:
-            raise ValueError("Max tokens must be between 1 and 128000")
-        return v
-
-
-@router.post("/config")
-async def update_config(config: LLMConfigModel):
-    """更新LLM配置"""
-    import os
-    from pathlib import Path
-    
-    # 写入.env文件
-    env_file = Path(__file__).parent.parent / ".env"
-    
-    env_content = f"""# LLM Configuration
-LLM_API_KEY={config.api_key}
-LLM_BASE_URL={config.base_url}
-LLM_MODEL={config.model}
-
-# Server Configuration
-HOST=0.0.0.0
-PORT=8000
-
-# Database
-DATABASE_URL=data/catown.db
-
-# Logging
-LOG_LEVEL=INFO
-"""
-    
-    env_file.write_text(env_content)
-    
-    # 更新环境变量
-    os.environ["LLM_API_KEY"] = config.api_key
-    os.environ["LLM_BASE_URL"] = config.base_url
-    os.environ["LLM_MODEL"] = config.model
-    
-    # 重新初始化LLM客户端
-    from llm.client import set_llm_client, LLMClient
-    from config import settings
-    # 更新 settings 对象中的值（运行时生效）
-    settings.LLM_API_KEY = config.api_key
-    settings.LLM_BASE_URL = config.base_url
-    settings.LLM_MODEL = config.model
-    # 创建新的 LLM 客户端并替换
-    set_llm_client(LLMClient())
-    
-    return {"message": "Configuration updated successfully"}
+    return {"message": "Configuration reloaded from agents.json"}
 
 
 @router.post("/config/test")
-async def test_config(config: LLMConfigModel):
-    """测试LLM配置连接"""
-    try:
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url
+async def test_agent_config(agent_name: str = "assistant"):
+    """
+    测试指定 Agent 的 LLM 连接
+
+    从 agents.json 读取该 Agent 的 provider 配置并发送测试请求。
+    """
+    from llm.client import _load_agent_provider
+    from openai import AsyncOpenAI
+
+    provider = _load_agent_provider(agent_name)
+    if not provider:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No provider config found for agent '{agent_name}' in agents.json"
         )
-        
-        # 发送一个简单的测试请求
+
+    try:
+        client = AsyncOpenAI(
+            api_key=provider["api_key"],
+            base_url=provider["base_url"]
+        )
         response = await client.chat.completions.create(
-            model=config.model,
+            model=provider["model"],
             messages=[{"role": "user", "content": "Hello"}],
             max_tokens=5
         )
-        
-        return {"status": "success", "message": "Connection successful"}
+        return {
+            "status": "success",
+            "agent": agent_name,
+            "model": provider["model"],
+            "baseUrl": provider["base_url"]
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
