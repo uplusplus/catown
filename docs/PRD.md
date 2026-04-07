@@ -561,12 +561,17 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 ```
 backend/
 ├── pipeline/
-│   ├── __init__.py
-│   ├── engine.py          # Pipeline 引擎（核心）
-│   ├── models.py          # Pipeline 数据模型
-│   └── config.py          # Pipeline 配置加载
+│   ├── __init__.py        ✅
+│   ├── config.py          ✅  Pipeline 配置加载
+│   ├── engine.py          ⏳  Pipeline 引擎（核心）
+│   └── models.py          ⏳  Pipeline 数据模型（如需要独立）
 ├── routes/
-│   └── pipeline.py        # Pipeline API 路由
+│   └── pipeline.py        ⏳  Pipeline API 路由
+├── configs/
+│   ├── agents.json        ✅  5 个角色，独立 LLM 配置
+│   └── pipelines.json     ✅  默认 5 阶段流水线模板
+└── models/
+    └── database.py        ✅  新增 5 张 Pipeline 表
 ```
 
 ### 12.3 关键设计决策
@@ -584,13 +589,34 @@ backend/
 
 ## 13. 实施计划
 
-### Phase 1: P0 — 数据模型与配置
+### 项目进度
 
-| # | 任务 | 交付物 |
-|---|------|--------|
-| 1 | Pipeline 数据模型 | `models/database.py` 新增 4 张表 |
-| 2 | Pipeline 配置 | `configs/pipelines.json` 默认 5 阶段 |
-| 3 | Agent 角色重写 | `configs/agents.json` 改为 5 个角色 |
+| 阶段 | 状态 | 完成日期 |
+|------|------|---------|
+| P0 — 数据模型与配置 | ✅ 已完成 | 2026-04-07 |
+| P1 — 引擎与 API | ⏳ 待开发 | — |
+| P1 — 前端 Dashboard | ⏳ 待开发 | — |
+| P2 — 增强 | ⏳ 待开发 | — |
+| P3 — 扩展 | ⏳ 待开发 | — |
+
+### Phase 1: P0 — 数据模型与配置 ✅ 已完成
+
+| # | 任务 | 交付物 | 状态 | 提交 |
+|---|------|--------|------|------|
+| 1 | Pipeline 数据模型 | `models/database.py` 新增 5 张表 | ✅ | a7d394b |
+| 2 | Pipeline 配置 + 加载器 | `configs/pipelines.json` + `pipeline/config.py` | ✅ | a7d394b |
+| 3 | Agent 角色重写（独立 LLM） | `configs/agents.json` 5 个角色 | ✅ | a7d394b |
+
+**交付物详情：**
+
+- `pipelines` 表 — Pipeline 定义，关联项目
+- `pipeline_runs` 表 — 运行实例，支持重跑
+- `pipeline_stages` 表 — 阶段记录（状态、Agent、Gate、上下文、重试次数）
+- `stage_artifacts` 表 — 产出物（文件路径、摘要）
+- `pipeline_messages` 表 — Agent 间协作消息
+- `configs/pipelines.json` — 默认 5 阶段流水线模板（含打回配置）
+- `pipeline/config.py` — 配置加载器（阶段查询、打回目标查询）
+- `configs/agents.json` — 5 个 Pipeline 角色，每个独立 provider + models 配置
 
 ### Phase 2: P1 — 引擎与 API
 
@@ -649,16 +675,21 @@ backend/
 
 ### A. 与现有代码的关系
 
-| 现有模块 | Pipeline 中的用途 | 改动量 |
-|---------|-------------------|--------|
-| `agents/core.py` | Agent 基类不变，重写 system_prompt | 小 |
-| `agents/registry.py` | 注册新角色 | 小 |
-| `agents/collaboration.py` | Agent 间消息路由 | 中 |
-| `models/database.py` | 新增 4 张表 | 中 |
-| `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 |
-| `frontend/index.html` | 新增 Pipeline Dashboard section | 中 |
-| `llm/client.py` | 已改为 per-agent 客户端 | ✅ 完成 |
-| `config.py` | 已去掉 LLM 配置 | ✅ 完成 |
+| 现有模块 | Pipeline 中的用途 | 改动量 | 状态 |
+|---------|-------------------|--------|------|
+| `config.py` | 已去掉 LLM 配置，仅保留基础设施 | — | ✅ 完成 |
+| `llm/client.py` | 已改为 per-agent 客户端工厂 | — | ✅ 完成 |
+| `models/database.py` | 新增 5 张 Pipeline 表 | 中 | ✅ 完成 |
+| `configs/agents.json` | 改为 5 个 Pipeline 角色 | — | ✅ 完成 |
+| `configs/pipelines.json` | 新增，默认 5 阶段模板 | — | ✅ 完成 |
+| `pipeline/config.py` | 新增，配置加载器 | — | ✅ 完成 |
+| `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ⏳ P1 |
+| `routes/pipeline.py` | 新增，Pipeline API 路由 | 中 | ⏳ P1 |
+| `agents/collaboration.py` | Agent 间消息路由，接入 Pipeline | 中 | ⏳ P1 |
+| `agents/registry.py` | 注册新角色（已由 agents.json 自动加载） | 小 | ✅ 完成 |
+| `agents/core.py` | Agent 基类不变 | 无 | — |
+| `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 | ⏳ P1 |
+| `frontend/index.html` | 新增 Pipeline Dashboard section | 中 | ⏳ P1 |
 
 ### B. 参考文档
 
