@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  catown:
+    build: .
+    container_name: catown
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DATABASE_URL=data/catown.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-60}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+    volumes:
+      - catown-data:/app/backend/data
+      - catown-logs:/app/backend/logs
+      - ./configs:/app/backend/configs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  catown-data:
+  catown-logs:

@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+data/*.db
+logs/*
+node_modules
+frontend/node_modules
+tests/
+backend/tests/
+*.md

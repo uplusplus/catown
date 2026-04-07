@@ -138,11 +138,12 @@ async def health_check():
 async def root():
     """返回前端首页"""
     try:
-        frontend_index = Path("frontend/dist/index.html")
-        if frontend_index.exists():
-            return HTMLResponse(content=frontend_index.read_text())
+        # 优先找 dist 版本，回退到源文件
+        for candidate in [Path("frontend/dist/index.html"), Path("../frontend/index.html"), Path("frontend/index.html")]:
+            if candidate.exists():
+                return HTMLResponse(content=candidate.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.debug(f"Frontend dist not found: {e}")
+        logger.debug(f"Frontend not found: {e}")
     
     # 返回简单的测试页面
     return HTMLResponse(content="""

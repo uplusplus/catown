@@ -218,9 +218,14 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
   - 实时过滤当前聊天室消息，高亮匹配文本
 
 #### P3-3：Agent 能力增强（3-5 天）
-- [ ] 记忆提取升级为 LLM 辅助（对话结束后自动总结重要信息）
+- [x] 记忆提取升级为 LLM 辅助（对话结束后自动总结重要信息）
+  - 异步调用 LLM 从对话中提取事实/决策/偏好/上下文
+  - 智能触发（>30 字符才有意义），最多 3 条，带重要性评分
+  - sync + SSE 双端点接入
+- [x] Agent 间上下文共享机制增强
+  - 自身记忆 8 条 + 其他 Agent 高重要性记忆（>=7）5 条
+  - system prompt 分区展示，带来源标注
 - [ ] 多 Agent 协作流程编排（并行、串行、条件分支）
-- [ ] Agent 间上下文共享机制增强
 
 #### P3-4：测试与质量保障（2-3 天）
 - [ ] 核心链路单元测试（LLM mock + 工具执行）
@@ -229,8 +234,11 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
 - [ ] 测试 CI 集成
 
 #### P3-5：生产部署（3-5 天）
-- [ ] Docker 化（Dockerfile + docker-compose）
-- [ ] 环境变量管理（.env.production）
+- [x] Docker 化（Dockerfile + docker-compose）
+  - Dockerfile: python:3.11-slim 基础镜像
+  - docker-compose.yml: 环境变量注入 + 数据卷持久化
+  - .dockerignore: 排除 .git/__pycache__/tests 等
+  - HEALTHCHECK 内置
 - [ ] PostgreSQL 支持（通过 SQLAlchemy URL 切换）
 - [ ] Alembic 数据库版本管理
 - [ ] 错误追踪集成
