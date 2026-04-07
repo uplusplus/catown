@@ -285,7 +285,70 @@ projects/
 
 ## 8. LLM 策略
 
-### 8.1 成本考量
+### 8.1 配置能力（✅ 已实现）
+
+Catown 的 LLM 配置已完全可定制，每个 Agent 独立配置，支持多 Provider、多模型：
+
+**配置文件**: `backend/configs/agents.json`
+
+```json
+{
+  "agents": {
+    "analyst": {
+      "role": "需求分析师",
+      "system_prompt": "...",
+      "default_model": "glm-v5-128k",
+      "provider": {
+        "baseUrl": "https://your-llm-provider.com/v1",
+        "apiKey": "your-api-key",
+        "auth": "api-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "glm-v5-128k",
+            "name": "GLM-V5-128K",
+            "contextWindow": 128000,
+            "maxTokens": 16384,
+            "cost": { "input": 0, "output": 0 }
+          }
+        ]
+      }
+    },
+    "architect": {
+      "default_model": "gpt-4",
+      "provider": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "sk-xxx",
+        "models": [
+          {
+            "id": "gpt-4",
+            "contextWindow": 128000,
+            "maxTokens": 8192,
+            "cost": { "input": 0.03, "output": 0.06 }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+**已支持的配置维度**：
+
+| 配置项 | 级别 | 说明 |
+|--------|------|------|
+| `provider.baseUrl` | per-Agent | 不同 Agent 可用不同 LLM 服务 |
+| `provider.apiKey` | per-Agent | 独立 API Key |
+| `provider.models[]` | per-Agent | 一个 Agent 可配多个模型 |
+| `default_model` | per-Agent | 指定默认模型 |
+| `models[].cost` | per-Model | 输入/输出/缓存成本（用于统计） |
+| `models[].contextWindow` | per-Model | 上下文窗口大小 |
+| `models[].maxTokens` | per-Model | 最大输出 Token |
+| `models[].input` | per-Model | 能力标记（text / image） |
+
+**典型用法**：廉价 Agent 用便宜模型，核心 Agent 用强模型。
+
+### 8.2 成本预估
 
 一次完整 Pipeline 预估：
 
@@ -296,19 +359,26 @@ projects/
 | 开发 | 10-30 次 | 编码 + 调试 + 代码审查 |
 | 测试 | 5-10 次 | 测试用例生成 + 执行 + 报告 |
 | 发布 | 2-3 次 | changelog + 版本管理 |
-| **总计** | **25-56 次** | 按 GPT-4 约 $2-10/次完整流程 |
+| **总计** | **25-56 次** | 成本取决于各 Agent 配置的模型 |
 
-### 8.2 模型分级策略
+### 8.3 建议的分级策略
 
-Catown 已支持 per-agent 模型配置，建议：
+| Agent | 建议模型等级 | 原因 |
+|-------|------------|------|
+| Analyst | 中等 | 理解需求 + 结构化输出，不需要最强推理 |
+| Architect | 强 | 需要深度推理、技术权衡 |
+| Developer | 强 | 代码质量直接影响产出 |
+| Tester | 中等 | 执行测试 + 生成报告 |
+| Release | 弱 | 主要是机械性操作（版本号、changelog） |
 
-| Agent | 推荐模型 | 原因 |
-|-------|---------|------|
-| Analyst | 中等模型 | 理解需求 + 结构化输出 |
-| Architect | 强模型 | 需要深度推理和权衡 |
-| Developer | 强模型 | 代码质量直接影响产出 |
-| Tester | 中等模型 | 执行测试 + 生成报告 |
-| Release | 弱模型 | 主要是机械性操作 |
+> 以上仅为建议，实际模型选择完全由 `agents.json` 配置决定，可随时调整。
+
+### 8.4 运行时切换
+
+Catown 已支持运行时模型切换（`/api/config` 端点），可在 Web UI 的 Config 面板中：
+- 查看当前各 Agent 的模型配置
+- 切换 Agent 使用的模型
+- 无需重启服务
 
 ---
 
@@ -330,10 +400,10 @@ Catown 已支持 per-agent 模型配置，建议：
 
 ## 10. 开放问题
 
-1. **LLM 选型**：使用什么模型？是否按阶段分级？
+1. ~~**LLM 选型**~~ ✅ 已支持 — 每个 Agent 独立配置 provider + 模型，见第 8 节
 2. **Pipeline 可配置性**：是否支持用户自定义 Pipeline（自定义阶段顺序和 Agent 组合）？
 3. **并发能力**：多个项目同时跑 Pipeline，资源如何隔离？
-4. **错误恢复**：Agent 调用失败 / LLM 超时如何处理？
+4. **错误恢复**：Agent 调用失败 / LLM 超时如何处理？重试策略？
 5. **安全性**：Developer Agent 的代码执行沙箱如何加强（TD-4）？
 6. **前端技术栈决策**：继续 Vanilla JS 还是启用 React 重写（TD-7）？
 
