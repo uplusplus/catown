@@ -40,6 +40,8 @@ def set_collaboration_coordinator(coordinator):
 tool_registry.register(WebSearchTool())
 tool_registry.register(ExecuteCodeTool())
 tool_registry.register(RetrieveMemoryTool())
+from .save_memory import SaveMemoryTool
+tool_registry.register(SaveMemoryTool())
 
 # Register file operation tools
 tool_registry.register(ReadFileTool(workspace=WORKSPACE))
@@ -75,6 +77,7 @@ __all__ = [
     'ListFilesTool',
     'DeleteFileTool',
     'SearchFilesTool',
+    'SaveMemoryTool',
     'DelegateTaskTool',
     'BroadcastMessageTool',
     'CheckTaskStatusTool',

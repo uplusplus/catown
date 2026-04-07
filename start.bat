@@ -1,70 +1,95 @@
 @echo off
-REM Catown 启动脚本 (Windows)
+setlocal enabledelayedexpansion
 
-echo 🐱 Catown - Multi-Agent Collaboration Platform
-echo ==============================================
+echo ============================================
+echo   Catown - Multi-Agent Collaboration Platform
+echo ============================================
 echo.
 
-REM 检查 Python
-python --version >nul 2>&1
+set "PROJECT_ROOT=%~dp0"
+set "BACKEND_DIR=%PROJECT_ROOT%backend"
+set "FRONTEND_DIR=%PROJECT_ROOT%frontend"
+
+REM === Pre-flight checks ===
+
+where python >nul 2>&1
 if errorlevel 1 (
-    echo ❌ Python is not installed. Please install Python 3.10+
+    echo [ERROR] Python not found, please install Python 3.10+
     pause
     exit /b 1
 )
 
-REM 检查 Node.js
-node --version >nul 2>&1
+where node >nul 2>&1
 if errorlevel 1 (
-    echo ❌ Node.js is not installed. Please install Node.js 18+
+    echo [ERROR] Node.js not found, please install Node.js 18+
     pause
     exit /b 1
 )
 
-REM 选择启动模式
-echo Choose startup mode:
-echo 1) Backend only
-echo 2) Frontend only  
-echo 3) Both (Full stack)
-echo.
-set /p choice="Enter choice (1-3): "
+REM === Backend check ===
 
-if "%choice%"=="1" (
-    echo Starting backend server...
-    cd backend
-    python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
-) else if "%choice%"=="2" (
-    echo Starting frontend development server...
-    cd frontend
-    npm run dev
-) else if "%choice%"=="3" (
-    echo Starting full stack...
-    
-    REM 启动后端
-    cd backend
-    start "Catown Backend" cmd /k "python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
-    
-    echo Backend started
-    echo.
-    
-    REM 等待后端启动
-    timeout /t 3 /nobreak >nul
-    
-    REM 启动前端
-    cd ..\frontend
-    start "Catown Frontend" cmd /k "npm run dev"
-    
-    echo Frontend started
-    echo.
-    echo ✅ Catown is running!
-    echo    Frontend: http://localhost:3000
-    echo    Backend:  http://localhost:8000
-    echo    API Docs: http://localhost:8000/docs
-    echo.
-    echo Close the backend and frontend windows to stop
-    pause
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
+    set "BACKEND_PID=%%a"
+)
+
+if defined BACKEND_PID (
+    echo [INFO] Backend already running on port 8000 (PID: !BACKEND_PID!)
+    set "BACKEND_READY=true"
 ) else (
-    echo Invalid choice
-    pause
-    exit /b 1
+    echo [INFO] Port 8000 free, starting backend...
+    cd /d "%BACKEND_DIR%"
+    python -c "import fastapi" >nul 2>&1
+    if errorlevel 1 (
+        echo [INFO] Installing Python dependencies...
+        pip install -r requirements.txt
+        if errorlevel 1 (
+            echo [ERROR] Failed to install Python dependencies
+            pause
+            exit /b 1
+        )
+    )
+    if not exist "%BACKEND_DIR%\.env" (
+        echo [WARN] .env not found, copying from .env.example...
+        if exist "%BACKEND_DIR%\.env.example" (
+            copy "%BACKEND_DIR%\.env.example" "%BACKEND_DIR%\.env" >nul
+        ) else (
+            echo [WARN] No .env.example either, using defaults
+        )
+    )
+    start "Catown Backend" cmd /c "cd /d %BACKEND_DIR% && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    set "BACKEND_READY=true"
+    echo [OK] Backend started (http://localhost:8000)
+    echo      API Docs: http://localhost:8000/docs
 )
+
+echo.
+
+REM === Frontend check ===
+
+echo [INFO] Starting frontend...
+cd /d "%FRONTEND_DIR%"
+if not exist "%FRONTEND_DIR%\node_modules\.bin\vite.cmd" (
+    echo [INFO] vite not found, running npm install...
+    call npm install
+    if errorlevel 1 (
+        echo [ERROR] Failed to install frontend dependencies
+        pause
+        exit /b 1
+    )
+    echo [OK] Frontend dependencies installed
+)
+start "Catown Frontend" cmd /c "cd /d %FRONTEND_DIR% && npm run dev"
+echo [OK] Frontend started (http://localhost:3000)
+echo.
+
+REM === Done ===
+
+echo ============================================
+echo   Catown is running!
+echo.
+echo   Frontend:  http://localhost:3000
+echo   Backend:   http://localhost:8000
+echo   API Docs:  http://localhost:8000/docs
+echo.
+echo   Close terminal windows to stop.
+echo ===========================================

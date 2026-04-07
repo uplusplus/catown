@@ -1,27 +1,1586 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/cat-icon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Catown - Multi-Agent Platform</title>
-    
-    <!-- Google Fonts - Inter -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
-    <!-- Font Awesome -->
+    <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Highlight.js for code syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script>
-      window.FontAwesomeConfig = {
-        autoReplaceSvg: 'nest'
-      };
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#0F1115',
+                            800: '#16181D',
+                            700: '#1E2128',
+                            600: '#2A2E35'
+                        },
+                        accent: {
+                            500: '#3B82F6',
+                            400: '#60A5FA'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
     </script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #2A2E35; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
+        body { background-color: #0F1115; color: #E5E7EB; }
+        .glass-panel { background: rgba(22, 24, 29, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        .agent-status-idle { color: #9CA3AF; }
+        .agent-status-thinking { color: #FBBF24; animation: pulse 2s infinite; }
+        .agent-status-executing { color: #10B981; }
+        #sidebar.mobile-hidden { transform: translateX(-100%); }
+        @media (min-width: 768px) { #sidebar.mobile-hidden { transform: translateX(0); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .typing-indicator span { animation: typing 1.4s infinite ease-in-out; }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-4px); } }
+        
+        /* Markdown content styles */
+        .markdown-content { line-height: 1.7; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4 { font-weight: 600; margin-top: 1em; margin-bottom: 0.5em; color: #fff; }
+        .markdown-content h1 { font-size: 1.5em; border-bottom: 1px solid #2A2E35; padding-bottom: 0.3em; }
+        .markdown-content h2 { font-size: 1.25em; }
+        .markdown-content h3 { font-size: 1.1em; }
+        .markdown-content p { margin: 0.75em 0; }
+        .markdown-content ul, .markdown-content ol { margin: 0.75em 0; padding-left: 1.5em; }
+        .markdown-content li { margin: 0.25em 0; }
+        .markdown-content code { background: #1E2128; padding: 0.2em 0.4em; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; color: #60A5FA; }
+        .markdown-content pre { background: #16181D; border: 1px solid #2A2E35; border-radius: 8px; padding: 1em; margin: 1em 0; overflow-x: auto; }
+        .markdown-content pre code { background: none; padding: 0; color: #E5E7EB; font-size: 0.85em; }
+        .markdown-content blockquote { border-left: 3px solid #3B82F6; padding-left: 1em; margin: 1em 0; color: #9CA3AF; }
+        .markdown-content a { color: #60A5FA; text-decoration: underline; }
+        .markdown-content a:hover { color: #3B82F6; }
+        .markdown-content table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+        .markdown-content th, .markdown-content td { border: 1px solid #2A2E35; padding: 0.5em 0.75em; }
+        .markdown-content th { background: #1E2128; font-weight: 600; }
+        .markdown-content hr { border: none; border-top: 1px solid #2A2E35; margin: 1.5em 0; }
+        .markdown-content img { max-width: 100%; border-radius: 8px; margin: 0.5em 0; }
+        
+        /* Agent mention dropdown */
+        .agent-mention-dropdown {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            right: 0;
+            background: #16181D;
+            border: 1px solid #2A2E35;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 50;
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+        }
+        .agent-mention-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .agent-mention-item:hover, .agent-mention-item.selected {
+            background: #1E2128;
+        }
+        .agent-mention-item .agent-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        .agent-mention-item .agent-info {
+            flex: 1;
+        }
+        .agent-mention-item .agent-name {
+            font-weight: 500;
+            color: #fff;
+        }
+        .agent-mention-item .agent-role {
+            font-size: 11px;
+            color: #9CA3AF;
+        }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex font-sans bg-dark-900 text-gray-200">
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="fixed inset-y-0 left-0 w-64 md:relative md:flex flex-col border-r border-dark-700 bg-dark-800 transition-transform duration-300 z-30 mobile-hidden">
+        <!-- Logo -->
+        <div class="h-16 flex items-center justify-between px-6 border-b border-dark-700">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-400 to-accent-500 flex items-center justify-center text-white font-bold text-xl">
+                    <i class="fa-solid fa-layer-group"></i>
+                </div>
+                <span class="text-xl font-semibold tracking-wide text-white">Catown</span>
+            </div>
+            <button onclick="toggleSidebar()" class="md:hidden text-gray-400">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+        </div>
+
+        <!-- Navigation -->
+        <nav class="flex-1 overflow-y-auto p-4 space-y-6">
+            <!-- Search -->
+            <div class="relative">
+                <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm"></i>
+                <input type="text" id="search-input" placeholder="Search rooms..." class="w-full bg-dark-900 border border-dark-700 rounded-lg py-2 pl-9 pr-4 text-sm focus:outline-none focus:border-accent-500 text-gray-300 placeholder-gray-500 transition-colors">
+            </div>
+
+            <!-- Main Links -->
+            <div class="space-y-1">
+                <a href="#" onclick="showHome()" class="flex items-center gap-3 px-3 py-2 rounded-lg bg-dark-700 text-white font-medium">
+                    <i class="fa-solid fa-house w-5 text-center"></i> Home
+                </a>
+                <a href="#" onclick="showAgents()" class="flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors">
+                    <i class="fa-solid fa-compass w-5 text-center"></i> Explore Agents
+                </a>
+                <a href="#" onclick="showTemplates()" class="flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors">
+                    <i class="fa-solid fa-book w-5 text-center"></i> Templates
+                </a>
+            </div>
+
+            <!-- Active Rooms -->
+            <div>
+                <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Active Rooms</h3>
+                <div id="rooms-list" class="space-y-1">
+                    <p class="text-xs text-gray-500 px-3 py-2">Loading...</p>
+                </div>
+            </div>
+        </nav>
+
+        <!-- User Profile -->
+        <div class="p-4 border-t border-dark-700">
+            <div class="flex items-center gap-3 cursor-pointer hover:bg-dark-700 p-2 rounded-lg transition-colors">
+                <div class="w-10 h-10 rounded-full border border-dark-600 bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white font-bold">U</div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-white truncate">User</p>
+                    <p class="text-xs text-gray-500 truncate">Pro Plan</p>
+                </div>
+                <i class="fa-solid fa-chevron-up text-gray-500 text-xs"></i>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col relative overflow-hidden">
+        <!-- Overlay for background -->
+        <div class="absolute inset-0 bg-dark-900/95 z-0"></div>
+
+        <!-- Header -->
+        <header id="main-header" class="h-16 flex items-center justify-between px-4 md:px-6 border-b border-dark-700/50 z-10 glass-panel">
+            <div class="flex items-center gap-3 md:gap-4">
+                <button onclick="toggleSidebar()" class="md:hidden text-gray-400 hover:text-white p-2">
+                    <i class="fa-solid fa-bars text-xl"></i>
+                </button>
+                <div class="flex items-center gap-2">
+                    <h1 id="room-title" class="text-base md:text-lg font-semibold text-white truncate max-w-[120px] md:max-w-none">Catown</h1>
+                    <span id="room-badge" class="hidden sm:inline-block px-2 py-0.5 rounded text-xs font-medium bg-dark-700 text-gray-300 border border-dark-600">Multi-Agent</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 md:gap-4">
+                <button onclick="toggleLogs()" class="hidden sm:block text-gray-400 hover:text-white transition-colors" title="View Logs">
+                    <i class="fa-solid fa-terminal"></i>
+                </button>
+                <button onclick="toggleLogs()" class="lg:hidden text-gray-400 hover:text-white p-2">
+                    <i class="fa-solid fa-receipt"></i>
+                </button>
+                <button onclick="showAddAgent()" class="bg-accent-500 hover:bg-accent-400 text-white px-3 md:px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                    <i class="fa-solid fa-plus"></i> <span class="hidden sm:inline">Add Agent</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Chat Area & Side Panel Container -->
+        <div class="flex-1 flex overflow-hidden z-10">
+            
+            <!-- Chat Window -->
+            <div id="chat-container" class="flex-1 flex flex-col relative w-full">
+                
+                <!-- Agent Status Bar -->
+                <div id="agent-status-bar" class="px-4 md:px-6 py-3 border-b border-dark-700/50 flex gap-3 md:gap-4 overflow-x-auto glass-panel no-scrollbar">
+                    <p class="text-xs text-gray-500">Loading agents...</p>
+                </div>
+
+                <!-- Messages Area -->
+                <div id="messages-area" class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+                    <!-- Intro Message -->
+                    <div class="text-center py-6 md:py-8">
+                        <div class="w-16 h-16 md:w-20 md:h-20 mx-auto rounded-full bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500 p-1 mb-4 shadow-lg shadow-accent-500/20">
+                            <div class="w-full h-full bg-dark-900 rounded-full flex items-center justify-center">
+                                <i class="fa-solid fa-robot text-3xl text-white"></i>
+                            </div>
+                        </div>
+                        <h2 class="text-xl md:text-2xl font-bold text-white mb-2">Welcome to Catown</h2>
+                        <p class="text-sm md:text-base text-gray-400 max-w-md mx-auto px-4">Multi-Agent Collaboration Platform - Loading...</p>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="p-4 bg-dark-900/80 border-t border-dark-700/50 backdrop-blur-md">
+                    <div class="max-w-4xl mx-auto">
+                        <!-- Command Hints -->
+                        <div class="flex gap-2 mb-2 px-2 flex-wrap">
+                            <button onclick="insertAt()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                                <i class="fa-solid fa-at text-gray-400 mr-1"></i> Mention Agent
+                            </button>
+                            <button onclick="insertCreateRoom()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                                <i class="fa-solid fa-plus text-gray-400 mr-1"></i> Create Room
+                            </button>
+                            <button onclick="runScript()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                                <i class="fa-solid fa-terminal text-gray-400 mr-1"></i> Run Script
+                            </button>
+                        </div>
+                        
+                        <!-- Input Box with @mention dropdown -->
+                        <div id="input-wrapper" class="relative flex items-end gap-2 bg-dark-800 border border-dark-600 rounded-xl p-2 shadow-lg focus-within:border-accent-500 focus-within:ring-1 focus-within:ring-accent-500 transition-all">
+                            <button class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700">
+                                <i class="fa-solid fa-paperclip"></i>
+                            </button>
+                            <textarea id="message-input" rows="1" class="w-full bg-transparent text-gray-200 placeholder-gray-500 resize-none outline-none py-2 max-h-32" placeholder="Message room or @agent... Try 'Create a new room for SEO analysis'"></textarea>
+                            <div class="flex gap-1">
+                                <button class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700">
+                                    <i class="fa-solid fa-microphone"></i>
+                                </button>
+                                <button onclick="sendMessage()" class="p-2 bg-accent-500 hover:bg-accent-400 text-white transition-colors rounded-lg shadow-md">
+                                    <i class="fa-solid fa-paper-plane"></i>
+                                </button>
+                            </div>
+                            <!-- @mention dropdown rendered here -->
+                            <div id="mention-dropdown" class="agent-mention-dropdown hidden"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Side Panel (Logs & Config) -->
+            <div id="side-panel" class="w-80 border-l border-dark-700/50 bg-dark-900/95 backdrop-blur-xl flex flex-col hidden lg:flex">
+                <!-- Panel Tabs -->
+                <div class="flex border-b border-dark-700">
+                    <button id="tab-logs" onclick="switchTab('logs')" class="flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50">
+                        <i class="fa-solid fa-terminal mr-2"></i>Logs
+                    </button>
+                    <button id="tab-config" onclick="switchTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors">
+                        <i class="fa-solid fa-sliders mr-2"></i>Config
+                    </button>
+                </div>
+
+                <!-- Log Content -->
+                <div id="logs-content" class="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-2">
+                    <div class="text-gray-500">System initializing...</div>
+                </div>
+
+                <!-- Config Content (hidden by default) -->
+                <div id="config-content" class="flex-1 overflow-y-auto p-4 hidden">
+                    <h4 class="text-sm font-semibold text-white mb-4">Agent Configuration</h4>
+                    <div id="config-agents" class="space-y-3">
+                        <!-- Agent configs will be populated here -->
+                    </div>
+                </div>
+
+                <!-- System Status -->
+                <div class="p-4 border-t border-dark-700 bg-dark-800/50">
+                    <h4 class="text-xs font-semibold text-gray-400 uppercase mb-3">System Status</h4>
+                    <div class="space-y-3">
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-gray-300">Active Agents</span>
+                                <span id="agents-count" class="text-gray-400">0 / 0</span>
+                            </div>
+                            <div class="h-1.5 w-full bg-dark-700 rounded-full overflow-hidden">
+                                <div id="agents-progress" class="h-full bg-blue-500 w-0 rounded-full transition-all"></div>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-gray-300">Backend Status</span>
+                            <span id="backend-status" class="text-gray-500 flex items-center gap-1">
+                                <i class="fa-solid fa-circle text-[8px]"></i> Connecting...
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+        // Configuration
+        const API_BASE = 'http://localhost:8000/api';
+        
+        // State
+        let projects = [];
+        let agents = [];
+        let currentProject = null;
+        let messages = [];
+        let ws = null;
+        let logs = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            addLog('System initializing...', 'gray');
+            addLog(`System initialized at ${new Date().toLocaleTimeString()} UTC`, 'gray');
+            
+            // Load data
+            await Promise.all([loadProjects(), loadAgents()]);
+            
+            // Connect WebSocket
+            connectWebSocket();
+            
+            // Select first project if available
+            if (projects.length > 0) {
+                selectProject(projects[0]);
+            }
+        });
+
+        // Global error handler — suppress network noise from external CDNs
+        window.addEventListener('error', (e) => {
+            // Suppress external resource errors (CDN fonts, etc.)
+            if (e.target && (e.target.src || e.target.href)) {
+                e.preventDefault();
+            }
+        }, true);
+
+        // API Functions
+        async function loadProjects() {
+            try {
+                const res = await fetch(`${API_BASE}/projects`);
+                projects = await res.json();
+                renderRooms();
+                addLog(`[API] Loaded ${projects.length} projects`, 'blue');
+            } catch (e) {
+                addLog('[API] Failed to load projects', 'red');
+            }
+        }
+
+        async function loadAgents() {
+            try {
+                const res = await fetch(`${API_BASE}/agents`);
+                agents = await res.json();
+                renderAgents();
+                addLog(`[API] Loaded ${agents.length} agents`, 'blue');
+                agents.forEach(a => addLog(`[Agent:${a.name}] Ready`, 'green'));
+            } catch (e) {
+                addLog('[API] Failed to load agents', 'red');
+            }
+        }
+
+        async function loadMessages(chatroomId) {
+            try {
+                const res = await fetch(`${API_BASE}/chatrooms/${chatroomId}/messages`);
+                messages = await res.json();
+                renderMessages();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function createProject(name) {
+            try {
+                const res = await fetch(`${API_BASE}/projects`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description: '' })
+                });
+                const project = await res.json();
+                projects.push(project);
+                renderRooms();
+                selectProject(project);
+                addLog(`[Room] ${name} created`, 'blue');
+                return project;
+            } catch (e) {
+                addLog('[API] Failed to create project', 'red');
+                console.error(e);
+            }
+        }
+
+        async function sendUserMessage(content) {
+            if (!currentProject?.chatroom_id) return;
+            
+            // Immediately render user message (optimistic update)
+            const localMsg = {
+                id: 'local-' + Date.now(),
+                content: content,
+                message_type: 'user',
+                agent_name: null,
+                chatroom_id: currentProject.chatroom_id,
+                created_at: new Date().toISOString()
+            };
+            messages.push(localMsg);
+            renderMessages();
+            
+            try {
+                const res = await fetch(`${API_BASE}/chatrooms/${currentProject.chatroom_id}/messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content, message_type: 'user' })
+                });
+                const msg = await res.json();
+                
+                // Replace local message with server version if we got one back
+                if (msg && msg.id) {
+                    const idx = messages.findIndex(x => x.id === localMsg.id);
+                    if (idx !== -1) {
+                        messages[idx] = msg;
+                        renderMessages();
+                    }
+                }
+                
+                addLog('[API] Message sent 200 OK', 'green');
+                
+                // Poll for agent response after a delay
+                setTimeout(async () => {
+                    await loadMessages(currentProject.chatroom_id);
+                }, 3000);
+            } catch (e) {
+                addLog('[API] Failed to send message', 'red');
+                console.error(e);
+            }
+        }
+
+        // WebSocket
+        function connectWebSocket() {
+            try {
+                ws = new WebSocket('ws://localhost:8000/ws');
+                
+                ws.onopen = () => {
+                    updateBackendStatus('connected');
+                    addLog('[WS] Connected to server', 'green');
+                };
+                
+                ws.onclose = () => {
+                    // Only log disconnect if we were connected
+                    if (updateBackendStatus) {
+                        updateBackendStatus('disconnected');
+                    }
+                    addLog('[WS] Disconnected, retrying in 5s...', 'yellow');
+                    setTimeout(connectWebSocket, 5000);
+                };
+                
+                ws.onerror = () => {
+                    // Don't spam errors — onclose will handle it
+                };
+                
+                ws.onmessage = (e) => {
+                    try {
+                        const data = JSON.parse(e.data);
+                        handleWebSocketMessage(data);
+                    } catch (parseErr) {
+                        addLog('[WS] Parse error: ' + parseErr.message, 'red');
+                    }
+                };
+            } catch (e) {
+                addLog('[WS] Connection failed: ' + e.message, 'red');
+                updateBackendStatus('disconnected');
+            }
+        }
+
+        function handleWebSocketMessage(data) {
+            if (data.type === 'message') {
+                messages.push(data);
+                renderMessages();
+            } else if (data.type === 'agent_status') {
+                updateAgentStatus(data.agent_name, data.status);
+            }
+        }
+
+        // Render Functions
+        function renderRooms() {
+            const container = document.getElementById('rooms-list');
+            if (projects.length === 0) {
+                container.innerHTML = '<p class="text-xs text-gray-500 px-3 py-2">No rooms yet. Create one!</p>';
+                return;
+            }
+            container.innerHTML = projects.map(p => {
+                const isActive = currentProject?.id === p.id;
+                const agentCount = p.agents?.length || 1;
+                return `
+                    <a href="#" onclick="event.preventDefault(); selectProject(projects.find(x => x.id === ${p.id}))" 
+                       class="flex items-center justify-between px-3 py-2 rounded-lg ${isActive ? 'bg-dark-700 text-gray-300' : 'text-gray-400 hover:bg-dark-700 hover:text-gray-300 transition-colors'} group">
+                        <div class="flex items-center gap-3 truncate">
+                            <span class="w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-500'}"></span>
+                            <span class="truncate text-sm">${escapeHtml(p.name)}</span>
+                        </div>
+                        <span class="text-xs ${isActive ? 'bg-dark-600' : 'bg-dark-800 group-hover:bg-dark-600'} px-1.5 py-0.5 rounded text-gray-400">${agentCount} AI</span>
+                    </a>
+                `;
+            }).join('');
+        }
+
+        function renderAgents() {
+            const container = document.getElementById('agent-status-bar');
+            const activeAgents = agents.filter(a => a.is_active);
+            if (activeAgents.length === 0) {
+                container.innerHTML = '<p class="text-xs text-gray-500">No active agents</p>';
+                return;
+            }
+            container.innerHTML = activeAgents.map(a => `
+                <div class="flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600">
+                    <div class="relative">
+                        <div class="w-6 h-6 rounded-full bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white text-xs font-bold">
+                            ${a.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span class="absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center">
+                            <i class="fa-solid fa-moon text-[8px] agent-status-idle"></i>
+                        </span>
+                    </div>
+                    <span class="text-sm font-medium text-gray-300">${escapeHtml(a.name)}</span>
+                    <span class="text-xs text-gray-500 border-l border-dark-600 pl-2">Idle</span>
+                </div>
+            `).join('');
+            
+            // Update status
+            document.getElementById('agents-count').textContent = `${activeAgents.length} / ${agents.length}`;
+            document.getElementById('agents-progress').style.width = `${(activeAgents.length / Math.max(agents.length, 1)) * 100}%`;
+        }
+
+        function renderMessages() {
+            const container = document.getElementById('messages-area');
+            let html = `
+                <div class="text-center py-6 md:py-8">
+                    <div class="w-16 h-16 md:w-20 md:h-20 mx-auto rounded-full bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500 p-1 mb-4 shadow-lg shadow-accent-500/20">
+                        <div class="w-full h-full bg-dark-900 rounded-full flex items-center justify-center">
+                            <i class="fa-solid fa-robot text-3xl text-white"></i>
+                        </div>
+                    </div>
+                    <h2 class="text-xl md:text-2xl font-bold text-white mb-2">${currentProject ? escapeHtml(currentProject.name) + ' Initialized' : 'Welcome to Catown'}</h2>
+                    <p class="text-sm md:text-base text-gray-400 max-w-md mx-auto px-4">${currentProject ? `I've assembled ${agents.filter(a => a.is_active).map(a => a.name).join(', ')}. What are we working on?` : 'Select or create a room to begin'}</p>
+                </div>
+            `;
+            
+            messages.forEach(m => {
+                if (m.message_type === 'user' || !m.agent_name) {
+                    html += `
+                        <div class="flex gap-3 md:gap-4 justify-end">
+                            <div class="bg-accent-600 text-white px-4 md:px-5 py-2 md:py-3 rounded-2xl rounded-tr-sm max-w-[85%] md:max-w-[80%] shadow-md text-sm md:text-base">
+                                <p>${escapeHtml(m.content)}</p>
+                            </div>
+                            <div class="w-8 h-8 rounded-full mt-auto bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white font-bold text-sm">U</div>
+                        </div>
+                    `;
+                } else {
+                    const agent = agents.find(a => a.name === m.agent_name);
+                    const color = getAgentColor(m.agent_name);
+                    // Render Agent message with Markdown
+                    const renderedContent = renderMarkdown(m.content);
+                    html += `
+                        <div class="flex gap-4">
+                            <div class="relative mt-auto">
+                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-xs font-bold">
+                                    ${m.agent_name.charAt(0).toUpperCase()}
+                                </div>
+                            </div>
+                            <div class="bg-dark-700/80 border border-dark-600 text-gray-200 px-5 py-4 rounded-2xl rounded-tl-sm max-w-[80%] shadow-md">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="font-semibold text-sm text-${color}-400">${escapeHtml(m.agent_name)}</span>
+                                    <span class="text-xs text-gray-500">${formatTime(m.created_at)}</span>
+                                </div>
+                                <div class="markdown-content text-sm md:text-base">${renderedContent}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            
+            container.innerHTML = html;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function renderConfig() {
+            const container = document.getElementById('config-agents');
+            container.innerHTML = agents.map(a => `
+                <div class="p-3 bg-dark-800 rounded-lg border border-dark-600">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="font-medium text-white">${escapeHtml(a.name)}</span>
+                        <span class="text-xs ${a.is_active ? 'text-green-400' : 'text-gray-500'}">${a.is_active ? 'Active' : 'Inactive'}</span>
+                    </div>
+                    <p class="text-xs text-gray-400">${escapeHtml(a.role || 'No role defined')}</p>
+                </div>
+            `).join('');
+        }
+
+        // UI Functions
+        function selectProject(project) {
+            currentProject = project;
+            document.getElementById('room-title').textContent = project.name;
+            renderRooms();
+            renderMessages();
+            if (project.chatroom_id) {
+                loadMessages(project.chatroom_id);
+                if (ws?.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'join', chatroom_id: project.chatroom_id }));
+                    console.log('[WS] Joined room: ' + project.chatroom_id);
+                }
+            }
+        }
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('mobile-hidden');
+        }
+
+        function toggleLogs() {
+            document.getElementById('side-panel').classList.toggle('hidden');
+        }
+
+        function switchTab(tab) {
+            const logsTab = document.getElementById('tab-logs');
+            const configTab = document.getElementById('tab-config');
+            const logsContent = document.getElementById('logs-content');
+            const configContent = document.getElementById('config-content');
+            
+            if (tab === 'logs') {
+                logsTab.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50';
+                configTab.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors';
+                logsContent.classList.remove('hidden');
+                configContent.classList.add('hidden');
+            } else {
+                configTab.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50';
+                logsTab.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors';
+                configContent.classList.remove('hidden');
+                logsContent.classList.add('hidden');
+                renderConfig();
+            }
+        }
+
+        function addLog(message, color = 'gray') {
+            const container = document.getElementById('logs-content');
+            const colorClass = {
+                'gray': 'text-gray-500',
+                'blue': 'text-blue-400',
+                'green': 'text-green-400',
+                'red': 'text-red-400',
+                'yellow': 'text-yellow-400'
+            }[color] || 'text-gray-500';
+            
+            const div = document.createElement('div');
+            div.className = colorClass;
+            div.textContent = message;
+            container.appendChild(div);
+            
+            // Also output to browser console for automated testing
+            if (color === 'green' || color === 'blue') {
+                console.log(message);
+            } else if (color === 'red') {
+                console.error(message);
+            } else if (color === 'yellow') {
+                console.warn(message);
+            }
+            
+            // Keep only last 100 logs
+            while (container.children.length > 100) {
+                container.removeChild(container.firstChild);
+            }
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function updateBackendStatus(status) {
+            const el = document.getElementById('backend-status');
+            if (status === 'connected') {
+                el.innerHTML = '<i class="fa-solid fa-circle text-[8px] text-green-400"></i> Connected';
+                el.className = 'text-green-400 flex items-center gap-1';
+            } else {
+                el.innerHTML = '<i class="fa-solid fa-circle text-[8px]"></i> Disconnected';
+                el.className = 'text-red-400 flex items-center gap-1';
+            }
+        }
+
+        function updateAgentStatus(agentName, status) {
+            // TODO: Update agent status in UI
+        }
+
+        // Message Actions
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const content = input.value.trim();
+            if (!content) return;
+            
+            input.value = '';
+            
+            // Check for commands
+            if (content.startsWith('创建项目：') || content.startsWith('Create room:') || content.startsWith('create room:')) {
+                const name = content.replace(/^(创建项目：|Create room:|create room:)\s*/, '');
+                await createProject(name);
+                return;
+            }
+            
+            if (!currentProject) {
+                addLog('[Error] Please select or create a room first', 'red');
+                return;
+            }
+            
+            await sendUserMessage(content);
+        }
+
+        function insertAt() {
+            const input = document.getElementById('message-input');
+            input.value += '@';
+            input.focus();
+            
+            // Move cursor to end and trigger dropdown
+            mentionStartPos = input.value.length - 1;
+            selectedMentionIndex = 0;
+            showMentionDropdown(input, '');
+        }
+
+        function insertCreateRoom() {
+            const input = document.getElementById('message-input');
+            input.value = '创建项目：';
+            input.focus();
+        }
+
+        function runScript() {
+            addLog('[Script] No script to run', 'yellow');
+        }
+
+        // Status Modal - Agent List & Project List
+        function showHome() {
+            addLog('[Nav] Home', 'blue');
+            showStatusModal();
+        }
+
+        function showAgents() {
+            addLog('[Nav] Explore Agents', 'blue');
+            showStatusModal('agents');
+        }
+
+        function showTemplates() {
+            addLog('[Nav] Templates', 'blue');
+        }
+
+        function showAddAgent() {
+            addLog('[Action] Add Agent dialog', 'blue');
+            showAddAgentModal();
+        }
+
+        // Status Modal - 显示Agent列表、项目列表
+        function showStatusModal(defaultTab = 'overview') {
+            // Create modal if not exists
+            let modal = document.getElementById('status-modal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'status-modal';
+                modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+                modal.innerHTML = `
+                    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeStatusModal()"></div>
+                    <div class="relative w-full max-w-4xl max-h-[80vh] bg-dark-800 rounded-2xl border border-dark-600 shadow-2xl flex flex-col">
+                        <!-- Header -->
+                        <div class="flex items-center justify-between p-4 border-b border-dark-600">
+                            <h2 class="text-lg font-semibold text-white">System Status</h2>
+                            <button onclick="closeStatusModal()" class="text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-xmark text-xl"></i>
+                            </button>
+                        </div>
+                        <!-- Tabs -->
+                        <div class="flex border-b border-dark-600">
+                            <button id="status-tab-overview" onclick="switchStatusTab('overview')" class="flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-700/50">
+                                <i class="fa-solid fa-chart-pie mr-2"></i>Overview
+                            </button>
+                            <button id="status-tab-agents" onclick="switchStatusTab('agents')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-users mr-2"></i>Agents
+                            </button>
+                            <button id="status-tab-projects" onclick="switchStatusTab('projects')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-folder mr-2"></i>Projects
+                            </button>
+                            <button id="status-tab-collab" onclick="switchStatusTab('collab')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-handshake mr-2"></i>Collab
+                            </button>
+                            <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-gear mr-2"></i>Config
+                            </button>
+                        </div>
+                        <!-- Content -->
+                        <div id="status-content" class="flex-1 overflow-y-auto p-6">
+                            Loading...
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } else {
+                modal.classList.remove('hidden');
+            }
+            
+            // Switch to default tab
+            switchStatusTab(defaultTab);
+        }
+
+        function closeStatusModal() {
+            const modal = document.getElementById('status-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+            }
+        }
+
+        function switchStatusTab(tab) {
+            // Update tab styles
+            ['overview', 'agents', 'projects', 'collab', 'config'].forEach(t => {
+                const tabBtn = document.getElementById(`status-tab-${t}`);
+                if (tabBtn) {
+                    if (t === tab) {
+                        tabBtn.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-700/50';
+                    } else {
+                        tabBtn.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors';
+                    }
+                }
+            });
+            
+            // Render content
+            const content = document.getElementById('status-content');
+            if (tab === 'overview') {
+                content.innerHTML = renderOverviewContent();
+            } else if (tab === 'agents') {
+                content.innerHTML = renderAgentsContent();
+            } else if (tab === 'projects') {
+                content.innerHTML = renderProjectsContent();
+            } else if (tab === 'collab') {
+                content.innerHTML = renderCollabContent();
+            } else if (tab === 'config') {
+                content.innerHTML = renderConfigContent();
+            }
+        }
+
+        function renderOverviewContent() {
+            const activeAgents = agents.filter(a => a.is_active).length;
+            const activeProjects = projects.length;
+            
+            return `
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
+                        <div class="text-2xl font-bold text-accent-400">${agents.length}</div>
+                        <div class="text-xs text-gray-400 mt-1">Total Agents</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
+                        <div class="text-2xl font-bold text-emerald-400">${activeAgents}</div>
+                        <div class="text-xs text-gray-400 mt-1">Active Agents</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
+                        <div class="text-2xl font-bold text-purple-400">${activeProjects}</div>
+                        <div class="text-xs text-gray-400 mt-1">Projects</div>
+                    </div>
+                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
+                        <div class="text-2xl font-bold text-amber-400">${messages.length}</div>
+                        <div class="text-xs text-gray-400 mt-1">Messages</div>
+                    </div>
+                </div>
+                
+                <h3 class="text-sm font-semibold text-gray-300 mb-3">Active Agents</h3>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+                    ${agents.filter(a => a.is_active).map(a => {
+                        const color = getAgentColor(a.name);
+                        return `
+                            <div class="bg-dark-700/50 rounded-lg p-3 border border-dark-600">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-8 h-8 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-xs font-bold">
+                                        ${a.name.charAt(0).toUpperCase()}
+                                    </div>
+                                    <div>
+                                        <div class="text-sm font-medium text-white">${escapeHtml(a.name)}</div>
+                                        <div class="text-xs text-gray-400">${escapeHtml(a.role || 'Agent')}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+                
+                <h3 class="text-sm font-semibold text-gray-300 mb-3">Recent Projects</h3>
+                <div class="space-y-2">
+                    ${projects.slice(0, 5).map(p => `
+                        <div class="bg-dark-700/50 rounded-lg p-3 border border-dark-600 flex items-center justify-between">
+                            <div>
+                                <div class="text-sm font-medium text-white">${escapeHtml(p.name)}</div>
+                                <div class="text-xs text-gray-400">${p.agents?.length || 0} agents • ${p.status || 'active'}</div>
+                            </div>
+                            <button onclick="closeStatusModal(); selectProject(projects.find(x => x.id === ${p.id}))" 
+                                    class="text-xs bg-accent-500/20 hover:bg-accent-500/30 text-accent-400 px-2 py-1 rounded transition-colors">
+                                Open
+                            </button>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function renderAgentsContent() {
+            return `
+                <div class="space-y-3">
+                    ${agents.map(a => {
+                        const color = getAgentColor(a.name);
+                        return `
+                            <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                                <div class="flex items-start gap-3">
+                                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-lg font-bold flex-shrink-0">
+                                        ${a.name.charAt(0).toUpperCase()}
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-base font-semibold text-white">${escapeHtml(a.name)}</span>
+                                            <span class="text-xs ${a.is_active ? 'bg-emerald-500/20 text-emerald-400' : 'bg-gray-500/20 text-gray-400'} px-2 py-0.5 rounded">
+                                                ${a.is_active ? 'Active' : 'Inactive'}
+                                            </span>
+                                        </div>
+                                        <div class="text-sm text-gray-300 mb-2">${escapeHtml(a.role || 'No role defined')}</div>
+                                        <div class="text-xs text-gray-500">ID: ${a.id}</div>
+                                    </div>
+                                    <button onclick="viewAgentMemory(${a.id})" class="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-3 py-1.5 rounded transition-colors">
+                                        <i class="fa-solid fa-brain mr-1"></i>Memory
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        function renderProjectsContent() {
+            return `
+                <div class="mb-4">
+                    <button onclick="showCreateProjectModal()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <i class="fa-solid fa-plus mr-2"></i>Create New Project
+                    </button>
+                </div>
+                <div class="space-y-3">
+                    ${projects.length === 0 ? `
+                        <div class="text-center py-8 text-gray-400">
+                            <i class="fa-solid fa-folder-open text-4xl mb-3 text-gray-500"></i>
+                            <p>No projects yet. Create one to get started!</p>
+                        </div>
+                    ` : projects.map(p => `
+                        <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="text-base font-semibold text-white">${escapeHtml(p.name)}</span>
+                                        <span class="text-xs bg-${p.status === 'active' ? 'emerald' : 'gray'}-500/20 text-${p.status === 'active' ? 'emerald' : 'gray'}-400 px-2 py-0.5 rounded">
+                                            ${p.status || 'active'}
+                                        </span>
+                                    </div>
+                                    <div class="text-sm text-gray-400 mb-2">${escapeHtml(p.description || 'No description')}</div>
+                                    <div class="flex items-center gap-4 text-xs text-gray-500">
+                                        <span><i class="fa-solid fa-users mr-1"></i>${p.agents?.length || 0} agents</span>
+                                        <span><i class="fa-solid fa-hashtag mr-1"></i>ID: ${p.id}</span>
+                                        <span><i class="fa-solid fa-door-open mr-1"></i>Room: ${p.chatroom_id || 'N/A'}</span>
+                                    </div>
+                                </div>
+                                <div class="flex gap-2 ml-3">
+                                    <button onclick="closeStatusModal(); selectProject(projects.find(x => x.id === ${p.id}))" 
+                                            class="text-xs bg-accent-500 hover:bg-accent-400 text-white px-3 py-1.5 rounded transition-colors">
+                                        Open
+                                    </button>
+                                    <button onclick="deleteProject(${p.id})" 
+                                            class="text-xs bg-red-500/20 hover:bg-red-500/30 text-red-400 px-3 py-1.5 rounded transition-colors">
+                                        <i class="fa-solid fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            ${p.agents && p.agents.length > 0 ? `
+                                <div class="mt-3 pt-3 border-t border-dark-600">
+                                    <div class="text-xs text-gray-400 mb-2">Assigned Agents:</div>
+                                    <div class="flex flex-wrap gap-2">
+                                        ${p.agents.map(a => `
+                                            <span class="text-xs bg-dark-600 text-gray-300 px-2 py-1 rounded flex items-center gap-1">
+                                                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                                ${escapeHtml(a.name)}
+                                            </span>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function renderCollabContent() {
+            return `
+                <div class="space-y-4">
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-handshake mr-2"></i>Collaboration Status</h3>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-accent-400" id="collab-agents-count">-</div>
+                                <div class="text-xs text-gray-400">Active Agents</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-emerald-400" id="collab-chatrooms-count">-</div>
+                                <div class="text-xs text-gray-400">Chatrooms</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-amber-400" id="collab-tasks-count">-</div>
+                                <div class="text-xs text-gray-400">Pending Tasks</div>
+                            </div>
+                            <div class="bg-dark-900 rounded-lg p-3 text-center">
+                                <div class="text-xl font-bold text-purple-400" id="collab-status">-</div>
+                                <div class="text-xs text-gray-400">Status</div>
+                            </div>
+                        </div>
+                        <button onclick="refreshCollabStatus()" class="bg-dark-600 hover:bg-dark-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+                            <i class="fa-solid fa-refresh mr-1"></i>Refresh
+                        </button>
+                    </div>
+                    
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-tasks mr-2"></i>Collaboration Tools</h3>
+                        <div class="space-y-2 text-xs text-gray-300">
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-paper-plane text-accent-400"></i>
+                                <span><strong>delegate_task</strong> - Delegate task to another agent</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-broadcast-tower text-emerald-400"></i>
+                                <span><strong>broadcast_message</strong> - Send message to all agents</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-search text-amber-400"></i>
+                                <span><strong>check_task_status</strong> - Check delegated task status</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-users text-purple-400"></i>
+                                <span><strong>list_collaborators</strong> - List available agents</span>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 bg-dark-900 rounded-lg">
+                                <i class="fa-solid fa-envelope text-rose-400"></i>
+                                <span><strong>send_direct_message</strong> - Direct message to agent</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-code mr-2"></i>Usage Example</h3>
+                        <div class="bg-dark-900 rounded-lg p-3 font-mono text-xs text-gray-300 overflow-x-auto">
+                            <pre>// Delegate task to coder agent
+@coder Please implement a REST API endpoint
+
+// Or use in conversation:
+"Can you ask @researcher to investigate this issue?"</pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function refreshCollabStatus() {
+            try {
+                const response = await fetch(API_BASE + '/api/collaboration/status');
+                const data = await response.json();
+                
+                document.getElementById('collab-agents-count').textContent = data.active_collaborators || 0;
+                document.getElementById('collab-chatrooms-count').textContent = data.chatrooms || 0;
+                document.getElementById('collab-tasks-count').textContent = data.pending_tasks || 0;
+                document.getElementById('collab-status').textContent = data.status || 'inactive';
+            } catch (e) {
+                console.error('Failed to fetch collaboration status:', e);
+            }
+        }
+
+        function renderConfigContent() {
+            return `
+                <div class="space-y-4">
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-robot mr-2"></i>LLM Configuration</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Base URL</label>
+                                <input type="text" id="config-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                       placeholder="http://api.openai.rnd.huawei.com/v1">
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400 block mb-1">Model</label>
+                                <input type="text" id="config-model" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                       placeholder="xiaoluban">
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label class="text-xs text-gray-400 block mb-1">API Key</label>
+                            <input type="password" id="config-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                   placeholder="sk-xxxxx">
+                        </div>
+                        <div class="mt-4 flex gap-2">
+                            <button onclick="saveConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                <i class="fa-solid fa-save mr-2"></i>Save Config
+                            </button>
+                            <button onclick="testConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                <i class="fa-solid fa-plug mr-2"></i>Test Connection
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-database mr-2"></i>System Info</h3>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex justify-between text-gray-300">
+                                <span>Backend URL</span>
+                                <span class="text-gray-400">${API_BASE}</span>
+                            </div>
+                            <div class="flex justify-between text-gray-300">
+                                <span>WebSocket</span>
+                                <span class="${ws?.readyState === WebSocket.OPEN ? 'text-emerald-400' : 'text-red-400'}">
+                                    ${ws?.readyState === WebSocket.OPEN ? 'Connected' : 'Disconnected'}
+                                </span>
+                            </div>
+                            <div class="flex justify-between text-gray-300">
+                                <span>Version</span>
+                                <span class="text-gray-400">1.0.0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function viewAgentMemory(agentId) {
+            try {
+                const res = await fetch(`${API_BASE}/agents/${agentId}/memory`);
+                const data = await res.json();
+                
+                // Show memory modal
+                let modal = document.getElementById('memory-modal');
+                if (!modal) {
+                    modal = document.createElement('div');
+                    modal.id = 'memory-modal';
+                    modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+                    document.body.appendChild(modal);
+                }
+                
+                modal.classList.remove('hidden');
+                modal.innerHTML = `
+                    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="document.getElementById('memory-modal').classList.add('hidden')"></div>
+                    <div class="relative w-full max-w-2xl max-h-[80vh] bg-dark-800 rounded-2xl border border-dark-600 shadow-2xl flex flex-col">
+                        <div class="flex items-center justify-between p-4 border-b border-dark-600">
+                            <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-brain mr-2"></i>${data.agent_name} Memory</h2>
+                            <button onclick="document.getElementById('memory-modal').classList.add('hidden')" class="text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-xmark text-xl"></i>
+                            </button>
+                        </div>
+                        <div class="flex-1 overflow-y-auto p-4 space-y-2">
+                            <div class="text-xs text-gray-400 mb-2">Total: ${data.memory_count} memories</div>
+                            ${data.memories.length === 0 ? `
+                                <div class="text-center py-8 text-gray-400">
+                                    <i class="fa-solid fa-brain text-4xl mb-3 text-gray-500"></i>
+                                    <p>No memories yet</p>
+                                </div>
+                            ` : data.memories.map(m => `
+                                <div class="bg-dark-700/50 rounded-lg p-3 border border-dark-600">
+                                    <div class="flex items-center justify-between mb-1">
+                                        <span class="text-xs bg-dark-600 text-gray-300 px-2 py-0.5 rounded">${m.type}</span>
+                                        <span class="text-xs text-gray-500">Importance: ${m.importance}</span>
+                                    </div>
+                                    <div class="text-sm text-gray-300">${escapeHtml(m.content)}</div>
+                                    <div class="text-xs text-gray-500 mt-1">${m.created_at}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            } catch (e) {
+                addLog('[Error] Failed to load agent memory', 'red');
+                console.error(e);
+            }
+        }
+
+        function showCreateProjectModal() {
+            let modal = document.getElementById('create-project-modal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'create-project-modal';
+                modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+                document.body.appendChild(modal);
+            }
+            
+            modal.classList.remove('hidden');
+            modal.innerHTML = `
+                <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="document.getElementById('create-project-modal').classList.add('hidden')"></div>
+                <div class="relative w-full max-w-md bg-dark-800 rounded-2xl border border-dark-600 shadow-2xl">
+                    <div class="flex items-center justify-between p-4 border-b border-dark-600">
+                        <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-plus mr-2"></i>Create New Project</h2>
+                        <button onclick="document.getElementById('create-project-modal').classList.add('hidden')" class="text-gray-400 hover:text-white transition-colors">
+                            <i class="fa-solid fa-xmark text-xl"></i>
+                        </button>
+                    </div>
+                    <div class="p-4 space-y-3">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Project Name *</label>
+                            <input type="text" id="new-project-name" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                   placeholder="My New Project">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Description</label>
+                            <textarea id="new-project-desc" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500 h-20 resize-none" 
+                                      placeholder="Project description..."></textarea>
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Assign Agents</label>
+                            <div class="flex flex-wrap gap-2">
+                                ${agents.filter(a => a.is_active).map(a => `
+                                    <label class="flex items-center gap-1 text-xs bg-dark-700 text-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-dark-600 transition-colors">
+                                        <input type="checkbox" name="project-agent" value="${a.name}" class="accent-accent-500" ${a.name === 'assistant' ? 'checked' : ''}>
+                                        ${escapeHtml(a.name)}
+                                    </label>
+                                `).join('')}
+                            </div>
+                        </div>
+                        <div class="flex gap-2 pt-2">
+                            <button onclick="submitCreateProject()" class="flex-1 bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Create Project
+                            </button>
+                            <button onclick="document.getElementById('create-project-modal').classList.add('hidden')" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitCreateProject() {
+            const name = document.getElementById('new-project-name').value.trim();
+            const desc = document.getElementById('new-project-desc').value.trim();
+            const agentCheckboxes = document.querySelectorAll('input[name="project-agent"]:checked');
+            const agentNames = Array.from(agentCheckboxes).map(cb => cb.value);
+            
+            if (!name) {
+                addLog('[Error] Project name is required', 'red');
+                return;
+            }
+            
+            if (agentNames.length === 0) {
+                agentNames.push('assistant');
+            }
+            
+            try {
+                const res = await fetch(`${API_BASE}/projects`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description: desc, agent_names: agentNames })
+                });
+                const project = await res.json();
+                projects.push(project);
+                
+                // Close modals
+                document.getElementById('create-project-modal')?.classList.add('hidden');
+                closeStatusModal();
+                
+                // Select the new project
+                selectProject(project);
+                
+                addLog(`[Project] ${name} created successfully`, 'green');
+            } catch (e) {
+                addLog('[Error] Failed to create project', 'red');
+                console.error(e);
+            }
+        }
+
+        async function deleteProject(projectId) {
+            if (!confirm('Are you sure you want to delete this project?')) return;
+            
+            try {
+                await fetch(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' });
+                projects = projects.filter(p => p.id !== projectId);
+                
+                if (currentProject?.id === projectId) {
+                    currentProject = null;
+                    renderMessages();
+                }
+                
+                renderRooms();
+                switchStatusTab('projects');
+                addLog(`[Project] Deleted successfully`, 'green');
+            } catch (e) {
+                addLog('[Error] Failed to delete project', 'red');
+                console.error(e);
+            }
+        }
+
+        async function saveConfig() {
+            const baseUrl = document.getElementById('config-base-url').value;
+            const model = document.getElementById('config-model').value;
+            const apiKey = document.getElementById('config-api-key').value;
+            
+            try {
+                const res = await fetch(`${API_BASE}/config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        base_url: baseUrl,
+                        model: model,
+                        temperature: 0.7,
+                        max_tokens: 2000
+                    })
+                });
+                const data = await res.json();
+                addLog('[Config] Saved successfully', 'green');
+            } catch (e) {
+                addLog('[Error] Failed to save config', 'red');
+                console.error(e);
+            }
+        }
+
+        async function testConfig() {
+            const baseUrl = document.getElementById('config-base-url').value;
+            const model = document.getElementById('config-model').value;
+            const apiKey = document.getElementById('config-api-key').value;
+            
+            try {
+                const res = await fetch(`${API_BASE}/config/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_key: apiKey,
+                        base_url: baseUrl,
+                        model: model
+                    })
+                });
+                const data = await res.json();
+                addLog('[Config] Connection test successful', 'green');
+                alert('Connection successful!');
+            } catch (e) {
+                addLog('[Error] Connection test failed', 'red');
+                alert('Connection failed: ' + e.message);
+            }
+        }
+
+        function showAddAgentModal() {
+            addLog('[Action] Add Agent feature coming soon', 'yellow');
+            alert('Add Agent feature coming soon! You can configure agents in backend/agents/registry.py');
+        }
+
+        // Utility Functions
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatTime(dateStr) {
+            if (!dateStr) return 'Just now';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diff = (now - date) / 1000;
+            if (diff < 60) return 'Just now';
+            if (diff < 3600) return `${Math.floor(diff / 60)} mins ago`;
+            return date.toLocaleTimeString();
+        }
+
+        function getAgentColor(name) {
+            const colors = ['purple', 'emerald', 'amber', 'rose', 'cyan', 'indigo'];
+            let hash = 0;
+            for (let i = 0; i < name.length; i++) {
+                hash = name.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return colors[Math.abs(hash) % colors.length];
+        }
+
+        // Markdown Rendering
+        function renderMarkdown(content) {
+            if (!content) return '';
+            try {
+                // Configure marked
+                marked.setOptions({
+                    breaks: true,
+                    gfm: true,
+                    highlight: function(code, lang) {
+                        if (lang && hljs.getLanguage(lang)) {
+                            try {
+                                return hljs.highlight(code, { language: lang }).value;
+                            } catch (e) {}
+                        }
+                        return hljs.highlightAuto(code).value;
+                    }
+                });
+                return marked.parse(content);
+            } catch (e) {
+                console.error('Markdown render error:', e);
+                return escapeHtml(content);
+            }
+        }
+
+        // Agent Mention (@) Functionality
+        let mentionStartPos = -1;
+        let selectedMentionIndex = 0;
+
+        function showMentionDropdown(input, filter = '') {
+            const dropdown = document.getElementById('mention-dropdown');
+            if (!dropdown) return;
+            
+            // Filter agents
+            const filteredAgents = agents.filter(a => 
+                a.name.toLowerCase().includes(filter.toLowerCase())
+            );
+            
+            if (filteredAgents.length === 0) {
+                hideMentionDropdown();
+                return;
+            }
+            
+            // Build dropdown content
+            dropdown.innerHTML = filteredAgents.map((a, idx) => {
+                const color = getAgentColor(a.name);
+                return `
+                    <div class="agent-mention-item ${idx === selectedMentionIndex ? 'selected' : ''}" 
+                         data-agent="${a.name}" data-index="${idx}">
+                        <div class="agent-avatar bg-gradient-to-br from-${color}-400 to-${color}-500">
+                            ${a.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div class="agent-info">
+                            <div class="agent-name">@${a.name}</div>
+                            <div class="agent-role">${a.role || 'Agent'}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            // Add click handlers
+            dropdown.querySelectorAll('.agent-mention-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    selectMention(item.dataset.agent);
+                });
+            });
+            
+            dropdown.classList.remove('hidden');
+        }
+
+        function hideMentionDropdown() {
+            const dropdown = document.getElementById('mention-dropdown');
+            if (dropdown) {
+                dropdown.classList.add('hidden');
+            }
+            mentionStartPos = -1;
+            selectedMentionIndex = 0;
+        }
+
+        function selectMention(agentName) {
+            const input = document.getElementById('message-input');
+            const value = input.value;
+            
+            // Find the @ position
+            let atPos = value.lastIndexOf('@', input.selectionStart);
+            if (atPos === -1) atPos = mentionStartPos;
+            
+            // Replace from @ to current position with @agent
+            const before = value.substring(0, atPos);
+            const after = value.substring(input.selectionStart);
+            
+            input.value = before + '@' + agentName + ' ' + after;
+            
+            // Move cursor after the mention
+            const newPos = atPos + agentName.length + 2;
+            input.setSelectionRange(newPos, newPos);
+            input.focus();
+            
+            hideMentionDropdown();
+        }
+
+        function handleMentionInput(e) {
+            const input = e.target;
+            const value = input.value;
+            const cursorPos = input.selectionStart;
+            
+            // Find @ before cursor
+            let atPos = -1;
+            for (let i = cursorPos - 1; i >= 0; i--) {
+                if (value[i] === '@') {
+                    atPos = i;
+                    break;
+                }
+                if (value[i] === ' ' || value[i] === '\n') break; // Stop at space or newline
+            }
+            
+            if (atPos !== -1 && atPos < cursorPos) {
+                mentionStartPos = atPos;
+                const filter = value.substring(atPos + 1, cursorPos);
+                showMentionDropdown(input, filter);
+            } else {
+                hideMentionDropdown();
+            }
+        }
+
+        function handleMentionKeydown(e) {
+            const dropdown = document.getElementById('mention-dropdown');
+            if (!dropdown || dropdown.classList.contains('hidden')) return;
+            
+            const input = document.getElementById('message-input');
+            const filteredAgents = agents.filter(a => {
+                const filter = mentionStartPos >= 0 ? input.value.substring(mentionStartPos + 1, input.selectionStart) : '';
+                return a.name.toLowerCase().includes(filter.toLowerCase());
+            });
+            
+            if (filteredAgents.length === 0) return;
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedMentionIndex = (selectedMentionIndex + 1) % filteredAgents.length;
+                showMentionDropdown(input, input.value.substring(mentionStartPos + 1, input.selectionStart));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedMentionIndex = (selectedMentionIndex - 1 + filteredAgents.length) % filteredAgents.length;
+                showMentionDropdown(input, input.value.substring(mentionStartPos + 1, input.selectionStart));
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                selectMention(filteredAgents[selectedMentionIndex % filteredAgents.length].name);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                hideMentionDropdown();
+            }
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            const input = document.getElementById('message-input');
+            if (document.activeElement === input) {
+                // Handle mention navigation first
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Tab' || e.key === 'Escape') {
+                    handleMentionKeydown(e);
+                    if (e.defaultPrevented) return;
+                }
+                // Send message on Enter (not Shift+Enter)
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    const dropdown = document.getElementById('mention-dropdown');
+                    if (dropdown && !dropdown.classList.contains('hidden')) {
+                        handleMentionKeydown(e);
+                        if (e.defaultPrevented) return;
+                    }
+                    e.preventDefault();
+                    sendMessage();
+                }
+            }
+        });
+
+        // Input event for @ mention detection
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('message-input');
+            if (input) {
+                input.addEventListener('input', (e) => {
+                    handleMentionInput(e);
+                });
+            }
+        });
+    </script>
+</body>
 </html>

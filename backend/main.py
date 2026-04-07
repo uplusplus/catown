@@ -3,16 +3,34 @@
 Catown - Multi-Agent Collaboration Platform
 后端主入口
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
+import logging
+import time
+import os
+from pathlib import Path
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-import os
-from pathlib import Path
+from starlette.middleware.base import BaseHTTPMiddleware
+from collections import defaultdict
 
 # 加载 .env 文件
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
+
+from config import settings
+
+# 结构化日志配置
+logging.basicConfig(
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("catown")
 
 # 导入路由
 from routes.api import router as api_router
@@ -22,6 +40,40 @@ from routes.websocket import websocket_manager
 from models.database import init_database
 from agents.registry import register_builtin_agents
 
+# ==================== 速率限制中间件 ====================
+
+class RateLimiter:
+    """简单基于 IP 的速率限制"""
+    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: dict[str, list[float]] = defaultdict(list)
+    
+    def is_allowed(self, client_ip: str) -> bool:
+        now = time.time()
+        window_start = now - self.window_seconds
+        # 清理过期记录
+        self._requests[client_ip] = [t for t in self._requests[client_ip] if t > window_start]
+        if len(self._requests[client_ip]) >= self.max_requests:
+            return False
+        self._requests[client_ip].append(now)
+        return True
+
+rate_limiter = RateLimiter(
+    max_requests=int(os.getenv("RATE_LIMIT_MAX", "60")),
+    window_seconds=int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+)
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host
+        if not rate_limiter.is_allowed(client_ip):
+            from fastapi.responses import JSONResponse
+            logger.warning(f"[RateLimit] IP {client_ip} exceeded rate limit")
+            return JSONResponse(status_code=429, content={"error": "Rate limit exceeded. Try again later."})
+        return await call_next(request)
+
+
 # 创建 FastAPI 应用
 app = FastAPI(
     title="Catown API",
@@ -29,19 +81,32 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS 配置
+# CORS 配置（白名单，不再允许所有来源）
+allowed_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001")
+ALLOWED_ORIGINS = [o.strip() for o in allowed_origins_str.split(",") if o.strip()]
+logger.info(f"[Config] CORS allowed origins: {ALLOWED_ORIGINS}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
+# 速率限制
+app.add_middleware(RateLimitMiddleware)
+logger.info(f"[Config] Rate limiter: {rate_limiter.max_requests} req / {rate_limiter.window_seconds}s per IP")
+
+
+# ==================== 请求日志中间件 ====================
+
 # 初始化数据库
+logger.info("[DB] Initializing database...")
 init_database()
 
 # 注册内置 Agent
+logger.info(f"[Agent] Registering built-in agents")
 register_builtin_agents()
 
 # 包含 API 路由
@@ -56,6 +121,11 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         await websocket_manager.disconnect(websocket)
 
+# 健康检查（顶层路径）
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 # 根路径
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -64,8 +134,8 @@ async def root():
         frontend_index = Path("frontend/dist/index.html")
         if frontend_index.exists():
             return HTMLResponse(content=frontend_index.read_text())
-    except:
-        pass
+    except Exception as e:
+        logger.debug(f"Frontend dist not found: {e}")
     
     # 返回简单的测试页面
     return HTMLResponse(content="""
@@ -79,14 +149,14 @@ async def root():
         </style>
     </head>
     <body>
-        <h1>🐱 Catown</h1>
-        <p class="status">✅ 后端服务运行正常</p>
-        <p>访问 <a href="/docs">/docs</a> 查看 API 文档</p>
-        <p>访问 <a href="http://localhost:3000">http://localhost:3000</a> 使用 Web 界面</p>
+        <h1>Catown - Multi-Agent Platform</h1>
+        <p class="status">Backend service is running</p>
+        <p>See <a href="/docs">/docs</a> for API documentation</p>
     </body>
     </html>
     """)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info(f"[Server] Starting on {settings.HOST}:{settings.PORT}")
+    uvicorn.run(app, host=settings.HOST, port=settings.PORT)

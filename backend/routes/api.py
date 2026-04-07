@@ -21,7 +21,7 @@ router = APIRouter()
 # ==================== Agent 响应处理 ====================
 
 async def trigger_agent_response(chatroom_id: int, user_message: str):
-    """触发 Agent 处理消息并生成响应（使用独立数据库连接，支持工具调用）"""
+    """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
     from tools import tool_registry
     import json
@@ -46,7 +46,6 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         # 2. 解析 @ 提及，确定目标 Agent
         target_agent_name = None
         if '@' in user_message:
-            # 提取 @agent 名称
             import re
             mentions = re.findall(r'@(\w+)', user_message)
             if mentions:
@@ -66,11 +65,9 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         # 4. 确定响应的 Agent
         target_agent = None
         if target_agent_name:
-            # 查找被 @ 提及的 Agent
             target_agent = next((a for a in agents if a.name == target_agent_name), None)
         
         if not target_agent:
-            # 默认使用第一个 Agent 或名为 "assistant" 的 Agent
             target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
         
         if not target_agent:
@@ -81,82 +78,123 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         # 5. 获取 LLM 客户端
         llm_client = get_llm_client()
-        print(f"[DEBUG] LLM client obtained: {llm_client.config.base_url}")
+        print(f"[DEBUG] LLM client obtained: {llm_client.client.base_url}")
         
         # 6. 构建消息上下文
         messages = []
         
-        # 系统提示（包含工具说明）
         system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
         system_prompt += f"\n\nCurrent project: {project.name}"
         if project.description:
             system_prompt += f"\nProject description: {project.description}"
         
-        # 添加可用工具说明
         available_tools = tool_registry.list_tools()
         if available_tools:
             system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
-            system_prompt += "\nWhen you need to use a tool, the system will execute it for you."
+            system_prompt += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
+        
+        # 注入长期记忆到上下文（2.3 记忆系统接入）
+        from models.database import Memory
+        
+        recent_memories = (
+            db.query(Memory)
+            .filter(Memory.agent_id.in_([target_agent.id, target_agent.id]))  # agent-specific memories
+            .order_by(Memory.importance.desc(), Memory.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        if recent_memories:
+            system_prompt += "\n\nStored memories (context for your responses):"
+            for mem in recent_memories:
+                ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
+                system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
         
         messages.append({
             "role": "system",
             "content": system_prompt
         })
         
-        # 获取最近的对话历史
+        # 获取最近的对话历史（修复：使用 agent 关系而非不存在的 agent_name 字段）
         recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
-        for msg in recent_messages[-6:]:  # 最近 3 轮对话
-            if msg.message_type == "user" or not msg.agent_name:
+        for msg in recent_messages[-6:]:
+            agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+            if msg.message_type == "user" or not agent_name:
                 messages.append({"role": "user", "content": msg.content})
             else:
                 messages.append({"role": "assistant", "content": msg.content})
+        
+        # 追加当前用户消息
+        messages.append({"role": "user", "content": user_message})
         
         print(f"[DEBUG] Context messages: {len(messages)} messages")
         
         # 7. 获取工具 schemas
         tool_schemas = tool_registry.get_schemas()
         
-        # 8. 调用 LLM 生成响应（支持工具调用）
+        # 8. 主循环：LLM → 执行工具 → 结果回传 LLM → 直到没有 tool_calls
         print(f"[LLM] Calling LLM for agent: {target_agent.name} with {len(tool_schemas)} tools available")
         
-        llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
+        max_tool_iterations = 5
+        iteration = 0
         
-        response_content = llm_response.get("content", "")
-        tool_calls = llm_response.get("tool_calls")
-        
-        print(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
-        print(f"[LLM] Tool calls: {tool_calls}")
-        
-        # 9. 处理工具调用
-        if tool_calls:
-            tool_results_text = "\n\n### Tool Execution Results:\n"
+        while iteration < max_tool_iterations:
+            iteration += 1
+            print(f"[LLM] Loop iteration {iteration}")
             
+            llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
+            
+            response_content = llm_response.get("content", "")
+            tool_calls = llm_response.get("tool_calls")
+            
+            print(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
+            print(f"[LLM] Tool calls: {tool_calls}")
+            
+            if not tool_calls:
+                # 没有更多工具调用，结束循环
+                print(f"[LLM] No more tool calls, loop done after {iteration} iterations")
+                break
+            
+            # 将 LLM 的 assistant 消息加入上下文（包含 tool_calls）
+            assistant_msg = {
+                "role": "assistant",
+                "content": response_content,
+                "tool_calls": [tc.model_dump() if hasattr(tc, 'model_dump') else {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                } for tc in tool_calls]
+            }
+            messages.append(assistant_msg)
+            
+            # 执行工具并将结果追加到 messages
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments)
+                tool_call_id = tool_call.id
                 
                 print(f"[Tool] Executing: {tool_name} with args: {tool_args}")
                 
                 try:
                     tool_result = await tool_registry.execute(tool_name, **tool_args)
-                    tool_results_text += f"\n**{tool_name}**:\n```\n{tool_result}\n```\n"
-                    print(f"[Tool] Result: {str(tool_result)[:100]}...")
+                    result_str = str(tool_result) if tool_result is not None else "(no output)"
+                    print(f"[Tool] Result: {result_str[:150]}...")
                 except Exception as te:
-                    error_msg = f"Error executing {tool_name}: {str(te)}"
-                    tool_results_text += f"\n**{tool_name}** (Error): {error_msg}\n"
+                    result_str = f"Error executing {tool_name}: {str(te)}"
                     print(f"[Tool] Error: {te}")
-            
-            # 将工具结果添加到响应
-            if response_content:
-                response_content += tool_results_text
-            else:
-                response_content = tool_results_text
+                
+                # 以 tool role 消息将结果回传 LLM
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result_str,
+                    "name": tool_name
+                })
         
         if not response_content:
-            print(f"[ERROR] LLM returned empty response")
+            print(f"[ERROR] LLM returned empty response after all tool iterations")
             return
         
-        # 10. 发送 Agent 响应
+        # 9. 发送 Agent 响应
         agent_response = await chatroom_manager.send_message(
             chatroom_id=chatroom_id,
             agent_id=target_agent.id,
@@ -167,7 +205,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         print(f"[DEBUG] Agent response saved: id={agent_response.id}")
         
-        # 11. 通过 WebSocket 广播
+        # 10. 通过 WebSocket 广播
         from routes.websocket import websocket_manager
         await websocket_manager.broadcast_to_room({
             "type": "message",

@@ -16,8 +16,7 @@
 ### 环境要求
 
 - Python 3.10+
-- Node.js 18+
-- pip 和 npm
+- pip
 
 ### 安装步骤
 
@@ -28,14 +27,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-#### 2. 前端安装
-
-```bash
-cd frontend
-npm install
-```
-
-#### 3. 配置
+#### 2. 配置
 
 复制环境变量文件并配置：
 
@@ -59,7 +51,13 @@ PORT=8000
 
 ### 启动服务
 
-#### 方式一：使用启动脚本（推荐）
+**启动后端:**
+```bash
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+或使用启动脚本：
 
 **Linux/Mac:**
 ```bash
@@ -72,27 +70,10 @@ chmod +x start.sh
 start.bat
 ```
 
-选择 "Both (Full stack)" 选项同时启动前后端。
-
-#### 方式二：手动启动
-
-**启动后端:**
-```bash
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-**启动前端（新终端）:**
-```bash
-cd frontend
-npm run dev
-```
-
 ### 访问应用
 
-- 🌐 **Web 界面**: http://localhost:3000
+- 🌐 **Web 界面**: http://localhost:8000
 - 📚 **API 文档**: http://localhost:8000/docs
-- 🏠 **后端首页**: http://localhost:8000
 
 ## 📁 项目结构
 
@@ -106,14 +87,12 @@ catown/
 │   ├── routes/          # API 路由
 │   ├── tools/           # 工具集合
 │   └── main.py         # 应用入口
-├── frontend/            # 前端应用
-│   ├── src/
-│   │   ├── components/  # React 组件
-│   │   ├── pages/       # 页面
-│   │   └── hooks/       # 自定义 Hooks
-│   └── public/
-├── data/               # 数据存储
-└── logs/              # 日志目录
+├── frontend/            # 前端（单文件 HTML）
+│   └── index.html
+├── docs/                # 项目文档
+├── tests/               # 测试文件
+├── data/                # 数据存储
+└── logs/                # 日志目录
 ```
 
 ## 🎯 使用示例
