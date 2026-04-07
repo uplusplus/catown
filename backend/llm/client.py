@@ -57,6 +57,75 @@ class LLMClient:
         except Exception as e:
             raise Exception(f"LLM API error with tools: {str(e)}")
 
+    async def chat_stream(self, messages: List[Dict], tools: List[Dict] = None):
+        """
+        流式聊天（SSE generator）
+
+        Yields:
+            dict: {"type": "content"|"tool_call"|"done", ...}
+                - content: {"type": "content", "delta": "chunk text"}
+                - tool_call: {"type": "tool_call", "tool_calls": [...]}
+                - done: {"type": "done", "full_content": "...", "tool_calls": [...]}
+        """
+        try:
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.7,
+                "stream": True
+            }
+            if tools:
+                kwargs["tools"] = tools
+
+            full_content = ""
+            accumulated_tool_calls = []
+
+            async for chunk in await self.client.chat.completions.create(**kwargs):
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+
+                delta = choice.delta
+
+                # 处理内容增量
+                if delta.content:
+                    full_content += delta.content
+                    yield {"type": "content", "delta": delta.content}
+
+                # 处理工具调用增量
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        # 扩展列表以容纳新索引
+                        while len(accumulated_tool_calls) <= idx:
+                            accumulated_tool_calls.append({
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+
+                        if tc_delta.id:
+                            accumulated_tool_calls[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                accumulated_tool_calls[idx]["function"]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+                # 检查是否结束
+                if choice.finish_reason in ("stop", "tool_calls", "length"):
+                    break
+
+            # 发送完成信号
+            yield {
+                "type": "done",
+                "full_content": full_content,
+                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None
+            }
+
+        except Exception as e:
+            yield {"type": "error", "error": str(e)}
+
 
 _llm_client: Optional[LLMClient] = None
 

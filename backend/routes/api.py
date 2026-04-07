@@ -3,11 +3,13 @@
 API 路由 - 主要端点
 """
 import logging
+import re
+import json
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
-import json
+from pydantic import BaseModel, field_validator
 
 from models.database import get_db, Agent, Project, Chatroom, AgentAssignment, Message, Base
 from agents.registry import get_registry
@@ -512,6 +514,238 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
     )
 
 
+@router.post("/chatrooms/{chatroom_id}/messages/stream")
+async def send_message_stream(chatroom_id: int, message: MessageRequest):
+    """
+    发送消息到聊天室（SSE 流式响应）
+
+    返回 SSE 事件流：
+    - data: {"type": "content", "delta": "..."}      — LLM 生成的文本增量
+    - data: {"type": "tool_start", "tool": "..."}     — 开始执行工具
+    - data: {"type": "tool_result", "tool": "...", "result": "..."} — 工具执行完毕
+    - data: {"type": "done", "agent_name": "...", "message_id": 123} — 全部完成
+    - data: {"type": "error", "error": "..."}         — 出错
+    """
+    import asyncio
+    import json as _json
+
+    async def event_generator():
+        from models.database import get_db as _get_db
+        from tools import tool_registry
+        from llm.client import get_llm_client
+
+        db = next(_get_db())
+        try:
+            # 1. 保存用户消息
+            user_msg = await chatroom_manager.send_message(
+                chatroom_id=chatroom_id,
+                agent_id=None,
+                content=message.content,
+                message_type="text"
+            )
+
+            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id})}\n\n"
+
+            # 2. 获取聊天室和项目
+            chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+            if not chatroom or not chatroom.project_id:
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom or project'})}\n\n"
+                return
+
+            project = db.query(Project).filter(Project.id == chatroom.project_id).first()
+            if not project:
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'No project found'})}\n\n"
+                return
+
+            # 3. 解析 @mention
+            target_agent_name = None
+            if '@' in message.content:
+                mentions = re.findall(r'@(\w+)', message.content)
+                if mentions:
+                    target_agent_name = mentions[0]
+
+            # 4. 获取项目 Agents
+            assignments = db.query(AgentAssignment).filter(
+                AgentAssignment.project_id == project.id
+            ).all()
+            agent_ids = [a.agent_id for a in assignments]
+            agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+
+            target_agent = None
+            if target_agent_name:
+                target_agent = next((a for a in agents if a.name == target_agent_name), None)
+            if not target_agent:
+                target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
+            if not target_agent:
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'No agent available'})}\n\n"
+                return
+
+            # 注册协作者
+            from agents.collaboration import collaboration_coordinator, AgentCollaborator
+            if target_agent.id not in collaboration_coordinator.collaborators:
+                collaborator = AgentCollaborator(
+                    agent_id=target_agent.id,
+                    agent_name=target_agent.name,
+                    chatroom_id=chatroom_id
+                )
+                collaboration_coordinator.register_collaborator(collaborator)
+
+            # 5. 构建消息上下文
+            llm_client = get_llm_client()
+            messages = []
+
+            system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
+            system_prompt += f"\n\nCurrent project: {project.name}"
+            if project.description:
+                system_prompt += f"\nProject description: {project.description}"
+
+            available_tools = tool_registry.list_tools()
+            if available_tools:
+                system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
+
+            # 注入记忆
+            from models.database import Memory
+            recent_memories = (
+                db.query(Memory)
+                .filter(Memory.agent_id == target_agent.id)
+                .order_by(Memory.importance.desc(), Memory.created_at.desc())
+                .limit(10)
+                .all()
+            )
+            if recent_memories:
+                system_prompt += "\n\nStored memories:"
+                for mem in recent_memories:
+                    ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
+                    system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
+
+            messages.append({"role": "system", "content": system_prompt})
+
+            recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
+            for msg in recent_messages[-6:]:
+                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                if msg.message_type == "user" or not agent_name:
+                    messages.append({"role": "user", "content": msg.content})
+                else:
+                    messages.append({"role": "assistant", "content": msg.content})
+
+            messages.append({"role": "user", "content": message.content})
+
+            tool_schemas = tool_registry.get_schemas()
+
+            # 6. 流式 LLM 循环
+            max_tool_iterations = 5
+            iteration = 0
+            final_content = ""
+
+            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name})}\n\n"
+
+            while iteration < max_tool_iterations:
+                iteration += 1
+                tool_calls_found = False
+
+                async for event in llm_client.chat_stream(
+                    messages, tool_schemas if tool_schemas else None
+                ):
+                    if event["type"] == "content":
+                        final_content += event["delta"]
+                        yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
+
+                    elif event["type"] == "done":
+                        tool_calls = event.get("tool_calls")
+                        full_content = event.get("full_content", "")
+
+                        if not tool_calls:
+                            # 无工具调用，结束
+                            break
+
+                        tool_calls_found = True
+
+                        # 将 assistant 消息加入上下文
+                        assistant_msg = {
+                            "role": "assistant",
+                            "content": full_content,
+                            "tool_calls": tool_calls
+                        }
+                        messages.append(assistant_msg)
+
+                        # 执行工具
+                        for tc in tool_calls:
+                            tool_name = tc["function"]["name"]
+                            tool_args_str = tc["function"]["arguments"]
+                            tool_call_id = tc["id"]
+
+                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str})}\n\n"
+
+                            try:
+                                tool_args = json.loads(tool_args_str)
+                                tool_result = await tool_registry.execute(tool_name, **tool_args)
+                                result_str = str(tool_result) if tool_result is not None else "(no output)"
+                            except Exception as te:
+                                result_str = f"Error: {str(te)}"
+
+                            # 截断过长的工具结果
+                            if len(result_str) > 2000:
+                                result_str = result_str[:2000] + "\n...(truncated)"
+
+                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500]})}\n\n"
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": result_str,
+                                "name": tool_name
+                            })
+
+                    elif event["type"] == "error":
+                        yield f"data: {_json.dumps({'type': 'error', 'error': event['error']})}\n\n"
+                        return
+
+                if not tool_calls_found:
+                    break
+
+            # 7. 保存最终响应
+            if not final_content:
+                final_content = "(Agent returned empty response)"
+
+            agent_response = await chatroom_manager.send_message(
+                chatroom_id=chatroom_id,
+                agent_id=target_agent.id,
+                content=final_content,
+                message_type="text",
+                agent_name=target_agent.name
+            )
+
+            # WebSocket 广播
+            from routes.websocket import websocket_manager
+            await websocket_manager.broadcast_to_room({
+                "type": "message",
+                "id": agent_response.id,
+                "content": final_content,
+                "agent_name": target_agent.name,
+                "message_type": "text"
+            }, chatroom_id)
+
+            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id})}\n\n"
+
+        except Exception as e:
+            logger.error(f"[SSE] Stream error: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
 # ==================== 状态相关 ====================
 
 @router.get("/status")
@@ -609,6 +843,42 @@ class LLMConfigModel(BaseModel):
     model: str = "gpt-4"
     temperature: float = 0.7
     max_tokens: int = 2000
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v):
+        if not v or not v.strip():
+            raise ValueError("API key cannot be empty")
+        return v.strip()
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, v):
+        v = v.strip().rstrip("/")
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("Base URL must start with http:// or https://")
+        return v
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Model name cannot be empty")
+        return v.strip()
+
+    @field_validator("temperature")
+    @classmethod
+    def validate_temperature(cls, v):
+        if not 0.0 <= v <= 2.0:
+            raise ValueError("Temperature must be between 0.0 and 2.0")
+        return v
+
+    @field_validator("max_tokens")
+    @classmethod
+    def validate_max_tokens(cls, v):
+        if not 1 <= v <= 128000:
+            raise ValueError("Max tokens must be between 1 and 128000")
+        return v
 
 
 @router.post("/config")

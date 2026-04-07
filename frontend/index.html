@@ -329,8 +329,14 @@
     </main>
 
     <script>
-        // Configuration
-        const API_BASE = 'http://localhost:8000/api';
+        // Configuration - dynamic based on current location
+        const _loc = window.location;
+        const _apiProtocol = _loc.protocol === 'https:' ? 'https:' : 'http:';
+        const _wsProtocol = _loc.protocol === 'https:' ? 'wss:' : 'ws:';
+        const _apiHost = _loc.hostname || 'localhost';
+        const _apiPort = _loc.port || '8000';
+        const API_BASE = `${_apiProtocol}//${_apiHost}:${_apiPort}/api`;
+        const WS_URL = `${_wsProtocol}//${_apiHost}:${_apiPort}/ws`;
         
         // State
         let projects = [];
@@ -420,7 +426,7 @@
 
         async function sendUserMessage(content) {
             if (!currentProject?.chatroom_id) return;
-            
+
             // Immediately render user message (optimistic update)
             const localMsg = {
                 id: 'local-' + Date.now(),
@@ -432,7 +438,137 @@
             };
             messages.push(localMsg);
             renderMessages();
-            
+
+            // Create a placeholder for the streaming agent response
+            const streamMsgId = 'stream-' + Date.now();
+            const streamMsg = {
+                id: streamMsgId,
+                content: '',
+                message_type: 'text',
+                agent_name: '...',
+                chatroom_id: currentProject.chatroom_id,
+                created_at: new Date().toISOString(),
+                _streaming: true
+            };
+            messages.push(streamMsg);
+            renderMessages();
+
+            try {
+                const res = await fetch(`${API_BASE}/chatrooms/${currentProject.chatroom_id}/messages/stream`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content, message_type: 'user' })
+                });
+
+                if (!res.ok) {
+                    // Fallback to non-streaming endpoint
+                    addLog('[SSE] Stream failed, falling back to sync', 'yellow');
+                    messages.pop(); // Remove placeholder
+                    renderMessages();
+                    await sendUserMessageSync(content);
+                    return;
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let fullContent = '';
+                let agentName = '';
+                let toolLogEl = null;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const data = JSON.parse(line.slice(6));
+
+                        if (data.type === 'agent_start') {
+                            agentName = data.agent_name;
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].agent_name = agentName;
+                                renderMessages();
+                            }
+                            addLog(`[SSE] ${agentName} responding...`, 'blue');
+                        }
+                        else if (data.type === 'content') {
+                            fullContent += data.delta;
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content = fullContent;
+                                renderMessages();
+                                // Auto-scroll to bottom
+                                const msgContainer = document.getElementById('messages-container');
+                                if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+                            }
+                        }
+                        else if (data.type === 'tool_start') {
+                            addLog(`[Tool] ${data.tool} executing...`, 'yellow');
+                            // Append tool indicator to message
+                            fullContent += `\n\n🔧 *Executing ${data.tool}...*`;
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content = fullContent;
+                                renderMessages();
+                            }
+                        }
+                        else if (data.type === 'tool_result') {
+                            addLog(`[Tool] ${data.tool} done`, 'green');
+                            // Update: replace the "executing" indicator with result
+                            fullContent = fullContent.replace(
+                                new RegExp(`🔧 \\*Executing ${data.tool}\\.\\.\\.\\*`),
+                                `✅ *${data.tool} completed*`
+                            );
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content = fullContent;
+                                renderMessages();
+                            }
+                        }
+                        else if (data.type === 'done') {
+                            // Finalize - replace placeholder with real message
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].id = data.message_id || streamMsgId;
+                                messages[idx].agent_name = data.agent_name || agentName;
+                                messages[idx]._streaming = false;
+                                renderMessages();
+                            }
+                            addLog('[SSE] Stream complete', 'green');
+                        }
+                        else if (data.type === 'error') {
+                            addLog(`[SSE] Error: ${data.error}`, 'red');
+                            const idx = messages.findIndex(x => x.id === streamMsgId);
+                            if (idx !== -1) {
+                                messages[idx].content = `⚠️ Error: ${data.error}`;
+                                messages[idx]._streaming = false;
+                                renderMessages();
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                addLog('[SSE] Stream error, falling back to sync', 'yellow');
+                console.error('SSE error:', e);
+                // Remove placeholder and try sync
+                const idx = messages.findIndex(x => x.id === streamMsgId);
+                if (idx !== -1) {
+                    messages.splice(idx, 1);
+                    renderMessages();
+                }
+                await sendUserMessageSync(content);
+            }
+        }
+
+        // Fallback: non-streaming message send
+        async function sendUserMessageSync(content) {
+            if (!currentProject?.chatroom_id) return;
             try {
                 const res = await fetch(`${API_BASE}/chatrooms/${currentProject.chatroom_id}/messages`, {
                     method: 'POST',
@@ -440,19 +576,8 @@
                     body: JSON.stringify({ content, message_type: 'user' })
                 });
                 const msg = await res.json();
-                
-                // Replace local message with server version if we got one back
-                if (msg && msg.id) {
-                    const idx = messages.findIndex(x => x.id === localMsg.id);
-                    if (idx !== -1) {
-                        messages[idx] = msg;
-                        renderMessages();
-                    }
-                }
-                
-                addLog('[API] Message sent 200 OK', 'green');
-                
-                // Poll for agent response after a delay
+                addLog('[API] Message sent (sync fallback)', 'green');
+                // Poll for agent response
                 setTimeout(async () => {
                     await loadMessages(currentProject.chatroom_id);
                 }, 3000);
@@ -465,7 +590,7 @@
         // WebSocket
         function connectWebSocket() {
             try {
-                ws = new WebSocket('ws://localhost:8000/ws');
+                ws = new WebSocket(WS_URL);
                 
                 ws.onopen = () => {
                     updateBackendStatus('connected');
@@ -1086,7 +1211,7 @@
 
         async function refreshCollabStatus() {
             try {
-                const response = await fetch(API_BASE + '/api/collaboration/status');
+                const response = await fetch(`${API_BASE}/collaboration/status`);
                 const data = await response.json();
                 
                 document.getElementById('collab-agents-count').textContent = data.active_collaborators || 0;
