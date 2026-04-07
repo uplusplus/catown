@@ -254,8 +254,14 @@ Catown 是一个多 Agent 协作平台，前后端分离，单进程部署：
   - docker-compose 内置 PostgreSQL 16 服务
   - `DATABASE_URL` 环境变量切换 SQLite/PostgreSQL
   - `psycopg2-binary` 依赖已添加
-- [ ] Alembic 数据库版本管理
-- [ ] 错误追踪集成
+- [x] Alembic 数据库版本管理
+  - alembic init 完成，env.py 配置使用项目 models
+  - 支持 SQLite + PostgreSQL 自动切换
+  - autogenerate 支持（基于 Base.metadata）
+- [x] 错误追踪集成
+  - RequestLoggingMiddleware：请求耗时 + 错误日志
+  - 500 错误自动捕获并记录完整 traceback
+  - 慢请求警告（>2s）
 
 ### Phase 4：插件与扩展（远期）
 

@@ -99,7 +99,47 @@ app.add_middleware(RateLimitMiddleware)
 logger.info(f"[Config] Rate limiter: {rate_limiter.max_requests} req / {rate_limiter.window_seconds}s per IP")
 
 
-# ==================== 请求日志中间件 ====================
+# ==================== 请求日志 & 错误追踪中间件 ====================
+
+import traceback as _traceback
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """记录请求耗时和错误"""
+
+    async def dispatch(self, request: Request, call_next):
+        import time as _time
+        start = _time.time()
+        path = request.url.path
+        method = request.method
+
+        try:
+            response = await call_next(request)
+            duration_ms = (_time.time() - start) * 1000
+
+            if response.status_code >= 400:
+                logger.warning(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
+            elif duration_ms > 2000:
+                logger.info(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms) SLOW")
+            else:
+                logger.debug(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
+
+            return response
+
+        except Exception as e:
+            duration_ms = (_time.time() - start) * 1000
+            logger.error(
+                f"[HTTP] {method} {path} FAILED ({duration_ms:.0f}ms)\n"
+                f"  Error: {e}\n"
+                f"{_traceback.format_exc()}"
+            )
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Internal server error", "detail": str(e)}
+            )
+
+
+app.add_middleware(RequestLoggingMiddleware)
 
 # 初始化数据库
 logger.info("[DB] Initializing database...")
