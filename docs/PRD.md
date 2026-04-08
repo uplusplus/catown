@@ -600,6 +600,7 @@ backend/
 | Bug Fix — 测试修复 | ✅ 已完成 | 2026-04-08 |
 | 补全 — 协作+搜索 | ✅ 已完成 | 2026-04-08 |
 | 两级 LLM 配置 | ✅ 已完成 | 2026-04-08 |
+| 测试修复 (agent 名称) | ✅ 已完成 | 2026-04-08 |
 
 ### Phase 1: P0 — 数据模型与配置 ✅ 已完成
 
@@ -696,27 +697,38 @@ backend/
 
 **测试结果**: 233/233 PASSED (新增 17 个用例)
 
+### Phase 9: 测试修复 (agent 名称映射) ✅ 已完成
+
+**问题**: agents.json 重构为 Pipeline 角色（analyst/architect/developer/tester/release）后，`test_api_routes.py` 中 10 个测试仍引用旧角色名（assistant/coder/reviewer/researcher），导致全部失败。
+
+| # | 问题 | 修复 | 状态 | 提交 |
+|---|------|------|------|------|
+| 1 | test_list_agents 断言旧角色名 | 更新为 analyst/architect/developer/tester | ✅ | 7abdb5a |
+| 2 | 项目创建测试引用旧 agent_names | 全部替换为 Pipeline 角色名 | ✅ | 7abdb5a |
+
+**测试结果**: 233/233 PASSED
+
 ---
 
 ## 14. 验收标准
 
 ### 14.1 功能验收
 
-- [ ] 提交原始需求后，Pipeline 自动执行 5 个阶段
-- [ ] 每个阶段的 Agent 使用正确的 system_prompt 和工具
-- [ ] 阶段产出物保存到 workspace，下一阶段能读取
-- [ ] Gate=manual 的阶段暂停等待人工审批
-- [ ] BOSS 可以通过 Web UI 暂停/继续/打回/审批
-- [ ] Agent 间可以互相发消息，BOSS 能实时看到
-- [ ] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
-- [ ] 错误自动重试，超过阈值暂停等人工
+- [x] 提交原始需求后，Pipeline 自动执行 5 个阶段
+- [x] 每个阶段的 Agent 使用正确的 system_prompt 和工具
+- [x] 阶段产出物保存到 workspace，下一阶段能读取
+- [x] Gate=manual 的阶段暂停等待人工审批
+- [x] BOSS 可以通过 Web UI 暂停/继续/打回/审批
+- [x] Agent 间可以互相发消息，BOSS 能实时看到
+- [x] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
+- [x] 错误自动重试，超过阈值暂停等人工
 
 ### 14.2 技术验收
 
-- [ ] 所有配置来源 agents.json（无 .env LLM 依赖）
-- [ ] Pipeline 状态持久化到数据库
-- [ ] Agent 协作消息持久化到数据库
-- [ ] WebSocket 实时推送 Pipeline 状态变更
+- [x] 所有配置来源 agents.json（无 .env LLM 依赖）
+- [x] Pipeline 状态持久化到数据库
+- [x] Agent 协作消息持久化到数据库
+- [x] WebSocket 实时推送 Pipeline 状态变更
 - [ ] Docker 部署正常
 
 ---
