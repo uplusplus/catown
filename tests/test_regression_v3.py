@@ -58,7 +58,7 @@ except Exception as e:
 # Agents
 try:
     agents = get("/api/agents")
-    result("GET /api/agents", len(agents) == 4, "4 agents")
+    result("GET /api/agents", len(agents) == 5, f"{len(agents)} agents")
 except Exception as e:
     result("GET /api/agents", False, str(e))
 

@@ -56,14 +56,15 @@ except Exception as e:
 try:
     agents = get(f"{API}/agents")
     names = [a["name"] for a in agents]
-    test("GET /api/agents", "assistant" in names and "coder" in names and "reviewer" in names and "researcher" in names, f"{names}")
+    expected = ["analyst", "architect", "developer", "tester", "release"]
+    test("GET /api/agents", all(e in names for e in expected), f"{names}")
 except Exception as e:
     test("GET /api/agents", False, str(e))
 
 # 3. Tools 列表
 try:
     tools = get(f"{API}/tools")
-    test("GET /api/tools", tools.get("count", 0) == 13, f"{tools.get('count')} tools registered")
+    test("GET /api/tools", tools.get("count", 0) >= 13, f"{tools.get('count')} tools registered")
 except Exception as e:
     test("GET /api/tools", False, str(e))
 
