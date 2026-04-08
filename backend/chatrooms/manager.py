@@ -7,6 +7,9 @@ from datetime import datetime
 from pydantic import BaseModel
 import asyncio
 import json
+import logging
+
+logger = logging.getLogger("catown.chatroom")
 
 
 class ChatroomMessage(BaseModel):
@@ -152,30 +155,125 @@ class ChatroomManager:
     async def process_user_message(self, chatroom_id: int, user_message: str) -> List[ChatroomMessage]:
         """
         处理用户消息，触发 Agent 协作
-        
-        Args:
-            chatroom_id: 聊天室 ID
-            user_message: 用户消息
-            
-        Returns:
-            Agent 响应消息列表
+
+        流程：
+        1. 保存用户消息
+        2. 获取聊天室关联的项目和 Agents
+        3. 解析 @mention，选择目标 Agent
+        4. 调用 LLM 生成响应
+        5. 保存 Agent 响应
         """
+        import re
         responses = []
-        
+
         # 发送用户消息
         user_msg = await self.send_message(chatroom_id, None, user_message, "text")
         responses.append(user_msg)
-        
+
         # 获取聊天室的 Agent 列表
         chatroom = self.get_chatroom(chatroom_id)
         if not chatroom:
             return responses
-        
-        # TODO: 实现 Agent 协作逻辑
-        # 这里简化为只让一个 Agent 响应
-        # 实际应该根据消息内容路由到合适的 Agent
-        
-        return responses
+
+        # 获取数据库中的项目和 Agent
+        from models.database import get_db, Project, Agent, AgentAssignment, Chatroom as ChatroomDB
+
+        db = next(get_db())
+        try:
+            # 查找聊天室关联的项目
+            db_chatroom = db.query(ChatroomDB).filter(ChatroomDB.id == chatroom_id).first()
+            if not db_chatroom or not db_chatroom.project_id:
+                return responses
+
+            project = db.query(Project).filter(Project.id == db_chatroom.project_id).first()
+            if not project:
+                return responses
+
+            # 获取项目关联的 Agents
+            assignments = db.query(AgentAssignment).filter(
+                AgentAssignment.project_id == project.id
+            ).all()
+            agent_ids = [a.agent_id for a in assignments]
+            agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+
+            if not agents:
+                return responses
+
+            # 注册为协作者
+            from agents.collaboration import collaboration_coordinator, AgentCollaborator
+            for agent in agents:
+                if agent.id not in collaboration_coordinator.collaborators:
+                    collaborator = AgentCollaborator(
+                        agent_id=agent.id,
+                        agent_name=agent.name,
+                        chatroom_id=chatroom_id
+                    )
+                    collaboration_coordinator.register_collaborator(collaborator)
+
+            # 解析 @mention
+            mentioned_names = re.findall(r'@(\w+)', user_message)
+
+            # 多 Agent 协作
+            if len(mentioned_names) > 1:
+                for agent_name in mentioned_names:
+                    agent = next((a for a in agents if a.name == agent_name), None)
+                    if agent:
+                        resp_content = await self._call_agent_llm(agent, user_message, chatroom_id, db)
+                        if resp_content:
+                            agent_msg = await self.send_message(
+                                chatroom_id, agent.id, resp_content, "agent_response",
+                                agent_name=agent.name
+                            )
+                            responses.append(agent_msg)
+                return responses
+
+            # 单 Agent 响应
+            target_agent = None
+            if mentioned_names:
+                target_agent = next((a for a in agents if a.name == mentioned_names[0]), None)
+            if not target_agent:
+                target_agent = next((a for a in agents if a.name == "assistant"), agents[0])
+
+            if target_agent:
+                resp_content = await self._call_agent_llm(target_agent, user_message, chatroom_id, db)
+                if resp_content:
+                    agent_msg = await self.send_message(
+                        chatroom_id, target_agent.id, resp_content, "agent_response",
+                        agent_name=target_agent.name
+                    )
+                    responses.append(agent_msg)
+
+            return responses
+        finally:
+            db.close()
+
+    async def _call_agent_llm(self, agent, user_message: str, chatroom_id: int, db) -> Optional[str]:
+        """调用 Agent 的 LLM 生成响应"""
+        from llm.client import get_llm_client_for_agent
+        from models.database import Message
+
+        try:
+            llm_client = get_llm_client_for_agent(agent.name)
+
+            # 构建消息历史
+            history = (
+                db.query(Message)
+                .filter(Message.chatroom_id == chatroom_id)
+                .order_by(Message.created_at.desc())
+                .limit(20)
+                .all()
+            )
+
+            messages = [{"role": "system", "content": agent.system_prompt or "You are a helpful assistant."}]
+            for msg in reversed(history):
+                role = "assistant" if msg.agent_id else "user"
+                messages.append({"role": role, "content": msg.content})
+
+            response = await llm_client.chat(messages)
+            return response
+        except Exception as e:
+            logger.error(f"LLM call failed for agent {agent.name}: {e}")
+            return None
 
 
 class ChatroomInstance:

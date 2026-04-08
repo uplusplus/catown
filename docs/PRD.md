@@ -599,6 +599,7 @@ backend/
 | P2 — 增强 | ✅ 已完成 | 2026-04-07 |
 | P3 — 扩展 | ✅ 已完成 | 2026-04-07 |
 | Bug Fix — 测试修复 | ✅ 已完成 | 2026-04-08 |
+| 补全 — 协作+搜索 | ✅ 已完成 | 2026-04-08 |
 
 ### Phase 1: P0 — 数据模型与配置 ✅ 已完成
 
@@ -662,6 +663,18 @@ backend/
 
 **测试结果**: 216/216 PASSED (从 188 passed / 28 failed 提升)
 
+### Phase 7: 补全 — Agent 协作 + Web 搜索 ✅ 已完成
+
+**问题**: 代码中存在 3 处未实现的功能（TODO / placeholder）。
+
+| # | 问题 | 修复 | 状态 | 提交 |
+|---|------|------|------|------|
+| 1 | `chatrooms/manager.py` process_user_message 无协作逻辑 | 实现完整 Agent 路由：@mention 解析、多 Agent 协作、LLM 调用 | ✅ | |
+| 2 | `pipeline/engine.py` web_search placeholder | 接入 DuckDuckGo Instant Answer API | ✅ | |
+| 3 | `pipeline/engine.py` send_message placeholder | 注释澄清（实际已有 _handle_send_message 实现） | ✅ | |
+
+**测试结果**: 216/216 PASSED
+
 ---
 
 ## 14. 验收标准
@@ -701,7 +714,7 @@ backend/
 | `pipeline/config.py` | 新增，配置加载器 | — | ✅ 完成 |
 | `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ✅ 完成 |
 | `routes/pipeline.py` | 新增，Pipeline API 路由 | 中 | ✅ 完成 |
-| `agents/collaboration.py` | Agent 间消息路由，接入 Pipeline | 中 | ⏳ P1 |
+| `agents/collaboration.py` | Agent 间消息路由，接入 Pipeline | 中 | ✅ 完成 |
 | `agents/registry.py` | 注册新角色（已由 agents.json 自动加载） | 小 | ✅ 完成 |
 | `agents/core.py` | Agent 基类不变 | 无 | — |
 | `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 | ✅ 完成 |

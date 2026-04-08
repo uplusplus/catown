@@ -129,13 +129,50 @@ def _tool_execute_code(workspace: Path, code: str, language: str = "python") -> 
 
 
 def _tool_web_search(workspace: Path, query: str) -> str:
-    """网络搜索（占位实现，后续接入真实搜索）"""
-    return f"[Web search placeholder] Query: {query}\n(Search not yet implemented in pipeline engine)"
+    """网络搜索（DuckDuckGo Instant Answer API）"""
+    import urllib.request
+    import urllib.parse
+
+    try:
+        url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+            "q": query,
+            "format": "json",
+            "no_html": 1,
+            "skip_disambig": 1
+        })
+
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        results = []
+
+        if data.get("Abstract"):
+            results.append(f"**Summary**: {data['Abstract']}")
+            if data.get("AbstractURL"):
+                results.append(f"Source: {data['AbstractURL']}")
+
+        if data.get("RelatedTopics"):
+            results.append("\n**Related Topics**:")
+            for i, topic in enumerate(data["RelatedTopics"][:5]):
+                if isinstance(topic, dict) and topic.get("Text"):
+                    results.append(f"  {i+1}. {topic['Text'][:200]}")
+
+        if data.get("Answer"):
+            results.append(f"\n**Answer**: {data['Answer']}")
+
+        if results:
+            return "\n".join(results)
+        else:
+            return f"[Web Search] No instant answer found for '{query}'. Try a more specific query."
+
+    except Exception as e:
+        return f"[Web Search] Error: {str(e)}"
 
 
 def _tool_send_message_placeholder(workspace: Path, **kwargs) -> str:
-    """占位 — 实际由 _execute_tool 特殊处理"""
-    return "Error: send_message not configured"
+    """Fallback — 实际调用由 _execute_tool 路由到 _handle_send_message"""
+    return "Error: send_message should be handled by _handle_send_message"
 
 
 TOOL_REGISTRY: Dict[str, Any] = {
