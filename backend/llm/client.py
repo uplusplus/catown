@@ -133,6 +133,8 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
     """
     从 agents.json 加载指定 Agent 的 provider 配置
 
+    优先级：Agent 自身 provider > global_llm provider
+
     Returns: {"base_url": str, "api_key": str, "model": str} 或 None
     """
     config_file = settings.AGENT_CONFIG_FILE
@@ -143,33 +145,54 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
         with open(config_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        # 先尝试 Agent 自身配置
         agents = data.get("agents", {})
         agent_data = agents.get(agent_name)
-        if not agent_data:
-            return None
+        if agent_data:
+            provider = agent_data.get("provider", {})
+            if provider:
+                base_url = provider.get("baseUrl", "")
+                api_key = provider.get("apiKey", "")
+                model = agent_data.get("default_model", "")
+                if not model:
+                    models = provider.get("models", [])
+                    if models:
+                        model = models[0].get("id", "")
+                if base_url and model:
+                    return {"base_url": base_url, "api_key": api_key, "model": model}
 
-        provider = agent_data.get("provider", {})
-        if not provider:
-            return None
-
-        base_url = provider.get("baseUrl", "")
-        api_key = provider.get("apiKey", "")
-
-        # 模型：优先用 default_model，否则取 models 列表第一个
-        model = agent_data.get("default_model", "")
-        if not model:
-            models = provider.get("models", [])
-            if models:
-                model = models[0].get("id", "")
-
-        if not base_url or not model:
-            return None
-
-        return {"base_url": base_url, "api_key": api_key, "model": model}
+        # fallback: 全局 LLM 配置
+        return _load_global_provider(data)
 
     except Exception as e:
         logger.warning(f"Failed to load provider config for agent '{agent_name}': {e}")
         return None
+
+
+def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
+    """从 agents.json 的 global_llm 段加载全局 provider 配置"""
+    if data is None:
+        config_file = settings.AGENT_CONFIG_FILE
+        if not os.path.exists(config_file):
+            return None
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+    global_cfg = data.get("global_llm", {})
+    provider = global_cfg.get("provider", {})
+    base_url = provider.get("baseUrl", "")
+    api_key = provider.get("apiKey", "")
+    model = global_cfg.get("default_model", "")
+    if not model:
+        models = provider.get("models", [])
+        if models:
+            model = models[0].get("id", "")
+    if base_url and model:
+        return {"base_url": base_url, "api_key": api_key, "model": model}
+    return None
 
 
 def get_llm_client_for_agent(agent_name: str) -> LLMClient:
@@ -271,7 +294,7 @@ def get_llm_client() -> LLMClient:
 
 
 def _get_first_provider() -> Optional[Dict[str, str]]:
-    """从 agents.json 获取第一个有 provider 配置的 Agent"""
+    """从 agents.json 获取第一个有 provider 配置的 Agent，兜底用 global_llm"""
     config_file = settings.AGENT_CONFIG_FILE
     if not os.path.exists(config_file):
         return None
@@ -293,6 +316,9 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
 
             if base_url and model:
                 return {"base_url": base_url, "api_key": api_key, "model": model}
+
+        # fallback: 全局配置
+        return _load_global_provider(data)
 
     except Exception as e:
         logger.warning(f"Failed to load first provider from agents.json: {e}")

@@ -1,4 +1,25 @@
 {
+  "global_llm": {
+    "provider": {
+      "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
+      "apiKey": "",
+      "auth": "api-key",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "GLM-V5-128K",
+          "name": "GLM-V5-128K",
+          "api": "openai-completions",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+          "contextWindow": 128000,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "default_model": "GLM-V5-128K"
+  },
   "agents": {
     "analyst": {
       "role": "需求分析师",

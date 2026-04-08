@@ -1315,6 +1315,7 @@ async def get_config():
     获取配置信息（唯一来源：agents.json）
 
     返回：
+    - global_llm: 全局 LLM 配置（Agent 未配置时的 fallback）
     - agents: 各 Agent 的完整配置
     - agent_llm_configs: 各 Agent 实际生效的 LLM 配置摘要
     - server: 服务器配置
@@ -1332,6 +1333,7 @@ async def get_config():
             "model": os.getenv("LLM_MODEL", ""),
             "has_api_key": bool(os.getenv("LLM_API_KEY", ""))
         },
+        "global_llm": {},
         "features": {
             "llm_enabled": True,
             "websocket_enabled": True,
@@ -1349,20 +1351,41 @@ async def get_config():
             with open(agents_config_file, 'r', encoding='utf-8') as f:
                 agents_config = json.load(f)
 
+            # 全局 LLM 配置
+            config["global_llm"] = agents_config.get("global_llm", {})
+
             agents_data = agents_config.get("agents", {})
             config["agents"] = agents_data
+
+            # 全局 provider 摘要（用于显示 fallback 来源）
+            global_provider = agents_config.get("global_llm", {}).get("provider", {})
+            global_model = agents_config.get("global_llm", {}).get("default_model", "")
+            if not global_model:
+                gm = global_provider.get("models", [])
+                if gm:
+                    global_model = gm[0].get("id", "")
 
             # 提取各 Agent 实际生效的 LLM 配置摘要
             for agent_name, agent_data in agents_data.items():
                 provider = agent_data.get("provider", {})
                 default_model = agent_data.get("default_model", "")
                 models = provider.get("models", [])
-                effective_model = default_model or (models[0]["id"] if models else "")
+
+                # 判断是否使用 Agent 自身配置还是全局 fallback
+                has_own_provider = bool(provider.get("baseUrl", ""))
+                if has_own_provider:
+                    effective_model = default_model or (models[0]["id"] if models else "")
+                    effective_url = provider.get("baseUrl", "")
+                else:
+                    effective_model = global_model
+                    effective_url = global_provider.get("baseUrl", "")
+
                 config["agent_llm_configs"][agent_name] = {
-                    "baseUrl": provider.get("baseUrl", ""),
+                    "baseUrl": effective_url,
                     "model": effective_model,
-                    "hasApiKey": bool(provider.get("apiKey", "")),
-                    "models": [m["id"] for m in models]
+                    "hasApiKey": bool(provider.get("apiKey", "") if has_own_provider else global_provider.get("apiKey", "")),
+                    "models": [m["id"] for m in models] if has_own_provider else [m["id"] for m in global_provider.get("models", [])],
+                    "source": "agent" if has_own_provider else "global"
                 }
         except Exception as e:
             logger.warning(f"Failed to load agents.json: {e}")
@@ -1385,6 +1408,99 @@ async def update_config(config: LLMConfigModel):
         "message": "Configuration validated successfully",
         "config": config.model_dump()
     }
+
+
+@router.put("/config/global")
+async def update_global_llm_config(config: Dict[str, Any]):
+    """
+    更新全局 LLM 配置（global_llm 段）
+
+    请求体：
+    {
+        "provider": {
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "models": [{"id": "gpt-4", ...}]
+        },
+        "default_model": "gpt-4"
+    }
+    """
+    from pathlib import Path
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        # 读取现有配置
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        # 更新全局配置
+        data["global_llm"] = config
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        # 清空 LLM 客户端缓存
+        clear_client_cache()
+
+        return {"message": "Global LLM config updated", "global_llm": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
+
+
+@router.put("/config/agent/{agent_name}")
+async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
+    """
+    更新指定 Agent 的 LLM 配置
+
+    请求体：
+    {
+        "provider": {
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "models": [{"id": "gpt-4", ...}]
+        },
+        "default_model": "gpt-4"
+    }
+
+    设置 provider 为空对象 {} 可清除 Agent 级配置，回退到全局。
+    """
+    from pathlib import Path
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        agents = data.get("agents", {})
+        if agent_name not in agents:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+
+        # 更新 Agent 的 provider 和 default_model
+        if "provider" in config:
+            agents[agent_name]["provider"] = config["provider"]
+        if "default_model" in config:
+            agents[agent_name]["default_model"] = config["default_model"]
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        # 清空该 Agent 的 LLM 客户端缓存
+        clear_client_cache()
+
+        return {
+            "message": f"Agent '{agent_name}' LLM config updated",
+            "agent": agents[agent_name]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
 
 
 @router.post("/config/reload")

@@ -407,19 +407,18 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 
 ### 9.1 配置能力
 
-✅ **已实现**。唯一配置源：`configs/agents.json`。
+✅ **已实现**。唯一配置源：`configs/agents.json`，两级配置架构。
 
-每个 Agent 独立配置：
+**配置优先级**：Agent 自身 provider → global_llm provider → 环境变量
 
 | 配置项 | 级别 | 说明 |
 |--------|------|------|
-| `provider.baseUrl` | per-Agent | 不同 Agent 可用不同 LLM 服务 |
-| `provider.apiKey` | per-Agent | 独立 API Key |
-| `provider.models[]` | per-Agent | 一个 Agent 可配多个模型 |
-| `default_model` | per-Agent | 指定默认模型 |
-| `models[].cost` | per-Model | 输入/输出成本 |
-| `models[].contextWindow` | per-Model | 上下文窗口大小 |
-| `models[].maxTokens` | per-Model | 最大输出 Token |
+| `global_llm.provider.baseUrl` | 全局 | 所有未配置 Agent 的默认 LLM 服务 |
+| `global_llm.provider.apiKey` | 全局 | 默认 API Key |
+| `global_llm.default_model` | 全局 | 默认模型 |
+| `agent.provider.baseUrl` | per-Agent | 该 Agent 专用 LLM 服务（覆盖全局） |
+| `agent.provider.apiKey` | per-Agent | 独立 API Key（覆盖全局） |
+| `agent.default_model` | per-Agent | 指定默认模型（覆盖全局） |
 
 ### 9.2 分级策略建议
 
@@ -600,6 +599,7 @@ backend/
 | P3 — 扩展 | ✅ 已完成 | 2026-04-07 |
 | Bug Fix — 测试修复 | ✅ 已完成 | 2026-04-08 |
 | 补全 — 协作+搜索 | ✅ 已完成 | 2026-04-08 |
+| 两级 LLM 配置 | ✅ 已完成 | 2026-04-08 |
 
 ### Phase 1: P0 — 数据模型与配置 ✅ 已完成
 
@@ -672,6 +672,24 @@ backend/
 | 1 | `chatrooms/manager.py` process_user_message 无协作逻辑 | 实现完整 Agent 路由：@mention 解析、多 Agent 协作、LLM 调用 | ✅ | |
 | 2 | `pipeline/engine.py` web_search placeholder | 接入 DuckDuckGo Instant Answer API | ✅ | |
 | 3 | `pipeline/engine.py` send_message placeholder | 注释澄清（实际已有 _handle_send_message 实现） | ✅ | |
+
+**测试结果**: 216/216 PASSED
+
+### Phase 8: 两级 LLM 配置 ✅ 已完成
+
+**需求**: Agent 级 LLM 配置 + 全局 fallback，两级都要有 Web UI 配置界面。
+
+| # | 改动 | 文件 | 状态 |
+|---|------|------|------|
+| 1 | agents.json 新增 `global_llm` 段 | `configs/agents.json` | ✅ |
+| 2 | LLM client 两级查找：Agent → global_llm → 环境变量 | `llm/client.py` | ✅ |
+| 3 | API: `PUT /config/global` + `PUT /config/agent/{name}` | `routes/api.py` | ✅ |
+| 4 | API: `GET /config` 返回 `source: agent|global` | `routes/api.py` | ✅ |
+| 5 | 前端: 全局配置编辑 + 保存 + 测试连接 | `frontend/index.html` | ✅ |
+| 6 | 前端: 每个 Agent 独立编辑 + "Use Global" 一键清除 | `frontend/index.html` | ✅ |
+| 7 | 前端: 运行时生效摘要（标注来源 agent/global） | `frontend/index.html` | ✅ |
+
+**配置优先级**: Agent 自身 provider → global_llm provider → 环境变量
 
 **测试结果**: 216/216 PASSED
 

@@ -1439,41 +1439,50 @@
             
             return `
                 <div class="space-y-4">
-                    <!-- 全局 LLM 配置 -->
+                    <!-- 全局 LLM 配置（fallback） -->
                     <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
-                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-robot mr-2"></i>Global LLM Configuration (.env)</h3>
+                        <h3 class="text-sm font-semibold text-white mb-1"><i class="fa-solid fa-globe mr-2"></i>Global LLM Config</h3>
+                        <p class="text-xs text-gray-500 mb-3">Default provider when an agent has no own config.</p>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Base URL</label>
-                                <input type="text" id="config-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                <input type="text" id="global-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
                                        placeholder="http://api.openai.com/v1">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Model</label>
-                                <input type="text" id="config-model" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                <input type="text" id="global-model" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
                                        placeholder="gpt-4">
                             </div>
                         </div>
                         <div class="mt-3">
                             <label class="text-xs text-gray-400 block mb-1">API Key</label>
-                            <input type="password" id="config-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                            <input type="password" id="global-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
                                    placeholder="sk-xxxxx">
                         </div>
                         <div class="mt-4 flex gap-2">
-                            <button onclick="saveConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                                <i class="fa-solid fa-save mr-2"></i>Save Config
+                            <button onclick="saveGlobalConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                <i class="fa-solid fa-save mr-2"></i>Save Global
                             </button>
-                            <button onclick="testConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                                <i class="fa-solid fa-plug mr-2"></i>Test Connection
+                            <button onclick="testGlobalConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                                <i class="fa-solid fa-plug mr-2"></i>Test
                             </button>
                         </div>
                     </div>
                     
-                    <!-- 各 Agent 实际生效的 LLM 配置 -->
+                    <!-- 各 Agent LLM 配置 -->
                     <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
-                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-users-gear mr-2"></i>Per-Agent LLM Config (agents.json)</h3>
-                        <p class="text-xs text-gray-500 mb-3">These are the configs actually used by each agent, which may differ from the global config above.</p>
-                        <div id="agent-llm-configs" class="space-y-2">
+                        <h3 class="text-sm font-semibold text-white mb-1"><i class="fa-solid fa-users-gear mr-2"></i>Per-Agent LLM Config</h3>
+                        <p class="text-xs text-gray-500 mb-3">Override global config for specific agents. Leave empty to use global.</p>
+                        <div id="agent-llm-configs" class="space-y-3">
+                            <p class="text-xs text-gray-500">Loading...</p>
+                        </div>
+                    </div>
+
+                    <!-- 运行时生效配置摘要 -->
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-bolt mr-2"></i>Effective Config (Runtime)</h3>
+                        <div id="effective-configs" class="space-y-2">
                             <p class="text-xs text-gray-500">Loading...</p>
                         </div>
                     </div>
@@ -1492,8 +1501,8 @@
                                 </span>
                             </div>
                             <div class="flex justify-between text-gray-300">
-                                <span>Version</span>
-                                <span class="text-gray-400">1.0.0</span>
+                                <span>Config Source</span>
+                                <span class="text-gray-400">configs/agents.json</span>
                             </div>
                         </div>
                     </div>
@@ -1506,67 +1515,178 @@
                 const res = await fetch(`${API_BASE}/config`);
                 const data = await res.json();
                 
-                // 填充全局配置输入框
-                const baseUrlInput = document.getElementById('config-base-url');
-                const modelInput = document.getElementById('config-model');
-                const apiKeyInput = document.getElementById('config-api-key');
+                // 填充全局 LLM 配置
+                const globalCfg = data.global_llm || {};
+                const globalProvider = globalCfg.provider || {};
+                const globalModel = globalCfg.default_model || (globalProvider.models?.[0]?.id) || '';
                 
-                if (baseUrlInput) baseUrlInput.value = data.llm?.baseUrl || '';
-                if (modelInput) modelInput.value = data.llm?.model || '';
-                if (apiKeyInput) apiKeyInput.value = data.llm?.apiKey || '';
+                const gUrl = document.getElementById('global-base-url');
+                const gModel = document.getElementById('global-model');
+                const gKey = document.getElementById('global-api-key');
+                if (gUrl) gUrl.value = globalProvider.baseUrl || '';
+                if (gModel) gModel.value = globalModel;
+                if (gKey) gKey.value = globalProvider.apiKey || '';
                 
-                // 渲染各 Agent 的 LLM 配置
-                const agentConfigsContainer = document.getElementById('agent-llm-configs');
-                if (agentConfigsContainer && data.agent_llm_configs) {
-                    const entries = Object.entries(data.agent_llm_configs);
+                // 渲染各 Agent 的 LLM 配置（可编辑）
+                const agentContainer = document.getElementById('agent-llm-configs');
+                if (agentContainer && data.agents) {
+                    const entries = Object.entries(data.agents);
                     if (entries.length === 0) {
-                        agentConfigsContainer.innerHTML = '<p class="text-xs text-gray-500">No agent-specific configs found</p>';
+                        agentContainer.innerHTML = '<p class="text-xs text-gray-500">No agents found</p>';
                     } else {
-                        agentConfigsContainer.innerHTML = entries.map(([name, cfg]) => {
-                            const globalUrl = data.llm?.baseUrl || '';
-                            const globalModel = data.llm?.model || '';
-                            const urlMismatch = cfg.baseUrl && cfg.baseUrl !== globalUrl;
-                            const modelMismatch = cfg.model && cfg.model !== globalModel;
-                            
+                        agentContainer.innerHTML = entries.map(([name, agent]) => {
+                            const prov = agent.provider || {};
+                            const hasOwn = !!prov.baseUrl;
                             return `
-                                <div class="bg-dark-900 rounded-lg p-3 border ${urlMismatch || modelMismatch ? 'border-amber-500/50' : 'border-dark-600'}">
+                                <div class="bg-dark-900 rounded-lg p-3 border ${hasOwn ? 'border-accent-500/40' : 'border-dark-600'}">
                                     <div class="flex items-center justify-between mb-2">
                                         <span class="text-sm font-medium text-white">${escapeHtml(name)}</span>
-                                        ${urlMismatch || modelMismatch ? 
-                                            '<span class="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Differs from global</span>' : 
-                                            '<span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded"><i class="fa-solid fa-check mr-1"></i>Synced</span>'
-                                        }
+                                        <span class="text-xs ${hasOwn ? 'bg-accent-500/20 text-accent-400' : 'bg-gray-600/30 text-gray-400'} px-2 py-0.5 rounded">
+                                            ${hasOwn ? '<i class="fa-solid fa-check mr-1"></i>Own config' : '<i class="fa-solid fa-globe mr-1"></i>Using global'}
+                                        </span>
                                     </div>
-                                    <div class="space-y-1 text-xs">
-                                        <div class="flex justify-between">
-                                            <span class="text-gray-400">Base URL</span>
-                                            <span class="${urlMismatch ? 'text-amber-300' : 'text-gray-300'} font-mono text-[11px] truncate max-w-[200px]" title="${escapeHtml(cfg.baseUrl)}">${escapeHtml(cfg.baseUrl || 'N/A')}</span>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                                        <div>
+                                            <label class="text-xs text-gray-500 block mb-1">Base URL</label>
+                                            <input type="text" id="agent-${name}-url" value="${escapeHtml(prov.baseUrl || '')}" 
+                                                   class="w-full bg-dark-800 border border-dark-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-accent-500"
+                                                   placeholder="(global)">
                                         </div>
-                                        <div class="flex justify-between">
-                                            <span class="text-gray-400">Model</span>
-                                            <span class="${modelMismatch ? 'text-amber-300' : 'text-gray-300'} font-mono">${escapeHtml(cfg.model || 'N/A')}</span>
+                                        <div>
+                                            <label class="text-xs text-gray-500 block mb-1">Model</label>
+                                            <input type="text" id="agent-${name}-model" value="${escapeHtml(agent.default_model || '')}" 
+                                                   class="w-full bg-dark-800 border border-dark-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-accent-500"
+                                                   placeholder="(global)">
                                         </div>
-                                        <div class="flex justify-between">
-                                            <span class="text-gray-400">API Key</span>
-                                            <span class="text-gray-300">${cfg.hasApiKey ? '<i class="fa-solid fa-lock text-emerald-400"></i> Set' : '<i class="fa-solid fa-unlock text-red-400"></i> Not set'}</span>
-                                        </div>
-                                        ${cfg.models && cfg.models.length > 0 ? `
-                                            <div class="flex justify-between">
-                                                <span class="text-gray-400">Available Models</span>
-                                                <span class="text-gray-300">${cfg.models.map(m => escapeHtml(m)).join(', ')}</span>
-                                            </div>
-                                        ` : ''}
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="text-xs text-gray-500 block mb-1">API Key</label>
+                                        <input type="password" id="agent-${name}-key" value="${escapeHtml(prov.apiKey || '')}" 
+                                               class="w-full bg-dark-800 border border-dark-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-accent-500"
+                                               placeholder="(global)">
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="saveAgentConfig('${name}')" class="bg-accent-500/80 hover:bg-accent-500 text-white px-3 py-1 rounded text-xs transition-colors">
+                                            <i class="fa-solid fa-save mr-1"></i>Save
+                                        </button>
+                                        <button onclick="clearAgentConfig('${name}')" class="bg-dark-600 hover:bg-dark-500 text-gray-300 px-3 py-1 rounded text-xs transition-colors">
+                                            <i class="fa-solid fa-eraser mr-1"></i>Use Global
+                                        </button>
                                     </div>
                                 </div>
                             `;
                         }).join('');
                     }
-                } else if (agentConfigsContainer) {
-                    agentConfigsContainer.innerHTML = '<p class="text-xs text-gray-500">No agents.json config file found</p>';
+                }
+                
+                // 运行时生效配置摘要
+                const effectiveContainer = document.getElementById('effective-configs');
+                if (effectiveContainer && data.agent_llm_configs) {
+                    const entries = Object.entries(data.agent_llm_configs);
+                    effectiveContainer.innerHTML = entries.map(([name, cfg]) => `
+                        <div class="bg-dark-900 rounded-lg p-2 border border-dark-600 flex items-center justify-between text-xs">
+                            <span class="text-white font-medium">${escapeHtml(name)}</span>
+                            <div class="flex items-center gap-3">
+                                <span class="text-gray-400 font-mono truncate max-w-[180px]" title="${escapeHtml(cfg.baseUrl)}">${escapeHtml(cfg.baseUrl || 'N/A')}</span>
+                                <span class="text-gray-300">${escapeHtml(cfg.model || 'N/A')}</span>
+                                <span class="text-xs ${cfg.source === 'agent' ? 'bg-accent-500/20 text-accent-400' : 'bg-gray-600/30 text-gray-400'} px-1.5 py-0.5 rounded">
+                                    ${cfg.source === 'agent' ? 'agent' : 'global'}
+                                </span>
+                            </div>
+                        </div>
+                    `).join('');
                 }
             } catch (e) {
                 console.error('Failed to load config:', e);
                 addLog('[Config] Failed to load current config', 'red');
+            }
+        }
+
+        async function saveGlobalConfig() {
+            const baseUrl = document.getElementById('global-base-url').value;
+            const model = document.getElementById('global-model').value;
+            const apiKey = document.getElementById('global-api-key').value;
+            
+            try {
+                await fetch(`${API_BASE}/config/global`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider: {
+                            baseUrl: baseUrl,
+                            apiKey: apiKey,
+                            models: [{ id: model, name: model }]
+                        },
+                        default_model: model
+                    })
+                });
+                addLog('[Config] Global LLM config saved', 'green');
+                loadCurrentConfig();
+            } catch (e) {
+                addLog('[Error] Failed to save global config', 'red');
+                console.error(e);
+            }
+        }
+
+        async function saveAgentConfig(agentName) {
+            const url = document.getElementById(`agent-${agentName}-url`).value;
+            const model = document.getElementById(`agent-${agentName}-model`).value;
+            const key = document.getElementById(`agent-${agentName}-key`).value;
+            
+            try {
+                const body = {};
+                if (url) {
+                    body.provider = { baseUrl: url, apiKey: key, models: [{ id: model || '', name: model || '' }] };
+                } else {
+                    body.provider = {};
+                }
+                if (model) body.default_model = model;
+                
+                await fetch(`${API_BASE}/config/agent/${agentName}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                addLog(`[Config] Agent '${agentName}' config saved`, 'green');
+                loadCurrentConfig();
+            } catch (e) {
+                addLog(`[Error] Failed to save agent config`, 'red');
+                console.error(e);
+            }
+        }
+
+        async function clearAgentConfig(agentName) {
+            try {
+                await fetch(`${API_BASE}/config/agent/${agentName}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider: {}, default_model: '' })
+                });
+                addLog(`[Config] Agent '${agentName}' cleared, using global`, 'green');
+                loadCurrentConfig();
+            } catch (e) {
+                addLog('[Error] Failed to clear agent config', 'red');
+                console.error(e);
+            }
+        }
+
+        async function testGlobalConfig() {
+            const baseUrl = document.getElementById('global-base-url').value;
+            const model = document.getElementById('global-model').value;
+            const apiKey = document.getElementById('global-api-key').value;
+            
+            try {
+                const res = await fetch(`${API_BASE}/config/test?agent_name=assistant`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey, base_url: baseUrl, model: model })
+                });
+                const data = await res.json();
+                addLog('[Config] Connection test: ' + (data.status || 'OK'), 'green');
+                alert('Connection successful!');
+            } catch (e) {
+                addLog('[Error] Connection test failed', 'red');
+                alert('Connection failed: ' + e.message);
             }
         }
 
@@ -1730,55 +1850,6 @@
             } catch (e) {
                 addLog('[Error] Failed to delete project', 'red');
                 console.error(e);
-            }
-        }
-
-        async function saveConfig() {
-            const baseUrl = document.getElementById('config-base-url').value;
-            const model = document.getElementById('config-model').value;
-            const apiKey = document.getElementById('config-api-key').value;
-            
-            try {
-                const res = await fetch(`${API_BASE}/config`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        api_key: apiKey,
-                        base_url: baseUrl,
-                        model: model,
-                        temperature: 0.7,
-                        max_tokens: 2000
-                    })
-                });
-                const data = await res.json();
-                addLog('[Config] Saved successfully', 'green');
-            } catch (e) {
-                addLog('[Error] Failed to save config', 'red');
-                console.error(e);
-            }
-        }
-
-        async function testConfig() {
-            const baseUrl = document.getElementById('config-base-url').value;
-            const model = document.getElementById('config-model').value;
-            const apiKey = document.getElementById('config-api-key').value;
-            
-            try {
-                const res = await fetch(`${API_BASE}/config/test`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        api_key: apiKey,
-                        base_url: baseUrl,
-                        model: model
-                    })
-                });
-                const data = await res.json();
-                addLog('[Config] Connection test successful', 'green');
-                alert('Connection successful!');
-            } catch (e) {
-                addLog('[Error] Connection test failed', 'red');
-                alert('Connection failed: ' + e.message);
             }
         }
 
