@@ -1483,13 +1483,17 @@
                             <input type="password" id="global-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
                                    placeholder="sk-xxxxx">
                         </div>
-                        <div class="mt-4 flex gap-2">
+                        <div class="mt-4 flex gap-2 items-center">
                             <button onclick="saveGlobalConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                                 <i class="fa-solid fa-save mr-2"></i>Save Global
                             </button>
                             <button onclick="testGlobalConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                                 <i class="fa-solid fa-plug mr-2"></i>Test
                             </button>
+                            <label class="flex items-center gap-2 text-xs text-gray-400 ml-auto cursor-pointer select-none">
+                                <input type="checkbox" id="global-sync-agents" checked class="rounded border-dark-500 bg-dark-800 text-accent-500 focus:ring-accent-500">
+                                <span>同步到全部 Agent</span>
+                            </label>
                         </div>
                     </div>
                     
@@ -1629,27 +1633,53 @@
             const baseUrl = document.getElementById('global-base-url').value;
             const model = document.getElementById('global-model').value;
             const apiKey = document.getElementById('global-api-key').value;
+            const syncAgents = document.getElementById('global-sync-agents')?.checked ?? false;
             
             if (!baseUrl) {
                 showToast('Base URL is required', 'error');
                 return;
             }
             
+            const providerPayload = {
+                provider: {
+                    baseUrl: baseUrl,
+                    apiKey: apiKey,
+                    models: [{ id: model, name: model }]
+                },
+                default_model: model
+            };
+            
             try {
+                // 1. Save global config
                 const res = await fetch(`${API_BASE}/config/global`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        provider: {
-                            baseUrl: baseUrl,
-                            apiKey: apiKey,
-                            models: [{ id: model, name: model }]
-                        },
-                        default_model: model
-                    })
+                    body: JSON.stringify(providerPayload)
                 });
                 if (!res.ok) throw new Error(await res.text());
-                showToast('Global LLM config saved', 'success');
+                
+                let msg = 'Global LLM config saved';
+                
+                // 2. Sync to all agents if checked
+                if (syncAgents && agents.length > 0) {
+                    let synced = 0;
+                    for (const agent of agents) {
+                        try {
+                            const r = await fetch(`${API_BASE}/config/agent/${agent.name}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(providerPayload)
+                            });
+                            if (r.ok) synced++;
+                        } catch (e) {
+                            console.error(`Failed to sync config to ${agent.name}:`, e);
+                        }
+                    }
+                    msg += `，已同步到 ${synced}/${agents.length} 个 Agent`;
+                    addLog(`[Config] Synced global config to ${synced} agents`, 'green');
+                }
+                
+                showToast(msg, 'success');
                 addLog('[Config] Global LLM config saved', 'green');
                 loadCurrentConfig();
             } catch (e) {
