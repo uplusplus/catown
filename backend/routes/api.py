@@ -93,6 +93,15 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         if '@' in user_message:
             mentioned_names = re.findall(r'@(\w+)', user_message)
 
+        # 3. 获取项目关联的 Agents（必须在多 Agent 检查之前）
+        assignments = db.query(AgentAssignment).filter(
+            AgentAssignment.project_id == project.id
+        ).all()
+        agent_ids = [a.agent_id for a in assignments]
+        agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+
+        logger.debug(f"[ Found {len(agents)} agents for project")
+
         # 多 Agent 协作：多个 @mention 或包含协作关键词
         if len(mentioned_names) > 1:
             logger.info(f"[Collab] Multi-agent pipeline triggered: {mentioned_names}")
@@ -108,15 +117,6 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
 
         target_agent_name = mentioned_names[0] if mentioned_names else None
         logger.debug(f"[ Target agent name: {target_agent_name}")
-
-        # 3. 获取项目关联的 Agents
-        assignments = db.query(AgentAssignment).filter(
-            AgentAssignment.project_id == project.id
-        ).all()
-        agent_ids = [a.agent_id for a in assignments]
-        agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-
-        logger.debug(f"[ Found {len(agents)} agents for project")
 
         # 4. 确定响应的 Agent
         target_agent = None
