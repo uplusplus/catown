@@ -14,7 +14,20 @@ logger = logging.getLogger("catown.filewatcher")
 class FileWatcher:
     """监听前端文件变更，触发浏览器热重载"""
 
-    def __init__(self, watch_dir: str = "frontend", interval: float = 1.0):
+    def __init__(self, watch_dir: str = None, interval: float = 1.0):
+        if watch_dir is None:
+            # 自动定位项目根目录下的 frontend/
+            # main.py 在 backend/ 下运行，所以先试 ../frontend
+            for candidate in [
+                Path("../frontend"),
+                Path("frontend"),
+                Path("../../frontend"),
+            ]:
+                if candidate.exists():
+                    watch_dir = str(candidate.resolve())
+                    break
+            else:
+                watch_dir = "../frontend"  # fallback
         self.watch_dir = Path(watch_dir)
         self.interval = interval
         self._mtimes: dict[str, float] = {}
