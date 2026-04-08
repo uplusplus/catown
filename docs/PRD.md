@@ -598,6 +598,7 @@ backend/
 | P1 — 前端 Dashboard | ✅ 已完成 | 2026-04-07 |
 | P2 — 增强 | ✅ 已完成 | 2026-04-07 |
 | P3 — 扩展 | ✅ 已完成 | 2026-04-07 |
+| Bug Fix — 测试修复 | ✅ 已完成 | 2026-04-08 |
 
 ### Phase 1: P0 — 数据模型与配置 ✅ 已完成
 
@@ -645,6 +646,21 @@ backend/
 |---|------|--------|------|
 | 10 | 多项目并行 | Pipeline 并发执行 | ✅ |
 | 11 | 测试覆盖 | Pipeline + 协作 + Dashboard 测试 | ✅ |
+
+### Phase 6: Bug Fix — 测试修复 ✅ 已完成
+
+**问题**: LLM 配置重构为 per-agent 模式后，28 个测试用例因 API 变更而失败。
+
+| # | 问题 | 修复 | 状态 | 提交 |
+|---|------|------|------|------|
+| 1 | `settings` 未导入 | `routes/api.py` 添加 `from config import settings` | ✅ | 1e02901 |
+| 2 | `LLMConfigModel` 缺失 | 新增 Pydantic 验证模型（api_key/url/temperature/max_tokens） | ✅ | 1e02901 |
+| 3 | `LLMClient()` 无参构造失败 | 支持环境变量回退（LLM_BASE_URL/LLM_API_KEY/LLM_MODEL） | ✅ | 1e02901 |
+| 4 | `set_llm_client()` 缺失 | 新增全局客户端注入函数（测试兼容） | ✅ | 1e02901 |
+| 5 | `GET /api/config` 缺少 `llm` 字段 | 响应增加 LLM 配置摘要 | ✅ | 1e02901 |
+| 6 | `POST /api/config` 端点缺失 | 新增配置验证端点 | ✅ | 1e02901 |
+
+**测试结果**: 216/216 PASSED (从 188 passed / 28 failed 提升)
 
 ---
 
