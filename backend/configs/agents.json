@@ -2,7 +2,7 @@
   "global_llm": {
     "provider": {
       "baseUrl": "https://openrouter.ai/api/v1",
-      "apiKey": "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",
+      "apiKey": "${OPENROUTER_API_KEY}",
       "auth": "api-key",
       "api": "openai-completions",
       "models": [
@@ -41,7 +41,7 @@
       "default_model": "openrouter/free",
       "provider": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "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",
+        "apiKey": "${OPENROUTER_API_KEY}",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -78,7 +78,7 @@
       "default_model": "openrouter/free",
       "provider": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "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",
+        "apiKey": "${OPENROUTER_API_KEY}",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -118,7 +118,7 @@
       "default_model": "openrouter/free",
       "provider": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "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",
+        "apiKey": "${OPENROUTER_API_KEY}",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -156,7 +156,7 @@
       "default_model": "openrouter/free",
       "provider": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "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",
+        "apiKey": "${OPENROUTER_API_KEY}",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
@@ -194,7 +194,7 @@
       "default_model": "openrouter/free",
       "provider": {
         "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "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",
+        "apiKey": "${OPENROUTER_API_KEY}",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [

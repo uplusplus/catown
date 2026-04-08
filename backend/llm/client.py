@@ -129,6 +129,14 @@ class LLMClient:
             yield {"type": "error", "error": str(e)}
 
 
+def _resolve_env_vars(value: str) -> str:
+    """解析字符串中的 ${ENV_VAR} 占位符"""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        env_name = value[2:-1]
+        return os.getenv(env_name, value)
+    return value
+
+
 def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
     """
     从 agents.json 加载指定 Agent 的 provider 配置
@@ -152,7 +160,7 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
             provider = agent_data.get("provider", {})
             if provider:
                 base_url = provider.get("baseUrl", "")
-                api_key = provider.get("apiKey", "")
+                api_key = _resolve_env_vars(provider.get("apiKey", ""))
                 model = agent_data.get("default_model", "")
                 if not model:
                     models = provider.get("models", [])
@@ -184,7 +192,7 @@ def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
     global_cfg = data.get("global_llm", {})
     provider = global_cfg.get("provider", {})
     base_url = provider.get("baseUrl", "")
-    api_key = provider.get("apiKey", "")
+    api_key = _resolve_env_vars(provider.get("apiKey", ""))
     model = global_cfg.get("default_model", "")
     if not model:
         models = provider.get("models", [])
@@ -306,7 +314,7 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
         for agent_name, agent_data in data.get("agents", {}).items():
             provider = agent_data.get("provider", {})
             base_url = provider.get("baseUrl", "")
-            api_key = provider.get("apiKey", "")
+            api_key = _resolve_env_vars(provider.get("apiKey", ""))
 
             model = agent_data.get("default_model", "")
             if not model:

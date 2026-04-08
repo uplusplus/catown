@@ -83,3 +83,4 @@ dmypy.json
 # Pyre
 .pyre/
 backend/data/
+.env
