@@ -972,7 +972,14 @@
         }
 
         function toggleLogs() {
-            document.getElementById('side-panel').classList.toggle('hidden');
+            const panel = document.getElementById('side-panel');
+            if (panel.classList.contains('hidden') || (!panel.classList.contains('flex') && !panel.classList.contains('lg:flex'))) {
+                panel.classList.remove('hidden');
+                panel.classList.add('flex');
+            } else {
+                panel.classList.add('hidden');
+                panel.classList.remove('flex');
+            }
         }
 
         function switchTab(tab) {
@@ -1791,7 +1798,7 @@
                             <div class="flex flex-wrap gap-2">
                                 ${agents.filter(a => a.is_active).map(a => `
                                     <label class="flex items-center gap-1 text-xs bg-dark-700 text-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-dark-600 transition-colors">
-                                        <input type="checkbox" name="project-agent" value="${a.name}" class="accent-accent-500" ${a.name === 'assistant' ? 'checked' : ''}>
+                                        <input type="checkbox" name="project-agent" value="${a.name}" class="accent-accent-500" ${a.name === 'analyst' ? 'checked' : ''}>
                                         ${escapeHtml(a.name)}
                                     </label>
                                 `).join('')}
@@ -1822,7 +1829,7 @@
             }
             
             if (agentNames.length === 0) {
-                agentNames.push('assistant');
+                agentNames.push('analyst');
             }
             
             try {

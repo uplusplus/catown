@@ -624,7 +624,7 @@ class AgentInfo(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    agent_names: List[str] = ["assistant"]
+    agent_names: List[str] = ["analyst"]
 
 
 class ProjectInfo(BaseModel):
