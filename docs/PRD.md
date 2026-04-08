@@ -568,7 +568,7 @@ backend/
 ├── routes/
 │   └── pipeline.py        ⏳  Pipeline API 路由
 ├── configs/
-│   ├── agents.json        ✅  5 个角色，独立 LLM 配置
+│   ├── agents.json        ✅  6 个角色，独立 LLM 配置
 │   └── pipelines.json     ✅  默认 5 阶段流水线模板
 └── models/
     └── database.py        ✅  新增 5 张 Pipeline 表
@@ -591,134 +591,20 @@ backend/
 
 ### 项目进度
 
-| 阶段 | 状态 | 完成日期 |
-|------|------|---------|
-| P0 — 数据模型与配置 | ✅ 已完成 | 2026-04-07 |
-| P1 — 引擎与 API | ✅ 已完成 | 2026-04-07 |
-| P1 — 前端 Dashboard | ✅ 已完成 | 2026-04-07 |
-| P2 — 增强 | ✅ 已完成 | 2026-04-07 |
-| P3 — 扩展 | ✅ 已完成 | 2026-04-07 |
-| Bug Fix — 测试修复 | ✅ 已完成 | 2026-04-08 |
-| 补全 — 协作+搜索 | ✅ 已完成 | 2026-04-08 |
-| 两级 LLM 配置 | ✅ 已完成 | 2026-04-08 |
-| 测试修复 (agent 名称) | ✅ 已完成 | 2026-04-08 |
-| Bug Fix — 配置路径修复 | ✅ 已完成 | 2026-04-08 |
+所有阶段已完成，233/233 单元测试 + 24/24 集成测试 100% 通过。
 
-### Phase 1: P0 — 数据模型与配置 ✅ 已完成
+| 阶段 | 状态 | 日期 |
+|------|------|------|
+| P0 — 数据模型与配置 | ✅ | 2026-04-07 |
+| P1 — 引擎与 API | ✅ | 2026-04-07 |
+| P1 — 前端 Dashboard | ✅ | 2026-04-07 |
+| P2 — 增强（Git 集成 + 产出物查看器） | ✅ | 2026-04-07 |
+| P3 — 扩展（多项目并行 + 测试覆盖） | ✅ | 2026-04-07 |
+| 测试修复 + Agent 协作 + 两级 LLM 配置 | ✅ | 2026-04-08 |
+| Agent 配置路径修复 | ✅ | 2026-04-08 |
+| 新增 assistant 助理角色 | ✅ | 2026-04-08 |
 
-| # | 任务 | 交付物 | 状态 | 提交 |
-|---|------|--------|------|------|
-| 1 | Pipeline 数据模型 | `models/database.py` 新增 5 张表 | ✅ | a7d394b |
-| 2 | Pipeline 配置 + 加载器 | `configs/pipelines.json` + `pipeline/config.py` | ✅ | a7d394b |
-| 3 | Agent 角色重写（独立 LLM） | `configs/agents.json` 5 个角色 | ✅ | a7d394b |
-
-**交付物详情：**
-
-- `pipelines` 表 — Pipeline 定义，关联项目
-- `pipeline_runs` 表 — 运行实例，支持重跑
-- `pipeline_stages` 表 — 阶段记录（状态、Agent、Gate、上下文、重试次数）
-- `stage_artifacts` 表 — 产出物（文件路径、摘要）
-- `pipeline_messages` 表 — Agent 间协作消息
-- `configs/pipelines.json` — 默认 5 阶段流水线模板（含打回配置）
-- `pipeline/config.py` — 配置加载器（阶段查询、打回目标查询）
-- `configs/agents.json` — 5 个 Pipeline 角色，每个独立 provider + models 配置
-
-### Phase 2: P1 — 引擎与 API
-
-| # | 任务 | 交付物 | 状态 |
-|---|------|--------|------|
-| 4 | Pipeline 引擎 | `pipeline/engine.py` 阶段流转 + Gate + 错误恢复 | ✅ |
-| 5 | Pipeline API | `routes/pipeline.py` REST 接口 | ✅ |
-| 6 | Agent 间消息 | 消息持久化 + WebSocket 广播 | ✅ |
-
-### Phase 3: P1 — 前端
-
-| # | 任务 | 交付物 | 状态 |
-|---|------|--------|------|
-| 7 | Pipeline Dashboard | `frontend/index.html` 新增 Pipeline 页面 | ✅ |
-
-### Phase 4: P2 — 增强
-
-| # | 任务 | 交付物 | 状态 |
-|---|------|--------|------|
-| 8 | Git 集成 | 阶段完成自动 commit | ✅ |
-| 9 | 产出物查看器 | Web UI 查看/编辑产出文件 | ✅ |
-
-### Phase 5: P3 — 扩展
-
-| # | 任务 | 交付物 | 状态 |
-|---|------|--------|------|
-| 10 | 多项目并行 | Pipeline 并发执行 | ✅ |
-| 11 | 测试覆盖 | Pipeline + 协作 + Dashboard 测试 | ✅ |
-
-### Phase 6: Bug Fix — 测试修复 ✅ 已完成
-
-**问题**: LLM 配置重构为 per-agent 模式后，28 个测试用例因 API 变更而失败。
-
-| # | 问题 | 修复 | 状态 | 提交 |
-|---|------|------|------|------|
-| 1 | `settings` 未导入 | `routes/api.py` 添加 `from config import settings` | ✅ | 1e02901 |
-| 2 | `LLMConfigModel` 缺失 | 新增 Pydantic 验证模型（api_key/url/temperature/max_tokens） | ✅ | 1e02901 |
-| 3 | `LLMClient()` 无参构造失败 | 支持环境变量回退（LLM_BASE_URL/LLM_API_KEY/LLM_MODEL） | ✅ | 1e02901 |
-| 4 | `set_llm_client()` 缺失 | 新增全局客户端注入函数（测试兼容） | ✅ | 1e02901 |
-| 5 | `GET /api/config` 缺少 `llm` 字段 | 响应增加 LLM 配置摘要 | ✅ | 1e02901 |
-| 6 | `POST /api/config` 端点缺失 | 新增配置验证端点 | ✅ | 1e02901 |
-
-**测试结果**: 216/216 PASSED (从 188 passed / 28 failed 提升)
-
-### Phase 7: 补全 — Agent 协作 + Web 搜索 ✅ 已完成
-
-**问题**: 代码中存在 3 处未实现的功能（TODO / placeholder）。
-
-| # | 问题 | 修复 | 状态 | 提交 |
-|---|------|------|------|------|
-| 1 | `chatrooms/manager.py` process_user_message 无协作逻辑 | 实现完整 Agent 路由：@mention 解析、多 Agent 协作、LLM 调用 | ✅ | |
-| 2 | `pipeline/engine.py` web_search placeholder | 接入 DuckDuckGo Instant Answer API | ✅ | |
-| 3 | `pipeline/engine.py` send_message placeholder | 注释澄清（实际已有 _handle_send_message 实现） | ✅ | |
-
-**测试结果**: 216/216 PASSED
-
-### Phase 8: 两级 LLM 配置 ✅ 已完成
-
-**需求**: Agent 级 LLM 配置 + 全局 fallback，两级都要有 Web UI 配置界面。
-
-| # | 改动 | 文件 | 状态 |
-|---|------|------|------|
-| 1 | agents.json 新增 `global_llm` 段 | `configs/agents.json` | ✅ |
-| 2 | LLM client 两级查找：Agent → global_llm → 环境变量 | `llm/client.py` | ✅ |
-| 3 | API: `PUT /config/global` + `PUT /config/agent/{name}` | `routes/api.py` | ✅ |
-| 4 | API: `GET /config` 返回 `source: agent|global` | `routes/api.py` | ✅ |
-| 5 | 前端: 全局配置编辑 + 保存 + 测试连接 | `frontend/index.html` | ✅ |
-| 6 | 前端: 每个 Agent 独立编辑 + "Use Global" 一键清除 | `frontend/index.html` | ✅ |
-| 7 | 前端: 运行时生效摘要（标注来源 agent/global） | `frontend/index.html` | ✅ |
-| 8 | 单元测试: LLM 两级 fallback 逻辑 (8 cases) | `tests/test_llm_two_level_config.py` | ✅ |
-| 9 | API 测试: config 端点 CRUD + roundtrip (7 cases) | `tests/test_llm_two_level_config.py` | ✅ |
-| 10 | E2E 测试: Config UI 交互 (5 cases) | `tests/test_e2e_playwright.py` | ✅ |
-
-**配置优先级**: Agent 自身 provider → global_llm provider → 环境变量
-
-**测试结果**: 233/233 PASSED (新增 17 个用例)
-
-### Phase 9: 测试修复 (agent 名称映射) ✅ 已完成
-
-**问题**: agents.json 重构为 Pipeline 角色（analyst/architect/developer/tester/release）后，`test_api_routes.py` 中 10 个测试仍引用旧角色名（assistant/coder/reviewer/researcher），导致全部失败。
-
-| # | 问题 | 修复 | 状态 | 提交 |
-|---|------|------|------|------|
-| 1 | test_list_agents 断言旧角色名 | 更新为 analyst/architect/developer/tester | ✅ | 7abdb5a |
-| 2 | 项目创建测试引用旧 agent_names | 全部替换为 Pipeline 角色名 | ✅ | 7abdb5a |
-
-**测试结果**: 233/233 PASSED
-
-### Phase 10: Bug Fix — Agent 配置路径修复 ✅ 已完成
-
-**问题**: `registry.py` 中 `get_builtin_agent_configs()` 使用相对路径 `"configs/agents.json"` 查找配置文件，当 CWD 不是 backend 目录时（如从项目根目录运行 pytest），找不到配置文件，回退到硬编码的旧默认 agent 名（assistant/coder/reviewer/researcher），导致 10 个测试失败。
-
-| # | 问题 | 修复 | 状态 | 提交 |
-|---|------|------|------|------|
-| 1 | `configs/agents.json` 相对路径解析失败 | 改为基于 `__file__` 解析 backend 目录绝对路径 | ✅ | — |
-
-**测试结果**: 233/233 PASSED (修复后从 223 passed / 10 failed 恢复)
+详细变更记录见 Git history。
 
 ---
 
@@ -754,7 +640,7 @@ backend/
 | `config.py` | 已去掉 LLM 配置，仅保留基础设施 | — | ✅ 完成 |
 | `llm/client.py` | 已改为 per-agent 客户端工厂 | — | ✅ 完成 |
 | `models/database.py` | 新增 5 张 Pipeline 表 | 中 | ✅ 完成 |
-| `configs/agents.json` | 改为 5 个 Pipeline 角色 | — | ✅ 完成 |
+| `configs/agents.json` | 改为 6 个 Agent 角色（5 个 Pipeline + 1 个助理） | — | ✅ 完成 |
 | `configs/pipelines.json` | 新增，默认 5 阶段模板 | — | ✅ 完成 |
 | `pipeline/config.py` | 新增，配置加载器 | — | ✅ 完成 |
 | `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ✅ 完成 |
@@ -767,9 +653,7 @@ backend/
 
 ### B. 参考文档
 
-- [PRD_ANALYSIS.md](./PRD_ANALYSIS.md) — 详细分析与讨论记录
-- [TECHNICAL_FEASIBILITY.md](./TECHNICAL_FEASIBILITY.md) — 技术可行性分析
-- [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md) — 现有功能总结
+- Git history — 详细变更记录
 
 ---
 
@@ -841,3 +725,65 @@ backend/
 #### 验证结论
 
 系统所有核心功能已实现完成，单元测试和集成测试 100% 通过。回归测试中的失败均为测试环境限制（未配置 LLM、未启动前端），非代码质量问题。
+
+---
+
+## 16. 快速启动
+
+### 16.1 安装依赖
+
+```bash
+cd backend && pip install -r requirements.txt
+```
+
+### 16.2 配置 LLM
+
+编辑 `backend/configs/agents.json`，在 `global_llm` 段设置 LLM 连接信息：
+
+```json
+{
+  "global_llm": {
+    "provider": {
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-your-api-key",
+      "models": [{ "id": "gpt-4", ... }]
+    },
+    "default_model": "gpt-4"
+  }
+}
+```
+
+也可使用 `.env` 中的环境变量回退：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
+
+### 16.3 启动
+
+```bash
+cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+- **Web 界面**: http://localhost:8000
+- **API 文档**: http://localhost:8000/docs
+
+---
+
+## 17. 常见问题
+
+### Q: Agent 没有回复
+
+检查 `agents.json` 中的 LLM 配置是否正确，API Key 是否有效。可通过 `GET /api/config` 确认当前配置。
+
+### Q: 测试失败，提示 agent 名称找不到
+
+确认 `agents.json` 中包含 6 个角色：`analyst`、`architect`、`developer`、`tester`、`release`、`assistant`。
+
+### Q: Pipeline 启动后卡在某个阶段
+
+查看后端日志，可能是 LLM 超时或工具执行失败。手动审批 Gate 或通过 API 打回重做。
+
+### Q: Docker 部署
+
+```bash
+docker-compose up -d
+```
+
+需配置环境变量或挂载 `configs/agents.json`。
