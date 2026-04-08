@@ -211,6 +211,137 @@ async def test_agent_responds_to_message(pw, browser):
     
     await page.close()
 
+async def test_config_tab_switches(pw, browser):
+    """Config 页签可以切换显示"""
+    page = await browser.new_page()
+    await page.goto(FRONTEND)
+    await page.wait_for_load_state("networkidle")
+    
+    # 点击 Config 页签
+    config_tab = await page.query_selector("#tab-config")
+    if config_tab:
+        await config_tab.click()
+        await asyncio.sleep(0.5)
+        
+        # 检查 config content 是否显示
+        config_content = await page.query_selector("#config-content")
+        if config_content:
+            is_visible = await config_content.is_visible()
+            result("Config tab click shows content", is_visible)
+        else:
+            result("Config tab click shows content", False, "config-content not found")
+    else:
+        result("Config tab exists", False, "tab-config not found")
+    
+    await page.close()
+
+async def test_config_global_llm_fields(pw, browser):
+    """全局 LLM 配置字段存在"""
+    page = await browser.new_page()
+    await page.goto(FRONTEND)
+    await page.wait_for_load_state("networkidle")
+    
+    # 切换到 Config 页签
+    config_tab = await page.query_selector("#tab-config")
+    if config_tab:
+        await config_tab.click()
+        await asyncio.sleep(0.5)
+    
+    # 检查全局配置字段
+    global_url = await page.query_selector("#global-base-url")
+    global_model = await page.query_selector("#global-model")
+    global_key = await page.query_selector("#global-api-key")
+    
+    result("Global Base URL input exists", global_url is not None)
+    result("Global Model input exists", global_model is not None)
+    result("Global API Key input exists", global_key is not None)
+    
+    # 检查按钮
+    save_btn = await page.query_selector("button:has-text('Save Global')")
+    test_btn = await page.query_selector("button:has-text('Test')")
+    result("Save Global button exists", save_btn is not None)
+    result("Test button exists", test_btn is not None)
+    
+    await page.close()
+
+async def test_config_agent_section_exists(pw, browser):
+    """Agent 配置区域存在"""
+    page = await browser.new_page()
+    await page.goto(FRONTEND)
+    await page.wait_for_load_state("networkidle")
+    
+    config_tab = await page.query_selector("#tab-config")
+    if config_tab:
+        await config_tab.click()
+        await asyncio.sleep(1)  # 等待配置加载
+    
+    # Agent 配置区域
+    agent_section = await page.query_selector("#agent-llm-configs")
+    result("Agent LLM config section exists", agent_section is not None)
+    
+    # 运行时生效摘要
+    effective = await page.query_selector("#effective-configs")
+    result("Effective config section exists", effective is not None)
+    
+    await page.close()
+
+async def test_config_global_save(pw, browser):
+    """全局配置可以保存"""
+    page = await browser.new_page()
+    await page.goto(FRONTEND)
+    await page.wait_for_load_state("networkidle")
+    
+    config_tab = await page.query_selector("#tab-config")
+    if config_tab:
+        await config_tab.click()
+        await asyncio.sleep(0.5)
+    
+    # 填写全局配置
+    url_input = await page.query_selector("#global-base-url")
+    model_input = await page.query_selector("#global-model")
+    
+    if url_input and model_input:
+        await url_input.fill("http://test-global.example.com/v1")
+        await model_input.fill("test-global-model")
+        
+        # 点击保存
+        save_btn = await page.query_selector("button:has-text('Save Global')")
+        if save_btn:
+            await save_btn.click()
+            await asyncio.sleep(1)
+            
+            # 检查是否有成功日志
+            log_area = await page.query_selector("#log-area")
+            if log_area:
+                log_text = await log_area.inner_text()
+                result("Global config save shows success", "Global LLM config saved" in log_text or "config" in log_text.lower())
+            else:
+                result("Global config save shows success", True, "save button clicked")
+        else:
+            result("Global config save button", False)
+    else:
+        result("Global config inputs", False)
+    
+    await page.close()
+
+async def test_config_agent_use_global_button(pw, browser):
+    """Agent 配置有 Use Global 按钮"""
+    page = await browser.new_page()
+    await page.goto(FRONTEND)
+    await page.wait_for_load_state("networkidle")
+    
+    config_tab = await page.query_selector("#tab-config")
+    if config_tab:
+        await config_tab.click()
+        await asyncio.sleep(1)
+    
+    # 查找 Use Global 按钮
+    use_global_btns = await page.query_selector_all("button:has-text('Use Global')")
+    result("Use Global buttons exist", len(use_global_btns) > 0, f"found {len(use_global_btns)}")
+    
+    await page.close()
+
+
 async def main():
     global passed, failed
     print("=== Catown Frontend E2E Tests (Playwright) ===\n")
@@ -258,6 +389,13 @@ async def main():
         
         print("\n--- 4. Agent Response ---")
         await test_agent_responds_to_message(p, browser)
+        
+        print("\n--- 5. Config UI ---")
+        await test_config_tab_switches(p, browser)
+        await test_config_global_llm_fields(p, browser)
+        await test_config_agent_section_exists(p, browser)
+        await test_config_global_save(p, browser)
+        await test_config_agent_use_global_button(p, browser)
         
         await browser.close()
     

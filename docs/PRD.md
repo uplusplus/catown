@@ -688,10 +688,13 @@ backend/
 | 5 | 前端: 全局配置编辑 + 保存 + 测试连接 | `frontend/index.html` | ✅ |
 | 6 | 前端: 每个 Agent 独立编辑 + "Use Global" 一键清除 | `frontend/index.html` | ✅ |
 | 7 | 前端: 运行时生效摘要（标注来源 agent/global） | `frontend/index.html` | ✅ |
+| 8 | 单元测试: LLM 两级 fallback 逻辑 (8 cases) | `tests/test_llm_two_level_config.py` | ✅ |
+| 9 | API 测试: config 端点 CRUD + roundtrip (7 cases) | `tests/test_llm_two_level_config.py` | ✅ |
+| 10 | E2E 测试: Config UI 交互 (5 cases) | `tests/test_e2e_playwright.py` | ✅ |
 
 **配置优先级**: Agent 自身 provider → global_llm provider → 环境变量
 
-**测试结果**: 216/216 PASSED
+**测试结果**: 233/233 PASSED (新增 17 个用例)
 
 ---
 
