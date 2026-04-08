@@ -107,7 +107,7 @@ class TestAgentEndpoints:
         agents = r.json()
         assert len(agents) >= 4
         names = [a["name"] for a in agents]
-        for expected in ["assistant", "coder", "reviewer", "researcher"]:
+        for expected in ["analyst", "developer", "tester", "architect"]:
             assert expected in names, f"Missing agent: {expected}"
 
     def test_get_agent_by_id(self, client):
@@ -181,7 +181,7 @@ class TestProjectEndpoints:
 
     def test_create_project(self, client):
         r = client.post("/api/projects", json={
-            "name": "Test Project", "description": "A test", "agent_names": ["assistant"]
+            "name": "Test Project", "description": "A test", "agent_names": ["analyst"]
         })
         assert r.status_code == 200
         data = r.json()
@@ -197,14 +197,14 @@ class TestProjectEndpoints:
 
     def test_create_project_multiple_agents(self, client):
         r = client.post("/api/projects", json={
-            "name": "Multi", "agent_names": ["assistant", "coder", "reviewer"]
+            "name": "Multi", "agent_names": ["analyst", "developer", "tester"]
         })
         assert r.status_code == 200
         assert len(r.json()["agents"]) == 3
 
     def test_get_project(self, client):
         r = client.post("/api/projects", json={
-            "name": "GetTest", "agent_names": ["assistant"]
+            "name": "GetTest", "agent_names": ["analyst"]
         })
         pid = r.json()["id"]
         r2 = client.get(f"/api/projects/{pid}")
@@ -217,7 +217,7 @@ class TestProjectEndpoints:
 
     def test_delete_project(self, client):
         r = client.post("/api/projects", json={
-            "name": "DelTest", "agent_names": ["assistant"]
+            "name": "DelTest", "agent_names": ["analyst"]
         })
         pid = r.json()["id"]
         r2 = client.delete(f"/api/projects/{pid}")
@@ -231,7 +231,7 @@ class TestProjectEndpoints:
 class TestChatEndpoints:
     def test_send_message(self, client):
         r = client.post("/api/projects", json={
-            "name": "ChatTest", "agent_names": ["assistant"]
+            "name": "ChatTest", "agent_names": ["analyst"]
         })
         cid = r.json()["chatroom_id"]
         r2 = client.post(f"/api/chatrooms/{cid}/messages", json={"content": "Hello!"})
@@ -239,7 +239,7 @@ class TestChatEndpoints:
 
     def test_get_messages(self, client):
         r = client.post("/api/projects", json={
-            "name": "GetMsg", "agent_names": ["assistant"]
+            "name": "GetMsg", "agent_names": ["analyst"]
         })
         cid = r.json()["chatroom_id"]
         client.post(f"/api/chatrooms/{cid}/messages", json={"content": "msg1"})
@@ -254,7 +254,7 @@ class TestChatEndpoints:
 class TestSSEStreaming:
     def test_stream_returns_sse(self, client):
         r = client.post("/api/projects", json={
-            "name": "SSETest", "agent_names": ["assistant"]
+            "name": "SSETest", "agent_names": ["analyst"]
         })
         cid = r.json()["chatroom_id"]
         r2 = client.post(
@@ -267,7 +267,7 @@ class TestSSEStreaming:
 
     def test_stream_has_data_events(self, client):
         r = client.post("/api/projects", json={
-            "name": "SSE2", "agent_names": ["assistant"]
+            "name": "SSE2", "agent_names": ["analyst"]
         })
         cid = r.json()["chatroom_id"]
         r2 = client.post(f"/api/chatrooms/{cid}/messages/stream", json={"content": "test"})
@@ -302,7 +302,7 @@ class TestMultiAgentPipeline:
     def test_multi_mention_stream(self, client):
         r = client.post("/api/projects", json={
             "name": "PipelineTest",
-            "agent_names": ["assistant", "coder"]
+            "agent_names": ["analyst", "developer"]
         })
         cid = r.json()["chatroom_id"]
         r2 = client.post(
