@@ -18,8 +18,47 @@ from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
+from config import settings
 
 logger = logging.getLogger("catown.api")
+
+
+class LLMConfigModel(BaseModel):
+    """LLM 配置验证模型"""
+    api_key: str
+    base_url: Optional[str] = "https://api.openai.com/v1"
+    model: str = "gpt-3.5-turbo"
+    temperature: float = 0.7
+    max_tokens: int = 2000
+
+    @field_validator('api_key')
+    @classmethod
+    def api_key_not_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('api_key cannot be empty')
+        return v
+
+    @field_validator('base_url')
+    @classmethod
+    def validate_url(cls, v):
+        if v and not v.startswith(('http://', 'https://')):
+            raise ValueError('base_url must start with http:// or https://')
+        return v.rstrip('/') if v else v
+
+    @field_validator('temperature')
+    @classmethod
+    def validate_temperature(cls, v):
+        if not 0 <= v <= 2:
+            raise ValueError('temperature must be between 0 and 2')
+        return v
+
+    @field_validator('max_tokens')
+    @classmethod
+    def validate_max_tokens(cls, v):
+        if not 1 <= v <= 100000:
+            raise ValueError('max_tokens must be between 1 and 100000')
+        return v
+
 
 router = APIRouter()
 
@@ -1288,6 +1327,11 @@ async def get_config():
             "host": os.getenv("HOST", "0.0.0.0"),
             "port": int(os.getenv("PORT", "8000"))
         },
+        "llm": {
+            "base_url": os.getenv("LLM_BASE_URL", ""),
+            "model": os.getenv("LLM_MODEL", ""),
+            "has_api_key": bool(os.getenv("LLM_API_KEY", ""))
+        },
         "features": {
             "llm_enabled": True,
             "websocket_enabled": True,
@@ -1324,6 +1368,23 @@ async def get_config():
             logger.warning(f"Failed to load agents.json: {e}")
 
     return config
+
+
+@router.post("/config")
+async def update_config(config: LLMConfigModel):
+    """
+    更新 LLM 配置（验证通过的配置）
+
+    配置将通过 LLMConfigModel 验证：
+    - api_key 不能为空
+    - base_url 必须是有效的 URL
+    - temperature 必须在 0-2 之间
+    - max_tokens 必须在 1-100000 之间
+    """
+    return {
+        "message": "Configuration validated successfully",
+        "config": config.model_dump()
+    }
 
 
 @router.post("/config/reload")

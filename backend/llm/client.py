@@ -25,7 +25,12 @@ class LLMClient:
     每个 Agent 可以有独立的 provider 配置（baseUrl, apiKey, model）。
     """
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str = None, api_key: str = None, model: str = None):
+        if base_url is None or api_key is None or model is None:
+            # 从环境变量获取默认配置（向后兼容）
+            base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+            api_key = api_key or os.getenv("LLM_API_KEY", "")
+            model = model or os.getenv("LLM_MODEL", "gpt-3.5-turbo")
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.base_url = base_url
@@ -231,14 +236,38 @@ def get_default_llm_client() -> LLMClient:
     )
 
 
+# 全局默认客户端（用于 set_llm_client 测试兼容）
+_default_client: Optional[LLMClient] = None
+
+
+def set_llm_client(client: Optional[LLMClient]):
+    """
+    设置全局默认 LLM 客户端（测试用）
+
+    Args:
+        client: 新的客户端实例，None 表示重置
+    """
+    global _default_client
+    _default_client = client
+
+
 def get_llm_client() -> LLMClient:
     """
     获取默认 LLM 客户端（向后兼容入口）
 
+    支持 set_llm_client 设置的全局客户端。
     优先返回已缓存的客户端，否则从 agents.json 第一个 Agent 加载。
     新代码建议使用 get_llm_client_for_agent(agent_name)。
     """
-    return get_default_llm_client()
+    global _default_client
+    if _default_client is not None:
+        return _default_client
+    try:
+        _default_client = get_default_llm_client()
+    except RuntimeError:
+        # fallback: 用环境变量创建
+        _default_client = LLMClient()
+    return _default_client
 
 
 def _get_first_provider() -> Optional[Dict[str, str]]:
