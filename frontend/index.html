@@ -1607,8 +1607,13 @@
             const model = document.getElementById('global-model').value;
             const apiKey = document.getElementById('global-api-key').value;
             
+            if (!baseUrl) {
+                showToast('Base URL is required', 'error');
+                return;
+            }
+            
             try {
-                await fetch(`${API_BASE}/config/global`, {
+                const res = await fetch(`${API_BASE}/config/global`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1620,9 +1625,12 @@
                         default_model: model
                     })
                 });
+                if (!res.ok) throw new Error(await res.text());
+                showToast('Global LLM config saved', 'success');
                 addLog('[Config] Global LLM config saved', 'green');
                 loadCurrentConfig();
             } catch (e) {
+                showToast('Failed to save: ' + e.message, 'error');
                 addLog('[Error] Failed to save global config', 'red');
                 console.error(e);
             }
@@ -1642,14 +1650,17 @@
                 }
                 if (model) body.default_model = model;
                 
-                await fetch(`${API_BASE}/config/agent/${agentName}`, {
+                const res = await fetch(`${API_BASE}/config/agent/${agentName}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
                 });
+                if (!res.ok) throw new Error(await res.text());
+                showToast(`Agent '${agentName}' config saved`, 'success');
                 addLog(`[Config] Agent '${agentName}' config saved`, 'green');
                 loadCurrentConfig();
             } catch (e) {
+                showToast('Failed to save agent config: ' + e.message, 'error');
                 addLog(`[Error] Failed to save agent config`, 'red');
                 console.error(e);
             }
@@ -1657,14 +1668,17 @@
 
         async function clearAgentConfig(agentName) {
             try {
-                await fetch(`${API_BASE}/config/agent/${agentName}`, {
+                const res = await fetch(`${API_BASE}/config/agent/${agentName}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ provider: {}, default_model: '' })
                 });
+                if (!res.ok) throw new Error(await res.text());
+                showToast(`Agent '${agentName}' now using global config`, 'success');
                 addLog(`[Config] Agent '${agentName}' cleared, using global`, 'green');
                 loadCurrentConfig();
             } catch (e) {
+                showToast('Failed to clear config: ' + e.message, 'error');
                 addLog('[Error] Failed to clear agent config', 'red');
                 console.error(e);
             }
@@ -1675,6 +1689,8 @@
             const model = document.getElementById('global-model').value;
             const apiKey = document.getElementById('global-api-key').value;
             
+            showToast('Testing connection...', 'info');
+            
             try {
                 const res = await fetch(`${API_BASE}/config/test?agent_name=assistant`, {
                     method: 'POST',
@@ -1682,11 +1698,11 @@
                     body: JSON.stringify({ api_key: apiKey, base_url: baseUrl, model: model })
                 });
                 const data = await res.json();
+                showToast('Connection successful!', 'success');
                 addLog('[Config] Connection test: ' + (data.status || 'OK'), 'green');
-                alert('Connection successful!');
             } catch (e) {
+                showToast('Connection failed: ' + e.message, 'error');
                 addLog('[Error] Connection test failed', 'red');
-                alert('Connection failed: ' + e.message);
             }
         }
 
@@ -1864,6 +1880,32 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function showToast(message, type = 'success') {
+            const colors = {
+                success: 'bg-emerald-600',
+                error: 'bg-red-600',
+                info: 'bg-blue-600',
+                warning: 'bg-amber-600'
+            };
+            const icons = {
+                success: 'fa-check-circle',
+                error: 'fa-times-circle',
+                info: 'fa-info-circle',
+                warning: 'fa-exclamation-circle'
+            };
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 z-50 ${colors[type] || colors.info} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 text-sm transition-all duration-300 opacity-0 translate-y-[-10px]`;
+            toast.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i><span>${escapeHtml(message)}</span>`;
+            document.body.appendChild(toast);
+            requestAnimationFrame(() => {
+                toast.classList.remove('opacity-0', 'translate-y-[-10px]');
+            });
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-[-10px]');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
         }
 
         function formatTime(dateStr) {
