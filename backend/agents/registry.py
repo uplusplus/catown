@@ -59,8 +59,9 @@ registry = AgentRegistry()
 def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
     """获取内置 Agent 配置"""
     
-    # 优先从配置文件加载
-    config_file = os.getenv("AGENT_CONFIG_FILE", "configs/agents.json")
+    # 优先从配置文件加载（相对于 backend 目录）
+    _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_file = os.getenv("AGENT_CONFIG_FILE", os.path.join(_backend_dir, "configs", "agents.json"))
     if os.path.exists(config_file):
         try:
             from agents.config_manager import load_agent_configs

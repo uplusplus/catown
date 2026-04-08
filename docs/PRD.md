@@ -601,6 +601,7 @@ backend/
 | 补全 — 协作+搜索 | ✅ 已完成 | 2026-04-08 |
 | 两级 LLM 配置 | ✅ 已完成 | 2026-04-08 |
 | 测试修复 (agent 名称) | ✅ 已完成 | 2026-04-08 |
+| Bug Fix — 配置路径修复 | ✅ 已完成 | 2026-04-08 |
 
 ### Phase 1: P0 — 数据模型与配置 ✅ 已完成
 
@@ -707,6 +708,16 @@ backend/
 | 2 | 项目创建测试引用旧 agent_names | 全部替换为 Pipeline 角色名 | ✅ | 7abdb5a |
 
 **测试结果**: 233/233 PASSED
+
+### Phase 10: Bug Fix — Agent 配置路径修复 ✅ 已完成
+
+**问题**: `registry.py` 中 `get_builtin_agent_configs()` 使用相对路径 `"configs/agents.json"` 查找配置文件，当 CWD 不是 backend 目录时（如从项目根目录运行 pytest），找不到配置文件，回退到硬编码的旧默认 agent 名（assistant/coder/reviewer/researcher），导致 10 个测试失败。
+
+| # | 问题 | 修复 | 状态 | 提交 |
+|---|------|------|------|------|
+| 1 | `configs/agents.json` 相对路径解析失败 | 改为基于 `__file__` 解析 backend 目录绝对路径 | ✅ | — |
+
+**测试结果**: 233/233 PASSED (修复后从 223 passed / 10 failed 恢复)
 
 ---
 
