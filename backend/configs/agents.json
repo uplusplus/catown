@@ -1,24 +1,31 @@
 {
   "global_llm": {
     "provider": {
-      "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-      "apiKey": "",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "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",
       "auth": "api-key",
       "api": "openai-completions",
       "models": [
         {
-          "id": "GLM-V5-128K",
-          "name": "GLM-V5-128K",
+          "id": "openrouter/free",
+          "name": "openrouter/free",
           "api": "openai-completions",
           "reasoning": false,
-          "input": ["text"],
-          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
           "contextWindow": 128000,
-          "maxTokens": 16384
+          "maxTokens": 4096
         }
       ]
     },
-    "default_model": "GLM-V5-128K"
+    "default_model": "openrouter/free"
   },
   "agents": {
     "analyst": {
@@ -31,16 +38,16 @@
         "write_file",
         "send_message"
       ],
-      "default_model": "GLM-V5-128K",
+      "default_model": "openrouter/free",
       "provider": {
-        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "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",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "GLM-V5-128K",
-            "name": "GLM-V5-128K",
+            "id": "openrouter/free",
+            "name": "openrouter/free",
             "api": "openai-completions",
             "reasoning": false,
             "input": [
@@ -53,7 +60,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 128000,
-            "maxTokens": 16384
+            "maxTokens": 4096
           }
         ]
       }
@@ -68,16 +75,16 @@
         "write_file",
         "send_message"
       ],
-      "default_model": "GLM-V5-128K",
+      "default_model": "openrouter/free",
       "provider": {
-        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "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",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "GLM-V5-128K",
-            "name": "GLM-V5-128K",
+            "id": "openrouter/free",
+            "name": "openrouter/free",
             "api": "openai-completions",
             "reasoning": false,
             "input": [
@@ -90,7 +97,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 128000,
-            "maxTokens": 16384
+            "maxTokens": 4096
           }
         ]
       }
@@ -108,34 +115,16 @@
         "search_files",
         "send_message"
       ],
-      "default_model": "Qwen-V3.5-256K",
+      "default_model": "openrouter/free",
       "provider": {
-        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "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",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "Qwen-V3.5-256K",
-            "name": "Qwen-V3.5-256K",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text",
-              "image"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 256000,
-            "maxTokens": 32768
-          },
-          {
-            "id": "GLM-V5-128K",
-            "name": "GLM-V5-128K",
+            "id": "openrouter/free",
+            "name": "openrouter/free",
             "api": "openai-completions",
             "reasoning": false,
             "input": [
@@ -148,7 +137,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 128000,
-            "maxTokens": 16384
+            "maxTokens": 4096
           }
         ]
       }
@@ -164,16 +153,16 @@
         "search_files",
         "send_message"
       ],
-      "default_model": "GLM-V5-128K",
+      "default_model": "openrouter/free",
       "provider": {
-        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "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",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "GLM-V5-128K",
-            "name": "GLM-V5-128K",
+            "id": "openrouter/free",
+            "name": "openrouter/free",
             "api": "openai-completions",
             "reasoning": false,
             "input": [
@@ -186,7 +175,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 128000,
-            "maxTokens": 16384
+            "maxTokens": 4096
           }
         ]
       }
@@ -202,16 +191,16 @@
         "execute_code",
         "send_message"
       ],
-      "default_model": "GLM-V5-128K",
+      "default_model": "openrouter/free",
       "provider": {
-        "baseUrl": "http://localhost:3008/opencode/assistant-agent-s/opencode/v1",
-        "apiKey": "",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "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",
         "auth": "api-key",
         "api": "openai-completions",
         "models": [
           {
-            "id": "GLM-V5-128K",
-            "name": "GLM-V5-128K",
+            "id": "openrouter/free",
+            "name": "openrouter/free",
             "api": "openai-completions",
             "reasoning": false,
             "input": [
@@ -224,7 +213,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 128000,
-            "maxTokens": 16384
+            "maxTokens": 4096
           }
         ]
       }
