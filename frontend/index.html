@@ -87,11 +87,15 @@
             border: 1px solid #2A2E35;
             border-radius: 8px;
             margin-bottom: 4px;
-            max-height: 200px;
+            max-height: 420px;
             overflow-y: auto;
             z-index: 50;
             box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+            scroll-behavior: smooth;
         }
+        .agent-mention-dropdown::-webkit-scrollbar { width: 4px; }
+        .agent-mention-dropdown::-webkit-scrollbar-track { background: transparent; }
+        .agent-mention-dropdown::-webkit-scrollbar-thumb { background: #3a3f47; border-radius: 2px; }
         .agent-mention-item {
             display: flex;
             align-items: center;
@@ -2013,6 +2017,12 @@
             });
             
             dropdown.classList.remove('hidden');
+
+            // Scroll selected item into view
+            const selectedEl = dropdown.querySelector('.agent-mention-item.selected');
+            if (selectedEl) {
+                selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
         }
 
         function hideMentionDropdown() {
