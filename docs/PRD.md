@@ -76,6 +76,7 @@ Pipeline 由 5 个专业 Agent + 1 个人角色组成：
 | 3 | `developer` | 开发工程师 | 编写代码、单元测试 | tech-spec.md | src/ 目录 |
 | 4 | `tester` | 测试工程师 | 测试执行、bug 发现、报告 | src/ + PRD.md | test_report.md |
 | 5 | `release` | 发布经理 | 版本管理、changelog、发布 | test_report.md + src/ | CHANGELOG.md, Git tag |
+| 6 | `assistant` | 助理 | 打杂：协助其他 Agent、处理杂项任务 | 任意 | 视任务而定 |
 | — | PM (人) | BOSS | 审批、介入、打回、发指令 | 任意阶段 | 审批结果 / 指令 |
 
 ### 4.2 角色配置
