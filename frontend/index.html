@@ -704,6 +704,18 @@
 
         function handleWebSocketMessage(data) {
             if (data.type === 'message') {
+                // Dedup 1: exact ID match (covers SSE done → WS broadcast race)
+                if (data.id && messages.some(m => m.id === data.id)) return;
+                // Dedup 2: WS arrives while SSE is still streaming (WS id won't match
+                // the stream-{ts} placeholder yet). If the agent response content is
+                // already being displayed in the streaming placeholder, skip it.
+                if (data.message_type !== 'user' && data.id) {
+                    const streamingMsg = messages.find(m => m._streaming);
+                    if (streamingMsg && streamingMsg.content && data.content &&
+                        (streamingMsg.content.includes(data.content) || data.content.includes(streamingMsg.content))) {
+                        return;
+                    }
+                }
                 messages.push(data);
                 renderMessages();
             } else if (data.type === 'agent_status') {

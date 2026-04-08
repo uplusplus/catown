@@ -912,6 +912,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
         from models.database import get_db as _get_db
         from tools import tool_registry
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
+        from routes.websocket import websocket_manager
 
         db = next(_get_db())
         try:
@@ -1029,10 +1030,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
                             elif event["type"] == "error":
                                 yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
+                                break
                         if not tool_calls_found:
                             break
 
                     # 保存
+                    saved = None
                     if step_content:
                         saved = await chatroom_manager.send_message(
                             chatroom_id=chatroom_id, agent_id=agent.id,
