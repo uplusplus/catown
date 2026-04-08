@@ -36,7 +36,8 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_message"
+        "send_message",
+        "query_agent"
       ],
       "default_model": "openrouter/free",
       "provider": {
@@ -73,7 +74,8 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_message"
+        "send_message",
+        "query_agent"
       ],
       "default_model": "openrouter/free",
       "provider": {
@@ -113,7 +115,8 @@
         "list_files",
         "execute_code",
         "search_files",
-        "send_message"
+        "send_message",
+        "query_agent"
       ],
       "default_model": "openrouter/free",
       "provider": {
@@ -151,7 +154,8 @@
         "execute_code",
         "list_files",
         "search_files",
-        "send_message"
+        "send_message",
+        "query_agent"
       ],
       "default_model": "openrouter/free",
       "provider": {
@@ -189,7 +193,9 @@
         "write_file",
         "list_files",
         "execute_code",
-        "send_message"
+        "send_message",
+        "query_agent",
+        "github_manager"
       ],
       "default_model": "openrouter/free",
       "provider": {
