@@ -83,12 +83,12 @@
             position: absolute;
             bottom: 100%;
             left: 0;
-            right: 0;
+            width: 260px;
             background: #16181D;
             border: 1px solid #2A2E35;
             border-radius: 8px;
             margin-bottom: 4px;
-            max-height: 420px;
+            max-height: 260px;
             overflow-y: auto;
             z-index: 50;
             box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
@@ -2177,6 +2177,15 @@
                 input.addEventListener('input', (e) => {
                     handleMentionInput(e);
                 });
+            }
+        });
+
+        // Click outside to hide mention dropdown
+        document.addEventListener('mousedown', (e) => {
+            const dropdown = document.getElementById('mention-dropdown');
+            if (!dropdown || dropdown.classList.contains('hidden')) return;
+            if (!dropdown.contains(e.target)) {
+                hideMentionDropdown();
             }
         });
 
