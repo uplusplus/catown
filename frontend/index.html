@@ -48,6 +48,7 @@
         .agent-status-executing { color: #10B981; }
         #sidebar.mobile-hidden { transform: translateX(-100%); }
         @media (min-width: 768px) { #sidebar.mobile-hidden { transform: translateX(0); } }
+        #side-panel.panel-collapsed { display: none !important; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -989,12 +990,20 @@
 
         function toggleLogs() {
             const panel = document.getElementById('side-panel');
-            if (panel.classList.contains('hidden') || (!panel.classList.contains('flex') && !panel.classList.contains('lg:flex'))) {
-                panel.classList.remove('hidden');
-                panel.classList.add('flex');
+            const lgMatch = window.matchMedia('(min-width: 1024px)').matches;
+
+            if (lgMatch) {
+                // 大屏：lg:flex 始终生效，用 panel-collapsed 覆盖
+                panel.classList.toggle('panel-collapsed');
             } else {
-                panel.classList.add('hidden');
-                panel.classList.remove('flex');
+                // 小屏：hidden 是默认状态，需切换 flex/hidden
+                if (panel.classList.contains('hidden')) {
+                    panel.classList.remove('hidden');
+                    panel.classList.add('flex');
+                } else {
+                    panel.classList.add('hidden');
+                    panel.classList.remove('flex');
+                }
             }
         }
 
