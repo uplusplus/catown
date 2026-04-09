@@ -9,13 +9,9 @@ Tests verify:
   5. Agent status bar & configuration
   6. Error handling & edge cases
 
-Run:
-    cd catown/backend
-    python3 -m pytest ../tests/test_frontend.py -v
-
-Or:
+Run (独立运行，避免模块缓存冲突):
     cd catown
-    python3 -m pytest tests/test_frontend.py -v --rootdir=backend
+    python3 -m pytest tests/test_frontend.py -v
 """
 
 import pytest
@@ -32,12 +28,18 @@ from fastapi.testclient import TestClient
 @pytest.fixture(scope="module")
 def client():
     """Shared TestClient backed by the real FastAPI app.
-    Rate limiting is already disabled by default (RATE_LIMIT_MAX=0)."""
-    # Ensure backend is importable
+    Uses isolated tmp DB and config paths, matching backend/tests/conftest.py.
+    Rate limiting is disabled by default (RATE_LIMIT_MAX=0)."""
+    import tempfile
     backend_dir = os.path.join(os.path.dirname(__file__), '..', 'backend')
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
-    os.chdir(backend_dir)  # pipelines.json / agents.json relative paths need this
+    os.chdir(backend_dir)
+
+    # Isolate DB and config for this test module
+    tmp = tempfile.mkdtemp(prefix="catown-ft-")
+    os.environ["DATABASE_URL"] = os.path.join(tmp, "test.db")
+    os.environ["LOG_LEVEL"] = "WARNING"
 
     from main import app
     with TestClient(app, raise_server_exceptions=False) as c:
