@@ -61,8 +61,9 @@ class RateLimiter:
         self._requests[client_ip].append(now)
         return True
 
+_rate_limit_max = int(os.getenv("RATE_LIMIT_MAX", "0"))
 rate_limiter = RateLimiter(
-    max_requests=int(os.getenv("RATE_LIMIT_MAX", "60")),
+    max_requests=_rate_limit_max if _rate_limit_max > 0 else 999_999,
     window_seconds=int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 )
 
