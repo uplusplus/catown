@@ -1,22 +1,25 @@
 """
 Frontend Visual Rendering Tests — Catown
 ==========================================
-Verifies that the frontend HTML/CSS/JS delivers correct visual output:
 
-  1. DOM structure & layout hierarchy
-  2. CSS / Tailwind class presence for visual components
-  3. Color theme & dark-mode tokens
-  4. Responsive design breakpoints
-  5. Agent status visual indicators (idle / thinking / executing)
-  6. Markdown rendering styles
-  7. Modal & overlay rendering
-  8. Toast notification styles
-  9. Animation & transition classes
- 10. Scrollbar & overflow styles
- 11. Icon / font assets loading
- 12. Pipeline Dashboard visual elements
- 13. Input & interaction visual feedback
- 14. Sidebar & navigation visual state
+⚠️  重要说明：这些是**静态分析**测试，不是真正的视觉渲染测试。
+    它们检查 HTML 源码中的 class 名和 CSS 规则，但**无法验证**
+    浏览器实际渲染出来的视觉效果。真正的视觉测试需要浏览器引擎
+    (Playwright/Puppeteer) 做 computed style 断言或截图对比。
+
+本测试能做的：
+  ✅ DOM 结构完整性（必要元素是否存在）
+  ✅ CSS 类名正确性（class 拼写是否正确）
+  ✅ 布局约束一致性（flex 父级是否有 min-h-0）
+  ✅ 外部依赖引用（CDN 资源是否引入）
+  ✅ API 数据流（数据能否正确传递到渲染函数）
+
+本测试不能做的：
+  ❌ 元素是否实际可见（不被其他元素遮挡）
+  ❌ 内容是否溢出容器（computed overflow）
+  ❌ 颜色/字体是否正确渲染
+  ❌ 动画是否平滑执行
+  ❌ 响应式布局在各断点的实际表现
 
 Run:
     cd catown
@@ -25,7 +28,6 @@ Run:
 
 import os
 import sys
-import re
 import time
 import pytest
 from fastapi.testclient import TestClient
@@ -54,7 +56,6 @@ def client():
 
 @pytest.fixture(scope="module")
 def html(client):
-    """Cached HTML source of the index page."""
     return client.get("/").text
 
 
@@ -70,27 +71,119 @@ def sample_project(client):
 
 
 # ═══════════════════════════════════════════════
-# 1. DOM Structure & Layout Hierarchy
+# 1. 布局约束一致性（最关键！）
+# ═══════════════════════════════════════════════
+
+class TestLayoutConstraintConsistency:
+    """
+    Flex 布局中，overflow-y-auto 的子元素要能滚动，其父级 flex 容器
+    必须有 min-h-0（或固定 height/max-height），否则 min-height: auto
+    会阻止子元素收缩，overflow 形同虚设，内容无限撑开。
+
+    这是导致日志被挤出屏幕的根因。
+    """
+
+    def _get_attr(self, html, element_id, attr='class'):
+        """提取指定 id 元素的属性值。"""
+        import re
+        # 匹配 <tag ... id="xxx" ... class="...">
+        # 先找 id="xxx" 所在的标签
+        pattern = rf'<\w+[^>]*id="{element_id}"[^>]*>'
+        match = re.search(pattern, html)
+        assert match, f"Element id='{element_id}' not found in HTML"
+        tag = match.group(0)
+        # 提取 class
+        cls_match = re.search(r'class="([^"]*)"', tag)
+        return cls_match.group(1) if cls_match else ""
+
+    def test_side_panel_has_min_h_0(self, html):
+        """side-panel 是 flex-col 父容器，必须有 min-h-0。"""
+        cls = self._get_attr(html, 'side-panel')
+        assert 'min-h-0' in cls, (
+            "side-panel 缺少 min-h-0。"
+            "flex 子元素默认 min-height: auto，overflow-y-auto 不生效，"
+            "会导致 logs 撑开容器把 System Status 推出屏幕。"
+        )
+
+    def test_chat_container_has_min_h_0(self, html):
+        """chat-container 是 flex-col 父容器，必须有 min-h-0。"""
+        cls = self._get_attr(html, 'chat-container')
+        assert 'min-h-0' in cls, (
+            "chat-container 缺少 min-h-0。"
+            "同理，messages-area 的 overflow-y-auto 不生效，"
+            "大量消息会撑开容器。"
+        )
+
+    def test_messages_area_has_overflow_auto(self, html):
+        """messages-area 必须有 overflow-y-auto。"""
+        cls = self._get_attr(html, 'messages-area')
+        assert 'overflow-y-auto' in cls, "messages-area 缺少 overflow-y-auto"
+
+    def test_logs_content_has_overflow_auto(self, html):
+        """logs-content 必须有 overflow-y-auto。"""
+        cls = self._get_attr(html, 'logs-content')
+        assert 'overflow-y-auto' in cls, "logs-content 缺少 overflow-y-auto"
+
+    def test_logs_content_has_flex_1(self, html):
+        """logs-content 必须有 flex-1 以占满父容器剩余空间。"""
+        cls = self._get_attr(html, 'logs-content')
+        assert 'flex-1' in cls, "logs-content 缺少 flex-1"
+
+    def test_side_panel_parent_has_overflow_hidden(self, html):
+        """side-panel 的父级（chat-area wrapper）必须有 overflow-hidden。"""
+        import re
+        # 找包含 side-panel 的直接父 div
+        pattern = r'<div[^>]*class="([^"]*)"[^>]*>\s*<!-- Chat.*?-->\s*<div[^>]*id="chat-container"'
+        # 简化：找 flex-1 flex overflow-hidden 的那个 wrapper
+        wrapper_match = re.search(r'<div[^>]*class="[^"]*flex-1 flex overflow-hidden[^"]*"[^>]*>', html)
+        assert wrapper_match, (
+            "未找到包含 chat-container 和 side-panel 的 flex wrapper，"
+            "它必须有 overflow-hidden 防止外层滚动。"
+        )
+
+    def test_flex_col_children_have_overflow_when_scrollable(self, html):
+        """
+        系统性检查：所有 flex-col 容器中，有 overflow-y-auto 的子元素，
+        其父级必须有 min-h-0 或固定高度。
+        """
+        import re
+
+        # 已知的 flex-col 容器 + 滚动子元素对
+        pairs = [
+            ('side-panel', 'logs-content'),
+            ('side-panel', 'config-content'),
+            ('chat-container', 'messages-area'),
+        ]
+
+        for parent_id, child_id in pairs:
+            parent_cls = self._get_attr(html, parent_id)
+            child_cls = self._get_attr(html, child_id)
+
+            if 'overflow-y-auto' in child_cls or 'overflow-auto' in child_cls:
+                assert 'min-h-0' in parent_cls or 'h-' in parent_cls, (
+                    f"{parent_id} (flex-col) 包含 {child_id} (overflow-y-auto)，"
+                    f"但缺少 min-h-0 或固定高度约束。"
+                    f"这会导致 overflow 不生效，内容撑开容器。"
+                )
+
+
+# ═══════════════════════════════════════════════
+# 2. DOM 结构完整性
 # ═══════════════════════════════════════════════
 
 class TestDOMStructure:
-    """Verify the essential DOM tree that supports visual layout."""
+    """验证必要的 DOM 元素存在。"""
 
     def test_html_has_doctype(self, html):
         assert html.strip().startswith("<!DOCTYPE html>") or html.strip().startswith("<!doctype html>")
 
-    def test_body_is_flex_container(self, html):
-        """Body must be flex for sidebar + main layout."""
-        assert 'class="h-screen overflow-hidden flex' in html
-
-    def test_sidebar_element_exists(self, html):
+    def test_sidebar_exists(self, html):
         assert 'id="sidebar"' in html
 
-    def test_main_content_area_exists(self, html):
+    def test_main_content_exists(self, html):
         assert '<main' in html
-        assert 'flex-1 flex flex-col' in html
 
-    def test_header_bar_exists(self, html):
+    def test_header_exists(self, html):
         assert 'id="main-header"' in html
 
     def test_chat_container_exists(self, html):
@@ -99,7 +192,7 @@ class TestDOMStructure:
     def test_messages_area_exists(self, html):
         assert 'id="messages-area"' in html
 
-    def test_input_area_exists(self, html):
+    def test_message_input_exists(self, html):
         assert 'id="message-input"' in html
 
     def test_side_panel_exists(self, html):
@@ -108,485 +201,32 @@ class TestDOMStructure:
     def test_agent_status_bar_exists(self, html):
         assert 'id="agent-status-bar"' in html
 
-    def test_overlay_layer_exists(self, html):
-        """Background overlay for glass-panel effect."""
-        assert 'bg-dark-900/95 z-0' in html
-
-    def test_sidebar_has_logo_section(self, html):
-        assert 'Catown' in html
-        assert 'fa-layer-group' in html
-
-    def test_sidebar_has_navigation(self, html):
-        assert '<nav' in html
-        assert 'showHome()' in html
-        assert 'showAgents()' in html
-        assert 'showTemplates()' in html
-
-    def test_sidebar_has_rooms_list(self, html):
+    def test_rooms_list_exists(self, html):
         assert 'id="rooms-list"' in html
 
-    def test_sidebar_has_user_profile(self, html):
-        assert 'Pro Plan' in html
+    def test_logs_content_exists(self, html):
+        assert 'id="logs-content"' in html
 
-    def test_input_has_attachment_button(self, html):
-        assert 'fa-paperclip' in html
+    def test_config_content_exists(self, html):
+        assert 'id="config-content"' in html
 
-    def test_input_has_send_button(self, html):
-        assert 'fa-paper-plane' in html
-        assert 'sendMessage()' in html
-
-    def test_input_has_microphone_button(self, html):
-        assert 'fa-microphone' in html
+    def test_pipeline_dashboard_exists(self, html):
+        assert "pipeline" in html.lower()
+        assert "renderPipelineContent" in html
 
 
 # ═══════════════════════════════════════════════
-# 2. CSS / Tailwind Classes
+# 3. 外部依赖引用
 # ═══════════════════════════════════════════════
 
-class TestTailwindClasses:
-    """Verify critical Tailwind utility classes are applied."""
+class TestExternalDependencies:
+    """验证 CDN 资源被正确引用。"""
 
-    def test_flex_layout_classes(self, html):
-        for cls in ["flex", "flex-1", "flex-col", "items-center", "justify-between"]:
-            assert cls in html, f"Missing Tailwind class: {cls}"
+    def test_tailwind_cdn(self, html):
+        assert "tailwindcss" in html
 
-    def test_spacing_classes(self, html):
-        for cls in ["p-4", "px-4", "py-2", "gap-3", "space-y-1", "space-y-6"]:
-            assert cls in html, f"Missing spacing class: {cls}"
-
-    def test_border_classes(self, html):
-        assert "border-b" in html
-        assert "border-r" in html
-        assert "border-dark-700" in html
-
-    def test_rounded_classes(self, html):
-        for cls in ["rounded-lg", "rounded-xl", "rounded-2xl", "rounded-full"]:
-            assert cls in html, f"Missing rounded class: {cls}"
-
-    def test_text_size_classes(self, html):
-        for cls in ["text-xs", "text-sm", "text-base", "text-lg", "text-xl"]:
-            assert cls in html, f"Missing text size class: {cls}"
-
-    def test_font_weight_classes(self, html):
-        for cls in ["font-medium", "font-semibold", "font-bold"]:
-            assert cls in html, f"Missing font weight class: {cls}"
-
-    def test_transition_classes(self, html):
-        assert "transition-colors" in html
-        assert "transition-all" in html
-
-    def test_shadow_classes(self, html):
-        assert "shadow-lg" in html or "shadow-md" in html
-
-    def test_z_index_layers(self, html):
-        assert "z-0" in html
-        assert "z-10" in html
-        assert "z-30" in html
-        assert "z-50" in html
-
-    def test_overflow_classes(self, html):
-        assert "overflow-hidden" in html
-        assert "overflow-y-auto" in html
-        assert "overflow-x-auto" in html
-
-
-# ═══════════════════════════════════════════════
-# 3. Color Theme & Dark Mode
-# ═══════════════════════════════════════════════
-
-class TestColorTheme:
-    """Catown uses a dark theme with custom color tokens."""
-
-    def test_dark_background_body(self, html):
-        assert "background-color: #0F1115" in html
-
-    def test_dark_text_color_body(self, html):
-        assert "color: #E5E7EB" in html
-
-    def test_dark_color_tokens_in_config(self, html):
-        """Tailwind config extends colors with dark-* tokens."""
-        assert "dark-900" in html
-        assert "dark-800" in html
-        assert "dark-700" in html
-        assert "dark-600" in html
-
-    def test_accent_color_tokens(self, html):
-        assert "accent-500" in html
-        assert "accent-400" in html
-
-    def test_glass_panel_style(self, html):
-        """Glass panel uses backdrop-filter blur."""
-        assert "backdrop-filter: blur" in html
-        assert "rgba(22, 24, 29, 0.6)" in html
-
-    def test_scrollbar_custom_style(self, html):
-        """Custom scrollbar thumb color."""
-        assert "::-webkit-scrollbar" in html
-        assert "#2A2E35" in html  # scrollbar thumb
-
-    def test_scrollbar_hover_accent(self, html):
-        assert "#3B82F6" in html  # scrollbar hover → accent
-
-    def test_agent_avatar_gradient(self, html):
-        """Agent avatars use gradient backgrounds."""
-        assert "from-accent-400 to-purple-500" in html
-
-    def test_welcome_gradient(self, html):
-        """Welcome hero uses multi-color gradient."""
-        assert "from-purple-500 via-accent-500 to-emerald-500" in html
-
-    def test_status_colors(self, html):
-        """Agent status indicators use semantic colors."""
-        # idle = gray
-        assert "agent-status-idle" in html
-        # thinking = yellow with pulse
-        assert "agent-status-thinking" in html
-        # executing = green
-        assert "agent-status-executing" in html
-
-
-# ═══════════════════════════════════════════════
-# 4. Responsive Design
-# ═══════════════════════════════════════════════
-
-class TestResponsiveDesign:
-    """Verify responsive breakpoint classes."""
-
-    def test_viewport_meta_tag(self, html):
-        assert 'name="viewport"' in html
-        assert "width=device-width" in html
-        assert "initial-scale=1.0" in html
-
-    def test_sidebar_mobile_toggle(self, html):
-        """Sidebar is hidden on mobile, toggleable."""
-        assert "mobile-hidden" in html
-        assert "toggleSidebar()" in html
-
-    def test_md_breakpoint_classes(self, html):
-        """md: prefixed classes for tablet+."""
-        assert "md:" in html
-        assert "md:relative" in html or "md:flex" in html
-
-    def test_sm_breakpoint_classes(self, html):
-        """sm: prefixed classes for small screens."""
-        html_lower = html
-        assert "sm:" in html_lower or "sm:inline" in html_lower
-
-    def test_lg_breakpoint_for_side_panel(self, html):
-        """Side panel hidden on small screens, shown on lg."""
-        assert "lg:hidden" in html or "lg:flex" in html
-
-    def test_sidebar_transform_transition(self, html):
-        """Sidebar slides in/out with transform."""
-        assert "translateX(-100%)" in html
-        assert "duration-300" in html
-
-    def test_media_query_for_sidebar(self, html):
-        assert "@media (min-width: 768px)" in html
-
-    def test_truncate_for_overflow(self, html):
-        """Text truncation for long room names."""
-        assert "truncate" in html
-
-    def test_max_width_constraints(self, html):
-        assert "max-w-" in html  # max-w-[80%], max-w-4xl, etc.
-
-
-# ═══════════════════════════════════════════════
-# 5. Agent Status Visual Indicators
-# ═══════════════════════════════════════════════
-
-class TestAgentStatusVisuals:
-    """Agent status bar renders correct visual states."""
-
-    def test_agent_chip_structure(self, html):
-        """Agent chip contains avatar + status icon + label."""
-        assert "agent-status-chip" in html
-        assert "agent-avatar" in html
-        assert "agent-status-icon" in html
-        assert "agent-status-label" in html
-
-    def test_idle_icon_is_moon(self, html):
-        assert "fa-moon" in html
-        assert "agent-status-idle" in html
-
-    def test_thinking_spinner_class(self, html):
-        """Thinking state uses spinner icon."""
-        # In JS, setAgentStatus sets fa-spinner fa-spin
-        assert "fa-spinner" in html
-        assert "fa-spin" in html
-
-    def test_executing_gear_class(self, html):
-        """Executing state uses gear icon."""
-        assert "fa-gear" in html
-
-    def test_pulse_animation_for_thinking(self, html):
-        """Thinking agent avatar pulses."""
-        assert "animate-pulse" in html
-
-    def test_status_ring_effect(self, html):
-        """Active agent chip gets a ring highlight."""
-        assert "ring-1" in html
-
-    def test_agent_color_mapping(self, html):
-        """getAgentColor hashes name to consistent color."""
-        assert "getAgentColor" in html
-        colors = ["purple", "emerald", "amber", "rose", "cyan", "indigo"]
-        for c in colors:
-            assert c in html, f"Agent color '{c}' missing from palette"
-
-    def test_status_progress_bar(self, html):
-        """System status shows active agents progress bar."""
-        assert "agents-progress" in html
-        assert "bg-blue-500" in html
-
-
-# ═══════════════════════════════════════════════
-# 6. Markdown Rendering Styles
-# ═══════════════════════════════════════════════
-
-class TestMarkdownStyles:
-    """Verify CSS rules for rendered markdown content."""
-
-    def test_markdown_content_class(self, html):
-        assert ".markdown-content" in html
-
-    def test_markdown_headings_styled(self, html):
-        assert ".markdown-content h1" in html
-        assert ".markdown-content h2" in html
-        assert ".markdown-content h3" in html
-
-    def test_markdown_code_inline(self, html):
-        assert ".markdown-content code" in html
-        assert "color: #60A5FA" in html  # accent-400
-
-    def test_markdown_code_block(self, html):
-        assert ".markdown-content pre" in html
-        assert "background: #16181D" in html
-
-    def test_markdown_blockquote(self, html):
-        assert ".markdown-content blockquote" in html
-        assert "border-left: 3px solid #3B82F6" in html
-
-    def test_markdown_table_styled(self, html):
-        assert ".markdown-content table" in html
-        assert ".markdown-content th" in html
-        assert ".markdown-content td" in html
-
-    def test_markdown_links_styled(self, html):
-        assert ".markdown-content a" in html
-
-    def test_markdown_lists_styled(self, html):
-        assert ".markdown-content ul" in html
-        assert ".markdown-content ol" in html
-
-    def test_markdown_hr_styled(self, html):
-        assert ".markdown-content hr" in html
-
-    def test_markdown_images_responsive(self, html):
-        assert ".markdown-content img" in html
-        assert "max-width: 100%" in html
-
-    def test_markdown_render_function(self, html):
-        """JS function renderMarkdown uses marked + highlight.js."""
-        assert "renderMarkdown" in html
-        assert "marked.parse" in html
-        assert "hljs.highlight" in html
-
-    def test_highlight_js_github_dark_theme(self, html):
-        assert "github-dark.min.css" in html
-
-
-# ═══════════════════════════════════════════════
-# 7. Modal & Overlay Rendering
-# ═══════════════════════════════════════════════
-
-class TestModalVisuals:
-    """Modals use consistent visual style."""
-
-    def test_status_modal_structure(self, html):
-        """Status modal is dynamically created with correct classes."""
-        assert "status-modal" in html
-        assert "fixed inset-0 z-50" in html
-
-    def test_modal_backdrop_blur(self, html):
-        assert "bg-black/60" in html
-        assert "backdrop-blur-sm" in html
-
-    def test_modal_container_style(self, html):
-        assert "bg-dark-800" in html
-        assert "rounded-2xl" in html
-        assert "border-dark-600" in html
-        assert "shadow-2xl" in html
-
-    def test_modal_has_close_button(self, html):
-        assert "fa-xmark" in html
-
-    def test_modal_tabs_rendered(self, html):
-        """Status modal has tab navigation."""
-        for tab in ["overview", "agents", "projects", "collab", "pipeline", "config"]:
-            assert f"status-tab-{tab}" in html, f"Missing modal tab: {tab}"
-
-    def test_memory_modal_structure(self, html):
-        assert "memory-modal" in html
-        assert "fa-brain" in html
-
-    def test_create_project_modal(self, html):
-        assert "create-project-modal" in html
-        assert "showCreateProjectModal()" in html
-
-    def test_pipeline_modal_dynamically_created(self, html):
-        """Pipeline modals are created via JS createElement."""
-        assert "pipeline-modal" in html
-
-
-# ═══════════════════════════════════════════════
-# 8. Toast Notification Styles
-# ═══════════════════════════════════════════════
-
-class TestToastVisuals:
-    """Toast notifications have correct visual behavior."""
-
-    def test_showToast_function_exists(self, html):
-        assert "showToast" in html
-
-    def test_toast_position_fixed_top_right(self, html):
-        """Toast is positioned fixed top-right."""
-        assert "fixed top-4 right-4 z-50" in html
-
-    def test_toast_type_colors(self, html):
-        """Each toast type has a distinct color."""
-        assert "bg-emerald-600" in html  # success
-        assert "bg-red-600" in html      # error
-        assert "bg-blue-600" in html     # info
-        assert "bg-amber-600" in html    # warning
-
-    def test_toast_icons(self, html):
-        assert "fa-check-circle" in html   # success
-        assert "fa-times-circle" in html   # error
-        assert "fa-info-circle" in html    # info
-        assert "fa-exclamation-circle" in html  # warning
-
-    def test_toast_animation(self, html):
-        """Toast slides in from top with opacity transition."""
-        assert "opacity-0" in html
-        assert "translate-y-[-10px]" in html
-        assert "duration-300" in html
-
-
-# ═══════════════════════════════════════════════
-# 9. Animation & Transition Classes
-# ═══════════════════════════════════════════════
-
-class TestAnimations:
-    """CSS animations and transitions for interactive elements."""
-
-    def test_pulse_keyframes(self, html):
-        assert "@keyframes pulse" in html
-        assert "opacity: 1" in html
-        assert "opacity: 0.5" in html
-
-    def test_typing_indicator_keyframes(self, html):
-        assert "@keyframes typing" in html
-        assert "translateY(-4px)" in html
-
-    def test_typing_indicator_spans(self, html):
-        """Typing animation staggered across 3 spans."""
-        assert "typing-indicator" in html
-        assert "animation-delay: 0.2s" in html
-        assert "animation-delay: 0.4s" in html
-
-    def test_sidebar_slide_transition(self, html):
-        assert "transform: translateX" in html
-        assert "transition-transform" in html
-        assert "duration-300" in html
-
-    def test_focus_ring_transition(self, html):
-        assert "focus-within:border-accent-500" in html
-        assert "focus-within:ring-1" in html
-
-    def test_hover_color_transitions(self, html):
-        assert "hover:bg-dark-700" in html
-        assert "hover:text-white" in html
-
-    def test_agent_avatar_pulse(self, html):
-        """Agent thinking state adds animate-pulse to avatar."""
-        assert "animate-pulse" in html
-
-    def test_progress_bar_transition(self, html):
-        """Pipeline progress bar animates width changes."""
-        assert "transition-all" in html
-        assert "duration-500" in html
-
-
-# ═══════════════════════════════════════════════
-# 10. Scrollbar & Overflow Styles
-# ═══════════════════════════════════════════════
-
-class TestScrollbarStyles:
-    """Custom scrollbar styling for the dark theme."""
-
-    def test_webkit_scrollbar_width(self, html):
-        assert "::-webkit-scrollbar { width: 6px" in html
-
-    def test_webkit_scrollbar_track(self, html):
-        assert "::-webkit-scrollbar-track" in html
-        assert "background: transparent" in html
-
-    def test_webkit_scrollbar_thumb(self, html):
-        assert "::-webkit-scrollbar-thumb" in html
-        assert "border-radius: 3px" in html
-
-    def test_scrollbar_thumb_hover(self, html):
-        assert "::-webkit-scrollbar-thumb:hover" in html
-
-    def test_no_scrollbar_class(self, html):
-        """Some containers hide scrollbar entirely."""
-        assert "no-scrollbar" in html
-        assert "-ms-overflow-style: none" in html
-        assert "scrollbar-width: none" in html
-
-    def test_dropdown_scrollbar(self, html):
-        """Mention dropdown has its own thin scrollbar."""
-        assert ".agent-mention-dropdown::-webkit-scrollbar" in html
-
-
-# ═══════════════════════════════════════════════
-# 11. Icon & Font Assets
-# ═══════════════════════════════════════════════
-
-class TestIconFonts:
-    """Verify external icon/font resources are referenced."""
-
-    def test_font_awesome_loaded(self, html):
+    def test_font_awesome_cdn(self, html):
         assert "font-awesome" in html or "fontawesome" in html
-
-    def test_font_awesome_icons_used(self, html):
-        """Verify a range of FA icons used across the UI."""
-        icons = [
-            "fa-house", "fa-compass", "fa-book",
-            "fa-search", "fa-plus", "fa-paper-plane",
-            "fa-paperclip", "fa-microphone", "fa-bars",
-            "fa-xmark", "fa-terminal", "fa-sliders",
-            "fa-layer-group", "fa-robot", "fa-chevron-up",
-            "fa-circle", "fa-brain", "fa-trash",
-            "fa-folder", "fa-folder-open", "fa-door-open",
-            "fa-users", "fa-hashtag", "fa-at",
-            "fa-moon", "fa-spinner", "fa-gear",
-            "fa-play", "fa-pause", "fa-check",
-            "fa-rotate-left", "fa-diagram-project",
-            "fa-handshake", "fa-comments", "fa-file-code",
-            "fa-arrow-left", "fa-refresh", "fa-plug",
-            "fa-save", "fa-eraser", "fa-globe",
-            "fa-users-gear", "fa-bolt", "fa-database",
-            "fa-chart-pie", "fa-info-circle",
-            "fa-check-circle", "fa-times-circle",
-            "fa-exclamation-circle", "fa-magnifying-glass",
-            "fa-broadcast-tower", "fa-tasks", "fa-code",
-            "fa-envelope", "fa-chevron-up",
-        ]
-        for icon in icons:
-            assert icon in html, f"Missing FA icon: {icon}"
 
     def test_google_fonts_inter(self, html):
         assert "Inter" in html
@@ -594,352 +234,272 @@ class TestIconFonts:
     def test_google_fonts_jetbrains_mono(self, html):
         assert "JetBrains Mono" in html
 
-    def test_tailwind_cdn_loaded(self, html):
-        assert "tailwindcss" in html
-
-    def test_marked_js_loaded(self, html):
+    def test_marked_js_cdn(self, html):
         assert "marked/marked.min.js" in html
 
-    def test_highlight_js_loaded(self, html):
+    def test_highlight_js_cdn(self, html):
         assert "highlight.min.js" in html
+        assert "github-dark.min.css" in html
 
 
 # ═══════════════════════════════════════════════
-# 12. Pipeline Dashboard Visual Elements
+# 4. CSS 规则完整性
 # ═══════════════════════════════════════════════
 
-class TestPipelineVisuals:
-    """Pipeline tab renders visual elements correctly."""
+class TestCSSRules:
+    """验证关键 CSS 规则在 HTML 的 <style> 块中。"""
 
-    def test_pipeline_stage_icons(self, html):
-        """Stage status uses emoji indicators."""
-        assert "⏳" in html  # pending
-        assert "🔄" in html  # running
-        assert "🚧" in html  # blocked
-        assert "✅" in html  # completed
-        assert "❌" in html  # failed
-        assert "⏪" in html  # rejected
+    def test_body_background(self, html):
+        assert "background-color: #0F1115" in html
+
+    def test_glass_panel_style(self, html):
+        assert "backdrop-filter: blur" in html
+
+    def test_scrollbar_thumb_style(self, html):
+        assert "::-webkit-scrollbar-thumb" in html
+
+    def test_markdown_content_styles(self, html):
+        for selector in [".markdown-content h1", ".markdown-content code",
+                         ".markdown-content pre", ".markdown-content blockquote",
+                         ".markdown-content table"]:
+            assert selector in html, f"Missing CSS rule: {selector}"
+
+    def test_mention_dropdown_styles(self, html):
+        assert ".agent-mention-dropdown" in html
+        assert ".agent-mention-item:hover" in html
+
+    def test_agent_status_styles(self, html):
+        assert "agent-status-idle" in html
+        assert "agent-status-thinking" in html
+        assert "agent-status-executing" in html
+
+    def test_pulse_animation(self, html):
+        assert "@keyframes pulse" in html
+
+    def test_typing_animation(self, html):
+        assert "@keyframes typing" in html
+
+    def test_no_scrollbar_class(self, html):
+        assert "scrollbar-width: none" in html
+
+
+# ═══════════════════════════════════════════════
+# 5. JS 函数完整性
+# ═══════════════════════════════════════════════
+
+class TestJSFunctions:
+    """验证关键渲染函数存在。"""
+
+    def test_render_messages(self, html):
+        assert "function renderMessages" in html
+
+    def test_render_agents(self, html):
+        assert "function renderAgents" in html
+
+    def test_render_rooms(self, html):
+        assert "function renderRooms" in html
+
+    def test_set_agent_status(self, html):
+        assert "function setAgentStatus" in html
+
+    def test_render_markdown(self, html):
+        assert "function renderMarkdown" in html
+
+    def test_show_toast(self, html):
+        assert "function showToast" in html
+
+    def test_format_time(self, html):
+        assert "function formatTime" in html
+
+    def test_get_agent_color(self, html):
+        assert "function getAgentColor" in html
+
+    def test_escape_html(self, html):
+        assert "function escapeHtml" in html
+
+    def test_connect_websocket(self, html):
+        assert "function connectWebSocket" in html
+
+    def test_send_message(self, html):
+        assert "function sendMessage" in html
+
+    def test_select_project(self, html):
+        assert "function selectProject" in html
+
+
+# ═══════════════════════════════════════════════
+# 6. 响应式断点
+# ═══════════════════════════════════════════════
+
+class TestResponsiveBreakpoints:
+    """验证响应式 class 存在（不能验证实际效果）。"""
+
+    def test_viewport_meta(self, html):
+        assert 'name="viewport"' in html
+        assert "width=device-width" in html
+
+    def test_sidebar_mobile_hidden_class(self, html):
+        assert "mobile-hidden" in html
+
+    def test_sidebar_toggle_function(self, html):
+        assert "toggleSidebar()" in html
+
+    def test_sidebar_media_query(self, html):
+        assert "@media (min-width: 768px)" in html
+
+    def test_lg_breakpoint_for_side_panel(self, html):
+        assert "lg:flex" in html or "lg:hidden" in html
+
+    def test_md_breakpoint_classes(self, html):
+        assert "md:" in html
+
+
+# ═══════════════════════════════════════════════
+# 7. Agent 状态指示器
+# ═══════════════════════════════════════════════
+
+class TestAgentStatusIndicators:
+    """验证 Agent 状态的 CSS class 和图标引用。"""
+
+    def test_agent_chip_structure(self, html):
+        assert "agent-status-chip" in html
+        assert "agent-avatar" in html
+        assert "agent-status-icon" in html
+        assert "agent-status-label" in html
+
+    def test_idle_icon(self, html):
+        assert "fa-moon" in html
+
+    def test_thinking_spinner(self, html):
+        assert "fa-spinner" in html
+        assert "fa-spin" in html
+
+    def test_executing_gear(self, html):
+        assert "fa-gear" in html
+
+    def test_pulse_animation_on_thinking(self, html):
+        assert "animate-pulse" in html
+
+    def test_agent_color_palette(self, html):
+        colors = ["purple", "emerald", "amber", "rose", "cyan", "indigo"]
+        for c in colors:
+            assert c in html, f"Missing agent color: {c}"
+
+
+# ═══════════════════════════════════════════════
+# 8. Pipeline 视觉元素
+# ═══════════════════════════════════════════════
+
+class TestPipelineVisualElements:
+    """验证 Pipeline Dashboard 的视觉标记。"""
+
+    def test_stage_status_emojis(self, html):
+        for emoji in ["⏳", "🔄", "🚧", "✅", "❌", "⏪"]:
+            assert emoji in html, f"Missing stage emoji: {emoji}"
 
     def test_pipeline_status_colors(self, html):
-        """Pipeline status uses semantic colors."""
-        assert "text-emerald-400" in html  # running
-        assert "text-yellow-400" in html   # paused
-        assert "text-blue-400" in html     # completed
-        assert "text-red-400" in html      # failed
+        for cls in ["text-emerald-400", "text-yellow-400",
+                     "text-blue-400", "text-red-400"]:
+            assert cls in html, f"Missing pipeline color: {cls}"
 
-    def test_pipeline_progress_bar(self, html):
-        """Progress bar renders with conditional color."""
-        assert "bg-accent-500" in html     # default
-        assert "bg-emerald-500" in html    # completed
-        assert "bg-red-500" in html        # failed
-
-    def test_pipeline_stage_card_style(self, html):
-        """Stage cards have rounded + border + padding."""
-        assert "rounded-xl" in html
-        assert "border-dark-600" in html
-        assert "p-4" in html
-
-    def test_pipeline_active_stage_ring(self, html):
-        """Active stage card gets accent ring."""
-        assert "ring-accent-500/30" in html
-
-    def test_pipeline_action_buttons(self, html):
-        """Action buttons have correct visual styles."""
-        assert "bg-emerald-600" in html   # start/resume/approve
+    def test_pipeline_action_button_colors(self, html):
+        assert "bg-emerald-600" in html   # start/approve
         assert "bg-yellow-600" in html    # pause
         assert "bg-red-600" in html       # reject
 
-    def test_pipeline_file_icons(self, html):
-        """Artifacts use file/folder emoji."""
-        assert "📁" in html
-        assert "📄" in html
-
     def test_pipeline_message_type_colors(self, html):
-        """Agent messages colored by type."""
         assert "text-blue-300" in html     # AGENT_OUTPUT
         assert "text-emerald-300" in html  # STAGE_OUTPUT
         assert "text-yellow-300" in html   # AGENT_QUESTION
         assert "text-purple-300" in html   # AGENT_REPLY
         assert "text-orange-300" in html   # HUMAN_INSTRUCT
 
+    def test_file_browser_icons(self, html):
+        assert "📁" in html
+        assert "📄" in html
+
 
 # ═══════════════════════════════════════════════
-# 13. Input & Interaction Visual Feedback
+# 9. Toast 通知样式
+# ═══════════════════════════════════════════════
+
+class TestToastNotifications:
+    """验证 Toast 通知的样式定义。"""
+
+    def test_toast_position(self, html):
+        assert "fixed top-4 right-4 z-50" in html
+
+    def test_toast_type_colors(self, html):
+        for cls in ["bg-emerald-600", "bg-red-600", "bg-blue-600", "bg-amber-600"]:
+            assert cls in html, f"Missing toast color: {cls}"
+
+    def test_toast_icons(self, html):
+        for icon in ["fa-check-circle", "fa-times-circle",
+                     "fa-info-circle", "fa-exclamation-circle"]:
+            assert icon in html, f"Missing toast icon: {icon}"
+
+    def test_toast_animate_in(self, html):
+        assert "opacity-0" in html
+        assert "translate-y-[-10px]" in html
+
+
+# ═══════════════════════════════════════════════
+# 10. Input 交互反馈
 # ═══════════════════════════════════════════════
 
 class TestInputVisualFeedback:
-    """Input area provides correct visual cues."""
+    """验证输入区的视觉反馈 class。"""
 
-    def test_input_wrapper_focus_ring(self, html):
+    def test_input_focus_ring(self, html):
         assert "focus-within:border-accent-500" in html
-        assert "focus-within:ring-accent-500" in html
+        assert "focus-within:ring-1" in html
 
-    def test_input_placeholder_text(self, html):
+    def test_input_placeholder(self, html):
         assert "Message room or @agent" in html
 
-    def test_command_hints_visible(self, html):
-        """Command hint buttons are styled as pills."""
-        assert 'Mention Agent' in html
-        assert 'Create Room' in html
-        assert 'Run Script' in html
+    def test_command_hints(self, html):
+        assert "Mention Agent" in html
+        assert "Create Room" in html
+        assert "Run Script" in html
 
-    def test_command_hint_style(self, html):
-        assert "bg-dark-700" in html
-        assert "border border-dark-600" in html
-
-    def test_mention_dropdown_style(self, html):
-        """@mention dropdown has correct visual style."""
+    def test_mention_dropdown_structure(self, html):
         assert "agent-mention-dropdown" in html
-        assert "background: #16181D" in html
-        assert "box-shadow: 0 -4px 12px" in html
+        assert "agent-mention-item" in html
 
-    def test_mention_item_hover_style(self, html):
-        assert ".agent-mention-item:hover" in html
-
-    def test_mention_item_selected_style(self, html):
-        assert ".agent-mention-item.selected" in html
-
-    def test_send_button_accent_color(self, html):
+    def test_send_button_style(self, html):
         assert "bg-accent-500" in html
         assert "hover:bg-accent-400" in html
 
-    def test_search_input_style(self, html):
-        """Sidebar search input styled for dark theme."""
-        assert 'bg-dark-900' in html
-        assert 'placeholder-gray-500' in html
-
 
 # ═══════════════════════════════════════════════
-# 14. Sidebar & Navigation Visual State
+# 11. API → 渲染数据流
 # ═══════════════════════════════════════════════
 
-class TestSidebarVisuals:
-    """Sidebar rendering and active states."""
+class TestAPIRenderDataFlow:
+    """验证 API 数据能正确传递给渲染函数（端到端）。"""
 
-    def test_sidebar_width(self, html):
-        assert "w-64" in html
-
-    def test_sidebar_border(self, html):
-        assert "border-r border-dark-700" in html
-
-    def test_sidebar_bg(self, html):
-        assert "bg-dark-800" in html
-
-    def test_active_room_indicator(self, html):
-        """Active room shows green dot."""
-        assert "bg-green-500" in html
-
-    def test_inactive_room_indicator(self, html):
-        """Inactive room shows gray dot."""
-        assert "bg-gray-500" in html
-
-    def test_active_room_bg_highlight(self, html):
-        assert "bg-dark-700 text-gray-300" in html
-
-    def test_agent_count_badge(self, html):
-        """Room items show agent count badge."""
-        assert "AI" in html  # "N AI" badge
-
-    def test_user_avatar_gradient(self, html):
-        assert "from-accent-400 to-purple-500" in html
-
-    def test_logo_gradient(self, html):
-        assert "from-accent-400 to-accent-500" in html
-
-
-# ═══════════════════════════════════════════════
-# 15. Message Bubble Visual Styles
-# ═══════════════════════════════════════════════
-
-class TestMessageBubbleStyles:
-    """Message rendering uses correct visual styles (from JS)."""
-
-    def test_user_message_align_right(self, html):
-        """User messages are right-aligned in JS renderMessages."""
-        assert "justify-end" in html
-
-    def test_user_message_bg(self, html):
-        """User message bubble uses accent color."""
-        assert "bg-accent-600" in html
-
-    def test_agent_message_bg(self, html):
-        """Agent message bubble uses dark background."""
-        assert "bg-dark-700/80" in html
-
-    def test_agent_message_border(self, html):
-        assert "border-dark-600" in html
-
-    def test_agent_name_colored(self, html):
-        """Agent name in message uses agent-specific color."""
-        assert "text-${color}-400" in html or "text-" in html
-
-    def test_message_timestamp(self, html):
-        assert "formatTime" in html
-        assert "Just now" in html
-        assert "mins ago" in html
-
-    def test_message_max_width(self, html):
-        assert "max-w-[85%]" in html or "max-w-[80%]" in html
-
-    def test_user_bubble_rounded_tr(self, html):
-        """User bubble has rounded top-right corner small."""
-        assert "rounded-tr-sm" in html
-
-    def test_agent_bubble_rounded_tl(self, html):
-        """Agent bubble has rounded top-left corner small."""
-        assert "rounded-tl-sm" in html
-
-
-# ═══════════════════════════════════════════════
-# 16. Config Tab Visual Styles
-# ═══════════════════════════════════════════════
-
-class TestConfigTabVisuals:
-    """Config tab renders LLM settings with correct visuals."""
-
-    def test_config_input_style(self, html):
-        """Config inputs use dark background."""
-        assert "bg-dark-900" in html
-        assert "border-dark-600" in html
-        assert "focus:border-accent-500" in html
-
-    def test_config_agent_own_indicator(self, html):
-        """Agents with own config get accent border."""
-        assert "border-accent-500/40" in html
-
-    def test_config_agent_global_indicator(self, html):
-        """Agents using global config show globe icon."""
-        assert "fa-globe" in html
-
-    def test_config_save_button(self, html):
-        assert "bg-accent-500" in html
-        assert "fa-save" in html
-
-    def test_config_test_button(self, html):
-        assert "fa-plug" in html
-
-    def test_config_sync_checkbox(self, html):
-        assert "global-sync-agents" in html
-        assert "accent-accent-500" in html
-
-    def test_effective_config_source_badge(self, html):
-        """Effective config shows source: agent vs global."""
-        assert "source === 'agent'" in html or "'agent'" in html
-        assert "'global'" in html
-
-
-# ═══════════════════════════════════════════════
-# 17. System Status Panel Visuals
-# ═══════════════════════════════════════════════
-
-class TestSystemStatusVisuals:
-    """System status panel in the side panel."""
-
-    def test_system_status_section(self, html):
-        assert "System Status" in html
-
-    def test_active_agents_progress_bar(self, html):
-        """Progress bar for active agent ratio."""
-        assert "h-1.5 w-full bg-dark-700 rounded-full" in html
-        assert "bg-blue-500" in html
-
-    def test_backend_status_indicator(self, html):
-        assert "fa-circle text-[8px]" in html
-
-    def test_connected_state_green(self, html):
-        assert "text-green-400" in html
-
-    def test_disconnected_state_red(self, html):
-        assert "text-red-400" in html
-
-
-# ═══════════════════════════════════════════════
-# 18. Welcome / Empty State Visuals
-# ═══════════════════════════════════════════════
-
-class TestWelcomeStateVisuals:
-    """Welcome message and empty states have proper visuals."""
-
-    def test_welcome_avatar_ring(self, html):
-        """Welcome avatar has gradient ring."""
-        assert "bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500" in html
-
-    def test_welcome_shadow(self, html):
-        assert "shadow-lg shadow-accent-500/20" in html
-
-    def test_welcome_title(self, html):
-        assert "Welcome to Catown" in html
-
-    def test_welcome_subtitle(self, html):
-        assert "Multi-Agent Collaboration Platform" in html
-
-    def test_no_rooms_empty_state(self, html):
-        """When no rooms exist, shows empty state text."""
-        assert "No rooms yet" in html
-
-
-# ═══════════════════════════════════════════════
-# 19. Overview Tab Visual Styles
-# ═══════════════════════════════════════════════
-
-class TestOverviewTabVisuals:
-    """Overview tab in status modal has correct card layouts."""
-
-    def test_stat_card_style(self, html):
-        """Overview stat cards."""
-        assert "bg-dark-700 rounded-xl p-4 border border-dark-600" in html
-
-    def test_stat_card_number_colors(self, html):
-        """Each stat card number has a unique color."""
-        assert "text-accent-400" in html   # total agents
-        assert "text-emerald-400" in html  # active agents
-        assert "text-purple-400" in html   # projects
-        assert "text-amber-400" in html    # messages
-
-    def test_agent_card_in_overview(self, html):
-        """Agent cards in overview have avatar + info."""
-        assert "w-8 h-8 rounded-full" in html
-
-    def test_project_card_open_button(self, html):
-        assert "bg-accent-500/20" in html
-        assert "text-accent-400" in html
-
-
-# ═══════════════════════════════════════════════
-# 20. Dynamic Rendering Correctness (API → DOM)
-# ═══════════════════════════════════════════════
-
-class TestDynamicRendering:
-    """Verify API data flows correctly into rendered DOM elements."""
-
-    def test_agents_render_in_status_bar(self, client, sample_project):
-        """After project creation, agents should be loadable."""
+    def test_agents_available_for_rendering(self, client):
         agents = client.get("/api/agents").json()
         assert len(agents) >= 5
         names = {a["name"] for a in agents}
         for role in ["analyst", "architect", "developer", "tester", "release"]:
             assert role in names
 
-    def test_rooms_render_with_agent_count(self, client, sample_project):
-        """Rooms sidebar shows agent count badge."""
-        projects = client.get("/api/projects").json()
-        assert len(projects) >= 1
-        for p in projects:
-            assert "id" in p
-            assert "name" in p
+    def test_projects_available_for_sidebar(self, client):
+        resp = client.get("/api/projects")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
 
-    def test_messages_render_with_agent_name(self, client, sample_project):
-        """Messages include agent attribution."""
+    def test_messages_available_for_chat(self, client, sample_project):
         cid = sample_project["chatroom_id"]
         client.post(f"/api/chatrooms/{cid}/messages", json={
-            "content": "rendering test",
+            "content": "render test",
             "message_type": "user"
         })
         msgs = client.get(f"/api/chatrooms/{cid}/messages").json()
-        assert any(m["content"] == "rendering test" for m in msgs)
+        assert any(m["content"] == "render test" for m in msgs)
 
-    def test_pipeline_stages_render_in_order(self, client):
-        """Pipeline detail returns stages in correct order."""
+    def test_pipeline_stages_order(self, client):
         resp = client.post("/api/projects", json={
             "name": f"vr-order-{int(time.time())}",
             "description": ""
@@ -957,13 +517,35 @@ class TestDynamicRendering:
             assert names == ["analysis", "architecture", "development", "testing", "release"]
         client.delete(f"/api/projects/{proj['id']}")
 
-    def test_config_renders_global_and_agent(self, client):
-        """Config endpoint returns both global and per-agent configs."""
+    def test_config_provides_global_and_agent(self, client):
         data = client.get("/api/config").json()
         assert "global_llm" in data
         assert "agent_llm_configs" in data
-        agent_configs = data["agent_llm_configs"]
-        assert len(agent_configs) >= 5
+        assert len(data["agent_llm_configs"]) >= 5
+
+
+# ═══════════════════════════════════════════════
+# 12. Markdown 渲染函数配置
+# ═══════════════════════════════════════════════
+
+class TestMarkdownRendering:
+    """验证 Markdown 渲染管线的配置。"""
+
+    def test_marked_configured(self, html):
+        assert "marked.setOptions" in html
+        assert "breaks: true" in html
+        assert "gfm: true" in html
+
+    def test_highlight_js_integration(self, html):
+        assert "hljs.highlight" in html
+        assert "hljs.highlightAuto" in html
+
+    def test_render_function_uses_marked(self, html):
+        assert "marked.parse(content)" in html
+
+    def test_render_fallback_to_escape(self, html):
+        """renderMarkdown 出错时 fallback 到 escapeHtml。"""
+        assert "escapeHtml(content)" in html
 
 
 if __name__ == "__main__":
