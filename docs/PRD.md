@@ -184,7 +184,7 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 1. **辨识度**：BOSS 看输出能感受到不同"人"在做事
 2. **记忆注入点**：长期记忆的内容直接影响 Agent 行为，而不只是被动检索
 3. **可调性**：BOSS 调整 soul 配置即可改变 Agent 风格，不动职责和规则
-4. **向后兼容**：旧的扁平 `system_prompt` 字段仍可作为 fallback
+4. **可扩展**：未来可以支持 BOSS 在 Web UI 中编辑 Agent 个性
 
 ### 4.3 工具分配
 

@@ -198,12 +198,12 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 | `role.responsibilities` | string[] | 是 | 职责列表 |
 | `role.rules` | string[] | 是 | 硬性规则 |
 
-## 向后兼容
+## 旧设计清理
 
-- 旧的扁平 `system_prompt` 字段仍保留作为 fallback
-- 如果 `soul` 字段存在，优先使用三层结构组装
-- 如果只有 `system_prompt`，直接使用旧逻辑
-- 迁移路径：逐步将现有 agent 迁移到新结构
+项目未发布，不保留兼容层：
+- 删除旧的扁平 `system_prompt` 字段
+- 引擎直接从 `soul` + `role` 组装 prompt
+- 配置校验：缺少 `soul` 或 `role` 时启动报错
 
 ## 好处
 
