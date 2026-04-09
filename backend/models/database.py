@@ -39,10 +39,58 @@ class Agent(Base):
     config = Column(Text, default="{}")            # 完整 agent 配置 JSON
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
-    
+
     # 关系
     memories = relationship("Memory", back_populates="agent")
     messages = relationship("Message", back_populates="agent")
+
+    @property
+    def system_prompt(self) -> str:
+        """从 SOUL JSON 动态组装 system_prompt"""
+        import json as _json
+        try:
+            soul_data = _json.loads(self.soul) if self.soul else {}
+        except (_json.JSONDecodeError, TypeError):
+            soul_data = {}
+
+        parts = []
+        identity = soul_data.get("identity", "")
+        values = soul_data.get("values", [])
+        style = soul_data.get("style", "")
+
+        if identity:
+            parts.append(f"你是 {self.name}。{identity}")
+        else:
+            parts.append(f"你是 {self.name}，一个{self.role}。")
+
+        if values:
+            parts.append("你的原则：\n" + "\n".join(f"- {v}" for v in values))
+        if style:
+            parts.append(f"沟通风格：{style}")
+
+        # 角色职责
+        responsibilities = soul_data.get("responsibilities", [])
+        if responsibilities:
+            parts.append("## 职责\n" + "\n".join(f"- {r}" for r in responsibilities))
+
+        # 规则
+        rules = soul_data.get("rules", [])
+        if rules:
+            parts.append("## 规则\n" + "\n".join(f"- {r}" for r in rules))
+
+        # 如果有完整 config JSON，也从中提取 role 信息
+        try:
+            full_config = _json.loads(self.config) if self.config else {}
+        except (json.JSONDecodeError, TypeError):
+            full_config = {}
+
+        role_cfg = full_config.get("role", {})
+        if role_cfg.get("responsibilities") and not responsibilities:
+            parts.append("## 职责\n" + "\n".join(f"- {r}" for r in role_cfg["responsibilities"]))
+        if role_cfg.get("rules") and not rules:
+            parts.append("## 规则\n" + "\n".join(f"- {r}" for r in role_cfg["rules"]))
+
+        return "\n\n".join(parts) if parts else f"You are {self.name}, a {self.role}."
 
 
 class Project(Base):
