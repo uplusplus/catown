@@ -81,15 +81,110 @@ Pipeline 由 5 个专业 Agent + 1 个人角色组成：
 
 ### 4.2 角色配置
 
-每个 Agent 的配置存储在 `configs/agents.json`，包括：
+每个 Agent 的配置存储在 `configs/agents.json`，采用三层结构：**灵魂 → 角色 → 规则**。
 
-| 配置项 | 说明 |
-|--------|------|
-| `role` | 角色名称 |
-| `system_prompt` | 系统提示词，定义 Agent 行为 |
-| `tools` | 可用工具列表 |
-| `provider` | LLM 配置（baseUrl, apiKey, models） |
-| `default_model` | 默认使用的模型 |
+**当前问题**：现有 `system_prompt` 是一段静态扁平文本，只有职责和规则，没有个性、价值观、沟通风格。各 Agent 辨识度低，读起来像岗位说明书。
+
+**改进方案**：将 system_prompt 拆解为结构化的 SOUL 体系，由引擎动态组装：
+
+```json
+{
+  "developer": {
+    "name": "Dev",
+    "soul": {
+      "identity": "一个注重代码质量的资深工程师，信奉'代码是写给人看的，顺便让机器执行'",
+      "values": ["可读性优先于聪明", "测试覆盖是底线", "遇到不确定的先问再写"],
+      "style": "说话简洁，技术问题不废话，给出代码示例比文字解释更高效",
+      "quirks": "对命名有强迫症，看到不规范的变量名会忍不住改掉"
+    },
+    "role": {
+      "title": "开发工程师",
+      "responsibilities": ["基于 tech-spec 编写代码", "编写单元测试", "用 execute_code 验证"],
+      "rules": ["代码写到 src/", "测试写到 tests/", "遇到接口歧义问 architect"]
+    },
+    "tools": ["read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory"],
+    "skills": ["code-generation", "unit-testing", "refactoring"],
+    "provider": { "baseUrl": "...", "apiKey": "...", "models": [...] },
+    "default_model": "gpt-4"
+  }
+}
+```
+
+**Prompt 组装逻辑**（引擎动态生成）：
+
+```python
+def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
+    parts = []
+    soul = agent_config["soul"]
+    # 1. 灵魂层：身份、价值观、风格
+    parts.append(f"你是 {agent_config['name']}。{soul['identity']}")
+    parts.append("你的原则：\n" + "\n".join(f"- {v}" for v in soul["values"]))
+    parts.append(f"沟通风格：{soul['style']}")
+    # 2. 角色层：职责
+    role = agent_config["role"]
+    parts.append("## 职责\n" + "\n".join(f"- {r}" for r in role["responsibilities"]))
+    # 3. 规则层
+    parts.append("## 规则\n" + "\n".join(f"- {r}" for r in role["rules"]))
+    # 4. 项目记忆注入
+    if project_memory:
+        parts.append(f"## 项目上下文\n{project_memory}")
+    # 5. 长期记忆注入
+    if long_term_memory:
+        parts.append(f"## 你的经验\n{long_term_memory}")
+    return "\n\n".join(parts)
+```
+
+**生成的 system_prompt 示例**：
+
+```
+你是 Dev。一个注重代码质量的资深工程师，信奉"代码是写给人看的，顺便让机器执行"。
+
+你的原则：
+- 可读性优先于聪明
+- 测试覆盖是底线
+- 遇到不确定的先问再写
+
+沟通风格：说话简洁，技术问题不废话，给出代码示例比文字解释更高效。
+
+## 职责
+- 基于 tech-spec 编写代码
+- 编写单元测试
+- 用 execute_code 验证代码
+
+## 规则
+- 代码写到 src/ 目录
+- 测试写到 tests/ 目录
+- 遇到接口歧义问 architect
+
+## 项目上下文
+[从项目记忆注入的关键决策和约定]
+
+## 你的经验
+[从长期记忆注入的通用模式和教训]
+```
+
+**配置字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | Agent 显示名 |
+| `soul.identity` | string | 一句话定义 Agent 是谁、信奉什么 |
+| `soul.values` | string[] | 行为原则，决定 Agent 的决策优先级 |
+| `soul.style` | string | 沟通风格（简洁/详细/严谨/幽默） |
+| `soul.quirks` | string | 个性特征，增加辨识度（可选） |
+| `role.title` | string | 角色头衔 |
+| `role.responsibilities` | string[] | 职责列表 |
+| `role.rules` | string[] | 硬性规则 |
+| `tools` | string[] | 白名单工具（见 §4.5） |
+| `skills` | string[] | 白名单技能（见 §4.5） |
+| `provider` | object | LLM 配置（见 §10） |
+| `default_model` | string | 默认模型 |
+
+**SOUL 的价值**：
+1. **辨识度**：BOSS 看输出能感受到不同"人"在做事
+2. **记忆注入点**：长期记忆的内容直接影响 Agent 行为，而不只是被动检索
+3. **可调性**：BOSS 调整 soul 配置即可改变 Agent 风格，不动职责和规则
+4. **向后兼容**：旧的扁平 `system_prompt` 字段仍可作为 fallback
 
 ### 4.3 工具分配
 
