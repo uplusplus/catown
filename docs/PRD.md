@@ -743,6 +743,93 @@ Pipeline 运行时
 
 Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾。
 
+### 7.4 消息队列调度模式
+
+Agent 同时接收来自 BOSS、其他 Agent、Pipeline Engine 的消息，需要根据来源和 Agent 状态动态选择调度策略，而非全局固定一种模式。
+
+#### 支持的队列模式
+
+**用户面模式**（面向交互体验）：
+
+| 模式 | 行为 | 典型场景 |
+|------|------|---------|
+| `steer` | 立即注入当前流程，可能中断正在执行的任务 | BOSS 紧急指令（暂停、修改方向） |
+| `followup` | 排队等候，Agent 完成当前轮次后再处理 | Agent 正在推理，BOSS 发了非紧急备注 |
+| `collect` | 短时间内多条消息合并为一条，再统一处理 | BOSS 连续补充需求细节 |
+| `steer-backlog` | 立即干预当前运行 + 保留到下一轮 | BOSS 修改决策，需打断又需后续记住 |
+
+**底层策略**（面向系统资源）：
+
+| 策略 | 行为 | 典型场景 |
+|------|------|---------|
+| `queue` | 严格 FIFO | 测试用例批量处理 |
+| `debounce` | 时间窗口内只取最后一条 | 实时参数调整 |
+| `concurrent` | 全部并行 | 互不依赖的独立任务 |
+| `drop` | 系统繁忙时直接丢弃 | 非关键状态更新 |
+
+#### 动态模式选择
+
+按消息来源 + Agent 当前状态自动选择：
+
+**BOSS → Agent**：
+
+| Agent 状态 | 消息特征 | 选择模式 |
+|-----------|---------|---------|
+| 任意 | 含 stop/pause/rollback 关键词 | `steer` |
+| 空闲 | 任意 | 直接处理 |
+| 忙 | 任意 | `steer-backlog` |
+
+**Agent → Agent**：
+
+| 目标 Agent 状态 | 选择模式 |
+|----------------|---------|
+| 空闲 | 直接处理 |
+| LLM 推理中 | `followup` |
+| 工具执行中 | `collect`（合并窗口 1-3s） |
+
+**Pipeline Engine → Agent**：
+
+| 触发类型 | 选择模式 |
+|---------|---------|
+| 下一阶段启动 | `followup` |
+| 超时/错误恢复 | `steer` |
+
+#### 优先级矩阵
+
+| 优先级 | 消息来源 | 处理策略 |
+|--------|---------|---------|
+| P0 | BOSS 紧急指令 | `steer` — 立即中断当前任务 |
+| P1 | BOSS 普通指令 | `steer-backlog` — 插队并保留 |
+| P1 | Pipeline Engine 错误恢复 | `steer` |
+| P2 | Agent 间协作 | `followup` / `collect` |
+| P3 | Pipeline Engine 阶段推进 | `followup` |
+
+#### 公平调度
+
+多个 Agent 向同一 Agent 发消息时，按来源 Agent 轮转处理，防止饿死。BOSS 消息始终插队到最前。
+
+#### 配置项
+
+新增 `configs/agents.json` 队列相关配置：
+
+```json
+{
+  "queue": {
+    "collect_window_ms": 3000,
+    "backpressure_threshold": 50,
+    "stale_ttl_seconds": 300,
+    "fair_scheduling": true
+  }
+}
+```
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `collect_window_ms` | 3000 | 消息合并窗口（毫秒） |
+| `backpressure_threshold` | 50 | 队列积压超过此值触发背压 |
+| `stale_ttl_seconds` | 300 | 消息过期时间（秒），超时丢弃 |
+| `fair_scheduling` | true | 是否启用公平调度 |
+
 ---
 
 ## 8. 监控与人工介入
