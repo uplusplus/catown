@@ -107,6 +107,254 @@ Pipeline 由 5 个专业 Agent + 1 个人角色组成：
 - 可在 `pipelines.json` 中引用新角色
 - Agent 的 system_prompt 和工具配置完全独立
 
+### 4.5 工具/技能白名单机制
+
+**每个 Agent 仅能调用其配置中声明的工具和技能。** 工具访问不是全局共享的，而是严格的白名单控制。
+
+| 维度 | 说明 |
+|------|------|
+| 工具声明 | 在 `agents.json` 的 `tools` 数组中明确定义 |
+| 运行时检查 | 每次工具调用前，引擎验证 Agent 是否有权使用该工具 |
+| 拒绝策略 | 无权调用时返回明确错误，不静默忽略 |
+| 动态调整 | 修改 `agents.json` 后热加载，无需重启 |
+
+**工具白名单示例**：
+
+```json
+{
+  "analyst": {
+    "tools": ["web_search", "read_file", "write_file", "retrieve_memory"],
+    "skills": ["document-analysis", "requirement-decomposition"]
+  },
+  "developer": {
+    "tools": ["read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory"],
+    "skills": ["code-generation", "unit-testing", "refactoring"]
+  },
+  "release": {
+    "tools": ["read_file", "write_file", "list_files", "execute_code", "retrieve_memory"],
+    "skills": ["changelog-generation", "version-tagging"]
+  }
+}
+```
+
+**临时授权机制**：
+
+当 Agent 需要使用白名单之外的工具时（例如 developer 在编码时需要 `web_search` 查阅 API 文档），Agent 可主动发起临时授权请求：
+
+```
+Agent 需要 web_search，但不在白名单中
+    │
+    ├── Agent 发送授权请求（含理由）
+    │       │
+    │       ├── 请求格式:
+    │       │   "需要临时使用 web_search 查询 FastAPI WebSocket 文档，
+    │       │    当前 tech-spec.md 中的实现方案需要补充细节。"
+    │       │
+    │       └── 前端弹出交互卡片:
+    │           ┌──────────────────────────────────────┐
+    │           │ 🔐 developer 请求临时授权              │
+    │           │ 工具: web_search                       │
+    │           │ 理由: 查询 FastAPI WebSocket 文档       │
+    │           │                                       │
+    │           │ [✅ 本次允许] [🔄 本阶段允许] [❌ 拒绝] │
+    │           └──────────────────────────────────────┘
+    │
+    ├── BOSS 审批:
+    │       ├── 本次允许 → 单次调用授权，不改变白名单
+    │       ├── 本阶段允许 → 在当前 Stage 内加入白名单，Stage 结束后移除
+    │       └── 拒绝 → Agent 收到拒绝通知，调整方案
+    │
+    └── 记录审计: 所有授权请求和审批结果写入 audit_logs
+```
+
+**Skills 体系**：
+- Skills 是工具的高层封装，由系统 prompt 和工具组合定义
+- 每个 Skill 可声明其依赖的工具列表
+- Agent 的可用 Skills 也通过白名单控制
+- Skills 配置存储在 `configs/skills.json`，引用时按 `agent.skills` 白名单过滤
+
+### 4.6 三层记忆体系
+
+每个 Agent 支持三层记忆，分别服务于不同时间尺度的认知需求：
+
+```
+┌─────────────────────────────────────────────────┐
+│              Agent 长期记忆                      │
+│         (agent-level, 持久存储)                  │
+│    工作模式、原则、通用经验、教训                  │
+├─────────────────────────────────────────────────┤
+│              项目记忆                            │
+│         (project-level, 项目周期)                │
+│    项目上下文、关键决策、架构约定                  │
+├─────────────────────────────────────────────────┤
+│              短期记忆                            │
+│         (session-level, 会话生命周期)             │
+│    当前任务的对话上下文、中间状态                   │
+└─────────────────────────────────────────────────┘
+```
+
+#### 4.6.1 短期记忆（会话级）
+
+| 属性 | 说明 |
+|------|------|
+| 生命周期 | 单个 Stage 执行期间 |
+| 存储位置 | 内存，Stage 结束后可选持久化 |
+| 内容 | 当前对话历史、工具调用记录、中间推理过程 |
+| 清理策略 | Stage 完成后自动归档到项目记忆（摘要化） |
+
+#### 4.6.2 项目记忆（项目级）
+
+| 属性 | 说明 |
+|------|------|
+| 生命周期 | 项目创建 → 项目归档 |
+| 存储位置 | `projects/{project_id}/.catown/memory/` |
+| 内容 | 项目关键决策、架构约定、遇到的问题及解决方案、代码约定 |
+| 组织方式 | 按类别分文件（decisions.md, conventions.md, issues.md） |
+| 访问方式 | Agent 通过 `retrieve_memory` 工具检索项目记忆 |
+
+#### 4.6.3 长期记忆（Agent 级）
+
+| 属性 | 说明 |
+|------|------|
+| 生命周期 | Agent 存续期间，跨项目保留 |
+| 存储位置 | `configs/agents/{agent_name}/memory/` |
+| 内容 | 工作模式、设计原则、通用经验、偏好设置、过往教训 |
+| 组织方式 | 向量数据库 + 关键词索引，支持语义检索 |
+| 访问方式 | Agent 通过 `retrieve_memory` 工具按语义查询 |
+
+**长期记忆持久化规则** — 基础判定矩阵：
+
+| 记忆类型 | 是否泛化 | 判定标准 | 示例 |
+|----------|----------|----------|------|
+| 工作模式 | ✅ 是 | 可重复使用的做事方法 | "先写测试再写实现"、"API 设计遵循 REST 规范" |
+| 设计原则 | ✅ 是 | 跨项目适用的决策标准 | "优先选择活跃维护的开源库"、"数据库设计第三范式" |
+| 通用经验 | ✅ 是 | 与具体业务无关的技术知识 | "FastAPI 的 WebSocket 在测试环境需用 TestClient" |
+| 常见坑 | ✅ 是 | 可避免的重复错误 | "Python 3.10 下 pydantic v2 需显式声明 Optional" |
+| 偏好 | ✅ 是 | Agent 的风格与习惯 | "测试文件命名 test_xxx.py 而非 xxx_test.py" |
+| 项目特定细节 | ❌ 否 | 与具体项目强绑定 | "用户管理系统用 PostgreSQL，表结构是..." |
+| 一次性决策 | ❌ 否 | 无复用价值 | "这次选了红色主题色" |
+| 上下文片段 | ❌ 否 | 临时对话内容 | "BOSS 说下周三交付" |
+
+**不确定记忆 → BOSS 确认**：当 Agent 无法确定某条记忆是否应该写入长期记忆时，不自行决定，而是通过聊天框的**交互选择框**提交给 BOSS 确认：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 🧠 developer 发现一条可能值得长期记忆的经验                    │
+│                                                              │
+│ "在 WebSocket 连接中，心跳超时设置为 30s 会导致移动端          │
+│  在弱网环境下频繁断线重连。建议改用自适应心跳：                  │
+│  基础间隔 60s，指数退避。"                                    │
+│                                                              │
+│ 这条记忆应该：                                                │
+│                                                              │
+│ ○ 💾 写入长期记忆（作为通用模式，所有项目适用）                  │
+│ ○ 📁 写入项目记忆（仅限当前项目）                              │
+│ ○ 🗑️  忽略（不需要持久化）                                    │
+│ ○ ✏️  编辑后保存                                             │
+│                                                              │
+│ [确认选择]                                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 4.6.4 聊天交互选择框机制
+
+**聊天框不仅支持文本消息，还支持交互式选择框（Choice Box），用于 BOSS 发表意见、做出选择。**
+
+**交互组件类型**：
+
+| 组件类型 | 用途 | 数据格式 |
+|----------|------|----------|
+| `choice` | 单选/多选 | 选项列表 + 默认值 |
+| `confirm` | 确认/取消 | 二元决策 |
+| `rating` | 评分 | 1-5 星，用于记忆价值评估 |
+| `edit` | 文本编辑 | 预填文本，BOSS 可修改后提交 |
+
+**Choice Box 数据结构**：
+
+```json
+{
+  "id": "choice_20260407_001",
+  "type": "choice",
+  "source_agent": "developer",
+  "context": "记忆持久化决策",
+  "question": "这条记忆应该：",
+  "options": [
+    {"id": "save_long", "label": "💾 写入长期记忆", "description": "作为通用模式，所有项目适用"},
+    {"id": "save_project", "label": "📁 写入项目记忆", "description": "仅限当前项目"},
+    {"id": "ignore", "label": "🗑️ 忽略", "description": "不需要持久化"},
+    {"id": "edit", "label": "✏️ 编辑后保存", "description": "修改内容后保存"}
+  ],
+  "multi": false,
+  "timeout_seconds": null,
+  "created_at": "2026-04-07T14:30:00Z"
+}
+```
+
+**Choice Box 使用场景**：
+
+| 场景 | 触发方 | 选项 |
+|------|--------|------|
+| 记忆持久化不确定 | Agent | 写入长期 / 写入项目 / 忽略 / 编辑 |
+| 工具临时授权 | Agent | 本次允许 / 本阶段允许 / 拒绝 |
+| Pipeline 阶段审批 | 系统 | 通过 / 打回 / 修改后继续 |
+| 产出物确认 | Agent | 确认满意 / 需要修改 / 重做 |
+| 设计方案选择 | Agent | 方案 A / 方案 B / 都不用 |
+
+**BOSS 响应流程**：
+
+```
+BOSS 在聊天框看到 Choice Box
+    │
+    ├── 点选选项 → 即时响应，Agent 立刻收到结果
+    ├── 选择 "编辑" → 弹出文本编辑框，BOSS 修改后提交
+    ├── 超时未响应 → 使用默认选项（如有），或 Agent 主动提醒
+    └── 取消 → Agent 收到取消通知，调整策略
+```
+
+#### 4.6.5 睡眠记忆整理机制
+
+**Agent 在空闲时自动进行记忆整理和优化。触发条件是连续空闲时长，而非固定时间段。**
+
+```
+Agent 进入空闲状态（无活跃 Pipeline Stage）
+    │
+    ├── 记录空闲开始时间 idle_start
+    │
+    ├── 连续空闲 > idle_threshold（可配置） → 触发整理
+    │       │
+    │       ├── 1. 短期记忆 → 项目记忆（摘要提取）
+    │       ├── 2. 项目记忆审查 → 按规则判定是否泛化到长期记忆
+    │       │       ├── 明确可泛化（工作模式/原则/通用经验） → 自动写入
+    │       │       └── 不确定 → 生成 Choice Box 等 BOSS 确认
+    │       ├── 3. 长期记忆去重和压缩
+    │       └── 4. 标记 low-value 记忆待清理
+    │
+    └── 有新任务到来 → 立即中断整理，恢复工作
+```
+
+**睡眠配置项**（`agents.json`）：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `sleep.enabled` | true | 是否启用睡眠整理 |
+| `sleep.idle_threshold_minutes` | 30 | 连续空闲多少分钟后触发整理 |
+| `sleep.preferred_window_start` | "23:00" | 优先整理时段（非强制，空闲时可随时触发） |
+| `sleep.preferred_window_end` | "07:00" | 优先整理时段结束 |
+| `sleep.max_retain_days` | 30 | 短期记忆最大保留天数 |
+| `sleep.long_term_max_tokens` | 100000 | 长期记忆最大 token 数 |
+| `sleep.auto_generalize` | false | 是否自动泛化（false=每次都问 BOSS） |
+
+**睡眠整理流程**：
+
+1. **短期 → 项目记忆**：对每个完成的 Stage，提取关键信息（决策、问题、解决方案）写入项目记忆
+2. **项目记忆审查**：逐条审查，按判定矩阵判断是否泛化到长期记忆
+   - 类型匹配"工作模式/原则/通用经验" → 自动写入长期记忆
+   - 类型不明确 → 生成 Choice Box 等待 BOSS 确认
+   - `auto_generalize=true` 时全部自动处理（省 BOSS 时间，但可能误判）
+3. **长期记忆压缩**：超过 `max_retain_tokens` 时，按价值评分淘汰低价值条目
+4. **清理**：删除超过 `max_retain_days` 的短期记忆归档文件
+5. **可中断**：新任务到来时立即中止整理，下次空闲继续
+
 ---
 
 ## 5. Pipeline 工作流引擎
@@ -268,6 +516,8 @@ PENDING → RUNNING → COMPLETED
 
 ### 6.1 项目 Workspace
 
+**核心约束：每个项目拥有完全隔离的 Workspace。Agent 只能访问当前项目的工作目录，严禁跨项目访问。**
+
 每个项目独立目录结构：
 
 ```
@@ -285,8 +535,28 @@ projects/
     ├── CHANGELOG.md             # Release 产出
     └── .catown/
         ├── pipeline.json        # Pipeline 运行状态
-        └── stage_context/       # 各阶段上下文快照
+        ├── stage_context/       # 各阶段上下文快照
+        └── memory/              # 项目记忆存储
+            ├── decisions.md     # 关键决策记录
+            ├── conventions.md   # 代码/架构约定
+            └── issues.md        # 遇到的问题与方案
 ```
+
+**隔离机制**：
+
+| 维度 | 说明 |
+|------|------|
+| 文件系统隔离 | Agent 工具读写操作限定在 `projects/{project_id}/` 下 |
+| 路径校验 | `read_file` / `write_file` / `execute_code` 在执行前校验路径是否在项目目录内 |
+| 绝对路径拒绝 | Agent 传入的绝对路径被强制转换为项目相对路径 |
+| Symlink 防护 | 解析路径前展开所有符号链接，校验最终路径仍在项目目录内；对 Agent 创建的 symlink 目标也做校验 |
+| 跨项目禁止 | Agent 不可访问其他项目的 `.catown/memory/` 或产出物 |
+| 环境变量 | Agent 进程注入 `PROJECT_WORKSPACE` 环境变量，指向当前项目目录 |
+
+**隔离的目的**：
+- **安全**：防止 Agent 误读/误写其他项目的敏感代码
+- **可预测**：每个项目的行为完全独立，不受其他项目干扰
+- **审计**：所有文件操作可追溯到具体项目
 
 ### 6.2 阶段间上下文传递
 
@@ -402,11 +672,222 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 | 发指令 | 直接给指定 Agent 发消息 | `POST /api/pipelines/{id}/instruct` |
 | 修改产出物 | 直接编辑 Agent 生成的文件 | 文件编辑器 |
 
+### 8.3 Agent 操作可视化
+
+**Agent 与 LLM 的对话内容、执行工具调用的动作，在聊天框中以折叠卡片形式呈现，BOSS 可随时展开查看详情。**
+
+#### 折叠卡片类型
+
+| 卡片类型 | 图标 | 默认状态 | 展开内容 |
+|----------|------|----------|----------|
+| `llm_chat` | 🧠 | 折叠 | **关键变更摘要**（而非完整 prompt）+ token 用量；"查看原始"展开完整内容 |
+| `tool_call` | 🔧 | 折叠 | 工具名 + 入参 + 执行结果（成功/失败 + 输出） |
+| `memory_query` | 🧩 | 折叠 | 查询内容 + 匹配的回忆条目 + 相关性评分 |
+| `memory_write` | 📝 | 折叠 | 写入的记忆类别 + 内容摘要 |
+| `memory_decision` | 🤔 | 展开 | 记忆持久化决策 → Choice Box 等 BOSS 选择 |
+| `auth_request` | 🔐 | 展开 | 工具临时授权请求 → Choice Box 等 BOSS 审批 |
+| `agent_message` | 💬 | 展开 | Agent 间通信（保持默认展开，方便追踪协作） |
+| `error` | ❌ | 展开 | 错误详情 + 堆栈 + 恢复操作（默认展开） |
+
+#### LLM 卡片设计（重点优化）
+
+LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.md、代码文件、系统指令），直接展示没有意义。LLM 卡片的设计原则是**展示 BOSS 真正关心的信息**：
+
+```
+🧠 LLM 思考 [developer] ⮟  (gpt-4 · 1247 tokens in / 583 out · 2.3s)
+┌─ 关键变更 ──────────────────────────────────────────┐
+│ 📄 新增上下文: tech-spec.md (8.2KB)                  │
+│ 📄 新增上下文: src/models.py (1.4KB)                  │
+│ ❓ 回答了 architect 的问题: "认证方式用 JWT"            │
+│ 📝 下一步计划: 实现 /api/auth/login 端点              │
+└──────────────────────────────────────────────────────┘
+└── [展开后]
+    ┌─ LLM 响应摘要 ──────────────────────────────┐
+    │ 决定实现 JWT 认证，包括 login、refresh、       │
+    │ middleware 三个模块。先从 login 端点开始。     │
+    └───────────────────────────────────────────────┘
+    ┌─ 工具调用计划 ──────────────────────────────┐
+    │ 1. read_file(src/main.py) — 检查现有路由      │
+    │ 2. write_file(src/auth.py) — 创建认证模块     │
+    │ 3. write_file(src/middleware.py) — 中间件     │
+    └───────────────────────────────────────────────┘
+    [📋 查看完整 prompt] [💬 查看完整 response]
+```
+
+**"关键变更"的生成规则**：对比本次 LLM 调用与上一次调用的上下文差异：
+
+| 变更类型 | 检测方式 | 展示 |
+|----------|----------|------|
+| 新增文件上下文 | prompt 中新增的文件路径 | `📄 新增上下文: filename (size)` |
+| 文件内容变更 | 同一文件内容 diff | `📝 变更上下文: filename (+N/-M lines)` |
+| 新增工具结果 | 上次调用后新产生的工具输出 | `🔧 收到工具结果: tool_name → summary` |
+| 回答了某问题 | LLM 响应中识别到回答模式 | `❓ 回答了 {agent} 的问题: "{question}"` |
+| 提出新问题 | LLM 响应中识别到提问模式 | `💬 向 {agent} 提出问题: "{question}"` |
+| 下一步计划 | LLM 响应中的意图声明 | `📝 下一步计划: {plan}` |
+
+#### 折叠卡片交互
+
+```
+聊天框实时滚动
+    │
+    ├── 🧠 LLM 思考 [developer] ⮟ 展开 (3 tokens: 1247 in / 583 out)
+    │     └── [展开后] 完整 prompt + response + token 明细
+    │
+    ├── 🔧 执行工具: write_file(src/main.py) ⮟
+    │     └── [展开后] 入参内容 + 写入结果: 3.2KB
+    │
+    ├── 💬 developer → architect: 用户认证方式用 JWT 还是 Session？
+    │
+    └── ❌ execute_code 超时 (30s) ⮟
+          └── [展开后] 命令详情 + 堆栈 + [重试] [跳过] 按钮
+```
+
+#### 数据格式
+
+每个卡片对应一条 `AgentOperation` 记录：
+
+```json
+{
+  "id": "op_20260407_001",
+  "run_id": 42,
+  "agent": "developer",
+  "type": "tool_call",
+  "timestamp": "2026-04-07T14:23:01Z",
+  "collapsed": true,
+  "icon": "🔧",
+  "title": "执行工具: write_file(src/main.py)",
+  "summary": "写入成功, 3.2KB",
+  "detail": {
+    "tool": "write_file",
+    "params": {"path": "src/main.py", "content": "..."},
+    "result": {"success": true, "bytes_written": 3200},
+    "duration_ms": 142
+  }
+}
+```
+
+#### 实时推送
+
+- 每条 AgentOperation 通过 WebSocket 实时推送到前端
+- 前端按时间线渲染为折叠卡片流
+- BOSS 可按 Agent 筛选、按类型筛选、搜索关键词
+- 支持"全展开" / "全折叠"快捷操作
+
 ---
 
-## 9. LLM 配置
+## 9. 审计机制
 
-### 9.1 配置能力
+**数据库记录 Agent 与 LLM 的每一次交互、每一次工具调用及结果，并支持记忆滚动和定期清理。**
+
+### 9.1 审计范围
+
+| 审计项 | 字段 | 说明 |
+|--------|------|------|
+| LLM 对话 | prompt, response, model, tokens | Agent 向 LLM 发送的每次请求和收到的回复 |
+| 工具调用 | tool_name, params, result, duration | 每次工具执行的入参和返回值 |
+| 记忆操作 | action, memory_layer, content | 每次记忆读写操作（含查询条件和写入内容） |
+| Agent 消息 | from, to, content, type | Agent 间及 Agent 与人的通信 |
+| Pipeline 事件 | event, stage, status, timestamp | Pipeline 状态变迁 |
+
+### 9.2 数据模型
+
+**audit_logs** — 审计日志主表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PK | 主键 |
+| run_id | INTEGER FK | 关联 PipelineRun |
+| agent_name | TEXT | Agent 名称 |
+| stage_name | TEXT | 所在阶段 |
+| event_type | TEXT | llm_chat / tool_call / memory_op / agent_msg / pipeline_event |
+| timestamp | DATETIME | 事件时间 |
+| duration_ms | INTEGER | 执行耗时（毫秒） |
+| token_input | INTEGER | LLM 输入 token 数 |
+| token_output | INTEGER | LLM 输出 token 数 |
+| summary | TEXT | 事件摘要（用于列表展示） |
+
+**audit_details** — 审计详情（大字段分离）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PK | 主键 |
+| log_id | INTEGER FK | 关联 audit_logs |
+| request_payload | TEXT | 请求内容（JSON，LLM prompt 或工具入参） |
+| response_payload | TEXT | 响应内容（JSON，LLM 回复或工具返回） |
+| error_info | TEXT | 错误信息（如有） |
+
+### 9.3 滚动清理策略
+
+**审计日志有生命周期，过期自动清理，避免无限膨胀。**
+
+| 日志类型 | 默认保留期 | 说明 |
+|----------|-----------|------|
+| LLM 对话详情 | 7 天 | prompt/response 占空间大，快速清理 |
+| 工具调用详情 | 14 天 | 保留期稍长，便于排障 |
+| 工具调用摘要 | 90 天 | 摘要（工具名+结果状态）保留更久 |
+| Pipeline 事件 | 180 天 | 项目流水线状态变更 |
+| Agent 消息 | 30 天 | Agent 间通信 |
+
+**清理机制**：
+
+```python
+# 清理任务（由 sleep 机制或定时 cron 触发）
+cleanup_rules = {
+    "llm_chat": {"detail_days": 7, "summary_days": 90},
+    "tool_call": {"detail_days": 14, "summary_days": 90},
+    "memory_op": {"detail_days": 7, "summary_days": 30},
+    "agent_msg": {"detail_days": 30, "summary_days": 30},
+    "pipeline_event": {"detail_days": 180, "summary_days": 180},
+}
+```
+
+**日志锁定机制**：
+
+当某个 PipelineRun 需要事后调查（出问题、争议复盘），BOSS 可以锁定其审计日志，跳过自动清理：
+
+```
+BOSS 发现 Pipeline 运行异常
+    │
+    ├── POST /api/audit/lock { run_id: 42, reason: "产出物质量问题追溯" }
+    │       │
+    │       ├── audit_logs 表增加 locked=true 标记
+    │       ├── audit_details 中关联 run_id 的记录同步锁定
+    │       └── 清理任务扫描时跳过所有 locked=true 的记录
+    │
+    ├── 调查期间，日志完整保留，不受 retention 策略影响
+    │
+    └── 调查完毕:
+            POST /api/audit/unlock { run_id: 42 }
+            → 标记移除，恢复正常的清理周期（从解锁时间重新计算）
+```
+
+**清理流程**：
+1. 定期（每日凌晨）扫描 `audit_details` 表，删除超过保留期**且未锁定**的详情记录
+2. 定期扫描 `audit_logs` 表，删除超过摘要保留期**且未锁定**的记录
+3. 清理前导出统计：清理条目数、释放空间大小
+4. 可配置 `audit.retention_override` 覆盖默认保留期（如项目合规需要）
+
+### 9.4 审计查询 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/audit/logs` | 查询审计日志（支持 agent/stage/type/time 过滤） |
+| GET | `/api/audit/logs/{id}` | 获取单条审计日志详情 |
+| GET | `/api/audit/logs/{id}/detail` | 获取请求/响应完整内容 |
+| GET | `/api/audit/stats` | 审计统计（token 用量、工具调用次数等） |
+| POST | `/api/audit/cleanup` | 手动触发清理（管理员） |
+
+### 9.5 安全与隐私
+
+- 审计日志仅限项目成员和 BOSS 访问
+- LLM 对话详情可能包含敏感信息（代码、业务数据），按保留期自动销毁
+- 导出审计日志时可选择脱敏（隐藏 prompt/response 内容，仅保留摘要）
+
+---
+
+## 10. LLM 配置
+
+### 10.1 配置能力
 
 ✅ **已实现**。唯一配置源：`configs/agents.json`，两级配置架构。
 
@@ -421,7 +902,7 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 | `agent.provider.apiKey` | per-Agent | 独立 API Key（覆盖全局） |
 | `agent.default_model` | per-Agent | 指定默认模型（覆盖全局） |
 
-### 9.2 分级策略建议
+### 10.2 分级策略建议
 
 | Agent | 建议模型等级 | 原因 |
 |-------|------------|------|
@@ -433,15 +914,15 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 
 > 以上仅为建议，实际由 `agents.json` 决定，随时可调。
 
-### 9.3 运行时热加载
+### 10.3 运行时热加载
 
 修改 `agents.json` 后调用 `POST /api/config/reload`，无需重启服务。
 
 ---
 
-## 10. 数据模型
+## 11. 数据模型
 
-### 10.1 新增表
+### 11.1 新增表
 
 **pipelines** — Pipeline 定义
 
@@ -508,15 +989,15 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 | content | TEXT | 消息内容 |
 | created_at | DATETIME | 创建时间 |
 
-### 10.2 保留现有表
+### 11.2 保留现有表
 
 `agents`, `projects`, `chatrooms`, `messages`, `memories`, `agent_assignments` 保持不变。
 
 ---
 
-## 11. API 设计
+## 12. API 设计
 
-### 11.1 Pipeline 管理
+### 12.1 Pipeline 管理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -533,7 +1014,7 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 | GET | `/api/pipelines/{id}/messages` | 获取 Agent 协作消息 |
 | GET | `/api/pipelines/{id}/artifacts` | 获取产出物列表 |
 
-### 11.2 配置
+### 12.2 配置
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -543,9 +1024,9 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 
 ---
 
-## 12. 技术架构
+## 13. 技术架构
 
-### 12.1 技术栈
+### 13.1 技术栈
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
@@ -556,7 +1037,7 @@ Agent 间协作消息持久化到 `pipeline_messages` 表，BOSS 可事后回顾
 | 实时通信 | WebSocket + SSE | Agent 消息 + 流式输出 |
 | 部署 | Docker + docker-compose | 单进程 |
 
-### 12.2 新增模块
+### 13.2 新增模块
 
 ```
 backend/
@@ -574,7 +1055,7 @@ backend/
     └── database.py        ✅  新增 5 张 Pipeline 表
 ```
 
-### 12.3 关键设计决策
+### 13.3 关键设计决策
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
@@ -587,7 +1068,7 @@ backend/
 
 ---
 
-## 13. 实施计划
+## 14. 实施计划
 
 ### 项目进度
 
@@ -608,9 +1089,9 @@ backend/
 
 ---
 
-## 14. 验收标准
+## 15. 验收标准
 
-### 14.1 功能验收
+### 15.1 功能验收
 
 - [x] 提交原始需求后，Pipeline 自动执行 5 个阶段
 - [x] 每个阶段的 Agent 使用正确的 system_prompt 和工具
@@ -621,7 +1102,7 @@ backend/
 - [x] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
 - [x] 错误自动重试，超过阈值暂停等人工
 
-### 14.2 技术验收
+### 15.2 技术验收
 
 - [x] 所有配置来源 agents.json（无 .env LLM 依赖）
 - [x] Pipeline 状态持久化到数据库
@@ -657,9 +1138,9 @@ backend/
 
 ---
 
-## 15. 验证报告
+## 16. 验证报告
 
-### 15.1 单元测试 (2026-04-08)
+### 16.1 单元测试 (2026-04-08)
 
 - **总用例**: 233
 - **通过**: 233
@@ -667,7 +1148,7 @@ backend/
 - **通过率**: 100%
 - **覆盖模块**: Agent、API 路由、聊天室、协作工具、配置模型、核心模块、数据库、文件操作、LLM 客户端、两级 LLM 配置、启动流程、工具注册、WebSocket
 
-### 15.2 集成测试 (2026-04-08)
+### 16.2 集成测试 (2026-04-08)
 
 - **总用例**: 24
 - **通过**: 24
@@ -675,7 +1156,7 @@ backend/
 - **通过率**: 100%
 - **覆盖**: 健康检查、Agent 注册（5 个 Pipeline 角色）、工具注册（14 个工具）、Pipeline API、配置管理、项目 CRUD、消息链路、协作状态
 
-### 15.3 修复记录 (2026-04-08)
+### 16.3 修复记录 (2026-04-08)
 
 | # | 问题 | 修复 |
 |---|------|------|
@@ -687,7 +1168,7 @@ backend/
 | 6 | `test_regression_v3.py` agent 数量断言（==4） | 更新为 5 |
 | 7 | `requirements.txt` 与 `requirements-test.txt` pytest 版本冲突 | 统一使用 pytest>=8.0 |
 
-### 15.4 独立验证 (2026-04-08 18:05 CST)
+### 16.4 独立验证 (2026-04-08 18:05 CST)
 
 **环境**: Linux 6.8.0-100-generic, Python 3.12, 从 GitHub 重新 clone 独立验证。
 
@@ -726,7 +1207,7 @@ backend/
 
 系统所有核心功能已实现完成，单元测试和集成测试 100% 通过。回归测试中的失败均为测试环境限制（未配置 LLM、未启动前端），非代码质量问题。
 
-### 15.5 E2E 集成测试 (2026-04-09)
+### 16.5 E2E 集成测试 (2026-04-09)
 
 **环境**: Linux 6.8.0-100-generic, Python 3.12.3, pytest 9.0.3。
 
@@ -766,15 +1247,15 @@ backend/
 
 ---
 
-## 16. 快速启动
+## 17. 快速启动
 
-### 16.1 安装依赖
+### 17.1 安装依赖
 
 ```bash
 cd backend && pip install -r requirements.txt
 ```
 
-### 16.2 配置 LLM
+### 17.2 配置 LLM
 
 编辑 `backend/configs/agents.json`，在 `global_llm` 段设置 LLM 连接信息：
 
@@ -793,7 +1274,7 @@ cd backend && pip install -r requirements.txt
 
 也可使用 `.env` 中的环境变量回退：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
 
-### 16.3 启动
+### 17.3 启动
 
 ```bash
 cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -804,7 +1285,7 @@ cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-## 17. 常见问题
+## 18. 常见问题
 
 ### Q: Agent 没有回复
 
