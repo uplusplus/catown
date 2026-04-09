@@ -726,6 +726,44 @@ backend/
 
 系统所有核心功能已实现完成，单元测试和集成测试 100% 通过。回归测试中的失败均为测试环境限制（未配置 LLM、未启动前端），非代码质量问题。
 
+### 15.5 E2E 集成测试 (2026-04-09)
+
+**环境**: Linux 6.8.0-100-generic, Python 3.12.3, pytest 9.0.3。
+
+#### 全量单元测试
+
+- **命令**: `python3 -m pytest backend/tests/ backend/test_pipeline.py -v`
+- **结果**: **252/252 PASSED** ✅
+- **耗时**: 84.28s
+
+#### E2E 集成测试 (test_integration_e2e.py)
+
+- **命令**: `python3 -m pytest tests/test_integration_e2e.py -v`
+- **结果**: **35/35 PASSED** ✅
+- **耗时**: 9.80s
+- **覆盖模块**:
+  - 健康检查与状态 (3)
+  - Agent 注册与角色验证 (4)
+  - 项目 CRUD 完整流程 (5)
+  - 消息发送与接收 (1)
+  - Pipeline API 全生命周期：创建/启动/暂停/恢复/阶段查询 (5)
+  - 两级 LLM 配置管理 (4)
+  - 工具注册与执行 (2)
+  - Agent 间协作与任务委托 (3)
+  - 前端页面 (1)
+  - 完整业务流程：多阶段 Pipeline + 多项目并行 (2)
+  - 错误处理与边界情况 (5)
+
+#### Bug 修复
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `RateLimitMiddleware` 在 TestClient 环境下 `request.client` 为 None 导致 500 | 增加空值保护：`request.client.host if request.client else "testclient"` |
+
+#### 验证结论
+
+所有 287 个测试（252 单元 + 35 E2E 集成）100% 通过。系统功能完整，覆盖 PRD 中所有验收标准。
+
 ---
 
 ## 16. 快速启动

@@ -68,7 +68,7 @@ rate_limiter = RateLimiter(
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host
+        client_ip = request.client.host if request.client else "testclient"
         if not rate_limiter.is_allowed(client_ip):
             from fastapi.responses import JSONResponse
             logger.warning(f"[RateLimit] IP {client_ip} exceeded rate limit")
