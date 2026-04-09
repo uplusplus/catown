@@ -50,14 +50,26 @@ class WebSocketManager:
     
     async def broadcast(self, message: Dict):
         """广播消息给所有连接"""
+        dead = []
         for connection in self.active_connections:
-            await connection.send_json(message)
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for conn in dead:
+            self.active_connections.discard(conn)
     
     async def broadcast_to_room(self, message: Dict, chatroom_id: int):
         """广播消息到特定聊天室"""
         if chatroom_id in self.room_connections:
+            dead = []
             for connection in self.room_connections[chatroom_id]:
-                await connection.send_json(message)
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    dead.append(connection)
+            for conn in dead:
+                self.room_connections[chatroom_id].discard(conn)
     
     async def receive(self, websocket: WebSocket):
         """处理接收消息的循环"""
