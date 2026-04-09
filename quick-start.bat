@@ -14,7 +14,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cd /d "%~dp0backend"
+pushd "%~dp0backend"
 
 REM Install dependencies if needed
 python -c "import fastapi" >nul 2>&1
@@ -38,7 +38,8 @@ echo   Frontend:  http://localhost:8000
 echo   API Docs:  http://localhost:8000/docs
 echo.
 
-start "Catown" cmd /c "python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+popd
 
 timeout /t 3 /nobreak >nul
 start http://localhost:8000

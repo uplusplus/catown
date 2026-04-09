@@ -13,7 +13,7 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-cd "$(dirname "$0")/backend"
+pushd "$(dirname "$0")/backend"
 
 # Install dependencies if needed
 if ! python3 -c "import fastapi" &> /dev/null; then
@@ -37,3 +37,4 @@ echo "  Press Ctrl+C to stop."
 echo ""
 
 python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+popd
