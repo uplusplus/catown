@@ -1,4 +1,4 @@
-# -*- coding: -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 GitHub Management Tool
 
