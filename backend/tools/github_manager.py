@@ -1,23 +1,43 @@
-# -*- coding: utf-8 -*-
+# -*- coding: -*- coding: utf-8 -*-
 """
 GitHub Management Tool
 
-Lets the release agent (and others) manage GitHub projects via the REST API.
+Lets agents manage GitHub projects via the REST API + local git.
 
 Supported actions:
+  # Repo
   - repo_info:        Get repository info
+  - fork_repo:        Fork a repository
+  # Branches
   - list_branches:    List branches
+  - create_branch:    Create a branch
+  - delete_branch:    Delete a branch
+  # Tags & Releases
   - list_tags:        List tags
-  - create_tag:       Create a tag (annotated, lightweight, or from existing commit)
+  - create_tag:       Create a tag (annotated or lightweight)
   - list_releases:    List releases
-  - create_release:   Create a release (with tag, body, draft/prerelease)
-  - update_release:   Update an existing release
+  - create_release:   Create a release
+  - update_release:   Update a release
   - delete_release:   Delete a release
+  # Issues
   - list_issues:      List issues (with filters)
   - create_issue:     Create an issue
   - close_issue:      Close an issue
+  # Pull Requests
   - list_prs:         List pull requests
   - create_pr:        Create a pull request
+  # Files & Content
+  - list_contents:    List files/dirs in a repo path
+  - get_file:         Get file content (decoded)
+  - create_file:      Create a new file
+  - update_file:      Update an existing file
+  - delete_file:      Delete a file
+  - clone_repo:       Clone repo to workspace (local git)
+  # Commits
+  - list_commits:     List commits (with path/author filters)
+  - get_commit:       Get commit details (files changed, diff)
+  # Search
+  - search_code:      Search code in a repo
 
 Authentication: set GITHUB_TOKEN env var (classic PAT or fine-grained with repo scope).
 Repository:     set GITHUB_REPO env var as "owner/repo", or pass repo param per call.
@@ -26,6 +46,7 @@ from .base import BaseTool
 from typing import Optional, Dict, Any, List
 import os
 import json
+import base64
 import logging
 
 logger = logging.getLogger("catown.github")
@@ -34,7 +55,6 @@ API_BASE = "https://api.github.com"
 
 
 def _get_headers() -> dict:
-    """Build GitHub API request headers."""
     token = os.getenv("GITHUB_TOKEN", "")
     headers = {
         "Accept": "application/vnd.github+json",
@@ -46,11 +66,9 @@ def _get_headers() -> dict:
 
 
 def _get_default_repo() -> Optional[str]:
-    """Get default repo from env or git remote."""
     repo = os.getenv("GITHUB_REPO", "").strip()
     if repo:
         return repo
-    # Try to detect from git remote
     try:
         import subprocess
         result = subprocess.run(
@@ -59,7 +77,6 @@ def _get_default_repo() -> Optional[str]:
             cwd=os.getenv("CATOWN_WORKSPACE", os.getcwd())
         )
         url = result.stdout.strip()
-        # git@github.com:owner/repo.git or https://github.com/owner/repo.git
         if "github.com" in url:
             if url.startswith("git@"):
                 path = url.split(":")[1]
@@ -72,7 +89,6 @@ def _get_default_repo() -> Optional[str]:
 
 
 async def _api_request(method: str, path: str, data: dict = None, params: dict = None) -> dict:
-    """Make a GitHub API request and return parsed response."""
     import httpx
     url = f"{API_BASE}{path}"
     headers = _get_headers()
@@ -98,30 +114,45 @@ async def _api_request(method: str, path: str, data: dict = None, params: dict =
 
 
 class GitHubManagerTool(BaseTool):
-    """Manage a GitHub repository: releases, tags, issues, PRs, and repo info."""
+    """Manage a GitHub repository: files, branches, commits, releases, tags, issues, PRs, and more."""
 
     name = "github_manager"
     description = (
-        "Manage a GitHub repository. Actions: repo_info, list_branches, list_tags, "
-        "create_tag, list_releases, create_release, update_release, delete_release, "
-        "list_issues, create_issue, close_issue, list_prs, create_pr. "
+        "Manage a GitHub repository. Actions: repo_info, fork_repo, "
+        "list_branches, create_branch, delete_branch, "
+        "list_tags, create_tag, "
+        "list_releases, create_release, update_release, delete_release, "
+        "list_issues, create_issue, close_issue, "
+        "list_prs, create_pr, "
+        "list_contents, get_file, create_file, update_file, delete_file, clone_repo, "
+        "list_commits, get_commit, "
+        "search_code. "
         "Requires GITHUB_TOKEN env var. Default repo is auto-detected from git remote "
         "or set GITHUB_REPO env var (owner/repo format)."
     )
 
     async def execute(self, action: str, repo: str = "", **kwargs) -> str:
-        # Resolve repo
         repo = repo.strip() or (_get_default_repo() or "")
+
+        # clone_repo / search_code don't need repo pre-resolved
+        if action == "clone_repo":
+            return await self._action_clone_repo(repo or kwargs.get("repo", ""), **kwargs)
+        if action == "search_code":
+            if not repo:
+                return "[github_manager] Error: 'repo' is required for search_code."
+            return await self._action_search_code(repo, **kwargs)
+
         if not repo:
             return (
                 "[github_manager] Error: No repository specified. "
                 "Set GITHUB_REPO=owner/repo or pass repo parameter."
             )
 
-        # Check token for write operations
         write_actions = {
             "create_tag", "create_release", "update_release", "delete_release",
-            "create_issue", "close_issue", "create_pr"
+            "create_issue", "close_issue", "create_pr",
+            "create_branch", "delete_branch", "fork_repo",
+            "create_file", "update_file", "delete_file",
         }
         if action in write_actions and not os.getenv("GITHUB_TOKEN"):
             return (
@@ -140,7 +171,7 @@ class GitHubManagerTool(BaseTool):
             logger.error(f"[github_manager] {action} failed: {e}")
             return f"[github_manager] Error: {e}"
 
-    # ──────────────────────── actions ────────────────────────
+    # ──────────────────── Repo ────────────────────
 
     async def _action_repo_info(self, repo: str, **kw) -> str:
         data = await _api_request("GET", f"/repos/{repo}")
@@ -156,15 +187,60 @@ class GitHubManagerTool(BaseTool):
             f"  Created: {data.get('created_at')}  Updated: {data.get('updated_at')}"
         )
 
+    async def _action_fork_repo(self, repo: str, organization: str = "", **kw) -> str:
+        """Fork a repository."""
+        payload = {}
+        if organization:
+            payload["organization"] = organization
+        data = await _api_request("POST", f"/repos/{repo}/forks", data=payload)
+        return (
+            f"[GitHub] Fork created: {data['full_name']}\n"
+            f"  URL: {data['html_url']}\n"
+            f"  Branch: {data.get('default_branch', 'main')}"
+        )
+
+    # ──────────────────── Branches ────────────────────
+
     async def _action_list_branches(self, repo: str, **kw) -> str:
-        data = await _api_request("GET", f"/repos/{repo}/branches", params={"per_page": 30})
+        data = await _api_request("GET", f"/repos/{repo}/branches", params={"per_page": 100})
         if not data:
             return f"[GitHub] No branches found in {repo}."
         lines = [f"  - {b['name']}" + (" (protected)" if b.get('protected') else "") for b in data]
         return f"[GitHub] Branches in {repo} ({len(data)}):\n" + "\n".join(lines)
 
+    async def _action_create_branch(self, repo: str, branch: str = "", source: str = "", **kw) -> str:
+        """Create a branch from source (default: default branch HEAD)."""
+        if not branch:
+            return "[github_manager] Error: 'branch' is required for create_branch."
+
+        if not source:
+            repo_info = await _api_request("GET", f"/repos/{repo}")
+            source = repo_info["default_branch"]
+
+        # Resolve source to SHA
+        try:
+            branch_data = await _api_request("GET", f"/repos/{repo}/branches/{source}")
+            sha = branch_data["commit"]["sha"]
+        except Exception:
+            sha = source  # assume it's a SHA
+
+        await _api_request("POST", f"/repos/{repo}/git/refs", data={
+            "ref": f"refs/heads/{branch}",
+            "sha": sha
+        })
+        return f"[GitHub] Branch '{branch}' created from '{source}' ({sha[:8]})"
+
+    async def _action_delete_branch(self, repo: str, branch: str = "", **kw) -> str:
+        """Delete a branch."""
+        if not branch:
+            return "[github_manager] Error: 'branch' is required for delete_branch."
+        await _api_request("DELETE", f"/repos/{repo}/git/refs/heads/{branch}")
+        return f"[GitHub] Branch '{branch}' deleted."
+
+    # ──────────────────── Tags & Releases ────────────────────
+
     async def _action_list_tags(self, repo: str, **kw) -> str:
-        data = await _api_request("GET", f"/repos/{repo}/tags", params={"per_page": 30})
+        data = await _api_request("GET", f"/repos/{repo}/tags", params={"per_page": 100})
         if not data:
             return f"[GitHub] No tags found in {repo}."
         lines = [f"  - {t['name']} (commit: {t['commit']['sha'][:8]})" for t in data]
@@ -176,38 +252,23 @@ class GitHubManagerTool(BaseTool):
         message: str = "", tagger_name: str = "", tagger_email: str = "",
         **kw
     ) -> str:
-        """
-        Create an annotated tag. If message is empty, creates a lightweight tag
-        (just a ref pointing at ref/commit SHA).
-
-        Args:
-            tag: Tag name (e.g. "v1.0.0")
-            ref: Commit SHA or branch name to tag (defaults to HEAD of default branch)
-            message: Tag message (makes it annotated; omit for lightweight)
-            tagger_name: Tagger name (default: from env GIT_AUTHOR_NAME or "Catown")
-            tagger_email: Tagger email (default: from env GIT_AUTHOR_EMAIL or "catown@bot")
-        """
         if not tag:
             return "[github_manager] Error: 'tag' is required for create_tag."
 
-        # Resolve ref to commit SHA
         if not ref:
-            # Get default branch HEAD
             repo_info = await _api_request("GET", f"/repos/{repo}")
             default_branch = repo_info["default_branch"]
             branch_data = await _api_request("GET", f"/repos/{repo}/branches/{default_branch}")
             ref = branch_data["commit"]["sha"]
 
-        # If ref is a branch name, resolve to SHA
         if len(ref) < 40:
             try:
                 branch_data = await _api_request("GET", f"/repos/{repo}/branches/{ref}")
                 ref = branch_data["commit"]["sha"]
             except Exception:
-                pass  # assume it's already a SHA
+                pass
 
         if message:
-            # Annotated tag: create a tag object first
             tagger_name = tagger_name or os.getenv("GIT_AUTHOR_NAME", "Catown")
             tagger_email = tagger_email or os.getenv("GIT_AUTHOR_EMAIL", "catown@bot")
             from datetime import datetime, timezone
@@ -222,7 +283,6 @@ class GitHubManagerTool(BaseTool):
                     "date": datetime.now(timezone.utc).isoformat()
                 }
             })
-            # Create ref pointing to the tag object
             sha = tag_obj["sha"]
             await _api_request("POST", f"/repos/{repo}/git/refs", data={
                 "ref": f"refs/tags/{tag}",
@@ -230,16 +290,13 @@ class GitHubManagerTool(BaseTool):
             })
             return f"[GitHub] Annotated tag '{tag}' created on {ref[:8]} (tag object: {sha[:8]})"
         else:
-            # Lightweight tag: just a ref
             await _api_request("POST", f"/repos/{repo}/git/refs", data={
                 "ref": f"refs/tags/{tag}",
                 "sha": ref
             })
             return f"[GitHub] Lightweight tag '{tag}' created on {ref[:8]}"
 
-    async def _action_list_releases(
-        self, repo: str, per_page: int = 10, **kw
-    ) -> str:
+    async def _action_list_releases(self, repo: str, per_page: int = 10, **kw) -> str:
         data = await _api_request(
             "GET", f"/repos/{repo}/releases",
             params={"per_page": min(per_page, 50)}
@@ -257,25 +314,10 @@ class GitHubManagerTool(BaseTool):
 
     async def _action_create_release(
         self, repo: str,
-        tag: str = "",
-        name: str = "",
-        body: str = "",
-        target: str = "",
-        draft: bool = False,
-        prerelease: bool = False,
+        tag: str = "", name: str = "", body: str = "",
+        target: str = "", draft: bool = False, prerelease: bool = False,
         **kw
     ) -> str:
-        """
-        Create a GitHub release.
-
-        Args:
-            tag: Tag name for the release (e.g. "v1.0.0")
-            name: Release title (defaults to tag name)
-            body: Release notes / description (Markdown)
-            target: Commit SHA or branch to tag (if tag doesn't exist yet)
-            draft: Create as draft (default false)
-            prerelease: Mark as prerelease (default false)
-        """
         if not tag:
             return "[github_manager] Error: 'tag' is required for create_release."
 
@@ -298,19 +340,13 @@ class GitHubManagerTool(BaseTool):
 
     async def _action_update_release(
         self, repo: str,
-        release_id: int = 0,
-        name: str = "",
-        body: str = "",
-        draft: Optional[bool] = None,
-        prerelease: Optional[bool] = None,
-        tag: str = "",
-        **kw
+        release_id: int = 0, name: str = "", body: str = "",
+        draft: Optional[bool] = None, prerelease: Optional[bool] = None,
+        tag: str = "", **kw
     ) -> str:
-        """Update an existing release by ID or tag name."""
         if not release_id and not tag:
             return "[github_manager] Error: 'release_id' or 'tag' is required for update_release."
 
-        # Find by tag if no ID
         if not release_id:
             releases = await _api_request("GET", f"/repos/{repo}/releases", params={"per_page": 100})
             match = next((r for r in releases if r["tag_name"] == tag), None)
@@ -335,11 +371,8 @@ class GitHubManagerTool(BaseTool):
 
     async def _action_delete_release(
         self, repo: str,
-        release_id: int = 0,
-        tag: str = "",
-        **kw
+        release_id: int = 0, tag: str = "", **kw
     ) -> str:
-        """Delete a release by ID or tag name."""
         if not release_id and not tag:
             return "[github_manager] Error: 'release_id' or 'tag' is required for delete_release."
 
@@ -353,18 +386,16 @@ class GitHubManagerTool(BaseTool):
         await _api_request("DELETE", f"/repos/{repo}/releases/{release_id}")
         return f"[GitHub] Release deleted (id={release_id})."
 
+    # ──────────────────── Issues ────────────────────
+
     async def _action_list_issues(
         self, repo: str,
-        state: str = "open",
-        labels: str = "",
-        per_page: int = 15,
-        **kw
+        state: str = "open", labels: str = "", per_page: int = 15, **kw
     ) -> str:
         params = {"state": state, "per_page": min(per_page, 100), "sort": "created", "direction": "desc"}
         if labels:
             params["labels"] = labels
         data = await _api_request("GET", f"/repos/{repo}/issues", params=params)
-        # Filter out pull requests (GitHub API returns PRs in issues endpoint)
         issues = [i for i in data if "pull_request" not in i]
         if not issues:
             return f"[GitHub] No {state} issues in {repo}."
@@ -381,21 +412,9 @@ class GitHubManagerTool(BaseTool):
 
     async def _action_create_issue(
         self, repo: str,
-        title: str = "",
-        body: str = "",
-        labels: str = "",
-        assignees: str = "",
-        **kw
+        title: str = "", body: str = "",
+        labels: str = "", assignees: str = "", **kw
     ) -> str:
-        """
-        Create an issue.
-
-        Args:
-            title: Issue title
-            body: Issue body (Markdown)
-            labels: Comma-separated label names (e.g. "bug,priority:high")
-            assignees: Comma-separated GitHub usernames
-        """
         if not title:
             return "[github_manager] Error: 'title' is required for create_issue."
 
@@ -412,12 +431,7 @@ class GitHubManagerTool(BaseTool):
             f"  State: {data['state']}"
         )
 
-    async def _action_close_issue(
-        self, repo: str,
-        issue_number: int = 0,
-        **kw
-    ) -> str:
-        """Close an issue by number."""
+    async def _action_close_issue(self, repo: str, issue_number: int = 0, **kw) -> str:
         if not issue_number:
             return "[github_manager] Error: 'issue_number' is required for close_issue."
 
@@ -427,11 +441,11 @@ class GitHubManagerTool(BaseTool):
         )
         return f"[GitHub] Issue #{data['number']} closed: {data['title']}"
 
+    # ──────────────────── Pull Requests ────────────────────
+
     async def _action_list_prs(
         self, repo: str,
-        state: str = "open",
-        per_page: int = 15,
-        **kw
+        state: str = "open", per_page: int = 15, **kw
     ) -> str:
         params = {"state": state, "per_page": min(per_page, 100), "sort": "created", "direction": "desc"}
         data = await _api_request("GET", f"/repos/{repo}/pulls", params=params)
@@ -447,23 +461,9 @@ class GitHubManagerTool(BaseTool):
 
     async def _action_create_pr(
         self, repo: str,
-        title: str = "",
-        head: str = "",
-        base: str = "",
-        body: str = "",
-        draft: bool = False,
-        **kw
+        title: str = "", head: str = "", base: str = "",
+        body: str = "", draft: bool = False, **kw
     ) -> str:
-        """
-        Create a pull request.
-
-        Args:
-            title: PR title
-            head: Source branch (the one with changes)
-            base: Target branch (default: repo's default branch)
-            body: PR description (Markdown)
-            draft: Create as draft PR
-        """
         if not title or not head:
             return "[github_manager] Error: 'title' and 'head' are required for create_pr."
 
@@ -487,11 +487,276 @@ class GitHubManagerTool(BaseTool):
             f"  State: {data['state']}  Draft: {data.get('draft', False)}"
         )
 
+    # ──────────────────── Files & Content ────────────────────
+
+    async def _action_list_contents(
+        self, repo: str, path: str = "", ref: str = "", **kw
+    ) -> str:
+        """List files and dirs at a repo path."""
+        params = {}
+        if ref:
+            params["ref"] = ref
+        data = await _api_request("GET", f"/repos/{repo}/contents/{path}", params=params)
+        if isinstance(data, dict) and data.get("type") == "file":
+            return f"[GitHub] {path} is a file ({data.get('size', 0)} bytes)."
+        if not data:
+            return f"[GitHub] Empty directory: /{path}"
+        lines = []
+        for item in sorted(data, key=lambda x: (x["type"] != "dir", x["name"])):
+            icon = "📁" if item["type"] == "dir" else "📄"
+            size = f" ({item['size']}B)" if item["type"] == "file" else ""
+            lines.append(f"  {icon} {item['name']}{size}")
+        return f"[GitHub] Contents of /{path or ''} in {repo}:\n" + "\n".join(lines)
+
+    async def _action_get_file(
+        self, repo: str, path: str = "", ref: str = "", **kw
+    ) -> str:
+        """Get file content (decoded from base64)."""
+        if not path:
+            return "[github_manager] Error: 'path' is required for get_file."
+
+        params = {}
+        if ref:
+            params["ref"] = ref
+        data = await _api_request("GET", f"/repos/{repo}/contents/{path}", params=params)
+
+        if data.get("type") != "file":
+            return f"[github_manager] '{path}' is not a file (type: {data.get('type')})."
+
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        size = data.get("size", 0)
+        sha = data.get("sha", "")[:8]
+
+        if size > 50000:
+            return (
+                f"[GitHub] File: {path} ({size} bytes, sha: {sha})\n"
+                f"  [File too large ({size} bytes), showing first 10000 chars]\n\n"
+                f"{content[:10000]}"
+            )
+        return f"[GitHub] File: {path} ({size} bytes, sha: {sha})\n\n{content}"
+
+    async def _action_create_file(
+        self, repo: str,
+        path: str = "", content: str = "",
+        message: str = "", branch: str = "", **kw
+    ) -> str:
+        """Create a new file in the repo."""
+        if not path:
+            return "[github_manager] Error: 'path' is required for create_file."
+        if content is None:
+            return "[github_manager] Error: 'content' is required for create_file."
+        if not message:
+            message = f"Create {path}"
+
+        payload: Dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+        if branch:
+            payload["branch"] = branch
+
+        data = await _api_request("PUT", f"/repos/{repo}/contents/{path}", data=payload)
+        commit = data.get("commit", {})
+        return (
+            f"[GitHub] File created: {path}\n"
+            f"  Commit: {commit.get('sha', '')[:8]}\n"
+            f"  URL: {data.get('content', {}).get('html_url', '')}"
+        )
+
+    async def _action_update_file(
+        self, repo: str,
+        path: str = "", content: str = "",
+        message: str = "", branch: str = "", sha: str = "", **kw
+    ) -> str:
+        """Update an existing file. Requires the file's current SHA for conflict detection."""
+        if not path:
+            return "[github_manager] Error: 'path' is required for update_file."
+        if content is None:
+            return "[github_manager] Error: 'content' is required for update_file."
+        if not message:
+            message = f"Update {path}"
+
+        # Auto-fetch SHA if not provided
+        if not sha:
+            file_data = await _api_request("GET", f"/repos/{repo}/contents/{path}")
+            sha = file_data.get("sha", "")
+            if not sha:
+                return f"[github_manager] Error: Could not get SHA for {path}."
+
+        payload: Dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "sha": sha,
+        }
+        if branch:
+            payload["branch"] = branch
+
+        data = await _api_request("PUT", f"/repos/{repo}/contents/{path}", data=payload)
+        commit = data.get("commit", {})
+        return (
+            f"[GitHub] File updated: {path}\n"
+            f"  Commit: {commit.get('sha', '')[:8]}\n"
+            f"  New SHA: {data.get('content', {}).get('sha', '')[:8]}"
+        )
+
+    async def _action_delete_file(
+        self, repo: str,
+        path: str = "", message: str = "",
+        branch: str = "", sha: str = "", **kw
+    ) -> str:
+        """Delete a file from the repo."""
+        if not path:
+            return "[github_manager] Error: 'path' is required for delete_file."
+        if not message:
+            message = f"Delete {path}"
+
+        if not sha:
+            file_data = await _api_request("GET", f"/repos/{repo}/contents/{path}")
+            sha = file_data.get("sha", "")
+            if not sha:
+                return f"[github_manager] Error: Could not get SHA for {path}."
+
+        payload: Dict[str, Any] = {"message": message, "sha": sha}
+        if branch:
+            payload["branch"] = branch
+
+        await _api_request("DELETE", f"/repos/{repo}/contents/{path}", data=payload)
+        return f"[GitHub] File deleted: {path}"
+
+    async def _action_clone_repo(
+        self, repo: str, dest: str = "", branch: str = "", **kw
+    ) -> str:
+        """Clone a repo to the local workspace directory."""
+        import subprocess
+
+        if not repo:
+            return "[github_manager] Error: 'repo' is required for clone_repo."
+
+        workspace = os.getenv("CATOWN_WORKSPACE", os.getcwd())
+        if dest:
+            target = os.path.join(workspace, dest)
+        else:
+            target = os.path.join(workspace, repo.split("/")[-1])
+
+        token = os.getenv("GITHUB_TOKEN", "")
+        if token:
+            clone_url = f"https://{token}@github.com/{repo}.git"
+        else:
+            clone_url = f"https://github.com/{repo}.git"
+
+        cmd = ["git", "clone"]
+        if branch:
+            cmd.extend(["-b", branch])
+        cmd.extend(["--depth", "1", clone_url, target])
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120,
+                cwd=workspace
+            )
+            if result.returncode != 0:
+                return f"[github_manager] Clone failed: {result.stderr[:500]}"
+            return f"[GitHub] Cloned {repo} → {target}"
+        except subprocess.TimeoutExpired:
+            return "[github_manager] Clone timed out (120s)."
+
+    # ──────────────────── Commits ────────────────────
+
+    async def _action_list_commits(
+        self, repo: str,
+        branch: str = "", path: str = "",
+        author: str = "", per_page: int = 15, **kw
+    ) -> str:
+        """List commits with optional filters."""
+        params: Dict[str, Any] = {"per_page": min(per_page, 100)}
+        if branch:
+            params["sha"] = branch
+        if path:
+            params["path"] = path
+        if author:
+            params["author"] = author
+
+        data = await _api_request("GET", f"/repos/{repo}/commits", params=params)
+        if not data:
+            return f"[GitHub] No commits found in {repo}."
+        lines = []
+        for c in data[:per_page]:
+            msg = c["commit"]["message"].split("\n")[0][:80]
+            author_name = c["commit"]["author"]["name"]
+            date = c["commit"]["author"]["date"][:10]
+            lines.append(f"  {c['sha'][:8]} {date} {author_name}: {msg}")
+        return f"[GitHub] Commits in {repo} ({len(data)}):\n" + "\n".join(lines)
+
+    async def _action_get_commit(self, repo: str, sha: str = "", **kw) -> str:
+        """Get commit details: message, author, files changed."""
+        if not sha:
+            return "[github_manager] Error: 'sha' is required for get_commit."
+
+        data = await _api_request("GET", f"/repos/{repo}/commits/{sha}")
+        commit = data["commit"]
+        files = data.get("files", [])
+
+        lines = [
+            f"[GitHub] Commit {data['sha'][:8]} in {repo}",
+            f"  Author: {commit['author']['name']} <{commit['author']['email']}>",
+            f"  Date: {commit['author']['date']}",
+            f"  Message: {commit['message'][:200]}",
+            f"  Files changed: {len(files)}",
+        ]
+        for f in files[:30]:
+            lines.append(f"    {f['status'][:1].upper()} {f['filename']} (+{f['additions']}/-{f['deletions']})")
+        if len(files) > 30:
+            lines.append(f"    ... and {len(files) - 30} more files")
+
+        stats = data.get("stats", {})
+        lines.append(f"  Total: +{stats.get('additions', 0)}/-{stats.get('deletions', 0)}")
+
+        return "\n".join(lines)
+
+    # ──────────────────── Search ────────────────────
+
+    async def _action_search_code(
+        self, repo: str, query: str = "", per_page: int = 10, **kw
+    ) -> str:
+        """Search code in a repo."""
+        if not query:
+            return "[github_manager] Error: 'query' is required for search_code."
+
+        params = {
+            "q": f"{query} repo:{repo}",
+            "per_page": min(per_page, 30),
+        }
+        data = await _api_request("GET", "/search/code", params=params)
+
+        items = data.get("items", [])
+        total = data.get("total_count", 0)
+        if not items:
+            return f"[GitHub] No results for '{query}' in {repo}."
+
+        lines = []
+        for item in items[:per_page]:
+            text_matches = item.get("text_matches", [])
+            snippet = ""
+            if text_matches:
+                fragment = text_matches[0].get("fragment", "")
+                snippet = f"\n      {fragment[:120]}"
+            lines.append(f"  📄 {item['path']}{snippet}")
+
+        return f"[GitHub] Code search: '{query}' in {repo} ({total} results):\n" + "\n".join(lines)
+
+    # ──────────────────── Helpers ────────────────────
+
     def _list_actions(self) -> str:
         return (
-            "repo_info, list_branches, list_tags, create_tag, "
+            "repo_info, fork_repo, "
+            "list_branches, create_branch, delete_branch, "
+            "list_tags, create_tag, "
             "list_releases, create_release, update_release, delete_release, "
-            "list_issues, create_issue, close_issue, list_prs, create_pr"
+            "list_issues, create_issue, close_issue, "
+            "list_prs, create_pr, "
+            "list_contents, get_file, create_file, update_file, delete_file, clone_repo, "
+            "list_commits, get_commit, "
+            "search_code"
         )
 
     def _get_parameters_schema(self) -> dict:
@@ -502,14 +767,47 @@ class GitHubManagerTool(BaseTool):
                     "type": "string",
                     "description": "Action to perform",
                     "enum": [
-                        "repo_info", "list_branches", "list_tags", "create_tag",
+                        "repo_info", "fork_repo",
+                        "list_branches", "create_branch", "delete_branch",
+                        "list_tags", "create_tag",
                         "list_releases", "create_release", "update_release", "delete_release",
-                        "list_issues", "create_issue", "close_issue", "list_prs", "create_pr"
+                        "list_issues", "create_issue", "close_issue",
+                        "list_prs", "create_pr",
+                        "list_contents", "get_file", "create_file", "update_file", "delete_file", "clone_repo",
+                        "list_commits", "get_commit",
+                        "search_code",
                     ]
                 },
                 "repo": {
                     "type": "string",
                     "description": "Repository in owner/repo format. Auto-detected from git remote if omitted.",
+                    "default": ""
+                },
+                # File
+                "path": {
+                    "type": "string",
+                    "description": "File/dir path in repo (for get_file, create_file, update_file, delete_file, list_contents)",
+                    "default": ""
+                },
+                "content": {
+                    "type": "string",
+                    "description": "File content (for create_file, update_file)",
+                    "default": ""
+                },
+                "sha": {
+                    "type": "string",
+                    "description": "File SHA (for update_file/delete_file) or commit SHA (for get_commit)",
+                    "default": ""
+                },
+                # Branch
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name (for create_branch, delete_branch, clone_repo, or file operations)",
+                    "default": ""
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Source branch for create_branch",
                     "default": ""
                 },
                 # Tag
@@ -525,7 +823,7 @@ class GitHubManagerTool(BaseTool):
                 },
                 "message": {
                     "type": "string",
-                    "description": "Tag message for annotated tags (omit for lightweight)",
+                    "description": "Commit message (for create_file, update_file, delete_file) or tag message",
                     "default": ""
                 },
                 # Release
@@ -589,6 +887,30 @@ class GitHubManagerTool(BaseTool):
                 "base": {
                     "type": "string",
                     "description": "Target branch for PR (default: repo's default branch)",
+                    "default": ""
+                },
+                # Commit
+                "author": {
+                    "type": "string",
+                    "description": "Filter commits by author (for list_commits)",
+                    "default": ""
+                },
+                # Clone
+                "dest": {
+                    "type": "string",
+                    "description": "Destination directory name in workspace (for clone_repo)",
+                    "default": ""
+                },
+                # Fork
+                "organization": {
+                    "type": "string",
+                    "description": "Organization to fork into (for fork_repo)",
+                    "default": ""
+                },
+                # Search
+                "query": {
+                    "type": "string",
+                    "description": "Search query (for search_code)",
                     "default": ""
                 },
                 # Common
