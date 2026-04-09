@@ -514,16 +514,31 @@ PENDING → RUNNING → COMPLETED
 
 ## 6. 产出物管理
 
-### 6.1 项目 Workspace
+### 6.1 项目 Workspace 隔离
 
-**核心约束：每个项目拥有完全隔离的 Workspace。Agent 只能访问当前项目的工作目录，严禁跨项目访问。**
+**核心约束：项目之间完全隔离。每个项目是一个独立沙箱，互不可见、互不影响、互不干扰。**
+
+```
+┌──────────────────┐    ✗ 不可见    ┌──────────────────┐
+│   Project A      │◄─────────────►│   Project B      │
+│                  │               │                  │
+│  PRD.md          │               │  PRD.md          │
+│  src/            │               │  src/            │
+│  .catown/        │               │  .catown/        │
+│    ├── memory/   │               │    ├── memory/   │
+│    └── pipeline  │               │    └── pipeline  │
+│  .git/           │               │  .git/           │
+└──────────────────┘               └──────────────────┘
+
+两个项目之间：无共享文件、无共享记忆、无共享状态、无交叉引用。
+```
 
 每个项目独立目录结构：
 
 ```
 projects/
 └── {project_id}/
-    ├── .git/                    # Git 版本管理
+    ├── .git/                    # 独立 Git 仓库（项目间无共享）
     ├── PRD.md                   # Analyst 产出
     ├── tech-spec.md             # Architect 产出
     ├── src/                     # Developer 产出
@@ -533,30 +548,42 @@ projects/
     │   ├── test_report.md
     │   └── ...
     ├── CHANGELOG.md             # Release 产出
-    └── .catown/
+    └── .catown/                 # 项目私有元数据（其他项目不可见）
         ├── pipeline.json        # Pipeline 运行状态
         ├── stage_context/       # 各阶段上下文快照
-        └── memory/              # 项目记忆存储
+        └── memory/              # 项目记忆存储（隔离）
             ├── decisions.md     # 关键决策记录
             ├── conventions.md   # 代码/架构约定
             └── issues.md        # 遇到的问题与方案
 ```
 
-**隔离机制**：
+**隔离维度**：
 
-| 维度 | 说明 |
+| 维度 | 隔离方式 | 说明 |
+|------|----------|------|
+| 文件系统 | 目录隔离 | 每个项目独立目录树，物理上不存在交叉 |
+| Git 仓库 | 仓库隔离 | 每个项目独立 `.git/`，无共享分支/提交历史 |
+| 记忆存储 | .catown 隔离 | 项目记忆存于 `.catown/memory/`，其他项目无法访问 |
+| Pipeline 状态 | 状态隔离 | 每个 PipelineRun 绑定唯一 project_id，引擎不跨项目调度 |
+| Agent 上下文 | 会话隔离 | Agent 执行 Stage 时注入 `PROJECT_WORKSPACE`，只指向当前项目 |
+| LLM Prompt | 注入隔离 | 传入 LLM 的上下文只包含当前项目文件，不包含其他项目内容 |
+
+**防逃逸机制**（技术保障）：
+
+| 机制 | 说明 |
 |------|------|
-| 文件系统隔离 | Agent 工具读写操作限定在 `projects/{project_id}/` 下 |
-| 路径校验 | `read_file` / `write_file` / `execute_code` 在执行前校验路径是否在项目目录内 |
-| 绝对路径拒绝 | Agent 传入的绝对路径被强制转换为项目相对路径 |
-| Symlink 防护 | 解析路径前展开所有符号链接，校验最终路径仍在项目目录内；对 Agent 创建的 symlink 目标也做校验 |
-| 跨项目禁止 | Agent 不可访问其他项目的 `.catown/memory/` 或产出物 |
-| 环境变量 | Agent 进程注入 `PROJECT_WORKSPACE` 环境变量，指向当前项目目录 |
+| 路径白名单 | Agent 工具读写限定在 `projects/{project_id}/` 下 |
+| 路径校验 | `read_file` / `write_file` / `execute_code` 执行前校验路径前缀 |
+| 绝对路径拒绝 | Agent 传入的绝对路径强制转为项目相对路径 |
+| Symlink 防护 | 解析所有符号链接，校验最终路径仍在项目目录内 |
+| 跨项目禁止 | Agent 不可访问其他项目的 `.catown/`、`.git/` 或任何产出物 |
+| API 层校验 | 所有涉及项目的 API 调用验证 project_id 归属 |
 
 **隔离的目的**：
-- **安全**：防止 Agent 误读/误写其他项目的敏感代码
+- **安全**：防止项目 A 的 Agent 读取项目 B 的敏感代码或记忆
 - **可预测**：每个项目的行为完全独立，不受其他项目干扰
-- **审计**：所有文件操作可追溯到具体项目
+- **并行安全**：多项目并行运行时不会产生文件冲突或状态污染
+- **审计清晰**：所有操作可追溯到具体项目，不会混淆
 
 ### 6.2 阶段间上下文传递
 
