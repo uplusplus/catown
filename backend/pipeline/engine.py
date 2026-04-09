@@ -1071,13 +1071,40 @@ class PipelineEngine:
         )
 
     def _get_agent_system_prompt(self, agent_name: str) -> str:
-        """从 agents.json 获取 Agent 的 system_prompt"""
+        """从 agents.json 读取 Agent 配置，动态组装 system_prompt"""
         config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             agent_data = data.get("agents", {}).get(agent_name, {})
-            return agent_data.get("system_prompt", f"You are {agent_name}, a helpful AI assistant.")
+
+            # 从 soul + role 组装
+            parts = []
+            name = agent_data.get("name", agent_name)
+            soul = agent_data.get("soul", {})
+            role = agent_data.get("role", {})
+
+            if soul:
+                parts.append(f"你是 {name}。{soul.get('identity', '')}")
+                values = soul.get("values", [])
+                if values:
+                    parts.append("你的原则：\n" + "\n".join(f"- {v}" for v in values))
+                style = soul.get("style", "")
+                if style:
+                    parts.append(f"沟通风格：{style}")
+
+            if isinstance(role, dict):
+                resp = role.get("responsibilities", [])
+                if resp:
+                    parts.append("## 职责\n" + "\n".join(f"- {r}" for r in resp))
+                rules = role.get("rules", [])
+                if rules:
+                    parts.append("## 规则\n" + "\n".join(f"- {r}" for r in rules))
+
+            if parts:
+                return "\n\n".join(parts)
+
+            return f"You are {agent_name}, a helpful AI assistant."
         except Exception:
             return f"You are {agent_name}, a helpful AI assistant."
 

@@ -32,9 +32,11 @@ class Agent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
-    role = Column(String, nullable=False)
-    system_prompt = Column(Text, nullable=False)
-    tools = Column(Text, default="[]")  # JSON 字符串
+    role = Column(String, nullable=False)          # role.title
+    soul = Column(Text, default="{}")              # soul 配置 JSON
+    tools = Column(Text, default="[]")             # tools JSON
+    skills = Column(Text, default="[]")            # skills JSON
+    config = Column(Text, default="{}")            # 完整 agent 配置 JSON
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
     

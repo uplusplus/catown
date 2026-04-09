@@ -61,11 +61,11 @@ class Agent:
     
     @property
     def role(self) -> str:
-        return self.config.role
-    
+        return self.config.role.title
+
     @property
     def system_prompt(self) -> str:
-        return self.config.system_prompt
+        return self.config.build_system_prompt()
     
     @property
     def tools(self) -> List[str]:

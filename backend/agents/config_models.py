@@ -56,45 +56,98 @@ class AgentProviderConfig(BaseModel):
         return [m for m in self.models if capability in m.input]
 
 
+class SoulConfig(BaseModel):
+    """Agent 灵魂配置"""
+    identity: str
+    values: List[str] = []
+    style: str = ""
+    quirks: str = ""
+
+
+class RoleConfig(BaseModel):
+    """Agent 角色配置"""
+    title: str
+    responsibilities: List[str] = []
+    rules: List[str] = []
+
+
+class MemoryConfig(BaseModel):
+    """Agent 记忆配置"""
+    long_term_enabled: bool = True
+    auto_generalize: bool = False
+
+
+class SleepConfig(BaseModel):
+    """Agent 睡眠配置"""
+    enabled: bool = True
+    idle_threshold_minutes: int = 30
+    preferred_window_start: str = "23:00"
+    preferred_window_end: str = "07:00"
+    max_retain_days: int = 30
+    long_term_max_tokens: int = 100000
+
+
 class AgentConfigV2(BaseModel):
-    """Agent 配置 V2 - 支持新的配置格式"""
+    """Agent 配置 V2 - SOUL/ROLE/RULES 三层结构"""
     name: str
-    role: str
-    system_prompt: str
+    soul: SoulConfig
+    role: RoleConfig
     tools: List[str] = []
+    skills: List[str] = []
+    memory: MemoryConfig = MemoryConfig()
+    sleep: SleepConfig = SleepConfig()
     provider: Optional[AgentProviderConfig] = None
-    default_model: Optional[str] = None  # 默认使用的模型 ID
+    default_model: Optional[str] = None
     metadata: Dict[str, Any] = {}
-    
-    # 兼容旧配置
-    llm_base_url: Optional[str] = None
-    llm_api_key: Optional[str] = None
-    llm_model: Optional[str] = None
     
     def get_effective_base_url(self) -> str:
         """获取有效的 base URL"""
         if self.provider:
             return self.provider.baseUrl
-        return self.llm_base_url or "https://api.openai.com/v1"
+        return "https://api.openai.com/v1"
     
     def get_effective_api_key(self) -> str:
         """获取有效的 API key"""
         if self.provider:
             return self.provider.apiKey
-        return self.llm_api_key or ""
+        return ""
     
     def get_effective_model(self) -> str:
         """获取有效的模型"""
-        # 优先使用指定的默认模型
         if self.default_model:
             return self.default_model
-        
-        # 然后使用 provider 的第一个模型
         if self.provider and self.provider.models:
             return self.provider.models[0].id
+        return "gpt-4"
+    
+    def build_system_prompt(self, project_memory: str = "", long_term_memory: str = "") -> str:
+        """组装 system_prompt（SOUL + ROLE + RULES + MEMORY）"""
+        parts = []
         
-        # 最后使用旧配置的模型
-        return self.llm_model or "gpt-4"
+        # 1. 灵魂层
+        parts.append(f"你是 {self.name}。{self.soul.identity}")
+        if self.soul.values:
+            parts.append("你的原则：\n" + "\n".join(f"- {v}" for v in self.soul.values))
+        if self.soul.style:
+            parts.append(f"沟通风格：{self.soul.style}")
+        
+        # 2. 角色层
+        if self.role.responsibilities:
+            parts.append("## 职责\n" + "\n".join(f"- {r}" for r in self.role.responsibilities))
+        
+        # 3. 规则层
+        if self.role.rules:
+            parts.append("## 规则\n" + "\n".join(f"- {r}" for r in self.role.rules))
+        
+        # 4. 项目记忆注入
+        if project_memory:
+            parts.append(f"## 项目上下文\n{project_memory}")
+        
+        # 5. 长期记忆注入
+        if long_term_memory:
+            parts.append(f"## 你的经验\n{long_term_memory}")
+        
+        return "\n\n".join(parts)
     
     def get_model_config(self, model_id: str = None) -> Optional[ModelConfig]:
         """获取模型配置"""
@@ -163,33 +216,26 @@ def parse_agent_config(config_dict: Dict[str, Any]) -> AgentProviderConfig:
 
 def create_agent_config_from_provider(
     agent_name: str,
-    role: str,
-    system_prompt: str,
+    soul: Dict[str, Any],
+    role: Dict[str, Any],
     provider_config: Dict[str, Any],
     tools: List[str] = None,
+    skills: List[str] = None,
+    memory: Dict[str, Any] = None,
+    sleep: Dict[str, Any] = None,
     default_model: str = None
 ) -> AgentConfigV2:
-    """
-    从 provider 配置创建 Agent 配置
-    
-    Args:
-        agent_name: Agent 名称
-        role: Agent 角色
-        system_prompt: 系统提示
-        provider_config: provider 配置字典
-        tools: 工具列表
-        default_model: 默认模型 ID
-    
-    Returns:
-        AgentConfigV2 对象
-    """
+    """从 provider 配置创建 Agent 配置"""
     provider = parse_agent_config(provider_config)
-    
+
     return AgentConfigV2(
         name=agent_name,
-        role=role,
-        system_prompt=system_prompt,
+        soul=SoulConfig(**soul),
+        role=RoleConfig(**role),
         tools=tools or [],
+        skills=skills or [],
+        memory=MemoryConfig(**(memory or {})),
+        sleep=SleepConfig(**(sleep or {})),
         provider=provider,
         default_model=default_model
     )
