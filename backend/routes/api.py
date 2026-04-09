@@ -173,7 +173,13 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         if available_tools:
             system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
             system_prompt += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
-        
+
+        # 注入项目中所有 Agent 列表（让 Agent 知道队友是谁）
+        team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+        system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
+        if target_agent.id:
+            system_prompt += f"\n\nYou are **{target_agent.name}** (role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
+
         # 注入记忆到上下文（含跨 Agent 共享）
         from models.database import Memory
 
@@ -448,6 +454,11 @@ async def _run_single_agent_turn(
     available_tools = tool_registry.list_tools()
     if available_tools:
         system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
+
+    # 注入项目中所有 Agent 列表
+    team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+    system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
+    system_prompt += f"\n\nYou are **{agent.name}** (role: {agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
 
     # 记忆注入
     own_memories = (
@@ -991,6 +1002,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         sys_prompt += f"\nProject description: {project.description}"
                     if tool_registry.list_tools():
                         sys_prompt += f"\n\nTools: {', '.join(tool_registry.list_tools())}"
+                    # 注入团队列表
+                    team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+                    sys_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
                     if previous_context:
                         sys_prompt += f"\n\nPrevious agent ({mentioned_names[step_idx-1]}) output:\n{previous_context[:1500]}"
 
@@ -1107,6 +1121,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             available_tools = tool_registry.list_tools()
             if available_tools:
                 system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
+
+            # 注入项目中所有 Agent 列表
+            team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+            system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
+            system_prompt += f"\n\nYou are **{target_agent.name}** (role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
 
             # 注入记忆（含跨 Agent 共享）
             from models.database import Memory

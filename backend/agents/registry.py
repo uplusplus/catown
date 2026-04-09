@@ -93,32 +93,46 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
     return [
         create_agent_config_from_provider(
             agent_name="assistant",
-            role="通用助手",
+            role="助理",
             system_prompt="You are a helpful assistant in the Catown platform. Help users with general tasks, answer questions, and coordinate with other agents when needed.",
             provider_config=default_provider,
             tools=["web_search", "retrieve_memory"]
         ),
         create_agent_config_from_provider(
-            agent_name="coder",
-            role="代码专家",
-            system_prompt="You are an expert programmer. Write clean, efficient code. Review and debug code. Explain technical concepts clearly.",
+            agent_name="analyst",
+            role="需求分析师",
+            system_prompt="You are a professional requirements analyst. Transform vague user requirements into structured, actionable PRDs.",
             provider_config=default_provider,
-            tools=["web_search", "execute_code", "retrieve_memory"]
+            tools=["web_search", "retrieve_memory", "read_file", "write_file"]
         ),
         create_agent_config_from_provider(
-            agent_name="reviewer",
-            role="审核专家",
-            system_prompt="You are a critical reviewer. Review work products for quality, provide constructive feedback, and suggest improvements.",
+            agent_name="architect",
+            role="架构师",
+            system_prompt="You are a senior software architect. Design technical solutions based on PRDs.",
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory"]
+            tools=["web_search", "retrieve_memory", "read_file", "write_file"]
         ),
         create_agent_config_from_provider(
-            agent_name="researcher",
-            role="研究专家",
-            system_prompt="You are a research specialist. Gather and analyze information, synthesize complex topics, and provide evidence-based insights.",
+            agent_name="developer",
+            role="开发工程师",
+            system_prompt="You are an expert software developer. Implement code based on tech specs.",
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory"]
-        )
+            tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "search_files"]
+        ),
+        create_agent_config_from_provider(
+            agent_name="tester",
+            role="测试工程师",
+            system_prompt="You are a QA engineer. Test software against requirements and find bugs.",
+            provider_config=default_provider,
+            tools=["retrieve_memory", "read_file", "execute_code", "list_files", "search_files"]
+        ),
+        create_agent_config_from_provider(
+            agent_name="release",
+            role="发布经理",
+            system_prompt="You are a release manager. Prepare software for release.",
+            provider_config=default_provider,
+            tools=["retrieve_memory", "read_file", "write_file", "list_files", "execute_code"]
+        ),
     ]
 
 

@@ -94,13 +94,14 @@ class TestStartupDataLoad:
     """启动时数据加载流程（模拟前端 loadProjects + loadAgents）"""
 
     def test_load_agents_returns_builtin(self, client):
-        """首次加载 agents 返回内置 4 个"""
+        """首次加载 agents 返回配置中的角色"""
         r = client.get("/api/agents")
         assert r.status_code == 200
         agents = r.json()
-        assert len(agents) == 4
+        # agents.json 中定义了 6 个角色
+        assert len(agents) == 6
         names = {a["name"] for a in agents}
-        assert names == {"assistant", "coder", "reviewer", "researcher"}
+        assert names == {"analyst", "architect", "developer", "tester", "release", "assistant"}
 
     def test_load_projects_empty_on_fresh_start(self, client):
         """全新启动时 projects 为空"""
@@ -244,7 +245,7 @@ class TestDelayedBackendScenario:
     def test_create_project_then_immediately_use(self, client):
         """创建项目后立即使用（无延迟）"""
         r = client.post("/api/projects", json={
-            "name": "Instant Use", "agent_names": ["assistant", "coder"]
+            "name": "Instant Use", "agent_names": ["assistant", "developer"]
         })
         assert r.status_code == 200
         data = r.json()

@@ -127,21 +127,27 @@ class MultiAgentStrategy(CollaborationStrategy):
         
         # Code-related tasks
         if any(kw in message_lower for kw in ['code', '编程', '程序', 'debug', '代码', 'implement', '实现']):
-            coder = next((a for a in agents if a.name == 'coder'), None)
-            if coder:
-                selected.append(coder)
+            dev = next((a for a in agents if a.name == 'developer'), None)
+            if dev:
+                selected.append(dev)
         
-        # Research tasks
-        if any(kw in message_lower for kw in ['research', '研究', 'investigate', '调查', 'analyze', '分析']):
-            researcher = next((a for a in agents if a.name == 'researcher'), None)
-            if researcher:
-                selected.append(researcher)
+        # Analysis/research tasks
+        if any(kw in message_lower for kw in ['research', '研究', 'investigate', '调查', 'analyze', '分析', '需求']):
+            analyst = next((a for a in agents if a.name == 'analyst'), None)
+            if analyst:
+                selected.append(analyst)
         
-        # Review tasks
-        if any(kw in message_lower for kw in ['review', '审核', 'check', '检查', 'evaluate', '评估']):
-            reviewer = next((a for a in agents if a.name == 'reviewer'), None)
-            if reviewer:
-                selected.append(reviewer)
+        # Architecture tasks
+        if any(kw in message_lower for kw in ['architecture', '架构', 'design', '设计', 'technical']):
+            architect = next((a for a in agents if a.name == 'architect'), None)
+            if architect:
+                selected.append(architect)
+        
+        # Testing tasks
+        if any(kw in message_lower for kw in ['test', '测试', 'check', '检查', 'review', '审核']):
+            tester = next((a for a in agents if a.name == 'tester'), None)
+            if tester:
+                selected.append(tester)
         
         # If no specific agents selected, use default
         if not selected:

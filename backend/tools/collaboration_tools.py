@@ -128,7 +128,7 @@ class DelegateTaskTool(BaseTool):
             "properties": {
                 "target_agent_name": {
                     "type": "string",
-                    "description": "Name of the agent to delegate to (coder, researcher, reviewer, assistant)"
+                    "description": "Name of the agent to delegate to (analyst, architect, developer, tester, release, assistant)"
                 },
                 "task_title": {
                     "type": "string",
