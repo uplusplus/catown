@@ -1587,6 +1587,8 @@ backend/
 - [x] Agent 间可以互相发消息，BOSS 能实时看到
 - [x] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
 - [x] 错误自动重试，超过阈值暂停等人工
+- [x] 工具白名单运行时校验：Agent 仅能调用 agents.json 中声明的工具
+- [x] 项目 Workspace 隔离：路径穿越检测 + symlink 防护 + .catown 目录保护
 
 ### 15.2 技术验收
 
@@ -1594,6 +1596,8 @@ backend/
 - [x] Pipeline 状态持久化到数据库
 - [x] Agent 协作消息持久化到数据库
 - [x] WebSocket 实时推送 Pipeline 状态变更
+- [x] _validate_path 统一路径校验（symlink 解析 + 目录穿越 + .catown 保护）
+- [x] _execute_tool 白名单校验（区分未配置/空列表/白名单三种状态）
 - [~] Docker 部署正常 (Dockerfile/docker-compose.yml 已配置，待有 Docker 环境时验证)
 
 ---

@@ -1,243 +1,125 @@
-# Catown - Multi-Agent Collaboration Platform
+# Catown — AI 软件工厂
 
-一个支持多 AI Agent 协作的平台，Agent 们可以通过聊天频道通信，协作完成复杂任务。
+输入原始需求，输出可发布产品。全流程自动化，BOSS 可实时监控和介入。
 
-## 🌟 特性
+## 🌟 核心特性
 
-- 🤖 **多 Agent 协作**：支持创建不同角色的 Agent，它们可以协作完成任务
-- 💬 **聊天室系统**：每个项目自动创建独立聊天室，Agent 间实时通信
-- 🧠 **记忆系统**：Agent 具备长期和短期记忆能力
-- 🛠️ **工具调用**：Agent 可以调用各种工具和技能
-- 🌐 **OpenAI 兼容**：支持任何 OpenAI 兼容的 LLM 接口
-- 🎨 **Web 界面**：友好的 Web 界面用于监控和交互
+- 🏭 **AI 软件工厂**：需求分析 → 架构设计 → 开发 → 测试 → 发布，全链路自动
+- 🤖 **6 个专业 Agent**：analyst / architect / developer / tester / release / assistant
+- 💬 **Agent 间实时消息**：Agent 可直接互相提问，BOSS 实时可见
+- 🧠 **SOUL 体系**：三层 prompt 结构（灵魂 → 角色 → 规则 → 记忆注入）
+- 🛡️ **安全隔离**：工具白名单 + Workspace 路径防护 + .catown 保护
+- 📊 **Pipeline Dashboard**：实时进度、Agent 通信、产出物管理
+- ⚙️ **全可配置**：LLM 模型、Pipeline 流程、Agent 角色全部由 JSON 驱动
 
 ## 🚀 快速开始
 
 ### 环境要求
 
 - Python 3.10+
-- pip
 
-### 安装步骤
-
-#### 1. 后端安装
+### 安装 & 启动
 
 ```bash
-cd backend
-pip install -r requirements.txt
+cd backend && pip install -r requirements.txt
 ```
 
-#### 2. 配置
+配置 LLM（编辑 `backend/configs/agents.json`）：
 
-复制环境变量文件并配置：
+```json
+{
+  "global_llm": {
+    "provider": {
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-your-key",
+      "models": [{"id": "gpt-4", "name": "GPT-4", "maxTokens": 8192}]
+    },
+    "default_model": "gpt-4"
+  }
+}
+```
+
+启动：
 
 ```bash
-cd backend
-cp .env.example .env
+cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-编辑 `.env` 文件，设置你的 LLM API 密钥：
-
-```env
-# LLM 配置
-LLM_API_KEY=your_api_key_here
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4
-
-# 服务器配置
-HOST=0.0.0.0
-PORT=8000
-```
-
-### 启动服务
-
-**启动后端:**
-```bash
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-或使用启动脚本：
-
-**Linux/Mac:**
-```bash
-chmod +x start.sh
-./start.sh
-```
-
-**Windows:**
-```bash
-start.bat
-```
-
-### 访问应用
-
-- 🌐 **Web 界面**: http://localhost:8000
-- 📚 **API 文档**: http://localhost:8000/docs
+- 🌐 Web 界面：http://localhost:8000
+- 📚 API 文档：http://localhost:8000/docs
 
 ## 📁 项目结构
 
 ```
 catown/
-├── backend/              # 后端服务
-│   ├── agents/          # Agent 核心模块
+├── backend/
+│   ├── agents/          # Agent 核心（SOUL 体系、注册、协作）
 │   ├── chatrooms/       # 聊天室系统
-│   ├── llm/             # LLM 集成
-│   ├── models/          # 数据模型
+│   ├── configs/         # 配置文件（agents.json, pipelines.json, skills.json）
+│   ├── llm/             # LLM 客户端（OpenAI 兼容，per-agent 配置）
+│   ├── models/          # 数据库模型（含 Pipeline 表）
+│   ├── pipeline/        # Pipeline 引擎（核心）
 │   ├── routes/          # API 路由
-│   ├── tools/           # 工具集合
-│   └── main.py         # 应用入口
-├── frontend/            # 前端（单文件 HTML）
-│   └── index.html
-├── docs/                # 项目文档
-├── tests/               # 测试文件
-├── data/                # 数据存储
-└── logs/                # 日志目录
+│   ├── tools/           # 工具集合（文件、代码执行、浏览器、截图等）
+│   └── main.py          # 应用入口
+├── frontend/            # 前端（Vanilla JS + TailwindCSS 单文件）
+├── docs/                # PRD + ADR
+└── tests/               # 单元测试 + E2E 测试
 ```
 
-## 🎯 使用示例
+## 🤖 Agent 角色
 
-### 创建项目
+| 角色 | 职责 | Gate |
+|------|------|------|
+| `analyst` | 需求分析，输出 PRD.md | 人工审批 |
+| `architect` | 架构设计，输出 tech-spec.md | 自动 |
+| `developer` | 编写代码 + 单元测试 | 自动 |
+| `tester` | 测试执行，输出 test_report.md | 自动 |
+| `release` | 版本管理，输出 CHANGELOG.md | 人工审批 |
+| `assistant` | 打杂，协助其他 Agent | — |
 
-通过 Web 界面或 API 创建新项目：
+每个 Agent 有独立的 SOUL（灵魂）、角色、工具白名单、LLM 模型配置。
 
-```bash
-curl -X POST http://localhost:8000/api/projects \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "我的第一个项目",
-    "description": "测试项目",
-    "agents": ["assistant", "coder", "reviewer"]
-  }'
-```
+## 🛡️ 安全机制
 
-### 与 Agent 交互
+- **工具白名单**：Agent 仅能调用 `agents.json` 中声明的工具
+- **路径校验**：统一 `_validate_path()` — symlink 解析 + 目录穿越检测 + `.catown/` 保护
+- **Workspace 隔离**：每个项目独立目录，Agent 无法访问其他项目数据
 
-在 Web 界面中选择项目，发送消息到聊天室，Agent 们会自动协作回复。
+## 📊 测试状态
 
-## 🤖 内置 Agent 角色
+- Pipeline 测试：27/27 ✅（含 8 个安全专项测试）
+- E2E 集成测试：35/35 ✅
 
-- **Assistant**: 通用助手，处理日常任务
-- **Coder**: 代码专家，编写和审查代码
-- **Reviewer**: 审核专家，提供反馈和建议
-- **Researcher**: 研究专家，信息收集和分析
+## 📋 实施进度
 
-## 📝 API 文档
+| 模块 | 状态 | 日期 |
+|------|------|------|
+| 数据模型 + 配置 | ✅ 完成 | 2026-04-07 |
+| Pipeline 引擎 + API | ✅ 完成 | 2026-04-07 |
+| 前端 Dashboard | ✅ 完成 | 2026-04-07 |
+| Git 集成 + 产出物查看 | ✅ 完成 | 2026-04-07 |
+| Agent SOUL 体系 | ✅ 完成 | 2026-04-08 |
+| Skills 三级注入 (ADR-008) | ✅ 完成 | 2026-04-10 |
+| 工具白名单 + Workspace 隔离 | ✅ 完成 | 2026-04-10 |
+| 短期记忆 | ⏳ 待做 | — |
+| 项目记忆 | ⏳ 待做 | — |
+| 长期记忆 (ChromaDB) | ⏳ 待做 | — |
+| 审计日志 | ⏳ 待做 | — |
+| Choice Box 交互组件 | ⏳ 待做 | — |
+| Agent 操作可视化 | ⏳ 待做 | — |
+| 聊天框输入体验 | ⏳ 待做 | — |
+| 睡眠整理调度器 | ⏳ 待做 | — |
+| 临时授权请求流程 | ⏳ 待做 | — |
+| OMNI 多模态集成 | ⏳ 待做 | — |
+| UI/UX Pro Max Phase 2 | ⏳ 待做 | — |
+| Knowledge Graph Skill | ⏳ 待做 | — |
 
-启动服务后访问 http://localhost:8000/docs 查看完整的 API 文档
+## 📖 文档
 
-### 主要 API 端点
-
-#### Agents
-- `GET /api/agents` - 获取所有可用 Agent
-- `GET /api/agents/{id}` - 获取 Agent 详情
-- `GET /api/agents/{id}/memory` - 获取 Agent 记忆
-
-#### Projects
-- `GET /api/projects` - 获取所有项目
-- `POST /api/projects` - 创建新项目
-- `GET /api/projects/{id}` - 获取项目详情
-- `DELETE /api/projects/{id}` - 删除项目
-
-#### Chat
-- `GET /api/chatrooms/{id}/messages` - 获取聊天消息
-- `POST /api/chatrooms/{id}/messages` - 发送消息
-
-#### Status
-- `GET /api/status` - 获取系统状态
-- `GET /api/health` - 健康检查
-
-#### WebSocket
-- `WS /ws` - WebSocket 实时通信
-
-## 🔧 配置自定义 Agent
-
-在 `backend/agents/registry.py` 中添加新的 Agent 配置：
-
-```python
-AgentConfig(
-    name="my_agent",
-    role="我的专家角色",
-    system_prompt="""You are a specialized agent...
-    
-    Your capabilities:
-    - Capability 1
-    - Capability 2
-    
-    Guidelines:
-    - Always be helpful
-    - Provide clear explanations
-    """,
-    tools=["web_search", "custom_tool"]
-)
-```
-
-然后重启后端服务即可。
-
-## 🧪 运行测试
-
-```bash
-cd backend
-pip install -r requirements-test.txt
-pytest tests/ -v
-```
-
-## 📖 示例代码
-
-查看 `backend/examples/demo.py` 了解如何使用 API：
-
-```bash
-cd backend/examples
-python demo.py
-```
-
-## 🎯 验收要求完成情况
-
-✅ **1. Web 页面用于同 Agent 交互**
-   - Dashboard 页面：项目管理、Agent 列表、项目列表
-   - Chat 页面：实时聊天界面
-   - Agents 页面：Agent 详细信息和记忆查看
-   - Status 页面：系统状态监控
-
-✅ **2. 使用与 OpenAI 兼容的 LLM**
-   - 支持任何 OpenAI 兼容的 API
-   - 可配置的 base_url 和 model
-   - 统一的 LLM 客户端封装
-
-✅ **3. Agent 具备调用 tool/skills 能力**
-   - 工具注册机制
-   - 工具调用和结果处理
-   - 内置工具：web_search, execute_code, retrieve_memory
-
-✅ **4. Agent 具备记忆能力**
-   - 短期记忆（最近对话）
-   - 长期记忆（重要信息）
-   - 程序性记忆（技能和经验）
-   - 记忆重要性评分系统
-
-## 🛣️ 路线图
-
-- [ ] Agent 间自动协作机制
-- [ ] 更多内置工具
-- [ ] Agent 学习和适应能力
-- [ ] 分布式部署支持
-- [ ] 插件系统
-- [ ] 可视化工作流编排
-
-## 🤝 贡献
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+- [PRD（产品需求文档）](docs/PRD.md)
+- [Wiki](https://github.com/uplusplus/catown.wiki.git) — ADR 索引、架构决策、开发日志
 
 ## 📄 License
 
 MIT License
-
-## 👥 团队
-
-这个项目由 Catown 团队开发。感谢所有贡献者！
