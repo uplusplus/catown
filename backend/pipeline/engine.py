@@ -65,21 +65,59 @@ def _get_workspace(run: PipelineRun) -> Path:
     return ws
 
 
+def _validate_path(workspace: Path, target: Path, allow_catown: bool = False) -> Optional[str]:
+    """
+    统一路径校验：symlink 解析 + 目录穿越检测 + .catown 保护。
+    返回错误消息字符串，None 表示校验通过。
+    """
+    try:
+        real_target = target.resolve()
+        real_workspace = workspace.resolve()
+    except (OSError, RuntimeError) as e:
+        return f"Error: path resolution failed: {e}"
+
+    # 检查是否在 workspace 内（处理 symlink 攻击）
+    try:
+        real_target.relative_to(real_workspace)
+    except ValueError:
+        return "Error: path traversal detected (access outside workspace)"
+
+    # 检查是否试图访问 .catown 目录（项目元数据，Agent 不可读写）
+    if not allow_catown:
+        try:
+            rel = real_target.relative_to(real_workspace)
+            if str(rel) == ".catown" or str(rel).startswith(".catown" + os.sep):
+                return "Error: access to .catown/ directory is restricted (project metadata)"
+        except ValueError:
+            pass
+
+    return None
+
+
 def _tool_read_file(workspace: Path, file_path: str) -> str:
     """读取 workspace 内的文件"""
     target = workspace / file_path
-    if not target.resolve().is_relative_to(workspace.resolve()):
-        return "Error: path traversal detected"
+    err = _validate_path(workspace, target)
+    if err:
+        return err
     if not target.exists():
         return f"Error: file not found: {file_path}"
+    if not target.is_file():
+        return f"Error: not a file: {file_path}"
     return target.read_text(encoding="utf-8", errors="replace")
 
 
 def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
     """写入 workspace 内的文件"""
     target = workspace / file_path
-    if not target.resolve().is_relative_to(workspace.resolve()):
-        return "Error: path traversal detected"
+    # 校验目标路径
+    err = _validate_path(workspace, target)
+    if err:
+        return err
+    # 校验父目录路径（防止 mkdir 创建非法目录）
+    parent_err = _validate_path(workspace, target.parent)
+    if parent_err:
+        return parent_err
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"Written: {file_path} ({len(content)} chars)"
@@ -88,10 +126,22 @@ def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
 def _tool_list_files(workspace: Path, dir_path: str = ".") -> str:
     """列出 workspace 内的文件"""
     target = workspace / dir_path
+    err = _validate_path(workspace, target)
+    if err:
+        return err
     if not target.exists():
         return f"Error: directory not found: {dir_path}"
+    if not target.is_dir():
+        return f"Error: not a directory: {dir_path}"
     entries = []
     for p in sorted(target.iterdir()):
+        # 跳过 .catown 目录
+        try:
+            rel = p.relative_to(workspace.resolve())
+            if str(rel) == ".catown" or str(rel).startswith(".catown" + os.sep):
+                continue
+        except ValueError:
+            pass
         rel = p.relative_to(workspace)
         entries.append(f"{'[DIR]' if p.is_dir() else '[FILE]'} {rel}")
     return "\n".join(entries) or "(empty)"
@@ -106,6 +156,11 @@ def _tool_execute_code(workspace: Path, code: str, language: str = "python") -> 
         f.write(code)
         tmp_path = f.name
     try:
+        # 验证临时文件在 workspace 内
+        err = _validate_path(workspace, Path(tmp_path))
+        if err:
+            os.unlink(tmp_path)
+            return err
         result = subprocess.run(
             ["python3", tmp_path],
             capture_output=True,
@@ -125,7 +180,10 @@ def _tool_execute_code(workspace: Path, code: str, language: str = "python") -> 
     except Exception as e:
         return f"Error: {e}"
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _tool_web_search(workspace: Path, query: str) -> str:
@@ -218,6 +276,17 @@ def _build_tools_for_agent(agent_name: str) -> List[Dict]:
 
 async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str], db=None, stage_id: int = None) -> str:
     """执行单个工具调用"""
+
+    # === 白名单校验：Agent 仅能调用 agents.json 中声明的工具 ===
+    # None = Agent 未在 agents.json 中配置（允许全部，向后兼容）
+    # []   = Agent 已配置但无任何工具（拒绝全部）
+    # [...] = Agent 的工具白名单
+    if agent_name in AGENT_TOOLS:
+        allowed_tools = AGENT_TOOLS[agent_name]
+        if tool_name not in allowed_tools:
+            logger.warning(f"Agent '{agent_name}' attempted unauthorized tool: '{tool_name}' (allowed: {allowed_tools})")
+            return f"Error: Agent '{agent_name}' is not authorized to use tool '{tool_name}'. Allowed tools: {allowed_tools}"
+
     # send_message 需要特殊处理（需要 db 访问）
     if tool_name == "send_message":
         return await _handle_send_message(agent_name, run, arguments, db, stage_id)

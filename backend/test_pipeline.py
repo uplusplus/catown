@@ -235,6 +235,138 @@ class TestTools:
 
         shutil.rmtree(workspace, ignore_errors=True)
 
+    def test_catown_directory_blocked_read(self):
+        """Agent 不可读 .catown/ 目录"""
+        workspace = TEST_DIR / "test_catown_read"
+        workspace.mkdir(parents=True, exist_ok=True)
+        catown_dir = workspace / ".catown"
+        catown_dir.mkdir()
+        (catown_dir / "memory.md").write_text("secret project memory")
+
+        result = TOOL_REGISTRY["read_file"]["fn"](workspace, ".catown/memory.md")
+        assert "restricted" in result.lower() or "denied" in result.lower()
+
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_catown_directory_blocked_write(self):
+        """Agent 不可写 .catown/ 目录"""
+        workspace = TEST_DIR / "test_catown_write"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        result = TOOL_REGISTRY["write_file"]["fn"](workspace, ".catown/hack.py", "malicious code")
+        assert "restricted" in result.lower() or "denied" in result.lower()
+
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_catown_hidden_in_list(self):
+        """list_files 隐藏 .catown/ 目录"""
+        workspace = TEST_DIR / "test_catown_list"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / ".catown").mkdir()
+        (workspace / "src").mkdir()
+        (workspace / "README.md").write_text("hello")
+
+        result = TOOL_REGISTRY["list_files"]["fn"](workspace, ".")
+        assert ".catown" not in result
+        assert "src" in result
+        assert "README.md" in result
+
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_symlink_attack_blocked(self):
+        """Symlink 攻击被阻止"""
+        workspace = TEST_DIR / "test_symlink"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "safe.txt").write_text("safe content")
+
+        # 创建指向 /etc 的 symlink
+        symlink = workspace / "evil"
+        try:
+            symlink.symlink_to("/etc")
+        except (OSError, PermissionError):
+            pytest.skip("Cannot create symlink to /etc")
+
+        result = TOOL_REGISTRY["read_file"]["fn"](workspace, "evil/passwd")
+        assert "traversal" in result.lower() or "denied" in result.lower() or "not found" in result.lower() or "error" in result.lower()
+
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    def test_catown_symlink_blocked(self):
+        """伪装成普通目录的 .catown symlink 被阻止"""
+        workspace = TEST_DIR / "test_catown_symlink"
+        workspace.mkdir(parents=True, exist_ok=True)
+        # 创建外部目录
+        outside = TEST_DIR / "outside_catown"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "secret.md").write_text("secrets")
+
+        # 创建指向外部目录的 symlink
+        catown_link = workspace / ".catown"
+        try:
+            catown_link.symlink_to(outside)
+        except (OSError, PermissionError):
+            shutil.rmtree(outside, ignore_errors=True)
+            pytest.skip("Cannot create symlink")
+
+        result = TOOL_REGISTRY["read_file"]["fn"](workspace, ".catown/secret.md")
+        assert any(w in result.lower() for w in ["restricted", "denied", "traversal", "error"])
+
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+class TestWhitelist:
+    """工具白名单运行时校验"""
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_tool_rejected(self, db, project):
+        """Agent 调用未授权工具被拒绝"""
+        from pipeline.engine import _execute_tool, AGENT_TOOLS, _get_workspace
+
+        # analyst 的白名单中没有 execute_code
+        pipeline = pipeline_engine.create_pipeline(db, project.id)
+        run = pipeline_engine.start_pipeline(db, pipeline.id, "test")
+        db.refresh(run)
+
+        # 手动调用，模拟 analyst 尝试执行代码
+        result = await _execute_tool("analyst", run, "execute_code", {"code": "print('hacked')"})
+        assert "not authorized" in result.lower() or "error" in result.lower()
+        assert "execute_code" in result
+
+    @pytest.mark.asyncio
+    async def test_authorized_tool_allowed(self, db, project):
+        """Agent 调用授权工具正常执行"""
+        from pipeline.engine import _execute_tool
+
+        pipeline = pipeline_engine.create_pipeline(db, project.id)
+        run = pipeline_engine.start_pipeline(db, pipeline.id, "test")
+        db.refresh(run)
+
+        # developer 有 read_file 权限
+        workspace = _get_workspace(run)
+        (workspace / "test.txt").write_text("hello")
+
+        result = await _execute_tool("developer", run, "read_file", {"file_path": "test.txt"})
+        assert "hello" in result
+
+    @pytest.mark.asyncio
+    async def test_configured_empty_tools_denied(self, db, project):
+        """已配置但 tools=[] 的 Agent 不可调用任何工具"""
+        from pipeline.engine import _execute_tool, AGENT_TOOLS
+
+        # 模拟一个已配置但无工具的 Agent
+        AGENT_TOOLS["empty_agent"] = []
+
+        pipeline = pipeline_engine.create_pipeline(db, project.id)
+        run = pipeline_engine.start_pipeline(db, pipeline.id, "test")
+        db.refresh(run)
+
+        result = await _execute_tool("empty_agent", run, "read_file", {"file_path": "test.txt"})
+        assert "not authorized" in result.lower()
+
+        # 清理
+        del AGENT_TOOLS["empty_agent"]
+
 
 class TestPipelineExecution:
     """Pipeline 执行测试（Mock LLM）"""
