@@ -19,6 +19,7 @@ Catown — AI 软件工厂。输入原始需求，输出可发布的产品。
 | [ADR-003](../docs/ADR-queue-modes.md) | LLM 对话系统队列调度模式 | 2026-04-09 | 已确认 |
 | [ADR-004](../docs/ADR-004-knowledge-graph.md) | 知识图谱集成方案 — Skills 模式 + 人控建图 | 2026-04-10 | 已确认 |
 | [ADR-005](../docs/ADR-005-chat-input.md) | 聊天框输入体验优化 — 历史/指令/联想 | 2026-04-10 | 已确认 |
+| [ADR-006](../docs/ADR-006-omni.md) | OMNI 多模态能力集成 — 图片/视频/音频 | 2026-04-10 | 草案 |
 
 ## 快速开始
 
