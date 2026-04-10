@@ -1649,7 +1649,7 @@ backend/
 | Skill 配置框架 | ✅ 够用 | 无 | — |
 | SOUL 注入 | ✅ 够用 | 无 | — |
 | Pipeline 扩展 | ✅ 够用 | 无 | — |
-| 工具层（screenshot/browser） | ❌ 缺失 | 需新增 | **P0** |
+| 工具层（screenshot/browser） | ⚠️ 部分完成 | screenshot ✅，browser ❌ | **P0** |
 | 执行环境（Node.js/浏览器） | ❌ 缺失 | 需新增 | **P0** |
 | 专门 UI Agent 角色 | ❌ 缺失 | 需新增 | P1 |
 | 截图式审计/记忆 | ❌ 缺失 | 需新增 | P1 |
@@ -1664,7 +1664,7 @@ backend/
 
 | 新增 | 说明 |
 |------|------|
-| `screenshot` 工具 | Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
+| `screenshot` 工具 | ✅ 已实现 — Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
 | `browser` 工具 | Playwright 自动化，打开页面交互测试 |
 | `execute_code` 增强 | 支持 Node.js 运行时（npm/vite/webpack） |
 | `ui-designer` Agent | 专门的 UI 设计师角色，独立 SOUL |
