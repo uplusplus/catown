@@ -222,14 +222,26 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             "content": system_prompt
         })
         
-        # 获取最近的对话历史（修复：使用 agent 关系而非不存在的 agent_name 字段）
-        recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
-        for msg in recent_messages[-6:]:
-            agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-            if msg.message_type == "user" or not agent_name:
-                messages.append({"role": "user", "content": msg.content})
-            else:
-                messages.append({"role": "assistant", "content": msg.content})
+        # 获取对话历史（根据房间可见度配置）
+        visibility = chatroom.message_visibility or "all"
+        recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
+
+        if visibility == "all":
+            # 所有 agent 可见：包含所有消息，标注发言者
+            for msg in recent_messages[-10:]:
+                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                if msg.message_type == "user" or not agent_name:
+                    messages.append({"role": "user", "content": msg.content})
+                else:
+                    messages.append({"role": "assistant", "content": f"[{agent_name}]: {msg.content}"})
+        else:
+            # 仅目标可见：只包含用户消息和该 agent 自己的消息
+            for msg in recent_messages[-10:]:
+                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                if msg.message_type == "user" or not agent_name:
+                    messages.append({"role": "user", "content": msg.content})
+                elif agent_name == target_agent.name:
+                    messages.append({"role": "assistant", "content": msg.content})
         
         # 追加当前用户消息
         messages.append({"role": "user", "content": user_message})
@@ -871,6 +883,33 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
         )
         for msg in messages
     ]
+
+
+@router.get("/chatrooms/{chatroom_id}/visibility")
+async def get_chatroom_visibility(chatroom_id: int, db: Session = Depends(get_db)):
+    """获取聊天室消息可见度配置"""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+    return {"chatroom_id": chatroom_id, "message_visibility": chatroom.message_visibility or "all"}
+
+
+@router.put("/chatrooms/{chatroom_id}/visibility")
+async def set_chatroom_visibility(
+    chatroom_id: int,
+    body: dict,
+    db: Session = Depends(get_db)
+):
+    """设置聊天室消息可见度: all=所有agent可见, target=仅目标agent可见"""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+    visibility = body.get("message_visibility")
+    if visibility not in ("all", "target"):
+        raise HTTPException(status_code=400, detail="message_visibility must be 'all' or 'target'")
+    chatroom.message_visibility = visibility
+    db.commit()
+    return {"chatroom_id": chatroom_id, "message_visibility": visibility}
 
 
 @router.post("/chatrooms/{chatroom_id}/messages", response_model=MessageResponse)

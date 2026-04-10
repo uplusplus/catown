@@ -115,6 +115,7 @@ class Chatroom(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), unique=True, nullable=False)
+    message_visibility = Column(String, default="all")  # all=所有agent可见, target=仅目标agent可见
     created_at = Column(DateTime, default=datetime.now)
     
     # 关系
