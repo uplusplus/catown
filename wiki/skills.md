@@ -68,7 +68,7 @@ graphify-out/
 | 依赖 | 状态 | 说明 |
 |------|------|------|
 | `screenshot` 工具 | ✅ 已实现 | Headless Chromium 截图 |
-| `browser` 工具 | ❌ 未实现 | Playwright 自动化 |
+| `browser` 工具 | ✅ 已实现 | Playwright 自动化（15 个交互动作） |
 | `execute_code` 增强 | ❌ 未实现 | 需支持 Node.js 运行时 |
 | `ui-designer` Agent | ❌ 未实现 | 专门 UI 设计师角色 |
 
