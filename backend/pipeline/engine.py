@@ -738,6 +738,10 @@ class PipelineEngine:
         stage.input_context = json.dumps({"context_length": len(context)}, ensure_ascii=False)
         db.commit()
 
+        # 将 skill full 内容写入 .catown/skills/ 供 Agent 按需 read_file
+        workspace = _get_workspace(run)
+        self._write_skill_full_files(stage_cfg.agent, stage_cfg, workspace)
+
         await event_bus.emit("stage_started", {
             "pipeline_id": pipeline.id,
             "run_id": run.id,
@@ -881,8 +885,8 @@ class PipelineEngine:
         llm_client = get_llm_client_for_agent(stage_cfg.agent)
         tools = _build_tools_for_agent(stage_cfg.agent)
 
-        # 加载 Agent 的 system_prompt
-        system_prompt = self._get_agent_system_prompt(stage_cfg.agent)
+        # 加载 Agent 的 system_prompt（传入 stage_cfg 实现三级 Skill 注入）
+        system_prompt = self._get_agent_system_prompt(stage_cfg.agent, stage_cfg)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1070,8 +1074,27 @@ class PipelineEngine:
             .first()
         )
 
-    def _get_agent_system_prompt(self, agent_name: str) -> str:
-        """从 agents.json 读取 Agent 配置，动态组装 system_prompt"""
+    def _load_skills_config(self) -> Dict:
+        """加载 skills.json"""
+        config_dir = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+        skills_file = os.path.join(os.path.dirname(config_dir), "skills.json")
+        try:
+            with open(skills_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _get_agent_system_prompt(
+        self, agent_name: str, stage_cfg: Optional["StageConfig"] = None
+    ) -> str:
+        """
+        从 agents.json 读取 Agent 配置，动态组装 system_prompt。
+
+        ADR-008 三级 Skill 注入：
+        - hint: 始终注入（Agent 有哪些可用技能）
+        - guide: 仅 active_skills 注入（当前阶段需要的详细指引）
+        - full: 不注入，写入 .catown/skills/ 按需 read_file
+        """
         config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
         try:
             with open(config_file, "r", encoding="utf-8") as f:
@@ -1101,12 +1124,68 @@ class PipelineEngine:
                 if rules:
                     parts.append("## 规则\n" + "\n".join(f"- {r}" for r in rules))
 
+            # === Skills 三级注入（ADR-008）===
+            skills_config = self._load_skills_config()
+            agent_skills = agent_data.get("skills", [])
+
+            if agent_skills and skills_config:
+                # hint — 始终注入所有 agent skill 的一句话提示
+                hints = []
+                for skill_name in agent_skills:
+                    skill = skills_config.get(skill_name, {})
+                    hint = skill.get("levels", {}).get("hint", "")
+                    if hint:
+                        hints.append(hint)
+                if hints:
+                    parts.append("## 可用技能\n" + "\n".join(f"- {h}" for h in hints))
+
+                # guide — 仅注入当前 stage 的 active_skills
+                if stage_cfg and stage_cfg.active_skills:
+                    guides = []
+                    for skill_name in stage_cfg.active_skills:
+                        if skill_name in agent_skills:
+                            skill = skills_config.get(skill_name, {})
+                            guide = skill.get("levels", {}).get("guide", "")
+                            if guide:
+                                guides.append(guide)
+                    if guides:
+                        parts.append("\n\n".join(guides))
+
             if parts:
                 return "\n\n".join(parts)
 
             return f"You are {agent_name}, a helpful AI assistant."
         except Exception:
             return f"You are {agent_name}, a helpful AI assistant."
+
+    def _write_skill_full_files(
+        self, agent_name: str, stage_cfg: "StageConfig", workspace: Path
+    ):
+        """
+        将 Agent 配置的所有 skill 的 full 内容写入 .catown/skills/ 目录。
+        Agent 通过 read_file 按需读取。
+        """
+        config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            agent_skills = data.get("agents", {}).get(agent_name, {}).get("skills", [])
+        except Exception:
+            return
+
+        skills_config = self._load_skills_config()
+        if not skills_config or not agent_skills:
+            return
+
+        skills_dir = workspace / ".catown" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        for skill_name in agent_skills:
+            skill = skills_config.get(skill_name, {})
+            full_content = skill.get("levels", {}).get("full", "")
+            if full_content:
+                skill_file = skills_dir / f"{skill_name}.md"
+                skill_file.write_text(full_content, encoding="utf-8")
 
     def _get_pending_instructions(
         self, db: Session, run: PipelineRun, agent_name: str

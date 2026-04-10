@@ -26,6 +26,9 @@ class StageConfig(BaseModel):
     rollback_on_blocker: bool = False
     max_rollback_count: int = 3
     rollback_target: Optional[str] = None  # 打回目标阶段名
+    # Skills 三级注入配置（ADR-008）
+    active_skills: List[str] = []  # 注入 guide 层的 skill 名称
+    hint_only_skills: List[str] = []  # 仅保留 hint 层（不注入 guide）
 
 
 class PipelineConfig(BaseModel):

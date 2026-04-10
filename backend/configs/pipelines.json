@@ -10,7 +10,9 @@
         "gate": "manual",
         "timeout_minutes": 30,
         "expected_artifacts": ["PRD.md"],
-        "context_prompt": "请根据用户的原始需求，输出一份结构化的 PRD。包含用户故事、验收标准、优先级。"
+        "context_prompt": "请根据用户的原始需求，输出一份结构化的 PRD。包含用户故事、验收标准、优先级。",
+        "active_skills": ["document-analysis", "requirement-decomposition", "user-story-writing"],
+        "hint_only_skills": []
       },
       {
         "name": "architecture",
@@ -19,7 +21,9 @@
         "gate": "auto",
         "timeout_minutes": 30,
         "expected_artifacts": ["tech-spec.md"],
-        "context_prompt": "请基于 PRD 进行技术选型和架构设计。包含模块划分、API 接口定义、数据库 schema。"
+        "context_prompt": "请基于 PRD 进行技术选型和架构设计。包含模块划分、API 接口定义、数据库 schema。",
+        "active_skills": ["architecture-design", "technology-evaluation", "api-design"],
+        "hint_only_skills": ["knowledge-graph"]
       },
       {
         "name": "development",
@@ -28,7 +32,9 @@
         "gate": "auto",
         "timeout_minutes": 60,
         "expected_artifacts": ["src/"],
-        "context_prompt": "请按照 tech-spec 实现代码。写完一个模块后跑测试确认能用。遇到接口不清晰时可以给 architect 发消息。"
+        "context_prompt": "请按照 tech-spec 实现代码。写完一个模块后跑测试确认能用。遇到接口不清晰时可以给 architect 发消息。",
+        "active_skills": ["code-generation", "unit-testing", "refactoring"],
+        "hint_only_skills": ["knowledge-graph", "debugging"]
       },
       {
         "name": "testing",
@@ -40,7 +46,9 @@
         "context_prompt": "请基于 PRD 的验收标准测试代码。包含边界测试和异常路径。如果有 blocker 级别的 bug，明确标注。",
         "rollback_on_blocker": true,
         "max_rollback_count": 3,
-        "rollback_target": "development"
+        "rollback_target": "development",
+        "active_skills": ["test-generation", "bug-reporting", "security-testing"],
+        "hint_only_skills": []
       },
       {
         "name": "release",
@@ -49,7 +57,9 @@
         "gate": "manual",
         "timeout_minutes": 15,
         "expected_artifacts": ["CHANGELOG.md"],
-        "context_prompt": "请检查测试报告，确认无 blocker 后生成 CHANGELOG 和 Git tag。"
+        "context_prompt": "请检查测试报告，确认无 blocker 后生成 CHANGELOG 和 Git tag。",
+        "active_skills": ["changelog-generation", "version-tagging", "release-management"],
+        "hint_only_skills": []
       }
     ]
   }
