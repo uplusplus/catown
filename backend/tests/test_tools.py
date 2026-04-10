@@ -109,7 +109,7 @@ class TestExecuteCodeTool:
     @pytest.mark.asyncio
     async def test_execute_unsupported_language(self):
         tool = ExecuteCodeTool()
-        result = await tool.execute(code="console.log('hi')", language="javascript")
+        result = await tool.execute(code="puts 'hi'", language="ruby")
         assert "not supported" in result.lower()
 
 

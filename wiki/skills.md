@@ -69,7 +69,7 @@ graphify-out/
 |------|------|------|
 | `screenshot` 工具 | ✅ 已实现 | Headless Chromium 截图 |
 | `browser` 工具 | ✅ 已实现 | Playwright 自动化（15 个交互动作） |
-| `execute_code` 增强 | ❌ 未实现 | 需支持 Node.js 运行时 |
+| `execute_code` 增强 | ✅ 已实现 | Python + Node.js 双语言沙箱 |
 | `ui-designer` Agent | ❌ 未实现 | 专门 UI 设计师角色 |
 
 ### 核心迭代闭环

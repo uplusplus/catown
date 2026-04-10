@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Execute Code Tool — 带安全沙箱限制
+Execute Code Tool — 带安全沙箱限制，支持 Python 和 Node.js
 """
 from .base import BaseTool
 import subprocess
@@ -8,16 +8,16 @@ import tempfile
 import os
 import sys
 
-# 禁止导入的危险模块
-DENY_IMPORTS = [
+# ─── Python 沙箱 ─────────────────────────────────────────────
+
+PY_DENY_IMPORTS = [
     "os", "sys", "subprocess", "shutil", "ctypes", "pickle", "marshal",
     "multiprocessing", "socket", "httplib", "http", "urllib", "requests",
     "ftplib", "smtplib", "telnetlib", "xmlrpc", "pathlib", "glob",
     "webbrowser", "cgi", "cgitb", "pty", "ptyprocess",
 ]
 
-# 沙箱包装代码：仅通过 import hook 拦截危险导入
-SANDBOX_WRAPPER = r"""
+PY_SANDBOX_WRAPPER = r"""
 import builtins as _sb
 
 _original_import = _sb.__import__
@@ -36,83 +36,221 @@ if isinstance(_sb.__import__, type(_original_import)):
 # 用户代码在此之下执行
 """
 
+# ─── Node.js 沙箱 ────────────────────────────────────────────
+
+NODE_BLOCKED_MODULES = [
+    "child_process", "cluster", "dgram",
+    "net", "tls", "dns", "dgram",
+    "http", "https", "http2",
+    "worker_threads",
+]
+
+NODE_SANDBOX_WRAPPER = r"""
+// 拦截危险模块
+const _origRequire = require;
+const _blocked = {blocked_modules_placeholder};
+
+require = function(name) {
+    const top = name.split('/')[0];
+    if (_blocked.includes(top)) {
+        throw new Error(`Module '${name}' is not allowed in sandbox`);
+    }
+    return _origRequire(name);
+};
+
+// 拦截 process.exit 和危险的 child_process 方法
+const _origExit = process.exit;
+process.exit = function() { throw new Error('process.exit() is not allowed in sandbox'); };
+
+// 用户代码在此之下执行
+"""
+
+# ─── 超时和输出限制 ─────────────────────────────────────────
+
+TIMEOUT_SECONDS = 15
+MAX_OUTPUT_CHARS = 50000
+
+
 class ExecuteCodeTool(BaseTool):
     """Tool for executing code snippets with sandbox restrictions"""
-    
+
     name = "execute_code"
-    description = "Execute Python code snippets in a sandboxed environment. Dangerous imports (os, subprocess, socket, etc.) are blocked."
-    
+    description = (
+        "Execute code in a sandboxed environment. "
+        "Supports 'python' and 'node' (JavaScript/Node.js). "
+        "Dangerous imports/modules are blocked. "
+        "Timeout: 15s, max output: 50KB."
+    )
+
     async def execute(self, code: str, language: str = "python", **kwargs) -> str:
         """
-        Execute code snippet in sandbox
-        
+        Execute code snippet in sandbox.
+
         Args:
             code: Code to execute
-            language: Programming language (python only)
-            
+            language: 'python' or 'node'
+
         Returns:
             Execution output
         """
-        if language != "python":
-            return f"[Execute Code] Language '{language}' not supported. Only Python currently."
-        
+        lang = language.lower().strip()
+
+        if lang in ("python", "py"):
+            return await self._exec_python(code)
+        elif lang in ("node", "nodejs", "javascript", "js"):
+            return await self._exec_node(code)
+        else:
+            return f"[Execute Code] Language '{language}' not supported. Use 'python' or 'node'."
+
+    # ─── Python 执行 ──────────────────────────────────────────
+
+    async def _exec_python(self, code: str) -> str:
         try:
-            # 先做简单文本扫描，拦截明显恶意代码
-            for keyword in ['__import__', 'subprocess', 'eval(', 'exec(', 'os.system', 'shutil']:
+            # 文本扫描拦截明显恶意代码
+            for keyword in ["__import__", "subprocess", "eval(", "exec(", "os.system", "shutil"]:
                 if keyword in code:
                     return f"[Execute Code] Blocked: '{keyword}' is not allowed in sandbox."
-            
-            # 准备沙箱代码
-            wrapper = SANDBOX_WRAPPER.replace("{deny_modules_placeholder}", repr(set(DENY_IMPORTS)))
+
+            wrapper = PY_SANDBOX_WRAPPER.replace(
+                "{deny_modules_placeholder}", repr(set(PY_DENY_IMPORTS))
+            )
             full_code = wrapper + "\n" + code
-            
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as f:
                 f.write(full_code)
                 temp_path = f.name
-            
-            python_cmd = sys.executable
-            
-            result = subprocess.run(
-                [python_cmd, "-u", temp_path],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"}
-            )
-            
-            os.unlink(temp_path)
-            
+
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-u", temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SECONDS,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                )
+            finally:
+                os.unlink(temp_path)
+
             if result.returncode == 0:
-                output = result.stdout.strip()
-                return f"[Execute Code] Success:\n{output}" if output else "[Execute Code] Success (no output)"
+                output = result.stdout.strip()[:MAX_OUTPUT_CHARS]
+                return (
+                    f"[Execute Code] Success:\n{output}"
+                    if output
+                    else "[Execute Code] Success (no output)"
+                )
             else:
-                stderr = result.stderr.strip()
-                # 过滤内部堆栈，只保留有用信息
-                if "Traceback" in stderr:
-                    lines = stderr.split("\n")
-                    # 取最后几行（实际的错误信息）
-                    useful = [l for l in lines if not l.startswith("  File") or "tmp" in l]
-                    return f"[Execute Code] Error:\n" + "\n".join(useful[-5:])
-                return f"[Execute Code] Error:\n{stderr}"
-                
+                return f"[Execute Code] Error:\n{self._clean_stderr(result.stderr)}"
+
         except subprocess.TimeoutExpired:
-            return "[Execute Code] Error: Execution timed out (15s limit)"
+            return f"[Execute Code] Error: Execution timed out ({TIMEOUT_SECONDS}s limit)"
         except Exception as e:
-            return f"[Execute Code] Error: {str(e)}"
-    
+            return f"[Execute Code] Error: {e}"
+
+    # ─── Node.js 执行 ────────────────────────────────────────
+
+    async def _exec_node(self, code: str) -> str:
+        # 检查 node 是否可用
+        node_bin = self._find_node()
+        if not node_bin:
+            return "[Execute Code] Error: Node.js not found. Install node or set NODE_PATH env var."
+
+        try:
+            # 文本扫描
+            for keyword in ["child_process", "cluster.fork", "eval(", ".exec("]:
+                if keyword in code:
+                    # eval 在 JS 中常用，只拦截 child_process 等
+                    if "child_process" in keyword or "cluster" in keyword:
+                        return f"[Execute Code] Blocked: '{keyword}' is not allowed in sandbox."
+
+            wrapper = NODE_SANDBOX_WRAPPER.replace(
+                "{blocked_modules_placeholder}", repr(NODE_BLOCKED_MODULES)
+            )
+            full_code = wrapper + "\n" + code
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".js", delete=False, encoding="utf-8"
+            ) as f:
+                f.write(full_code)
+                temp_path = f.name
+
+            try:
+                result = subprocess.run(
+                    [node_bin, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SECONDS,
+                    env={**os.environ, "NODE_NO_WARNINGS": "1"},
+                )
+            finally:
+                os.unlink(temp_path)
+
+            if result.returncode == 0:
+                output = result.stdout.strip()[:MAX_OUTPUT_CHARS]
+                return (
+                    f"[Execute Code] Success:\n{output}"
+                    if output
+                    else "[Execute Code] Success (no output)"
+                )
+            else:
+                return f"[Execute Code] Error:\n{self._clean_stderr(result.stderr)}"
+
+        except subprocess.TimeoutExpired:
+            return f"[Execute Code] Error: Execution timed out ({TIMEOUT_SECONDS}s limit)"
+        except Exception as e:
+            return f"[Execute Code] Error: {e}"
+
+    # ─── 辅助方法 ────────────────────────────────────────────
+
+    def _find_node(self) -> str | None:
+        """Find Node.js binary"""
+        candidates = [
+            os.environ.get("NODE_PATH", ""),
+            "/usr/bin/node",
+            "/usr/local/bin/node",
+        ]
+        for p in candidates:
+            if p and os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        # 尝试 which
+        try:
+            result = subprocess.run(
+                ["which", "node"], capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _clean_stderr(stderr: str) -> str:
+        """Filter internal stack frames, keep useful error info"""
+        stderr = stderr.strip()
+        if not stderr:
+            return "(no error details)"
+        if "Traceback" in stderr or "Error:" in stderr:
+            lines = stderr.split("\n")
+            useful = [
+                l for l in lines if not l.strip().startswith("File ") or "tmp" in l
+            ]
+            return "\n".join(useful[-8:])[:MAX_OUTPUT_CHARS]
+        return stderr[:MAX_OUTPUT_CHARS]
+
     def _get_parameters_schema(self) -> dict:
         return {
             "type": "object",
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Python code to execute"
+                    "description": "Code to execute",
                 },
                 "language": {
                     "type": "string",
                     "description": "Programming language (default: python)",
-                    "enum": ["python"]
-                }
+                    "enum": ["python", "node"],
+                },
             },
-            "required": ["code"]
+            "required": ["code"],
         }

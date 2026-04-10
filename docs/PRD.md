@@ -1650,7 +1650,7 @@ backend/
 | SOUL 注入 | ✅ 够用 | 无 | — |
 | Pipeline 扩展 | ✅ 够用 | 无 | — |
 | 工具层（screenshot/browser） | ✅ 已实现 | screenshot ✅ + browser ✅（Playwright） | — |
-| 执行环境（Node.js/浏览器） | ❌ 缺失 | 需新增 | **P0** |
+| 执行环境（Node.js/浏览器） | ✅ 已实现 | execute_code 支持 node 语言 | — |
 | 专门 UI Agent 角色 | ❌ 缺失 | 需新增 | P1 |
 | 截图式审计/记忆 | ❌ 缺失 | 需新增 | P1 |
 | 设计资产产出物类型 | ⚠️ 不足 | 需扩展 | P2 |
@@ -1666,7 +1666,7 @@ backend/
 |------|------|
 | `screenshot` 工具 | ✅ 已实现 — Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
 | `browser` 工具 | ✅ 已实现 — Playwright 自动化（navigate/click/fill/type/screenshot/evaluate 等 15 个动作） |
-| `execute_code` 增强 | 支持 Node.js 运行时（npm/vite/webpack） |
+| `execute_code` 增强 | ✅ 已实现 — 支持 Python + Node.js 双语言沙箱 |
 | `ui-designer` Agent | 专门的 UI 设计师角色，独立 SOUL |
 
 #### Phase 2 — 闭环验证
