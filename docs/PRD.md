@@ -1152,6 +1152,156 @@ LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.
 - BOSS 可按 Agent 筛选、按类型筛选、搜索关键词
 - 支持"全展开" / "全折叠"快捷操作
 
+### 8.4 聊天框输入体验优化
+
+聊天框是 BOSS 与系统交互的核心入口。通过消息历史、指令系统、联想补全三项机制，大幅提升操作效率。
+
+#### 8.4.1 消息历史机制
+
+输入框支持历史记录回溯，快速复用之前的消息或指令。
+
+| 操作 | 行为 |
+|------|------|
+| ↑ 向上 | 回溯到上一条输入历史（当前已输入内容暂存） |
+| ↓ 向下 | 前进到下一条输入历史，直到回到最新（恢复暂存内容） |
+| 输入新内容后 ↑ | 从当前输入位置开始，在历史中搜索匹配前缀 |
+| ESC | 清空当前输入，放弃历史回溯 |
+
+规则：
+- 仅记录 BOSS 主动发送的消息（指令 + 自由文本），不记录 Agent 回复
+- 历史按时间倒序存储，最近的在最前面
+- 跨会话持久化（存储在 `projects/{id}/.catown/input_history.json`）
+- 默认保留最近 200 条，可配置
+- 敏感内容（含密码/token 的消息）标记为 `sensitive`，历史回溯时脱敏显示，需二次确认才能发送
+
+#### 8.4.2 指令系统
+
+输入框以 `/` 开头触发指令模式，用于快速执行系统管理操作。
+
+**指令分类与列表：**
+
+| 指令 | 分类 | 说明 |
+|------|------|------|
+| `/help` | 基础 | 显示所有可用指令及说明 |
+| `/skills list` | Skills | 列出已安装 Skills |
+| `/skills info <name>` | Skills | 查看 Skill 详情（描述、依赖工具、适用 Agent） |
+| `/skills enable <name> <agent>` | Skills | 为指定 Agent 启用 Skill |
+| `/skills disable <name> <agent>` | Skills | 为指定 Agent 禁用 Skill |
+| `/tools list` | Tools | 列出所有可用工具 |
+| `/tools info <name>` | Tools | 查看工具详情（参数、权限） |
+| `/tools test <name>` | Tools | 测试工具连通性 |
+| `/agents list` | Agent | 列出所有 Agent 角色及状态 |
+| `/agents info <name>` | Agent | 查看 Agent 详情（SOUL、工具、模型） |
+| `/agents model <name> <model>` | Agent | 切换 Agent 的 LLM 模型 |
+| `/agents reload` | Agent | 热加载 agents.json 配置 |
+| `/config get` | 配置 | 查看当前全局配置 |
+| `/config set <key> <value>` | 配置 | 修改配置项 |
+| `/config reload` | 配置 | 热加载所有配置文件 |
+| `/pipeline status` | Pipeline | 查看当前 Pipeline 运行状态 |
+| `/pipeline pause` | Pipeline | 暂停 Pipeline |
+| `/pipeline resume` | Pipeline | 恢复 Pipeline |
+| `/pipeline rollback <stage>` | Pipeline | 打回到指定阶段 |
+| `/service status` | 服务 | 查看服务健康状态（CPU/内存/运行时间） |
+| `/service restart` | 服务 | 重启后端服务 |
+| `/service logs [lines]` | 服务 | 查看最近 N 行日志（默认 50） |
+
+**指令特性：**
+
+- 指令在聊天框中以特殊样式渲染（左侧紫色竖线 + 等宽字体），与普通消息区分
+- 指令执行结果以系统消息卡片返回，非 Agent 回复
+- 权限控制：敏感指令（`/service restart`、`/config set`）需二次确认
+- 可扩展：在 `configs/commands.json` 中定义新指令，支持注册自定义指令
+
+**指令数据结构：**
+
+```json
+{
+  "commands": {
+    "skills.list": {
+      "trigger": "/skills list",
+      "category": "skills",
+      "description": "列出已安装 Skills",
+      "params": [],
+      "handler": "system",
+      "dangerous": false
+    },
+    "service.restart": {
+      "trigger": "/service restart",
+      "category": "service",
+      "description": "重启后端服务",
+      "params": [],
+      "handler": "system",
+      "dangerous": true,
+      "confirm_message": "确认重启服务？当前 Pipeline 将中断。"
+    }
+  }
+}
+```
+
+#### 8.4.3 输入联想与补全
+
+输入框实时分析当前输入内容，提供上下文相关的补全建议。
+
+**触发方式：**
+
+| 触发 | 行为 |
+|------|------|
+| 输入 `/` | 显示所有指令列表，按分类分组 |
+| 输入 `/skills ` | 显示 skills 子命令列表 |
+| 输入 `/agents ` | 显示 Agent 名称列表 |
+| 输入历史匹配前缀 | 显示匹配的历史消息（最多 5 条） |
+| 输入 `@` | 显示 Agent 名称列表（用于定向发指令） |
+| Tab | 接受当前选中的补全项 |
+| ↑ / ↓ | 在补全列表中上下选择 |
+| ESC | 关闭补全面板 |
+
+**联想面板 UI：**
+
+```
+┌──────────────────────────────────────┐
+│ /skills info <name>                  │
+├──────────────────────────────────────┤
+│ 📋 指令                              │
+│   /skills list        列出已安装 Skills│
+│   /skills info        查看 Skill 详情  │
+│   /skills enable      启用 Skill      │
+│   /skills disable     禁用 Skill      │
+│                                      │
+│ 🕐 历史                              │
+│   做一个用户管理系统，支持注册登录      │
+│   把架构设计打回，补充数据库选型理由    │
+│   暂停 Pipeline                      │
+└──────────────────────────────────────┘
+```
+
+**补全来源优先级：**
+
+1. **精确指令匹配** — 当前输入是某指令的前缀（最高优先级）
+2. **上下文补全** — 基于当前阶段和 Agent 的上下文建议（如开发阶段建议 `/pipeline rollback development`）
+3. **历史匹配** — 历史消息中匹配当前输入前缀的结果
+4. **模糊匹配** — 指令名的模糊搜索（编辑距离 ≤ 2）
+
+**补全面板数据流：**
+
+```
+用户输入
+  │
+  ├─ 以 / 开头 ──→ 命令解析器 ──→ 匹配指令 + 参数提示
+  │
+  ├─ 以 @ 开头 ──→ Agent 注册表 ──→ Agent 名称列表
+  │
+  └─ 普通文本 ──→ 历史搜索 ──→ 匹配的历史消息
+  │
+  ▼
+  联想面板（WebSocket 实时推送）
+```
+
+**技术要求：**
+- 联想响应延迟 < 100ms（本地计算，不走 LLM）
+- 历史搜索使用前缀树（Trie）索引
+- 补全面板使用虚拟滚动，支持大量候选项
+- 移动端：输入 `/` 后显示底部指令栏替代补全面板
+
 ---
 
 ## 9. 审计机制
