@@ -1171,45 +1171,33 @@ LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.
 - 仅记录 BOSS 主动发送的消息（指令 + 自由文本），不记录 Agent 回复
 - 历史按时间倒序存储，最近的在最前面
 - 跨会话持久化（存储在 `projects/{id}/.catown/input_history.json`）
-- 默认保留最近 200 条，可配置
+- 默认保留最近 50 条，可配置
 
 
 #### 8.4.2 指令系统
 
 输入框以 `/` 开头触发指令模式，用于快速执行系统管理操作。
 
-**指令分类与列表：**
+**指令分类与列表（第一版·只读）：**
 
-| 指令 | 分类 | 说明 |
-|------|------|------|
-| `/help` | 基础 | 显示所有可用指令及说明 |
-| `/skills list` | Skills | 列出已安装 Skills |
-| `/skills info <name>` | Skills | 查看 Skill 详情（描述、依赖工具、适用 Agent） |
-| `/skills enable <name> <agent>` | Skills | 为指定 Agent 启用 Skill |
-| `/skills disable <name> <agent>` | Skills | 为指定 Agent 禁用 Skill |
-| `/tools list` | Tools | 列出所有可用工具 |
-| `/tools info <name>` | Tools | 查看工具详情（参数、权限） |
-| `/tools test <name>` | Tools | 测试工具连通性 |
-| `/agents list` | Agent | 列出所有 Agent 角色及状态 |
-| `/agents info <name>` | Agent | 查看 Agent 详情（SOUL、工具、模型） |
-| `/agents model <name> <model>` | Agent | 切换 Agent 的 LLM 模型 |
-| `/agents reload` | Agent | 热加载 agents.json 配置 |
-| `/config get` | 配置 | 查看当前全局配置 |
-| `/config set <key> <value>` | 配置 | 修改配置项 |
-| `/config reload` | 配置 | 热加载所有配置文件 |
-| `/pipeline status` | Pipeline | 查看当前 Pipeline 运行状态 |
-| `/pipeline pause` | Pipeline | 暂停 Pipeline |
-| `/pipeline resume` | Pipeline | 恢复 Pipeline |
-| `/pipeline rollback <stage>` | Pipeline | 打回到指定阶段 |
-| `/service status` | 服务 | 查看服务健康状态（CPU/内存/运行时间） |
-| `/service restart` | 服务 | 重启后端服务 |
-| `/service logs [lines]` | 服务 | 查看最近 N 行日志（默认 50） |
+| 指令 | 别名 | 分类 | 说明 |
+|------|------|------|------|
+| `/help` | `/h` | 基础 | 显示所有可用指令及说明 |
+| `/skills list` | `/sl` | Skills | 列出已安装 Skills |
+| `/skills info <name>` | `/si` | Skills | 查看 Skill 详情（描述、依赖工具、适用 Agent） |
+| `/tools list` | `/tl` | Tools | 列出所有可用工具 |
+| `/tools info <name>` | `/ti` | Tools | 查看工具详情（参数、权限） |
+| `/agents list` | `/al` | Agent | 列出所有 Agent 角色及状态 |
+| `/agents info <name>` | `/ai` | Agent | 查看 Agent 详情（SOUL、工具、模型） |
+| `/config get` | `/cg` | 配置 | 查看当前全局配置 |
+| `/pipeline status` | `/ps` | Pipeline | 查看当前 Pipeline 运行状态 |
+
+> 第一版仅提供只读查询指令。写操作类指令（`/skills enable`、`/config set`、`/service restart` 等）后续版本迭代。
 
 **指令特性：**
 
 - 指令在聊天框中以特殊样式渲染（左侧紫色竖线 + 等宽字体），与普通消息区分
-- 指令执行结果以系统消息卡片返回，非 Agent 回复
-- 权限控制：敏感指令（`/service restart`、`/config set`）需二次确认
+- 指令执行结果以系统消息卡片返回，区分成功（绿色）和失败（红色）样式
 - 可扩展：在 `configs/commands.json` 中定义新指令，支持注册自定义指令
 
 **指令数据结构：**
@@ -1274,12 +1262,10 @@ LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.
 └──────────────────────────────────────┘
 ```
 
-**补全来源优先级：**
+**补全来源：**
 
-1. **精确指令匹配** — 当前输入是某指令的前缀（最高优先级）
-2. **上下文补全** — 基于当前阶段和 Agent 的上下文建议（如开发阶段建议 `/pipeline rollback development`）
-3. **历史匹配** — 历史消息中匹配当前输入前缀的结果
-4. **模糊匹配** — 指令名的模糊搜索（编辑距离 ≤ 2）
+1. **指令匹配** — 当前输入匹配指令前缀（最高优先级）
+2. **历史匹配** — 历史消息中匹配当前输入前缀的结果（最多 5 条）
 
 **补全面板数据流：**
 
@@ -1298,9 +1284,7 @@ LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.
 
 **技术要求：**
 - 联想响应延迟 < 100ms（本地计算，不走 LLM）
-- 历史搜索使用前缀树（Trie）索引
 - 补全面板使用虚拟滚动，支持大量候选项
-- 移动端：输入 `/` 后显示底部指令栏替代补全面板
 
 ---
 
