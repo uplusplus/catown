@@ -1,9 +1,10 @@
 @echo off
-REM Catown 交互式启动脚本 - Windows
+REM Catown 交互式启动脚本 - Windows（同窗口运行）
 REM q = 停止, r = 重载
 
 setlocal enabledelayedexpansion
 set "DIR=%~dp0backend"
+set "PIDFILE=%~dp0.catown.pid"
 
 REM Python 检查
 python --version >nul 2>&1
@@ -37,10 +38,22 @@ echo    Frontend:  http://localhost:8000
 echo    API Docs:  http://localhost:8000/docs
 echo.
 
-REM 用 start 启动 uvicorn 到新窗口，标题为 catown_server
-start "catown_server" cmd /c "cd /d "%DIR%" && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+REM 用 start /B 后台启动 uvicorn
+cd /d "%DIR%"
+start "" /B python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-echo   服务已启动。
+REM 获取后台进程 PID
+for /f "tokens=2 delims=," %%p in (
+    'wmic process where "commandline like '%%uvicorn main:app%%' and name='python.exe'" get processid /format:csv 2^>nul ^| findstr /v "Node"'
+) do set "PID=%%p"
+
+if not defined PID (
+    for /f "tokens=2 delims=," %%p in (
+        'wmic process where "commandline like '%%uvicorn%%' and name='python.exe'" get processid /format:csv 2^>nul ^| findstr /v "Node"'
+    ) do set "PID=%%p"
+)
+
+echo   服务已启动 ^(PID: %PID%^).
 echo.
 echo ──────────────────────────────────────
 echo   输入 q + 回车 = 停止
@@ -60,14 +73,16 @@ goto :LOOP
 :RELOAD
 echo.
 echo 重载中...
-taskkill /FI "WINDOWTITLE eq catown_server" /F >nul 2>&1
+if defined PID taskkill /PID %PID% /F >nul 2>&1
 timeout /t 1 /nobreak >nul
+set "PID="
 goto :START
 
 :STOP
 echo.
 echo 停止服务...
-taskkill /FI "WINDOWTITLE eq catown_server" /F >nul 2>&1
+if defined PID taskkill /PID %PID% /F >nul 2>&1
+set "PID="
 echo 已退出。
 pause
 exit /b 0
