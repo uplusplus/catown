@@ -1,82 +1,113 @@
 @echo off
-REM Catown 交互式启动脚本 - Windows
-REM q = 停止, r = 重载
+chcp 65001 >nul 2>&1
+REM Catown - Windows Launcher
+REM q=quit  r=restart
+REM
+REM Run from any directory. Uvicorn output is visible in this console.
+REM Uses start /B so uvicorn shares this cmd window.
+REM PID is captured immediately after launch for clean restart.
 
 setlocal enabledelayedexpansion
-set "DIR=%~dp0backend"
 
+set "BACKEND=%~dp0backend"
+if "%BACKEND:~-1%"=="\" set "BACKEND=%BACKEND:~0,-1%"
+
+:: --- Python ---
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] 找不到 Python，请安装 Python 3.10+
-    pause
+    echo [ERROR] Python not found. Install Python 3.10+
     exit /b 1
 )
 
+:: --- Dependencies ---
+pushd "%BACKEND%"
 python -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
-    echo 安装依赖...
-    pushd "%DIR%"
+    echo Installing dependencies...
     pip install -r requirements.txt
-    popd
 )
+popd
 
-if not exist "%DIR%\.env" (
-    if exist "%DIR%\.env.example" (
-        copy "%DIR%\.env.example" "%DIR%\.env" >nul
-        echo 已创建 backend\.env — 请编辑填入 LLM_API_KEY
+:: --- .env ---
+if not exist "%BACKEND%\.env" (
+    if exist "%BACKEND%\.env.example" (
+        copy "%BACKEND%\.env.example" "%BACKEND%\.env" >nul
+        echo Created backend\.env - edit it to set LLM_API_KEY
     )
 )
 
-:START
+:: ==========================================
+:: Launch
+:: ==========================================
+:LAUNCH
+set "PID="
 echo.
-echo 启动 Catown...
-echo   前端:  http://localhost:8000
-echo   API:   http://localhost:8000/docs
-echo.
+echo Starting Catown...
+echo   Web:      http://localhost:8000
+echo   API Docs: http://localhost:8000/docs
 
-cd /d "%DIR%"
-start "" /B python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+start "Catown" /B python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-for /f "tokens=2 delims=," %%p in (
-    'wmic process where "commandline like '%%uvicorn main:app%%' and name='python.exe'" get processid /format:csv 2^>nul ^| findstr /v "Node"'
-) do set "PID=%%p"
-
-if not defined PID (
-    for /f "tokens=2 delims=," %%p in (
-        'wmic process where "commandline like '%%uvicorn%%' and name='python.exe'" get processid /format:csv 2^>nul ^| findstr /v "Node"'
-    ) do set "PID=%%p"
+:: Capture PID (retry a few times for startup delay)
+for /l %%i in (1,1,10) do (
+    if not defined PID (
+        call :FIND_PID
+        if not defined PID timeout /t 1 /nobreak >nul
+    )
 )
 
-echo   服务已启动 (PID: %PID%).
+if defined PID (
+    echo   PID:      %PID%
+) else (
+    echo   PID:      unknown
+)
 echo.
-echo ──────────────────────────────────
-echo   输入 q + 回车 = 停止
-echo   输入 r + 回车 = 重载
-echo ──────────────────────────────────
+echo ----------------------------------------------
+echo   q + Enter  = quit
+echo   r + Enter  = restart
+echo ----------------------------------------------
 echo.
 
+:: ==========================================
+:: Command loop
+:: ==========================================
 :LOOP
 set "cmd="
 set /p "cmd=? "
-if /i "!cmd!"=="q" goto :STOP
-if /i "!cmd!"=="r" goto :RELOAD
 if "!cmd!"=="" goto :LOOP
-echo 未知命令: !cmd! （输入 q 停止, r 重载）
+if /i "!cmd!"=="q" goto :QUIT
+if /i "!cmd!"=="r" goto :RESTART
 goto :LOOP
 
-:RELOAD
-echo.
-echo 重载中...
+:: ==========================================
+:: Restart
+:: ==========================================
+:RESTART
+echo Restarting...
 if defined PID taskkill /PID %PID% /F >nul 2>&1
+set "PID="
 timeout /t 1 /nobreak >nul
-set "PID="
-goto :START
+goto :LAUNCH
 
-:STOP
-echo.
-echo 停止服务...
+:: ==========================================
+:: Quit
+:: ==========================================
+:QUIT
+echo Stopping...
 if defined PID taskkill /PID %PID% /F >nul 2>&1
 set "PID="
-echo 已退出。
-pause
+echo Done.
+exit /b 0
+
+:: ==========================================
+:: Find PID of our uvicorn process
+:: ==========================================
+:FIND_PID
+set "PID="
+for /f "tokens=2 delims=," %%p in (
+    'tasklist /FI "IMAGENAME eq python.exe" /FI "CMDLINE eq *uvicorn main:app*" /FO CSV /NH 2^>nul'
+) do (
+    set "raw=%%~p"
+    if not "!raw!"=="" set "PID=!raw!"
+)
 exit /b 0
