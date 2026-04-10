@@ -46,7 +46,9 @@ echo Starting Catown...
 echo   Web:      http://localhost:8000
 echo   API Docs: http://localhost:8000/docs
 
-start "Catown" /B python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+pushd "%BACKEND%"
+start "Catown" /B python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+popd
 
 :: Capture PID (retry a few times for startup delay)
 for /l %%i in (1,1,10) do (
