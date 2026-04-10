@@ -263,10 +263,173 @@ Agent 需要 web_search，但不在白名单中
 ```
 
 **Skills 体系**：
-- Skills 是工具的高层封装，由系统 prompt 和工具组合定义
-- 每个 Skill 可声明其依赖的工具列表
-- Agent 的可用 Skills 也通过白名单控制
-- Skills 配置存储在 `configs/skills.json`，引用时按 `agent.skills` 白名单过滤
+
+Skills 是 Agent 能力的高层封装。每个 Skill 定义了一种专业行为模式，由指令片段（注入 system prompt）和依赖工具组成。Agent 配置中声明的 skills 决定了它的行为风格和可用能力边界。
+
+#### Skills 数据模型
+
+配置文件：`configs/skills.json`
+
+```json
+{
+  "code-generation": {
+    "name": "代码生成",
+    "description": "根据技术规范生成高质量代码",
+    "required_tools": ["read_file", "write_file", "list_files"],
+    "prompt_fragment": "## 代码生成规范\n- 遵循项目已有代码风格和约定\n- 每个函数必须有 docstring\n- 写代码前先 read_file 了解现有结构\n- 代码写入 src/ 目录，测试写入 tests/ 目录",
+    "category": "development"
+  },
+  "unit-testing": {
+    "name": "单元测试",
+    "description": "为代码编写单元测试",
+    "required_tools": ["read_file", "write_file", "execute_code"],
+    "prompt_fragment": "## 测试规范\n- 每个公共函数至少一个测试用例\n- 测试覆盖正常路径和边界条件\n- 用 execute_code 运行测试验证通过\n- 测试文件命名: test_<module>.py",
+    "category": "development"
+  },
+  "refactoring": {
+    "name": "重构",
+    "description": "改进代码结构而不改变外部行为",
+    "required_tools": ["read_file", "write_file", "search_files"],
+    "prompt_fragment": "## 重构规范\n- 小步提交，每次只做一件事\n- 重构前后运行测试确认行为不变\n- 消除重复代码，提取公共逻辑\n- 改善命名，提高可读性",
+    "category": "development"
+  },
+  "document-analysis": {
+    "name": "文档分析",
+    "description": "分析和结构化需求文档",
+    "required_tools": ["read_file", "write_file", "web_search"],
+    "prompt_fragment": "## 文档分析规范\n- 提取关键需求点并结构化\n- 识别模糊表述，标记需要澄清的部分\n- 输出包含用户故事和验收标准",
+    "category": "analysis"
+  },
+  "architecture-design": {
+    "name": "架构设计",
+    "description": "设计系统架构和技术方案",
+    "required_tools": ["read_file", "write_file", "web_search"],
+    "prompt_fragment": "## 架构设计规范\n- 先理解需求再设计方案\n- 输出包含组件图、数据流、接口定义\n- 评估技术选型的优劣\n- 考虑可扩展性和维护性",
+    "category": "architecture"
+  },
+  "changelog-generation": {
+    "name": "Changelog 生成",
+    "description": "基于 Git 历史生成变更日志",
+    "required_tools": ["read_file", "write_file", "execute_code"],
+    "prompt_fragment": "## Changelog 规范\n- 按 Added/Changed/Fixed/Removed 分类\n- 每条记录关联 commit hash\n- 语义化版本号 (SemVer)",
+    "category": "release"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | Skill 显示名 |
+| `description` | string | 一句话说明 Skill 做什么 |
+| `required_tools` | string[] | 该 Skill 依赖的工具列表 |
+| `prompt_fragment` | string | 注入 system prompt 的指令片段 |
+| `category` | string | 分类标签（analysis / architecture / development / release） |
+
+#### Skills 工作机制
+
+**1. Prompt 注入**
+
+当 Agent 配置了 skills 列表时，引擎将对应的 `prompt_fragment` 拼接到 system prompt 中：
+
+```python
+def build_system_prompt(agent_config, skill_configs):
+    parts = []
+    # ... 灵魂层、角色层、规则层（见 §4.2）...
+
+    # Skills 指令注入
+    agent_skills = agent_config.get("skills", [])
+    if agent_skills:
+        skill_parts = []
+        for skill_name in agent_skills:
+            skill = skill_configs.get(skill_name)
+            if skill:
+                skill_parts.append(skill["prompt_fragment"])
+        if skill_parts:
+            parts.append("## 你的技能\n" + "\n\n".join(skill_parts))
+
+    # ... 项目记忆、长期记忆 ...
+    return "\n\n".join(parts)
+```
+
+**2. 工具访问联动**
+
+Skills 声明的 `required_tools` 不直接授予工具权限，而是作为**参考依据**：
+- Agent 的工具白名单仍由 `agents.json` 的 `tools` 字段控制（权限来源）
+- Skills 的 `required_tools` 用于**校验一致性**：如果 Agent 配置了某 Skill 但缺少其依赖工具，启动时发出警告
+- BOSS 在配置 Agent 时可以参考 Skill 的 `required_tools` 来决定工具白名单
+
+校验逻辑：
+```python
+def validate_agent_skills(agent_config, skill_configs):
+    """启动时校验 Agent 的 skills 与 tools 是否一致"""
+    warnings = []
+    agent_tools = set(agent_config.get("tools", []))
+    for skill_name in agent_config.get("skills", []):
+        skill = skill_configs.get(skill_name)
+        if not skill:
+            warnings.append(f"Skill '{skill_name}' not found in skills.json")
+            continue
+        missing = set(skill["required_tools"]) - agent_tools
+        if missing:
+            warnings.append(
+                f"Agent '{agent_config['name']}' has skill '{skill_name}' "
+                f"but missing tools: {missing}"
+            )
+    return warnings
+```
+
+**3. 系统 prompt 生成示例**
+
+developer 配置了 `code-generation` + `unit-testing` + `refactoring`，生成的 system prompt 片段：
+
+```
+## 你的技能
+## 代码生成规范
+- 遵循项目已有代码风格和约定
+- 每个函数必须有 docstring
+- 写代码前先 read_file 了解现有结构
+- 代码写入 src/ 目录，测试写入 tests/ 目录
+
+## 测试规范
+- 每个公共函数至少一个测试用例
+- 测试覆盖正常路径和边界条件
+- 用 execute_code 运行测试验证通过
+- 测试文件命名: test_<module>.py
+
+## 重构规范
+- 小步提交，每次只做一件事
+- 重构前后运行测试确认行为不变
+- 消除重复代码，提取公共逻辑
+- 改善命名，提高可读性
+```
+
+**4. 可扩展性**
+
+- 新增 Skill：在 `skills.json` 添加条目即可，无需改代码
+- Agent 配置新 Skill：在 `agents.json` 的 agent skills 数组中添加名称
+- 热加载：修改 `skills.json` 后调用 `POST /api/config/reload` 生效
+- 自定义 Skill：BOSS 可编写自有 Skill（如 `security-audit`、`performance-tuning`），只要 prompt_fragment 和 required_tools 定义正确
+
+**5. 与工具白名单的关系**
+
+```
+┌─────────────────────────────────────────────────┐
+│                  agents.json                     │
+│  agent.tools: [read_file, write_file, ...]      │  ← 权限来源（硬限制）
+│  agent.skills: [code-generation, unit-testing]  │  ← 行为来源（软引导）
+└──────────────┬──────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────┐
+│                  skills.json                     │
+│  code-generation.prompt_fragment → system prompt│  ← 注入指令
+│  code-generation.required_tools → 校验一致性     │  ← 不授予权限
+└─────────────────────────────────────────────────┘
+```
+
+- **tools** = Agent 能做什么（权限边界）
+- **skills** = Agent 怎么做（行为指引）
+- 两者独立配置，通过校验机制确保一致性
 
 ### 4.6 三层记忆体系
 
