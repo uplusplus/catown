@@ -291,16 +291,27 @@ class ListCollaboratorsTool(BaseTool):
 
         agent_ids = self.coordinator.chatroom_agents.get(chatroom_id, set())
 
-        # 如果聊天室没有注册的协作者，从全局数据库获取所有 Agent
+        # 如果聊天室没有注册的协作者，查询当前房间（项目）关联的 Agent
         if not agent_ids:
             try:
-                from models.database import get_db, Agent as DBAgent
+                from models.database import get_db, Agent as DBAgent, Chatroom, AgentAssignment
                 db = next(get_db())
                 try:
-                    all_agents = db.query(DBAgent).filter(DBAgent.is_active == True).all()
-                    if all_agents:
-                        result = f"[List Collaborators] All available agents in the system:\n"
-                        for a in all_agents:
+                    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+                    if chatroom and chatroom.project_id:
+                        assignments = db.query(AgentAssignment).filter(
+                            AgentAssignment.project_id == chatroom.project_id
+                        ).all()
+                        assigned_ids = [a.agent_id for a in assignments]
+                        room_agents = db.query(DBAgent).filter(
+                            DBAgent.id.in_(assigned_ids), DBAgent.is_active == True
+                        ).all() if assigned_ids else []
+                    else:
+                        room_agents = []
+
+                    if room_agents:
+                        result = f"[List Collaborators] {len(room_agents)} agent(s) in this room:\n"
+                        for a in room_agents:
                             tools = a.tools if isinstance(a.tools, str) else str(a.tools)
                             result += f"  - **{a.name}** (role: {a.role}, tools: {tools})\n"
                         result += "\nTip: Use @agent_name to directly invoke an agent, or delegate_task to assign work."
@@ -400,4 +411,116 @@ class SendDirectMessageTool(BaseTool):
                 }
             },
             "required": ["target_agent_name", "message"]
+        }
+
+
+class ListDirectoryTool(BaseTool):
+    """Tool for listing agents in the system directory that are NOT in the current room"""
+
+    name = "list_directory"
+    description = (
+        "List agents in the system directory that are NOT in the current room. "
+        "Use this to find agents you can invite to join the current project."
+    )
+
+    async def execute(self, **kwargs) -> str:
+        chatroom_id = kwargs.get('chatroom_id', 0)
+
+        from models.database import get_db, Agent as DBAgent, Chatroom, AgentAssignment
+        db = next(get_db())
+        try:
+            chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+            if not chatroom or not chatroom.project_id:
+                return "[Directory] Error: No project associated with this chatroom"
+
+            # 当前房间内的 agent ids
+            assignments = db.query(AgentAssignment).filter(
+                AgentAssignment.project_id == chatroom.project_id
+            ).all()
+            room_agent_ids = {a.agent_id for a in assignments}
+
+            # 系统中所有活跃 agent，排除已在房间内的
+            all_agents = db.query(DBAgent).filter(DBAgent.is_active == True).all()
+            external = [a for a in all_agents if a.id not in room_agent_ids]
+
+            if not external:
+                return "[Directory] All system agents are already in this room."
+
+            result = f"[Directory] {len(external)} agent(s) available to invite:\n"
+            for a in external:
+                result += f"  - **{a.name}** (role: {a.role})\n"
+            result += "\nUse invite_agent(agent_name) to add one to this room."
+            return result
+        finally:
+            db.close()
+
+    def _get_parameters_schema(self) -> dict:
+        return {"type": "object", "properties": {}, "required": []}
+
+
+class InviteAgentTool(BaseTool):
+    """Tool for inviting an agent to join the current room"""
+
+    name = "invite_agent"
+    description = (
+        "Invite an agent to join the current room/project. "
+        "The agent will be added to the team and available for collaboration."
+    )
+
+    async def execute(self, agent_name: str, **kwargs) -> str:
+        chatroom_id = kwargs.get('chatroom_id', 0)
+
+        from models.database import get_db, Agent as DBAgent, Chatroom, AgentAssignment
+        db = next(get_db())
+        try:
+            chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+            if not chatroom or not chatroom.project_id:
+                return "[Invite] Error: No project associated with this chatroom"
+
+            # 查找目标 agent
+            target = db.query(DBAgent).filter(
+                DBAgent.name == agent_name, DBAgent.is_active == True
+            ).first()
+            if not target:
+                return f"[Invite] Error: Agent '{agent_name}' not found in the system."
+
+            # 检查是否已在房间内
+            existing = db.query(AgentAssignment).filter(
+                AgentAssignment.project_id == chatroom.project_id,
+                AgentAssignment.agent_id == target.id
+            ).first()
+            if existing:
+                return f"[Invite] Agent '{agent_name}' is already in this room."
+
+            # 创建分配
+            assignment = AgentAssignment(project_id=chatroom.project_id, agent_id=target.id)
+            db.add(assignment)
+            db.commit()
+
+            # 注册到协作协调器
+            try:
+                from agents.collaboration import collaboration_coordinator, AgentCollaborator
+                collaborator = AgentCollaborator(
+                    agent_id=target.id,
+                    agent_name=target.name,
+                    chatroom_id=chatroom_id
+                )
+                collaboration_coordinator.register_collaborator(collaborator)
+            except Exception:
+                pass
+
+            return f"[Invite] ✅ Agent '{agent_name}' (role: {target.role}) has joined this room."
+        finally:
+            db.close()
+
+    def _get_parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "agent_name": {
+                    "type": "string",
+                    "description": "Name of the agent to invite (e.g. 'security_auditor')"
+                }
+            },
+            "required": ["agent_name"]
         }

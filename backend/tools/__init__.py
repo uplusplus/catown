@@ -19,7 +19,9 @@ from .collaboration_tools import (
     BroadcastMessageTool,
     CheckTaskStatusTool,
     ListCollaboratorsTool,
-    SendDirectMessageTool
+    SendDirectMessageTool,
+    ListDirectoryTool,
+    InviteAgentTool
 )
 from .query_agent import QueryAgentTool
 from .github_manager import GitHubManagerTool
@@ -59,6 +61,8 @@ tool_registry.register(CheckTaskStatusTool())
 tool_registry.register(ListCollaboratorsTool())
 tool_registry.register(SendDirectMessageTool())
 tool_registry.register(QueryAgentTool())
+tool_registry.register(ListDirectoryTool())
+tool_registry.register(InviteAgentTool())
 tool_registry.register(GitHubManagerTool())
 
 def init_collaboration_tools(coordinator):

@@ -72,11 +72,38 @@ class QueryAgentTool(BaseTool):
             ).first()
 
             if not target_db_agent:
-                available = [a.name for a in db.query(DBAgent).filter(DBAgent.is_active == True).all()]
+                # 仅列出当前房间（项目）内的 agent
+                from models.database import AgentAssignment
+                chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
+                if chatroom and chatroom.project_id:
+                    assignments = db.query(AgentAssignment).filter(
+                        AgentAssignment.project_id == chatroom.project_id
+                    ).all()
+                    assigned_ids = [a.agent_id for a in assignments]
+                    room_agents = db.query(DBAgent).filter(
+                        DBAgent.id.in_(assigned_ids), DBAgent.is_active == True
+                    ).all() if assigned_ids else []
+                else:
+                    room_agents = []
+                available = [a.name for a in room_agents]
                 return (
-                    f"[query_agent] Error: Agent '{agent_name}' not found. "
-                    f"Available agents: {available}"
+                    f"[query_agent] Error: Agent '{agent_name}' not found in this room. "
+                    f"Agents in this room: {available}"
                 )
+
+            # 验证目标 agent 是否在当前房间内
+            from models.database import AgentAssignment
+            chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
+            if chatroom and chatroom.project_id:
+                assignment = db.query(AgentAssignment).filter(
+                    AgentAssignment.project_id == chatroom.project_id,
+                    AgentAssignment.agent_id == target_db_agent.id
+                ).first()
+                if not assignment:
+                    return (
+                        f"[query_agent] Error: Agent '{agent_name}' is not in this room. "
+                        f"Use @mention to invite them first."
+                    )
 
             # 2. Get the target agent's LLM client
             from llm.client import get_llm_client_for_agent
