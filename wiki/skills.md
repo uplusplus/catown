@@ -57,6 +57,56 @@ graphify-out/
 
 详见 [ADR-004](../docs/ADR-004-knowledge-graph.md)。
 
+## UI/UX Pro Max Skill（规划中）
+
+### 定位
+
+让 Agent 能生成高质量前端界面，并通过截图验证形成迭代闭环。
+
+### 前置条件
+
+| 依赖 | 状态 | 说明 |
+|------|------|------|
+| `screenshot` 工具 | ❌ 未实现 | Headless Chromium 截图 |
+| `browser` 工具 | ❌ 未实现 | Playwright 自动化 |
+| `execute_code` 增强 | ❌ 未实现 | 需支持 Node.js 运行时 |
+| `ui-designer` Agent | ❌ 未实现 | 专门 UI 设计师角色 |
+
+### 核心迭代闭环
+
+```
+Agent 生成 HTML/CSS 代码
+    │
+    ├── screenshot 工具截图 → 渲染效果
+    │       │
+    │       ├── 符合预期 → 进入下一组件
+    │       └── 不符合 → LLM 分析截图 → 修改代码 → 再截图
+    │
+    └── browser 工具交互测试 → 响应式/交互验证
+```
+
+### 预计 Skill 配置
+
+```json
+{
+  "ui-ux-pro-max": {
+    "name": "UI/UX 专业设计",
+    "description": "生成高质量前端界面并通过截图验证迭代",
+    "required_tools": ["read_file", "write_file", "execute_code", "screenshot", "browser"],
+    "prompt_fragment": "## UI/UX 设计规范\n- 先出 wireframe 再出实现\n- 每次修改后截图验证\n- 遵循设计系统 token\n- 响应式优先（mobile-first）",
+    "category": "design"
+  }
+}
+```
+
+### 分阶段引入
+
+- **Phase 1**：screenshot + browser 工具 + Node.js 运行时 + ui-designer Agent
+- **Phase 2**：截图对比 + 截图式审计 + ui-ux-pro-max Skill 配置
+- **Phase 3**：设计稿解析 + 多分辨率测试 + 设计资产管理
+
+详见 [ADR-007](../docs/ADR-007-ui-ux-skill.md)。
+
 ## 配置
 
 ### 新增 Skill

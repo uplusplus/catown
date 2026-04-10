@@ -1625,6 +1625,84 @@ backend/
 
 ---
 
+## 19. UI/UX Pro Max Skill 集成规划
+
+### 19.1 背景
+
+当前 7 个预置 Skill 全部是文本/代码导向。要让 Catown 成为真正的 AI 软件工厂，需要引入 UI/UX 专业设计类 Skill，让 Agent 能生成高质量前端界面并闭环验证。
+
+### 19.2 能力需求
+
+| 能力 | 说明 |
+|------|------|
+| 视觉生成 | 生成 HTML/CSS/组件代码 |
+| 视觉验证 | 截图预览，确认渲染效果 |
+| 迭代闭环 | 生成 → 截图 → 对比 → 修改 |
+| 设计规范注入 | 设计系统/tokens/组件库约束 |
+| 响应式测试 | 多分辨率截图对比 |
+| 设计稿解析 | 读取截图/设计稿并理解 |
+
+### 19.3 现状差距
+
+| 维度 | 现状 | 差距 | 优先级 |
+|------|------|------|--------|
+| Skill 配置框架 | ✅ 够用 | 无 | — |
+| SOUL 注入 | ✅ 够用 | 无 | — |
+| Pipeline 扩展 | ✅ 够用 | 无 | — |
+| 工具层（screenshot/browser） | ❌ 缺失 | 需新增 | **P0** |
+| 执行环境（Node.js/浏览器） | ❌ 缺失 | 需新增 | **P0** |
+| 专门 UI Agent 角色 | ❌ 缺失 | 需新增 | P1 |
+| 截图式审计/记忆 | ❌ 缺失 | 需新增 | P1 |
+| 设计资产产出物类型 | ⚠️ 不足 | 需扩展 | P2 |
+| 设计稿解析 | ❌ 缺失 | 需新增 | P2 |
+
+**核心结论**：Skill 配置框架和注入机制完全兼容，但工具层（screenshot + browser）和执行环境（Node.js）是硬瓶颈。
+
+### 19.4 实施阶段
+
+#### Phase 1 — 硬门槛
+
+| 新增 | 说明 |
+|------|------|
+| `screenshot` 工具 | Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
+| `browser` 工具 | Playwright 自动化，打开页面交互测试 |
+| `execute_code` 增强 | 支持 Node.js 运行时（npm/vite/webpack） |
+| `ui-designer` Agent | 专门的 UI 设计师角色，独立 SOUL |
+
+#### Phase 2 — 闭环验证
+
+| 新增 | 说明 |
+|------|------|
+| 截图对比能力 | baseline vs actual 差异检测 |
+| 截图式审计 | 截图存入审计日志和记忆体系 |
+| `ui-ux-pro-max` Skill | 完整的 prompt_fragment + 工具绑定 |
+
+#### Phase 3 — 高级能力
+
+| 新增 | 说明 |
+|------|------|
+| 设计稿解析 | 图片 → 结构化需求 |
+| 多分辨率响应式测试 | 自动化 viewport 切换 |
+| 设计资产产出物管理 | design_spec/component/screenshot 类型 |
+
+### 19.5 需修改的模块
+
+| 模块 | 改动 |
+|------|------|
+| 工具注册 (`tools/`) | 新增 screenshot、browser 工具实现 |
+| `execute_code` | 增加 Node.js 运行时支持 |
+| `agents.json` | 新增 ui-designer 角色 |
+| `skills.json` | 新增 ui-ux-pro-max Skill |
+| `pipelines.json` | Pipeline 中可引用 ui-designer |
+| 审计体系 | 支持截图类型的审计记录 |
+| 记忆体系 | 支持截图标注存入长期记忆 |
+| 产出物模型 | 新增设计资产类型 |
+| 前端 Dashboard | 产出物预览支持截图展示 |
+
+> 详见 [ADR-007](docs/ADR-007-ui-ux-skill.md)。
+
+---
+
 ## 附录
 
 ### A. 与现有代码的关系
