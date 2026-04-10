@@ -1172,7 +1172,7 @@ LLM 对话的完整 prompt 可能包含数万 token（塞入了完整 tech-spec.
 - 历史按时间倒序存储，最近的在最前面
 - 跨会话持久化（存储在 `projects/{id}/.catown/input_history.json`）
 - 默认保留最近 200 条，可配置
-- 敏感内容（含密码/token 的消息）标记为 `sensitive`，历史回溯时脱敏显示，需二次确认才能发送
+
 
 #### 8.4.2 指令系统
 
