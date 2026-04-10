@@ -1,20 +1,20 @@
 @echo off
-REM Catown Interactive Launcher - Windows
-REM q = stop, r = reload
+REM Catown 交互式启动脚本 - Windows
+REM q = 停止, r = 重载
 
 setlocal enabledelayedexpansion
 set "DIR=%~dp0backend"
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python not found. Install Python 3.10+
+    echo [ERROR] 找不到 Python，请安装 Python 3.10+
     pause
     exit /b 1
 )
 
 python -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
-    echo Installing dependencies...
+    echo 安装依赖...
     pushd "%DIR%"
     pip install -r requirements.txt
     popd
@@ -23,15 +23,15 @@ if errorlevel 1 (
 if not exist "%DIR%\.env" (
     if exist "%DIR%\.env.example" (
         copy "%DIR%\.env.example" "%DIR%\.env" >nul
-        echo Created backend\.env - edit to set your LLM_API_KEY
+        echo 已创建 backend\.env — 请编辑填入 LLM_API_KEY
     )
 )
 
 :START
 echo.
-echo Starting Catown...
-echo   Frontend:  http://localhost:8000
-echo   API Docs:  http://localhost:8000/docs
+echo 启动 Catown...
+echo   前端:  http://localhost:8000
+echo   API:   http://localhost:8000/docs
 echo.
 
 cd /d "%DIR%"
@@ -47,26 +47,26 @@ if not defined PID (
     ) do set "PID=%%p"
 )
 
-echo   Server started (PID: %PID%).
+echo   服务已启动 (PID: %PID%).
 echo.
-echo ----------------------------------------
-echo   q + Enter = stop
-echo   r + Enter = reload
-echo ----------------------------------------
+echo ──────────────────────────────────
+echo   输入 q + 回车 = 停止
+echo   输入 r + 回车 = 重载
+echo ──────────────────────────────────
 echo.
 
 :LOOP
 set "cmd="
-set /p "cmd=>> "
+set /p "cmd=? "
 if /i "!cmd!"=="q" goto :STOP
 if /i "!cmd!"=="r" goto :RELOAD
 if "!cmd!"=="" goto :LOOP
-echo Unknown command: !cmd! (q=stop, r=reload)
+echo 未知命令: !cmd! （输入 q 停止, r 重载）
 goto :LOOP
 
 :RELOAD
 echo.
-echo Reloading...
+echo 重载中...
 if defined PID taskkill /PID %PID% /F >nul 2>&1
 timeout /t 1 /nobreak >nul
 set "PID="
@@ -74,9 +74,9 @@ goto :START
 
 :STOP
 echo.
-echo Stopping...
+echo 停止服务...
 if defined PID taskkill /PID %PID% /F >nul 2>&1
 set "PID="
-echo Done.
+echo 已退出。
 pause
 exit /b 0
