@@ -1556,9 +1556,7 @@ backend/
 
 ## 14. 实施计划
 
-### 项目进度
-
-所有阶段已完成，233/233 单元测试 + 24/24 集成测试 100% 通过。
+### 已完成
 
 | 阶段 | 状态 | 日期 |
 |------|------|------|
@@ -1570,8 +1568,56 @@ backend/
 | 测试修复 + Agent 协作 + 两级 LLM 配置 | ✅ | 2026-04-08 |
 | Agent 配置路径修复 | ✅ | 2026-04-08 |
 | 新增 assistant 助理角色 | ✅ | 2026-04-08 |
+| Skills 三级注入 (ADR-008) | ✅ | 2026-04-10 |
+| 工具白名单校验 + Workspace 隔离 | ✅ | 2026-04-10 |
+| 知识图谱 Skill 定义 (ADR-004) | ✅ | 2026-04-10 |
+
+### 待做 — 按阶段规划
 
 详细变更记录见 Git history。
+
+---
+
+#### 阶段一：Agent 认知基础（P0）
+
+补齐 Agent 的记忆和决策能力，让 Agent 从"执行器"变成有认知的协作者。
+
+| # | 模块 | 内容 | 依赖 |
+|---|------|------|------|
+| 1 | 短期记忆 | 内存 + JSON 落盘，Stage 结束摘要归档到项目记忆 | 无 |
+| 2 | 项目记忆 | Markdown 文件 + grep 检索，存储在 `.catown/memory/` | #1 |
+| 3 | Choice Box 交互组件 | 前端：单选/多选/确认/编辑组件，用于 BOSS 审批和决策 | 无 |
+| 4 | Agent 操作可视化 | 折叠卡片：LLM 思考 / 工具调用 / 记忆操作 / Agent 通信 | 无 |
+
+#### 阶段二：交互与流程（P1）
+
+完善 BOSS 与系统的交互体验和 Agent 授权流程。
+
+| # | 模块 | 内容 | 依赖 |
+|---|------|------|------|
+| 5 | 聊天框输入体验 | 消息历史（↑↓）、指令系统（/help 等）、输入联想补全 | #3 |
+| 6 | 工具临时授权流程 | Agent 请求 → Choice Box → BOSS 审批（本次/本阶段/拒绝） | #3 |
+| 7 | 审计日志系统 | audit_logs + audit_details 双表，滚动清理，锁定机制 | 无 |
+| 8 | 知识图谱集成 | agents.json 中 developer/architect 加入 knowledge-graph skill；建图审批接入 Choice Box | #3, #6 |
+
+#### 阶段三：记忆深化（P2）
+
+从结构化存储升级到语义检索。
+
+| # | 模块 | 内容 | 依赖 |
+|---|------|------|------|
+| 9 | 长期记忆 (ChromaDB) | Agent 级向量数据库，语义检索，跨项目保留 | #1, #2 |
+| 10 | 睡眠整理调度器 | 空闲触发记忆压缩、短期→项目→长期迁移、不确定项提交 Choice Box | #1, #2, #3 |
+
+#### 阶段四：高级能力（P3）
+
+多模态和专业 Agent 角色。
+
+| # | 模块 | 内容 | 依赖 |
+|---|------|------|------|
+| 11 | OMNI 多模态集成 | 图片理解（P0）、视频/音频处理（P1） | 无 |
+| 12 | UI/UX Pro Max Phase 2 | 截图对比、ui-designer Agent 角色、设计资产产出物 | #6 |
+| 13 | Knowledge Graph 进阶 | 增量更新自动化、图谱可视化、Agent 建图自主决策 | #8, #9 |
 
 ---
 
@@ -1677,6 +1723,74 @@ backend/
 | 前端 Dashboard | 产出物预览支持截图展示 |
 
 > 详见 [ADR-007](docs/ADR-007-ui-ux-skill.md)。
+
+---
+
+## 20. 知识图谱 Skill 集成规划
+
+### 20.1 背景
+
+Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效协作。当前通过 `read_file` 逐个读取文件，效率低、缺乏全局视角、新 Agent 入驻慢。需要引入代码知识图谱能力，让 Agent 快速获取项目的结构化知识。
+
+### 20.2 决策
+
+**采用方案 A：Skills 集成，建图需人控，查询 Agent 自主。**（详见 [ADR-004](../catown.wiki/ADR-004-knowledge-graph.md)）
+
+核心原则：**建图由人决策，查询由 Agent 自主。**
+
+| 操作 | 决策方 | 理由 |
+|------|--------|------|
+| 建图（`graphify . --no-viz`） | BOSS 审批 | 需要 LLM API 调用，有时间和费用成本；不是所有项目都需要知识图谱 |
+| 查询（`graphify query`） | Agent 自主 | 纯本地计算，毫秒级响应，无成本 |
+| 增量更新（`graphify . --update`） | BOSS 审批 | 同样涉及 LLM API 调用 |
+
+### 20.3 Skill 定义
+
+```json
+{
+  "knowledge-graph": {
+    "name": "知识图谱",
+    "description": "基于 graphify 构建和查询项目代码知识图谱",
+    "required_tools": ["execute_code", "read_file", "write_file"],
+    "category": "analysis",
+    "levels": {
+      "hint": "知识图谱: 代码任务前检查 graphify-out/，查询为本地计算无需审批",
+      "guide": "## 知识图谱\n- 处理代码相关任务前，检查项目中是否存在 graphify-out/graph.json\n- 不存在 → 向 BOSS 请求建图许可\n- 已存在 → 可直接读取 GRAPH_REPORT.md 获取项目结构概览\n- 具体查询 → 自主执行 graphify query（无需审批）\n- 项目文件变更后 → 向 BOSS 请求增量更新许可",
+      "full": "## 知识图谱完整指南\n\n### 建图（需 BOSS 审批）\n```bash\ngraphify . --no-viz\n```\n\n### 查询（Agent 自主）\n```bash\ngraphify query \"模块 A 依赖哪些外部库\" --graph graphify-out/graph.json\n```\n\n### 产出物\n- graphify-out/graph.json — 可查询的图数据\n- graphify-out/GRAPH_REPORT.md — 结构概览\n- graphify-out/cache/ — 增量更新缓存"
+    }
+  }
+}
+```
+
+### 20.4 适用 Agent
+
+| Agent | 是否配置 | 理由 |
+|-------|---------|------|
+| developer | ✅ | 核心使用者，编码时频繁需要理解代码结构 |
+| architect | ✅ | 设计架构时需要了解现有代码依赖 |
+| analyst | 可选 | 需求分析阶段可能代码尚未存在 |
+| tester | 可选 | 测试时可能需要理解代码结构 |
+| release | ❌ | 发布阶段不涉及代码理解 |
+
+### 20.5 需修改的模块
+
+| 模块 | 改动 | 状态 |
+|------|------|------|
+| `configs/skills.json` | 新增 knowledge-graph skill 定义（hint/guide/full 三级） | ✅ 完成 |
+| `configs/agents.json` | developer/architect 的 skills 列表加入 knowledge-graph | ⏳ 待做 |
+| `tools/execute_code.py` | 用于执行 graphify 命令 | ✅ 无改动（已支持） |
+| Agent 建图审批流程 | Agent 发起建图请求 → Choice Box → BOSS 审批 | ⏳ 待做（依赖 Choice Box） |
+
+### 20.6 决策理由
+
+**为什么不选方案 B（Pipeline 集成）**：
+- 不是所有项目都需要；BOSS 失去控制权；graphify 快速迭代，锁定在 pipeline 里维护成本高
+
+**为什么不选方案 C（纯手动）**：
+- Agent 无法自主触发；无法融入 Agent 上下文
+
+**为什么方案 A 最优**：
+- 按需激活、成本可控、查询零成本、与 Skills 体系天然契合、独立升级
 
 ---
 
