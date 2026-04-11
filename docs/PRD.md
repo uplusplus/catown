@@ -1621,6 +1621,225 @@ backend/
 
 ---
 
+## 21. 上下文压缩系统
+
+### 20.1 背景
+
+Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码读取、测试结果、Git 操作、构建日志），直接进入 LLM 上下文窗口。一个中型项目的完整 Pipeline 执行，工具输出可达 100K+ tokens，导致：
+
+- Token 成本飙升
+- 上下文窗口被噪声占据，Agent 推理质量下降
+- 长对话中关键信息注意力分散
+
+需要在工具执行层引入上下文压缩机制，在不修改 Agent prompt 和 SOUL 体系的前提下，降低全链路 token 消耗。
+
+详细竞品分析见 [ADR-009](ADR-009-context-compression.md)。
+
+### 20.2 需求概述
+
+| 需求 ID | 需求名称 | 优先级 | 描述 |
+|---------|---------|--------|------|
+| CC-001 | 工具输出过滤器框架 | P0 | 通用 OutputFilter 模块，按命令类型路由到对应过滤器，支持过滤器注册扩展 |
+| CC-002 | 测试输出过滤 | P0 | 状态机解析 pytest/vitest/cargo test/npm test 输出，仅保留失败用例详情 |
+| CC-003 | Git 输出过滤 | P0 | 统计提取：status→文件计数、diff→+N/-N、log→提交数+统计、commit/push→ok hash |
+| CC-004 | 构建输出过滤 | P0 | 仅保留 error/warning 行，丢弃 stdout 正常输出 |
+| CC-005 | Lint 输出过滤 | P1 | 按 error code/rule 分桶计数，按频率降序排列 |
+| CC-006 | 文件读取过滤 | P1 | 三级代码过滤：None/Minimal(去注释)/Aggressive(去函数体) |
+| CC-007 | 通用过滤器 | P2 | 相邻重复行合并计数 + ANSI 转义序列剥离 |
+| CC-008 | Tee 机制 | P0 | 过滤前的原始输出备份到 .catown/tee/，失败时可追溯 |
+| CC-009 | Token 追踪 | P1 | 每次工具调用记录原始/过滤后 token 数和压缩率，持久化到 SQLite |
+| CC-010 | 跨阶段摘要 | P0 | Agent stage 结束后生成结构化摘要 JSON，注入下一阶段 Agent 上下文 |
+| CC-011 | Dashboard Token Savings 面板 | P1 | 前端展示实时压缩率、累计节省、按命令类型分布、趋势图 |
+
+### 20.3 详细需求
+
+#### CC-001: 工具输出过滤器框架
+
+**用户故事**：作为系统，我需要一个通用的输出过滤框架，使每种工具命令能自动应用对应的压缩策略。
+
+**功能要求**：
+- OutputFilter 类作为过滤器入口，接收 (command, raw_output, exit_code) 参数
+- 基于命令前缀的路由机制（如 `git status` → git_filter，`pytest` → test_filter）
+- BaseFilter 抽象类定义 apply(raw_output, exit_code) → str 接口
+- 过滤器通过 register() 注册，支持动态扩展
+- 过滤失败时自动 fallback 到原始输出（Fail-Safe）
+
+**非功能要求**：
+- 过滤延迟 < 5ms（纯字符串处理，无网络/模型调用）
+- 不引入额外依赖（标准库 re + json 足够）
+
+**验收标准**：
+- 注册 3 个以上过滤器后，路由正确率 100%
+- 过滤器抛异常时返回原始输出并记录错误日志
+
+#### CC-002: 测试输出过滤
+
+**用户故事**：作为 Developer/Tester Agent，我希望测试输出只包含失败用例信息，不需要看到通过的测试。
+
+**功能要求**：
+- 支持 pytest（文本状态机）、vitest/jest（JSON + 文本）、cargo test（Rust test output）、go test（NDJSON）
+- 状态机解析：IDLE → TEST_START → PASSED/FAILED → SUMMARY
+- 输出格式：FAILED: N/M tests + 失败用例名称 + 失败详情（文件:行号 + assertion）
+- 成功用例不输出（或仅输出计数）
+
+**验收标准**：
+- 100 个测试 98 通过 2 失败 → 输出约 20 行（而非 200+ 行）
+- 压缩率 ≥ 90%
+
+#### CC-003: Git 输出过滤
+
+**用户故事**：作为全链路 Agent，我希望 Git 操作的输出精简但信息完整。
+
+**功能要求**：
+- `git status` → 修改文件数 + 分类（modified/added/deleted）
+- `git diff` → 变更统计（N files changed, +X, -Y），不输出完整 diff 内容
+- `git log` → 提交数 + 统计（+X/-Y）
+- `git add` → "ok"
+- `git commit` → "ok {short_hash}"
+- `git push` → "ok {branch}"
+- `git pull` → "ok N files +X -Y"
+
+**验收标准**：
+- git status 输出从 ~50 行压缩到 1-3 行
+- 压缩率 ≥ 75%
+
+#### CC-004: 构建输出过滤
+
+**用户故事**：作为 Developer Agent，我只关心构建是否成功以及失败原因。
+
+**功能要求**：
+- 识别 exit_code：0 → "Build succeeded"
+- exit_code != 0 → 提取 stderr 中的 error/warning 行
+- 支持 cargo build、npm run build、go build
+- strip ANSI 转义序列
+
+**验收标准**：
+- 成功构建输出 ≤ 1 行
+- 失败构建仅输出 error 行（去除编译进度、链接信息等噪声）
+- 压缩率 ≥ 60%
+
+#### CC-005: Lint 输出过滤
+
+**用户故事**：作为 Tester Agent，我希望 lint 结果按规则分组，一眼看到问题分布。
+
+**功能要求**：
+- 支持 ruff（JSON 模式）、eslint（JSON 模式）、tsc、golangci-lint
+- 按 error code/rule 分桶计数
+- 按违规数量降序排列
+- 附带受影响文件列表（去重）
+
+**验收标准**：
+- 100 条 lint 错误 → 约 5 行摘要
+- 压缩率 ≥ 80%
+
+#### CC-006: 文件读取过滤
+
+**用户故事**：作为所有 Agent，我需要按需控制读取代码的详细程度。
+
+**功能要求**：
+- 三级过滤：None（原样）/ Minimal（去注释）/ Aggressive（去函数体）
+- 支持语言：Rust、Python、JS/TS、Go、C/C++、Java、Ruby、Shell
+- Minimal：删除单行注释、块注释，保留 doc comments，合并空行
+- Aggressive：保留 import + 函数/类签名，丢弃函数体
+- Data 格式（JSON/YAML/TOML）不进行代码过滤
+
+**验收标准**：
+- Minimal 压缩率 20-40%
+- Aggressive 压缩率 60-90%
+- 过滤后代码仍可识别结构（类名、方法签名、import 清晰）
+
+#### CC-008: Tee 机制
+
+**用户故事**：作为 BOSS/Agent，当过滤后的输出信息不足时，我能追溯到原始输出。
+
+**功能要求**：
+- 过滤前自动备份原始输出到 `.catown/tee/{timestamp}_{command}.log`
+- 保留最近 N 个文件（默认 50），超出自动清理
+- FilterResult 中附带 tee_path
+- 输出末尾追加 `[full output: .catown/tee/xxx.log]` 标记
+
+**验收标准**：
+- 过滤后输出包含 tee 路径引用
+- tee 文件内容与原始输出完全一致
+
+#### CC-009: Token 追踪
+
+**用户故事**：作为 BOSS，我能看到每次工具调用和每个 Pipeline 阶段的 token 节省数据。
+
+**功能要求**：
+- 每次工具调用记录：command、raw_tokens、filtered_tokens、savings_pct、timestamp
+- 每个 Pipeline 阶段汇总：总输入 token、总输出 token、总节省
+- SQLite 持久化（复用现有数据库或新建 token_tracking 表）
+- API 端点：GET /api/token-savings（支持按日期/阶段/命令类型过滤）
+
+**验收标准**：
+- 每次工具调用后 token 数据正确写入
+- API 返回数据与实际过滤结果一致
+
+#### CC-010: 跨阶段摘要
+
+**用户故事**：作为 Pipeline 引擎，我希望下游 Agent 只拿到上游的关键结论，而非完整对话历史。
+
+**功能要求**：
+- 每个 Agent stage 结束后，引擎提取结构化摘要：
+  - stage 名称
+  - 产出物列表（文件路径）
+  - 关键决策（字符串列表）
+  - 指标数据（dict）
+  - 警告/风险（字符串列表）
+- 下游 Agent 的上下文注入摘要 JSON，替代上游完整消息历史
+- 原始对话归档到 `.catown/stages/{stage_id}/history.json`
+
+**验收标准**：
+- 摘要 JSON 格式正确，包含所有必填字段
+- 下游 Agent 能基于摘要理解上游结果并正常执行
+- 原始历史可追溯
+
+#### CC-011: Dashboard Token Savings 面板
+
+**用户故事**：作为 BOSS，我能在 Web UI 上看到 token 节省的实时数据。
+
+**功能要求**：
+- 面板位置：Pipeline Dashboard 新增 Tab / 卡片
+- 展示内容：
+  - 当前 Pipeline 累计 token 节省（数字 + 百分比）
+  - 按命令类型分布（饼图/柱状图）
+  - 按时间趋势（折线图，最近 30 次调用）
+  - Top 5 最高效过滤（节省最多的命令）
+- 数据来源：CC-009 的 API 端点
+
+**验收标准**：
+- 面板数据与 token_tracking 表一致
+- 页面加载时间 < 2s
+
+### 20.4 实施计划
+
+| 阶段 | 需求 | 预计工时 | 产出 |
+|------|------|---------|------|
+| Phase 1 | CC-001 框架 + CC-002/003/004 P0 过滤器 + CC-008 Tee | 3 天 | output_filter.py + 3 个过滤器 + tee 机制 |
+| Phase 2 | CC-010 跨阶段摘要 | 2 天 | Pipeline 引擎摘要提取 + 上下文注入 |
+| Phase 3 | CC-005/006 P1 过滤器 + CC-009 Token 追踪 + CC-011 Dashboard | 3 天 | 2 个过滤器 + tracking + 面板 |
+| Phase 4 | CC-007 通用过滤器 | 1 天 | generic_filter.py |
+
+### 20.5 预期收益
+
+| 场景 | 当前 token 消耗 | 压缩后 | 节省 |
+|------|----------------|--------|------|
+| 单次 Pipeline (小型项目) | ~80K | ~20K | -75% |
+| 单次 Pipeline (中型项目) | ~200K | ~50K | -75% |
+| 测试输出 (pytest) | ~25K | ~2.5K | -90% |
+| Git 操作 (20 次) | ~15K | ~3K | -80% |
+
+### 20.6 关键约束
+
+1. **Agent 零改动**：过滤在工具执行层完成，不改 Agent prompt、SOUL、配置
+2. **Fail-Safe**：过滤失败必须 fallback 到原始输出
+3. **可追溯**：所有被过滤掉的信息通过 tee 机制可恢复
+4. **不引入外部依赖**：纯 Python 标准库实现（re、json、sqlite3）
+
+---
+
+
 ## 15. 验收标准
 
 ### 15.1 功能验收

@@ -352,6 +352,148 @@ Catown 与 RTK 的典型使用场景（Claude Code）有本质区别：
 
 ---
 
+---
+
+## 七、落地实施分析
+
+### 7.1 核心判断：不集成 RTK 二进制，翻译其策略
+
+| 因素 | 分析 |
+|------|------|
+| **Hook 机制不可用** | RTK 靠 PreToolUse hook 拦截 shell 命令。Catown Agent 通过 Python subprocess 调工具，无 shell 环境，hook 用不上 |
+| **部署复杂度** | 引入 Rust 二进制做依赖，Docker 构建链复杂度翻倍，CI/CD 需交叉编译 |
+| **策略可翻译** | RTK 的 12 种策略本质是正则 + 状态机 + 聚合逻辑，Python 实现难度低 |
+| **可控性** | 自有实现可针对 Catown 特有工具（code_executor、file_tool）扩展，不受上游限制 |
+
+### 7.2 目录结构设计
+
+```
+backend/tools/
+├── output_filter.py          # 新增：过滤器核心入口
+├── filters/                  # 新增：各命令类型的过滤器
+│   ├── __init__.py           #   过滤器注册表
+│   ├── base.py               #   BaseFilter 抽象类
+│   ├── git_filter.py         #   git status/diff/log/commit/push
+│   ├── test_filter.py        #   pytest/cargo test/npm test/vitest
+│   ├── lint_filter.py        #   ruff/eslint/tsc/golangci-lint
+│   ├── build_filter.py       #   cargo build/npm run build/go build
+│   ├── read_filter.py        #   文件读取（三级代码过滤）
+│   └── generic_filter.py     #   通用 fallback（去重 + 进度过滤）
+├── file_tool.py              # 现有
+├── code_executor.py          # 现有
+└── ...
+```
+
+### 7.3 OutputFilter 核心接口
+
+```python
+@dataclass
+class FilterResult:
+    output: str             # 过滤后的输出
+    raw_tokens: int         # 原始 token 数（len // 4）
+    filtered_tokens: int    # 过滤后 token 数
+    savings_pct: float      # 节省百分比
+    tee_path: Optional[str] # 原始输出备份路径
+
+class OutputFilter:
+    def filter(self, command: str, raw_output: str, exit_code: int) -> FilterResult:
+        # 1. 路由到对应过滤器
+        # 2. 执行过滤
+        # 3. Tee 备份
+        # 4. Token 追踪
+        ...
+
+    def register(self, command_prefix: str, filter_cls: type):
+        # 注册命令前缀对应的过滤器
+        ...
+```
+
+### 7.4 过滤器实现优先级与算法
+
+#### P0 — 覆盖 70% token 节省
+
+| 过滤器 | 对应 RTK 策略 | 核心算法 | 预期压缩率 |
+|--------|-------------|---------|-----------|
+| `test_filter.py` | Failure Focus + State Machine | 状态机追踪测试名称和 PASSED/FAILED，仅保留失败用例及详情 | 90-99% |
+| `git_filter.py` | Stats Extraction | 解析 git 输出：status → 文件计数；diff → +N/-N；log → 提交数+统计；commit/push → ok hash | 75-99% |
+| `build_filter.py` | Error Only | 丢弃 stdout，提取 stderr 中的 error/warning 行 | 60-80% |
+
+#### P1 — 覆盖额外 15%
+
+| 过滤器 | 对应 RTK 策略 | 核心算法 | 预期压缩率 |
+|--------|-------------|---------|-----------|
+| `lint_filter.py` | Grouping by Pattern | 按 error code / rule 分桶计数，按频率降序排列 | 80-90% |
+| `read_filter.py` | Code Filtering (三级) | None/Minimal(去注释)/Aggressive(去函数体)，基于正则 + 大括号深度追踪 | 20-90% |
+
+#### P2 — 覆盖剩余 15%
+
+| 过滤器 | 对应 RTK 策略 | 核心算法 | 预期压缩率 |
+|--------|-------------|---------|-----------|
+| `generic_filter.py` | Deduplication + Progress | 相邻重复行合并计数 + ANSI 转义序列剥离 | 50-85% |
+
+### 7.5 接入点：工具执行层
+
+过滤只改工具执行层，Agent 和 Pipeline 零改动：
+
+```python
+# backend/tools/code_executor.py — 改动前
+result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+return result.stdout.decode()
+
+# 改动后
+result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+raw = result.stdout.decode()
+filtered = output_filter.filter(cmd, raw, result.returncode)
+return filtered.output  # Agent 拿到过滤后的输出；原始输出存 tee/
+```
+
+**关键约束**：
+- Agent 完全无感知——不改 prompt、不改 SOUL 体系
+- 过滤失败时 fallback 到原始输出（Fail-Safe）
+- FilterResult.tee_path 附在输出末尾，需要时可追溯
+
+### 7.6 跨阶段摘要（Layer 2）
+
+每个 Agent stage 结束后，引擎生成结构化摘要注入下一阶段：
+
+```json
+{
+  "stage": "analyst",
+  "artifacts": ["PRD.md"],
+  "key_decisions": ["使用 React + TypeScript", "REST API"],
+  "metrics": {"requirements": 12, "user_stories": 8},
+  "warnings": []
+}
+```
+
+- 替代上游 Agent 的完整对话历史
+- 原始对话归档到 `.catown/stages/{stage_id}/`
+- 摘要格式标准化，关键信息有专用字段保证可追溯
+
+### 7.7 Token 追踪与可观测性
+
+借鉴 RTK 的 SQLite 追踪：
+
+| 维度 | 记录内容 |
+|------|---------|
+| 每次工具调用 | 命令、原始 token、过滤后 token、压缩率、时间戳 |
+| 每个 Pipeline 阶段 | 输入 token、输出 token、各 Layer 节省 |
+| 前端 Dashboard | Token Savings 面板：实时压缩率、累计节省、趋势图 |
+
+### 7.8 不做的事
+
+1. **不做 LLM 辅助摘要（Layer 3）**——成本高、延迟大、引入偏差，先把规则层做好
+2. **不一次性实现 12 种策略**——P0 的 3 个先上线验证效果
+3. **不改 Agent 的 prompt**——过滤在工具层做，不污染 SOUL 体系
+4. **不跳过 tee 机制**——过滤掉的信息必须可追溯
+
+### 7.9 验证方式
+
+上线后跑一个完整 Pipeline，对比 output_filter 的 token 追踪日志和 Dashboard 上的 token 消耗曲线。P0 三个过滤器到位后，工具输出 token 应直接降低 60-70%。
+
+---
+
+
 ## 参考
 
 - RTK 仓库: https://github.com/rtk-ai/rtk
