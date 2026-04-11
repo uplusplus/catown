@@ -630,7 +630,7 @@
                         // 卡片事件：SSE 发出的 llm_call / tool_call / skill_inject → 统一走卡片系统
                         else if (['llm_call', 'tool_call', 'skill_inject', 'agent_message', 'boss_instruction'].includes(data.type)) {
                             data.source = data.source || 'chatroom';
-                            handlePipelineEvent(data);
+                            handleCardEvent(data);
                         }
                     }
                 }
@@ -751,14 +751,14 @@
                     // 构造统一格式
                     const cardData = { ...data, type: eventType };
                     cardData.source = cardData.source || 'pipeline';
-                    handlePipelineEvent(cardData);
+                    handleCardEvent(cardData);
                 }
             }
         }
 
-        // ==================== Pipeline 事件卡片处理 ====================
+        // ==================== 卡片事件处理（统一 Pipeline + Chatroom 来源） ====================
 
-        function handlePipelineEvent(data) {
+        function handleCardEvent(data) {
             const eventType = data.type.replace('pipeline_', '');
             let card = null;
             const ts = new Date().toISOString();
