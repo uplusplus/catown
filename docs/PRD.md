@@ -2340,6 +2340,38 @@ Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效
 
 **优先级**：P2（不影响核心功能，但影响体验）
 
+### 16.2 项目 Workspace 未隔离
+
+**问题**：所有 room 的 Agent 共享同一个文件目录，无项目级隔离。
+
+**现状**：
+
+| 路径 | Workspace | 问题 |
+|------|-----------|------|
+| Pipeline 引擎 | `data/workspaces/run_{id}` | 按 run 隔离，粒度应为 project |
+| 聊天室 Tools | 全局 `CATOWN_WORKSPACE` 或 `os.getcwd()` | 所有 room 共享，完全无隔离 |
+
+**PRD 设计**（§6.1）：
+
+```
+projects/
+└── {project_id}/
+    ├── PRD.md
+    ├── tech-spec.md
+    ├── src/
+    ├── tests/
+    └── .catown/
+```
+
+**待修复**：
+
+1. 项目创建时自动创建 `projects/{project_id}/` 目录
+2. 工具注册改为 per-project：每个 room 的 Agent 拿到指向自己项目目录的工具实例
+3. `_validate_path` 校验确保 Agent 无法跨项目读写
+4. Pipeline 引擎的 workspace 改为 `projects/{project_id}/` 而非 `data/workspaces/run_{id}`
+
+**优先级**：P1（PRD 核心约束，影响多项目并行安全性）
+
 ---
 
 ## 17. 快速启动
