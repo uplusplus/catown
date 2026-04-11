@@ -66,9 +66,15 @@ class LLMClient:
 
             response = await self.client.chat.completions.create(**kwargs)
 
-            # 某些 API（如 openrouter/free）不支持 tools 时返回非标准响应（字符串等）
+            # 调试：记录实际响应类型和内容，帮助定位 'str' object has no attribute 'choices' 问题
+            if not hasattr(response, 'choices'):
+                logger.error(
+                    f"LLM response is not ChatCompletion! type={type(response).__name__}, "
+                    f"value={repr(response)[:1000]}"
+                )
+
+            # 兼容 API 返回字符串/非标准响应的情况
             if isinstance(response, str):
-                logger.warning(f"Model '{self.model}' returned string instead of ChatCompletion — likely doesn't support tools. Falling back to plain chat.")
                 return {"content": response, "tool_calls": None}
 
             if not hasattr(response, 'choices') or not response.choices:
