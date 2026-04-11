@@ -2477,51 +2477,70 @@
 
         // ---- Pipeline Actions ----
 
-        async function pausePipeline() {
+        async function pipelineAction(action, body = null) {
             if (!_currentPipelineDetail) return;
-            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/pause`, { method: 'POST' });
-            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+            const opts = { method: 'POST' };
+            if (body) {
+                opts.headers = { 'Content-Type': 'application/json' };
+                opts.body = JSON.stringify(body);
+            }
+            try {
+                const res = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/${action}`, opts);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`Pipeline ${action} 失败: ${err.detail || res.status}`);
+                    return;
+                }
+                setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+            } catch (e) {
+                alert(`Pipeline ${action} 失败: ${e.message}`);
+            }
         }
 
-        async function resumePipeline() {
-            if (!_currentPipelineDetail) return;
-            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/resume`, { method: 'POST' });
-            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
-        }
-
-        async function approvePipeline() {
-            if (!_currentPipelineDetail) return;
-            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/approve`, { method: 'POST' });
-            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
-        }
-
+        async function pausePipeline()  { await pipelineAction('pause'); }
+        async function resumePipeline() { await pipelineAction('resume'); }
+        async function approvePipeline(){ await pipelineAction('approve'); }
         async function rejectPipeline() {
-            if (!_currentPipelineDetail) return;
             const target = prompt('Rollback to stage name (e.g. "development"):');
-            await fetch(`/api/pipelines/${_currentPipelineDetail.id}/reject`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ rollback_to: target || null })
-            });
-            setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
+            await pipelineAction('reject', { rollback_to: target || null });
         }
 
         // ---- Modals ----
 
-        function showCreatePipelineModal() {
+        async function showCreatePipelineModal() {
             const modal = document.createElement('div');
             modal.id = 'pipeline-modal';
             modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+            document.body.appendChild(modal);
+
+            // Load templates + projects in parallel
+            let templateOpts = '<option value="default">default</option>';
+            let projectOpts = '';
+            try {
+                const [tplRes, projRes] = await Promise.all([
+                    fetch('/api/pipelines/config/templates').then(r => r.ok ? r.json() : []),
+                    fetch(`${API_BASE}/projects`).then(r => r.ok ? r.json() : [])
+                ]);
+                if (tplRes.length) {
+                    templateOpts = tplRes.map(t => `<option value="${t.name}">${t.display_name || t.name} — ${t.description || ''}</option>`).join('');
+                }
+                if (projRes.length) {
+                    projectOpts = projRes.map(p => `<option value="${p.id}">#${p.id} — ${escapeHtml(p.name)}</option>`).join('');
+                }
+            } catch (e) { /* fallback to defaults */ }
+
             modal.innerHTML = `
                 <div class="absolute inset-0 bg-black/60" onclick="this.parentElement.remove()"></div>
                 <div class="relative bg-dark-800 rounded-2xl border border-dark-600 p-6 w-full max-w-md">
                     <h3 class="text-lg font-semibold text-white mb-4">Create Pipeline</h3>
-                    <label class="block text-sm text-gray-400 mb-1">Project ID</label>
-                    <input id="modal-project-id" type="number" placeholder="1"
-                        class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-500">
+                    <label class="block text-sm text-gray-400 mb-1">Project</label>
+                    ${projectOpts
+                        ? `<select id="modal-project-id" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4">${projectOpts}</select>`
+                        : `<input id="modal-project-id" type="number" placeholder="1" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4 focus:outline-none focus:border-accent-500">`
+                    }
                     <label class="block text-sm text-gray-400 mb-1">Template</label>
                     <select id="modal-template" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-white text-sm mb-4">
-                        <option value="default">default — 标准软件开发流水线</option>
+                        ${templateOpts}
                     </select>
                     <div class="flex justify-end gap-2">
                         <button onclick="this.closest('#pipeline-modal').remove()"
@@ -2531,23 +2550,29 @@
                     </div>
                 </div>
             `;
-            document.body.appendChild(modal);
         }
 
         async function createPipeline() {
-            const projectId = document.getElementById('modal-project-id').value;
+            const projectEl = document.getElementById('modal-project-id');
+            const projectId = projectEl ? projectEl.value : '';
             const template = document.getElementById('modal-template').value;
-            if (!projectId) return alert('Project ID is required');
+            if (!projectId) return alert('请选择一个项目');
             try {
-                await fetch('/api/pipelines', {
+                const res = await fetch('/api/pipelines', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ project_id: parseInt(projectId), pipeline_name: template })
                 });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    const msg = err.detail || `Server error (${res.status})`;
+                    alert('创建 Pipeline 失败: ' + msg);
+                    return;
+                }
                 document.getElementById('pipeline-modal')?.remove();
                 await loadPipelineData();
             } catch (e) {
-                alert('Failed to create pipeline: ' + e.message);
+                alert('创建 Pipeline 失败: ' + e.message);
             }
         }
 
@@ -2580,15 +2605,20 @@
             const req = document.getElementById('modal-requirement').value;
             if (!req) return alert('Requirement is required');
             try {
-                await fetch(`/api/pipelines/${_currentPipelineDetail.id}/start`, {
+                const res = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/start`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ requirement: req })
                 });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert('启动 Pipeline 失败: ' + (err.detail || res.status));
+                    return;
+                }
                 document.getElementById('pipeline-modal')?.remove();
                 setTimeout(() => onPipelineSelect(_currentPipelineDetail.id), 500);
             } catch (e) {
-                alert('Failed to start: ' + e.message);
+                alert('启动 Pipeline 失败: ' + e.message);
             }
         }
 
@@ -2628,14 +2658,19 @@
             const message = document.getElementById('modal-instruct-msg').value;
             if (!message) return alert('Message is required');
             try {
-                await fetch(`/api/pipelines/${_currentPipelineDetail.id}/instruct`, {
+                const res = await fetch(`/api/pipelines/${_currentPipelineDetail.id}/instruct`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ agent_name: agentName, message })
                 });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert('发送指令失败: ' + (err.detail || res.status));
+                    return;
+                }
                 document.getElementById('pipeline-modal')?.remove();
             } catch (e) {
-                alert('Failed to send: ' + e.message);
+                alert('发送指令失败: ' + e.message);
             }
         }
 
@@ -2658,12 +2693,6 @@
                 } catch (e) {}
             };
             _pipelineWs.onclose = () => { _pipelineWs = null; };
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
         }
 
         // ==================== File Browser ====================
