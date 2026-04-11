@@ -754,7 +754,9 @@
                         tokens_in: data.tokens_in,
                         tokens_out: data.tokens_out,
                         duration_ms: data.duration_ms,
-                        content_preview: data.content_preview,
+                        system_prompt: data.system_prompt,
+                        response: data.response,
+                        tool_calls: data.tool_calls,
                         _collapsed: true,
                     };
                     break;
@@ -765,8 +767,11 @@
                         _ts: ts,
                         agent: data.agent,
                         tool: data.tool,
-                        result_preview: data.result_preview,
-                        _collapsed: true,
+                        arguments: data.arguments,
+                        success: data.success,
+                        result: data.result,
+                        duration_ms: data.duration_ms,
+                        _collapsed: data.success !== false, // auto-expand on failure
                     };
                     break;
 
@@ -777,6 +782,9 @@
                         stage: data.stage,
                         display_name: data.display_name,
                         agent: data.agent,
+                        gate: data.gate,
+                        active_skills: data.active_skills,
+                        expected_artifacts: data.expected_artifacts,
                         _collapsed: false,
                     };
                     break;
@@ -841,6 +849,18 @@
                     };
                     break;
 
+                case 'skill_inject':
+                    card = {
+                        _type: 'skill_inject',
+                        _ts: ts,
+                        agent: data.agent,
+                        stage: data.stage,
+                        skills: data.skills,
+                        agent_all_skills: data.agent_all_skills,
+                        _collapsed: false,
+                    };
+                    break;
+
                 case 'agent_output':
                     // Agent 输出文本 — 作为普通 agent 消息添加
                     messages.push({
@@ -867,31 +887,68 @@
         // ==================== 卡片渲染函数 ====================
 
         function renderLLMCard(card) {
-            const collapsed = card._collapsed;
             const color = getAgentColor(card.agent || 'unknown');
-            const toolIcon = '🧠';
             const tokens = `${(card.tokens_in || 0).toLocaleString()} in / ${(card.tokens_out || 0).toLocaleString()} out`;
 
-            let html = `
+            // system_prompt 来源分析（按段落拆分，标注来源）
+            let promptBreakdown = '';
+            if (card.system_prompt) {
+                const sections = card.system_prompt.split(/\n\n+/);
+                promptBreakdown = sections.map((s, i) => {
+                    let source = 'context';
+                    if (s.startsWith('你是 ') || s.startsWith('You are ')) source = 'soul.identity';
+                    else if (s.startsWith('你的原则')) source = 'soul.values';
+                    else if (s.startsWith('沟通风格')) source = 'soul.style';
+                    else if (s.startsWith('## 职责')) source = 'role.responsibilities';
+                    else if (s.startsWith('## 规则')) source = 'role.rules';
+                    else if (s.startsWith('## 可用技能')) source = 'skills.hint';
+                    else if (s.startsWith('## 代码生成') || s.startsWith('## 单元测试') || s.startsWith('## 重构')) source = 'skills.guide';
+                    else if (s.startsWith('## 项目上下文')) source = 'memory.project';
+                    else if (s.startsWith('## 你的经验')) source = 'memory.long_term';
+                    const tok = Math.ceil(s.length / 4); // rough token estimate
+                    return `<div class="mb-2"><div class="text-[10px] text-accent-400 mb-0.5">[${source} · ~${tok} tok]</div><pre class="text-[11px] text-gray-300 whitespace-pre-wrap bg-dark-900 rounded p-2 max-h-32 overflow-y-auto">${escapeHtml(s)}</pre></div>`;
+                }).join('');
+            }
+
+            // tool_calls 列表
+            let toolCallsHtml = '';
+            if (card.tool_calls && card.tool_calls.length) {
+                toolCallsHtml = `<div class="mb-2"><div class="text-[10px] text-gray-500 mb-1">Tool Calls:</div>` +
+                    card.tool_calls.map(tc => `<div class="text-[11px] text-gray-300 font-mono">🔧 ${escapeHtml(tc.name || '')}(${escapeHtml(tc.args_preview || '')})</div>`).join('') +
+                    `</div>`;
+            }
+
+            return `
                 <div class="ml-12 my-1" data-card-type="llm_call">
                     <div class="bg-dark-700/50 border border-dark-600 rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
                          onclick="toggleCard(this)">
                         <div class="flex items-center gap-2">
-                            <span>${toolIcon}</span>
+                            <span>🧠</span>
                             <span class="text-${color}-400 font-medium">${escapeHtml(card.agent || '?')}</span>
-                            <span class="text-gray-500">· LLM #${card.turn || 0}</span>
+                            <span class="text-gray-500">· #${card.turn || 0}</span>
                             <span class="text-gray-500">· ${escapeHtml(card.model || '')}</span>
                             <span class="text-gray-500">· ${tokens}</span>
                             ${card.duration_ms ? `<span class="text-gray-600">· ${card.duration_ms}ms</span>` : ''}
-                            <span class="ml-auto text-gray-600 collapse-icon">⮟</span>
+                            <span class="ml-auto text-gray-600 collapse-icon">${card._collapsed ? '⮟' : '⮝'}</span>
                         </div>
-                        ${card.content_preview ? `<div class="text-gray-300 mt-1 truncate">${escapeHtml(card.content_preview)}</div>` : ''}
+                        ${card.response ? `<div class="text-gray-300 mt-1 truncate">${escapeHtml(card.response.substring(0, 120))}</div>` : ''}
                     </div>
-                    <div class="card-detail hidden bg-dark-800 border border-dark-600 border-t-0 rounded-b-lg px-3 py-2 text-xs text-gray-400 space-y-2">
-                        <div class="text-gray-500">Full detail available in audit API: <code class="text-accent-400">/api/audit/llm</code></div>
+                    <div class="card-detail ${card._collapsed ? 'hidden' : ''} bg-dark-800 border border-dark-600 border-t-0 rounded-b-lg px-3 py-2 text-xs space-y-2">
+                        <div>
+                            <div class="text-[10px] text-gray-500 mb-1">System Prompt (来源标注):</div>
+                            ${promptBreakdown || '<div class="text-gray-600">No system prompt</div>'}
+                        </div>
+                        ${card.response ? `
+                        <div>
+                            <div class="text-[10px] text-gray-500 mb-1">Response:</div>
+                            <pre class="text-[11px] text-gray-300 whitespace-pre-wrap bg-dark-900 rounded p-2 max-h-48 overflow-y-auto">${escapeHtml(card.response)}</pre>
+                        </div>` : ''}
+                        ${toolCallsHtml}
+                        <div class="text-[10px] text-gray-600 pt-1 border-t border-dark-600">
+                            ${tokens} · ${card.duration_ms || 0}ms · ${card.model || ''}
+                        </div>
                     </div>
                 </div>`;
-            return html;
         }
 
         function renderToolCard(card) {
@@ -901,28 +958,84 @@
             };
             const icon = toolIcons[card.tool] || '🔧';
             const color = getAgentColor(card.agent || 'unknown');
+            const borderClass = card.success === false ? 'border-red-500/50 bg-red-500/5' : 'border-dark-600 bg-dark-700/50';
 
-            let html = `
+            // 格式化 arguments
+            let argsHtml = '';
+            if (card.arguments) {
+                try {
+                    const args = JSON.parse(card.arguments);
+                    argsHtml = `<div class="mb-2"><div class="text-[10px] text-gray-500 mb-1">Arguments:</div>`;
+                    for (const [k, v] of Object.entries(args)) {
+                        const valStr = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+                        if (k === 'content' && valStr.length > 500) {
+                            argsHtml += `<div class="text-[11px] mb-1"><span class="text-accent-400">${escapeHtml(k)}:</span> <span class="text-gray-500">(${valStr.length} chars)</span> <pre class="text-gray-300 bg-dark-900 rounded p-1 mt-0.5 max-h-24 overflow-y-auto">${escapeHtml(valStr.substring(0, 500))}...</pre></div>`;
+                        } else {
+                            argsHtml += `<div class="text-[11px] mb-1"><span class="text-accent-400">${escapeHtml(k)}:</span> <pre class="text-gray-300 bg-dark-900 rounded p-1 mt-0.5 max-h-24 overflow-y-auto">${escapeHtml(valStr.substring(0, 800))}</pre></div>`;
+                        }
+                    }
+                    argsHtml += '</div>';
+                } catch (e) {
+                    argsHtml = `<div class="text-[11px] text-gray-400 mb-2">${escapeHtml(card.arguments.substring(0, 300))}</div>`;
+                }
+            }
+
+            return `
                 <div class="ml-12 my-1" data-card-type="tool_call">
-                    <div class="bg-dark-700/50 border border-dark-600 rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
+                    <div class="${borderClass} border rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
                          onclick="toggleCard(this)">
                         <div class="flex items-center gap-2">
                             <span>${icon}</span>
                             <span class="font-mono text-gray-300">${escapeHtml(card.tool || '')}</span>
                             <span class="text-gray-500">·</span>
                             <span class="text-${color}-400 text-[10px]">${escapeHtml(card.agent || '')}</span>
-                            <span class="ml-auto text-gray-600 collapse-icon">⮟</span>
+                            ${card.success === false ? '<span class="text-red-400 text-[10px]">FAILED</span>' : ''}
+                            ${card.duration_ms ? `<span class="text-gray-600 text-[10px]">${card.duration_ms}ms</span>` : ''}
+                            <span class="ml-auto text-gray-600 collapse-icon">${card._collapsed ? '⮟' : '⮝'}</span>
                         </div>
-                        ${card.result_preview ? `<div class="text-gray-400 mt-1 truncate">${escapeHtml(card.result_preview)}</div>` : ''}
+                        ${card.result ? `<div class="text-gray-400 mt-1 truncate">${escapeHtml(card.result.substring(0, 150))}</div>` : ''}
                     </div>
-                    <div class="card-detail hidden bg-dark-800 border border-dark-600 border-t-0 rounded-b-lg px-3 py-2 text-xs text-gray-400">
-                        <div class="text-gray-500">Full detail available in audit API: <code class="text-accent-400">/api/audit/tools</code></div>
+                    <div class="card-detail ${card._collapsed ? 'hidden' : ''} bg-dark-800 border border-dark-600 border-t-0 rounded-b-lg px-3 py-2 text-xs space-y-2">
+                        ${argsHtml}
+                        ${card.result ? `
+                        <div>
+                            <div class="text-[10px] text-gray-500 mb-1">Result:</div>
+                            <pre class="text-[11px] ${card.success === false ? 'text-red-400' : 'text-gray-300'} whitespace-pre-wrap bg-dark-900 rounded p-2 max-h-48 overflow-y-auto">${escapeHtml(card.result)}</pre>
+                        </div>` : ''}
                     </div>
                 </div>`;
-            return html;
+        }
+
+        function renderSkillInjectCard(card) {
+            if (!card.skills || !card.skills.length) return '';
+            const skillsHtml = card.skills.map(s => {
+                const hintHtml = s.hint ? `<div class="text-gray-400 mt-0.5">${escapeHtml(s.hint)}</div>` : '';
+                const guideHtml = s.guide ? `<div class="mt-1"><div class="text-[10px] text-gray-500">guide (~${s.guide_tokens || 0} words):</div><pre class="text-[11px] text-gray-300 bg-dark-900 rounded p-1.5 max-h-20 overflow-y-auto whitespace-pre-wrap">${escapeHtml(s.guide)}</pre></div>` : '';
+                return `<div class="bg-dark-800 rounded p-2 mb-1">
+                    <div class="text-accent-400 font-medium text-[11px]">⚡ ${escapeHtml(s.name || '')}</div>
+                    ${hintHtml}
+                    ${guideHtml}
+                </div>`;
+            }).join('');
+
+            const allSkills = (card.agent_all_skills || []).join(', ');
+
+            return `
+                <div class="my-1.5" data-card-type="skill_inject">
+                    <div class="bg-dark-700/30 border border-accent-500/20 rounded-lg px-3 py-2">
+                        <div class="flex items-center gap-2 text-xs mb-1.5">
+                            <span class="text-accent-400">⚡</span>
+                            <span class="text-white font-medium">Skills injected</span>
+                            <span class="text-gray-500">· ${escapeHtml(card.agent || '')} · ${card.stage || ''}</span>
+                        </div>
+                        ${skillsHtml}
+                        ${allSkills ? `<div class="text-[10px] text-gray-600 mt-1">Agent skills: ${escapeHtml(allSkills)}</div>` : ''}
+                    </div>
+                </div>`;
         }
 
         function renderStageStartCard(card) {
+            const skillsText = (card.active_skills || []).join(', ');
             return `
                 <div class="my-2" data-card-type="stage_start">
                     <div class="border-l-2 border-accent-500 bg-dark-700/30 rounded-r-lg px-4 py-2">
@@ -930,7 +1043,45 @@
                             <span class="text-accent-400">▶️</span>
                             <span class="text-white font-medium">${escapeHtml(card.display_name || card.stage || '')}</span>
                             <span class="text-gray-400">· ${escapeHtml(card.agent || '')}</span>
+                            <span class="text-gray-500">· gate: ${card.gate || 'auto'}</span>
                         </div>
+                        ${skillsText ? `<div class="text-[10px] text-gray-500 mt-0.5">Skills: ${escapeHtml(skillsText)}</div>` : ''}
+                        ${card.expected_artifacts ? `<div class="text-[10px] text-gray-500">Artifacts: ${(card.expected_artifacts || []).join(', ')}</div>` : ''}
+                    </div>
+                </div>`;
+        }
+
+        function renderToolMergeCard(card) {
+            const toolIcons = {
+                'read_file': '📖', 'write_file': '✏️', 'execute_code': '▶️',
+                'web_search': '🔍', 'send_message': '💬', 'list_files': '📂',
+            };
+            const icon = toolIcons[card.tool] || '🔧';
+            const color = getAgentColor(card.agent || 'unknown');
+
+            // 展开后显示每个调用
+            let detailHtml = (card.items || []).map((item, i) => {
+                return `<div class="border-t border-dark-600 pt-1 mt-1">
+                    <div class="text-[10px] text-gray-500">#${i+1} · ${item.duration_ms || 0}ms · ${item.success === false ? '<span class="text-red-400">FAILED</span>' : 'OK'}</div>
+                    ${item.result ? `<pre class="text-[11px] text-gray-300 whitespace-pre-wrap bg-dark-900 rounded p-1 mt-0.5 max-h-20 overflow-y-auto">${escapeHtml(item.result.substring(0, 500))}</pre>` : ''}
+                </div>`;
+            }).join('');
+
+            return `
+                <div class="ml-12 my-1" data-card-type="tool_merge">
+                    <div class="bg-dark-700/50 border border-dark-600 rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
+                         onclick="toggleCard(this)">
+                        <div class="flex items-center gap-2">
+                            <span>${icon}</span>
+                            <span class="font-mono text-gray-300">${escapeHtml(card.tool || '')}</span>
+                            <span class="text-gray-500">× ${card.count}</span>
+                            <span class="text-gray-500">·</span>
+                            <span class="text-${color}-400 text-[10px]">${escapeHtml(card.agent || '')}</span>
+                            <span class="ml-auto text-gray-600 collapse-icon">⮟</span>
+                        </div>
+                    </div>
+                    <div class="card-detail hidden bg-dark-800 border border-dark-600 border-t-0 rounded-b-lg px-3 py-2 text-xs space-y-1">
+                        ${detailHtml}
                     </div>
                 </div>`;
         }
@@ -1267,9 +1418,56 @@
             });
             items.sort((a, b) => (a._sort || '').localeCompare(b._sort || ''));
 
+            // 连续同类工具调用合并（同 agent 同 tool，最多 3 个合并为一个卡片）
+            let merged = [];
+            let streak = [];
+            function flushStreak() {
+                if (streak.length === 0) return;
+                if (streak.length <= 2) {
+                    streak.forEach(s => merged.push(s));
+                } else {
+                    // 合并为一个卡片
+                    const first = streak[0]._data;
+                    merged.push({
+                        _sort: streak[0]._sort,
+                        _source: 'card',
+                        _data: {
+                            _type: 'tool_merge',
+                            _ts: first._ts,
+                            agent: first.agent,
+                            tool: first.tool,
+                            count: streak.length,
+                            items: streak.map(s => s._data),
+                            _collapsed: true,
+                        }
+                    });
+                }
+                streak = [];
+            }
             items.forEach(item => {
+                if (item._source === 'card' && item._data._type === 'tool_call') {
+                    const last = streak.length > 0 ? streak[streak.length - 1]._data : null;
+                    if (last && last._type === 'tool_call' && last.tool === item._data.tool && last.agent === item._data.agent) {
+                        streak.push(item);
+                    } else {
+                        flushStreak();
+                        streak.push(item);
+                    }
+                } else {
+                    flushStreak();
+                    merged.push(item);
+                }
+            });
+            flushStreak();
+
+            // 渲染每一项
+            merged.forEach(item => {
                 if (item._source === 'card') {
-                    html += renderPipelineCard(item._data);
+                    if (item._data._type === 'tool_merge') {
+                        html += renderToolMergeCard(item._data);
+                    } else {
+                        html += renderPipelineCard(item._data);
+                    }
                 } else {
                     html += renderChatMessage(item._data);
                 }
@@ -1322,6 +1520,7 @@
                 case 'gate_rejected': return renderGateRejectedCard(card);
                 case 'agent_message': return renderAgentMessageCard(card);
                 case 'boss_instruction': return renderBossInstructionCard(card);
+                case 'skill_inject': return renderSkillInjectCard(card);
                 default: return '';
             }
         }

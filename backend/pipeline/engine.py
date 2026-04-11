@@ -343,7 +343,8 @@ async def _handle_send_message(
         "run_id": run.id,
         "from_agent": from_agent,
         "to_agent": to_agent,
-        "content": content[:500],
+        "content": content[:2000],
+        "message_type": message_type,
     })
 
     logger.info(f"Agent message: {from_agent} → {to_agent}: {content[:100]}")
@@ -891,7 +892,43 @@ class PipelineEngine:
             "stage": stage_cfg.name,
             "display_name": stage_cfg.display_name,
             "agent": stage_cfg.agent,
+            "gate": stage_cfg.gate,
+            "active_skills": active_skills,
+            "expected_artifacts": stage_cfg.expected_artifacts,
         })
+
+        # 广播 skill 注入事件
+        if active_skills:
+            skills_config = self._load_skills_config()
+            agent_data_skills = []
+            try:
+                config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+                with open(config_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                agent_data_skills = data.get("agents", {}).get(stage_cfg.agent, {}).get("skills", [])
+            except Exception:
+                pass
+
+            skill_details = []
+            for skill_name in active_skills:
+                skill = skills_config.get(skill_name, {})
+                guide = skill.get("levels", {}).get("guide", "")
+                hint = skill.get("levels", {}).get("hint", "")
+                skill_details.append({
+                    "name": skill_name,
+                    "hint": hint,
+                    "guide": guide[:500] if guide else None,
+                    "guide_tokens": len(guide.split()) if guide else 0,
+                })
+
+            await event_bus.emit("skill_inject", {
+                "pipeline_id": pipeline.id,
+                "run_id": run.id,
+                "agent": stage_cfg.agent,
+                "stage": stage_cfg.name,
+                "skills": skill_details,
+                "agent_all_skills": agent_data_skills,
+            })
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -1196,7 +1233,7 @@ class PipelineEngine:
                 }, ensure_ascii=False),
             ))
 
-            # 广播 LLM 调用事件（SSE 扩展）
+            # 广播 LLM 调用事件（SSE 扩展）— 含完整上下文供卡片展示
             await event_bus.emit("llm_call", {
                 "pipeline_id": pipeline.id,
                 "run_id": run.id,
@@ -1207,7 +1244,12 @@ class PipelineEngine:
                 "tokens_in": llm_call_record.token_input,
                 "tokens_out": llm_call_record.token_output,
                 "duration_ms": llm_call_record.duration_ms,
-                "content_preview": content[:200] if content else None,
+                "system_prompt": system_prompt[:5000] if system_prompt else None,
+                "response": content[:3000] if content else None,
+                "tool_calls": [
+                    {"name": tc.get("function", {}).get("name"), "args_preview": str(tc.get("function", {}).get("arguments", ""))[:200]}
+                    for tc in (tool_calls or [])
+                ],
             })
 
             db.commit()
@@ -1291,14 +1333,17 @@ class PipelineEngine:
                         "content": tool_result[:8000],
                     })
 
-                    # 广播工具调用
+                    # 广播工具调用（含完整入参和结果供卡片展示）
                     await event_bus.emit("tool_call", {
                         "pipeline_id": pipeline.id,
                         "run_id": run.id,
                         "stage": stage_cfg.name,
                         "agent": stage_cfg.agent,
                         "tool": fn_name,
-                        "result_preview": tool_result[:200],
+                        "arguments": json.dumps(fn_args, ensure_ascii=False)[:3000],
+                        "success": success,
+                        "result": tool_result[:3000],
+                        "duration_ms": tool_duration,
                     })
 
                 continue  # 继续循环让 LLM 处理工具结果
