@@ -190,11 +190,12 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 
 | Agent | 可用工具 |
 |-------|---------|
-| analyst | web_search, retrieve_memory, read_file, write_file |
-| architect | web_search, retrieve_memory, read_file, write_file |
-| developer | web_search, retrieve_memory, read_file, write_file, list_files, execute_code, search_files |
-| tester | retrieve_memory, read_file, execute_code, list_files, search_files |
-| release | retrieve_memory, read_file, write_file, list_files, execute_code |
+| analyst | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent |
+| architect | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent |
+| developer | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, query_agent |
+| tester | web_fetch, retrieve_memory, read_file, execute_code, list_files, search_files, send_direct_message, query_agent |
+| release | web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent, github_manager |
+| assistant | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, query_agent |
 
 ### 4.4 可扩展性
 
@@ -218,16 +219,16 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 ```json
 {
   "analyst": {
-    "tools": ["web_search", "read_file", "write_file", "retrieve_memory"],
-    "skills": ["document-analysis", "requirement-decomposition"]
+    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "query_agent"],
+    "skills": ["document-analysis", "requirement-decomposition", "user-story-writing"]
   },
   "developer": {
-    "tools": ["read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory"],
-    "skills": ["code-generation", "unit-testing", "refactoring"]
+    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory", "send_direct_message", "query_agent"],
+    "skills": ["code-generation", "unit-testing", "refactoring", "debugging"]
   },
   "release": {
-    "tools": ["read_file", "write_file", "list_files", "execute_code", "retrieve_memory"],
-    "skills": ["changelog-generation", "version-tagging"]
+    "tools": ["read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "query_agent", "github_manager"],
+    "skills": ["changelog-generation", "version-tagging", "release-management"]
   }
 }
 ```
@@ -1097,7 +1098,9 @@ LLM 对话的完整 prompt 可能包含数万 token，直接展示没有意义�
 | `write_file` | ✏️ | 灰色边框 | 红色边框 + 自动展开 |
 | `execute_code` | ▶️ | 绿色边框 | 红色边框 + 自动展开 |
 | `web_search` | 🔍 | 灰色边框 | 红色边框 + 自动展开 |
-| `send_message` | 💬 | 灰色边框 | 红色边框 + 自动展开 |
+| `web_fetch` | 🌐 | 灰色边框 | 红色边框 + 自动展开 |
+| `list_files` | 📂 | 灰色边框 | 红色边框 + 自动展开 |
+| `send_direct_message` | 💬 | 灰色边框 | 红色边框 + 自动展开 |
 
 #### 执行叙事线示例
 

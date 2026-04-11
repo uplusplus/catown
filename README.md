@@ -60,7 +60,7 @@ catown/
 │   ├── models/          # 数据库模型（含 Pipeline 表）
 │   ├── pipeline/        # Pipeline 引擎（核心）
 │   ├── routes/          # API 路由
-│   ├── tools/           # 工具集合（文件、代码执行、浏览器、截图等）
+│   ├── tools/           # 工具集合（21 个：文件操作、代码执行、浏览器、搜索、抓取等）
 │   └── main.py          # 应用入口
 ├── frontend/            # 前端（Vanilla JS + TailwindCSS 单文件）
 ├── docs/                # PRD + ADR
@@ -79,6 +79,16 @@ catown/
 | `assistant` | 打杂，协助其他 Agent | — |
 
 每个 Agent 有独立的 SOUL（灵魂）、角色、工具白名单、LLM 模型配置。
+
+### 内置工具（21 个）
+
+| 类别 | 工具 |
+|------|------|
+| 文件操作 | `read_file`, `write_file`, `list_files`, `delete_file`, `search_files` |
+| 代码执行 | `execute_code`（Python + Node.js 沙箱） |
+| 网络 | `web_search`（DuckDuckGo）, `web_fetch`（网页抓取） |
+| 协作 | `send_direct_message`, `query_agent`, `delegate_task`, `broadcast_message` |
+| 其他 | `retrieve_memory`, `save_memory`, `browser`, `screenshot`, `github_manager` |
 
 ## 🛡️ 安全机制
 
