@@ -164,6 +164,20 @@ logger.info("[Collab] Collaboration tools connected to coordinator")
 import asyncio as _asyncio
 from routes.file_watcher import file_watcher
 
+# 将 Pipeline 事件总线转发到通用 WebSocket（聊天窗口可实时接收）
+from pipeline.engine import event_bus
+
+async def _forward_pipeline_events_to_ws(event_type: str, data: dict):
+    """将 engine 事件转发到所有通用 /ws 连接"""
+    try:
+        msg = {"type": f"pipeline_{event_type}", **data}
+        await websocket_manager.broadcast(msg)
+    except Exception:
+        pass
+
+event_bus.on(_forward_pipeline_events_to_ws)
+logger.info("[Events] Pipeline event bus connected to general WebSocket")
+
 @app.on_event("startup")
 async def _start_file_watcher():
     loop = _asyncio.get_event_loop()
