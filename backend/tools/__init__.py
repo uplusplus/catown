@@ -5,6 +5,7 @@ Agent Tools Module
 import os
 from .base import ToolRegistry, BaseTool
 from .web_search import WebSearchTool
+from .web_fetch import WebFetchTool
 from .execute_code import ExecuteCodeTool
 from .retrieve_memory import RetrieveMemoryTool
 from .file_operations import (
@@ -44,6 +45,7 @@ def set_collaboration_coordinator(coordinator):
 
 # Register built-in tools
 tool_registry.register(WebSearchTool())
+tool_registry.register(WebFetchTool())
 tool_registry.register(ExecuteCodeTool())
 tool_registry.register(RetrieveMemoryTool())
 from .save_memory import SaveMemoryTool

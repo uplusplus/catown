@@ -60,8 +60,11 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_message",
-        "query_agent"
+        "send_direct_message",
+        "query_agent",
+        "list_files",
+        "execute_code",
+        "web_fetch"
       ],
       "skills": [
         "document-analysis",
@@ -141,8 +144,11 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_message",
-        "query_agent"
+        "send_direct_message",
+        "query_agent",
+        "list_files",
+        "execute_code",
+        "web_fetch"
       ],
       "skills": [
         "architecture-design",
@@ -225,8 +231,9 @@
         "list_files",
         "execute_code",
         "search_files",
-        "send_message",
-        "query_agent"
+        "send_direct_message",
+        "query_agent",
+        "web_fetch"
       ],
       "skills": [
         "code-generation",
@@ -306,8 +313,9 @@
         "execute_code",
         "list_files",
         "search_files",
-        "send_message",
-        "query_agent"
+        "send_direct_message",
+        "query_agent",
+        "web_fetch"
       ],
       "skills": [
         "test-generation",
@@ -386,9 +394,10 @@
         "write_file",
         "list_files",
         "execute_code",
-        "send_message",
+        "send_direct_message",
         "query_agent",
-        "github_manager"
+        "github_manager",
+        "web_fetch"
       ],
       "skills": [
         "changelog-generation",
@@ -468,8 +477,10 @@
         "write_file",
         "list_files",
         "search_files",
-        "send_message",
-        "query_agent"
+        "send_direct_message",
+        "query_agent",
+        "execute_code",
+        "web_fetch"
       ],
       "skills": [
         "research",
