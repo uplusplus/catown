@@ -268,7 +268,9 @@ class PipelineMessage(Base):
 
 
 def init_database():
-    """初始化数据库"""
+    """初始化数据库（含审计表）"""
+    # 导入审计模型，确保表被注册到 Base.metadata
+    from models import audit  # noqa: F401
     Base.metadata.create_all(bind=engine)
     print("✅ Database initialized successfully")
 

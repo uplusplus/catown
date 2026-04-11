@@ -36,6 +36,7 @@ logger = logging.getLogger("catown")
 # 导入路由
 from routes.api import router as api_router
 from routes.pipeline import router as pipeline_router
+from routes.audit import router as audit_router
 from routes.websocket import websocket_manager
 
 # 导入初始化模块
@@ -175,6 +176,7 @@ async def _stop_file_watcher():
 # 包含 API 路由
 app.include_router(api_router, prefix="/api")
 app.include_router(pipeline_router)
+app.include_router(audit_router)
 
 # WebSocket 路由
 @app.websocket("/ws")

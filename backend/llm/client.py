@@ -77,16 +77,27 @@ class LLMClient:
 
             # 兼容 API 返回字符串/非标准响应的情况
             if isinstance(response, str):
-                return {"content": response, "tool_calls": None}
+                return {"content": response, "tool_calls": None, "usage": None}
 
             if not hasattr(response, 'choices') or not response.choices:
                 logger.warning(f"Model '{self.model}' returned unexpected response type: {type(response)}. Falling back to plain chat.")
-                return {"content": str(response), "tool_calls": None}
+                return {"content": str(response), "tool_calls": None, "usage": None}
 
             choice = response.choices[0]
+
+            # 提取 usage 信息
+            usage = None
+            if hasattr(response, 'usage') and response.usage:
+                usage = {
+                    "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                    "total_tokens": getattr(response.usage, 'total_tokens', 0),
+                }
+
             return {
                 "content": choice.message.content,
-                "tool_calls": choice.message.tool_calls if hasattr(choice.message, 'tool_calls') else None
+                "tool_calls": choice.message.tool_calls if hasattr(choice.message, 'tool_calls') else None,
+                "usage": usage,
             }
         except Exception as e:
             raise Exception(f"LLM API error with tools: {str(e)}")
@@ -110,9 +121,19 @@ class LLMClient:
 
             full_content = ""
             accumulated_tool_calls = []
+            usage = None
 
             async for chunk in await self.client.chat.completions.create(**kwargs):
                 choice = chunk.choices[0] if chunk.choices else None
+
+                # 捕获 usage（流式模式下通常在最后一个 chunk）
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    usage = {
+                        "prompt_tokens": getattr(chunk.usage, 'prompt_tokens', 0),
+                        "completion_tokens": getattr(chunk.usage, 'completion_tokens', 0),
+                        "total_tokens": getattr(chunk.usage, 'total_tokens', 0),
+                    }
+
                 if not choice:
                     continue
 
@@ -146,7 +167,8 @@ class LLMClient:
             yield {
                 "type": "done",
                 "full_content": full_content,
-                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None
+                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                "usage": usage,
             }
 
         except Exception as e:
