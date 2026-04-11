@@ -44,6 +44,11 @@ class LLMClient:
                 temperature=kwargs.get("temperature", 0.7),
                 max_tokens=kwargs.get("max_tokens", 2000)
             )
+            if isinstance(response, str):
+                return response
+            if not hasattr(response, 'choices') or not response.choices:
+                logger.warning(f"Model '{self.model}' returned unexpected response: {type(response)}")
+                return str(response)
             return response.choices[0].message.content
         except Exception as e:
             raise Exception(f"LLM API error: {str(e)}")
@@ -58,7 +63,18 @@ class LLMClient:
             }
             if tools:
                 kwargs["tools"] = tools
+
             response = await self.client.chat.completions.create(**kwargs)
+
+            # 某些 API（如 openrouter/free）不支持 tools 时返回非标准响应（字符串等）
+            if isinstance(response, str):
+                logger.warning(f"Model '{self.model}' returned string instead of ChatCompletion — likely doesn't support tools. Falling back to plain chat.")
+                return {"content": response, "tool_calls": None}
+
+            if not hasattr(response, 'choices') or not response.choices:
+                logger.warning(f"Model '{self.model}' returned unexpected response type: {type(response)}. Falling back to plain chat.")
+                return {"content": str(response), "tool_calls": None}
+
             choice = response.choices[0]
             return {
                 "content": choice.message.content,
