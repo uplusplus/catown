@@ -2317,6 +2317,31 @@ Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效
 
 ---
 
+## 16. 已知问题
+
+### 16.1 前端刷新丢失状态
+
+**问题**：页面刷新后，聊天消息和事件卡片全部丢失。
+
+**根因**：
+
+| 数据 | 存储 | 刷新后 | 说明 |
+|------|------|--------|------|
+| `messages` | 数据库（`messages` 表） | ❌ 丢失 | 数据库有数据但前端未调 `loadMessages()` 恢复 |
+| `pipelineCards` | 仅前端内存 | ❌ 丢失 | LLM/工具/Skill 卡片无持久化，仅 SSE/WS 实时推送 |
+
+**待修复**：
+
+1. **Messages 恢复**（简单）：`selectProject()` 时调用 `GET /api/chatrooms/{id}/messages` 拉取历史消息
+2. **Pipeline Cards 恢复**（需后端配合）：
+   - 需要 `GET /api/audit/timeline` 接口回放历史事件
+   - 或在 `pipeline_stages` / `events` 表中存储卡片数据
+   - 前端页面加载时调用该接口恢复卡片流
+
+**优先级**：P2（不影响核心功能，但影响体验）
+
+---
+
 ## 17. 快速启动
 
 ### 17.1 安装依赖
