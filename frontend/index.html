@@ -1577,15 +1577,43 @@
 
         function renderConfig() {
             const container = document.getElementById('config-agents');
-            container.innerHTML = agents.map(a => `
-                <div class="p-3 bg-dark-800 rounded-lg border border-dark-600">
-                    <div class="flex items-center justify-between mb-2">
+            container.innerHTML = agents.map(a => {
+                const soul = a.soul || {};
+                const tools = a.tools || [];
+                const skills = a.skills || [];
+
+                // SOUL 展示
+                const soulParts = [];
+                if (soul.identity) soulParts.push(`<div class="text-[11px] text-gray-300"><span class="text-accent-400">identity:</span> ${escapeHtml(soul.identity)}</div>`);
+                if (soul.values && soul.values.length) soulParts.push(`<div class="text-[11px] text-gray-300"><span class="text-accent-400">values:</span> ${soul.values.map(v => escapeHtml(v)).join(' · ')}</div>`);
+                if (soul.style) soulParts.push(`<div class="text-[11px] text-gray-300"><span class="text-accent-400">style:</span> ${escapeHtml(soul.style)}</div>`);
+                if (soul.quirks) soulParts.push(`<div class="text-[11px] text-gray-400 italic"><span class="text-accent-400">quirks:</span> ${escapeHtml(soul.quirks)}</div>`);
+
+                // Tools 标签
+                const toolsHtml = tools.length
+                    ? `<div class="flex flex-wrap gap-1 mt-2">${tools.map(t => `<span class="text-[10px] bg-dark-600 text-gray-300 px-1.5 py-0.5 rounded">${escapeHtml(t)}</span>`).join('')}</div>`
+                    : '';
+
+                // Skills 标签
+                const skillsHtml = skills.length
+                    ? `<div class="flex flex-wrap gap-1 mt-1">${skills.map(s => `<span class="text-[10px] bg-accent-500/10 text-accent-400 px-1.5 py-0.5 rounded">⚡ ${escapeHtml(s)}</span>`).join('')}</div>`
+                    : '';
+
+                return `
+                <div class="p-3 bg-dark-800 rounded-lg border border-dark-600 cursor-pointer hover:border-dark-500 transition-colors"
+                     onclick="this.querySelector('.agent-detail').classList.toggle('hidden')">
+                    <div class="flex items-center justify-between mb-1">
                         <span class="font-medium text-white">${escapeHtml(a.name)}</span>
                         <span class="text-xs ${a.is_active ? 'text-green-400' : 'text-gray-500'}">${a.is_active ? 'Active' : 'Inactive'}</span>
                     </div>
                     <p class="text-xs text-gray-400">${escapeHtml(a.role || 'No role defined')}</p>
-                </div>
-            `).join('');
+                    <div class="agent-detail hidden mt-2 pt-2 border-t border-dark-600 space-y-1">
+                        ${soulParts.length ? '<div class="text-[10px] text-gray-500 font-medium mb-1">🧠 SOUL</div>' + soulParts.join('') : ''}
+                        ${tools.length ? '<div class="text-[10px] text-gray-500 font-medium mt-2">🔧 Tools (' + tools.length + ')</div>' + toolsHtml : ''}
+                        ${skills.length ? '<div class="text-[10px] text-gray-500 font-medium mt-1">⚡ Skills (' + skills.length + ')</div>' + skillsHtml : ''}
+                    </div>
+                </div>`;
+            }).join('');
         }
 
         // ==================== Token 面板 ====================
@@ -2337,6 +2365,26 @@
                                             <i class="fa-solid fa-eraser mr-1"></i>Use Global
                                         </button>
                                     </div>
+                                    ${(() => {
+                                        const a = agents.find(x => x.name === name);
+                                        if (!a) return '';
+                                        const soul = a.soul || {};
+                                        const parts = [];
+                                        if (soul.identity) parts.push(`<div class="text-[11px]"><span class="text-accent-400">identity:</span> <span class="text-gray-300">${escapeHtml(soul.identity)}</span></div>`);
+                                        if (soul.values?.length) parts.push(`<div class="text-[11px]"><span class="text-accent-400">values:</span> <span class="text-gray-300">${soul.values.map(v => escapeHtml(v)).join(' · ')}</span></div>`);
+                                        if (soul.style) parts.push(`<div class="text-[11px]"><span class="text-accent-400">style:</span> <span class="text-gray-300">${escapeHtml(soul.style)}</span></div>`);
+                                        if (soul.quirks) parts.push(`<div class="text-[11px] italic"><span class="text-accent-400">quirks:</span> <span class="text-gray-400">${escapeHtml(soul.quirks)}</span></div>`);
+                                        const t = a.tools || [];
+                                        const s = a.skills || [];
+                                        const tHtml = t.length ? `<div class="flex flex-wrap gap-1 mt-1.5">${t.map(x => '<span class="text-[10px] bg-dark-600 text-gray-300 px-1.5 py-0.5 rounded">' + escapeHtml(x) + '</span>').join('')}</div>` : '';
+                                        const sHtml = s.length ? `<div class="flex flex-wrap gap-1 mt-1">${s.map(x => '<span class="text-[10px] bg-accent-500/10 text-accent-400 px-1.5 py-0.5 rounded">⚡ ' + escapeHtml(x) + '</span>').join('')}</div>` : '';
+                                        if (!parts.length && !t.length && !s.length) return '';
+                                        return `<div class="mt-2 pt-2 border-t border-dark-700 space-y-1">
+                                            ${parts.length ? '<div class="text-[10px] text-gray-500 font-medium">🧠 SOUL</div>' + parts.join('') : ''}
+                                            ${t.length ? '<div class="text-[10px] text-gray-500 font-medium mt-1.5">🔧 Tools (' + t.length + ')</div>' + tHtml : ''}
+                                            ${s.length ? '<div class="text-[10px] text-gray-500 font-medium mt-1">⚡ Skills (' + s.length + ')</div>' + sHtml : ''}
+                                        </div>`;
+                                    })()}
                                 </div>
                             `;
                         }).join('');

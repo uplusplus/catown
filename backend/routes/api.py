@@ -643,6 +643,10 @@ class AgentInfo(BaseModel):
     name: str
     role: str
     is_active: bool
+    soul: Optional[Dict[str, Any]] = None
+    tools: Optional[List[str]] = None
+    skills: Optional[List[str]] = None
+    system_prompt_preview: Optional[str] = None
 
 
 class ProjectCreate(BaseModel):
@@ -676,16 +680,32 @@ class MessageResponse(BaseModel):
 @router.get("/agents", response_model=List[AgentInfo])
 async def list_agents(db: Session = Depends(get_db)):
     """获取所有可用 Agent 列表"""
+    import json as _json2
     agents = db.query(Agent).filter(Agent.is_active == True).all()
-    return [
-        AgentInfo(
-            id=agent.id,
-            name=agent.name,
-            role=agent.role,
-            is_active=agent.is_active
-        )
-        for agent in agents
-    ]
+    result = []
+    for agent in agents:
+        soul = {}
+        tools = []
+        skills = []
+        try:
+            soul = _json2.loads(agent.soul) if agent.soul else {}
+        except Exception:
+            pass
+        try:
+            tools = _json2.loads(agent.tools) if agent.tools else []
+        except Exception:
+            pass
+        try:
+            skills = _json2.loads(agent.skills) if agent.skills else []
+        except Exception:
+            pass
+        preview = (agent.system_prompt or "")[:300]
+        result.append(AgentInfo(
+            id=agent.id, name=agent.name, role=agent.role,
+            is_active=agent.is_active, soul=soul, tools=tools,
+            skills=skills, system_prompt_preview=preview,
+        ))
+    return result
 
 
 @router.get("/agents/{agent_id}", response_model=AgentInfo)
@@ -694,12 +714,29 @@ async def get_agent(agent_id: int, db: Session = Depends(get_db)):
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    
+
+    import json as _json3
+    soul = {}
+    tools = []
+    skills = []
+    try:
+        soul = _json3.loads(agent.soul) if agent.soul else {}
+    except Exception:
+        pass
+    try:
+        tools = _json3.loads(agent.tools) if agent.tools else []
+    except Exception:
+        pass
+    try:
+        skills = _json3.loads(agent.skills) if agent.skills else []
+    except Exception:
+        pass
+    preview = (agent.system_prompt or "")[:300]
+
     return AgentInfo(
-        id=agent.id,
-        name=agent.name,
-        role=agent.role,
-        is_active=agent.is_active
+        id=agent.id, name=agent.name, role=agent.role,
+        is_active=agent.is_active, soul=soul, tools=tools,
+        skills=skills, system_prompt_preview=preview,
     )
 
 
