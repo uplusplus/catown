@@ -965,6 +965,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
         from routes.websocket import websocket_manager
 
+        def _sse_card(event_type, data):
+            """格式化卡片事件 SSE，附带 source=chatroom"""
+            data["type"] = event_type
+            data["source"] = "chatroom"
+            return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
         db = next(_get_db())
         try:
             # 1. 保存用户消息
@@ -1058,34 +1064,76 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     msgs.append({"role": "user", "content": message.content})
 
                     # 流式输出
+                    import time as _time
                     step_content = ""
                     tool_schemas = tool_registry.get_schemas()
                     for iteration in range(5):
                         tool_calls_found = False
+                        _llm_start = _time.time()
+                        _llm_content = ""
+                        _llm_tool_calls = []
                         async for event in llm_client.chat_stream(msgs, tool_schemas or None):
                             if event["type"] == "content":
                                 step_content += event["delta"]
+                                _llm_content += event["delta"]
                                 yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_name})}\n\n"
                             elif event["type"] == "done":
                                 tc = event.get("tool_calls")
+                                _llm_full = event.get("full_content", _llm_content)
                                 if tc:
                                     tool_calls_found = True
-                                    msgs.append({"role": "assistant", "content": event.get("full_content", ""), "tool_calls": tc})
+                                    msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
                                     for t in tc:
                                         tname = t["function"]["name"]
                                         yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name})}\n\n"
+                                        _tool_start = _time.time()
                                         try:
                                             targs = json.loads(t["function"]["arguments"])
                                             tres = await tool_registry.execute(tname, **targs)
                                             tres_str = str(tres)[:2000] if tres else "(no output)"
                                         except Exception as te:
                                             tres_str = f"Error: {te}"
+                                        _tool_ms = int((_time.time() - _tool_start) * 1000)
                                         yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name})}\n\n"
                                         msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
+                                        # 工具卡片事件
+                                        _args_str = t["function"].get("arguments", "{}")
+                                        yield _sse_card("tool_call", {
+                                            "agent": agent_name, "tool": tname,
+                                            "arguments": _args_str,
+                                            "success": True, "result": tres_str[:1500],
+                                            "duration_ms": _tool_ms,
+                                        })
+                                        _llm_tool_calls.append({"name": tname, "args_preview": _args_str[:120]})
+                                # LLM 调用卡片事件
+                                _llm_ms = int((_time.time() - _llm_start) * 1000)
+                                yield _sse_card("llm_call", {
+                                    "agent": agent_name,
+                                    "model": getattr(llm_client, 'model', ''),
+                                    "turn": iteration + 1,
+                                    "tokens_in": 0, "tokens_out": 0,
+                                    "duration_ms": _llm_ms,
+                                    "system_prompt": sys_prompt[:5000],
+                                    "response": _llm_full[:3000] if _llm_full else _llm_content[:3000],
+                                    "tool_calls": _llm_tool_calls,
+                                })
                             elif event["type"] == "error":
                                 yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
                                 break
                         if not tool_calls_found:
+                            # 无工具调用的最终 LLM 回复卡片
+                            if _llm_content:
+                                _llm_ms = int((_time.time() - _llm_start) * 1000)
+                                yield _sse_card("llm_call", {
+                                    "agent": agent_name,
+                                    "model": getattr(llm_client, 'model', ''),
+                                    "turn": iteration + 1,
+                                    "tokens_in": 0, "tokens_out": 0,
+                                    "duration_ms": _llm_ms,
+                                    "system_prompt": sys_prompt[:5000],
+                                    "response": _llm_content[:3000],
+                                    "tool_calls": [],
+                                })
                             break
 
                     # 保存
@@ -1213,6 +1261,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             tool_schemas = tool_registry.get_schemas()
 
             # 6. 流式 LLM 循环
+            import time as _time2
             max_tool_iterations = 5
             iteration = 0
             final_content = ""
@@ -1222,12 +1271,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             while iteration < max_tool_iterations:
                 iteration += 1
                 tool_calls_found = False
+                _llm_start = _time2.time()
+                _llm_content = ""
+                _llm_tool_calls = []
 
                 async for event in llm_client.chat_stream(
                     messages, tool_schemas if tool_schemas else None
                 ):
                     if event["type"] == "content":
                         final_content += event["delta"]
+                        _llm_content += event["delta"]
                         yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
 
                     elif event["type"] == "done":
@@ -1235,7 +1288,19 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         full_content = event.get("full_content", "")
 
                         if not tool_calls:
-                            # 无工具调用，结束
+                            # 无工具调用，结束 — 发 LLM 卡片
+                            if _llm_content:
+                                _llm_ms = int((_time2.time() - _llm_start) * 1000)
+                                yield _sse_card("llm_call", {
+                                    "agent": target_agent.name,
+                                    "model": getattr(llm_client, 'model', ''),
+                                    "turn": iteration,
+                                    "tokens_in": 0, "tokens_out": 0,
+                                    "duration_ms": _llm_ms,
+                                    "system_prompt": system_prompt[:5000],
+                                    "response": _llm_content[:3000],
+                                    "tool_calls": [],
+                                })
                             break
 
                         tool_calls_found = True
@@ -1255,6 +1320,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             tool_call_id = tc["id"]
 
                             yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str})}\n\n"
+                            _tool_start = _time2.time()
 
                             try:
                                 tool_args = json.loads(tool_args_str)
@@ -1266,6 +1332,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             # 截断过长的工具结果
                             if len(result_str) > 2000:
                                 result_str = result_str[:2000] + "\n...(truncated)"
+                            _tool_ms = int((_time2.time() - _tool_start) * 1000)
 
                             yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500]})}\n\n"
 
@@ -1275,6 +1342,30 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 "content": result_str,
                                 "name": tool_name
                             })
+
+                            # 工具卡片事件
+                            yield _sse_card("tool_call", {
+                                "agent": target_agent.name,
+                                "tool": tool_name,
+                                "arguments": tool_args_str,
+                                "success": True,
+                                "result": result_str[:1500],
+                                "duration_ms": _tool_ms,
+                            })
+                            _llm_tool_calls.append({"name": tool_name, "args_preview": tool_args_str[:120]})
+
+                        # LLM 调用卡片事件（含工具调用）
+                        _llm_ms = int((_time2.time() - _llm_start) * 1000)
+                        yield _sse_card("llm_call", {
+                            "agent": target_agent.name,
+                            "model": getattr(llm_client, 'model', ''),
+                            "turn": iteration,
+                            "tokens_in": 0, "tokens_out": 0,
+                            "duration_ms": _llm_ms,
+                            "system_prompt": system_prompt[:5000],
+                            "response": full_content[:3000] if full_content else _llm_content[:3000],
+                            "tool_calls": _llm_tool_calls,
+                        })
 
                     elif event["type"] == "error":
                         yield f"data: {_json.dumps({'type': 'error', 'error': event['error']})}\n\n"

@@ -627,6 +627,11 @@
                                 renderMessages();
                             }
                         }
+                        // 卡片事件：SSE 发出的 llm_call / tool_call / skill_inject → 统一走卡片系统
+                        else if (['llm_call', 'tool_call', 'skill_inject', 'agent_message', 'boss_instruction'].includes(data.type)) {
+                            data.source = data.source || 'chatroom';
+                            handlePipelineEvent(data);
+                        }
                     }
                 }
             } catch (e) {
@@ -730,9 +735,24 @@
                 console.log('[HotReload] File changed:', data.files?.join(', '));
                 location.reload();
             }
-            // === Pipeline 事件卡片 ===
-            else if (data.type?.startsWith('pipeline_')) {
-                handlePipelineEvent(data);
+            // === 卡片事件：Pipeline WebSocket + SSE 统一处理 ===
+            else {
+                // 兼容 pipeline_ 前缀（旧版）和直接事件类型（引擎直发 + SSE）
+                const CARD_EVENT_TYPES = [
+                    'llm_call', 'tool_call', 'skill_inject', 'agent_message',
+                    'stage_started', 'stage_completed', 'gate_blocked',
+                    'gate_approved', 'gate_rejected', 'boss_instruction', 'agent_output'
+                ];
+                let eventType = data.type;
+                if (eventType?.startsWith('pipeline_')) {
+                    eventType = eventType.replace('pipeline_', '');
+                }
+                if (CARD_EVENT_TYPES.includes(eventType)) {
+                    // 构造统一格式
+                    const cardData = { ...data, type: eventType };
+                    cardData.source = cardData.source || 'pipeline';
+                    handlePipelineEvent(cardData);
+                }
             }
         }
 
@@ -742,12 +762,14 @@
             const eventType = data.type.replace('pipeline_', '');
             let card = null;
             const ts = new Date().toISOString();
+            const source = data.source || 'pipeline'; // 'chatroom' | 'pipeline'
 
             switch (eventType) {
                 case 'llm_call':
                     card = {
                         _type: 'llm_call',
                         _ts: ts,
+                        _source: source,
                         agent: data.agent,
                         model: data.model,
                         turn: data.turn,
@@ -765,6 +787,7 @@
                     card = {
                         _type: 'tool_call',
                         _ts: ts,
+                        _source: source,
                         agent: data.agent,
                         tool: data.tool,
                         arguments: data.arguments,
@@ -779,6 +802,7 @@
                     card = {
                         _type: 'stage_start',
                         _ts: ts,
+                        _source: source,
                         stage: data.stage,
                         display_name: data.display_name,
                         agent: data.agent,
@@ -793,6 +817,7 @@
                     card = {
                         _type: 'stage_end',
                         _ts: ts,
+                        _source: source,
                         stage: data.stage,
                         summary: data.summary,
                         _collapsed: false,
@@ -803,6 +828,7 @@
                     card = {
                         _type: 'gate_blocked',
                         _ts: ts,
+                        _source: source,
                         stage: data.stage,
                         display_name: data.display_name,
                         _collapsed: false,
@@ -813,6 +839,7 @@
                     card = {
                         _type: 'gate_approved',
                         _ts: ts,
+                        _source: source,
                         stage: data.stage,
                         _collapsed: false,
                     };
@@ -822,6 +849,7 @@
                     card = {
                         _type: 'gate_rejected',
                         _ts: ts,
+                        _source: source,
                         from_stage: data.from_stage,
                         to_stage: data.to_stage,
                         _collapsed: false,
@@ -832,6 +860,7 @@
                     card = {
                         _type: 'agent_message',
                         _ts: ts,
+                        _source: source,
                         from_agent: data.from_agent,
                         to_agent: data.to_agent,
                         content: data.content,
@@ -843,6 +872,7 @@
                     card = {
                         _type: 'boss_instruction',
                         _ts: ts,
+                        _source: source,
                         agent: data.agent,
                         content_preview: data.content_preview,
                         _collapsed: false,
@@ -853,6 +883,7 @@
                     card = {
                         _type: 'skill_inject',
                         _ts: ts,
+                        _source: source,
                         agent: data.agent,
                         stage: data.stage,
                         skills: data.skills,
@@ -919,7 +950,7 @@
             }
 
             return `
-                <div class="ml-12 my-1" data-card-type="llm_call">
+                <div class="ml-12 my-1 ${getSourceBorder(card)}" data-card-type="llm_call">
                     <div class="bg-dark-700/50 border border-dark-600 rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
                          onclick="toggleCard(this)">
                         <div class="flex items-center gap-2">
@@ -929,6 +960,7 @@
                             <span class="text-gray-500">· ${escapeHtml(card.model || '')}</span>
                             <span class="text-gray-500">· ${tokens}</span>
                             ${card.duration_ms ? `<span class="text-gray-600">· ${card.duration_ms}ms</span>` : ''}
+                            ${getSourceTag(card)}
                             <span class="ml-auto text-gray-600 collapse-icon">${card._collapsed ? '⮟' : '⮝'}</span>
                         </div>
                         ${card.response ? `<div class="text-gray-300 mt-1 truncate">${escapeHtml(card.response.substring(0, 120))}</div>` : ''}
@@ -981,7 +1013,7 @@
             }
 
             return `
-                <div class="ml-12 my-1" data-card-type="tool_call">
+                <div class="ml-12 my-1 ${getSourceBorder(card)}" data-card-type="tool_call">
                     <div class="${borderClass} border rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
                          onclick="toggleCard(this)">
                         <div class="flex items-center gap-2">
@@ -991,6 +1023,7 @@
                             <span class="text-${color}-400 text-[10px]">${escapeHtml(card.agent || '')}</span>
                             ${card.success === false ? '<span class="text-red-400 text-[10px]">FAILED</span>' : ''}
                             ${card.duration_ms ? `<span class="text-gray-600 text-[10px]">${card.duration_ms}ms</span>` : ''}
+                            ${getSourceTag(card)}
                             <span class="ml-auto text-gray-600 collapse-icon">${card._collapsed ? '⮟' : '⮝'}</span>
                         </div>
                         ${card.result ? `<div class="text-gray-400 mt-1 truncate">${escapeHtml(card.result.substring(0, 150))}</div>` : ''}
@@ -1021,12 +1054,13 @@
             const allSkills = (card.agent_all_skills || []).join(', ');
 
             return `
-                <div class="my-1.5" data-card-type="skill_inject">
+                <div class="my-1.5 ${getSourceBorder(card)}" data-card-type="skill_inject">
                     <div class="bg-dark-700/30 border border-accent-500/20 rounded-lg px-3 py-2">
                         <div class="flex items-center gap-2 text-xs mb-1.5">
                             <span class="text-accent-400">⚡</span>
                             <span class="text-white font-medium">Skills injected</span>
                             <span class="text-gray-500">· ${escapeHtml(card.agent || '')} · ${card.stage || ''}</span>
+                            ${getSourceTag(card)}
                         </div>
                         ${skillsHtml}
                         ${allSkills ? `<div class="text-[10px] text-gray-600 mt-1">Agent skills: ${escapeHtml(allSkills)}</div>` : ''}
@@ -1037,13 +1071,14 @@
         function renderStageStartCard(card) {
             const skillsText = (card.active_skills || []).join(', ');
             return `
-                <div class="my-2" data-card-type="stage_start">
+                <div class="my-2 ${getSourceBorder(card)}" data-card-type="stage_start">
                     <div class="border-l-2 border-accent-500 bg-dark-700/30 rounded-r-lg px-4 py-2">
                         <div class="flex items-center gap-2 text-sm">
                             <span class="text-accent-400">▶️</span>
                             <span class="text-white font-medium">${escapeHtml(card.display_name || card.stage || '')}</span>
                             <span class="text-gray-400">· ${escapeHtml(card.agent || '')}</span>
                             <span class="text-gray-500">· gate: ${card.gate || 'auto'}</span>
+                            ${getSourceTag(card)}
                         </div>
                         ${skillsText ? `<div class="text-[10px] text-gray-500 mt-0.5">Skills: ${escapeHtml(skillsText)}</div>` : ''}
                         ${card.expected_artifacts ? `<div class="text-[10px] text-gray-500">Artifacts: ${(card.expected_artifacts || []).join(', ')}</div>` : ''}
@@ -1068,7 +1103,7 @@
             }).join('');
 
             return `
-                <div class="ml-12 my-1" data-card-type="tool_merge">
+                <div class="ml-12 my-1 ${getSourceBorder(card)}" data-card-type="tool_merge">
                     <div class="bg-dark-700/50 border border-dark-600 rounded-lg px-3 py-2 text-xs cursor-pointer hover:border-dark-500 transition-colors"
                          onclick="toggleCard(this)">
                         <div class="flex items-center gap-2">
@@ -1077,6 +1112,7 @@
                             <span class="text-gray-500">× ${card.count}</span>
                             <span class="text-gray-500">·</span>
                             <span class="text-${color}-400 text-[10px]">${escapeHtml(card.agent || '')}</span>
+                            ${getSourceTag(card)}
                             <span class="ml-auto text-gray-600 collapse-icon">⮟</span>
                         </div>
                     </div>
@@ -1088,12 +1124,13 @@
 
         function renderStageEndCard(card) {
             return `
-                <div class="my-2" data-card-type="stage_end">
+                <div class="my-2 ${getSourceBorder(card)}" data-card-type="stage_end">
                     <div class="border-l-2 border-emerald-500 bg-dark-700/30 rounded-r-lg px-4 py-2">
                         <div class="flex items-center gap-2 text-sm">
                             <span class="text-emerald-400">✅</span>
                             <span class="text-white font-medium">${escapeHtml(card.stage || '')}</span>
                             <span class="text-gray-400">completed</span>
+                            ${getSourceTag(card)}
                         </div>
                         ${card.summary ? `<div class="text-xs text-gray-400 mt-1 truncate">${escapeHtml(card.summary)}</div>` : ''}
                     </div>
@@ -1102,12 +1139,13 @@
 
         function renderGateBlockedCard(card) {
             return `
-                <div class="my-2" data-card-type="gate_blocked">
+                <div class="my-2 ${getSourceBorder(card)}" data-card-type="gate_blocked">
                     <div class="border-l-2 border-yellow-500 bg-yellow-500/5 rounded-r-lg px-4 py-3">
                         <div class="flex items-center gap-2 text-sm mb-2">
                             <span class="text-yellow-400">🚧</span>
                             <span class="text-white font-medium">Gate: ${escapeHtml(card.display_name || card.stage || '')}</span>
                             <span class="text-gray-400">— 等待审批</span>
+                            ${getSourceTag(card)}
                         </div>
                         <div class="flex gap-2">
                             <button onclick="event.stopPropagation(); approvePipelineAction()"
@@ -1125,18 +1163,18 @@
 
         function renderGateApprovedCard(card) {
             return `
-                <div class="my-1" data-card-type="gate_approved">
+                <div class="my-1 ${getSourceBorder(card)}" data-card-type="gate_approved">
                     <div class="border-l-2 border-emerald-500/50 bg-dark-700/20 rounded-r-lg px-4 py-1.5 text-xs text-emerald-400">
-                        ✅ Gate approved: ${escapeHtml(card.stage || '')}
+                        ✅ Gate approved: ${escapeHtml(card.stage || '')}${getSourceTag(card) ? ' ' + getSourceTag(card) : ''}
                     </div>
                 </div>`;
         }
 
         function renderGateRejectedCard(card) {
             return `
-                <div class="my-1" data-card-type="gate_rejected">
+                <div class="my-1 ${getSourceBorder(card)}" data-card-type="gate_rejected">
                     <div class="border-l-2 border-red-500/50 bg-dark-700/20 rounded-r-lg px-4 py-1.5 text-xs text-red-400">
-                        ⏪ Gate rejected: ${escapeHtml(card.from_stage || '')} → rollback to ${escapeHtml(card.to_stage || '')}
+                        ⏪ Gate rejected: ${escapeHtml(card.from_stage || '')} → rollback to ${escapeHtml(card.to_stage || '')}${getSourceTag(card) ? ' ' + getSourceTag(card) : ''}
                     </div>
                 </div>`;
         }
@@ -1145,7 +1183,7 @@
             const fromColor = getAgentColor(card.from_agent || 'unknown');
             const toColor = getAgentColor(card.to_agent || 'unknown');
             return `
-                <div class="my-1.5" data-card-type="agent_message">
+                <div class="my-1.5 ${getSourceBorder(card)}" data-card-type="agent_message">
                     <div class="bg-dark-700/40 border border-dark-600/50 rounded-lg px-3 py-2 text-xs">
                         <div class="flex items-center gap-2 mb-1">
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-${fromColor}-400 to-${fromColor}-500 flex items-center justify-center text-white text-[10px] font-bold">${(card.from_agent || '?')[0].toUpperCase()}</span>
@@ -1153,6 +1191,7 @@
                             <span class="text-gray-500">→</span>
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-${toColor}-400 to-${toColor}-500 flex items-center justify-center text-white text-[10px] font-bold">${(card.to_agent || '?')[0].toUpperCase()}</span>
                             <span class="text-${toColor}-400 font-medium">${escapeHtml(card.to_agent || '')}</span>
+                            ${getSourceTag(card)}
                         </div>
                         <div class="text-gray-300 pl-7">${escapeHtml(card.content || '')}</div>
                     </div>
@@ -1161,16 +1200,27 @@
 
         function renderBossInstructionCard(card) {
             return `
-                <div class="my-1" data-card-type="boss_instruction">
+                <div class="my-1 ${getSourceBorder(card)}" data-card-type="boss_instruction">
                     <div class="border-l-2 border-orange-500 bg-orange-500/5 rounded-r-lg px-4 py-2 text-xs">
                         <div class="flex items-center gap-2 mb-1">
                             <span class="text-orange-400">👤</span>
                             <span class="text-orange-300 font-medium">BOSS</span>
                             <span class="text-gray-500">→ ${escapeHtml(card.agent || '')}</span>
+                            ${getSourceTag(card)}
                         </div>
                         <div class="text-gray-300">${escapeHtml(card.content_preview || '')}</div>
                     </div>
                 </div>`;
+        }
+
+        // 卡片来源样式：Pipeline 卡片带蓝色左侧竖线 + 标签
+        function getSourceBorder(card) {
+            return card._source === 'pipeline' ? 'border-l-2 border-l-blue-500' : '';
+        }
+        function getSourceTag(card) {
+            return card._source === 'pipeline'
+                ? '<span class="text-[10px] text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded ml-1">🔧 Pipeline</span>'
+                : '';
         }
 
         // 卡片折叠/展开切换

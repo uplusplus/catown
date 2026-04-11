@@ -425,10 +425,10 @@ async def pipeline_websocket(websocket: WebSocket):
 
     await websocket_manager.connect(websocket)
 
-    # 注册事件监听 → 转发到 WebSocket
+    # 注册事件监听 → 转发到 WebSocket（带 source=pipeline 标记）
     async def forward_event(event_type: str, data: dict):
         try:
-            await websocket.send_json({"type": event_type, **data})
+            await websocket.send_json({"type": event_type, "source": "pipeline", **data})
         except Exception:
             pass
 
