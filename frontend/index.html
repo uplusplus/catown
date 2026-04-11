@@ -1339,6 +1339,109 @@
             `).join('');
         }
 
+        // ==================== Token 面板 ====================
+
+        function renderTokensContent() {
+            return `
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-sm font-semibold text-white"><i class="fa-solid fa-coins mr-2"></i>Token Usage</h3>
+                        <button onclick="loadTokensData()" class="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-3 py-1.5 rounded transition-colors">
+                            <i class="fa-solid fa-refresh mr-1"></i>Refresh
+                        </button>
+                    </div>
+
+                    <!-- 总览卡片 -->
+                    <div id="tokens-overview" class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
+                            <div class="text-lg font-bold text-accent-400" id="tok-total-calls">-</div>
+                            <div class="text-xs text-gray-400">LLM Calls</div>
+                        </div>
+                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
+                            <div class="text-lg font-bold text-emerald-400" id="tok-total-input">-</div>
+                            <div class="text-xs text-gray-400">Input Tokens</div>
+                        </div>
+                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
+                            <div class="text-lg font-bold text-purple-400" id="tok-total-output">-</div>
+                            <div class="text-xs text-gray-400">Output Tokens</div>
+                        </div>
+                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
+                            <div class="text-lg font-bold text-amber-400" id="tok-total-cost">-</div>
+                            <div class="text-xs text-gray-400">Est. Cost (USD)</div>
+                        </div>
+                    </div>
+
+                    <!-- 按 Agent 分组 -->
+                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                        <h4 class="text-sm font-medium text-white mb-3">By Agent</h4>
+                        <div id="tokens-by-agent" class="space-y-2">
+                            <div class="text-xs text-gray-500">Loading...</div>
+                        </div>
+                    </div>
+
+                    <!-- 定价说明 -->
+                    <div class="bg-dark-700/30 rounded-lg p-3 border border-dark-600/50 text-xs text-gray-500">
+                        <i class="fa-solid fa-info-circle mr-1"></i>
+                        Cost estimate based on GPT-4 pricing ($0.03/1K input, $0.06/1K output).
+                        Actual cost depends on the model used by each agent.
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadTokensData() {
+            try {
+                const res = await fetch(`${API_BASE}/audit/tokens/summary`);
+                const data = await res.json();
+
+                // 更新总览
+                const t = data.total || {};
+                document.getElementById('tok-total-calls').textContent = (t.call_count || 0).toLocaleString();
+                document.getElementById('tok-total-input').textContent = (t.token_input || 0).toLocaleString();
+                document.getElementById('tok-total-output').textContent = (t.token_output || 0).toLocaleString();
+                document.getElementById('tok-total-cost').textContent = '$' + (t.estimated_cost_usd || 0).toFixed(2);
+
+                // 更新按 Agent 分组
+                const container = document.getElementById('tokens-by-agent');
+                if (!data.agents || data.agents.length === 0) {
+                    container.innerHTML = '<div class="text-xs text-gray-500 text-center py-4">No LLM calls recorded yet</div>';
+                    return;
+                }
+
+                const maxTokens = Math.max(...data.agents.map(a => a.token_total || 1));
+
+                container.innerHTML = data.agents.map(a => {
+                    const pct = ((a.token_total / maxTokens) * 100).toFixed(0);
+                    const color = getAgentColor(a.agent_name);
+                    return `
+                        <div class="bg-dark-800 rounded-lg p-3">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-6 h-6 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-[10px] font-bold">${(a.agent_name || '?')[0].toUpperCase()}</span>
+                                    <span class="text-sm font-medium text-white">${escapeHtml(a.agent_name)}</span>
+                                </div>
+                                <span class="text-xs text-amber-400">$${(a.estimated_cost_usd || 0).toFixed(4)}</span>
+                            </div>
+                            <div class="h-1.5 w-full bg-dark-700 rounded-full overflow-hidden mb-2">
+                                <div class="h-full bg-gradient-to-r from-${color}-500 to-${color}-400 rounded-full" style="width: ${pct}%"></div>
+                            </div>
+                            <div class="flex justify-between text-[10px] text-gray-500">
+                                <span>${a.call_count} calls</span>
+                                <span>${(a.token_input || 0).toLocaleString()} in / ${(a.token_output || 0).toLocaleString()} out</span>
+                                <span>${(a.duration_ms || 0).toLocaleString()}ms</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to load token data:', e);
+                const container = document.getElementById('tokens-by-agent');
+                if (container) container.innerHTML = `<div class="text-xs text-red-400">Failed to load: ${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        // ==================== Token 面板 END ====================
+
         // UI Functions
         function selectProject(project) {
             currentProject = project;
@@ -1545,6 +1648,9 @@
                             <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-gear mr-2"></i>Config
                             </button>
+                            <button id="status-tab-tokens" onclick="switchStatusTab('tokens')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                                <i class="fa-solid fa-coins mr-2"></i>Tokens
+                            </button>
                         </div>
                         <!-- Content -->
                         <div id="status-content" class="flex-1 overflow-y-auto p-6">
@@ -1570,7 +1676,7 @@
 
         function switchStatusTab(tab) {
             // Update tab styles
-            ['overview', 'agents', 'projects', 'collab', 'pipeline', 'config'].forEach(t => {
+            ['overview', 'agents', 'projects', 'collab', 'pipeline', 'config', 'tokens'].forEach(t => {
                 const tabBtn = document.getElementById(`status-tab-${t}`);
                 if (tabBtn) {
                     if (t === tab) {
@@ -1596,6 +1702,9 @@
                 loadPipelineData();
             } else if (tab === 'config') {
                 content.innerHTML = renderConfigContent();
+            } else if (tab === 'tokens') {
+                content.innerHTML = renderTokensContent();
+                loadTokensData();
             }
         }
 
