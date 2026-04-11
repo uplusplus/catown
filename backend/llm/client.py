@@ -69,8 +69,10 @@ class LLMClient:
             # 调试：记录实际响应类型和内容，帮助定位 'str' object has no attribute 'choices' 问题
             if not hasattr(response, 'choices'):
                 logger.error(
-                    f"LLM response is not ChatCompletion! type={type(response).__name__}, "
-                    f"value={repr(response)[:1000]}"
+                    f"LLM response is not ChatCompletion!\n"
+                    f"  type={type(response).__name__}\n"
+                    f"  dir={type(response).__mro__}\n"
+                    f"  repr={repr(response)[:2000]}"
                 )
 
             # 兼容 API 返回字符串/非标准响应的情况
