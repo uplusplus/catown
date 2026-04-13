@@ -6,7 +6,7 @@
     <title>Catown - Multi-Agent Platform</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- Highlight.js for code syntax highlighting -->
@@ -18,31 +18,101 @@
                 extend: {
                     colors: {
                         dark: {
-                            900: '#0F1115',
-                            800: '#16181D',
-                            700: '#1E2128',
-                            600: '#2A2E35'
+                            950: '#07111A',
+                            900: '#0B1620',
+                            800: '#11212D',
+                            700: '#1A3140',
+                            600: '#284659'
                         },
                         accent: {
-                            500: '#3B82F6',
-                            400: '#60A5FA'
+                            500: '#FF6B35',
+                            400: '#FF8A5B',
+                            300: '#FFB38F'
+                        },
+                        signal: {
+                            cyan: '#66D9EF',
+                            lime: '#B7F171',
+                            gold: '#FFC857'
                         }
                     },
                     fontFamily: {
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        sans: ['IBM Plex Sans', 'system-ui', 'sans-serif'],
+                        display: ['Space Grotesk', 'IBM Plex Sans', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
+                    },
+                    boxShadow: {
+                        cockpit: '0 24px 80px rgba(0, 0, 0, 0.35)'
                     }
                 }
             }
         }
     </script>
     <style>
+        :root {
+            --bg-0: #07111A;
+            --bg-1: #0B1620;
+            --bg-2: #11212D;
+            --panel: rgba(11, 22, 32, 0.82);
+            --panel-strong: rgba(17, 33, 45, 0.94);
+            --line: rgba(144, 185, 214, 0.16);
+            --text: #EAF4F8;
+            --muted: #88A1B3;
+            --accent: #FF6B35;
+            --accent-soft: #FF8A5B;
+            --signal: #66D9EF;
+            --glow: rgba(255, 107, 53, 0.22);
+        }
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2A2E35; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
-        body { background-color: #0F1115; color: #E5E7EB; }
-        .glass-panel { background: rgba(22, 24, 29, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        ::-webkit-scrollbar-thumb { background: #284659; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #FF6B35; }
+        body {
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(102, 217, 239, 0.16), transparent 24%),
+                radial-gradient(circle at top right, rgba(255, 107, 53, 0.18), transparent 30%),
+                linear-gradient(135deg, var(--bg-0), var(--bg-1) 42%, #09141D 100%);
+        }
+        .glass-panel {
+            background: linear-gradient(180deg, rgba(20, 37, 50, 0.82), rgba(10, 20, 28, 0.76));
+            backdrop-filter: blur(18px);
+            border: 1px solid var(--line);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+        }
+        .panel-shell {
+            background: linear-gradient(180deg, rgba(17, 33, 45, 0.92), rgba(9, 19, 27, 0.94));
+            border-color: var(--line);
+            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.25);
+        }
+        .command-chip {
+            background: rgba(17, 33, 45, 0.78);
+            border: 1px solid rgba(144, 185, 214, 0.14);
+        }
+        .command-chip:hover {
+            border-color: rgba(255, 107, 53, 0.45);
+            background: rgba(29, 48, 62, 0.92);
+        }
+        .hero-orb {
+            position: absolute;
+            border-radius: 999px;
+            filter: blur(18px);
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .hero-grid {
+            background-image:
+                linear-gradient(rgba(102, 217, 239, 0.08) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(102, 217, 239, 0.08) 1px, transparent 1px);
+            background-size: 22px 22px;
+        }
+        .hero-kicker {
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+        }
+        .stat-pill {
+            background: rgba(7, 17, 26, 0.7);
+            border: 1px solid rgba(144, 185, 214, 0.14);
+        }
         .agent-status-idle { color: #9CA3AF; }
         .agent-status-thinking { color: #FBBF24; animation: pulse 2s infinite; }
         .agent-status-executing { color: #10B981; }
@@ -131,17 +201,20 @@
         }
     </style>
 </head>
-<body class="h-screen overflow-hidden flex font-sans bg-dark-900 text-gray-200">
+<body class="h-screen overflow-hidden flex font-sans bg-dark-900 text-gray-200 selection:bg-accent-500/30 selection:text-white">
 
     <!-- Sidebar -->
-    <aside id="sidebar" class="fixed inset-y-0 left-0 w-64 md:relative md:flex flex-col border-r border-dark-700 bg-dark-800 transition-transform duration-300 z-30 mobile-hidden">
+    <aside id="sidebar" class="fixed inset-y-0 left-0 w-72 md:relative md:flex flex-col border-r border-dark-700 panel-shell transition-transform duration-300 z-30 mobile-hidden">
         <!-- Logo -->
-        <div class="h-16 flex items-center justify-between px-6 border-b border-dark-700">
+        <div class="h-20 flex items-center justify-between px-6 border-b border-dark-700/70">
             <div class="flex items-center gap-3">
-                <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-400 to-accent-500 flex items-center justify-center text-white font-bold text-xl">
-                    <i class="fa-solid fa-layer-group"></i>
+                <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-accent-400 via-accent-500 to-signal-cyan flex items-center justify-center text-white font-bold text-xl shadow-cockpit">
+                    <i class="fa-solid fa-tower-broadcast"></i>
                 </div>
-                <span class="text-xl font-semibold tracking-wide text-white">Catown</span>
+                <div>
+                    <span class="block text-[11px] hero-kicker text-signal-cyan font-medium">AI Software Factory</span>
+                    <span class="text-2xl font-display font-bold tracking-tight text-white">Catown</span>
+                </div>
             </div>
             <button onclick="toggleSidebar()" class="md:hidden text-gray-400">
                 <i class="fa-solid fa-xmark text-xl"></i>
@@ -153,25 +226,25 @@
             <!-- Search -->
             <div class="relative">
                 <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm"></i>
-                <input type="text" id="search-input" placeholder="Search rooms..." class="w-full bg-dark-900 border border-dark-700 rounded-lg py-2 pl-9 pr-4 text-sm focus:outline-none focus:border-accent-500 text-gray-300 placeholder-gray-500 transition-colors">
+                <input type="text" id="search-input" placeholder="Search war rooms..." class="w-full bg-dark-900/70 border border-dark-700 rounded-2xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:border-accent-500 text-gray-300 placeholder-gray-500 transition-colors">
             </div>
 
             <!-- Main Links -->
-            <div class="space-y-1">
-                <a href="#" onclick="showHome()" class="flex items-center gap-3 px-3 py-2 rounded-lg bg-dark-700 text-white font-medium">
-                    <i class="fa-solid fa-house w-5 text-center"></i> Home
+            <div class="space-y-2">
+                <a href="#" onclick="showHome()" class="flex items-center gap-3 px-4 py-3 rounded-2xl bg-gradient-to-r from-accent-500/20 to-signal-cyan/10 text-white font-medium border border-accent-500/30">
+                    <i class="fa-solid fa-house w-5 text-center text-accent-300"></i> Mission Control
                 </a>
-                <a href="#" onclick="showAgents()" class="flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors">
-                    <i class="fa-solid fa-compass w-5 text-center"></i> Explore Agents
+                <a href="#" onclick="showAgents()" class="flex items-center gap-3 px-4 py-3 rounded-2xl text-gray-400 hover:bg-dark-700/70 hover:text-white transition-colors border border-transparent hover:border-dark-600">
+                    <i class="fa-solid fa-compass w-5 text-center text-signal-cyan"></i> Agent Roster
                 </a>
-                <a href="#" onclick="showTemplates()" class="flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:bg-dark-700 hover:text-white transition-colors">
-                    <i class="fa-solid fa-book w-5 text-center"></i> Templates
+                <a href="#" onclick="showTemplates()" class="flex items-center gap-3 px-4 py-3 rounded-2xl text-gray-400 hover:bg-dark-700/70 hover:text-white transition-colors border border-transparent hover:border-dark-600">
+                    <i class="fa-solid fa-book w-5 text-center text-signal-gold"></i> Playbooks
                 </a>
             </div>
 
             <!-- Active Rooms -->
             <div>
-                <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Active Rooms</h3>
+                <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 px-3">Active War Rooms</h3>
                 <div id="rooms-list" class="space-y-1">
                     <p class="text-xs text-gray-500 px-3 py-2">Loading...</p>
                 </div>
@@ -180,11 +253,11 @@
 
         <!-- User Profile -->
         <div class="p-4 border-t border-dark-700">
-            <div class="flex items-center gap-3 cursor-pointer hover:bg-dark-700 p-2 rounded-lg transition-colors">
-                <div class="w-10 h-10 rounded-full border border-dark-600 bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white font-bold">U</div>
+            <div class="flex items-center gap-3 cursor-pointer hover:bg-dark-700/70 p-3 rounded-2xl transition-colors border border-dark-700/50">
+                <div class="w-10 h-10 rounded-2xl border border-dark-600 bg-gradient-to-br from-accent-400 to-signal-cyan flex items-center justify-center text-white font-bold">U</div>
                 <div class="flex-1 min-w-0">
                     <p class="text-sm font-medium text-white truncate">User</p>
-                    <p class="text-xs text-gray-500 truncate">Pro Plan</p>
+                    <p class="text-xs text-gray-500 truncate">Boss Console</p>
                 </div>
                 <i class="fa-solid fa-chevron-up text-gray-500 text-xs"></i>
             </div>
@@ -194,17 +267,25 @@
     <!-- Main Content Area -->
     <main class="flex-1 flex flex-col relative overflow-hidden">
         <!-- Overlay for background -->
-        <div class="absolute inset-0 bg-dark-900/95 z-0"></div>
+        <div class="absolute inset-0 z-0">
+            <div class="hero-orb w-72 h-72 bg-accent-500/30 top-[-6rem] right-[12%]"></div>
+            <div class="hero-orb w-80 h-80 bg-signal-cyan/20 bottom-[-7rem] left-[8%]"></div>
+            <div class="absolute inset-0 hero-grid opacity-30"></div>
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(7,17,26,0.12)_48%,rgba(7,17,26,0.72)_100%)]"></div>
+        </div>
 
         <!-- Header -->
-        <header id="main-header" class="h-16 flex items-center justify-between px-4 md:px-6 border-b border-dark-700/50 z-10 glass-panel">
+        <header id="main-header" class="h-20 flex items-center justify-between px-4 md:px-6 border-b border-dark-700/40 z-10 glass-panel">
             <div class="flex items-center gap-3 md:gap-4">
                 <button onclick="toggleSidebar()" class="md:hidden text-gray-400 hover:text-white p-2">
                     <i class="fa-solid fa-bars text-xl"></i>
                 </button>
-                <div class="flex items-center gap-2">
-                    <h1 id="room-title" class="text-base md:text-lg font-semibold text-white truncate max-w-[120px] md:max-w-none">Catown</h1>
-                    <span id="room-badge" class="hidden sm:inline-block px-2 py-0.5 rounded text-xs font-medium bg-dark-700 text-gray-300 border border-dark-600">Multi-Agent</span>
+                <div class="flex items-center gap-3">
+                    <div>
+                        <div class="text-[11px] hero-kicker text-signal-cyan">Command Deck</div>
+                        <h1 id="room-title" class="text-lg md:text-2xl font-display font-bold text-white truncate max-w-[160px] md:max-w-none">Catown</h1>
+                    </div>
+                    <span id="room-badge" class="hidden sm:inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-dark-700/80 text-gray-200 border border-dark-600"><span class="w-2 h-2 rounded-full bg-signal-lime"></span>Multi-Agent Live</span>
                 </div>
             </div>
             <div class="flex items-center gap-2 md:gap-4">
@@ -217,8 +298,8 @@
                 <button onclick="toggleLogs()" class="lg:hidden text-gray-400 hover:text-white p-2">
                     <i class="fa-solid fa-receipt"></i>
                 </button>
-                <button onclick="showAddAgent()" class="bg-accent-500 hover:bg-accent-400 text-white px-3 md:px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
-                    <i class="fa-solid fa-plus"></i> <span class="hidden sm:inline">Add Agent</span>
+                <button onclick="showAddAgent()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 md:px-5 py-2 rounded-2xl text-sm font-medium transition-colors flex items-center gap-2 shadow-cockpit">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> <span class="hidden sm:inline">Summon Agent</span>
                 </button>
             </div>
         </header>
@@ -243,12 +324,12 @@
             <div id="chat-container" class="flex-1 flex flex-col relative min-w-0 min-h-0">
                 
                 <!-- Agent Status Bar -->
-                <div id="agent-status-bar" class="px-4 md:px-6 py-3 border-b border-dark-700/50 flex gap-3 md:gap-4 overflow-x-auto glass-panel no-scrollbar">
+                <div id="agent-status-bar" class="px-4 md:px-6 py-4 border-b border-dark-700/40 flex gap-3 md:gap-4 overflow-x-auto glass-panel no-scrollbar">
                     <p class="text-xs text-gray-500">Loading agents...</p>
                 </div>
 
                 <!-- Messages Area -->
-                <div id="messages-area" class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+                <div id="messages-area" class="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
                     <!-- Intro Message -->
                     <div class="text-center py-6 md:py-8">
                         <div class="w-16 h-16 md:w-20 md:h-20 mx-auto rounded-full bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500 p-1 mb-4 shadow-lg shadow-accent-500/20">
@@ -262,32 +343,32 @@
                 </div>
 
                 <!-- Input Area -->
-                <div class="p-4 bg-dark-900/80 border-t border-dark-700/50 backdrop-blur-md">
+                <div class="p-4 bg-dark-900/60 border-t border-dark-700/40 backdrop-blur-md">
                     <div class="max-w-4xl mx-auto">
                         <!-- Command Hints -->
-                        <div class="flex gap-2 mb-2 px-2 flex-wrap">
-                            <button onclick="insertAt()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                        <div class="flex gap-2 mb-3 px-2 flex-wrap">
+                            <button onclick="insertAt()" class="command-chip text-xs text-gray-300 px-3 py-1.5 rounded-full transition-colors">
                                 <i class="fa-solid fa-at text-gray-400 mr-1"></i> Mention Agent
                             </button>
-                            <button onclick="insertCreateRoom()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                            <button onclick="insertCreateRoom()" class="command-chip text-xs text-gray-300 px-3 py-1.5 rounded-full transition-colors">
                                 <i class="fa-solid fa-plus text-gray-400 mr-1"></i> Create Room
                             </button>
-                            <button onclick="runScript()" class="text-xs bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-1 rounded border border-dark-600 transition-colors">
+                            <button onclick="runScript()" class="command-chip text-xs text-gray-300 px-3 py-1.5 rounded-full transition-colors">
                                 <i class="fa-solid fa-terminal text-gray-400 mr-1"></i> Run Script
                             </button>
                         </div>
                         
                         <!-- Input Box with @mention dropdown -->
-                        <div id="input-wrapper" class="relative flex items-end gap-2 bg-dark-800 border border-dark-600 rounded-xl p-2 shadow-lg focus-within:border-accent-500 focus-within:ring-1 focus-within:ring-accent-500 transition-all">
+                        <div id="input-wrapper" class="relative flex items-end gap-2 bg-dark-800/90 border border-dark-600 rounded-[28px] p-3 shadow-cockpit focus-within:border-accent-500 focus-within:ring-1 focus-within:ring-accent-500 transition-all">
                             <button class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700">
                                 <i class="fa-solid fa-paperclip"></i>
                             </button>
-                            <textarea id="message-input" rows="1" class="w-full bg-transparent text-gray-200 placeholder-gray-500 resize-none outline-none py-2 max-h-32" placeholder="Message room or @agent... Try 'Create a new room for SEO analysis'"></textarea>
+                            <textarea id="message-input" rows="1" class="w-full bg-transparent text-gray-100 placeholder-gray-500 resize-none outline-none py-2 max-h-32" placeholder="Issue orders to the factory... Try '@developer redesign the dashboard flow'"></textarea>
                             <div class="flex gap-1">
                                 <button class="p-2 text-gray-400 hover:text-white transition-colors rounded-lg hover:bg-dark-700">
                                     <i class="fa-solid fa-microphone"></i>
                                 </button>
-                                <button onclick="sendMessage()" class="p-2 bg-accent-500 hover:bg-accent-400 text-white transition-colors rounded-lg shadow-md">
+                                <button onclick="sendMessage()" class="p-3 bg-accent-500 hover:bg-accent-400 text-white transition-colors rounded-2xl shadow-cockpit">
                                     <i class="fa-solid fa-paper-plane"></i>
                                 </button>
                             </div>
@@ -299,7 +380,7 @@
             </div>
 
             <!-- Side Panel (Logs & Config) -->
-            <div id="side-panel" class="w-80 flex-shrink-0 border-l border-dark-700/50 bg-dark-900/95 backdrop-blur-xl flex flex-col hidden lg:flex min-h-0 max-h-full">
+            <div id="side-panel" class="w-80 flex-shrink-0 border-l border-dark-700/40 panel-shell backdrop-blur-xl flex flex-col hidden lg:flex min-h-0 max-h-full">
                 <!-- Panel Tabs -->
                 <div class="flex border-b border-dark-700">
                     <button id="tab-logs" onclick="switchTab('logs')" class="flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50">
@@ -1444,17 +1525,45 @@
 
         function renderMessages() {
             const container = document.getElementById('messages-area');
+            const activeAgentNames = agents.filter(a => a.is_active).map(a => a.name);
+            const activeAgentPills = activeAgentNames.length
+                ? activeAgentNames.slice(0, 6).map(name => `<span class="stat-pill inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs text-gray-200"><span class="w-2 h-2 rounded-full bg-signal-lime"></span>${escapeHtml(name)}</span>`).join('')
+                : '<span class="stat-pill inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs text-gray-400">Awaiting agents</span>';
 
             // 构建 intro
             let html = `
-                <div class="text-center py-6 md:py-8">
-                    <div class="w-16 h-16 md:w-20 md:h-20 mx-auto rounded-full bg-gradient-to-tr from-purple-500 via-accent-500 to-emerald-500 p-1 mb-4 shadow-lg shadow-accent-500/20">
-                        <div class="w-full h-full bg-dark-900 rounded-full flex items-center justify-center">
-                            <i class="fa-solid fa-robot text-3xl text-white"></i>
+                <div class="relative overflow-hidden rounded-[32px] border border-dark-600/80 bg-[linear-gradient(135deg,rgba(17,33,45,0.92),rgba(11,22,32,0.82))] p-6 md:p-8 shadow-cockpit">
+                    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,107,53,0.18),transparent_28%),radial-gradient(circle_at_bottom_left,rgba(102,217,239,0.16),transparent_26%)]"></div>
+                    <div class="relative z-10">
+                        <div class="hero-kicker text-signal-cyan text-xs font-medium mb-3">Orchestrate. Observe. Override.</div>
+                        <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-6">
+                            <div class="max-w-2xl">
+                                <div class="w-16 h-16 md:w-20 md:h-20 rounded-[24px] bg-gradient-to-br from-accent-400 via-accent-500 to-signal-cyan p-1 mb-5 shadow-cockpit">
+                                    <div class="w-full h-full bg-dark-900 rounded-[20px] flex items-center justify-center">
+                                        <i class="fa-solid fa-tower-broadcast text-3xl text-white"></i>
+                                    </div>
+                                </div>
+                                <h2 class="text-3xl md:text-5xl font-display font-bold text-white mb-3 leading-tight">${currentProject ? escapeHtml(currentProject.name) : 'Welcome to Catown'}</h2>
+                                <p class="text-sm md:text-lg text-gray-300 max-w-xl">${currentProject ? `Command the build line with ${activeAgentNames.length || 0} active agents online. Drop a mission, route it to the right specialists, and watch the whole factory move in formation.` : 'A live command deck for multi-agent software delivery. Spin up a war room, brief the agents, then supervise the entire build chain like a proper final boss.'}</p>
+                            </div>
+                            <div class="min-w-[220px] space-y-3">
+                                <div class="stat-pill rounded-3xl px-4 py-4">
+                                    <div class="text-[11px] hero-kicker text-gray-500 mb-2">Factory Snapshot</div>
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div>
+                                            <div class="text-2xl font-display font-bold text-white">${activeAgentNames.length}</div>
+                                            <div class="text-gray-500 text-xs">Active agents</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-2xl font-display font-bold text-white">${projects.length}</div>
+                                            <div class="text-gray-500 text-xs">War rooms</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="flex flex-wrap gap-2">${activeAgentPills}</div>
+                            </div>
                         </div>
                     </div>
-                    <h2 class="text-xl md:text-2xl font-bold text-white mb-2">${currentProject ? escapeHtml(currentProject.name) + ' Initialized' : 'Welcome to Catown'}</h2>
-                    <p class="text-sm md:text-base text-gray-400 max-w-md mx-auto px-4">${currentProject ? `I've assembled ${agents.filter(a => a.is_active).map(a => a.name).join(', ')}. What are we working on?` : 'Select or create a room to begin'}</p>
                 </div>
             `;
 
@@ -1530,29 +1639,35 @@
         function renderChatMessage(m) {
             if (m.message_type === 'user' || !m.agent_name) {
                 return `
-                    <div class="flex gap-3 md:gap-4 justify-end">
-                        <div class="bg-accent-600 text-white px-4 md:px-5 py-2 md:py-3 rounded-2xl rounded-tr-sm max-w-[85%] md:max-w-[80%] shadow-md text-sm md:text-base">
-                            <p>${escapeHtml(m.content)}</p>
+                    <div class="flex gap-3 md:gap-4 justify-end items-end">
+                        <div class="max-w-[88%] md:max-w-[72%]">
+                            <div class="text-[10px] hero-kicker text-right text-gray-500 mb-1">Boss Directive</div>
+                            <div class="bg-gradient-to-br from-accent-500 to-accent-400 text-white px-5 md:px-6 py-3 md:py-4 rounded-[24px] rounded-br-md shadow-cockpit text-sm md:text-base">
+                                <p>${escapeHtml(m.content)}</p>
+                            </div>
                         </div>
-                        <div class="w-8 h-8 rounded-full mt-auto bg-gradient-to-br from-accent-400 to-purple-500 flex items-center justify-center text-white font-bold text-sm">U</div>
+                        <div class="w-10 h-10 rounded-2xl mt-auto bg-gradient-to-br from-accent-400 to-signal-gold flex items-center justify-center text-white font-bold text-sm shadow-lg">U</div>
                     </div>
                 `;
             } else {
                 const color = getAgentColor(m.agent_name);
                 const renderedContent = renderMarkdown(m.content);
                 return `
-                    <div class="flex gap-4">
-                        <div class="relative mt-auto">
-                            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-xs font-bold">
+                    <div class="flex gap-4 items-start">
+                        <div class="relative pt-1">
+                            <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-xs font-bold shadow-lg">
                                 ${m.agent_name.charAt(0).toUpperCase()}
                             </div>
                         </div>
-                        <div class="bg-dark-700/80 border border-dark-600 text-gray-200 px-5 py-4 rounded-2xl rounded-tl-sm max-w-[80%] shadow-md">
-                            <div class="flex items-center gap-2 mb-2">
-                                <span class="font-semibold text-sm text-${color}-400">${escapeHtml(m.agent_name)}</span>
-                                <span class="text-xs text-gray-500">${formatTime(m.created_at)}</span>
+                        <div class="max-w-[88%] md:max-w-[78%]">
+                            <div class="text-[10px] hero-kicker text-gray-500 mb-1">Agent Transmission</div>
+                            <div class="bg-[linear-gradient(180deg,rgba(17,33,45,0.9),rgba(8,17,24,0.92))] border border-dark-600 text-gray-200 px-5 py-4 rounded-[24px] rounded-tl-md shadow-cockpit">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span class="font-semibold text-sm text-${color}-400">${escapeHtml(m.agent_name)}</span>
+                                    <span class="text-xs text-gray-500">${formatTime(m.created_at)}</span>
+                                </div>
+                                <div class="markdown-content text-sm md:text-base">${renderedContent}</div>
                             </div>
-                            <div class="markdown-content text-sm md:text-base">${renderedContent}</div>
                         </div>
                     </div>
                 `;
