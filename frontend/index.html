@@ -1354,20 +1354,23 @@
         function renderRooms() {
             const container = document.getElementById('rooms-list');
             if (projects.length === 0) {
-                container.innerHTML = '<p class="text-xs text-gray-500 px-3 py-2">No rooms yet. Create one!</p>';
+                container.innerHTML = '<p class="text-xs text-gray-500 px-3 py-3 rounded-2xl border border-dark-700/60 bg-dark-900/40">No war rooms yet. Create one and let the factory loose.</p>';
                 return;
             }
             container.innerHTML = projects.map(p => {
                 const isActive = currentProject?.id === p.id;
                 const agentCount = p.agents?.length || 1;
                 return `
-                    <a href="#" onclick="event.preventDefault(); selectProject(projects.find(x => x.id === ${p.id}))" 
-                       class="flex items-center justify-between px-3 py-2 rounded-lg ${isActive ? 'bg-dark-700 text-gray-300' : 'text-gray-400 hover:bg-dark-700 hover:text-gray-300 transition-colors'} group">
-                        <div class="flex items-center gap-3 truncate">
-                            <span class="w-2 h-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-gray-500'}"></span>
-                            <span class="truncate text-sm">${escapeHtml(p.name)}</span>
+                    <a href="#" onclick="event.preventDefault(); selectProject(projects.find(x => x.id === ${p.id}))"
+                       class="flex items-center justify-between px-4 py-3 rounded-2xl ${isActive ? 'bg-gradient-to-r from-accent-500/18 to-signal-cyan/10 text-white border border-accent-500/25 shadow-cockpit' : 'text-gray-400 hover:bg-dark-700/70 hover:text-gray-200 border border-transparent hover:border-dark-600 transition-colors'} group">
+                        <div class="flex items-center gap-3 truncate min-w-0">
+                            <span class="w-2.5 h-2.5 rounded-full ${isActive ? 'bg-signal-lime' : 'bg-gray-500'} shadow"></span>
+                            <div class="min-w-0">
+                                <div class="truncate text-sm font-medium">${escapeHtml(p.name)}</div>
+                                <div class="text-[10px] text-gray-500 hero-kicker">room active</div>
+                            </div>
                         </div>
-                        <span class="text-xs ${isActive ? 'bg-dark-600' : 'bg-dark-800 group-hover:bg-dark-600'} px-1.5 py-0.5 rounded text-gray-400">${agentCount} AI</span>
+                        <span class="text-xs ${isActive ? 'bg-dark-900/60' : 'bg-dark-800/80 group-hover:bg-dark-600'} px-2 py-1 rounded-full text-gray-300 border border-dark-600/60">${agentCount} AI</span>
                     </a>
                 `;
             }).join('');
@@ -1377,24 +1380,26 @@
             const container = document.getElementById('agent-status-bar');
             const activeAgents = agents.filter(a => a.is_active);
             if (activeAgents.length === 0) {
-                container.innerHTML = '<p class="text-xs text-gray-500">No active agents</p>';
+                container.innerHTML = '<p class="text-xs text-gray-500">No active agents in the formation.</p>';
                 return;
             }
             const color = getAgentColor;
             container.innerHTML = activeAgents.map(a => {
                 const c = color(a.name);
                 return `
-                <div class="agent-status-chip flex-shrink-0 flex items-center gap-2 bg-dark-800/80 px-3 py-1.5 rounded-full border border-dark-600 transition-all" data-agent="${escapeHtml(a.name)}">
+                <div class="agent-status-chip flex-shrink-0 flex items-center gap-3 bg-dark-800/70 px-4 py-2 rounded-2xl border border-dark-600/70 transition-all shadow-lg" data-agent="${escapeHtml(a.name)}">
                     <div class="relative">
-                        <div class="w-6 h-6 rounded-full bg-gradient-to-br from-${c}-400 to-${c}-500 flex items-center justify-center text-white text-xs font-bold agent-avatar">
+                        <div class="w-8 h-8 rounded-2xl bg-gradient-to-br from-${c}-400 to-${c}-500 flex items-center justify-center text-white text-xs font-bold agent-avatar shadow-lg">
                             ${a.name.charAt(0).toUpperCase()}
                         </div>
-                        <span class="absolute -bottom-1 -right-1 w-3 h-3 bg-dark-800 rounded-full flex items-center justify-center agent-status-icon">
+                        <span class="absolute -bottom-1 -right-1 w-4 h-4 bg-dark-900 rounded-full flex items-center justify-center agent-status-icon border border-dark-600">
                             <i class="fa-solid fa-moon text-[8px] agent-status-idle"></i>
                         </span>
                     </div>
-                    <span class="text-sm font-medium text-gray-300">${escapeHtml(a.name)}</span>
-                    <span class="agent-status-label text-xs text-gray-500 border-l border-dark-600 pl-2">Idle</span>
+                    <div>
+                        <div class="text-sm font-medium text-gray-200">${escapeHtml(a.name)}</div>
+                        <span class="agent-status-label text-[10px] text-gray-500 hero-kicker">Idle</span>
+                    </div>
                 </div>`;
             }).join('');
 
@@ -1735,47 +1740,34 @@
 
         function renderTokensContent() {
             return `
-                <div class="space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="text-sm font-semibold text-white"><i class="fa-solid fa-coins mr-2"></i>Token Usage</h3>
-                        <button onclick="loadTokensData()" class="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-3 py-1.5 rounded transition-colors">
-                            <i class="fa-solid fa-refresh mr-1"></i>Refresh
+                <div class="space-y-5">
+                    <div class="flex items-center justify-between gap-3">
+                        <div>
+                            <div class="text-[11px] hero-kicker text-signal-cyan">Economy Board</div>
+                            <h3 class="text-xl font-display font-bold text-white"><i class="fa-solid fa-coins mr-2"></i>Token Usage</h3>
+                        </div>
+                        <button onclick="loadTokensData()" class="text-xs bg-dark-600 hover:bg-dark-500 text-gray-200 px-4 py-2 rounded-full transition-colors border border-dark-500">
+                            <i class="fa-solid fa-rotate-right mr-1"></i>Refresh
                         </button>
                     </div>
 
-                    <!-- 总览卡片 -->
                     <div id="tokens-overview" class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
-                            <div class="text-lg font-bold text-accent-400" id="tok-total-calls">-</div>
-                            <div class="text-xs text-gray-400">LLM Calls</div>
-                        </div>
-                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
-                            <div class="text-lg font-bold text-emerald-400" id="tok-total-input">-</div>
-                            <div class="text-xs text-gray-400">Input Tokens</div>
-                        </div>
-                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
-                            <div class="text-lg font-bold text-purple-400" id="tok-total-output">-</div>
-                            <div class="text-xs text-gray-400">Output Tokens</div>
-                        </div>
-                        <div class="bg-dark-700 rounded-xl p-3 border border-dark-600">
-                            <div class="text-lg font-bold text-amber-400" id="tok-total-cost">-</div>
-                            <div class="text-xs text-gray-400">Est. Cost (USD)</div>
-                        </div>
+                        <div class="stat-pill rounded-3xl p-4"><div class="text-2xl font-display font-bold text-accent-400" id="tok-total-calls">-</div><div class="text-xs text-gray-400">LLM Calls</div></div>
+                        <div class="stat-pill rounded-3xl p-4"><div class="text-2xl font-display font-bold text-emerald-400" id="tok-total-input">-</div><div class="text-xs text-gray-400">Input Tokens</div></div>
+                        <div class="stat-pill rounded-3xl p-4"><div class="text-2xl font-display font-bold text-signal-cyan" id="tok-total-output">-</div><div class="text-xs text-gray-400">Output Tokens</div></div>
+                        <div class="stat-pill rounded-3xl p-4"><div class="text-2xl font-display font-bold text-signal-gold" id="tok-total-cost">-</div><div class="text-xs text-gray-400">Est. Cost (USD)</div></div>
                     </div>
 
-                    <!-- 按 Agent 分组 -->
-                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                    <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
                         <h4 class="text-sm font-medium text-white mb-3">By Agent</h4>
                         <div id="tokens-by-agent" class="space-y-2">
                             <div class="text-xs text-gray-500">Loading...</div>
                         </div>
                     </div>
 
-                    <!-- 定价说明 -->
-                    <div class="bg-dark-700/30 rounded-lg p-3 border border-dark-600/50 text-xs text-gray-500">
+                    <div class="bg-dark-700/30 rounded-2xl p-4 border border-dark-600/50 text-xs text-gray-500">
                         <i class="fa-solid fa-info-circle mr-1"></i>
-                        Cost estimate based on GPT-4 pricing ($0.03/1K input, $0.06/1K output).
-                        Actual cost depends on the model used by each agent.
+                        Cost estimate based on GPT-4 pricing ($0.03/1K input, $0.06/1K output). Actual cost depends on the model used by each agent.
                     </div>
                 </div>
             `;
@@ -1877,15 +1869,17 @@
             const configTab = document.getElementById('tab-config');
             const logsContent = document.getElementById('logs-content');
             const configContent = document.getElementById('config-content');
-            
+            const activeClass = 'flex-1 py-3 text-sm font-medium text-white bg-gradient-to-r from-accent-500/20 to-signal-cyan/10 border-b-2 border-accent-500';
+            const idleClass = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors';
+
             if (tab === 'logs') {
-                logsTab.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50';
-                configTab.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors';
+                logsTab.className = activeClass;
+                configTab.className = idleClass;
                 logsContent.classList.remove('hidden');
                 configContent.classList.add('hidden');
             } else {
-                configTab.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-800/50';
-                logsTab.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-dark-800/30 transition-colors';
+                configTab.className = activeClass;
+                logsTab.className = idleClass;
                 configContent.classList.remove('hidden');
                 logsContent.classList.add('hidden');
                 renderConfig();
@@ -2009,43 +2003,47 @@
             if (!modal) {
                 modal = document.createElement('div');
                 modal.id = 'status-modal';
-                modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+                modal.className = 'fixed inset-0 z-50 flex items-center justify-center p-3 md:p-6';
                 modal.innerHTML = `
-                    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeStatusModal()"></div>
-                    <div class="relative w-full max-w-4xl max-h-[80vh] bg-dark-800 rounded-2xl border border-dark-600 shadow-2xl flex flex-col">
+                    <div class="absolute inset-0 bg-black/70 backdrop-blur-md" onclick="closeStatusModal()"></div>
+                    <div class="relative w-full max-w-6xl max-h-[88vh] panel-shell rounded-[32px] border border-dark-600 shadow-cockpit flex flex-col overflow-hidden">
+                        <div class="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top_right,rgba(255,107,53,0.14),transparent_28%),radial-gradient(circle_at_bottom_left,rgba(102,217,239,0.12),transparent_25%)]"></div>
                         <!-- Header -->
-                        <div class="flex items-center justify-between p-4 border-b border-dark-600">
-                            <h2 class="text-lg font-semibold text-white">System Status</h2>
-                            <button onclick="closeStatusModal()" class="text-gray-400 hover:text-white transition-colors">
+                        <div class="relative flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-5 md:p-6 border-b border-dark-600/70">
+                            <div>
+                                <div class="text-[11px] hero-kicker text-signal-cyan mb-1">Mission Control Matrix</div>
+                                <h2 class="text-2xl font-display font-bold text-white">System Status</h2>
+                            </div>
+                            <button onclick="closeStatusModal()" class="self-end md:self-auto text-gray-400 hover:text-white transition-colors bg-dark-900/50 w-10 h-10 rounded-2xl border border-dark-600">
                                 <i class="fa-solid fa-xmark text-xl"></i>
                             </button>
                         </div>
                         <!-- Tabs -->
-                        <div class="flex border-b border-dark-600">
-                            <button id="status-tab-overview" onclick="switchStatusTab('overview')" class="flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-700/50">
+                        <div class="relative flex flex-wrap border-b border-dark-600/70 bg-dark-900/35">
+                            <button id="status-tab-overview" onclick="switchStatusTab('overview')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-700/50">
                                 <i class="fa-solid fa-chart-pie mr-2"></i>Overview
                             </button>
-                            <button id="status-tab-agents" onclick="switchStatusTab('agents')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-agents" onclick="switchStatusTab('agents')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-users mr-2"></i>Agents
                             </button>
-                            <button id="status-tab-projects" onclick="switchStatusTab('projects')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-projects" onclick="switchStatusTab('projects')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-folder mr-2"></i>Projects
                             </button>
-                            <button id="status-tab-collab" onclick="switchStatusTab('collab')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-collab" onclick="switchStatusTab('collab')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-handshake mr-2"></i>Collab
                             </button>
-                            <button id="status-tab-pipeline" onclick="switchStatusTab('pipeline')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-pipeline" onclick="switchStatusTab('pipeline')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-diagram-project mr-2"></i>Pipeline
                             </button>
-                            <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-config" onclick="switchStatusTab('config')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-gear mr-2"></i>Config
                             </button>
-                            <button id="status-tab-tokens" onclick="switchStatusTab('tokens')" class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
+                            <button id="status-tab-tokens" onclick="switchStatusTab('tokens')" class="flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors">
                                 <i class="fa-solid fa-coins mr-2"></i>Tokens
                             </button>
                         </div>
                         <!-- Content -->
-                        <div id="status-content" class="flex-1 overflow-y-auto p-6">
+                        <div id="status-content" class="relative flex-1 overflow-y-auto p-5 md:p-6">
                             Loading...
                         </div>
                     </div>
@@ -2072,9 +2070,9 @@
                 const tabBtn = document.getElementById(`status-tab-${t}`);
                 if (tabBtn) {
                     if (t === tab) {
-                        tabBtn.className = 'flex-1 py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-dark-700/50';
+                        tabBtn.className = 'flex-1 min-w-[120px] py-3 text-sm font-medium text-white border-b-2 border-accent-500 bg-gradient-to-r from-accent-500/18 to-signal-cyan/10';
                     } else {
-                        tabBtn.className = 'flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors';
+                        tabBtn.className = 'flex-1 min-w-[120px] py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors';
                     }
                 }
             });
@@ -2103,61 +2101,78 @@
         function renderOverviewContent() {
             const activeAgents = agents.filter(a => a.is_active).length;
             const activeProjects = projects.length;
-            
+
             return `
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
-                        <div class="text-2xl font-bold text-accent-400">${agents.length}</div>
-                        <div class="text-xs text-gray-400 mt-1">Total Agents</div>
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                        <div class="stat-pill rounded-[28px] p-5">
+                            <div class="text-[11px] hero-kicker text-gray-500 mb-2">Roster</div>
+                            <div class="text-3xl font-display font-bold text-accent-400">${agents.length}</div>
+                            <div class="text-xs text-gray-400 mt-1">Total agents</div>
+                        </div>
+                        <div class="stat-pill rounded-[28px] p-5">
+                            <div class="text-[11px] hero-kicker text-gray-500 mb-2">Formation</div>
+                            <div class="text-3xl font-display font-bold text-emerald-400">${activeAgents}</div>
+                            <div class="text-xs text-gray-400 mt-1">Active agents</div>
+                        </div>
+                        <div class="stat-pill rounded-[28px] p-5">
+                            <div class="text-[11px] hero-kicker text-gray-500 mb-2">Rooms</div>
+                            <div class="text-3xl font-display font-bold text-signal-cyan">${activeProjects}</div>
+                            <div class="text-xs text-gray-400 mt-1">War rooms</div>
+                        </div>
+                        <div class="stat-pill rounded-[28px] p-5">
+                            <div class="text-[11px] hero-kicker text-gray-500 mb-2">Traffic</div>
+                            <div class="text-3xl font-display font-bold text-signal-gold">${messages.length}</div>
+                            <div class="text-xs text-gray-400 mt-1">Messages logged</div>
+                        </div>
                     </div>
-                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
-                        <div class="text-2xl font-bold text-emerald-400">${activeAgents}</div>
-                        <div class="text-xs text-gray-400 mt-1">Active Agents</div>
-                    </div>
-                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
-                        <div class="text-2xl font-bold text-purple-400">${activeProjects}</div>
-                        <div class="text-xs text-gray-400 mt-1">Projects</div>
-                    </div>
-                    <div class="bg-dark-700 rounded-xl p-4 border border-dark-600">
-                        <div class="text-2xl font-bold text-amber-400">${messages.length}</div>
-                        <div class="text-xs text-gray-400 mt-1">Messages</div>
-                    </div>
-                </div>
-                
-                <h3 class="text-sm font-semibold text-gray-300 mb-3">Active Agents</h3>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-                    ${agents.filter(a => a.is_active).map(a => {
-                        const color = getAgentColor(a.name);
-                        return `
-                            <div class="bg-dark-700/50 rounded-lg p-3 border border-dark-600">
-                                <div class="flex items-center gap-2">
-                                    <div class="w-8 h-8 rounded-full bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-xs font-bold">
-                                        ${a.name.charAt(0).toUpperCase()}
-                                    </div>
-                                    <div>
-                                        <div class="text-sm font-medium text-white">${escapeHtml(a.name)}</div>
-                                        <div class="text-xs text-gray-400">${escapeHtml(a.role || 'Agent')}</div>
-                                    </div>
+
+                    <div class="grid lg:grid-cols-[1.2fr_0.8fr] gap-6">
+                        <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
+                            <div class="flex items-center justify-between mb-4">
+                                <div>
+                                    <div class="text-[11px] hero-kicker text-signal-cyan">Active Formation</div>
+                                    <h3 class="text-xl font-display font-bold text-white">Agent Grid</h3>
                                 </div>
                             </div>
-                        `;
-                    }).join('')}
-                </div>
-                
-                <h3 class="text-sm font-semibold text-gray-300 mb-3">Recent Projects</h3>
-                <div class="space-y-2">
-                    ${projects.slice(0, 5).map(p => `
-                        <div class="bg-dark-700/50 rounded-lg p-3 border border-dark-600 flex items-center justify-between">
-                            <div>
-                                <div class="text-sm font-medium text-white">${escapeHtml(p.name)}</div>
-                                <div class="text-xs text-gray-400">${p.agents?.length || 0} agents • ${p.status || 'active'}</div>
+                            <div class="grid sm:grid-cols-2 gap-3">
+                                ${agents.filter(a => a.is_active).map(a => {
+                                    const color = getAgentColor(a.name);
+                                    return `
+                                        <div class="bg-dark-900/55 rounded-2xl p-4 border border-dark-600/70">
+                                            <div class="flex items-center gap-3">
+                                                <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-${color}-400 to-${color}-500 flex items-center justify-center text-white text-sm font-bold shadow-lg">
+                                                    ${a.name.charAt(0).toUpperCase()}
+                                                </div>
+                                                <div>
+                                                    <div class="text-sm font-medium text-white">${escapeHtml(a.name)}</div>
+                                                    <div class="text-xs text-gray-400">${escapeHtml(a.role || 'Agent')}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('') || '<div class="text-sm text-gray-500">No active agents yet.</div>'}
                             </div>
-                            <button onclick="closeStatusModal(); selectProject(projects.find(x => x.id === ${p.id}))" 
-                                    class="text-xs bg-accent-500/20 hover:bg-accent-500/30 text-accent-400 px-2 py-1 rounded transition-colors">
-                                Open
-                            </button>
                         </div>
-                    `).join('')}
+                        <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
+                            <div class="text-[11px] hero-kicker text-signal-cyan">Recent Activity</div>
+                            <h3 class="text-xl font-display font-bold text-white mb-4">War Rooms</h3>
+                            <div class="space-y-3">
+                                ${projects.slice(0, 5).map(p => `
+                                    <div class="bg-dark-900/55 rounded-2xl p-4 border border-dark-600/70 flex items-center justify-between gap-3">
+                                        <div>
+                                            <div class="text-sm font-medium text-white">${escapeHtml(p.name)}</div>
+                                            <div class="text-xs text-gray-400">${p.agents?.length || 0} agents • ${p.status || 'active'}</div>
+                                        </div>
+                                        <button onclick="closeStatusModal(); selectProject(projects.find(x => x.id === ${p.id}))"
+                                                class="text-xs bg-accent-500/18 hover:bg-accent-500/30 text-accent-300 px-3 py-1.5 rounded-full transition-colors border border-accent-500/20">
+                                            Open
+                                        </button>
+                                    </div>
+                                `).join('') || '<div class="text-sm text-gray-500">No projects yet.</div>'}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             `;
         }
@@ -2339,35 +2354,35 @@
         function renderConfigContent() {
             // 加载当前配置
             loadCurrentConfig();
-            
+
             return `
-                <div class="space-y-4">
-                    <!-- 全局 LLM 配置（fallback） -->
-                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
-                        <h3 class="text-sm font-semibold text-white mb-1"><i class="fa-solid fa-globe mr-2"></i>Global LLM Config</h3>
-                        <p class="text-xs text-gray-500 mb-3">Default provider when an agent has no own config.</p>
+                <div class="space-y-5">
+                    <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
+                        <div class="text-[11px] hero-kicker text-signal-cyan mb-1">Core Uplink</div>
+                        <h3 class="text-lg font-display font-bold text-white mb-1"><i class="fa-solid fa-globe mr-2"></i>Global LLM Config</h3>
+                        <p class="text-xs text-gray-500 mb-4">Default provider when an agent has no own config.</p>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Base URL</label>
-                                <input type="text" id="global-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                <input type="text" id="global-base-url" class="w-full bg-dark-900 border border-dark-600 rounded-2xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-accent-500"
                                        placeholder="http://api.openai.com/v1">
                             </div>
                             <div>
                                 <label class="text-xs text-gray-400 block mb-1">Model</label>
-                                <input type="text" id="global-model" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                                <input type="text" id="global-model" class="w-full bg-dark-900 border border-dark-600 rounded-2xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-accent-500"
                                        placeholder="gpt-4">
                             </div>
                         </div>
                         <div class="mt-3">
                             <label class="text-xs text-gray-400 block mb-1">API Key</label>
-                            <input type="password" id="global-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-accent-500" 
+                            <input type="password" id="global-api-key" class="w-full bg-dark-900 border border-dark-600 rounded-2xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-accent-500"
                                    placeholder="sk-xxxxx">
                         </div>
-                        <div class="mt-4 flex gap-2 items-center">
-                            <button onclick="saveGlobalConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <div class="mt-4 flex gap-2 items-center flex-wrap">
+                            <button onclick="saveGlobalConfig()" class="bg-accent-500 hover:bg-accent-400 text-white px-4 py-2 rounded-full text-sm font-medium transition-colors">
                                 <i class="fa-solid fa-save mr-2"></i>Save Global
                             </button>
-                            <button onclick="testGlobalConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                            <button onclick="testGlobalConfig()" class="bg-dark-600 hover:bg-dark-500 text-white px-4 py-2 rounded-full text-sm font-medium transition-colors border border-dark-500">
                                 <i class="fa-solid fa-plug mr-2"></i>Test
                             </button>
                             <label class="flex items-center gap-2 text-xs text-gray-400 ml-auto cursor-pointer select-none">
@@ -2376,9 +2391,8 @@
                             </label>
                         </div>
                     </div>
-                    
-                    <!-- 各 Agent LLM 配置 -->
-                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+
+                    <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
                         <h3 class="text-sm font-semibold text-white mb-1"><i class="fa-solid fa-users-gear mr-2"></i>Per-Agent LLM Config</h3>
                         <p class="text-xs text-gray-500 mb-3">Override global config for specific agents. Leave empty to use global.</p>
                         <div id="agent-llm-configs" class="space-y-3">
@@ -2386,20 +2400,19 @@
                         </div>
                     </div>
 
-                    <!-- 运行时生效配置摘要 -->
-                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+                    <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
                         <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-bolt mr-2"></i>Effective Config (Runtime)</h3>
                         <div id="effective-configs" class="space-y-2">
                             <p class="text-xs text-gray-500">Loading...</p>
                         </div>
                     </div>
-                    
-                    <div class="bg-dark-700/50 rounded-xl p-4 border border-dark-600">
+
+                    <div class="bg-dark-700/45 rounded-[28px] p-5 border border-dark-600/70">
                         <h3 class="text-sm font-semibold text-white mb-3"><i class="fa-solid fa-database mr-2"></i>System Info</h3>
                         <div class="space-y-2 text-xs">
-                            <div class="flex justify-between text-gray-300">
+                            <div class="flex justify-between text-gray-300 gap-3">
                                 <span>Backend URL</span>
-                                <span class="text-gray-400">${API_BASE}</span>
+                                <span class="text-gray-400 text-right break-all">${API_BASE}</span>
                             </div>
                             <div class="flex justify-between text-gray-300">
                                 <span>WebSocket</span>
