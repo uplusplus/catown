@@ -45,12 +45,21 @@
 - `stage_run detail` 现在返回 `events`
 - 提交：`541d17e` `Add project-first stage events and executor contract`
 
+### 6. 继续抽 runtime primitive
+- 新增 `backend/execution/event_log.py`
+- 新增 `backend/execution/tool_audit.py`
+- 让 legacy `pipeline/engine.py` 的部分事件写入和 tool-call 审计开始复用共享 helper
+- 目标：把 audit/event sink 从 legacy engine 里继续薄化，给后续新 executor 复用打底
+
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`
 - 下一步重点不再是给旧 pipeline 做桥，而是继续抽 runtime primitive，并补真实 executor contract
 
 ## Wiki 同步状态
 - 目标：把这份过程记录同步到外部 wiki
-- 当前状态：阻塞
-- 原因：`feishu_wiki` 调用 `spaces` 连续返回 `400`，暂时无法可靠定位/写入 wiki 空间
-- 暂代：先落盘到仓库文档，待 wiki 接口恢复后再同步
+- 当前状态：已完成
+- 目标仓库：`https://github.com/uplusplus/catown.wiki.git`
+- wiki 提交：`06c139d` `Update project-first refactor wiki`
+- 同步页面：
+  - `Home.md`
+  - `Project-First-Refactor-Log.md`

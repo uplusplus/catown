@@ -27,6 +27,7 @@ from models.database import (
 )
 from models.audit import LLMCall, ToolCall, Event
 from execution.event_log import append_event
+from execution.tool_audit import append_tool_call
 from execution.workspace_guard import ensure_workspace_path, is_catown_protected, validate_workspace_target
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
@@ -1271,35 +1272,37 @@ class PipelineEngine:
                     success = not tool_result.startswith("Error:")
                     result_len = len(tool_result)
 
-                    db.add(ToolCall(
+                    append_tool_call(
+                        db,
                         llm_call_id=llm_call_record.id,
                         run_id=run.id,
                         stage_id=stage.id,
                         agent_name=stage_cfg.agent,
                         tool_name=fn_name,
-                        arguments=json.dumps(fn_args, ensure_ascii=False)[:50000],
-                        result_summary=tool_result[:500],
+                        arguments=fn_args,
+                        result_summary=tool_result,
                         result_length=result_len,
                         success=success,
                         duration_ms=tool_duration,
-                    ))
+                    )
 
                     # 写入事件
-                    db.add(Event(
+                    append_event(
+                        db,
                         run_id=run.id,
                         event_type="tool_call",
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
-                        summary=f"{fn_name}({'✅' if success else '❌'}, {result_len} chars, {tool_duration}ms)",
-                        payload=json.dumps({
+                        summary=f"{fn_name}({'OK' if success else 'ERR'}, {result_len} chars, {tool_duration}ms)",
+                        payload={
                             "tool": fn_name,
                             "args_keys": list(fn_args.keys()),
                             "success": success,
                             "result_length": result_len,
                             "result_preview": tool_result[:200],
                             "duration_ms": tool_duration,
-                        }, ensure_ascii=False),
-                    ))
+                        },
+                    )
                     db.commit()
 
                     messages.append({

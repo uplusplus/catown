@@ -1,12 +1,12 @@
 # Graph Report - .  (2026-04-14)
 
 ## Corpus Check
-- 84 files · ~88,576 words
+- 85 files · ~88,637 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1619 nodes · 3761 edges · 49 communities detected
-- Extraction: 49% EXTRACTED · 51% INFERRED · 0% AMBIGUOUS · INFERRED: 1915 edges (avg confidence: 0.5)
+- 1641 nodes · 3973 edges · 49 communities detected
+- Extraction: 47% EXTRACTED · 53% INFERRED · 0% AMBIGUOUS · INFERRED: 2125 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -61,16 +61,16 @@
 - [[_COMMUNITY_Community 48|Community 48]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `Project` - 143 edges
-2. `BaseTool` - 99 edges
-3. `Pipeline` - 99 edges
-4. `PipelineRun` - 99 edges
-5. `PipelineMessage` - 99 edges
-6. `PipelineStage` - 96 edges
-7. `StageArtifact` - 96 edges
-8. `StageConfig` - 83 edges
-9. `LLMClient` - 80 edges
-10. `AgentCollaborator` - 72 edges
+1. `Project` - 162 edges
+2. `Pipeline` - 118 edges
+3. `PipelineRun` - 118 edges
+4. `PipelineMessage` - 118 edges
+5. `PipelineStage` - 115 edges
+6. `StageArtifact` - 115 edges
+7. `StageConfig` - 102 edges
+8. `BaseTool` - 99 edges
+9. `LLMClient` - 99 edges
+10. `Event` - 83 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `RateLimiter` --uses--> `Frontend E2E Tests — Catown Pipeline Dashboard =================================`  [INFERRED]
@@ -87,16 +87,16 @@
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.02
-Nodes (83): ABC, BaseTool, Base class for all tools, Get OpenAI-compatible tool schema, Override this to define parameters schema, Registry for managing tools, List all registered tool names, Get schemas for specified tools (or all if not specified) (+75 more)
+Cohesion: 0.01
+Nodes (97): ABC, BaseTool, Base class for all tools, Get OpenAI-compatible tool schema, Override this to define parameters schema, Registry for managing tools, List all registered tool names, Get schemas for specified tools (or all if not specified) (+89 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.04
-Nodes (112): AgentInfo, create_project(), _extract_memories(), get_agent(), get_config(), get_messages(), get_project(), list_agents() (+104 more)
+Cohesion: 0.03
+Nodes (113): AgentInfo, create_project(), _extract_memories(), get_agent(), get_config(), get_messages(), get_project(), list_agents() (+105 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.07
-Nodes (117): Event, LLMCall, Token 汇总统计 + 成本估算（GPT-4 pricing）, 聚合时间线：events + llm_calls + tool_calls 混合排序, 单条 LLM 调用详情（含完整 prompt 和 response）, ToolCall, Base, LLMClient (+109 more)
+Nodes (136): Event, LLMCall, Token 汇总统计 + 成本估算（GPT-4 pricing）, 聚合时间线：events + llm_calls + tool_calls 混合排序, 单条 LLM 调用详情（含完整 prompt 和 response）, ToolCall, Base, LLMClient (+128 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.02
@@ -123,80 +123,80 @@ Cohesion: 0.04
 Nodes (16): client(), _make_app(), API 路由测试  使用 FastAPI TestClient 测试 REST 端点（mock LLM）, 在指定临时目录下创建全新的 FastAPI app（隔离测试）, 创建 FastAPI TestClient（完全隔离）, TestAgentEndpoints, TestChatEndpoints, TestCollaborationEndpoints (+8 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.08
-Nodes (15): _api_request(), _get_default_repo(), _get_headers(), GitHubManagerTool, Manage a GitHub repository: files, branches, commits, releases, tags, issues, PR, Create a branch from source (default: default branch HEAD)., List files and dirs at a repo path., Get file content (decoded from base64). (+7 more)
-
-### Community 10 - "Community 10"
 Cohesion: 0.1
 Nodes (14): _build_tools_for_agent(), _execute_tool(), _get_workspace(), _handle_send_message(), _load_agent_tools(), PipelineEngine, _pop_messages_for_agent(), _tool_execute_code() (+6 more)
 
-### Community 11 - "Community 11"
+### Community 10 - "Community 10"
 Cohesion: 0.05
 Nodes (24): agents_config_file(), LLM 两级配置测试  覆盖： 1. Agent 自身 provider → 直接使用 2. Agent 无 provider → fallback 到 glo, 没有 provider 字段的 Agent fallback 到 global_llm, 不存在的 Agent 也 fallback 到 global_llm, _load_global_provider 测试, 没有 global_llm 段时返回 None, _get_first_provider 测试 — 优先 Agent，兜底 global, 有 Agent provider 时优先返回 Agent 的 (+16 more)
 
-### Community 12 - "Community 12"
+### Community 11 - "Community 11"
 Cohesion: 0.06
 Nodes (18): client(), _make_app(), 前端启动流程测试  覆盖 start.bat 启动时序问题： 1. 后端未就绪时 API 返回错误 → 重试后成功 2. 多次调用 idempotent（不会重, 完整启动序列：status → agents → projects → config → tools, 创建项目后 loadProjects 能拿到数据, 同名项目可以创建多次（业务允许），每次返回不同 ID, WebSocket 启动流程测试（模拟前端 connectWebSocket + 数据补拉）, WebSocket join room 后可以正常加载消息 (+10 more)
 
-### Community 13 - "Community 13"
+### Community 12 - "Community 12"
 Cohesion: 0.09
 Nodes (8): ChatroomInstance, ChatroomManager, 聊天室管理器测试  覆盖 ChatroomManager 的 CRUD、消息发送、消息获取, TestChatroomCreation, TestChatroomInstance, TestGetMessages, TestProcessUserMessage, TestSendMessage
 
-### Community 14 - "Community 14"
+### Community 13 - "Community 13"
 Cohesion: 0.09
 Nodes (6): WebSocket 管理器测试  覆盖连接管理、房间广播、消息路由, TestBroadcast, TestReceive, TestRoomManagement, TestWebSocketConnection, WebSocketManager
 
-### Community 15 - "Community 15"
+### Community 14 - "Community 14"
 Cohesion: 0.07
 Nodes (8): 数据库模型测试  覆盖 Agent / Project / Chatroom / Message / Memory 表的 CRUD 和关系, TestAgentAssignment, TestAgentModel, TestCascadeDelete, TestChatroomModel, TestMemoryModel, TestMessageModel, TestProjectModel
 
-### Community 16 - "Community 16"
+### Community 15 - "Community 15"
 Cohesion: 0.1
 Nodes (6): LLM 客户端扩展测试  覆盖 chat / chat_with_tools / chat_stream / get_llm_client / set_llm_, get_llm_client / set_llm_client 测试, TestLLMClientChat, TestLLMClientChatStream, TestLLMClientChatWithTools, TestLLMClientSingleton
 
-### Community 17 - "Community 17"
+### Community 16 - "Community 16"
 Cohesion: 0.17
 Nodes (16): get_default_llm_client(), _get_first_provider(), get_llm_client(), get_llm_client_for_agent(), _load_agent_provider(), _load_global_provider(), 解析字符串中的 ${ENV_VAR} 占位符, 从 agents.json 加载指定 Agent 的 provider 配置      优先级：Agent 自身 provider > global_llm p (+8 more)
 
-### Community 18 - "Community 18"
+### Community 17 - "Community 17"
 Cohesion: 0.16
 Nodes (9): side-panel 是 flex-col 父容器，必须有 min-h-0。, chat-container 是 flex-col 父容器，必须有 min-h-0。, messages-area 必须有 overflow-y-auto。, logs-content 必须有 overflow-y-auto。, logs-content 必须有 flex-1 以占满父容器剩余空间。, side-panel 的父级（chat-area wrapper）必须有 overflow-hidden。, 系统性检查：所有 flex-col 容器中，有 overflow-y-auto 的子元素，         其父级必须有 min-h-0 或固定高度。, Flex 布局中，overflow-y-auto 的子元素要能滚动，其父级 flex 容器     必须有 min-h-0（或固定 height/max-hei (+1 more)
 
-### Community 19 - "Community 19"
+### Community 18 - "Community 18"
 Cohesion: 0.27
 Nodes (3): AgentRegistry, get_builtin_agent_configs(), register_builtin_agents()
 
-### Community 20 - "Community 20"
+### Community 19 - "Community 19"
 Cohesion: 0.24
 Nodes (3): FileWatcher, 通过 WebSocket 广播 reload 事件, 启动文件监听（在 FastAPI 启动时调用）
 
-### Community 21 - "Community 21"
+### Community 20 - "Community 20"
 Cohesion: 0.49
 Nodes (9): create_demo_project(), demo_workflow(), get_chatroom_messages(), get_system_status(), interactive_demo(), list_agents(), print_section(), 示例脚本 - 演示如何创建项目和使用 Agent (+1 more)
 
-### Community 22 - "Community 22"
+### Community 21 - "Community 21"
 Cohesion: 0.31
 Nodes (2): ProjectViewBuilder, Read-model builders for project-first v2 dashboard and overview responses.
 
-### Community 23 - "Community 23"
+### Community 22 - "Community 22"
 Cohesion: 0.46
 Nodes (1): PipelineConfigManager
 
-### Community 24 - "Community 24"
+### Community 23 - "Community 23"
 Cohesion: 0.25
 Nodes (2): populated_db(), 预填充数据的数据库（含 Agent、项目、聊天室）
 
-### Community 25 - "Community 25"
+### Community 24 - "Community 24"
 Cohesion: 0.29
 Nodes (3): audit_timeline(), get_llm_call(), token_summary()
 
-### Community 26 - "Community 26"
+### Community 25 - "Community 25"
 Cohesion: 0.29
 Nodes (6): ensure_workspace_path(), is_catown_protected(), Block traversal and protected metadata access outside the execution workspace., Check whether a path points into the protected .catown metadata directory., Resolve and create the workspace directory for an execution run., validate_workspace_target()
 
-### Community 27 - "Community 27"
+### Community 26 - "Community 26"
 Cohesion: 0.5
 Nodes (1): New business services for the v2 project-first API.
+
+### Community 27 - "Community 27"
+Cohesion: 0.67
+Nodes (0): 
 
 ### Community 28 - "Community 28"
 Cohesion: 0.67
@@ -204,7 +204,7 @@ Nodes (0):
 
 ### Community 29 - "Community 29"
 Cohesion: 0.67
-Nodes (0): 
+Nodes (2): append_tool_call(), Append a normalized tool-call audit row.
 
 ### Community 30 - "Community 30"
 Cohesion: 0.67
@@ -323,17 +323,17 @@ Nodes (1): 将 engine 事件转发到所有通用 /ws 连接
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Project` connect `Community 2` to `Community 0`, `Community 1`, `Community 3`, `Community 5`, `Community 10`, `Community 13`?**
-  _High betweenness centrality (0.111) - this node is a cross-community bridge._
-- **Why does `BaseTool` connect `Community 0` to `Community 1`, `Community 9`?**
+- **Why does `Project` connect `Community 2` to `Community 1`, `Community 3`, `Community 5`, `Community 9`, `Community 12`?**
+  _High betweenness centrality (0.114) - this node is a cross-community bridge._
+- **Why does `BaseTool` connect `Community 0` to `Community 1`?**
   _High betweenness centrality (0.099) - this node is a cross-community bridge._
-- **Why does `LLMClient` connect `Community 2` to `Community 16`, `Community 17`, `Community 10`, `Community 3`?**
-  _High betweenness centrality (0.050) - this node is a cross-community bridge._
-- **Are the 141 inferred relationships involving `Project` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
-  _`Project` has 141 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 94 inferred relationships involving `BaseTool` (e.g. with `RetrieveMemoryTool` and `Tool for retrieving agent memories from database`) actually correct?**
-  _`BaseTool` has 94 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 97 inferred relationships involving `Pipeline` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
-  _`Pipeline` has 97 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 97 inferred relationships involving `PipelineRun` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
-  _`PipelineRun` has 97 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `LLMClient` connect `Community 2` to `Community 16`, `Community 9`, `Community 3`, `Community 15`?**
+  _High betweenness centrality (0.052) - this node is a cross-community bridge._
+- **Are the 160 inferred relationships involving `Project` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
+  _`Project` has 160 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 116 inferred relationships involving `Pipeline` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
+  _`Pipeline` has 116 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 116 inferred relationships involving `PipelineRun` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
+  _`PipelineRun` has 116 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 116 inferred relationships involving `PipelineMessage` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
+  _`PipelineMessage` has 116 INFERRED edges - model-reasoned connections that need verification._

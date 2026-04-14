@@ -28,6 +28,7 @@
 - [ ] 把可复用的 runtime primitive 从旧 `pipeline/engine.py` 抽成独立薄模块，而不是继续保留整块 pipeline
   - 已完成首块：`backend/execution/workspace_guard.py`（workspace/path safety helpers）
   - 已完成第二块：`backend/execution/event_log.py`（shared event append helper，已接入 project-first + legacy pipeline 部分路径）
+  - 已完成第三块：`backend/execution/tool_audit.py`（shared tool-call audit helper，已接入 legacy engine tool path）
 - [ ] 明确 autopilot / checkpoint 在新 kernel 层的分流点
 
 ### Phase E — 进行中
@@ -38,7 +39,7 @@
 - [ ] 为新内核补 `tasks / agent_runs / audit` 的挂接策略
 - [ ] 补更细的 stage execution 可观测事件
 - [ ] 前端逐步去 pipeline 化，Mission Board 替代旧 pipeline dashboard 主视图
-- [ ] 将过程记录同步到外部 wiki（当前 `feishu_wiki spaces` 返回 400，暂存于 `docs/worklog-2026-04-14-project-first-refactor.md`）
+- [x] 将过程记录同步到外部 wiki（GitHub wiki: `catown.wiki.git`，提交 `06c139d`）
 
 ---
 
