@@ -336,26 +336,46 @@ class TestProjectV2Endpoints:
         assert data["release_readiness"]["status"] == "in_definition"
         assert data["recommended_next_action"] == "continue_project"
 
-    def test_continue_build_execution_generates_task_plan(self, client):
+    def test_release_ready_chain_generates_build_test_and_release_assets(self, client):
         project = client.post("/api/v2/projects", json={
             "name": "Planner",
-            "one_line_vision": "Validate task plan generation"
+            "one_line_vision": "Validate release-ready chain"
         }).json()["project"]
         project_id = project["id"]
         decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
         client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
-        client.post(f"/api/v2/projects/{project_id}/continue")
 
-        continued = client.post(f"/api/v2/projects/{project_id}/continue")
-        assert continued.status_code == 200
-        payload = continued.json()
-        assert payload["project"]["status"] == "building"
-        assert payload["stage_run"]["stage_type"] == "build_execution"
+        step1 = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert step1.status_code == 200
+        overview1 = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert overview1["recommended_next_action"] == "continue_project"
+
+        step2 = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert step2.status_code == 200
+        overview2 = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert "task_plan" in overview2["assets_by_type"]
+        assert "build_artifact" in overview2["assets_by_type"]
+        assert overview2["recommended_next_action"] == "continue_project"
+        assert overview2["release_readiness"]["status"] == "in_build"
+
+        step3 = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert step3.status_code == 200
+        overview3 = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert "test_report" in overview3["assets_by_type"]
+        assert overview3["recommended_next_action"] == "continue_project"
+        assert overview3["release_readiness"]["status"] == "qa_complete"
+
+        step4 = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert step4.status_code == 200
+        payload = step4.json()
+        assert payload["project"]["status"] == "release_ready"
+        assert payload["stage_run"]["stage_type"] == "release_preparation"
         assert payload["stage_run"]["status"] == "completed"
 
-        overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
-        assert "task_plan" in overview["assets_by_type"]
-        assert overview["recommended_next_action"] == "review_task_plan"
+        overview4 = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert "release_pack" in overview4["assets_by_type"]
+        assert overview4["recommended_next_action"] == "review_release_pack"
+        assert overview4["release_readiness"]["status"] == "ready_for_review"
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={

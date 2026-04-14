@@ -252,6 +252,10 @@ class ProjectService:
             self._bootstrap_product_definition_output(project, stage_run, now)
         elif stage_run.stage_type == "build_execution":
             self._bootstrap_build_execution_output(project, stage_run, now)
+        elif stage_run.stage_type == "qa_validation":
+            self._bootstrap_qa_validation_output(project, stage_run, now)
+        elif stage_run.stage_type == "release_preparation":
+            self._bootstrap_release_preparation_output(project, stage_run, now)
 
         self.db.commit()
         self.db.refresh(project)
@@ -390,14 +394,135 @@ class ProjectService:
             now=now,
         )
 
+        self._replace_current_asset(
+            project=project,
+            asset_type="build_artifact",
+            title=f"{project.name} Build Artifact v1",
+            summary="Bootstrap build artifact placeholder generated from the task plan",
+            content_json={
+                "project_name": project.name,
+                "artifact_kind": "bootstrap_bundle",
+                "includes": ["api-skeleton", "asset-flow", "overview-model"],
+                "status": "draft",
+            },
+            content_markdown=(
+                f"# {project.name} Build Artifact\n\n"
+                f"## Includes\n- api-skeleton\n- asset-flow\n- overview-model\n"
+            ),
+            owner_agent="developer",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
         stage_run.status = "completed"
         stage_run.ended_at = now
-        stage_run.summary = "Build execution bootstrap completed and task plan scaffold created"
+        stage_run.summary = "Build execution bootstrap completed and task plan/build artifact created"
+
+        self._queue_stage_run(
+            project=project,
+            stage_type="qa_validation",
+            triggered_by="system",
+            trigger_reason=f"stage_run:{stage_run.id}:build_complete",
+            summary="QA validation bootstrap queued after build execution",
+            now=now,
+        )
 
         project.status = "building"
-        project.current_stage = "build_execution"
-        project.current_focus = "Review task plan scaffold and start implementation"
-        project.latest_summary = "Task plan scaffold generated for build execution"
+        project.current_stage = "qa_validation"
+        project.current_focus = "Review task plan and build artifact"
+        project.latest_summary = "Build scaffolds generated; QA validation queued"
+
+    def _bootstrap_qa_validation_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+        build_artifact = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == "build_artifact", Asset.is_current == True)
+            .first()
+        )
+        source_refs = []
+        if build_artifact:
+            source_refs.append({"asset_id": build_artifact.id, "asset_type": build_artifact.asset_type})
+
+        self._replace_current_asset(
+            project=project,
+            asset_type="test_report",
+            title=f"{project.name} Test Report v1",
+            summary="Bootstrap QA report generated from the current build artifact",
+            content_json={
+                "project_name": project.name,
+                "test_suites": ["smoke", "api", "workflow"],
+                "result": "pass_with_followups",
+                "status": "draft",
+            },
+            content_markdown=(
+                f"# {project.name} Test Report\n\n"
+                f"## Test Suites\n- smoke\n- api\n- workflow\n\n"
+                f"## Result\npass_with_followups\n"
+            ),
+            owner_agent="tester",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        stage_run.status = "completed"
+        stage_run.ended_at = now
+        stage_run.summary = "QA validation bootstrap completed and test report created"
+
+        self._queue_stage_run(
+            project=project,
+            stage_type="release_preparation",
+            triggered_by="system",
+            trigger_reason=f"stage_run:{stage_run.id}:qa_complete",
+            summary="Release preparation bootstrap queued after QA validation",
+            now=now,
+        )
+
+        project.status = "testing"
+        project.current_stage = "release_preparation"
+        project.current_focus = "Review test report and prepare release pack"
+        project.latest_summary = "QA report generated; release preparation queued"
+
+    def _bootstrap_release_preparation_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+        test_report = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == "test_report", Asset.is_current == True)
+            .first()
+        )
+        source_refs = []
+        if test_report:
+            source_refs.append({"asset_id": test_report.id, "asset_type": test_report.asset_type})
+
+        self._replace_current_asset(
+            project=project,
+            asset_type="release_pack",
+            title=f"{project.name} Release Pack v1",
+            summary="Bootstrap release pack assembled from the validated build and QA report",
+            content_json={
+                "project_name": project.name,
+                "contents": ["build_artifact", "test_report", "release_notes"],
+                "release_channel": "internal_review",
+                "status": "in_review",
+            },
+            content_markdown=(
+                f"# {project.name} Release Pack\n\n"
+                f"## Contents\n- build_artifact\n- test_report\n- release_notes\n\n"
+                f"## Release Channel\ninternal_review\n"
+            ),
+            owner_agent="release_manager",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        stage_run.status = "completed"
+        stage_run.ended_at = now
+        stage_run.summary = "Release preparation bootstrap completed and release pack created"
+
+        project.status = "release_ready"
+        project.current_stage = "release_preparation"
+        project.current_focus = "Review release pack for approval"
+        project.latest_summary = "Release pack generated and ready for review"
 
     def _replace_current_asset(
         self,
@@ -533,6 +658,10 @@ class ProjectService:
         }
         if release_readiness["has_release_pack"] and not release_readiness["pending_release_decision"]:
             release_readiness["status"] = "ready_for_review"
+        elif "test_report" in assets_by_type:
+            release_readiness["status"] = "qa_complete"
+        elif "task_plan" in assets_by_type or "build_artifact" in assets_by_type:
+            release_readiness["status"] = "in_build"
         elif release_readiness["has_prd"]:
             release_readiness["status"] = "in_definition"
 
@@ -543,6 +672,10 @@ class ProjectService:
             recommended_next_action = "continue_project"
         elif current_stage_run and current_stage_run.status in {"running", "waiting_for_decision"}:
             recommended_next_action = "review_current_stage"
+        elif current_stage_run and current_stage_run.status == "completed" and "release_pack" in assets_by_type:
+            recommended_next_action = "review_release_pack"
+        elif current_stage_run and current_stage_run.status == "completed" and "test_report" in assets_by_type:
+            recommended_next_action = "review_test_report"
         elif current_stage_run and current_stage_run.status == "completed" and "task_plan" in assets_by_type:
             recommended_next_action = "review_task_plan"
         elif current_stage_run and current_stage_run.status == "completed" and {"prd", "ux_blueprint", "tech_spec"}.issubset(set(assets_by_type.keys())):
