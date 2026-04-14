@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """Project-first v2 routes."""
-import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -71,8 +70,9 @@ def patch_project(project_id: int, payload: ProjectPatchV2, db: Session = Depend
 @router.post("/projects/{project_id}/continue")
 def continue_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    project = service.get_project_or_404(project_id)
-    pending = service.get_pending_decisions(project_id)
-    if pending:
-        raise HTTPException(status_code=409, detail="Project has pending decisions and cannot continue yet")
-    return {"project": service.serialize_project(project), "message": "No automatic continuation implemented yet for the v2 bootstrap path"}
+    project, stage_run = service.continue_project(project_id)
+    return {
+        "project": service.serialize_project(project),
+        "stage_run": service.serialize_stage_run(stage_run),
+        "message": f"{stage_run.stage_type} is now running",
+    }

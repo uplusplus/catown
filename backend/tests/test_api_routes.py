@@ -282,6 +282,29 @@ class TestProjectV2Endpoints:
         assets = client.get(f"/api/v2/projects/{project_id}/assets").json()
         assert assets[0]["status"] == "approved"
 
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        stage_types = [item["stage_type"] for item in stage_runs]
+        assert "briefing" in stage_types
+        assert "product_definition" in stage_types
+
+    def test_continue_project_promotes_queued_stage_run(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "ContinueMe",
+            "one_line_vision": "Validate continue flow"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={
+            "resolution": "approved"
+        })
+
+        continued = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert continued.status_code == 200
+        payload = continued.json()
+        assert payload["project"]["status"] == "defining"
+        assert payload["stage_run"]["stage_type"] == "product_definition"
+        assert payload["stage_run"]["status"] == "running"
+
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
             "name": "Dash",

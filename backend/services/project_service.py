@@ -184,8 +184,21 @@ class ProjectService:
                     brief.approved_at = now
                 project.status = "brief_confirmed"
                 project.current_stage = "product_definition"
-                project.current_focus = "Ready to generate PRD and UX blueprint"
-                project.latest_summary = "Scope confirmed; project can enter product definition"
+                project.current_focus = "Generate PRD and UX blueprint"
+                project.latest_summary = "Scope confirmed; product definition stage is queued"
+
+                next_run = StageRun(
+                    project_id=project.id,
+                    stage_type="product_definition",
+                    run_index=self._next_stage_run_index(project.id, "product_definition"),
+                    status="queued",
+                    triggered_by="decision",
+                    trigger_reason=f"decision:{decision.id}:approved",
+                    execution_mode_snapshot=project.execution_mode,
+                    summary="Product definition stage queued after scope confirmation",
+                    created_at=now,
+                )
+                self.db.add(next_run)
             else:
                 if brief:
                     brief.status = "draft"
@@ -198,6 +211,47 @@ class ProjectService:
         self.db.refresh(project)
         self.db.refresh(decision)
         return project, decision
+
+    def _next_stage_run_index(self, project_id: int, stage_type: str) -> int:
+        existing = (
+            self.db.query(StageRun)
+            .filter(StageRun.project_id == project_id, StageRun.stage_type == stage_type)
+            .order_by(StageRun.run_index.desc())
+            .first()
+        )
+        return (existing.run_index + 1) if existing else 1
+
+    def continue_project(self, project_id: int) -> tuple[Project, StageRun]:
+        project = self.get_project_or_404(project_id)
+        pending = self.get_pending_decisions(project_id)
+        if pending:
+            raise HTTPException(status_code=409, detail="Project has pending decisions and cannot continue yet")
+
+        stage_run = (
+            self.db.query(StageRun)
+            .filter(StageRun.project_id == project_id, StageRun.status == "queued")
+            .order_by(StageRun.created_at.asc())
+            .first()
+        )
+        if not stage_run:
+            raise HTTPException(status_code=409, detail="Project has no queued stage run to continue")
+
+        now = datetime.now()
+        stage_run.status = "running"
+        if not stage_run.started_at:
+            stage_run.started_at = now
+
+        project.current_stage = stage_run.stage_type
+        project.current_focus = f"Running {stage_run.stage_type}"
+        project.latest_summary = f"{stage_run.stage_type} stage is now running"
+        project.last_activity_at = now
+        if project.status == "brief_confirmed":
+            project.status = "defining"
+
+        self.db.commit()
+        self.db.refresh(project)
+        self.db.refresh(stage_run)
+        return project, stage_run
 
     def build_dashboard(self) -> dict[str, Any]:
         projects = [self.serialize_project(project) for project in self.list_projects_v2()]
@@ -224,7 +278,11 @@ class ProjectService:
             "pending_decisions": [self.serialize_decision(d) for d in decisions if d.status == "pending"],
             "open_tasks_summary": {"count": 0},
             "recent_activity": [self.serialize_stage_run(stage_run) for stage_run in stage_runs[:5]],
-            "recommended_next_action": "resolve_scope_confirmation" if any(d.status == "pending" for d in decisions) else "continue_project",
+            "recommended_next_action": (
+                "resolve_scope_confirmation"
+                if any(d.status == "pending" for d in decisions)
+                else "continue_project"
+            ),
         }
 
     def serialize_project(self, project: Project) -> dict[str, Any]:
