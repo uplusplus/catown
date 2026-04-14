@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from models.database import Asset, Decision, Project, StageRun
+from models.database import Asset, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 
 
 class ProjectService:
@@ -124,6 +124,8 @@ class ProjectService:
 
         brief.approval_decision_id = decision.id
         project.last_decision_id = decision.id
+        self._link_stage_run_asset(stage_run.id, brief.id, "output", now)
+        self._link_decision_asset(decision.id, brief.id, "approval_target", now)
         self.db.commit()
         self.db.refresh(project)
         return project
@@ -182,23 +184,20 @@ class ProjectService:
                 if brief:
                     brief.status = "approved"
                     brief.approved_at = now
+                    self._link_decision_asset(decision.id, brief.id, "approval_target", now)
                 project.status = "brief_confirmed"
                 project.current_stage = "product_definition"
                 project.current_focus = "Generate PRD and UX blueprint"
                 project.latest_summary = "Scope confirmed; product definition stage is queued"
 
-                next_run = StageRun(
-                    project_id=project.id,
+                next_run = self._queue_stage_run(
+                    project=project,
                     stage_type="product_definition",
-                    run_index=self._next_stage_run_index(project.id, "product_definition"),
-                    status="queued",
                     triggered_by="decision",
                     trigger_reason=f"decision:{decision.id}:approved",
-                    execution_mode_snapshot=project.execution_mode,
                     summary="Product definition stage queued after scope confirmation",
-                    created_at=now,
+                    now=now,
                 )
-                self.db.add(next_run)
             else:
                 if brief:
                     brief.status = "draft"
@@ -206,6 +205,24 @@ class ProjectService:
                 project.current_stage = "briefing"
                 project.current_focus = "Revise the project brief"
                 project.latest_summary = "Scope rejected; brief needs revision"
+        elif decision.decision_type == "release_approval":
+            release_pack = self.db.query(Asset).filter(Asset.approval_decision_id == decision.id).first()
+            if release_pack:
+                self._link_decision_asset(decision.id, release_pack.id, "approval_target", now)
+            if resolution == "approved":
+                if release_pack:
+                    release_pack.status = "approved"
+                    release_pack.approved_at = now
+                project.status = "released"
+                project.current_focus = "Release approved"
+                project.latest_summary = "Release approved and project marked as released"
+                project.released_at = now
+            else:
+                if release_pack:
+                    release_pack.status = "in_review"
+                project.status = "release_ready"
+                project.current_focus = "Revise release pack and rerun release preparation"
+                project.latest_summary = "Release approval rejected; release pack needs revision"
 
         self.db.commit()
         self.db.refresh(project)
@@ -247,6 +264,8 @@ class ProjectService:
         project.last_activity_at = now
         if project.status == "brief_confirmed":
             project.status = "defining"
+
+        self._sync_stage_inputs_for_stage(stage_run, now)
 
         if stage_run.stage_type == "product_definition":
             self._bootstrap_product_definition_output(project, stage_run, now)
@@ -515,6 +534,34 @@ class ProjectService:
             now=now,
         )
 
+        release_pack = self.db.query(Asset).filter(
+            Asset.project_id == project.id,
+            Asset.asset_type == "release_pack",
+            Asset.is_current == True,
+        ).first()
+
+        decision = Decision(
+            project_id=project.id,
+            stage_run_id=stage_run.id,
+            decision_type="release_approval",
+            title="Approve release pack",
+            context_summary="Review the generated release pack and decide whether the project can be released.",
+            recommended_option="approve_release_pack_v1",
+            alternative_options_json=json.dumps(["approve_release_pack_v1", "revise_release_pack_v1"], ensure_ascii=False),
+            impact_summary="Approval moves the project from release_ready to released; rejection keeps it in review.",
+            requested_action="Approve the release pack or request another iteration.",
+            status="pending",
+            blocking_stage_run_id=stage_run.id,
+            created_by_system_reason="release_pack_ready",
+            created_at=now,
+        )
+        self.db.add(decision)
+        self.db.flush()
+        project.last_decision_id = decision.id
+        if release_pack:
+            release_pack.approval_decision_id = decision.id
+            self._link_decision_asset(decision.id, release_pack.id, "approval_target", now)
+
         stage_run.status = "completed"
         stage_run.ended_at = now
         stage_run.summary = "Release preparation bootstrap completed and release pack created"
@@ -522,7 +569,7 @@ class ProjectService:
         project.status = "release_ready"
         project.current_stage = "release_preparation"
         project.current_focus = "Review release pack for approval"
-        project.latest_summary = "Release pack generated and ready for review"
+        project.latest_summary = "Release pack generated and waiting for release approval"
 
     def _replace_current_asset(
         self,
@@ -568,6 +615,11 @@ class ProjectService:
             updated_at=now,
         )
         self.db.add(asset)
+        self.db.flush()
+        self._link_stage_run_asset(stage_run.id, asset.id, "output", now)
+        for ref in source_refs:
+            if ref.get("asset_id"):
+                self._link_asset_dependency(project.id, ref["asset_id"], asset.id, now)
         return asset
 
     def _queue_stage_run(
@@ -599,7 +651,53 @@ class ProjectService:
             created_at=now,
         )
         self.db.add(stage_run)
+        self.db.flush()
         return stage_run
+
+    def _link_stage_run_asset(self, stage_run_id: int, asset_id: int, direction: str, now: datetime) -> None:
+        existing = self.db.query(StageRunAsset).filter(
+            StageRunAsset.stage_run_id == stage_run_id,
+            StageRunAsset.asset_id == asset_id,
+            StageRunAsset.direction == direction,
+        ).first()
+        if not existing:
+            self.db.add(StageRunAsset(stage_run_id=stage_run_id, asset_id=asset_id, direction=direction, created_at=now))
+
+    def _link_decision_asset(self, decision_id: int, asset_id: int, relation_role: str, now: datetime) -> None:
+        existing = self.db.query(DecisionAsset).filter(
+            DecisionAsset.decision_id == decision_id,
+            DecisionAsset.asset_id == asset_id,
+            DecisionAsset.relation_role == relation_role,
+        ).first()
+        if not existing:
+            self.db.add(DecisionAsset(decision_id=decision_id, asset_id=asset_id, relation_role=relation_role, created_at=now))
+
+    def _link_asset_dependency(self, project_id: int, from_asset_id: int, to_asset_id: int, now: datetime) -> None:
+        from models.database import AssetLink
+        existing = self.db.query(AssetLink).filter(
+            AssetLink.project_id == project_id,
+            AssetLink.from_asset_id == from_asset_id,
+            AssetLink.to_asset_id == to_asset_id,
+            AssetLink.relation_type == "derived_from",
+        ).first()
+        if not existing:
+            self.db.add(AssetLink(project_id=project_id, from_asset_id=from_asset_id, to_asset_id=to_asset_id, relation_type="derived_from", created_at=now))
+
+    def _sync_stage_inputs_for_stage(self, stage_run: StageRun, now: datetime) -> None:
+        input_map = {
+            "product_definition": ["project_brief"],
+            "build_execution": ["tech_spec", "prd", "ux_blueprint"],
+            "qa_validation": ["build_artifact"],
+            "release_preparation": ["test_report", "build_artifact"],
+        }
+        for asset_type in input_map.get(stage_run.stage_type, []):
+            asset = self.db.query(Asset).filter(
+                Asset.project_id == stage_run.project_id,
+                Asset.asset_type == asset_type,
+                Asset.is_current == True,
+            ).first()
+            if asset:
+                self._link_stage_run_asset(stage_run.id, asset.id, "input", now)
 
     def build_dashboard(self) -> dict[str, Any]:
         projects = [self.serialize_project(project) for project in self.list_projects_v2()]

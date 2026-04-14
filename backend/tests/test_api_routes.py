@@ -374,8 +374,32 @@ class TestProjectV2Endpoints:
 
         overview4 = client.get(f"/api/v2/projects/{project_id}/overview").json()
         assert "release_pack" in overview4["assets_by_type"]
-        assert overview4["recommended_next_action"] == "review_release_pack"
-        assert overview4["release_readiness"]["status"] == "ready_for_review"
+        assert overview4["recommended_next_action"] == "resolve_scope_confirmation"
+        assert overview4["release_readiness"]["status"] == "not_ready"
+        assert any(item["decision_type"] == "release_approval" and item["status"] == "pending" for item in overview4["pending_decisions"])
+
+    def test_release_approval_marks_project_released(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "ReleaseMe",
+            "one_line_vision": "Validate release approval flow"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        for _ in range(4):
+            client.post(f"/api/v2/projects/{project_id}/continue")
+
+        decisions = client.get(f"/api/v2/projects/{project_id}/decisions").json()
+        release_decision = next(item for item in decisions if item["decision_type"] == "release_approval")
+        resolved = client.post(f"/api/v2/decisions/{release_decision['id']}/resolve", json={"resolution": "approved"})
+        assert resolved.status_code == 200
+        payload = resolved.json()
+        assert payload["project"]["status"] == "released"
+        assert payload["decision"]["status"] == "approved"
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert overview["project"]["status"] == "released"
+        assert overview["assets_by_type"]["release_pack"]["status"] == "approved"
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
