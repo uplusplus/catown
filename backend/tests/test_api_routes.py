@@ -398,6 +398,7 @@ class TestProjectV2Endpoints:
         assert resolved.status_code == 200
         payload = resolved.json()
         assert payload["project"]["status"] == "released"
+        assert payload["project"]["current_stage"] == "released"
         assert payload["decision"]["status"] == "approved"
 
         overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
@@ -427,8 +428,35 @@ class TestProjectV2Endpoints:
         assert detail.status_code == 200
         data = detail.json()
         assert data["stage_run"]["stage_type"] == "product_definition"
+        assert data["stage_run"]["lifecycle"]["phase"] == "done"
+        assert data["stage_run"]["lifecycle"]["is_terminal"] is True
         assert any(asset["asset_type"] == "project_brief" for asset in data["input_assets"])
         assert any(asset["asset_type"] == "prd" for asset in data["output_assets"])
+
+    def test_reject_release_approval_requeues_release_preparation(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "RejectRelease",
+            "one_line_vision": "Validate release rejection flow"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        for _ in range(4):
+            client.post(f"/api/v2/projects/{project_id}/continue")
+
+        decisions = client.get(f"/api/v2/projects/{project_id}/decisions").json()
+        release_decision = next(item for item in decisions if item["decision_type"] == "release_approval")
+        resolved = client.post(f"/api/v2/decisions/{release_decision['id']}/resolve", json={"resolution": "rejected"})
+        assert resolved.status_code == 200
+        payload = resolved.json()
+        assert payload["project"]["status"] == "release_ready"
+        assert payload["project"]["current_stage"] == "release_preparation"
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert overview["recommended_next_action"] == "continue_project"
+        assert overview["release_readiness"]["status"] == "ready_for_review"
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        assert any(item["stage_type"] == "release_preparation" and item["status"] == "queued" for item in stage_runs)
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
@@ -446,6 +474,7 @@ class TestProjectV2Endpoints:
         assert len(data["project_cards"]) >= 1
         assert "release_readiness" in data["project_cards"][0]
         assert "recommended_next_action" in data["project_cards"][0]
+        assert "lifecycle" in data["project_cards"][0]["current_stage_run"]
 
 
 class TestChatEndpoints:

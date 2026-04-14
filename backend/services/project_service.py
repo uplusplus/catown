@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
+from orchestration.decision_effects import DecisionEffectsCoordinator
 from orchestration.project_flow_coordinator import ProjectFlowCoordinator
 
 
@@ -179,59 +180,8 @@ class ProjectService:
         decision.resolved_at = now
         project.last_activity_at = now
 
-        if decision.decision_type == "scope_confirmation":
-            brief = self.db.query(Asset).filter(Asset.approval_decision_id == decision.id).first()
-            if resolution == "approved":
-                if brief:
-                    brief.status = "approved"
-                    brief.approved_at = now
-                    self._link_decision_asset(decision.id, brief.id, "approval_target", now)
-                project.status = "brief_confirmed"
-                project.current_stage = "product_definition"
-                project.current_focus = "Generate PRD and UX blueprint"
-                project.latest_summary = "Scope confirmed; product definition stage is queued"
-
-                next_run = self._queue_stage_run(
-                    project=project,
-                    stage_type="product_definition",
-                    triggered_by="decision",
-                    trigger_reason=f"decision:{decision.id}:approved",
-                    summary="Product definition stage queued after scope confirmation",
-                    now=now,
-                )
-            else:
-                if brief:
-                    brief.status = "draft"
-                project.status = "draft"
-                project.current_stage = "briefing"
-                project.current_focus = "Revise the project brief"
-                project.latest_summary = "Scope rejected; brief needs revision"
-        elif decision.decision_type == "release_approval":
-            release_pack = self.db.query(Asset).filter(Asset.approval_decision_id == decision.id).first()
-            if release_pack:
-                self._link_decision_asset(decision.id, release_pack.id, "approval_target", now)
-            if resolution == "approved":
-                if release_pack:
-                    release_pack.status = "approved"
-                    release_pack.approved_at = now
-                project.status = "released"
-                project.current_focus = "Release approved"
-                project.latest_summary = "Release approved and project marked as released"
-                project.released_at = now
-            else:
-                if release_pack:
-                    release_pack.status = "in_review"
-                self._queue_stage_run(
-                    project=project,
-                    stage_type="release_preparation",
-                    triggered_by="decision",
-                    trigger_reason=f"decision:{decision.id}:rejected",
-                    summary="Release preparation queued after release approval rejection",
-                    now=now,
-                )
-                project.status = "release_ready"
-                project.current_focus = "Revise release pack and rerun release preparation"
-                project.latest_summary = "Release approval rejected; release pack needs revision"
+        coordinator = DecisionEffectsCoordinator(self)
+        coordinator.apply(project, decision, resolution, now)
 
         self.db.commit()
         self.db.refresh(project)
@@ -629,6 +579,18 @@ class ProjectService:
         self.db.flush()
         return stage_run
 
+    def _stage_phase(self, status: str) -> str:
+        phase_map = {
+            "queued": "queued",
+            "running": "in_progress",
+            "waiting_for_decision": "blocked",
+            "blocked": "blocked",
+            "completed": "done",
+            "cancelled": "done",
+            "failed": "done",
+        }
+        return phase_map.get(status, "unknown")
+
     def _link_stage_run_asset(self, stage_run_id: int, asset_id: int, direction: str, now: datetime) -> None:
         existing = self.db.query(StageRunAsset).filter(
             StageRunAsset.stage_run_id == stage_run_id,
@@ -991,12 +953,19 @@ class ProjectService:
         }
 
     def serialize_stage_run(self, stage_run: StageRun) -> dict[str, Any]:
+        lifecycle = {
+            "phase": self._stage_phase(stage_run.status),
+            "is_active": stage_run.status == "running",
+            "is_terminal": stage_run.status in {"completed", "cancelled", "failed"},
+            "requires_attention": stage_run.status in {"waiting_for_decision", "blocked"},
+        }
         return {
             "id": stage_run.id,
             "project_id": stage_run.project_id,
             "stage_type": stage_run.stage_type,
             "run_index": stage_run.run_index,
             "status": stage_run.status,
+            "lifecycle": lifecycle,
             "triggered_by": stage_run.triggered_by,
             "trigger_reason": stage_run.trigger_reason,
             "summary": stage_run.summary,
