@@ -23,6 +23,7 @@
 ### Phase D — 进行中
 - [x] 新建 `backend/execution/stage_execution_kernel.py`，把 `continue_project()` 的执行入口切到新 kernel
 - [x] 新建 `backend/execution/bootstrap_stage_executor.py`，承接当前 scaffold-only 的 stage 执行逻辑
+- [x] 新建 `backend/orchestration/project_bootstrap_coordinator.py`，把 `create_project()` 的初始 briefing/brief/decision bootstrap 从 `ProjectService` 抽离
 - [x] 明确 `legacy_pipeline_adapter` 不再是默认路线，改为待审查项（见 `docs/ADR-021-pipeline-disposition-and-stage-execution-kernel.md`）
 - [x] 审计 `backend/pipeline/`，形成 `保留 / 改造 / 废弃` 清单并映射到实际文件/接口（见 `docs/pipeline-file-audit.md`）
 - [ ] 把可复用的 runtime primitive 从旧 `pipeline/engine.py` 抽成独立薄模块，而不是继续保留整块 pipeline
@@ -37,6 +38,7 @@
 - [x] 为 bootstrap executor 立最小 `StageExecutionResult` contract（后续真实 executor 复用）
 - [x] 为 `StageRun` 补最小事件/指令入口：`GET /api/v2/stage-runs/{id}/events` + `POST /api/v2/stage-runs/{id}/instructions`
 - [x] 把 `events` 初步挂到 `project_id / stage_run_id / asset_id`
+- [ ] 把 `bootstrap_stage_executor.py` 里的阶段产物生成继续拆成更清晰的 stage spec / asset recipe，减少 executor 内联数据块
 - [ ] 为真实 stage executor 设计完整输入/输出 contract（替换 bootstrap executor）
 - [ ] 为新内核补 `tasks / agent_runs / audit` 的挂接策略
 - [ ] 补更细的 stage execution 可观测事件
