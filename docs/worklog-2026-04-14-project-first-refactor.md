@@ -48,8 +48,10 @@
 ### 6. 继续抽 runtime primitive
 - 新增 `backend/execution/event_log.py`
 - 新增 `backend/execution/tool_audit.py`
-- 让 legacy `pipeline/engine.py` 的部分事件写入和 tool-call 审计开始复用共享 helper
-- 目标：把 audit/event sink 从 legacy engine 里继续薄化，给后续新 executor 复用打底
+- 新增 `backend/execution/llm_audit.py`
+- 新增 `backend/execution/tool_dispatch.py`
+- 让 legacy `pipeline/engine.py` 的部分事件写入、tool-call 审计、llm-call 审计、tool registry/build/execute 开始复用共享 helper
+- 目标：把 audit/event sink 和 tool dispatch 从 legacy engine 里继续薄化，给后续新 executor 复用打底
 
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`

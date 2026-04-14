@@ -12,11 +12,9 @@ Pipeline 引擎
 import asyncio
 import json
 import logging
-import os
 import time
 import traceback
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -25,254 +23,20 @@ from models.database import (
     SessionLocal, Pipeline, PipelineRun, PipelineStage,
     StageArtifact, PipelineMessage, Project,
 )
-from models.audit import LLMCall, ToolCall, Event
+from models.audit import Event
 from execution.event_log import append_event
+from execution.llm_audit import fail_llm_call, finalize_llm_call, start_llm_call
 from execution.tool_audit import append_tool_call
-from execution.workspace_guard import ensure_workspace_path, is_catown_protected, validate_workspace_target
+from execution.tool_dispatch import AGENT_TOOLS, build_tools_for_agent, execute_tool, load_agent_tools
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
 
 logger = logging.getLogger("catown.pipeline.engine")
 
 # ==================== 工具定义 ====================
-# 每个 Agent 可用的工具，由 agents.json 的 tools 字段 + 此处的实现映射决定
+# 每个 Agent 可用的工具，由 agents.json 的 tools 字段 + execution.tool_dispatch 的实现映射决定
 
-AGENT_TOOLS: Dict[str, List[str]] = {}  # 运行时从 agents.json 填充
-
-
-def _load_agent_tools():
-    """从 agents.json 加载每个 Agent 的工具列表"""
-    global AGENT_TOOLS
-    config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
-    if not os.path.exists(config_file):
-        return
-    try:
-        with open(config_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for name, cfg in data.get("agents", {}).items():
-            AGENT_TOOLS[name] = cfg.get("tools", [])
-    except Exception as e:
-        logger.warning(f"Failed to load agent tools: {e}")
-
-
-_load_agent_tools()
-
-# ==================== 工具执行 ====================
-
-TOOLS_DIR = Path(__file__).parent.parent / "tools"
-
-
-def _get_workspace(run: PipelineRun) -> Path:
-    """获取 pipeline run 的 workspace 目录"""
-    return ensure_workspace_path(run.workspace_path, run.id)
-
-
-def _validate_path(workspace: Path, target: Path, allow_catown: bool = False) -> Optional[str]:
-    """兼容旧调用点；实际校验逻辑已抽到 execution.workspace_guard。"""
-    return validate_workspace_target(workspace, target, allow_catown=allow_catown)
-
-
-def _tool_read_file(workspace: Path, file_path: str) -> str:
-    """读取 workspace 内的文件"""
-    target = workspace / file_path
-    err = _validate_path(workspace, target)
-    if err:
-        return err
-    if not target.exists():
-        return f"Error: file not found: {file_path}"
-    if not target.is_file():
-        return f"Error: not a file: {file_path}"
-    return target.read_text(encoding="utf-8", errors="replace")
-
-
-def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
-    """写入 workspace 内的文件"""
-    target = workspace / file_path
-    # 校验目标路径
-    err = _validate_path(workspace, target)
-    if err:
-        return err
-    # 校验父目录路径（防止 mkdir 创建非法目录）
-    parent_err = _validate_path(workspace, target.parent)
-    if parent_err:
-        return parent_err
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return f"Written: {file_path} ({len(content)} chars)"
-
-
-def _tool_list_files(workspace: Path, dir_path: str = ".") -> str:
-    """列出 workspace 内的文件"""
-    target = workspace / dir_path
-    err = _validate_path(workspace, target)
-    if err:
-        return err
-    if not target.exists():
-        return f"Error: directory not found: {dir_path}"
-    if not target.is_dir():
-        return f"Error: not a directory: {dir_path}"
-    entries = []
-    for p in sorted(target.iterdir()):
-        # 跳过 .catown 目录
-        if is_catown_protected(workspace, p.resolve()):
-            continue
-        rel = p.relative_to(workspace)
-        entries.append(f"{'[DIR]' if p.is_dir() else '[FILE]'} {rel}")
-    return "\n".join(entries) or "(empty)"
-
-
-def _tool_execute_code(workspace: Path, code: str, language: str = "python") -> str:
-    """执行代码（仅 python）"""
-    if language != "python":
-        return f"Error: unsupported language: {language}"
-    import subprocess, tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir=str(workspace)) as f:
-        f.write(code)
-        tmp_path = f.name
-    try:
-        # 验证临时文件在 workspace 内
-        err = _validate_path(workspace, Path(tmp_path))
-        if err:
-            os.unlink(tmp_path)
-            return err
-        result = subprocess.run(
-            ["python3", tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=str(workspace),
-        )
-        output = ""
-        if result.stdout:
-            output += f"stdout:\n{result.stdout}"
-        if result.stderr:
-            output += f"\nstderr:\n{result.stderr}"
-        output += f"\nexit_code: {result.returncode}"
-        return output.strip()
-    except subprocess.TimeoutExpired:
-        return "Error: execution timed out (30s)"
-    except Exception as e:
-        return f"Error: {e}"
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
-def _tool_web_search(workspace: Path, query: str) -> str:
-    """网络搜索（DuckDuckGo Instant Answer API）"""
-    import urllib.request
-    import urllib.parse
-
-    try:
-        url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
-            "q": query,
-            "format": "json",
-            "no_html": 1,
-            "skip_disambig": 1
-        })
-
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
-
-        results = []
-
-        if data.get("Abstract"):
-            results.append(f"**Summary**: {data['Abstract']}")
-            if data.get("AbstractURL"):
-                results.append(f"Source: {data['AbstractURL']}")
-
-        if data.get("RelatedTopics"):
-            results.append("\n**Related Topics**:")
-            for i, topic in enumerate(data["RelatedTopics"][:5]):
-                if isinstance(topic, dict) and topic.get("Text"):
-                    results.append(f"  {i+1}. {topic['Text'][:200]}")
-
-        if data.get("Answer"):
-            results.append(f"\n**Answer**: {data['Answer']}")
-
-        if results:
-            return "\n".join(results)
-        else:
-            return f"[Web Search] No instant answer found for '{query}'. Try a more specific query."
-
-    except Exception as e:
-        return f"[Web Search] Error: {str(e)}"
-
-
-def _tool_send_message_placeholder(workspace: Path, **kwargs) -> str:
-    """Fallback — 实际调用由 _execute_tool 路由到 _handle_send_message"""
-    return "Error: send_message should be handled by _handle_send_message"
-
-
-TOOL_REGISTRY: Dict[str, Any] = {
-    "read_file": {"fn": _tool_read_file, "params": ["file_path"], "desc": "Read a file from workspace"},
-    "write_file": {"fn": _tool_write_file, "params": ["file_path", "content"], "desc": "Write content to a file in workspace"},
-    "list_files": {"fn": _tool_list_files, "params": ["dir_path?"], "desc": "List files in workspace directory"},
-    "execute_code": {"fn": _tool_execute_code, "params": ["code", "language?"], "desc": "Execute code (python)"},
-    "web_search": {"fn": _tool_web_search, "params": ["query"], "desc": "Search the web"},
-    "send_message": {"fn": _tool_send_message_placeholder, "params": ["to_agent", "content", "message_type?"], "desc": "Send a message to another agent in this pipeline (e.g. ask architect for clarification)"},
-}
-
-
-def _build_tools_for_agent(agent_name: str) -> List[Dict]:
-    """为指定 Agent 构建 OpenAI function calling 工具列表"""
-    allowed = AGENT_TOOLS.get(agent_name, list(TOOL_REGISTRY.keys()))
-    tools = []
-    for tool_name in allowed:
-        info = TOOL_REGISTRY.get(tool_name)
-        if not info:
-            continue
-        properties = {}
-        required = []
-        for p in info["params"]:
-            optional = p.endswith("?")
-            pname = p.rstrip("?")
-            properties[pname] = {"type": "string", "description": pname}
-            if not optional:
-                required.append(pname)
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "description": info["desc"],
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            },
-        })
-    return tools
-
-
-async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str], db=None, stage_id: int = None) -> str:
-    """执行单个工具调用"""
-
-    # === 白名单校验：Agent 仅能调用 agents.json 中声明的工具 ===
-    # None = Agent 未在 agents.json 中配置（允许全部，向后兼容）
-    # []   = Agent 已配置但无任何工具（拒绝全部）
-    # [...] = Agent 的工具白名单
-    if agent_name in AGENT_TOOLS:
-        allowed_tools = AGENT_TOOLS[agent_name]
-        if tool_name not in allowed_tools:
-            logger.warning(f"Agent '{agent_name}' attempted unauthorized tool: '{tool_name}' (allowed: {allowed_tools})")
-            return f"Error: Agent '{agent_name}' is not authorized to use tool '{tool_name}'. Allowed tools: {allowed_tools}"
-
-    # send_message 需要特殊处理（需要 db 访问）
-    if tool_name == "send_message":
-        return await _handle_send_message(agent_name, run, arguments, db, stage_id)
-
-    info = TOOL_REGISTRY.get(tool_name)
-    if not info:
-        return f"Error: unknown tool: {tool_name}"
-    workspace = _get_workspace(run)
-    try:
-        return info["fn"](workspace, **arguments)
-    except Exception as e:
-        return f"Tool error ({tool_name}): {e}"
+load_agent_tools()
 
 
 async def _handle_send_message(
@@ -1121,7 +885,7 @@ class PipelineEngine:
         返回最终输出摘要
         """
         llm_client = get_llm_client_for_agent(stage_cfg.agent)
-        tools = _build_tools_for_agent(stage_cfg.agent)
+        tools = build_tools_for_agent(stage_cfg.agent)
 
         # 加载 Agent 的 system_prompt（传入 stage_cfg 实现三级 Skill 注入）
         system_prompt = self._get_agent_system_prompt(stage_cfg.agent, stage_cfg)
@@ -1154,60 +918,53 @@ class PipelineEngine:
                 })
 
             # === 审计：记录 LLM 调用 ===
-            llm_start = time.time()
-            llm_call_record = LLMCall(
+            llm_call_record, llm_start = start_llm_call(
                 run_id=run.id,
                 stage_id=stage.id,
                 agent_name=stage_cfg.agent,
                 turn_index=turn,
                 model=getattr(llm_client, 'model', 'unknown'),
-                system_prompt=system_prompt[:50000] if system_prompt else None,
-                messages=json.dumps(messages[-10:], ensure_ascii=False)[:100000],  # 最近 10 条
+                system_prompt=system_prompt,
+                messages=messages,
             )
 
             # 调用 LLM
             try:
                 response = await llm_client.chat_with_tools(messages, tools=tools if tools else None)
             except Exception as e:
-                llm_call_record.error = str(e)[:5000]
-                llm_call_record.duration_ms = int((time.time() - llm_start) * 1000)
-                db.add(llm_call_record)
-                db.commit()
+                fail_llm_call(db, llm_call_record, llm_start, e)
                 raise
 
             content = response.get("content") or ""
             tool_calls = response.get("tool_calls")
             usage = response.get("usage")
 
-            # 写入 LLM 调用审计
-            llm_call_record.response_content = content[:100000] if content else None
-            llm_call_record.response_tool_calls = json.dumps(
-                [{"id": tc.get("id"), "function": tc.get("function")} for tc in tool_calls],
-                ensure_ascii=False
-            ) if tool_calls else None
-            llm_call_record.duration_ms = int((time.time() - llm_start) * 1000)
-            if usage:
-                llm_call_record.token_input = usage.get("prompt_tokens", 0)
-                llm_call_record.token_output = usage.get("completion_tokens", 0)
-            db.add(llm_call_record)
-            db.flush()  # 获取 llm_call_record.id
+            llm_call_record = finalize_llm_call(
+                db,
+                llm_call_record,
+                llm_start,
+                content=content,
+                tool_calls=tool_calls,
+                usage=usage,
+            )
 
             # 写入事件
-            db.add(Event(
+            append_event(
+                db,
                 run_id=run.id,
                 event_type="llm_call",
                 agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
                 summary=f"LLM #{turn}: {llm_call_record.token_input}in/{llm_call_record.token_output}out, {llm_call_record.duration_ms}ms",
-                payload=json.dumps({
+                payload={
                     "turn": turn,
                     "model": llm_call_record.model,
                     "tokens_in": llm_call_record.token_input,
                     "tokens_out": llm_call_record.token_output,
                     "duration_ms": llm_call_record.duration_ms,
                     "content_preview": content[:200] if content else None,
-                }, ensure_ascii=False),
-            ))
+                },
+            )
 
             # 广播 LLM 调用事件（SSE 扩展）— 含完整上下文供卡片展示
             await event_bus.emit("llm_call", {
@@ -1266,7 +1023,15 @@ class PipelineEngine:
 
                     # === 审计：记录工具调用 ===
                     tool_start = time.time()
-                    tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
+                    tool_result = await execute_tool(
+                        stage_cfg.agent,
+                        run,
+                        fn_name,
+                        fn_args,
+                        send_message_handler=_handle_send_message,
+                        db=db,
+                        stage_id=stage.id,
+                    )
                     tool_duration = int((time.time() - tool_start) * 1000)
 
                     success = not tool_result.startswith("Error:")

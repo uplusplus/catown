@@ -29,6 +29,8 @@
   - 已完成首块：`backend/execution/workspace_guard.py`（workspace/path safety helpers）
   - 已完成第二块：`backend/execution/event_log.py`（shared event append helper，已接入 project-first + legacy pipeline 部分路径）
   - 已完成第三块：`backend/execution/tool_audit.py`（shared tool-call audit helper，已接入 legacy engine tool path）
+  - 已完成第四块：`backend/execution/llm_audit.py`（shared llm-call audit helper，已接入 legacy engine llm path）
+  - 已完成第五块：`backend/execution/tool_dispatch.py`（shared tool registry/dispatch helper，已接入 legacy engine tool build/execute path）
 - [ ] 明确 autopilot / checkpoint 在新 kernel 层的分流点
 
 ### Phase E — 进行中
