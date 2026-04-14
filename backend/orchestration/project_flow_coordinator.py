@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from models.database import Project, StageRun
+from orchestration.stage_execution_coordinator import StageExecutionCoordinator
 
 
 class ProjectFlowCoordinator:
@@ -42,13 +43,6 @@ class ProjectFlowCoordinator:
 
         self.service._sync_stage_inputs_for_stage(stage_run, now)
 
-        if stage_run.stage_type == "product_definition":
-            self.service._bootstrap_product_definition_output(project, stage_run, now)
-        elif stage_run.stage_type == "build_execution":
-            self.service._bootstrap_build_execution_output(project, stage_run, now)
-        elif stage_run.stage_type == "qa_validation":
-            self.service._bootstrap_qa_validation_output(project, stage_run, now)
-        elif stage_run.stage_type == "release_preparation":
-            self.service._bootstrap_release_preparation_output(project, stage_run, now)
+        StageExecutionCoordinator(self.service).run(project, stage_run, now)
 
         return stage_run
