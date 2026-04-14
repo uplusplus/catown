@@ -250,6 +250,8 @@ class ProjectService:
 
         if stage_run.stage_type == "product_definition":
             self._bootstrap_product_definition_output(project, stage_run, now)
+        elif stage_run.stage_type == "build_execution":
+            self._bootstrap_build_execution_output(project, stage_run, now)
 
         self.db.commit()
         self.db.refresh(project)
@@ -343,8 +345,59 @@ class ProjectService:
         stage_run.ended_at = now
         stage_run.summary = "Product definition bootstrap completed and PRD/UX/Tech scaffolds created"
 
+        self._queue_stage_run(
+            project=project,
+            stage_type="build_execution",
+            triggered_by="system",
+            trigger_reason=f"stage_run:{stage_run.id}:definition_complete",
+            summary="Build execution bootstrap queued after definition bundle review",
+            now=now,
+        )
+
         project.current_focus = "Review PRD, UX blueprint, and tech spec scaffolds"
-        project.latest_summary = "Product definition scaffolds generated"
+        project.latest_summary = "Product definition scaffolds generated; build execution queued"
+
+    def _bootstrap_build_execution_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+        tech_spec = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == "tech_spec", Asset.is_current == True)
+            .first()
+        )
+        source_refs = []
+        if tech_spec:
+            source_refs.append({"asset_id": tech_spec.id, "asset_type": tech_spec.asset_type})
+
+        self._replace_current_asset(
+            project=project,
+            asset_type="task_plan",
+            title=f"{project.name} Task Plan v1",
+            summary="Bootstrap task plan scaffold derived from the tech spec",
+            content_json={
+                "project_name": project.name,
+                "execution_tracks": ["backend", "frontend", "qa"],
+                "milestones": ["foundation", "core_flow", "validation"],
+                "source": "tech_spec",
+                "status": "draft",
+            },
+            content_markdown=(
+                f"# {project.name} Task Plan\n\n"
+                f"## Execution Tracks\n- backend\n- frontend\n- qa\n\n"
+                f"## Milestones\n- foundation\n- core_flow\n- validation\n"
+            ),
+            owner_agent="delivery_manager",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        stage_run.status = "completed"
+        stage_run.ended_at = now
+        stage_run.summary = "Build execution bootstrap completed and task plan scaffold created"
+
+        project.status = "building"
+        project.current_stage = "build_execution"
+        project.current_focus = "Review task plan scaffold and start implementation"
+        project.latest_summary = "Task plan scaffold generated for build execution"
 
     def _replace_current_asset(
         self,
@@ -391,6 +444,37 @@ class ProjectService:
         )
         self.db.add(asset)
         return asset
+
+    def _queue_stage_run(
+        self,
+        project: Project,
+        stage_type: str,
+        triggered_by: str,
+        trigger_reason: str,
+        summary: str,
+        now: datetime,
+    ) -> StageRun:
+        queued = (
+            self.db.query(StageRun)
+            .filter(StageRun.project_id == project.id, StageRun.stage_type == stage_type, StageRun.status == "queued")
+            .first()
+        )
+        if queued:
+            return queued
+
+        stage_run = StageRun(
+            project_id=project.id,
+            stage_type=stage_type,
+            run_index=self._next_stage_run_index(project.id, stage_type),
+            status="queued",
+            triggered_by=triggered_by,
+            trigger_reason=trigger_reason,
+            execution_mode_snapshot=project.execution_mode,
+            summary=summary,
+            created_at=now,
+        )
+        self.db.add(stage_run)
+        return stage_run
 
     def build_dashboard(self) -> dict[str, Any]:
         projects = [self.serialize_project(project) for project in self.list_projects_v2()]
@@ -455,8 +539,12 @@ class ProjectService:
         recommended_next_action = "continue_project"
         if pending_decisions:
             recommended_next_action = "resolve_scope_confirmation"
+        elif current_stage_run and current_stage_run.status == "queued":
+            recommended_next_action = "continue_project"
         elif current_stage_run and current_stage_run.status in {"running", "waiting_for_decision"}:
             recommended_next_action = "review_current_stage"
+        elif current_stage_run and current_stage_run.status == "completed" and "task_plan" in assets_by_type:
+            recommended_next_action = "review_task_plan"
         elif current_stage_run and current_stage_run.status == "completed" and {"prd", "ux_blueprint", "tech_spec"}.issubset(set(assets_by_type.keys())):
             recommended_next_action = "review_definition_bundle"
         elif current_stage_run and current_stage_run.status == "completed" and "prd" in assets_by_type:

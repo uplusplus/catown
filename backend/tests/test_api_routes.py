@@ -310,6 +310,9 @@ class TestProjectV2Endpoints:
         asset_types = {item["asset_type"] for item in assets}
         assert {"prd", "ux_blueprint", "tech_spec"}.issubset(asset_types)
 
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        assert any(item["stage_type"] == "build_execution" and item["status"] == "queued" for item in stage_runs)
+
     def test_project_overview_v2_returns_mission_board_shape(self, client):
         project = client.post("/api/v2/projects", json={
             "name": "Overview",
@@ -331,7 +334,28 @@ class TestProjectV2Endpoints:
         assert "tech_spec" in data["assets_by_type"]
         assert data["stage_summary"]["completed"] >= 1
         assert data["release_readiness"]["status"] == "in_definition"
-        assert data["recommended_next_action"] == "review_definition_bundle"
+        assert data["recommended_next_action"] == "continue_project"
+
+    def test_continue_build_execution_generates_task_plan(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "Planner",
+            "one_line_vision": "Validate task plan generation"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        client.post(f"/api/v2/projects/{project_id}/continue")
+
+        continued = client.post(f"/api/v2/projects/{project_id}/continue")
+        assert continued.status_code == 200
+        payload = continued.json()
+        assert payload["project"]["status"] == "building"
+        assert payload["stage_run"]["stage_type"] == "build_execution"
+        assert payload["stage_run"]["status"] == "completed"
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        assert "task_plan" in overview["assets_by_type"]
+        assert overview["recommended_next_action"] == "review_task_plan"
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
