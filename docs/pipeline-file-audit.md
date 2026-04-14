@@ -156,6 +156,11 @@
 - event emission helpers
 - audit sink helpers
 
+当前已完成：
+
+- `backend/execution/workspace_guard.py`
+- `backend/execution/event_log.py`
+
 ### 第四步：前端与测试去 pipeline 化
 
 - 用 Mission Board / Project Overview 替代 pipeline dashboard 主入口

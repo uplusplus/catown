@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from execution.event_log import append_event
 from models.audit import Event
 from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 from orchestration.decision_effects import DecisionEffectsCoordinator
@@ -513,19 +514,16 @@ class ProjectService:
         payload: dict[str, Any] | None = None,
         agent_name: str | None = None,
     ) -> Event:
-        event = Event(
+        return append_event(
+            self.db,
             project_id=stage_run.project_id,
             stage_run_id=stage_run.id,
             event_type=event_type,
             agent_name=agent_name,
             stage_name=stage_run.stage_type,
             summary=summary,
-            payload=json.dumps(payload or {}, ensure_ascii=False),
-            created_at=datetime.now(),
+            payload=payload,
         )
-        self.db.add(event)
-        self.db.flush()
-        return event
 
     def add_stage_run_instruction(self, stage_run_id: int, content: str, author: str = "boss") -> Event:
         stage_run = self.db.query(StageRun).filter(StageRun.id == stage_run_id).first()

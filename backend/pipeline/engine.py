@@ -26,6 +26,7 @@ from models.database import (
     StageArtifact, PipelineMessage, Project,
 )
 from models.audit import LLMCall, ToolCall, Event
+from execution.event_log import append_event
 from execution.workspace_guard import ensure_workspace_path, is_catown_protected, validate_workspace_target
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
@@ -534,14 +535,15 @@ class PipelineEngine:
         logger.info(f"Gate approved: pipeline={pipeline_id}, stage={stage.stage_name}")
 
         # 写入 gate 审批事件
-        db.add(Event(
+        append_event(
+            db,
             run_id=run.id,
             event_type="gate_approved",
             agent_name=None,
             stage_name=stage.stage_name,
             summary=f"Gate approved: {stage.display_name} by BOSS",
-            payload=json.dumps({"stage": stage.stage_name, "display_name": stage.display_name}, ensure_ascii=False),
-        ))
+            payload={"stage": stage.stage_name, "display_name": stage.display_name},
+        )
         db.commit()
 
         await event_bus.emit("gate_approved", {
@@ -626,17 +628,18 @@ class PipelineEngine:
         self._running_tasks[pipeline_id] = task
 
         # 写入 gate 拒绝 + 打回事件
-        db.add(Event(
+        append_event(
+            db,
             run_id=run.id,
             event_type="gate_rejected",
             agent_name=None,
             stage_name=stage.stage_name,
-            summary=f"Gate rejected: {stage.display_name} → rolling back to {target_name}",
-            payload=json.dumps({
+            summary=f"Gate rejected: {stage.display_name} -> rolling back to {target_name}",
+            payload={
                 "rejected_stage": stage.stage_name,
                 "rollback_target": target_name,
-            }, ensure_ascii=False),
-        ))
+            },
+        )
         db.commit()
 
         await event_bus.emit("gate_rejected", {
@@ -666,14 +669,15 @@ class PipelineEngine:
         db.add(msg)
 
         # 写入 BOSS 指令事件
-        db.add(Event(
+        append_event(
+            db,
             run_id=run.id,
             event_type="boss_instruction",
             agent_name=agent_name,
             stage_name=None,
-            summary=f"BOSS → {agent_name}: {message[:100]}",
-            payload=json.dumps({"to_agent": agent_name, "content": message[:5000]}, ensure_ascii=False),
-        ))
+            summary=f"BOSS -> {agent_name}: {message[:100]}",
+            payload={"to_agent": agent_name, "content": message[:5000]},
+        )
 
         db.commit()
         logger.info(f"BOSS instruction sent to {agent_name} in pipeline {pipeline_id}")
