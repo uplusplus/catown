@@ -29,10 +29,12 @@
   - 已完成首块：`backend/execution/workspace_guard.py`（workspace/path safety helpers）
 - [ ] 明确 autopilot / checkpoint 在新 kernel 层的分流点
 
-### Phase E — 待开始
-- [ ] 为真实 stage executor 设计输入/输出 contract（替换 bootstrap executor）
+### Phase E — 进行中
+- [x] 为 bootstrap executor 立最小 `StageExecutionResult` contract（后续真实 executor 复用）
+- [x] 为 `StageRun` 补最小事件/指令入口：`GET /api/v2/stage-runs/{id}/events` + `POST /api/v2/stage-runs/{id}/instructions`
+- [x] 把 `events` 初步挂到 `project_id / stage_run_id / asset_id`
+- [ ] 为真实 stage executor 设计完整输入/输出 contract（替换 bootstrap executor）
 - [ ] 为新内核补 `tasks / agent_runs / audit` 的挂接策略
-- [ ] 把 `llm_calls / tool_calls / events` 逐步重新挂到 `project_id / stage_run_id / asset_id`
 - [ ] 补更细的 stage execution 可观测事件
 - [ ] 前端逐步去 pipeline 化，Mission Board 替代旧 pipeline dashboard 主视图
 

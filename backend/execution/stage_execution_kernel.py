@@ -9,7 +9,7 @@ from typing import Protocol
 from fastapi import HTTPException
 
 from models.database import Project, StageRun
-from execution.bootstrap_stage_executor import BootstrapStageExecutor
+from execution.bootstrap_stage_executor import BootstrapStageExecutor, StageExecutionResult
 
 
 class StageExecutor(Protocol):
@@ -18,7 +18,7 @@ class StageExecutor(Protocol):
     def supports(self, stage_type: str) -> bool:
         ...
 
-    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         ...
 
 
@@ -33,11 +33,10 @@ class StageExecutionKernel:
             BootstrapStageExecutor(self.service),
         ]
 
-    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         for executor in self.executors:
             if executor.supports(stage_run.stage_type):
-                executor.execute(project, stage_run, now)
-                return
+                return executor.execute(project, stage_run, now)
         raise HTTPException(
             status_code=501,
             detail=f"No stage executor is registered for stage_type '{stage_run.stage_type}'",

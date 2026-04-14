@@ -482,6 +482,41 @@ class TestProjectV2Endpoints:
         stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
         assert any(item["stage_type"] == "release_preparation" and item["status"] == "queued" for item in stage_runs)
 
+    def test_stage_run_instructions_and_events_use_project_first_event_shape(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "StageEvents",
+            "one_line_vision": "Track stage instructions and execution events"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        client.post(f"/api/v2/projects/{project_id}/continue")
+
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        product_definition = next(item for item in stage_runs if item["stage_type"] == "product_definition")
+
+        instruction = client.post(
+            f"/api/v2/stage-runs/{product_definition['id']}/instructions",
+            json={"content": "Please tighten MVP scope.", "author": "boss"},
+        )
+        assert instruction.status_code == 200
+        event_payload = instruction.json()["event"]
+        assert event_payload["project_id"] == project_id
+        assert event_payload["stage_run_id"] == product_definition["id"]
+        assert event_payload["event_type"] == "stage_instruction"
+        assert event_payload["payload"]["content"] == "Please tighten MVP scope."
+
+        events = client.get(f"/api/v2/stage-runs/{product_definition['id']}/events")
+        assert events.status_code == 200
+        data = events.json()
+        event_types = {item["event_type"] for item in data}
+        assert "stage_instruction" in event_types
+        assert "stage_execution_completed" in event_types
+
+        detail = client.get(f"/api/v2/stage-runs/{product_definition['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["summary"]["event_count"] >= 2
+
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
             "name": "Dash",

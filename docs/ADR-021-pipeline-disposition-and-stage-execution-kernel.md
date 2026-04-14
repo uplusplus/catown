@@ -146,6 +146,15 @@
 
 - `BootstrapStageExecutor`
 
+当前还补上了一个最小返回契约：
+
+- `StageExecutionResult`
+  - `status`
+  - `summary`
+  - `emitted_asset_types`
+  - `queued_stage_types`
+  - `pending_decision_types`
+
 它承接当前已经跑通的 scaffold 逻辑：
 
 - `product_definition`
@@ -178,8 +187,11 @@
 
 ### 新 Phase E
 
-- 为真实 stage executor 设计输入输出 contract
+- 为真实 stage executor 设计完整输入输出 contract
 - 补 `tasks / agent_runs / audit / events` 对 `StageRun` 的挂接
+- 当前已先落最小 v2 入口：
+  - `GET /api/v2/stage-runs/{id}/events`
+  - `POST /api/v2/stage-runs/{id}/instructions`
 - 前端逐步去 pipeline 化
 
 ---

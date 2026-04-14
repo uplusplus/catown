@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
 """Bootstrap executor for the current scaffold-only project-first flow."""
 import json
+from dataclasses import dataclass
 from datetime import datetime
 
 from models.database import Decision, Project, StageRun
+
+
+@dataclass
+class StageExecutionResult:
+    """Minimal execution contract for stage executors under the new kernel."""
+
+    status: str
+    summary: str
+    emitted_asset_types: list[str]
+    queued_stage_types: list[str]
+    pending_decision_types: list[str]
 
 
 class BootstrapStageExecutor:
@@ -24,17 +36,16 @@ class BootstrapStageExecutor:
     def supports(self, stage_type: str) -> bool:
         return stage_type in self.SUPPORTED_STAGE_TYPES
 
-    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def execute(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         if stage_run.stage_type == "product_definition":
-            self._product_definition(project, stage_run, now)
-        elif stage_run.stage_type == "build_execution":
-            self._build_execution(project, stage_run, now)
-        elif stage_run.stage_type == "qa_validation":
-            self._qa_validation(project, stage_run, now)
-        elif stage_run.stage_type == "release_preparation":
-            self._release_preparation(project, stage_run, now)
+            return self._product_definition(project, stage_run, now)
+        if stage_run.stage_type == "build_execution":
+            return self._build_execution(project, stage_run, now)
+        if stage_run.stage_type == "qa_validation":
+            return self._qa_validation(project, stage_run, now)
+        return self._release_preparation(project, stage_run, now)
 
-    def _product_definition(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def _product_definition(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         source_refs = self.assets.build_source_refs(project.id, ["project_brief"])
 
         self.assets.replace_current_asset(
@@ -120,8 +131,15 @@ class BootstrapStageExecutor:
         )
         project.current_focus = "Review PRD, UX blueprint, and tech spec scaffolds"
         project.latest_summary = "Product definition scaffolds generated; build execution queued"
+        return StageExecutionResult(
+            status=stage_run.status,
+            summary=stage_run.summary,
+            emitted_asset_types=["prd", "ux_blueprint", "tech_spec"],
+            queued_stage_types=["build_execution"],
+            pending_decision_types=[],
+        )
 
-    def _build_execution(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def _build_execution(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         source_refs = self.assets.build_source_refs(project.id, ["tech_spec", "prd", "ux_blueprint"])
 
         self.assets.replace_current_asset(
@@ -181,8 +199,15 @@ class BootstrapStageExecutor:
         project.current_stage = "qa_validation"
         project.current_focus = "Review task plan and build artifact"
         project.latest_summary = "Build scaffolds generated; QA validation queued"
+        return StageExecutionResult(
+            status=stage_run.status,
+            summary=stage_run.summary,
+            emitted_asset_types=["task_plan", "build_artifact"],
+            queued_stage_types=["qa_validation"],
+            pending_decision_types=[],
+        )
 
-    def _qa_validation(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def _qa_validation(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         source_refs = self.assets.build_source_refs(project.id, ["build_artifact"])
 
         self.assets.replace_current_asset(
@@ -221,8 +246,15 @@ class BootstrapStageExecutor:
         project.current_stage = "release_preparation"
         project.current_focus = "Review test report and prepare release pack"
         project.latest_summary = "QA report generated; release preparation queued"
+        return StageExecutionResult(
+            status=stage_run.status,
+            summary=stage_run.summary,
+            emitted_asset_types=["test_report"],
+            queued_stage_types=["release_preparation"],
+            pending_decision_types=[],
+        )
 
-    def _release_preparation(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+    def _release_preparation(self, project: Project, stage_run: StageRun, now: datetime) -> StageExecutionResult:
         source_refs = self.assets.build_source_refs(project.id, ["test_report", "build_artifact"])
 
         self.assets.replace_current_asset(
@@ -275,3 +307,10 @@ class BootstrapStageExecutor:
         project.current_stage = "release_preparation"
         project.current_focus = "Review release pack for approval"
         project.latest_summary = "Release pack generated and waiting for release approval"
+        return StageExecutionResult(
+            status=stage_run.status,
+            summary=stage_run.summary,
+            emitted_asset_types=["release_pack"],
+            queued_stage_types=[],
+            pending_decision_types=["release_approval"],
+        )

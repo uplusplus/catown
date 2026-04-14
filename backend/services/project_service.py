@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from models.audit import Event
 from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 from orchestration.decision_effects import DecisionEffectsCoordinator
 from orchestration.project_flow_coordinator import ProjectFlowCoordinator
@@ -469,6 +470,7 @@ class ProjectService:
             .all()
         )
         decision_rows = self.db.query(Decision).filter(Decision.stage_run_id == stage_run_id).order_by(Decision.created_at.desc()).all()
+        event_rows = self.list_stage_run_events(stage_run_id)
 
         input_assets = []
         output_assets = []
@@ -486,11 +488,69 @@ class ProjectService:
             "input_assets": input_assets,
             "output_assets": output_assets,
             "decisions": [self.serialize_decision(decision) for decision in decision_rows],
+            "events": [self.serialize_event(event) for event in event_rows],
             "summary": {
                 "input_count": len(input_assets),
                 "output_count": len(output_assets),
                 "decision_count": len(decision_rows),
+                "event_count": len(event_rows),
             },
+        }
+
+    def list_stage_run_events(self, stage_run_id: int) -> list[Event]:
+        return (
+            self.db.query(Event)
+            .filter(Event.stage_run_id == stage_run_id)
+            .order_by(Event.created_at.asc(), Event.id.asc())
+            .all()
+        )
+
+    def append_stage_run_event(
+        self,
+        stage_run: StageRun,
+        event_type: str,
+        summary: str,
+        payload: dict[str, Any] | None = None,
+        agent_name: str | None = None,
+    ) -> Event:
+        event = Event(
+            project_id=stage_run.project_id,
+            stage_run_id=stage_run.id,
+            event_type=event_type,
+            agent_name=agent_name,
+            stage_name=stage_run.stage_type,
+            summary=summary,
+            payload=json.dumps(payload or {}, ensure_ascii=False),
+            created_at=datetime.now(),
+        )
+        self.db.add(event)
+        self.db.flush()
+        return event
+
+    def add_stage_run_instruction(self, stage_run_id: int, content: str, author: str = "boss") -> Event:
+        stage_run = self.db.query(StageRun).filter(StageRun.id == stage_run_id).first()
+        if not stage_run:
+            raise HTTPException(status_code=404, detail="Stage run not found")
+        return self.append_stage_run_event(
+            stage_run=stage_run,
+            event_type="stage_instruction",
+            summary=f"Instruction added for {stage_run.stage_type}",
+            payload={"content": content, "author": author},
+            agent_name=author,
+        )
+
+    def serialize_event(self, event: Event) -> dict[str, Any]:
+        return {
+            "id": event.id,
+            "project_id": event.project_id,
+            "stage_run_id": event.stage_run_id,
+            "asset_id": event.asset_id,
+            "event_type": event.event_type,
+            "agent_name": event.agent_name,
+            "stage_name": event.stage_name,
+            "summary": event.summary,
+            "payload": json.loads(event.payload or "{}"),
+            "created_at": event.created_at.isoformat() if event.created_at else None,
         }
 
     def serialize_stage_run(self, stage_run: StageRun) -> dict[str, Any]:

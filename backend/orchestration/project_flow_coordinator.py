@@ -43,6 +43,17 @@ class ProjectFlowCoordinator:
 
         self.service._sync_stage_inputs_for_stage(stage_run, now)
 
-        StageExecutionKernel(self.service).execute(project, stage_run, now)
+        result = StageExecutionKernel(self.service).execute(project, stage_run, now)
+        self.service.append_stage_run_event(
+            stage_run=stage_run,
+            event_type="stage_execution_completed",
+            summary=result.summary,
+            payload={
+                "status": result.status,
+                "emitted_asset_types": result.emitted_asset_types,
+                "queued_stage_types": result.queued_stage_types,
+                "pending_decision_types": result.pending_decision_types,
+            },
+        )
 
         return stage_run
