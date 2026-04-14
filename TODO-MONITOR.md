@@ -21,15 +21,19 @@
 - [x] 补齐 bootstrap 资产依赖链（`build_artifact` <- `prd+ux_blueprint+tech_spec`; `release_pack` <- `build_artifact+test_report`）
 
 ### Phase D — 进行中
-- [ ] 新建 `backend/adapters/stage_execution_adapter.py`，把当前 bootstrap 执行入口从 coordinator 再抽一层
-- [ ] 新建 `backend/adapters/legacy_pipeline_adapter.py`，定义新 `StageRun` -> 旧 pipeline 的桥接边界
-- [ ] 让 `continue_project()` 只依赖稳定的 stage execution adapter 接口
-- [ ] 明确 autopilot / checkpoint 在 adapter 层的分流点
+- [x] 新建 `backend/execution/stage_execution_kernel.py`，把 `continue_project()` 的执行入口切到新 kernel
+- [x] 新建 `backend/execution/bootstrap_stage_executor.py`，承接当前 scaffold-only 的 stage 执行逻辑
+- [x] 明确 `legacy_pipeline_adapter` 不再是默认路线，改为待审查项（见 `docs/ADR-021-pipeline-disposition-and-stage-execution-kernel.md`）
+- [ ] 审计 `backend/pipeline/`，形成 `保留 / 改造 / 废弃` 清单并映射到实际文件/接口
+- [ ] 把可复用的 runtime primitive 从旧 `pipeline/engine.py` 抽成独立薄模块，而不是继续保留整块 pipeline
+- [ ] 明确 autopilot / checkpoint 在新 kernel 层的分流点
 
 ### Phase E — 待开始
+- [ ] 为真实 stage executor 设计输入/输出 contract（替换 bootstrap executor）
 - [ ] 为新内核补 `tasks / agent_runs / audit` 的挂接策略
 - [ ] 把 `llm_calls / tool_calls / events` 逐步重新挂到 `project_id / stage_run_id / asset_id`
 - [ ] 补更细的 stage execution 可观测事件
+- [ ] 前端逐步去 pipeline 化，Mission Board 替代旧 pipeline dashboard 主视图
 
 ---
 

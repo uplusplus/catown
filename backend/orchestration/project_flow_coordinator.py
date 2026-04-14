@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from models.database import Project, StageRun
-from orchestration.stage_execution_coordinator import StageExecutionCoordinator
+from execution.stage_execution_kernel import StageExecutionKernel
 
 
 class ProjectFlowCoordinator:
@@ -43,6 +43,6 @@ class ProjectFlowCoordinator:
 
         self.service._sync_stage_inputs_for_stage(stage_run, now)
 
-        StageExecutionCoordinator(self.service).run(project, stage_run, now)
+        StageExecutionKernel(self.service).execute(project, stage_run, now)
 
         return stage_run
