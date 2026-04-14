@@ -257,15 +257,6 @@ class ProjectService:
         return project, stage_run
 
     def _bootstrap_product_definition_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        existing_prd = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == "prd", Asset.is_current == True)
-            .first()
-        )
-        if existing_prd:
-            existing_prd.is_current = False
-            existing_prd.status = "superseded"
-
         brief = (
             self.db.query(Asset)
             .filter(Asset.project_id == project.id, Asset.asset_type == "project_brief", Asset.is_current == True)
@@ -275,46 +266,131 @@ class ProjectService:
         if brief:
             source_refs.append({"asset_id": brief.id, "asset_type": brief.asset_type})
 
-        prd = Asset(
-            project_id=project.id,
+        self._replace_current_asset(
+            project=project,
             asset_type="prd",
             title=f"{project.name} PRD v1",
             summary="Bootstrap PRD scaffold generated from the confirmed project brief",
-            content_json=json.dumps(
-                {
-                    "project_name": project.name,
-                    "one_line_vision": project.one_line_vision,
-                    "problem_statement": project.description or project.one_line_vision,
-                    "target_users": json.loads(project.target_users_json or "[]"),
-                    "target_platforms": json.loads(project.target_platforms_json or "[]"),
-                    "scope_basis": "confirmed_project_brief",
-                    "status": "draft",
-                },
-                ensure_ascii=False,
-            ),
+            content_json={
+                "project_name": project.name,
+                "one_line_vision": project.one_line_vision,
+                "problem_statement": project.description or project.one_line_vision,
+                "target_users": json.loads(project.target_users_json or "[]"),
+                "target_platforms": json.loads(project.target_platforms_json or "[]"),
+                "scope_basis": "confirmed_project_brief",
+                "status": "draft",
+            },
             content_markdown=(
                 f"# {project.name} PRD\n\n"
                 f"## Vision\n{project.one_line_vision or 'TBD'}\n\n"
                 f"## Scope Basis\nConfirmed project brief\n\n"
                 f"## Next Step\nRefine requirements, flows, and UX blueprint.\n"
             ),
-            version=1,
+            owner_agent="product_manager",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        self._replace_current_asset(
+            project=project,
+            asset_type="ux_blueprint",
+            title=f"{project.name} UX Blueprint v1",
+            summary="Bootstrap UX blueprint scaffold aligned with the initial PRD",
+            content_json={
+                "project_name": project.name,
+                "primary_user_flow": ["Landing", "Core task", "Progress feedback"],
+                "key_screens": ["home", "detail", "settings"],
+                "design_goal": "Simple, low-friction MVP flow",
+                "status": "draft",
+            },
+            content_markdown=(
+                f"# {project.name} UX Blueprint\n\n"
+                f"## Design Goal\nSimple, low-friction MVP flow.\n\n"
+                f"## Key Screens\n- Home\n- Detail\n- Settings\n"
+            ),
+            owner_agent="ux_designer",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        self._replace_current_asset(
+            project=project,
+            asset_type="tech_spec",
+            title=f"{project.name} Tech Spec v1",
+            summary="Bootstrap technical specification scaffold derived from the product definition stage",
+            content_json={
+                "project_name": project.name,
+                "architecture_style": "modular monolith",
+                "target_platforms": json.loads(project.target_platforms_json or "[]"),
+                "core_modules": ["project", "asset", "decision", "stage_run"],
+                "delivery_goal": "Support the first product-definition to release-ready pipeline",
+                "status": "draft",
+            },
+            content_markdown=(
+                f"# {project.name} Tech Spec\n\n"
+                f"## Architecture Style\nModular monolith\n\n"
+                f"## Core Modules\n- project\n- asset\n- decision\n- stage_run\n"
+            ),
+            owner_agent="architect",
+            stage_run=stage_run,
+            source_refs=source_refs,
+            now=now,
+        )
+
+        stage_run.status = "completed"
+        stage_run.ended_at = now
+        stage_run.summary = "Product definition bootstrap completed and PRD/UX/Tech scaffolds created"
+
+        project.current_focus = "Review PRD, UX blueprint, and tech spec scaffolds"
+        project.latest_summary = "Product definition scaffolds generated"
+
+    def _replace_current_asset(
+        self,
+        project: Project,
+        asset_type: str,
+        title: str,
+        summary: str,
+        content_json: dict[str, Any],
+        content_markdown: str,
+        owner_agent: str,
+        stage_run: StageRun,
+        source_refs: list[dict[str, Any]],
+        now: datetime,
+    ) -> Asset:
+        existing = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == asset_type, Asset.is_current == True)
+            .first()
+        )
+        version = 1
+        supersedes_asset_id = None
+        if existing:
+            existing.is_current = False
+            existing.status = "superseded"
+            version = existing.version + 1
+            supersedes_asset_id = existing.id
+
+        asset = Asset(
+            project_id=project.id,
+            asset_type=asset_type,
+            title=title,
+            summary=summary,
+            content_json=json.dumps(content_json, ensure_ascii=False),
+            content_markdown=content_markdown,
+            version=version,
             status="draft",
             is_current=True,
-            owner_agent="product_manager",
+            owner_agent=owner_agent,
             produced_by_stage_run_id=stage_run.id,
+            supersedes_asset_id=supersedes_asset_id,
             source_input_refs_json=json.dumps(source_refs, ensure_ascii=False),
             created_at=now,
             updated_at=now,
         )
-        self.db.add(prd)
-
-        stage_run.status = "completed"
-        stage_run.ended_at = now
-        stage_run.summary = "Product definition bootstrap completed and PRD scaffold created"
-
-        project.current_focus = "Review and refine the PRD scaffold"
-        project.latest_summary = "Product definition scaffold generated"
+        self.db.add(asset)
+        return asset
 
     def build_dashboard(self) -> dict[str, Any]:
         projects = [self.serialize_project(project) for project in self.list_projects_v2()]
@@ -381,6 +457,8 @@ class ProjectService:
             recommended_next_action = "resolve_scope_confirmation"
         elif current_stage_run and current_stage_run.status in {"running", "waiting_for_decision"}:
             recommended_next_action = "review_current_stage"
+        elif current_stage_run and current_stage_run.status == "completed" and {"prd", "ux_blueprint", "tech_spec"}.issubset(set(assets_by_type.keys())):
+            recommended_next_action = "review_definition_bundle"
         elif current_stage_run and current_stage_run.status == "completed" and "prd" in assets_by_type:
             recommended_next_action = "review_prd"
 

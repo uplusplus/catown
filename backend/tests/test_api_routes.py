@@ -302,13 +302,13 @@ class TestProjectV2Endpoints:
         assert continued.status_code == 200
         payload = continued.json()
         assert payload["project"]["status"] == "defining"
-        assert payload["project"]["current_focus"] == "Review and refine the PRD scaffold"
+        assert payload["project"]["current_focus"] == "Review PRD, UX blueprint, and tech spec scaffolds"
         assert payload["stage_run"]["stage_type"] == "product_definition"
         assert payload["stage_run"]["status"] == "completed"
 
         assets = client.get(f"/api/v2/projects/{project_id}/assets").json()
-        asset_types = [item["asset_type"] for item in assets]
-        assert "prd" in asset_types
+        asset_types = {item["asset_type"] for item in assets}
+        assert {"prd", "ux_blueprint", "tech_spec"}.issubset(asset_types)
 
     def test_project_overview_v2_returns_mission_board_shape(self, client):
         project = client.post("/api/v2/projects", json={
@@ -327,9 +327,11 @@ class TestProjectV2Endpoints:
         assert "assets_by_type" in data
         assert "project_brief" in data["assets_by_type"]
         assert "prd" in data["assets_by_type"]
+        assert "ux_blueprint" in data["assets_by_type"]
+        assert "tech_spec" in data["assets_by_type"]
         assert data["stage_summary"]["completed"] >= 1
         assert data["release_readiness"]["status"] == "in_definition"
-        assert data["recommended_next_action"] == "review_prd"
+        assert data["recommended_next_action"] == "review_definition_bundle"
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
