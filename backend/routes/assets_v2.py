@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from models.database import Asset, get_db
+from models.database import Asset, DecisionAsset, StageRunAsset, get_db
 from services.project_service import ProjectService
 
 router = APIRouter(prefix="/api/v2", tags=["v2-assets"])
@@ -25,4 +25,16 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return service.serialize_asset(asset)
+
+    stage_links = db.query(StageRunAsset).filter(StageRunAsset.asset_id == asset_id).all()
+    decision_links = db.query(DecisionAsset).filter(DecisionAsset.asset_id == asset_id).all()
+    payload = service.serialize_asset(asset)
+    payload["stage_links"] = [
+        {"stage_run_id": link.stage_run_id, "direction": link.direction}
+        for link in stage_links
+    ]
+    payload["decision_links"] = [
+        {"decision_id": link.decision_id, "relation_role": link.relation_role}
+        for link in decision_links
+    ]
+    return payload

@@ -335,6 +335,7 @@ class TestProjectV2Endpoints:
         assert data["stage_summary"]["completed"] >= 1
         assert data["release_readiness"]["status"] == "in_definition"
         assert data["recommended_next_action"] == "continue_project"
+        assert any(link["asset_type"] == "prd" and link["direction"] == "output" for link in data["stage_asset_links"])
 
     def test_release_ready_chain_generates_build_test_and_release_assets(self, client):
         project = client.post("/api/v2/projects", json={
@@ -374,9 +375,10 @@ class TestProjectV2Endpoints:
 
         overview4 = client.get(f"/api/v2/projects/{project_id}/overview").json()
         assert "release_pack" in overview4["assets_by_type"]
-        assert overview4["recommended_next_action"] == "resolve_scope_confirmation"
+        assert overview4["recommended_next_action"] == "resolve_release_approval"
         assert overview4["release_readiness"]["status"] == "not_ready"
         assert any(item["decision_type"] == "release_approval" and item["status"] == "pending" for item in overview4["pending_decisions"])
+        assert any(link["decision_type"] == "release_approval" and link["asset_type"] == "release_pack" for link in overview4["decision_asset_links"])
 
     def test_release_approval_marks_project_released(self, client):
         project = client.post("/api/v2/projects", json={
@@ -400,6 +402,13 @@ class TestProjectV2Endpoints:
         overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
         assert overview["project"]["status"] == "released"
         assert overview["assets_by_type"]["release_pack"]["status"] == "approved"
+
+        release_pack_id = overview["assets_by_type"]["release_pack"]["id"]
+        asset_detail = client.get(f"/api/v2/assets/{release_pack_id}")
+        assert asset_detail.status_code == 200
+        asset_data = asset_detail.json()
+        assert any(link["relation_role"] == "approval_target" for link in asset_data["decision_links"])
+        assert any(link["direction"] == "output" for link in asset_data["stage_links"])
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={

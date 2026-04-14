@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from models.database import Asset, Decision, DecisionAsset, Project, StageRun, StageRunAsset
+from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 
 
 class ProjectService:
@@ -220,6 +220,14 @@ class ProjectService:
             else:
                 if release_pack:
                     release_pack.status = "in_review"
+                self._queue_stage_run(
+                    project=project,
+                    stage_type="release_preparation",
+                    triggered_by="decision",
+                    trigger_reason=f"decision:{decision.id}:rejected",
+                    summary="Release preparation queued after release approval rejection",
+                    now=now,
+                )
                 project.status = "release_ready"
                 project.current_focus = "Revise release pack and rerun release preparation"
                 project.latest_summary = "Release approval rejected; release pack needs revision"
@@ -673,7 +681,6 @@ class ProjectService:
             self.db.add(DecisionAsset(decision_id=decision_id, asset_id=asset_id, relation_role=relation_role, created_at=now))
 
     def _link_asset_dependency(self, project_id: int, from_asset_id: int, to_asset_id: int, now: datetime) -> None:
-        from models.database import AssetLink
         existing = self.db.query(AssetLink).filter(
             AssetLink.project_id == project_id,
             AssetLink.from_asset_id == from_asset_id,
@@ -736,6 +743,8 @@ class ProjectService:
         current_stage_run = stage_runs[0] if stage_runs else None
         pending_decisions = [decision for decision in decisions if decision.status == "pending"]
         assets_by_type = {asset.asset_type: self.serialize_asset(asset) for asset in assets}
+        stage_asset_links = self._serialize_stage_asset_links(project_id)
+        decision_asset_links = self._serialize_decision_asset_links(project_id)
         stage_summary = {
             "total": len(stage_runs),
             "completed": len([run for run in stage_runs if run.status == "completed"]),
@@ -765,7 +774,7 @@ class ProjectService:
 
         recommended_next_action = "continue_project"
         if pending_decisions:
-            recommended_next_action = "resolve_scope_confirmation"
+            recommended_next_action = self._recommended_decision_action(pending_decisions[0].decision_type)
         elif current_stage_run and current_stage_run.status == "queued":
             recommended_next_action = "continue_project"
         elif current_stage_run and current_stage_run.status in {"running", "waiting_for_decision"}:
@@ -789,6 +798,8 @@ class ProjectService:
             "pending_decisions": [self.serialize_decision(decision) for decision in pending_decisions],
             "decision_history": [self.serialize_decision(decision) for decision in decisions[:10]],
             "stage_summary": stage_summary,
+            "stage_asset_links": stage_asset_links,
+            "decision_asset_links": decision_asset_links,
             "open_tasks_summary": {"count": 0},
             "recent_activity": [self.serialize_stage_run(stage_run) for stage_run in stage_runs[:5]],
             "release_readiness": release_readiness,
@@ -818,6 +829,76 @@ class ProjectService:
             "created_at": project.created_at.isoformat() if project.created_at else None,
         }
 
+    def _recommended_decision_action(self, decision_type: str) -> str:
+        action_map = {
+            "scope_confirmation": "resolve_scope_confirmation",
+            "direction_confirmation": "resolve_direction_confirmation",
+            "release_approval": "resolve_release_approval",
+        }
+        return action_map.get(decision_type, "resolve_decision")
+
+    def _serialize_stage_asset_links(self, project_id: int) -> list[dict[str, Any]]:
+        rows = (
+            self.db.query(StageRunAsset, Asset, StageRun)
+            .join(Asset, StageRunAsset.asset_id == Asset.id)
+            .join(StageRun, StageRunAsset.stage_run_id == StageRun.id)
+            .filter(StageRun.project_id == project_id)
+            .all()
+        )
+        return [
+            {
+                "stage_run_id": stage_run.id,
+                "stage_type": stage_run.stage_type,
+                "asset_id": asset.id,
+                "asset_type": asset.asset_type,
+                "direction": link.direction,
+            }
+            for link, asset, stage_run in rows
+        ]
+
+    def _serialize_decision_asset_links(self, project_id: int) -> list[dict[str, Any]]:
+        rows = (
+            self.db.query(DecisionAsset, Asset, Decision)
+            .join(Asset, DecisionAsset.asset_id == Asset.id)
+            .join(Decision, DecisionAsset.decision_id == Decision.id)
+            .filter(Decision.project_id == project_id)
+            .all()
+        )
+        return [
+            {
+                "decision_id": decision.id,
+                "decision_type": decision.decision_type,
+                "asset_id": asset.id,
+                "asset_type": asset.asset_type,
+                "relation_role": link.relation_role,
+            }
+            for link, asset, decision in rows
+        ]
+
+    def _serialize_asset_dependencies(self, asset_id: int) -> dict[str, list[dict[str, Any]]]:
+        upstream_rows = (
+            self.db.query(AssetLink, Asset)
+            .join(Asset, AssetLink.from_asset_id == Asset.id)
+            .filter(AssetLink.to_asset_id == asset_id)
+            .all()
+        )
+        downstream_rows = (
+            self.db.query(AssetLink, Asset)
+            .join(Asset, AssetLink.to_asset_id == Asset.id)
+            .filter(AssetLink.from_asset_id == asset_id)
+            .all()
+        )
+        return {
+            "upstream": [
+                {"asset_id": asset.id, "asset_type": asset.asset_type, "relation_type": link.relation_type}
+                for link, asset in upstream_rows
+            ],
+            "downstream": [
+                {"asset_id": asset.id, "asset_type": asset.asset_type, "relation_type": link.relation_type}
+                for link, asset in downstream_rows
+            ],
+        }
+
     def serialize_asset(self, asset: Asset) -> dict[str, Any]:
         return {
             "id": asset.id,
@@ -832,6 +913,7 @@ class ProjectService:
             "is_current": asset.is_current,
             "approval_decision_id": asset.approval_decision_id,
             "produced_by_stage_run_id": asset.produced_by_stage_run_id,
+            "relationships": self._serialize_asset_dependencies(asset.id),
             "updated_at": asset.updated_at.isoformat() if asset.updated_at else None,
             "created_at": asset.created_at.isoformat() if asset.created_at else None,
         }
