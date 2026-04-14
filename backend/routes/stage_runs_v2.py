@@ -22,7 +22,4 @@ def list_stage_runs(project_id: int, db: Session = Depends(get_db)) -> list[dict
 @router.get("/stage-runs/{stage_run_id}")
 def get_stage_run(stage_run_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    stage_run = db.query(StageRun).filter(StageRun.id == stage_run_id).first()
-    if not stage_run:
-        raise HTTPException(status_code=404, detail="Stage run not found")
-    return service.serialize_stage_run(stage_run)
+    return service.build_stage_run_detail(stage_run_id)

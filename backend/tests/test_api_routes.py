@@ -410,6 +410,25 @@ class TestProjectV2Endpoints:
         assert any(link["relation_role"] == "approval_target" for link in asset_data["decision_links"])
         assert any(link["direction"] == "output" for link in asset_data["stage_links"])
 
+    def test_stage_run_detail_returns_inputs_outputs_and_decisions(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "StageDetail",
+            "one_line_vision": "Validate stage detail"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        client.post(f"/api/v2/projects/{project_id}/continue")
+
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        product_definition = next(item for item in stage_runs if item["stage_type"] == "product_definition")
+        detail = client.get(f"/api/v2/stage-runs/{product_definition['id']}")
+        assert detail.status_code == 200
+        data = detail.json()
+        assert data["stage_run"]["stage_type"] == "product_definition"
+        assert any(asset["asset_type"] == "project_brief" for asset in data["input_assets"])
+        assert any(asset["asset_type"] == "prd" for asset in data["output_assets"])
+
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
             "name": "Dash",
@@ -419,8 +438,11 @@ class TestProjectV2Endpoints:
         assert r.status_code == 200
         data = r.json()
         assert "projects" in data
+        assert "project_cards" in data
+        assert "summary" in data
         assert "pending_decisions" in data
         assert len(data["projects"]) >= 1
+        assert len(data["project_cards"]) >= 1
 
 
 class TestChatEndpoints:

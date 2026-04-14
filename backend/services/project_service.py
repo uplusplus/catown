@@ -707,16 +707,51 @@ class ProjectService:
                 self._link_stage_run_asset(stage_run.id, asset.id, "input", now)
 
     def build_dashboard(self) -> dict[str, Any]:
-        projects = [self.serialize_project(project) for project in self.list_projects_v2()]
+        project_rows = self.list_projects_v2()
         decisions = self.db.query(Decision).filter(Decision.status == "pending").order_by(Decision.created_at.desc()).all()
         assets = self.db.query(Asset).filter(Asset.is_current == True).order_by(Asset.updated_at.desc()).limit(10).all()
         stage_runs = self.db.query(StageRun).filter(StageRun.status.in_(["queued", "running", "waiting_for_decision"])).all()
+
+        project_cards = []
+        for project in project_rows:
+            project_decisions = self.db.query(Decision).filter(Decision.project_id == project.id, Decision.status == "pending").all()
+            current_assets = self.db.query(Asset).filter(Asset.project_id == project.id, Asset.is_current == True).all()
+            current_stage_run = self.db.query(StageRun).filter(StageRun.project_id == project.id).order_by(StageRun.created_at.desc()).first()
+            asset_types = sorted(asset.asset_type for asset in current_assets)
+            project_cards.append({
+                "project": self.serialize_project(project),
+                "current_stage_run": self.serialize_stage_run(current_stage_run) if current_stage_run else None,
+                "pending_decision_count": len(project_decisions),
+                "asset_types": asset_types,
+                "recommended_next_action": (
+                    self._recommended_decision_action(project_decisions[0].decision_type)
+                    if project_decisions else ("continue_project" if current_stage_run and current_stage_run.status == "queued" else "review_project")
+                ),
+            })
+
+        alerts = [
+            {
+                "kind": "pending_decision",
+                "project_id": decision.project_id,
+                "decision_id": decision.id,
+                "decision_type": decision.decision_type,
+                "title": decision.title,
+            }
+            for decision in decisions[:10]
+        ]
+
         return {
-            "projects": projects,
+            "projects": [self.serialize_project(project) for project in project_rows],
+            "project_cards": project_cards,
             "pending_decisions": [self.serialize_decision(decision) for decision in decisions],
             "recent_assets": [self.serialize_asset(asset) for asset in assets],
             "active_stage_runs": [self.serialize_stage_run(stage_run) for stage_run in stage_runs],
-            "alerts": [],
+            "summary": {
+                "project_count": len(project_rows),
+                "pending_decision_count": len(decisions),
+                "active_stage_run_count": len(stage_runs),
+            },
+            "alerts": alerts,
         }
 
     def build_project_overview(self, project_id: int) -> dict[str, Any]:
@@ -935,6 +970,43 @@ class ProjectService:
             "resolution_note": decision.resolution_note,
             "created_at": decision.created_at.isoformat() if decision.created_at else None,
             "resolved_at": decision.resolved_at.isoformat() if decision.resolved_at else None,
+        }
+
+    def build_stage_run_detail(self, stage_run_id: int) -> dict[str, Any]:
+        stage_run = self.db.query(StageRun).filter(StageRun.id == stage_run_id).first()
+        if not stage_run:
+            raise HTTPException(status_code=404, detail="Stage run not found")
+
+        project = self.get_project_or_404(stage_run.project_id)
+        link_rows = (
+            self.db.query(StageRunAsset, Asset)
+            .join(Asset, StageRunAsset.asset_id == Asset.id)
+            .filter(StageRunAsset.stage_run_id == stage_run_id)
+            .all()
+        )
+        decision_rows = self.db.query(Decision).filter(Decision.stage_run_id == stage_run_id).order_by(Decision.created_at.desc()).all()
+
+        input_assets = []
+        output_assets = []
+        for link, asset in link_rows:
+            payload = self.serialize_asset(asset)
+            payload["direction"] = link.direction
+            if link.direction == "input":
+                input_assets.append(payload)
+            else:
+                output_assets.append(payload)
+
+        return {
+            "stage_run": self.serialize_stage_run(stage_run),
+            "project": self.serialize_project(project),
+            "input_assets": input_assets,
+            "output_assets": output_assets,
+            "decisions": [self.serialize_decision(decision) for decision in decision_rows],
+            "summary": {
+                "input_count": len(input_assets),
+                "output_count": len(output_assets),
+                "decision_count": len(decision_rows),
+            },
         }
 
     def serialize_stage_run(self, stage_run: StageRun) -> dict[str, Any]:
