@@ -228,6 +228,73 @@ class TestProjectEndpoints:
 
 # ==================== 聊天 API ====================
 
+class TestProjectV2Endpoints:
+    def test_create_project_v2_bootstraps_brief_and_decision(self, client):
+        r = client.post("/api/v2/projects", json={
+            "name": "FitPet",
+            "one_line_vision": "Help pet owners manage feeding and exercise",
+            "target_platforms": ["ios", "android"],
+            "target_users": ["pet owners"],
+            "references": ["https://example.com/reference"]
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["project"]["status"] == "draft"
+        assert data["project"]["current_stage"] == "briefing"
+
+        project_id = data["project"]["id"]
+        assets = client.get(f"/api/v2/projects/{project_id}/assets")
+        assert assets.status_code == 200
+        assert len(assets.json()) == 1
+        assert assets.json()[0]["asset_type"] == "project_brief"
+        assert assets.json()[0]["status"] == "in_review"
+
+        decisions = client.get(f"/api/v2/projects/{project_id}/decisions")
+        assert decisions.status_code == 200
+        assert len(decisions.json()) == 1
+        assert decisions.json()[0]["decision_type"] == "scope_confirmation"
+        assert decisions.json()[0]["status"] == "pending"
+
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs")
+        assert stage_runs.status_code == 200
+        assert len(stage_runs.json()) == 1
+        assert stage_runs.json()[0]["stage_type"] == "briefing"
+
+    def test_resolve_scope_confirmation_moves_project_forward(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "CatPlan",
+            "one_line_vision": "Ship an MVP cat social planner"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+
+        resolved = client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={
+            "resolution": "approved",
+            "selected_option": "approve_brief_v1",
+            "note": "Looks good"
+        })
+        assert resolved.status_code == 200
+        payload = resolved.json()
+        assert payload["decision"]["status"] == "approved"
+        assert payload["project"]["status"] == "brief_confirmed"
+        assert payload["project"]["current_stage"] == "product_definition"
+
+        assets = client.get(f"/api/v2/projects/{project_id}/assets").json()
+        assert assets[0]["status"] == "approved"
+
+    def test_dashboard_v2_returns_project_first_view(self, client):
+        client.post("/api/v2/projects", json={
+            "name": "Dash",
+            "one_line_vision": "Validate dashboard aggregation"
+        })
+        r = client.get("/api/v2/dashboard")
+        assert r.status_code == 200
+        data = r.json()
+        assert "projects" in data
+        assert "pending_decisions" in data
+        assert len(data["projects"]) >= 1
+
+
 class TestChatEndpoints:
     def test_send_message(self, client):
         r = client.post("/api/projects", json={

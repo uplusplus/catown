@@ -591,9 +591,139 @@ pending -> expired
 
 ---
 
-## 10. 实施建议
+## 10. 重构策略决策
 
-### 10.1 P0 最小闭环
+### 10.1 重构总原则
+
+在评估当前 Catown 实现后，进一步明确以下策略：
+
+- 以 `best architecture first` 为原则推进下一阶段设计
+- 不以兼容旧业务抽象为默认目标
+- 旧实现最多作为底层能力来源，不作为新业务骨架的约束
+
+换句话说，后续设计应优先确保：
+
+- 业务对象正确
+- 主流程正确
+- 系统长期可演进
+
+而不是优先保证：
+
+- 与旧 `chatroom/message` 心智兼容
+- 与旧 `pipeline` 暴露方式兼容
+- 为了少改代码而保留错误抽象
+
+### 10.2 重建核心、复用底层
+
+本 ADR 进一步做出实现策略判断：
+
+**不建议继续在当前主结构上做兼容式改造，而应采用“重建核心、复用底层”的路线。**
+
+原因：
+
+- 现有系统主轴更接近 `chatroom/message + pipeline`
+- 目标系统主轴应为 `project/asset/decision/stage_run`
+- 如果在旧主轴上继续堆业务概念，容易形成双重模型和长期复杂度债务
+
+因此：
+
+#### 建议重建的部分
+
+- 新业务数据模型
+- 主 API 边界
+- 项目主流程状态机
+- Dashboard / Mission Board / Release Center 的主信息架构
+
+#### 建议复用或吸收的部分
+
+- Agent runtime
+- 工具调用体系
+- 事件总线 / WebSocket 推送能力
+- 审计可视化能力
+- 部分 Pipeline 执行能力（作为底层执行引擎，而非产品主轴）
+
+### 10.3 分阶段重构路线图
+
+建议按以下阶段推进：
+
+#### Phase 0: 冻结旧世界观
+
+- 停止继续强化 `chatroom/message` 作为主业务入口
+- 停止把旧 Pipeline 继续包装成产品主轴
+- 旧结构保留运行价值，但不再承载新业务抽象
+
+#### Phase 1: 建立新内核
+
+优先落地以下四个核心对象：
+
+- `Project`
+- `Asset`
+- `Decision`
+- `StageRun`
+
+这是第一刀，也是最关键的一刀。
+
+#### Phase 2: 重做主 API
+
+围绕新内核建立最小闭环 API：
+
+- `POST /projects`
+- `GET /projects/:id`
+- `GET /projects/:id/assets`
+- `GET /projects/:id/decisions`
+- `POST /projects/:id/continue`
+- `POST /decisions/:id/resolve`
+
+#### Phase 3: 重做主前端
+
+把前端主入口切换到：
+
+- Dashboard
+- Mission Board
+- Release Center
+
+使其围绕项目状态、资产、决策运作，而不是围绕聊天室消息运作。
+
+#### Phase 4: 吸收旧执行能力
+
+- 将旧 Agent 执行能力映射到 `StageRun/AgentRun`
+- 将旧 Pipeline 拆解为可复用执行引擎
+- 将聊天与协作信息降级为辅助视图/审计视图
+
+#### Phase 5: 清理旧壳
+
+当新主链路稳定后：
+
+- 降级旧 `chatroom` 主路径
+- 降级或移除旧 Pipeline 主入口
+- 清理只服务旧世界观的耦合代码
+
+### 10.4 第一阶段的实施顺序
+
+建议第一阶段按如下顺序执行：
+
+1. 新增数据模型和迁移草案，只加新表，不急于删除旧表
+2. 新增并行 API，不先替换所有旧 API
+3. 打通最小闭环：
+   - 创建项目
+   - 生成 `Project Brief`
+   - 创建 `scope_confirmation`
+   - 用户确认
+   - 进入下一阶段
+4. 再让前端接入这条最小闭环
+5. 最后逐步挂入 PRD / Tech Spec / Release Pack 等资产链
+
+### 10.5 近期里程碑建议
+
+- `M1`：`Project / Asset / Decision / StageRun` 模型与 API 落地
+- `M2`：新建项目到 Brief 确认流程跑通
+- `M3`：Mission Board 基于新对象可展示项目推进
+- `M4`：Build / Test / Release 资产接入新链路
+- `M5`：旧 `chatroom` 主路径降级为辅助视图
+
+## 11. 实施建议
+
+### 11.1 P0 最小闭环
 
 为了尽快让业务架构落地，建议优先实现：
 
@@ -616,7 +746,7 @@ pending -> expired
 
 ---
 
-## 11. 与 ADR-013 的关系
+## 12. 与 ADR-013 的关系
 
 - `ADR-013` 回答“Catown 应该成为什么”
 - `ADR-014` 回答“Catown 内部应该怎么推进”
@@ -628,6 +758,6 @@ pending -> expired
 
 ---
 
-## 12. 一句话总结
+## 13. 一句话总结
 
 **Catown 的项目推进应围绕 Project / Asset / StageRun / Decision 四个主轴建立标准化状态流，使“创建项目 -> 确认 MVP -> 生成蓝图 -> 自动生产 -> 发布准备 -> 发布迭代”成为可执行、可追踪、可恢复的业务流程。**

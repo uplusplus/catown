@@ -100,13 +100,34 @@ class Project(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
-    status = Column(String, default="active")  # active, completed, paused
+    status = Column(String, default="active")  # legacy default: active, completed, paused
+    slug = Column(String, unique=True, index=True, nullable=True)
+    one_line_vision = Column(Text)
+    target_users_json = Column(Text, default="[]")
+    target_platforms_json = Column(Text, default="[]")
+    primary_outcome = Column(Text)
+    references_json = Column(Text, default="[]")
+    current_stage = Column(String)
+    execution_mode = Column(String, default="autopilot")
+    health_status = Column(String, default="healthy")
+    autopilot_enabled = Column(Boolean, default=True)
+    current_focus = Column(Text)
+    blocking_reason = Column(Text)
+    latest_summary = Column(Text)
+    last_decision_id = Column(Integer, ForeignKey("decisions.id"), nullable=True)
+    last_activity_at = Column(DateTime, default=datetime.now)
+    released_at = Column(DateTime)
+    legacy_mode = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     # 关系
     chatroom = relationship("Chatroom", uselist=False, back_populates="project")
     agent_assignments = relationship("AgentAssignment", back_populates="project")
     pipeline = relationship("Pipeline", uselist=False, back_populates="project")
+    assets = relationship("Asset", back_populates="project")
+    decisions = relationship("Decision", back_populates="project", foreign_keys="Decision.project_id")
+    stage_runs = relationship("StageRun", back_populates="project")
 
 
 class Chatroom(Base):
@@ -265,6 +286,119 @@ class PipelineMessage(Base):
 
     # 关系
     run = relationship("PipelineRun", back_populates="messages")
+
+
+class Asset(Base):
+    """正式项目资产"""
+    __tablename__ = "assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    asset_type = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text)
+    content_json = Column(Text, default="{}")
+    content_markdown = Column(Text)
+    version = Column(Integer, default=1)
+    status = Column(String, default="draft", index=True)
+    is_current = Column(Boolean, default=True)
+    owner_agent = Column(String)
+    produced_by_stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=True)
+    supersedes_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    approval_decision_id = Column(Integer, ForeignKey("decisions.id"), nullable=True)
+    source_input_refs_json = Column(Text, default="[]")
+    storage_path = Column(String)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    approved_at = Column(DateTime)
+
+    project = relationship("Project", back_populates="assets")
+    produced_by_stage_run = relationship("StageRun", back_populates="produced_assets", foreign_keys=[produced_by_stage_run_id])
+
+
+class Decision(Base):
+    """人工决策对象"""
+    __tablename__ = "decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=True, index=True)
+    decision_type = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    context_summary = Column(Text)
+    recommended_option = Column(String)
+    alternative_options_json = Column(Text, default="[]")
+    impact_summary = Column(Text)
+    requested_action = Column(Text)
+    status = Column(String, default="pending", index=True)
+    resolved_option = Column(String)
+    resolution_note = Column(Text)
+    blocking_stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=True)
+    created_by_system_reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    resolved_at = Column(DateTime)
+    expires_at = Column(DateTime)
+
+    project = relationship("Project", back_populates="decisions", foreign_keys=[project_id])
+    stage_run = relationship("StageRun", back_populates="decisions", foreign_keys=[stage_run_id])
+
+
+class StageRun(Base):
+    """阶段推进实例"""
+    __tablename__ = "stage_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    stage_type = Column(String, nullable=False, index=True)
+    run_index = Column(Integer, default=1)
+    status = Column(String, default="queued", index=True)
+    triggered_by = Column(String)
+    trigger_reason = Column(Text)
+    execution_mode_snapshot = Column(String)
+    summary = Column(Text)
+    checkpoint_summary = Column(Text)
+    failed_reason = Column(Text)
+    started_at = Column(DateTime)
+    ended_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+    project = relationship("Project", back_populates="stage_runs")
+    decisions = relationship("Decision", back_populates="stage_run", foreign_keys="Decision.stage_run_id")
+    produced_assets = relationship("Asset", back_populates="produced_by_stage_run", foreign_keys="Asset.produced_by_stage_run_id")
+
+
+class AssetLink(Base):
+    """资产依赖关系"""
+    __tablename__ = "asset_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    from_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    to_asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    relation_type = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class DecisionAsset(Base):
+    """决策关联资产"""
+    __tablename__ = "decision_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    decision_id = Column(Integer, ForeignKey("decisions.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    relation_role = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class StageRunAsset(Base):
+    """阶段输入输出资产关联"""
+    __tablename__ = "stage_run_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    direction = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 def init_database():
