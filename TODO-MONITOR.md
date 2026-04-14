@@ -24,8 +24,9 @@
 - [x] 新建 `backend/execution/stage_execution_kernel.py`，把 `continue_project()` 的执行入口切到新 kernel
 - [x] 新建 `backend/execution/bootstrap_stage_executor.py`，承接当前 scaffold-only 的 stage 执行逻辑
 - [x] 明确 `legacy_pipeline_adapter` 不再是默认路线，改为待审查项（见 `docs/ADR-021-pipeline-disposition-and-stage-execution-kernel.md`）
-- [ ] 审计 `backend/pipeline/`，形成 `保留 / 改造 / 废弃` 清单并映射到实际文件/接口
+- [x] 审计 `backend/pipeline/`，形成 `保留 / 改造 / 废弃` 清单并映射到实际文件/接口（见 `docs/pipeline-file-audit.md`）
 - [ ] 把可复用的 runtime primitive 从旧 `pipeline/engine.py` 抽成独立薄模块，而不是继续保留整块 pipeline
+  - 已完成首块：`backend/execution/workspace_guard.py`（workspace/path safety helpers）
 - [ ] 明确 autopilot / checkpoint 在新 kernel 层的分流点
 
 ### Phase E — 待开始

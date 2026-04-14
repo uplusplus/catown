@@ -26,6 +26,7 @@ from models.database import (
     StageArtifact, PipelineMessage, Project,
 )
 from models.audit import LLMCall, ToolCall, Event
+from execution.workspace_guard import ensure_workspace_path, is_catown_protected, validate_workspace_target
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
 
@@ -61,38 +62,12 @@ TOOLS_DIR = Path(__file__).parent.parent / "tools"
 
 def _get_workspace(run: PipelineRun) -> Path:
     """获取 pipeline run 的 workspace 目录"""
-    ws = Path(run.workspace_path) if run.workspace_path else Path("data") / "workspaces" / f"run_{run.id}"
-    ws.mkdir(parents=True, exist_ok=True)
-    return ws
+    return ensure_workspace_path(run.workspace_path, run.id)
 
 
 def _validate_path(workspace: Path, target: Path, allow_catown: bool = False) -> Optional[str]:
-    """
-    统一路径校验：symlink 解析 + 目录穿越检测 + .catown 保护。
-    返回错误消息字符串，None 表示校验通过。
-    """
-    try:
-        real_target = target.resolve()
-        real_workspace = workspace.resolve()
-    except (OSError, RuntimeError) as e:
-        return f"Error: path resolution failed: {e}"
-
-    # 检查是否在 workspace 内（处理 symlink 攻击）
-    try:
-        real_target.relative_to(real_workspace)
-    except ValueError:
-        return "Error: path traversal detected (access outside workspace)"
-
-    # 检查是否试图访问 .catown 目录（项目元数据，Agent 不可读写）
-    if not allow_catown:
-        try:
-            rel = real_target.relative_to(real_workspace)
-            if str(rel) == ".catown" or str(rel).startswith(".catown" + os.sep):
-                return "Error: access to .catown/ directory is restricted (project metadata)"
-        except ValueError:
-            pass
-
-    return None
+    """兼容旧调用点；实际校验逻辑已抽到 execution.workspace_guard。"""
+    return validate_workspace_target(workspace, target, allow_catown=allow_catown)
 
 
 def _tool_read_file(workspace: Path, file_path: str) -> str:
@@ -137,12 +112,8 @@ def _tool_list_files(workspace: Path, dir_path: str = ".") -> str:
     entries = []
     for p in sorted(target.iterdir()):
         # 跳过 .catown 目录
-        try:
-            rel = p.relative_to(workspace.resolve())
-            if str(rel) == ".catown" or str(rel).startswith(".catown" + os.sep):
-                continue
-        except ValueError:
-            pass
+        if is_catown_protected(workspace, p.resolve()):
+            continue
         rel = p.relative_to(workspace)
         entries.append(f"{'[DIR]' if p.is_dir() else '[FILE]'} {rel}")
     return "\n".join(entries) or "(empty)"
