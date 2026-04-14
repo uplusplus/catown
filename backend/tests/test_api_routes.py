@@ -376,7 +376,8 @@ class TestProjectV2Endpoints:
         overview4 = client.get(f"/api/v2/projects/{project_id}/overview").json()
         assert "release_pack" in overview4["assets_by_type"]
         assert overview4["recommended_next_action"] == "resolve_release_approval"
-        assert overview4["release_readiness"]["status"] == "not_ready"
+        assert overview4["release_readiness"]["status"] == "awaiting_release_approval"
+        assert overview4["release_readiness"]["next_gate"] == "release_approval"
         assert any(item["decision_type"] == "release_approval" and item["status"] == "pending" for item in overview4["pending_decisions"])
         assert any(link["decision_type"] == "release_approval" and link["asset_type"] == "release_pack" for link in overview4["decision_asset_links"])
 
@@ -443,6 +444,8 @@ class TestProjectV2Endpoints:
         assert "pending_decisions" in data
         assert len(data["projects"]) >= 1
         assert len(data["project_cards"]) >= 1
+        assert "release_readiness" in data["project_cards"][0]
+        assert "recommended_next_action" in data["project_cards"][0]
 
 
 class TestChatEndpoints:

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
+from orchestration.project_flow_coordinator import ProjectFlowCoordinator
 
 
 class ProjectService:
@@ -248,42 +249,8 @@ class ProjectService:
 
     def continue_project(self, project_id: int) -> tuple[Project, StageRun]:
         project = self.get_project_or_404(project_id)
-        pending = self.get_pending_decisions(project_id)
-        if pending:
-            raise HTTPException(status_code=409, detail="Project has pending decisions and cannot continue yet")
-
-        stage_run = (
-            self.db.query(StageRun)
-            .filter(StageRun.project_id == project_id, StageRun.status == "queued")
-            .order_by(StageRun.created_at.asc())
-            .first()
-        )
-        if not stage_run:
-            raise HTTPException(status_code=409, detail="Project has no queued stage run to continue")
-
-        now = datetime.now()
-        stage_run.status = "running"
-        if not stage_run.started_at:
-            stage_run.started_at = now
-
-        project.current_stage = stage_run.stage_type
-        project.current_focus = f"Running {stage_run.stage_type}"
-        project.latest_summary = f"{stage_run.stage_type} stage is now running"
-        project.last_activity_at = now
-        if project.status == "brief_confirmed":
-            project.status = "defining"
-
-        self._sync_stage_inputs_for_stage(stage_run, now)
-
-        if stage_run.stage_type == "product_definition":
-            self._bootstrap_product_definition_output(project, stage_run, now)
-        elif stage_run.stage_type == "build_execution":
-            self._bootstrap_build_execution_output(project, stage_run, now)
-        elif stage_run.stage_type == "qa_validation":
-            self._bootstrap_qa_validation_output(project, stage_run, now)
-        elif stage_run.stage_type == "release_preparation":
-            self._bootstrap_release_preparation_output(project, stage_run, now)
-
+        coordinator = ProjectFlowCoordinator(self)
+        stage_run = coordinator.continue_project(project)
         self.db.commit()
         self.db.refresh(project)
         self.db.refresh(stage_run)
@@ -718,11 +685,16 @@ class ProjectService:
             current_assets = self.db.query(Asset).filter(Asset.project_id == project.id, Asset.is_current == True).all()
             current_stage_run = self.db.query(StageRun).filter(StageRun.project_id == project.id).order_by(StageRun.created_at.desc()).first()
             asset_types = sorted(asset.asset_type for asset in current_assets)
+            release_readiness = self._build_release_readiness(
+                {asset.asset_type: self.serialize_asset(asset) for asset in current_assets},
+                project_decisions,
+            )
             project_cards.append({
                 "project": self.serialize_project(project),
                 "current_stage_run": self.serialize_stage_run(current_stage_run) if current_stage_run else None,
                 "pending_decision_count": len(project_decisions),
                 "asset_types": asset_types,
+                "release_readiness": release_readiness,
                 "recommended_next_action": (
                     self._recommended_decision_action(project_decisions[0].decision_type)
                     if project_decisions else ("continue_project" if current_stage_run and current_stage_run.status == "queued" else "review_project")
@@ -789,23 +761,7 @@ class ProjectService:
                 None,
             ),
         }
-        release_readiness = {
-            "has_prd": "prd" in assets_by_type,
-            "has_release_pack": "release_pack" in assets_by_type,
-            "pending_release_decision": any(
-                decision.decision_type == "release_approval" and decision.status == "pending"
-                for decision in decisions
-            ),
-            "status": "not_ready",
-        }
-        if release_readiness["has_release_pack"] and not release_readiness["pending_release_decision"]:
-            release_readiness["status"] = "ready_for_review"
-        elif "test_report" in assets_by_type:
-            release_readiness["status"] = "qa_complete"
-        elif "task_plan" in assets_by_type or "build_artifact" in assets_by_type:
-            release_readiness["status"] = "in_build"
-        elif release_readiness["has_prd"]:
-            release_readiness["status"] = "in_definition"
+        release_readiness = self._build_release_readiness(assets_by_type, decisions)
 
         recommended_next_action = "continue_project"
         if pending_decisions:
@@ -863,6 +819,31 @@ class ProjectService:
             "last_activity_at": project.last_activity_at.isoformat() if project.last_activity_at else None,
             "created_at": project.created_at.isoformat() if project.created_at else None,
         }
+
+    def _build_release_readiness(self, assets_by_type: dict[str, Any], decisions: list[Decision]) -> dict[str, Any]:
+        pending_release_decision = any(
+            decision.decision_type == "release_approval" and decision.status == "pending"
+            for decision in decisions
+        )
+        readiness = {
+            "has_prd": "prd" in assets_by_type,
+            "has_release_pack": "release_pack" in assets_by_type,
+            "pending_release_decision": pending_release_decision,
+            "status": "not_ready",
+            "next_gate": None,
+        }
+        if readiness["has_release_pack"] and pending_release_decision:
+            readiness["status"] = "awaiting_release_approval"
+            readiness["next_gate"] = "release_approval"
+        elif readiness["has_release_pack"]:
+            readiness["status"] = "ready_for_review"
+        elif "test_report" in assets_by_type:
+            readiness["status"] = "qa_complete"
+        elif "task_plan" in assets_by_type or "build_artifact" in assets_by_type:
+            readiness["status"] = "in_build"
+        elif readiness["has_prd"]:
+            readiness["status"] = "in_definition"
+        return readiness
 
     def _recommended_decision_action(self, decision_type: str) -> str:
         action_map = {
