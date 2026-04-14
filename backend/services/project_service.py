@@ -248,10 +248,73 @@ class ProjectService:
         if project.status == "brief_confirmed":
             project.status = "defining"
 
+        if stage_run.stage_type == "product_definition":
+            self._bootstrap_product_definition_output(project, stage_run, now)
+
         self.db.commit()
         self.db.refresh(project)
         self.db.refresh(stage_run)
         return project, stage_run
+
+    def _bootstrap_product_definition_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
+        existing_prd = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == "prd", Asset.is_current == True)
+            .first()
+        )
+        if existing_prd:
+            existing_prd.is_current = False
+            existing_prd.status = "superseded"
+
+        brief = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project.id, Asset.asset_type == "project_brief", Asset.is_current == True)
+            .first()
+        )
+        source_refs = []
+        if brief:
+            source_refs.append({"asset_id": brief.id, "asset_type": brief.asset_type})
+
+        prd = Asset(
+            project_id=project.id,
+            asset_type="prd",
+            title=f"{project.name} PRD v1",
+            summary="Bootstrap PRD scaffold generated from the confirmed project brief",
+            content_json=json.dumps(
+                {
+                    "project_name": project.name,
+                    "one_line_vision": project.one_line_vision,
+                    "problem_statement": project.description or project.one_line_vision,
+                    "target_users": json.loads(project.target_users_json or "[]"),
+                    "target_platforms": json.loads(project.target_platforms_json or "[]"),
+                    "scope_basis": "confirmed_project_brief",
+                    "status": "draft",
+                },
+                ensure_ascii=False,
+            ),
+            content_markdown=(
+                f"# {project.name} PRD\n\n"
+                f"## Vision\n{project.one_line_vision or 'TBD'}\n\n"
+                f"## Scope Basis\nConfirmed project brief\n\n"
+                f"## Next Step\nRefine requirements, flows, and UX blueprint.\n"
+            ),
+            version=1,
+            status="draft",
+            is_current=True,
+            owner_agent="product_manager",
+            produced_by_stage_run_id=stage_run.id,
+            source_input_refs_json=json.dumps(source_refs, ensure_ascii=False),
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(prd)
+
+        stage_run.status = "completed"
+        stage_run.ended_at = now
+        stage_run.summary = "Product definition bootstrap completed and PRD scaffold created"
+
+        project.current_focus = "Review and refine the PRD scaffold"
+        project.latest_summary = "Product definition scaffold generated"
 
     def build_dashboard(self) -> dict[str, Any]:
         projects = [self.serialize_project(project) for project in self.list_projects_v2()]

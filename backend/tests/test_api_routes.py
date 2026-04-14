@@ -302,8 +302,13 @@ class TestProjectV2Endpoints:
         assert continued.status_code == 200
         payload = continued.json()
         assert payload["project"]["status"] == "defining"
+        assert payload["project"]["current_focus"] == "Review and refine the PRD scaffold"
         assert payload["stage_run"]["stage_type"] == "product_definition"
-        assert payload["stage_run"]["status"] == "running"
+        assert payload["stage_run"]["status"] == "completed"
+
+        assets = client.get(f"/api/v2/projects/{project_id}/assets").json()
+        asset_types = [item["asset_type"] for item in assets]
+        assert "prd" in asset_types
 
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
