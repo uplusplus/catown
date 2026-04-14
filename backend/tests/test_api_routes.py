@@ -310,6 +310,27 @@ class TestProjectV2Endpoints:
         asset_types = [item["asset_type"] for item in assets]
         assert "prd" in asset_types
 
+    def test_project_overview_v2_returns_mission_board_shape(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "Overview",
+            "one_line_vision": "Validate overview aggregation"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        client.post(f"/api/v2/projects/{project_id}/continue")
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview")
+        assert overview.status_code == 200
+        data = overview.json()
+        assert data["project"]["id"] == project_id
+        assert "assets_by_type" in data
+        assert "project_brief" in data["assets_by_type"]
+        assert "prd" in data["assets_by_type"]
+        assert data["stage_summary"]["completed"] >= 1
+        assert data["release_readiness"]["status"] == "in_definition"
+        assert data["recommended_next_action"] == "review_prd"
+
     def test_dashboard_v2_returns_project_first_view(self, client):
         client.post("/api/v2/projects", json={
             "name": "Dash",

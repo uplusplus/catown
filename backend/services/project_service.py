@@ -331,21 +331,71 @@ class ProjectService:
 
     def build_project_overview(self, project_id: int) -> dict[str, Any]:
         project = self.get_project_or_404(project_id)
-        assets = self.db.query(Asset).filter(Asset.project_id == project_id, Asset.is_current == True).all()
-        decisions = self.db.query(Decision).filter(Decision.project_id == project_id).order_by(Decision.created_at.desc()).all()
-        stage_runs = self.db.query(StageRun).filter(StageRun.project_id == project_id).order_by(StageRun.created_at.desc()).all()
+        assets = (
+            self.db.query(Asset)
+            .filter(Asset.project_id == project_id, Asset.is_current == True)
+            .order_by(Asset.updated_at.desc())
+            .all()
+        )
+        decisions = (
+            self.db.query(Decision)
+            .filter(Decision.project_id == project_id)
+            .order_by(Decision.created_at.desc())
+            .all()
+        )
+        stage_runs = (
+            self.db.query(StageRun)
+            .filter(StageRun.project_id == project_id)
+            .order_by(StageRun.created_at.desc())
+            .all()
+        )
+
+        current_stage_run = stage_runs[0] if stage_runs else None
+        pending_decisions = [decision for decision in decisions if decision.status == "pending"]
+        assets_by_type = {asset.asset_type: self.serialize_asset(asset) for asset in assets}
+        stage_summary = {
+            "total": len(stage_runs),
+            "completed": len([run for run in stage_runs if run.status == "completed"]),
+            "active": len([run for run in stage_runs if run.status in {"queued", "running", "waiting_for_decision"}]),
+            "latest_completed_stage": next(
+                (run.stage_type for run in stage_runs if run.status == "completed"),
+                None,
+            ),
+        }
+        release_readiness = {
+            "has_prd": "prd" in assets_by_type,
+            "has_release_pack": "release_pack" in assets_by_type,
+            "pending_release_decision": any(
+                decision.decision_type == "release_approval" and decision.status == "pending"
+                for decision in decisions
+            ),
+            "status": "not_ready",
+        }
+        if release_readiness["has_release_pack"] and not release_readiness["pending_release_decision"]:
+            release_readiness["status"] = "ready_for_review"
+        elif release_readiness["has_prd"]:
+            release_readiness["status"] = "in_definition"
+
+        recommended_next_action = "continue_project"
+        if pending_decisions:
+            recommended_next_action = "resolve_scope_confirmation"
+        elif current_stage_run and current_stage_run.status in {"running", "waiting_for_decision"}:
+            recommended_next_action = "review_current_stage"
+        elif current_stage_run and current_stage_run.status == "completed" and "prd" in assets_by_type:
+            recommended_next_action = "review_prd"
+
         return {
             "project": self.serialize_project(project),
-            "current_stage_run": self.serialize_stage_run(stage_runs[0]) if stage_runs else None,
+            "current_stage_run": self.serialize_stage_run(current_stage_run) if current_stage_run else None,
             "key_assets": [self.serialize_asset(asset) for asset in assets],
-            "pending_decisions": [self.serialize_decision(d) for d in decisions if d.status == "pending"],
+            "assets_by_type": assets_by_type,
+            "pending_decisions": [self.serialize_decision(decision) for decision in pending_decisions],
+            "decision_history": [self.serialize_decision(decision) for decision in decisions[:10]],
+            "stage_summary": stage_summary,
             "open_tasks_summary": {"count": 0},
             "recent_activity": [self.serialize_stage_run(stage_run) for stage_run in stage_runs[:5]],
-            "recommended_next_action": (
-                "resolve_scope_confirmation"
-                if any(d.status == "pending" for d in decisions)
-                else "continue_project"
-            ),
+            "release_readiness": release_readiness,
+            "recommended_next_action": recommended_next_action,
         }
 
     def serialize_project(self, project: Project) -> dict[str, Any]:
