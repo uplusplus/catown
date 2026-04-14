@@ -2016,7 +2016,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L1",
       "id": "backend_execution_tool_dispatch_py",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_dispatch.py"
     },
     {
@@ -2025,7 +2025,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L20",
       "id": "tool_dispatch_load_agent_tools",
-      "community": 23,
+      "community": 22,
       "norm_label": "load_agent_tools()"
     },
     {
@@ -2034,7 +2034,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L35",
       "id": "tool_dispatch_get_workspace",
-      "community": 23,
+      "community": 22,
       "norm_label": "get_workspace()"
     },
     {
@@ -2043,7 +2043,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L39",
       "id": "tool_dispatch_validate_path",
-      "community": 23,
+      "community": 22,
       "norm_label": "validate_path()"
     },
     {
@@ -2052,7 +2052,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L43",
       "id": "tool_dispatch_tool_read_file",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_read_file()"
     },
     {
@@ -2061,7 +2061,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L55",
       "id": "tool_dispatch_tool_write_file",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_write_file()"
     },
     {
@@ -2070,7 +2070,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L68",
       "id": "tool_dispatch_tool_list_files",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_list_files()"
     },
     {
@@ -2079,7 +2079,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L86",
       "id": "tool_dispatch_tool_execute_code",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_execute_code()"
     },
     {
@@ -2088,7 +2088,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L125",
       "id": "tool_dispatch_tool_web_search",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_web_search()"
     },
     {
@@ -2097,7 +2097,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L158",
       "id": "tool_dispatch_tool_send_message_placeholder",
-      "community": 23,
+      "community": 22,
       "norm_label": "tool_send_message_placeholder()"
     },
     {
@@ -2106,7 +2106,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L172",
       "id": "tool_dispatch_build_tools_for_agent",
-      "community": 23,
+      "community": 22,
       "norm_label": "build_tools_for_agent()"
     },
     {
@@ -2115,7 +2115,7 @@
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L202",
       "id": "tool_dispatch_execute_tool",
-      "community": 23,
+      "community": 22,
       "norm_label": "execute_tool()"
     },
     {
@@ -2123,7 +2123,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/tool_dispatch.py",
       "source_location": "L21",
-      "community": 23,
+      "community": 22,
       "norm_label": "load per-agent tool allowlists from agents.json.",
       "id": "tool_dispatch_rationale_21"
     },
@@ -2292,26 +2292,44 @@
     {
       "label": "bootstrap_stage_executor.py",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L1",
-      "id": "backend_execution_bootstrap_stage_executor_py",
+      "id": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
       "community": 4,
       "norm_label": "bootstrap_stage_executor.py"
     },
     {
       "label": "StageExecutionResult",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L11",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L12",
       "id": "bootstrap_stage_executor_stageexecutionresult",
       "community": 4,
       "norm_label": "stageexecutionresult"
     },
     {
+      "label": "AssetRecipe",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L23",
+      "id": "bootstrap_stage_executor_assetrecipe",
+      "community": 4,
+      "norm_label": "assetrecipe"
+    },
+    {
+      "label": "StagePlan",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L35",
+      "id": "bootstrap_stage_executor_stageplan",
+      "community": 4,
+      "norm_label": "stageplan"
+    },
+    {
       "label": "BootstrapStageExecutor",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L21",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L50",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor",
       "community": 4,
       "norm_label": "bootstrapstageexecutor"
@@ -2319,8 +2337,8 @@
     {
       "label": ".__init__()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L31",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L241",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_init",
       "community": 4,
       "norm_label": ".__init__()"
@@ -2328,8 +2346,8 @@
     {
       "label": ".supports()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L36",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L246",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_supports",
       "community": 4,
       "norm_label": ".supports()"
@@ -2337,65 +2355,83 @@
     {
       "label": ".execute()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L39",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L249",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
       "community": 4,
       "norm_label": ".execute()"
     },
     {
-      "label": "._product_definition()",
+      "label": "._emit_assets()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L48",
-      "id": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L271",
+      "id": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
       "community": 4,
-      "norm_label": "._product_definition()"
+      "norm_label": "._emit_assets()"
     },
     {
-      "label": "._build_execution()",
+      "label": "._finalize_stage()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L142",
-      "id": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L296",
+      "id": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
       "community": 4,
-      "norm_label": "._build_execution()"
+      "norm_label": "._finalize_stage()"
     },
     {
-      "label": "._qa_validation()",
+      "label": "._queue_next_stage()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L210",
-      "id": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L306",
+      "id": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
       "community": 4,
-      "norm_label": "._qa_validation()"
+      "norm_label": "._queue_next_stage()"
     },
     {
-      "label": "._release_preparation()",
+      "label": "._attach_release_approval()",
       "file_type": "code",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L257",
-      "id": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L320",
+      "id": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "community": 4,
-      "norm_label": "._release_preparation()"
+      "norm_label": "._attach_release_approval()"
     },
     {
       "label": "Minimal execution contract for stage executors under the new kernel.",
       "file_type": "rationale",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L12",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L13",
+      "id": "bootstrap_stage_executor_rationale_13",
       "community": 4,
-      "norm_label": "minimal execution contract for stage executors under the new kernel.",
-      "id": "bootstrap_stage_executor_rationale_12"
+      "norm_label": "minimal execution contract for stage executors under the new kernel."
+    },
+    {
+      "label": "Describes one scaffold asset emitted by a bootstrap stage.",
+      "file_type": "rationale",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L24",
+      "id": "bootstrap_stage_executor_rationale_24",
+      "community": 4,
+      "norm_label": "describes one scaffold asset emitted by a bootstrap stage."
+    },
+    {
+      "label": "Static bootstrap plan for a stage before special-case side effects run.",
+      "file_type": "rationale",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L36",
+      "id": "bootstrap_stage_executor_rationale_36",
+      "community": 4,
+      "norm_label": "static bootstrap plan for a stage before special-case side effects run."
     },
     {
       "label": "Owns the scaffold generation path until a real runtime replaces it.",
       "file_type": "rationale",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L22",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L51",
+      "id": "bootstrap_stage_executor_rationale_51",
       "community": 4,
-      "norm_label": "owns the scaffold generation path until a real runtime replaces it.",
-      "id": "bootstrap_stage_executor_rationale_22"
+      "norm_label": "owns the scaffold generation path until a real runtime replaces it."
     },
     {
       "label": "llm_audit.py",
@@ -6102,7 +6138,7 @@
       "source_file": "backend/chatrooms/manager.py",
       "source_location": "L67",
       "id": "manager_chatroommanager_send_message",
-      "community": 0,
+      "community": 15,
       "norm_label": ".send_message()"
     },
     {
@@ -6317,18 +6353,18 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L1",
-      "id": "project_bootstrap_coordinator_rationale_1",
       "community": 4,
-      "norm_label": "initial project bootstrap coordinator for the v2 project-first flow."
+      "norm_label": "initial project bootstrap coordinator for the v2 project-first flow.",
+      "id": "project_bootstrap_coordinator_rationale_1"
     },
     {
       "label": "Creates the initial briefing stage, brief asset, and scope decision.",
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L9",
-      "id": "project_bootstrap_coordinator_rationale_9",
       "community": 4,
-      "norm_label": "creates the initial briefing stage, brief asset, and scope decision."
+      "norm_label": "creates the initial briefing stage, brief asset, and scope decision.",
+      "id": "project_bootstrap_coordinator_rationale_9"
     },
     {
       "label": "project_flow_coordinator.py",
@@ -6453,7 +6489,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L1",
       "id": "backend_agents_registry_py",
-      "community": 2,
+      "community": 23,
       "norm_label": "registry.py"
     },
     {
@@ -6462,7 +6498,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L23",
       "id": "registry_agentregistry",
-      "community": 2,
+      "community": 23,
       "norm_label": "agentregistry"
     },
     {
@@ -6471,7 +6507,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L26",
       "id": "registry_agentregistry_init",
-      "community": 2,
+      "community": 23,
       "norm_label": ".__init__()"
     },
     {
@@ -6480,7 +6516,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L30",
       "id": "registry_agentregistry_register",
-      "community": 2,
+      "community": 23,
       "norm_label": ".register()"
     },
     {
@@ -6489,7 +6525,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L35",
       "id": "registry_agentregistry_get",
-      "community": 2,
+      "community": 23,
       "norm_label": ".get()"
     },
     {
@@ -6498,7 +6534,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L39",
       "id": "registry_agentregistry_get_config",
-      "community": 2,
+      "community": 23,
       "norm_label": ".get_config()"
     },
     {
@@ -6507,7 +6543,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L43",
       "id": "registry_agentregistry_list_agents",
-      "community": 2,
+      "community": 23,
       "norm_label": ".list_agents()"
     },
     {
@@ -6516,7 +6552,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L47",
       "id": "registry_agentregistry_get_tools_for_agent",
-      "community": 2,
+      "community": 23,
       "norm_label": ".get_tools_for_agent()"
     },
     {
@@ -6525,7 +6561,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L59",
       "id": "registry_get_builtin_agent_configs",
-      "community": 2,
+      "community": 23,
       "norm_label": "get_builtin_agent_configs()"
     },
     {
@@ -6534,7 +6570,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L139",
       "id": "registry_register_builtin_agents",
-      "community": 2,
+      "community": 23,
       "norm_label": "register_builtin_agents()"
     },
     {
@@ -6543,7 +6579,7 @@
       "source_file": "backend/agents/registry.py",
       "source_location": "L177",
       "id": "registry_get_registry",
-      "community": 2,
+      "community": 23,
       "norm_label": "get_registry()"
     },
     {
@@ -6831,7 +6867,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L41",
       "id": "core_agent",
-      "community": 2,
+      "community": 0,
       "norm_label": "agent"
     },
     {
@@ -6840,7 +6876,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L49",
       "id": "core_agent_init",
-      "community": 2,
+      "community": 0,
       "norm_label": ".__init__()"
     },
     {
@@ -6885,7 +6921,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L74",
       "id": "core_agent_set_model",
-      "community": 2,
+      "community": 0,
       "norm_label": ".set_model()"
     },
     {
@@ -6894,7 +6930,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L78",
       "id": "core_agent_get_available_models",
-      "community": 2,
+      "community": 0,
       "norm_label": ".get_available_models()"
     },
     {
@@ -6903,7 +6939,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L85",
       "id": "core_agent_get_effective_model",
-      "community": 2,
+      "community": 0,
       "norm_label": ".get_effective_model()"
     },
     {
@@ -6912,7 +6948,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L93",
       "id": "core_agent_get_model_info",
-      "community": 2,
+      "community": 0,
       "norm_label": ".get_model_info()"
     },
     {
@@ -6930,7 +6966,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L127",
       "id": "core_agent_get_memory_summary",
-      "community": 2,
+      "community": 0,
       "norm_label": ".get_memory_summary()"
     },
     {
@@ -6939,7 +6975,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L136",
       "id": "core_agent_add_conversation_turn",
-      "community": 2,
+      "community": 0,
       "norm_label": ".add_conversation_turn()"
     },
     {
@@ -6948,7 +6984,7 @@
       "source_file": "backend/agents/core.py",
       "source_location": "L140",
       "id": "core_agent_reset_conversation",
-      "community": 2,
+      "community": 0,
       "norm_label": ".reset_conversation()"
     },
     {
@@ -10035,7 +10071,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L1",
       "id": "backend_tests_test_collaboration_tools_py",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_collaboration_tools.py"
     },
     {
@@ -10044,7 +10080,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L13",
       "id": "test_collaboration_tools_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "coordinator()"
     },
     {
@@ -10062,7 +10098,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L27",
       "id": "test_collaboration_tools_test_delegate_success",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_delegate_success()"
     },
     {
@@ -10071,7 +10107,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L41",
       "id": "test_collaboration_tools_test_delegate_to_nonexistent_agent",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_delegate_to_nonexistent_agent()"
     },
     {
@@ -10080,7 +10116,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L54",
       "id": "test_collaboration_tools_test_delegate_without_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_delegate_without_coordinator()"
     },
     {
@@ -10089,7 +10125,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L66",
       "id": "test_collaboration_tools_test_delegate_registers_task_in_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_delegate_registers_task_in_coordinator()"
     },
     {
@@ -10116,7 +10152,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L94",
       "id": "test_collaboration_tools_test_broadcast_success",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_broadcast_success()"
     },
     {
@@ -10125,7 +10161,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L105",
       "id": "test_collaboration_tools_test_broadcast_without_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_broadcast_without_coordinator()"
     },
     {
@@ -10143,7 +10179,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L116",
       "id": "test_collaboration_tools_test_check_existing_task",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_check_existing_task()"
     },
     {
@@ -10152,7 +10188,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L134",
       "id": "test_collaboration_tools_test_check_nonexistent_task",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_check_nonexistent_task()"
     },
     {
@@ -10161,7 +10197,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L141",
       "id": "test_collaboration_tools_test_check_without_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_check_without_coordinator()"
     },
     {
@@ -10179,7 +10215,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L152",
       "id": "test_collaboration_tools_test_list_with_collaborators",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_list_with_collaborators()"
     },
     {
@@ -10188,7 +10224,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L161",
       "id": "test_collaboration_tools_test_list_empty_chatroom_from_db",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_list_empty_chatroom_from_db()"
     },
     {
@@ -10197,7 +10233,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L174",
       "id": "test_collaboration_tools_test_list_without_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_list_without_coordinator()"
     },
     {
@@ -10215,7 +10251,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L185",
       "id": "test_collaboration_tools_test_dm_success",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_dm_success()"
     },
     {
@@ -10224,7 +10260,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L196",
       "id": "test_collaboration_tools_test_dm_to_nonexistent",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_dm_to_nonexistent()"
     },
     {
@@ -10233,7 +10269,7 @@
       "source_file": "backend/tests/test_collaboration_tools.py",
       "source_location": "L206",
       "id": "test_collaboration_tools_test_dm_without_coordinator",
-      "community": 21,
+      "community": 0,
       "norm_label": "test_dm_without_coordinator()"
     },
     {
@@ -11655,7 +11691,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L77",
       "id": "test_visual_rendering_testlayoutconstraintconsistency",
-      "community": 22,
+      "community": 21,
       "norm_label": "testlayoutconstraintconsistency"
     },
     {
@@ -11664,7 +11700,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L86",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_get_attr",
-      "community": 22,
+      "community": 21,
       "norm_label": "._get_attr()"
     },
     {
@@ -11673,7 +11709,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L99",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_side_panel_has_min_h_0",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_side_panel_has_min_h_0()"
     },
     {
@@ -11682,7 +11718,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L108",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_chat_container_has_min_h_0",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_chat_container_has_min_h_0()"
     },
     {
@@ -11691,7 +11727,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L117",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_messages_area_has_overflow_auto",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_messages_area_has_overflow_auto()"
     },
     {
@@ -11700,7 +11736,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L122",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_logs_content_has_overflow_auto",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_logs_content_has_overflow_auto()"
     },
     {
@@ -11709,7 +11745,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L127",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_logs_content_has_flex_1",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_logs_content_has_flex_1()"
     },
     {
@@ -11718,7 +11754,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L132",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_side_panel_parent_has_overflow_hidden",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_side_panel_parent_has_overflow_hidden()"
     },
     {
@@ -11727,7 +11763,7 @@
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L144",
       "id": "test_visual_rendering_testlayoutconstraintconsistency_test_flex_col_children_have_overflow_when_scrollable",
-      "community": 22,
+      "community": 21,
       "norm_label": ".test_flex_col_children_have_overflow_when_scrollable()"
     },
     {
@@ -12518,7 +12554,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L78",
-      "community": 22,
+      "community": 21,
       "norm_label": "flex \u5e03\u5c40\u4e2d,overflow-y-auto \u7684\u5b50\u5143\u7d20\u8981\u80fd\u6eda\u52a8,\u5176\u7236\u7ea7 flex \u5bb9\u5668     \u5fc5\u987b\u6709 min-h-0(\u6216\u56fa\u5b9a height/max-hei",
       "id": "test_visual_rendering_rationale_78"
     },
@@ -12527,7 +12563,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L100",
-      "community": 22,
+      "community": 21,
       "norm_label": "side-panel \u662f flex-col \u7236\u5bb9\u5668,\u5fc5\u987b\u6709 min-h-0\u3002",
       "id": "test_visual_rendering_rationale_100"
     },
@@ -12536,7 +12572,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L109",
-      "community": 22,
+      "community": 21,
       "norm_label": "chat-container \u662f flex-col \u7236\u5bb9\u5668,\u5fc5\u987b\u6709 min-h-0\u3002",
       "id": "test_visual_rendering_rationale_109"
     },
@@ -12545,7 +12581,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L118",
-      "community": 22,
+      "community": 21,
       "norm_label": "messages-area \u5fc5\u987b\u6709 overflow-y-auto\u3002",
       "id": "test_visual_rendering_rationale_118"
     },
@@ -12554,7 +12590,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L123",
-      "community": 22,
+      "community": 21,
       "norm_label": "logs-content \u5fc5\u987b\u6709 overflow-y-auto\u3002",
       "id": "test_visual_rendering_rationale_123"
     },
@@ -12563,7 +12599,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L128",
-      "community": 22,
+      "community": 21,
       "norm_label": "logs-content \u5fc5\u987b\u6709 flex-1 \u4ee5\u5360\u6ee1\u7236\u5bb9\u5668\u5269\u4f59\u7a7a\u95f4\u3002",
       "id": "test_visual_rendering_rationale_128"
     },
@@ -12572,7 +12608,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L133",
-      "community": 22,
+      "community": 21,
       "norm_label": "side-panel \u7684\u7236\u7ea7(chat-area wrapper)\u5fc5\u987b\u6709 overflow-hidden\u3002",
       "id": "test_visual_rendering_rationale_133"
     },
@@ -12581,7 +12617,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_visual_rendering.py",
       "source_location": "L145",
-      "community": 22,
+      "community": 21,
       "norm_label": "\u7cfb\u7edf\u6027\u68c0\u67e5:\u6240\u6709 flex-col \u5bb9\u5668\u4e2d,\u6709 overflow-y-auto \u7684\u5b50\u5143\u7d20,         \u5176\u7236\u7ea7\u5fc5\u987b\u6709 min-h-0 \u6216\u56fa\u5b9a\u9ad8\u5ea6\u3002",
       "id": "test_visual_rendering_rationale_145"
     },
@@ -14330,6 +14366,24 @@
       "community": 7,
       "norm_label": "\u8bbf\u95ee\u4e0d\u5b58\u5728\u7684 pipeline \u2192 404",
       "id": "test_integration_e2e_rationale_539"
+    },
+    {
+      "label": "Minimal execution contract for stage executors under the new kernel.",
+      "file_type": "rationale",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L12",
+      "community": 4,
+      "norm_label": "minimal execution contract for stage executors under the new kernel.",
+      "id": "bootstrap_stage_executor_rationale_12"
+    },
+    {
+      "label": "Owns the scaffold generation path until a real runtime replaces it.",
+      "file_type": "rationale",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L22",
+      "community": 4,
+      "norm_label": "owns the scaffold generation path until a real runtime replaces it.",
+      "id": "bootstrap_stage_executor_rationale_22"
     },
     {
       "label": "\u4ece agents.json \u52a0\u8f7d\u6bcf\u4e2a Agent \u7684\u5de5\u5177\u5217\u8868",
@@ -25061,85 +25115,85 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L11",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L12",
       "weight": 1.0,
-      "_src": "backend_execution_bootstrap_stage_executor_py",
+      "_src": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
       "_tgt": "bootstrap_stage_executor_stageexecutionresult",
-      "source": "backend_execution_bootstrap_stage_executor_py",
+      "source": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
       "target": "bootstrap_stage_executor_stageexecutionresult",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L21",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L23",
       "weight": 1.0,
-      "_src": "backend_execution_bootstrap_stage_executor_py",
+      "_src": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
+      "_tgt": "bootstrap_stage_executor_assetrecipe",
+      "source": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
+      "target": "bootstrap_stage_executor_assetrecipe",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L35",
+      "weight": 1.0,
+      "_src": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
+      "_tgt": "bootstrap_stage_executor_stageplan",
+      "source": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
+      "target": "bootstrap_stage_executor_stageplan",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L50",
+      "weight": 1.0,
+      "_src": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
       "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "source": "backend_execution_bootstrap_stage_executor_py",
+      "source": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
       "target": "bootstrap_stage_executor_bootstrapstageexecutor",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L134",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L263",
       "weight": 1.0,
-      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
       "_tgt": "bootstrap_stage_executor_stageexecutionresult",
       "source": "bootstrap_stage_executor_stageexecutionresult",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L202",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L350",
       "weight": 1.0,
-      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "_tgt": "bootstrap_stage_executor_stageexecutionresult",
       "source": "bootstrap_stage_executor_stageexecutionresult",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L249",
-      "weight": 1.0,
-      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
-      "_tgt": "bootstrap_stage_executor_stageexecutionresult",
-      "source": "bootstrap_stage_executor_stageexecutionresult",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L310",
-      "weight": 1.0,
-      "_src": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
-      "_tgt": "bootstrap_stage_executor_stageexecutionresult",
-      "source": "bootstrap_stage_executor_stageexecutionresult",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "confidence_score": 1.0
     },
     {
       "relation": "rationale_for",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L12",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L13",
       "weight": 1.0,
-      "_src": "bootstrap_stage_executor_rationale_12",
+      "_src": "bootstrap_stage_executor_rationale_13",
       "_tgt": "bootstrap_stage_executor_stageexecutionresult",
       "source": "bootstrap_stage_executor_stageexecutionresult",
-      "target": "bootstrap_stage_executor_rationale_12",
+      "target": "bootstrap_stage_executor_rationale_13",
       "confidence_score": 1.0
     },
     {
@@ -25179,10 +25233,106 @@
       "target": "database_stagerun"
     },
     {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_src": "bootstrap_stage_executor_rationale_24",
+      "_tgt": "bootstrap_stage_executor_assetrecipe",
+      "source": "bootstrap_stage_executor_assetrecipe",
+      "target": "bootstrap_stage_executor_rationale_24",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_assetrecipe",
+      "_tgt": "database_decision",
+      "source": "bootstrap_stage_executor_assetrecipe",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_assetrecipe",
+      "_tgt": "database_project",
+      "source": "bootstrap_stage_executor_assetrecipe",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_assetrecipe",
+      "_tgt": "database_stagerun",
+      "source": "bootstrap_stage_executor_assetrecipe",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L36",
+      "weight": 1.0,
+      "_src": "bootstrap_stage_executor_rationale_36",
+      "_tgt": "bootstrap_stage_executor_stageplan",
+      "source": "bootstrap_stage_executor_stageplan",
+      "target": "bootstrap_stage_executor_rationale_36",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_stageplan",
+      "_tgt": "database_decision",
+      "source": "bootstrap_stage_executor_stageplan",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_stageplan",
+      "_tgt": "database_project",
+      "source": "bootstrap_stage_executor_stageplan",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_stageplan",
+      "_tgt": "database_stagerun",
+      "source": "bootstrap_stage_executor_stageplan",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
+    },
+    {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L31",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L241",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
       "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_init",
@@ -25193,8 +25343,8 @@
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L36",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L246",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
       "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_supports",
@@ -25205,8 +25355,8 @@
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L39",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L249",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
       "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
@@ -25217,61 +25367,61 @@
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L48",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L271",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
       "confidence_score": 1.0
     },
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L142",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L296",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
       "confidence_score": 1.0
     },
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L210",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L306",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
       "confidence_score": 1.0
     },
     {
       "relation": "method",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L257",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L320",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "confidence_score": 1.0
     },
     {
       "relation": "rationale_for",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L22",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L51",
       "weight": 1.0,
-      "_src": "bootstrap_stage_executor_rationale_22",
+      "_src": "bootstrap_stage_executor_rationale_51",
       "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "target": "bootstrap_stage_executor_rationale_22",
+      "target": "bootstrap_stage_executor_rationale_51",
       "confidence_score": 1.0
     },
     {
@@ -25349,122 +25499,194 @@
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L41",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L255",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_product_definition",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L43",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L257",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_build_execution",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L45",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L260",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_qa_validation",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
       "confidence_score": 1.0
     },
     {
       "relation": "calls",
       "confidence": "EXTRACTED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L46",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L262",
       "weight": 1.0,
       "_src": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "_tgt": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
       "source": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "target": "bootstrap_stage_executor_bootstrapstageexecutor_release_preparation",
+      "target": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
       "confidence_score": 1.0
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_12",
+      "_src": "bootstrap_stage_executor_rationale_13",
       "_tgt": "database_decision",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_12",
-      "target": "database_decision"
+      "source": "bootstrap_stage_executor_rationale_13",
+      "target": "database_decision",
+      "confidence_score": 0.5
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_12",
+      "_src": "bootstrap_stage_executor_rationale_13",
       "_tgt": "database_project",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_12",
-      "target": "database_project"
+      "source": "bootstrap_stage_executor_rationale_13",
+      "target": "database_project",
+      "confidence_score": 0.5
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_12",
+      "_src": "bootstrap_stage_executor_rationale_13",
       "_tgt": "database_stagerun",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_12",
-      "target": "database_stagerun"
+      "source": "bootstrap_stage_executor_rationale_13",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_22",
+      "_src": "bootstrap_stage_executor_rationale_24",
       "_tgt": "database_decision",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_22",
-      "target": "database_decision"
+      "source": "bootstrap_stage_executor_rationale_24",
+      "target": "database_decision",
+      "confidence_score": 0.5
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_22",
+      "_src": "bootstrap_stage_executor_rationale_24",
       "_tgt": "database_project",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_22",
-      "target": "database_project"
+      "source": "bootstrap_stage_executor_rationale_24",
+      "target": "database_project",
+      "confidence_score": 0.5
     },
     {
       "relation": "uses",
       "confidence": "INFERRED",
-      "source_file": "backend/execution/bootstrap_stage_executor.py",
-      "source_location": "L7",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
       "weight": 0.8,
-      "_src": "bootstrap_stage_executor_rationale_22",
+      "_src": "bootstrap_stage_executor_rationale_24",
       "_tgt": "database_stagerun",
-      "confidence_score": 0.5,
-      "source": "bootstrap_stage_executor_rationale_22",
-      "target": "database_stagerun"
+      "source": "bootstrap_stage_executor_rationale_24",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_36",
+      "_tgt": "database_decision",
+      "source": "bootstrap_stage_executor_rationale_36",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_36",
+      "_tgt": "database_project",
+      "source": "bootstrap_stage_executor_rationale_36",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_36",
+      "_tgt": "database_stagerun",
+      "source": "bootstrap_stage_executor_rationale_36",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_51",
+      "_tgt": "database_decision",
+      "source": "bootstrap_stage_executor_rationale_51",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_51",
+      "_tgt": "database_project",
+      "source": "bootstrap_stage_executor_rationale_51",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L8",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_51",
+      "_tgt": "database_stagerun",
+      "source": "bootstrap_stage_executor_rationale_51",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
     },
     {
       "relation": "contains",
@@ -26374,9 +26596,9 @@
       "weight": 0.8,
       "_src": "project_service_projectservice",
       "_tgt": "project_bootstrap_coordinator_projectbootstrapcoordinator",
+      "confidence_score": 0.5,
       "source": "project_service_projectservice",
-      "target": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "confidence_score": 0.5
+      "target": "project_bootstrap_coordinator_projectbootstrapcoordinator"
     },
     {
       "relation": "uses",
@@ -42550,9 +42772,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_projectbootstrapcoordinator",
       "_tgt": "database_asset",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "target": "database_asset",
-      "confidence_score": 0.5
+      "target": "database_asset"
     },
     {
       "relation": "uses",
@@ -42562,9 +42784,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_projectbootstrapcoordinator",
       "_tgt": "database_decision",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "target": "database_decision",
-      "confidence_score": 0.5
+      "target": "database_decision"
     },
     {
       "relation": "uses",
@@ -42574,9 +42796,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_projectbootstrapcoordinator",
       "_tgt": "database_project",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "target": "database_project",
-      "confidence_score": 0.5
+      "target": "database_project"
     },
     {
       "relation": "uses",
@@ -42586,9 +42808,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_projectbootstrapcoordinator",
       "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "target": "database_stagerun",
-      "confidence_score": 0.5
+      "target": "database_stagerun"
     },
     {
       "relation": "uses",
@@ -42598,9 +42820,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_1",
       "_tgt": "database_asset",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_1",
-      "target": "database_asset",
-      "confidence_score": 0.5
+      "target": "database_asset"
     },
     {
       "relation": "uses",
@@ -42610,9 +42832,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_1",
       "_tgt": "database_decision",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_1",
-      "target": "database_decision",
-      "confidence_score": 0.5
+      "target": "database_decision"
     },
     {
       "relation": "uses",
@@ -42622,9 +42844,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_1",
       "_tgt": "database_project",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_1",
-      "target": "database_project",
-      "confidence_score": 0.5
+      "target": "database_project"
     },
     {
       "relation": "uses",
@@ -42634,9 +42856,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_1",
       "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_1",
-      "target": "database_stagerun",
-      "confidence_score": 0.5
+      "target": "database_stagerun"
     },
     {
       "relation": "uses",
@@ -42646,9 +42868,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_9",
       "_tgt": "database_asset",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_9",
-      "target": "database_asset",
-      "confidence_score": 0.5
+      "target": "database_asset"
     },
     {
       "relation": "uses",
@@ -42658,9 +42880,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_9",
       "_tgt": "database_decision",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_9",
-      "target": "database_decision",
-      "confidence_score": 0.5
+      "target": "database_decision"
     },
     {
       "relation": "uses",
@@ -42670,9 +42892,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_9",
       "_tgt": "database_project",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_9",
-      "target": "database_project",
-      "confidence_score": 0.5
+      "target": "database_project"
     },
     {
       "relation": "uses",
@@ -42682,9 +42904,9 @@
       "weight": 0.8,
       "_src": "project_bootstrap_coordinator_rationale_9",
       "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
       "source": "project_bootstrap_coordinator_rationale_9",
-      "target": "database_stagerun",
-      "confidence_score": 0.5
+      "target": "database_stagerun"
     },
     {
       "relation": "contains",
@@ -55217,6 +55439,30 @@
     {
       "relation": "uses",
       "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_12",
+      "_tgt": "database_project",
+      "confidence_score": 0.5,
+      "source": "database_project",
+      "target": "bootstrap_stage_executor_rationale_12"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_22",
+      "_tgt": "database_project",
+      "confidence_score": 0.5,
+      "source": "database_project",
+      "target": "bootstrap_stage_executor_rationale_22"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
       "source_file": "backend/pipeline/engine.py",
       "source_location": "L24",
       "weight": 0.8,
@@ -60570,6 +60816,30 @@
       "relation": "uses",
       "confidence": "INFERRED",
       "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_12",
+      "_tgt": "database_decision",
+      "confidence_score": 0.5,
+      "source": "database_decision",
+      "target": "bootstrap_stage_executor_rationale_12"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_22",
+      "_tgt": "database_decision",
+      "confidence_score": 0.5,
+      "source": "database_decision",
+      "target": "bootstrap_stage_executor_rationale_22"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
       "source_location": "L6",
       "weight": 0.8,
       "_src": "database_decision",
@@ -60577,6 +60847,30 @@
       "confidence_score": 0.5,
       "source": "database_decision",
       "target": "bootstrap_stage_executor_rationale_10"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_12",
+      "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
+      "source": "database_stagerun",
+      "target": "bootstrap_stage_executor_rationale_12"
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "backend/execution/bootstrap_stage_executor.py",
+      "source_location": "L7",
+      "weight": 0.8,
+      "_src": "bootstrap_stage_executor_rationale_22",
+      "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
+      "source": "database_stagerun",
+      "target": "bootstrap_stage_executor_rationale_22"
     },
     {
       "relation": "uses",
