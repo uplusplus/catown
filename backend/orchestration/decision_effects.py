@@ -21,8 +21,7 @@ class DecisionEffectsCoordinator:
         brief = self.db.query(Asset).filter(Asset.approval_decision_id == decision.id).first()
         if resolution == "approved":
             if brief:
-                brief.status = "approved"
-                brief.approved_at = now
+                self.service.asset_service.set_asset_status(brief, "approved", now, approved=True)
                 self.service._link_decision_asset(decision.id, brief.id, "approval_target", now)
             project.status = "brief_confirmed"
             project.current_stage = "product_definition"
@@ -39,7 +38,7 @@ class DecisionEffectsCoordinator:
             return
 
         if brief:
-            brief.status = "draft"
+            self.service.asset_service.set_asset_status(brief, "draft", now)
         project.status = "draft"
         project.current_stage = "briefing"
         project.current_focus = "Revise the project brief"
@@ -52,8 +51,7 @@ class DecisionEffectsCoordinator:
 
         if resolution == "approved":
             if release_pack:
-                release_pack.status = "approved"
-                release_pack.approved_at = now
+                self.service.asset_service.set_asset_status(release_pack, "approved", now, approved=True)
             project.status = "released"
             project.current_stage = "released"
             project.current_focus = "Release approved"
@@ -62,7 +60,7 @@ class DecisionEffectsCoordinator:
             return
 
         if release_pack:
-            release_pack.status = "in_review"
+            self.service.asset_service.set_asset_status(release_pack, "in_review", now)
         self.service._queue_stage_run(
             project=project,
             stage_type="release_preparation",

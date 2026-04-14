@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 from orchestration.decision_effects import DecisionEffectsCoordinator
 from orchestration.project_flow_coordinator import ProjectFlowCoordinator
-from orchestration.stage_execution_coordinator import StageExecutionCoordinator
 from read_models.project_views import ProjectViewBuilder
+from services.asset_service import AssetService
 
 
 class ProjectService:
@@ -22,6 +22,7 @@ class ProjectService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.asset_service = AssetService(db, self)
 
     def _slugify(self, name: str) -> str:
         base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "project"
@@ -212,69 +213,6 @@ class ProjectService:
         self.db.refresh(stage_run)
         return project, stage_run
 
-    def _bootstrap_product_definition_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        StageExecutionCoordinator(self).run(project, stage_run, now)
-
-    def _bootstrap_build_execution_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        StageExecutionCoordinator(self).run(project, stage_run, now)
-
-    def _bootstrap_qa_validation_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        StageExecutionCoordinator(self).run(project, stage_run, now)
-
-    def _bootstrap_release_preparation_output(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        StageExecutionCoordinator(self).run(project, stage_run, now)
-
-    def _replace_current_asset(
-        self,
-        project: Project,
-        asset_type: str,
-        title: str,
-        summary: str,
-        content_json: dict[str, Any],
-        content_markdown: str,
-        owner_agent: str,
-        stage_run: StageRun,
-        source_refs: list[dict[str, Any]],
-        now: datetime,
-    ) -> Asset:
-        existing = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == asset_type, Asset.is_current == True)
-            .first()
-        )
-        version = 1
-        supersedes_asset_id = None
-        if existing:
-            existing.is_current = False
-            existing.status = "superseded"
-            version = existing.version + 1
-            supersedes_asset_id = existing.id
-
-        asset = Asset(
-            project_id=project.id,
-            asset_type=asset_type,
-            title=title,
-            summary=summary,
-            content_json=json.dumps(content_json, ensure_ascii=False),
-            content_markdown=content_markdown,
-            version=version,
-            status="draft",
-            is_current=True,
-            owner_agent=owner_agent,
-            produced_by_stage_run_id=stage_run.id,
-            supersedes_asset_id=supersedes_asset_id,
-            source_input_refs_json=json.dumps(source_refs, ensure_ascii=False),
-            created_at=now,
-            updated_at=now,
-        )
-        self.db.add(asset)
-        self.db.flush()
-        self._link_stage_run_asset(stage_run.id, asset.id, "output", now)
-        for ref in source_refs:
-            if ref.get("asset_id"):
-                self._link_asset_dependency(project.id, ref["asset_id"], asset.id, now)
-        return asset
-
     def _queue_stage_run(
         self,
         project: Project,
@@ -338,14 +276,7 @@ class ProjectService:
             self.db.add(DecisionAsset(decision_id=decision_id, asset_id=asset_id, relation_role=relation_role, created_at=now))
 
     def _link_asset_dependency(self, project_id: int, from_asset_id: int, to_asset_id: int, now: datetime) -> None:
-        existing = self.db.query(AssetLink).filter(
-            AssetLink.project_id == project_id,
-            AssetLink.from_asset_id == from_asset_id,
-            AssetLink.to_asset_id == to_asset_id,
-            AssetLink.relation_type == "derived_from",
-        ).first()
-        if not existing:
-            self.db.add(AssetLink(project_id=project_id, from_asset_id=from_asset_id, to_asset_id=to_asset_id, relation_type="derived_from", created_at=now))
+        self.asset_service.link_dependency(project_id, from_asset_id, to_asset_id, now)
 
     def _sync_stage_inputs_for_stage(self, stage_run: StageRun, now: datetime) -> None:
         input_map = {

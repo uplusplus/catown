@@ -2,7 +2,7 @@
 import json
 from datetime import datetime
 
-from models.database import Asset, Decision, Project, StageRun
+from models.database import Decision, Project, StageRun
 
 
 class StageExecutionCoordinator:
@@ -11,6 +11,7 @@ class StageExecutionCoordinator:
     def __init__(self, service):
         self.service = service
         self.db = service.db
+        self.assets = service.asset_service
 
     def run(self, project: Project, stage_run: StageRun, now: datetime) -> None:
         if stage_run.stage_type == "product_definition":
@@ -23,16 +24,9 @@ class StageExecutionCoordinator:
             self._release_preparation(project, stage_run, now)
 
     def _product_definition(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        brief = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == "project_brief", Asset.is_current == True)
-            .first()
-        )
-        source_refs = []
-        if brief:
-            source_refs.append({"asset_id": brief.id, "asset_type": brief.asset_type})
+        source_refs = self.assets.build_source_refs(project.id, ["project_brief"])
 
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="prd",
             title=f"{project.name} PRD v1",
@@ -57,7 +51,7 @@ class StageExecutionCoordinator:
             source_refs=source_refs,
             now=now,
         )
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="ux_blueprint",
             title=f"{project.name} UX Blueprint v1",
@@ -79,7 +73,7 @@ class StageExecutionCoordinator:
             source_refs=source_refs,
             now=now,
         )
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="tech_spec",
             title=f"{project.name} Tech Spec v1",
@@ -117,16 +111,9 @@ class StageExecutionCoordinator:
         project.latest_summary = "Product definition scaffolds generated; build execution queued"
 
     def _build_execution(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        tech_spec = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == "tech_spec", Asset.is_current == True)
-            .first()
-        )
-        source_refs = []
-        if tech_spec:
-            source_refs.append({"asset_id": tech_spec.id, "asset_type": tech_spec.asset_type})
+        source_refs = self.assets.build_source_refs(project.id, ["tech_spec", "prd", "ux_blueprint"])
 
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="task_plan",
             title=f"{project.name} Task Plan v1",
@@ -148,7 +135,7 @@ class StageExecutionCoordinator:
             source_refs=source_refs,
             now=now,
         )
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="build_artifact",
             title=f"{project.name} Build Artifact v1",
@@ -185,16 +172,9 @@ class StageExecutionCoordinator:
         project.latest_summary = "Build scaffolds generated; QA validation queued"
 
     def _qa_validation(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        build_artifact = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == "build_artifact", Asset.is_current == True)
-            .first()
-        )
-        source_refs = []
-        if build_artifact:
-            source_refs.append({"asset_id": build_artifact.id, "asset_type": build_artifact.asset_type})
+        source_refs = self.assets.build_source_refs(project.id, ["build_artifact"])
 
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="test_report",
             title=f"{project.name} Test Report v1",
@@ -232,16 +212,9 @@ class StageExecutionCoordinator:
         project.latest_summary = "QA report generated; release preparation queued"
 
     def _release_preparation(self, project: Project, stage_run: StageRun, now: datetime) -> None:
-        test_report = (
-            self.db.query(Asset)
-            .filter(Asset.project_id == project.id, Asset.asset_type == "test_report", Asset.is_current == True)
-            .first()
-        )
-        source_refs = []
-        if test_report:
-            source_refs.append({"asset_id": test_report.id, "asset_type": test_report.asset_type})
+        source_refs = self.assets.build_source_refs(project.id, ["test_report", "build_artifact"])
 
-        self.service._replace_current_asset(
+        self.assets.replace_current_asset(
             project=project,
             asset_type="release_pack",
             title=f"{project.name} Release Pack v1",
@@ -262,11 +235,7 @@ class StageExecutionCoordinator:
             source_refs=source_refs,
             now=now,
         )
-        release_pack = self.db.query(Asset).filter(
-            Asset.project_id == project.id,
-            Asset.asset_type == "release_pack",
-            Asset.is_current == True,
-        ).first()
+        release_pack = self.assets.get_current_asset(project.id, "release_pack")
         decision = Decision(
             project_id=project.id,
             stage_run_id=stage_run.id,

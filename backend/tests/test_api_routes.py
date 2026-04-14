@@ -433,6 +433,30 @@ class TestProjectV2Endpoints:
         assert any(asset["asset_type"] == "project_brief" for asset in data["input_assets"])
         assert any(asset["asset_type"] == "prd" for asset in data["output_assets"])
 
+    def test_asset_dependencies_capture_multi_input_stage_refs(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "DependencyChain",
+            "one_line_vision": "Validate asset dependency graph"
+        }).json()["project"]
+        project_id = project["id"]
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+
+        client.post(f"/api/v2/projects/{project_id}/continue")
+        client.post(f"/api/v2/projects/{project_id}/continue")
+        client.post(f"/api/v2/projects/{project_id}/continue")
+        client.post(f"/api/v2/projects/{project_id}/continue")
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview").json()
+        build_artifact = overview["assets_by_type"]["build_artifact"]
+        release_pack = overview["assets_by_type"]["release_pack"]
+
+        build_upstream = {item["asset_type"] for item in build_artifact["relationships"]["upstream"]}
+        release_upstream = {item["asset_type"] for item in release_pack["relationships"]["upstream"]}
+
+        assert {"prd", "ux_blueprint", "tech_spec"}.issubset(build_upstream)
+        assert {"build_artifact", "test_report"}.issubset(release_upstream)
+
     def test_reject_release_approval_requeues_release_preparation(self, client):
         project = client.post("/api/v2/projects", json={
             "name": "RejectRelease",

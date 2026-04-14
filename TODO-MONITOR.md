@@ -3,6 +3,36 @@
 > 基于 ADR-010 / PRD §14 阶段零
 > 开始时间: 2026-04-11 22:42
 
+## Project-First Refactor 主线
+
+> 基于 `docs/ADR-020-service-layer-and-implementation-plan.md`
+> 当前优先级高于监控面板；监控审计链路放在新业务骨架稳定后继续接。
+
+### Phase B/C — 已完成
+- [x] `Project / Asset / Decision / StageRun` 新模型主链路打通
+- [x] `POST /api/v2/projects` 创建 `project_brief + scope_confirmation`
+- [x] `POST /api/v2/decisions/{id}/resolve` 推进 scope / release 决策
+- [x] `GET /api/v2/dashboard` / `GET /api/v2/projects/{id}/overview` 新读模型落地
+- [x] 拆出 `ProjectFlowCoordinator`
+- [x] 拆出 `DecisionEffectsCoordinator`
+- [x] 拆出 `ProjectViewBuilder`
+- [x] 拆出 `AssetService`
+- [x] 统一 stage-run lifecycle / release-readiness 读模型字段
+- [x] 补齐 bootstrap 资产依赖链（`build_artifact` <- `prd+ux_blueprint+tech_spec`; `release_pack` <- `build_artifact+test_report`）
+
+### Phase D — 进行中
+- [ ] 新建 `backend/adapters/stage_execution_adapter.py`，把当前 bootstrap 执行入口从 coordinator 再抽一层
+- [ ] 新建 `backend/adapters/legacy_pipeline_adapter.py`，定义新 `StageRun` -> 旧 pipeline 的桥接边界
+- [ ] 让 `continue_project()` 只依赖稳定的 stage execution adapter 接口
+- [ ] 明确 autopilot / checkpoint 在 adapter 层的分流点
+
+### Phase E — 待开始
+- [ ] 为新内核补 `tasks / agent_runs / audit` 的挂接策略
+- [ ] 把 `llm_calls / tool_calls / events` 逐步重新挂到 `project_id / stage_run_id / asset_id`
+- [ ] 补更细的 stage execution 可观测事件
+
+---
+
 ## P0 — 数据管道
 
 ### 0a. LLM Client 返回 usage
