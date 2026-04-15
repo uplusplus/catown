@@ -40,11 +40,18 @@ The Catown frontend should use this interaction model:
 
 **Stable Mission Board + progressive conversational flow + contextual task cards**
 
-All three parts matter.
+And it should support two complementary interaction channels:
+
+- natural language for expressing intent, revision, interruption, and continuation
+- refined UI for presenting state, focusing choices, accelerating action, and building trust
+
+All three structural parts matter.
 
 Without the stable board, the user loses orientation.
 Without the conversational flow, complex work becomes rigid and form-heavy.
 Without task cards, interaction collapses back into unstructured chat.
+Without natural language, the system becomes too rigid.
+Without refined UI, the system becomes too vague and too hard to trust.
 
 ---
 
@@ -98,14 +105,39 @@ Do not dump a large form.
 Do not ask for everything up front.
 Ask only for the next missing piece that matters.
 
-### 4. Conversation should guide, not replace structure
+### 4. Natural language and UI should complement each other
+
+Catown should support both natural-language interaction and refined graphical interaction as first-class paths.
+
+Natural language is the primary protocol for expressing intent.
+UI is the primary medium for making state legible, presenting constrained choices, accelerating action, and building confidence.
+
+They should not compete.
+They should reinforce each other.
+
+### 5. Conversation should guide, not replace structure
 
 The interaction can feel conversational, but the outcome must become structured state.
 
 Conversation is the guidance layer.
 Structured objects are the execution layer.
 
-### 5. Simple actions should stay simple
+### 6. Refined UI is required, not optional
+
+Catown needs UI not just for functionality but for quality.
+
+The interface should feel:
+
+- calm
+- precise
+- elegant
+- trustworthy
+- low-friction
+
+Refined UI does not mean ornamental excess.
+It means the system presents complex work with clear hierarchy, disciplined spacing, strong visual rhythm, and high-confidence feedback.
+
+### 7. Simple actions should stay simple
 
 Not every interaction deserves a conversational flow.
 
@@ -115,7 +147,7 @@ Not every interaction deserves a conversational flow.
 
 Do not force chat theater onto trivial operations.
 
-### 6. AI should absorb complexity
+### 8. AI should absorb complexity
 
 The system should do more interpretation and organization so the user can do less manual configuration.
 
@@ -123,7 +155,7 @@ The user provides intent.
 The system proposes structure.
 The user corrects only where correction matters.
 
-### 7. The homepage should optimize for progress, not feature discovery
+### 9. The homepage should optimize for progress, not feature discovery
 
 The main surface should emphasize:
 
@@ -133,6 +165,47 @@ The main surface should emphasize:
 - taking the next valuable step
 
 Low-frequency environment actions should remain easy to reach, but they should not dominate the home screen.
+
+---
+
+## Natural language first, UI always available
+
+Every core Catown interaction should be completable through natural language.
+
+Users should be able to initiate, revise, confirm, pause, resume, and redirect work by saying what they want in ordinary language.
+
+But this does not reduce the need for UI.
+
+UI should remain available at every important step as an accelerator and trust surface.
+
+That means:
+
+- users can start with language and finish with cards
+- users can click through cards and then correct with language
+- users can mix speaking intent and using controls in the same flow
+- graphical controls are accelerators, not mandatory gateways
+
+A strong Catown experience lets the user fluidly move between saying and selecting.
+
+---
+
+## Refined UI quality bar
+
+Catown should not settle for merely functional UI.
+
+The interface should feel polished enough that the user experiences the system as competent and composed.
+
+The quality bar should emphasize:
+
+- visual restraint over noise
+- strong hierarchy over clutter
+- breathing room over density for its own sake
+- direct feedback over ambiguity
+- clear object boundaries over blended mush
+- smooth progression over flashy motion
+
+The target feeling is not decorative futurism.
+It is calm high-end operational clarity.
 
 ---
 
@@ -166,6 +239,7 @@ This is the foreground interaction layer used when:
 The flow should:
 
 - accept natural-language intent
+- support UI-based selection and confirmation at every key step
 - identify the task type
 - ask one minimum necessary question at a time
 - explain why the question matters when needed
@@ -177,6 +251,8 @@ This is guided task progression.
 ## C. Contextual task cards
 
 Task cards are the execution units inside the flow.
+
+They should be elegant, focused, and fast to parse.
 
 Examples include:
 
@@ -190,6 +266,12 @@ Examples include:
 
 The conversational layer introduces and explains.
 The card layer captures action and confirmation.
+
+Users should be able to complete the same core step by either:
+
+- responding in natural language
+- selecting directly on the card
+- mixing both in the same task flow
 
 ---
 
@@ -228,6 +310,8 @@ The homepage should feel like a mission control view, not a feature menu.
 Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
 
 The right model is a lightweight command trigger that opens into a guided interaction flow.
+
+The trigger should accept natural language naturally, but it should also feel like a polished system control rather than a generic chat input.
 
 Possible forms:
 
