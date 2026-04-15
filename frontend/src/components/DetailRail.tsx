@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { FileText, GitBranch, ListChecks, Workflow } from 'lucide-react';
+import { FileText, GitBranch, ListChecks, Loader, Workflow } from 'lucide-react';
 
 import { prettyJson, titleize } from '../lib/format';
 import type { Asset, Decision, EventItem, StageRunDetail } from '../types';
@@ -15,6 +15,7 @@ type Props = {
   selectedEvent: EventItem | null;
   onSelectDecision: (decisionId: number) => void;
   onSelectAsset: (assetId: number) => void;
+  loading: 'decision' | 'asset' | null;
 };
 
 export function DetailRail({
@@ -25,12 +26,23 @@ export function DetailRail({
   selectedEvent,
   onSelectDecision,
   onSelectAsset,
+  loading,
 }: Props) {
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
   let body: JSX.Element = <div className="empty-card">Select a stage, decision, asset, or event.</div>;
 
-  if (focus === 'stage' && stageDetail) {
+  if (loading) {
+    body = (
+      <div className="detail-loading-state">
+        <Loader className="spin" size={18} />
+        <span>{loading === 'decision' ? 'Loading decision detail...' : 'Loading asset detail...'}</span>
+      </div>
+    );
+  }
+
+  if (!loading && focus === 'stage' && stageDetail) {
+
     title = `${titleize(stageDetail.stage_run.stage_type)} Run`;
     icon = <Workflow size={18} />;
     body = (
@@ -86,7 +98,7 @@ export function DetailRail({
     );
   }
 
-  if (focus === 'decision' && decisionDetail) {
+  if (!loading && focus === 'decision' && decisionDetail) {
     title = 'Decision Detail';
     icon = <ListChecks size={18} />;
     body = (
@@ -130,7 +142,7 @@ export function DetailRail({
     );
   }
 
-  if (focus === 'asset' && assetDetail) {
+  if (!loading && focus === 'asset' && assetDetail) {
     title = 'Asset Detail';
     icon = <FileText size={18} />;
     body = (
@@ -179,7 +191,7 @@ export function DetailRail({
     );
   }
 
-  if (focus === 'event' && selectedEvent) {
+  if (!loading && focus === 'event' && selectedEvent) {
     title = 'Event Detail';
     icon = <GitBranch size={18} />;
     body = (

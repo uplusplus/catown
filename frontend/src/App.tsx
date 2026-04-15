@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from 'react';
-import { AlertCircle, Compass, Loader } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, CheckCircle2, Compass, Loader } from 'lucide-react';
 
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
@@ -16,6 +16,8 @@ import type { EventItem } from './types';
 function App() {
   const board = useProjectBoardData();
   const selection = useBoardSelection();
+  const [detailLoading, setDetailLoading] = useState<'decision' | 'asset' | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'info'; message: string } | null>(null);
 
   const {
     projects,
@@ -66,6 +68,12 @@ function App() {
   useEffect(() => {
     void loadProjectsAndSelect();
   }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (selectedProjectId == null) return;
@@ -125,6 +133,7 @@ function App() {
     const preferredStageId = await hydrateProject(selectedProjectId);
     resetForProject(preferredStageId);
     setDetailFocus('stage');
+    setNotice({ tone: 'success', message: 'Project advanced. Mission board refreshed.' });
   }
 
   async function handleResolve(decisionId: number, resolution: 'approved' | 'rejected') {
@@ -137,18 +146,32 @@ function App() {
     }
     await loadDecision(decisionId);
     setDecision(decisionId);
+    setNotice({
+      tone: 'success',
+      message: resolution === 'approved' ? 'Decision approved and board refreshed.' : 'Decision rejected and board refreshed.',
+    });
   }
 
   async function handleSelectDecision(decisionId: number) {
-    const detail = await loadDecision(decisionId);
-    if (!detail) return;
-    setDecision(decisionId);
+    setDetailLoading('decision');
+    try {
+      const detail = await loadDecision(decisionId);
+      if (!detail) return;
+      setDecision(decisionId);
+    } finally {
+      setDetailLoading(null);
+    }
   }
 
   async function handleSelectAsset(assetId: number) {
-    const detail = await loadAsset(assetId);
-    if (!detail) return;
-    setAsset(assetId);
+    setDetailLoading('asset');
+    try {
+      const detail = await loadAsset(assetId);
+      if (!detail) return;
+      setAsset(assetId);
+    } finally {
+      setDetailLoading(null);
+    }
   }
 
   function handleSelectStage(stageRunId: number) {
@@ -158,6 +181,8 @@ function App() {
   function handleSelectEvent(event: EventItem) {
     setEvent(event);
   }
+
+  const boardBusy = continuing || resolvingId != null;
 
   return (
     <div className="app-shell">
@@ -186,10 +211,17 @@ function App() {
         </div>
       ) : null}
 
+      {notice ? (
+        <div className={`notice-banner is-${notice.tone}`}>
+          <CheckCircle2 size={18} />
+          <span>{notice.message}</span>
+        </div>
+      ) : null}
+
       <div className="board-layout">
         <ProjectRail projects={projects} selectedProjectId={selectedProjectId} onSelect={setProject} />
 
-        <main className="main-board">
+        <main className={`main-board ${boardBusy ? 'is-busy' : ''}`}>
           {boardReady && overview ? (
             <>
               <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} />
@@ -219,7 +251,7 @@ function App() {
           )}
         </main>
 
-        <DetailRail {...detailProps} />
+        <DetailRail {...detailProps} loading={detailLoading} />
       </div>
     </div>
   );

@@ -505,7 +505,8 @@ button.event-card {
 
 .loading-state,
 .empty-board,
-.error-banner {
+.error-banner,
+.notice-banner {
   padding: 18px 20px;
 }
 
@@ -516,15 +517,31 @@ button.event-card {
   margin-bottom: 18px;
 }
 
-.error-banner {
+.error-banner,
+.notice-banner {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 18px;
+  border-radius: 18px;
+}
+
+.error-banner {
   color: #ffd5d5;
   border: 1px solid rgba(255, 107, 107, 0.25);
-  border-radius: 18px;
   background: rgba(255, 107, 107, 0.1);
+}
+
+.notice-banner {
+  color: #d8f7e6;
+  border: 1px solid rgba(116, 217, 159, 0.3);
+  background: rgba(116, 217, 159, 0.12);
+}
+
+.notice-banner.is-info {
+  color: #d8eef7;
+  border-color: rgba(67, 198, 185, 0.28);
+  background: rgba(67, 198, 185, 0.12);
 }
 
 .empty-board {
@@ -532,6 +549,23 @@ button.event-card {
   display: flex;
   flex-direction: column;
   justify-content: center;
+}
+
+.main-board.is-busy {
+  opacity: 0.9;
+}
+
+.detail-loading-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 160px;
+  justify-content: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 22px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .spin {
