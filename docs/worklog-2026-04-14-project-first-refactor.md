@@ -53,9 +53,18 @@
 - 让 legacy `pipeline/engine.py` 的部分事件写入、tool-call 审计、llm-call 审计、tool registry/build/execute 开始复用共享 helper
 - 目标：把 audit/event sink 和 tool dispatch 从 legacy engine 里继续薄化，给后续新 executor 复用打底
 
+## 7. 补充架构判断：为什么继续往下拆
+- 新增 ADR：`docs/ADR-022-project-first-backend-layering-and-refactor-purpose.md`
+- 新增 wiki 页面：`docs/Project-First-Backend-Architecture.md`
+- 核心结论：继续下拆不是为了“代码好看”，而是为了
+  - 分离业务推进与接口返回 shape
+  - 防止 `ProjectService` 重新膨胀成上帝类
+  - 稳定 `/api/v2/*` contract，给前端一个可靠靶子
+
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`
 - 下一步重点不再是给旧 pipeline 做桥，而是继续抽 runtime primitive，并补真实 executor contract
+- 后端继续下拆的直接目标，是把 project-first v2 后端整理成可继续演进、可稳定对接前端的分层底座
 
 ## Wiki 同步状态
 - 目标：把这份过程记录同步到外部 wiki
