@@ -15,6 +15,7 @@ The design goal is simple:
 
 Related:
 
+- `docs/Catown-UX-Interaction-Principles.md`
 - `docs/Frontend-Mission-Board-Migration-Audit.md`
 - `docs/Mission-Board-Minimum-V2-Contract.md`
 - `docs/ADR-017-main-api-design.md`
@@ -71,6 +72,16 @@ The layout should separate:
 
 That gives the UI a stable mental model.
 
+### 6. Stable board, guided interaction
+
+The main surface should remain structurally stable.
+
+When the user needs to create, clarify, confirm, or steer work, the system should open a progressive conversational flow inside that stable board context.
+
+The board gives orientation.
+The conversational flow reduces form burden.
+The interaction should feel guided, not form-heavy and not like a generic chat transcript.
+
 ---
 
 ## Primary layout
@@ -120,7 +131,7 @@ Persistent project navigation and lightweight filtering.
 - status filter
 - stage filter
 - project list
-- create project button
+- lightweight create project entry
 
 ### Card contents per project
 
@@ -143,6 +154,8 @@ Selecting a project refreshes the rest of the board.
 
 This replaces the old rooms sidebar.
 It should feel like a mission roster, not a chatroom list.
+
+"Create project" should be easy to reach here, but it should not dominate the primary home-state attention model when active work already exists.
 
 ---
 

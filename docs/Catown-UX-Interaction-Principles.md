@@ -1,0 +1,426 @@
+# Catown UX Interaction Principles
+
+_Last updated: 2026-04-15_
+
+## Purpose
+
+This document captures the current UX conclusions for Catown before deeper wireframing.
+
+It defines the interaction model for the new Catown frontend so product, frontend, and backend work can converge on the same user experience.
+
+Related:
+
+- `docs/Mission-Board-Information-Architecture.md`
+- `docs/Mission-Board-Minimum-V2-Contract.md`
+- `docs/ADR-023-frontend-react-mission-board-architecture.md`
+
+---
+
+## Product stance
+
+Catown is not a form-heavy dashboard, not a pure chat app, and not an infinitely reshaping canvas.
+
+Catown should behave like an AI operating system for project execution:
+
+- the user gives intent
+- the system interprets and structures the work
+- the interface reveals only what matters now
+- the user is asked for decisions only when needed
+- every interaction pushes project state forward
+
+In one sentence:
+
+**Catown is a stable task stage with progressive conversational guidance and structured stateful outcomes.**
+
+---
+
+## Core UX conclusion
+
+The Catown frontend should use this interaction model:
+
+**Stable Mission Board + progressive conversational flow + contextual task cards**
+
+All three parts matter.
+
+Without the stable board, the user loses orientation.
+Without the conversational flow, complex work becomes rigid and form-heavy.
+Without task cards, interaction collapses back into unstructured chat.
+
+---
+
+## What Catown should not become
+
+### 1. Not a pile of forms
+
+The UI should not push system modeling work onto the user through large multi-field forms.
+
+A wall of fields is lazy UX.
+It forces the user to think in the system's schema before the system has earned that effort.
+
+### 2. Not a pure chat transcript product
+
+A raw chat timeline is too loose for project execution.
+It drifts, hides state, and makes it hard to understand what changed or what still needs attention.
+
+### 3. Not an infinitely morphing canvas as the default mode
+
+A totally dynamic canvas sounds powerful but damages orientation, predictability, and trust if used as the primary interaction model.
+
+A freeform canvas may exist later as an exploration mode for relationships, dependencies, or strategy maps, but not as the default operational UI.
+
+---
+
+## Primary interaction principles
+
+### 1. Stable structure first
+
+The user must always be able to answer:
+
+- where am I
+- what is the system doing
+- what needs my attention
+- what should happen next
+
+The overall layout should stay stable enough that the user builds a mental model over time.
+
+### 2. Show state before asking for input
+
+The default experience should present current status, current work, blockers, and pending decisions.
+
+Catown should not open like a chatbot asking the user to type.
+It should open like a calm mission control surface.
+
+### 3. Complex work should be guided step by step
+
+When user input is needed, the system should guide the user through the minimum necessary decisions in sequence.
+
+Do not dump a large form.
+Do not ask for everything up front.
+Ask only for the next missing piece that matters.
+
+### 4. Conversation should guide, not replace structure
+
+The interaction can feel conversational, but the outcome must become structured state.
+
+Conversation is the guidance layer.
+Structured objects are the execution layer.
+
+### 5. Simple actions should stay simple
+
+Not every interaction deserves a conversational flow.
+
+- simple confirmations should use direct confirm cards
+- simple edits should use focused inline controls
+- high-frequency micro-actions should complete in one move
+
+Do not force chat theater onto trivial operations.
+
+### 6. AI should absorb complexity
+
+The system should do more interpretation and organization so the user can do less manual configuration.
+
+The user provides intent.
+The system proposes structure.
+The user corrects only where correction matters.
+
+### 7. The homepage should optimize for progress, not feature discovery
+
+The main surface should emphasize:
+
+- continuing meaningful work
+- resolving blockers
+- answering pending decisions
+- taking the next valuable step
+
+Low-frequency environment actions should remain easy to reach, but they should not dominate the home screen.
+
+---
+
+## Interaction layers
+
+## A. Stable Mission Board
+
+This is the persistent background layer.
+It gives the user orientation and project context.
+
+It should answer:
+
+- what project is active
+- what stage it is in
+- whether progress is healthy or blocked
+- what the recommended next action is
+- what is waiting on the user
+- what recently changed
+
+This layer should feel steady, not noisy.
+
+## B. Progressive conversational flow
+
+This is the foreground interaction layer used when:
+
+- the user issues a new command
+- the system needs clarification
+- the system needs user confirmation
+- the work is complex enough to benefit from guided progression
+
+The flow should:
+
+- accept natural-language intent
+- identify the task type
+- ask one minimum necessary question at a time
+- explain why the question matters when needed
+- converge quickly toward an executable draft
+
+This is not generic chatting.
+This is guided task progression.
+
+## C. Contextual task cards
+
+Task cards are the execution units inside the flow.
+
+Examples include:
+
+- choice cards
+- draft cards
+- confirmation cards
+- diff cards
+- risk cards
+- result cards
+- summary cards
+
+The conversational layer introduces and explains.
+The card layer captures action and confirmation.
+
+---
+
+## Default home experience
+
+When the user enters Catown, the default page should prioritize present-tense operational awareness.
+
+It should foreground:
+
+### 1. Current primary work
+
+What the system is actively trying to move forward.
+
+### 2. Current stage and health
+
+Where the project is in its lifecycle, and whether it is progressing, blocked, or awaiting input.
+
+### 3. Recommended next action
+
+A clear, opinionated cue for what should happen next.
+
+### 4. Pending user decisions
+
+Anything that needs user review, confirmation, or approval.
+
+### 5. Recent meaningful changes
+
+The most relevant project events, not a noisy raw log.
+
+The homepage should feel like a mission control view, not a feature menu.
+
+---
+
+## Command entry model
+
+Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
+
+The right model is a lightweight command trigger that opens into a guided interaction flow.
+
+Possible forms:
+
+- a subtle command bar
+- a command trigger in the main board
+- keyboard shortcut invocation
+- a continue or act-now control attached to the recommended action area
+
+The trigger is not the product.
+It is the doorway into guided interaction.
+
+---
+
+## Progressive conversational flow pattern
+
+The standard pattern should be:
+
+### Step 1. Capture intent
+
+The user states a goal in natural language.
+
+Examples:
+
+- create a new project
+- continue this project
+- summarize blockers
+- prepare release
+
+### Step 2. Infer task type
+
+The system determines whether this is primarily:
+
+- creation
+- progression
+- review
+- approval
+- analysis
+- correction
+
+### Step 3. Ask one minimal question
+
+The system asks only the next question that unblocks forward motion.
+
+This question should usually ask for:
+
+- a choice
+- a confirmation
+- a priority
+- a missing key constraint
+
+### Step 4. Generate a draft or proposed action
+
+The system should synthesize what it understands into a structured draft.
+
+The user should be able to:
+
+- confirm
+- revise a specific part
+- back up
+- restart when necessary
+
+### Step 5. Execute and write state back to the board
+
+The result should update structured domain objects and visible system state.
+
+That may include updates to:
+
+- `Project`
+- `StageRun`
+- `Decision`
+- `Asset`
+- `Event`
+
+Without state write-back, the experience collapses into disposable chat.
+
+---
+
+## When to use conversational guidance
+
+### Good fit
+
+Use progressive conversational guidance for:
+
+- project creation
+- ambiguous requests
+- multi-step planning
+- blocker resolution
+- high-value decision review
+- stage progression where intent needs clarification
+
+### Bad fit
+
+Do not use progressive conversational guidance for:
+
+- basic confirmation
+- small single-property edits
+- repetitive micro-actions
+- obvious one-click actions
+
+The rule is simple:
+
+**Complex tasks should feel guided. Simple tasks should feel immediate.**
+
+---
+
+## Information hierarchy implications
+
+### Priority 0: immediate attention
+
+- decisions awaiting user review
+- high-risk blockers
+- release or scope confirmations
+
+### Priority 1: active progress
+
+- continue the current project
+- execute the recommended next step
+- inspect the current stage when it is the main blocker
+
+### Priority 2: supporting context
+
+- recent activity
+- assets
+- event history
+- drill-down details
+
+### Priority 3: environment actions
+
+- create project
+- workspace management
+- settings-like controls
+
+This means "create project" is important but not homepage-dominant once the user already has active work.
+It should be reachable without becoming the main CTA in the normal home state.
+
+---
+
+## Design implications for key disputed points
+
+### Creating a project
+
+Creating a project is important but usually low-frequency.
+
+So:
+
+- it should not dominate the default home screen when active projects already exist
+- it can become the main CTA in an empty state
+- it should remain easy to reach through command entry, navigation, or contextual triggers
+
+### Chat-like interaction
+
+The desired behavior is not a freeform chat product.
+It is a guided, step-by-step, conversational task flow.
+
+This means:
+
+- fewer open-ended text prompts
+- more selective system guidance
+- more choices and confirmations
+- more compact summarization of completed steps
+- stronger focus on the current step
+
+### Dynamic UI generation
+
+Dynamic UI generation is useful only when bounded.
+
+The system should dynamically choose the right card or interaction unit for the current step, but it should do so inside a stable board structure.
+
+The system should not continuously reinvent the whole page layout.
+
+---
+
+## Product-quality bar
+
+A strong Catown interaction should feel like this:
+
+- calm at rest
+- opinionated about next steps
+- lightweight to enter
+- guided during ambiguity
+- direct during simple operations
+- structured after every action
+
+A weak Catown interaction feels like this:
+
+- noisy by default
+- chatty without making progress
+- form-heavy before context is established
+- visually unstable
+- unclear about what the user should do next
+
+---
+
+## One-line summary
+
+**Catown should feel like an AI mission control system where users express intent naturally, the system guides them through only the necessary decisions, and every interaction resolves into visible project state.**
