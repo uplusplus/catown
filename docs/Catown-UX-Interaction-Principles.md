@@ -382,6 +382,135 @@ It is a composed mission-control environment that feels trustworthy under comple
 
 ---
 
+## Theme system strategy
+
+Catown should define one baseline dark theme first and express it through replaceable semantic design tokens.
+
+This means:
+
+- the product establishes a single authoritative visual baseline first
+- components should consume semantic roles instead of hard-coded color choices
+- future themes can remap the same roles without changing interaction logic
+- theme switching should extend the design system, not weaken the first theme
+
+The first authoritative theme should be `Catown Dark Baseline`.
+
+---
+
+## Catown Dark Baseline
+
+This is the first recommended baseline palette for the product.
+
+It should serve as the reference implementation for:
+
+- design exploration
+- frontend tokens
+- component styling
+- future theme derivation
+
+### Base and surfaces
+
+```css
+--bg-app:        #0B1020;
+--bg-board:      #11182A;
+--bg-panel:      #151D31;
+--bg-elevated:   #1A243A;
+--bg-task-layer: #1E2942;
+--bg-selected:   #22314D;
+```
+
+Usage intent:
+
+- `--bg-app`: deepest application frame
+- `--bg-board`: main mission board background
+- `--bg-panel`: standard cards and panels
+- `--bg-elevated`: hover, raised, or more important surfaces
+- `--bg-task-layer`: centered task layer and high-attention overlays
+- `--bg-selected`: selected rows, selected cards, or active contextual regions
+
+### Borders and dividers
+
+```css
+--border-subtle:  #24324A;
+--border-default: #2C3B56;
+--border-strong:  #39506F;
+```
+
+Borders should support separation and hierarchy without turning the UI into a wireframe.
+
+### Text hierarchy
+
+```css
+--text-primary:   #F3F7FF;
+--text-secondary: #B6C2D9;
+--text-tertiary:  #7F8CA8;
+--text-muted:     #5F6C86;
+--text-disabled:  #46526A;
+```
+
+The system should rely on tiered legibility instead of blasting maximum contrast everywhere.
+
+### Accent system
+
+```css
+--accent-primary: #42CFEA;
+--accent-hover:   #67DCF2;
+--accent-active:  #24B8D6;
+--accent-soft:    rgba(66, 207, 234, 0.16);
+--accent-ring:    rgba(66, 207, 234, 0.42);
+```
+
+Accent intent:
+
+- use for primary CTA emphasis
+- use for current focus or active command states
+- use for selected or guided interaction moments
+- do not flood the whole interface with accent color
+
+### Semantic states
+
+```css
+--state-success:      #3FCB8E;
+--state-success-soft: rgba(63, 203, 142, 0.14);
+
+--state-warning:      #E7B35A;
+--state-warning-soft: rgba(231, 179, 90, 0.14);
+
+--state-danger:       #E06C75;
+--state-danger-soft:  rgba(224, 108, 117, 0.14);
+
+--state-info:         #59A8FF;
+--state-info-soft:    rgba(89, 168, 255, 0.14);
+```
+
+Semantic colors should remain purposeful and localized.
+They should not become decorative background paint.
+
+### Recommended application guidance
+
+For the first implementation pass:
+
+- main board uses `--bg-board`
+- standard cards use `--bg-panel`
+- stronger modules or hover states use `--bg-elevated`
+- the guided task layer uses `--bg-task-layer`
+- primary actions use `--accent-primary`
+- warnings and risk indicators use semantic colors in restrained, local ways
+
+### Baseline palette intent
+
+This palette should make Catown feel:
+
+- calm
+- focused
+- modern
+- premium
+- system-like
+
+It should feel AI-native without looking gimmicky.
+
+---
+
 ## Interaction layers
 
 ## A. Stable Mission Board
