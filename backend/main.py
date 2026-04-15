@@ -206,7 +206,12 @@ async def root():
     """返回前端首页"""
     try:
         # 优先找 dist 版本，回退到源文件
-        for candidate in [Path("frontend/dist/index.html"), Path("../frontend/index.html"), Path("frontend/index.html")]:
+        for candidate in [
+            Path("frontend/dist/index.html"),
+            Path("../frontend/dist/index.html"),
+            Path("../frontend/index.html"),
+            Path("frontend/index.html"),
+        ]:
             if candidate.exists():
                 return HTMLResponse(content=candidate.read_text(encoding="utf-8"))
     except Exception as e:

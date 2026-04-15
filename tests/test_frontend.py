@@ -71,6 +71,10 @@ class TestFrontendEntry:
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
 
+    def test_root_prefers_built_frontend_artifact(self, client):
+        html = client.get("/").text
+        assert '<script type="module" crossorigin' in html
+
     def test_root_serves_mission_board_shell(self, client):
         html = client.get("/").text
         assert '<div id="root"></div>' in html

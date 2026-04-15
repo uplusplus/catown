@@ -96,21 +96,21 @@
        - 强化 `StageLane` 的 active / waiting / completed / failed 视觉区分
        - 定型 `ActivityFeed` 第一版是 stage 级还是 project 级
     2. `DetailRail` 工作台化
-       - `stage detail`：summary、input/output assets、linked decisions、events 摘要
-       - `decision detail`：context、recommended option、impact、关联 stage/asset
-       - `asset detail`：markdown/content、relationships、stage links、decision links
-       - `event detail`：summary、payload、关联对象跳转
+       - [x] `stage detail`：summary、input/output assets、linked decisions、events 摘要
+       - [x] `decision detail`：context、recommended option、impact、关联 stage/asset
+       - [x] `asset detail`：markdown/content、relationships、stage links、decision links
+       - [x] `event detail`：summary、payload、关联对象跳转
     3. 前端 state/query 收口
-       - 把 `App.tsx` 当前集中状态继续下沉为更清晰的 store / query 结构
-       - 分离 board state、selected entity state、async loading/error state
-       - 避免新前端重新膨胀成单文件控制器
+       - [x] 把 `App.tsx` 当前集中状态继续下沉为更清晰的 store / query 结构
+       - [x] 分离 board state、selected entity state、async loading/error state
+       - [x] 避免新前端重新膨胀成单文件控制器
     4. 主动作与反馈收口
-       - 补全 continue / resolve 后的局部刷新策略
-       - 补全错误态、空态、loading 态与动作反馈
-       - 避免每次全量重拉或局部状态失真
+       - [x] 补全 continue / resolve 后的局部刷新策略
+       - [x] 补全错误态、空态、loading 态与动作反馈
+       - [x] 避免每次全量重拉或局部状态失真
     5. 测试重写
-       - 重写 `tests/test_frontend.py`
-       - 把断言从 legacy Pipeline Dashboard 切到 React Mission Board 的 `project / stage-run / decision / asset` 主流程
+       - [x] 重写 `tests/test_frontend.py`
+       - [x] 把断言从 legacy Pipeline Dashboard 切到 React Mission Board 的 `project / stage-run / decision / asset` 主流程
     6. 交付链路固化
        - 确认后端根路径优先消费 `frontend/dist/index.html`
        - 把 `npm run build` 纳入前端回归步骤
