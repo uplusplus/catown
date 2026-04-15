@@ -8,6 +8,8 @@ import sys
 import os
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from http_client import SyncASGITestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -64,10 +66,10 @@ def _make_app(tmp_path):
 
 @pytest.fixture
 def client(tmp_path):
-    """创建 FastAPI TestClient（完全隔离）"""
-    from fastapi.testclient import TestClient
+    """创建基于 httpx ASGITransport 的同步测试客户端（完全隔离）"""
     app = _make_app(tmp_path)
-    return TestClient(app, base_url="http://testserver")
+    with SyncASGITestClient(app, base_url="http://testserver") as client:
+        yield client
 
 
 # ==================== 健康检查 ====================

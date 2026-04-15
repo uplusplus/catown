@@ -13,6 +13,8 @@ import os
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock
+
+from http_client import SyncASGITestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -60,9 +62,9 @@ def _make_app(tmp_path):
 
 @pytest.fixture
 def client(tmp_path):
-    from fastapi.testclient import TestClient
     app = _make_app(tmp_path)
-    return TestClient(app, base_url="http://testserver")
+    with SyncASGITestClient(app, base_url="http://testserver") as client:
+        yield client
 
 
 class TestStartupHealthCheck:

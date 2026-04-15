@@ -19,6 +19,8 @@ import asyncio
 import pytest
 import httpx
 
+from http_client import SyncASGITestClient
+
 # 添加 backend 到 path
 _backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backend')
 sys.path.insert(0, _backend_dir)
@@ -27,7 +29,6 @@ sys.path.insert(0, _backend_dir)
 _original_cwd = os.getcwd()
 os.chdir(_backend_dir)
 
-from fastapi.testclient import TestClient
 from main import app
 from models.database import init_database, get_db, Base, engine
 
@@ -37,7 +38,7 @@ from models.database import init_database, get_db, Base, engine
 @pytest.fixture(scope="module")
 def client():
     """创建测试客户端"""
-    with TestClient(app) as c:
+    with SyncASGITestClient(app) as c:
         yield c
 
 

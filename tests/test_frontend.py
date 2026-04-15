@@ -16,7 +16,8 @@ import tempfile
 import time
 
 import pytest
-from fastapi.testclient import TestClient
+
+from http_client import SyncASGITestClient
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +33,7 @@ def client():
 
     from main import app
 
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with SyncASGITestClient(app, raise_server_exceptions=False) as c:
         yield c
 
 

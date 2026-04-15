@@ -15,6 +15,8 @@ import json
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from http_client import SyncASGITestClient
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -266,7 +268,7 @@ class TestConfigAPIEndpoints:
     """配置 API 端点集成测试"""
 
     @pytest.fixture
-    def client_with_config(self, tmp_path):
+    def client_with_config(self, tmp_path, request):
         """创建带配置文件的测试客户端"""
         import importlib
 
@@ -340,8 +342,10 @@ class TestConfigAPIEndpoints:
         main_mod.RateLimitMiddleware.dispatch = passthrough
         main_mod.RequestLoggingMiddleware.dispatch = passthrough
 
-        from fastapi.testclient import TestClient
-        return TestClient(main_mod.app, base_url="http://testserver"), config_file
+        client = SyncASGITestClient(main_mod.app, base_url="http://testserver")
+        client.__enter__()
+        request.addfinalizer(lambda: client.__exit__(None, None, None))
+        return client, config_file
 
     def test_get_config_returns_global_llm(self, client_with_config):
         """GET /config 返回 global_llm 段"""

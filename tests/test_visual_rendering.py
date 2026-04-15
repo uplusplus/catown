@@ -18,7 +18,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+
+from http_client import SyncASGITestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "frontend"
@@ -38,7 +39,7 @@ def client():
 
     from main import app
 
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with SyncASGITestClient(app, raise_server_exceptions=False) as c:
         yield c
 
 
