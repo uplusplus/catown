@@ -53,6 +53,7 @@ Thumbs.db
 # Frontend
 frontend/node_modules/
 frontend/dist/
+graphify-out/cache/
 frontend/.vite/
 
 # Test coverage
