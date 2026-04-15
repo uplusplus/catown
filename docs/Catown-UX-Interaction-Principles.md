@@ -115,14 +115,30 @@ UI is the primary medium for making state legible, presenting constrained choice
 They should not compete.
 They should reinforce each other.
 
-### 5. Conversation should guide, not replace structure
+### 5. AI-era interaction must feel like dialogue, not GUI wizardry
+
+Catown should treat human-AI interaction primarily as dialogue.
+
+That does not mean unstructured chat logs.
+It means the system should adapt to human expression instead of forcing people through rigid GUI-era step sequences.
+
+The interaction may still converge step by step, but those steps should feel like a conversation being progressively clarified, not like a Windows-style wizard being mechanically advanced.
+
+This means:
+
+- users can interrupt and redirect the flow
+- users can revise earlier assumptions without feeling trapped in a funnel
+- the system should skip unnecessary questions when intent is already clear
+- the UI should compress the current decision, not force the user into machine-shaped order
+
+### 6. Conversation should guide, not replace structure
 
 The interaction can feel conversational, but the outcome must become structured state.
 
 Conversation is the guidance layer.
 Structured objects are the execution layer.
 
-### 6. Refined UI is required, not optional
+### 7. Refined UI is required, not optional
 
 Catown needs UI not just for functionality but for quality.
 
@@ -147,7 +163,7 @@ Not every interaction deserves a conversational flow.
 
 Do not force chat theater onto trivial operations.
 
-### 8. AI should absorb complexity
+### 9. AI should absorb complexity
 
 The system should do more interpretation and organization so the user can do less manual configuration.
 
@@ -155,7 +171,7 @@ The user provides intent.
 The system proposes structure.
 The user corrects only where correction matters.
 
-### 9. The homepage should optimize for progress, not feature discovery
+### 10. The homepage should optimize for progress, not feature discovery
 
 The main surface should emphasize:
 
@@ -186,6 +202,26 @@ That means:
 - graphical controls are accelerators, not mandatory gateways
 
 A strong Catown experience lets the user fluidly move between saying and selecting.
+
+---
+
+## Dialogue-first progression
+
+Catown should avoid the feel of a classic wizard.
+
+Even when the system converges through stages, the user should feel that they are in a live conversation with a system that understands, adapts, and reorganizes around their intent.
+
+That means:
+
+- the user can jump ahead when they already know what they want
+- the system can skip no-longer-necessary questions
+- the user can revise a prior decision in natural language
+- the system should prefer local correction over forcing linear backtracking
+- cards should represent the current decision node, not a static page in a rigid funnel
+
+In short:
+
+**progressive interaction should feel like dialogue being compressed into a current decision, not like a GUI wizard demanding the next click.**
 
 ---
 
@@ -1531,6 +1567,9 @@ This question should usually ask for:
 - a confirmation
 - a priority
 - a missing key constraint
+
+The system should not ask questions mechanically just because a previous flow map expected them.
+If the user's intent already answers a step, that step should collapse.
 
 ### Step 4. Generate a draft or proposed action
 
