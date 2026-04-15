@@ -914,6 +914,209 @@ The homepage should feel like a mission control view, not a feature menu.
 
 ---
 
+## Homepage composition
+
+The homepage should not behave like a feature directory, a KPI dashboard, or a chat landing page.
+
+Its first screen should answer three things immediately:
+
+- where the current battle is
+- whether the user needs to intervene
+- what the next move should be
+
+The recommended composition is:
+
+**one strong center stage with two supporting bands**
+
+That means:
+
+- a narrow left rail for project context switching
+- a dominant center stage for the active mission board
+- a weak right band for supporting attention items
+
+The visual center of gravity should remain in the middle.
+The homepage must not devolve into equal-weight multi-column noise.
+
+### Layout intent
+
+#### Left rail
+
+The left rail is for context switching, not situation explanation.
+
+It should stay narrow and light.
+
+It may include:
+
+- project list
+- current project highlight
+- light filtering
+- low-emphasis create-project entry
+
+It should not become a secondary content area full of logs, metrics, or narrative explanation.
+
+#### Center stage
+
+The center stage is the heart of the homepage.
+
+Its first-screen structure should be vertically organized into three levels:
+
+1. a project hero that defines the current situation
+2. an action-focus module that defines the best next move
+3. a stage-progress region that explains current progression context
+
+This is where the product earns its operational clarity.
+
+#### Right band
+
+The right side should stay weaker than the center stage.
+
+It should carry supporting attention items such as:
+
+- pending decisions
+- key changes
+- lightweight situational alerts
+
+It should not compete with the center stage for primary attention.
+
+### Visual priority order
+
+The recommended homepage attention order is:
+
+1. project hero
+2. action-focus module
+3. pending attention or stage progress
+4. recent changes and other supporting context
+
+If the event feed, metadata, or low-frequency features become more visually dominant than the action focus, the homepage has failed.
+
+### Anti-patterns
+
+The first screen should avoid:
+
+- a large persistent chat input
+- a heavy chat transcript
+- equal-weight statistics cards
+- multiple competing CTAs
+- a large empty canvas waiting for interaction
+
+The homepage should feel like a composed operations surface, not an information marketplace.
+
+---
+
+## Project hero
+
+The homepage hero is not a banner and not a project profile card.
+
+It is a compressed situation card for the current project.
+
+Its job is to answer:
+
+- what project this is
+- what state it is in
+- what the system is currently focused on
+- how serious the current situation is
+
+### Hero content
+
+The hero should stay disciplined and include only high-value context:
+
+1. project identity
+   - project name
+   - a single short objective sentence
+2. current stage
+3. health or risk status
+4. current system focus
+5. one recent meaningful change at most
+
+The hero should not become a metadata dump.
+
+### Hero structure
+
+A good hero can be thought of as three stacked layers:
+
+#### Identity layer
+
+- project name
+- short objective statement
+
+#### Status layer
+
+- current stage
+- health or risk state
+- optional execution mode when genuinely useful
+
+#### System focus layer
+
+- one sentence describing the system's current focus
+- one sentence describing the latest meaningful change
+
+### Hero role in the page
+
+The hero sets the scene.
+It should feel steady, high-trust, and situational.
+
+It should not try to become the main action area.
+The action-focus module below it should own active progression.
+
+---
+
+## Action-focus module
+
+The recommended next-action area should not be treated as a generic CTA card.
+
+It should behave like a system judgment surface.
+
+Its purpose is to tell the user:
+
+- what matters most right now
+- why this is the best next move
+- whether the user needs to intervene
+- what will happen if they continue
+
+### Core role
+
+This module is the homepage's action engine.
+It is where Catown demonstrates that it is not merely showing state, but actively guiding progress.
+
+### Recommended structure
+
+A strong action-focus module contains four parts:
+
+1. a short action label
+   - examples: `Continue project`, `Review scope decision`, `Unblock release`
+2. one short reason statement
+3. one clear primary action
+4. one weaker supporting entry when needed
+
+The primary action must be singular.
+If the module presents multiple equal-weight main actions, the system is avoiding judgment instead of providing it.
+
+### Action states
+
+The module should support at least these semantic modes:
+
+- progression state
+- awaiting-confirmation state
+- blocked state
+- completion or idle-transition state
+
+Each mode should adjust tone and supporting explanation, but the structure should remain consistent.
+
+### Visual intent
+
+The action-focus module should feel stronger than surrounding support cards, but it should not become a loud marketing banner.
+
+Its authority should come from:
+
+- hierarchy
+- wording precision
+- surface emphasis
+- focused use of action color
+
+Not from oversized color blocks or excessive visual dramatics.
+
+---
+
 ## Command entry model
 
 Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
