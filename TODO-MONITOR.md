@@ -87,10 +87,9 @@
     1. 先冻结 Mission Board 所需最小 `/api/v2/*` contract（已落地：`docs/Mission-Board-Minimum-V2-Contract.md`）
     2. 新建 project-first 主视图，再逐步删除 pipeline/chatroom 主壳
   - 页面信息架构已落地：`docs/Mission-Board-Information-Architecture.md`
-  - 推荐实现顺序：
-    1. 先在 `frontend/index.html` 落静态 Mission Board shell
-    2. 再只接最小 v2 读接口
-    3. 最后再接 continue / decision resolve 等主动作
+  - 前端架构决策已切到方案 C：`docs/ADR-023-frontend-react-mission-board-architecture.md`
+  - 当前执行策略已改为：不做兼容迁移，直接以 `React + Vite + TypeScript` 重建 project-first Mission Board
+  - 当前已完成首个骨架：`frontend/index.html` 已改为 Vite shell，`frontend/src/` 已建立 Mission Board 主结构并接入核心 `/api/v2/*` 读流与基本 continue / decision resolve 动作
 
 ---
 

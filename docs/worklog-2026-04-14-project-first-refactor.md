@@ -71,6 +71,7 @@
   - 让主视图围绕 `Project / StageRun / Decision / Asset / Event`
 - 进一步补充：已新增 `docs/Mission-Board-Minimum-V2-Contract.md`，冻结第一版 Mission Board 所需最小 `/api/v2/*` 字段面，避免前后端继续互相猜字段
 - 进一步补充：已新增 `docs/Mission-Board-Information-Architecture.md`，把新前端主视图的布局、区块职责、默认行为和实现切片固定下来，避免又按旧 Pipeline Dashboard 思维落页面
+- 架构决策进一步收敛：用户明确选择直接启动方案 C，不做兼容迁移；因此已新增 `docs/ADR-023-frontend-react-mission-board-architecture.md`，并把 `frontend/index.html` 切成 Vite shell，建立 `frontend/src/` 下的 React/TypeScript Mission Board 骨架
 
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`
