@@ -167,6 +167,12 @@ button {
   align-items: flex-start;
 }
 
+.section-copy {
+  margin-top: 6px;
+  max-width: 52ch;
+  font-size: 0.9rem;
+}
+
 .rail-list,
 .stage-list,
 .decision-list,
@@ -272,7 +278,8 @@ button {
 .hero-vision,
 .detail-block p,
 .warning-card p,
-.hero-summary-grid p {
+.hero-summary-grid p,
+.section-copy {
   margin: 0;
   color: var(--muted);
   line-height: 1.5;

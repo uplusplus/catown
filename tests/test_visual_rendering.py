@@ -58,6 +58,11 @@ def styles_source() -> str:
     return (SRC_ROOT / "styles.css").read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def activity_feed_source() -> str:
+    return (SRC_ROOT / "components" / "ActivityFeed.tsx").read_text(encoding="utf-8")
+
+
 class TestMissionBoardShell:
     def test_vite_shell_has_root_mount(self, shell_html: str):
         assert "<div id=\"root\"></div>" in shell_html
@@ -102,6 +107,11 @@ class TestMissionBoardComposition:
         ]
         for token in forbidden:
             assert token not in app_source
+
+    def test_activity_feed_is_described_as_project_activity(self, activity_feed_source: str):
+        assert "Project Activity" in activity_feed_source
+        assert "Activity" in activity_feed_source
+        assert "No project activity yet." in activity_feed_source
 
 
 class TestDesignTokensAndStates:

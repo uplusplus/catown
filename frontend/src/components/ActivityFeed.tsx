@@ -7,15 +7,28 @@ type Props = {
   events: EventItem[];
   selectedEventId: number | null;
   onSelect: (event: EventItem) => void;
+  projectName?: string | null;
+  currentStageName?: string | null;
 };
 
-export function ActivityFeed({ events, selectedEventId, onSelect }: Props) {
+export function ActivityFeed({
+  events,
+  selectedEventId,
+  onSelect,
+  projectName,
+  currentStageName,
+}: Props) {
   return (
     <section className="panel-shell activity-feed">
       <div className="section-header">
         <div>
-          <p className="eyebrow">Live Context</p>
-          <h3>Recent Activity</h3>
+          <p className="eyebrow">Project Activity</p>
+          <h3>{projectName ? `${projectName} Activity` : 'Recent Activity'}</h3>
+          <p className="section-copy">
+            {currentStageName
+              ? `Currently focused on ${titleize(currentStageName)} while keeping the wider mission timeline visible.`
+              : 'Mission events stay visible here as the board focus moves between stages and decisions.'}
+          </p>
         </div>
         <span className="section-stat">{events.length} items</span>
       </div>
@@ -44,7 +57,13 @@ export function ActivityFeed({ events, selectedEventId, onSelect }: Props) {
             </button>
           );
         })}
-        {events.length === 0 ? <div className="empty-card">No events for this stage yet.</div> : null}
+        {events.length === 0 ? (
+          <div className="empty-card">
+            {currentStageName
+              ? `No activity has landed for ${titleize(currentStageName)} yet.`
+              : 'No project activity yet.'}
+          </div>
+        ) : null}
       </div>
     </section>
   );

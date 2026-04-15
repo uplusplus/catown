@@ -105,7 +105,7 @@
        - [x] 收口 board 级 error 与 detail 级 error 的职责边界，减少 `App.tsx` 编排分支
        - [x] 为 project/stage 切换补更明确的局部 loading 语义，减少“整板一起忙碌”的反馈粒度
     3. Mission Board 交互收尾
-       - [ ] 定型 `ActivityFeed` 应保持 stage 级还是提升为 project 级聚合视图
+       - [x] 定型 `ActivityFeed` 为 project-aware 聚合视图；当前先展示所选阶段事件切片，并用文案明确其项目语义
        - [ ] 继续强化 `ProjectHero / NextActionStrip` 的信息优先级，减少重复信息和低价值文案
        - [ ] 评估是否需要为 stage / event / asset 跳转补面包屑或上下文提示，降低 detail rail 迷失感
     4. 前端测试与回归补强

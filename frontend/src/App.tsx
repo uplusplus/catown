@@ -280,7 +280,13 @@ function App() {
                   onSelect={handleSelectAsset}
                 />
               </section>
-              <ActivityFeed events={events} selectedEventId={selectedIds.eventId} onSelect={handleSelectEvent} />
+              <ActivityFeed
+                events={events}
+                selectedEventId={selectedIds.eventId}
+                onSelect={handleSelectEvent}
+                projectName={overview.project.name}
+                currentStageName={stageDetail?.stage_run.stage_type ?? overview.current_stage_run?.stage_type ?? null}
+              />
             </>
           ) : (
             <section className="panel-shell empty-board">
