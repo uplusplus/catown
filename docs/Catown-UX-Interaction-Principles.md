@@ -665,6 +665,159 @@ Thin or ornamental weights should be avoided, especially in dark mode where they
 
 ---
 
+## Foundational component language
+
+Catown should feel precise and system-grade at the component level.
+
+The foundational visual language should be:
+
+- restrained in shape
+- disciplined in spacing
+- light in boundary treatment
+- quiet in depth effects
+- consistent in hierarchy
+
+It should avoid both extremes:
+
+- not soft and toy-like
+- not harsh and terminal-like
+
+The goal is cold precision with enough polish to feel premium.
+
+---
+
+## Spacing system
+
+Catown should use an 8pt foundation with 4pt micro-adjustments.
+
+Recommended spacing scale:
+
+```css
+--space-1:  4px;
+--space-2:  8px;
+--space-3: 12px;
+--space-4: 16px;
+--space-6: 24px;
+--space-8: 32px;
+--space-10: 40px;
+--space-12: 48px;
+```
+
+Spacing principles:
+
+- spacing between major modules should be larger than spacing inside modules
+- focused task areas should breathe more than passive context areas
+- simplicity should come from hierarchy, not from compressing everything together
+
+---
+
+## Radius system
+
+Catown should use medium-small radii with tight discipline.
+
+Recommended scale:
+
+```css
+--radius-sm:  8px;
+--radius-md: 12px;
+--radius-lg: 16px;
+--radius-xl: 20px;
+```
+
+Usage intent:
+
+- `--radius-sm` for compact controls and small UI elements
+- `--radius-md` for standard cards, controls, and compact panels
+- `--radius-lg` for larger panels and prominent surfaces
+- `--radius-xl` only for major task layers or rare large containers
+
+The product should feel modern but not soft or bubbly.
+
+---
+
+## Border system
+
+In Catown, borders matter more than heavy shadows.
+
+Borders should establish structure, separation, and active state changes with precision.
+
+Recommended widths:
+
+```css
+--border-width-thin:   1px;
+--border-width-strong: 1.5px;
+```
+
+Principles:
+
+- default cards and panels should rely on subtle borders
+- hover or active states may strengthen border presence slightly
+- focus states can combine border emphasis with accent rings
+- borders should support order without turning the UI into outlined boxes everywhere
+
+---
+
+## Shadow system
+
+Shadows should be used sparingly and mainly for elevation cues.
+
+Recommended scale:
+
+```css
+--shadow-soft:   0 6px 18px rgba(0, 0, 0, 0.18);
+--shadow-raised: 0 10px 28px rgba(0, 0, 0, 0.24);
+--shadow-task:   0 20px 48px rgba(0, 0, 0, 0.32);
+```
+
+Usage intent:
+
+- `--shadow-soft` for gentle hover or light elevation
+- `--shadow-raised` for raised panels that need clear separation
+- `--shadow-task` for major overlays such as the centered task layer
+
+Catown should not depend on shadows for its sophistication.
+Most depth should come from surface hierarchy, spacing, and border discipline.
+
+---
+
+## Surface hierarchy guidance
+
+Components should respect a clear surface hierarchy:
+
+1. base application frame
+2. main mission board plane
+3. standard panels and cards
+4. elevated or selected surfaces
+5. high-attention task layers and overlays
+
+This hierarchy should be more important than one-off component styling flourishes.
+
+---
+
+## Component behavior principles
+
+### 1. Cards are priority containers, not neutral boxes
+
+Card treatment should reflect importance.
+Primary cards, supporting cards, and contextual cards should not all feel identical.
+
+### 2. Buttons should feel sharp, not puffy
+
+Buttons should feel confident and compact.
+Avoid oversized pill treatments or overly soft consumer-app button styling.
+
+### 3. Inputs should feel like system controls, not chat bubbles
+
+Command triggers, fields, and focused inputs should look like refined operating controls.
+They should not visually collapse into IM-style message boxes.
+
+### 4. Status tags should feel disciplined
+
+Tags, pills, and state labels should read as system markers.
+They should avoid candy-like colors or playful social-product styling.
+
+---
+
 ## Interaction layers
 
 ## A. Stable Mission Board
