@@ -1,12 +1,12 @@
-# Graph Report - /home/sun/.openclaw/workspace/catown  (2026-04-14)
+# Graph Report - /home/sun/.openclaw/workspace/catown  (2026-04-15)
 
 ## Corpus Check
-- 88 files · ~89,158 words
+- 89 files · ~89,220 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1675 nodes · 4123 edges · 55 communities detected
-- Extraction: 45% EXTRACTED · 55% INFERRED · 0% AMBIGUOUS · INFERRED: 2276 edges (avg confidence: 0.5)
+- 1680 nodes · 4129 edges · 55 communities detected
+- Extraction: 45% EXTRACTED · 55% INFERRED · 0% AMBIGUOUS · INFERRED: 2285 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -94,15 +94,15 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.03
-Nodes (124): AgentInfo, create_project(), _extract_memories(), get_agent(), get_config(), get_messages(), get_project(), list_agents() (+116 more)
+Nodes (128): AgentInfo, create_project(), _extract_memories(), get_agent(), get_config(), get_messages(), get_project(), list_agents() (+120 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.08
-Nodes (146): Event, LLMCall, Token 汇总统计 + 成本估算（GPT-4 pricing）, 聚合时间线：events + llm_calls + tool_calls 混合排序, 单条 LLM 调用详情（含完整 prompt 和 response）, ToolCall, Base, LLMClient (+138 more)
+Nodes (145): Event, LLMCall, Token 汇总统计 + 成本估算（GPT-4 pricing）, 聚合时间线：events + llm_calls + tool_calls 混合排序, 单条 LLM 调用详情（含完整 prompt 和 response）, ToolCall, LLMClient, 流式聊天（SSE generator）          Yields:             dict: {"type": "content"|"tool_ (+137 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.02
-Nodes (59): LLMConfigModel, BaseModel, CollaborationManager, CollaborationStrategy, MultiAgentStrategy, Multiple agents collaborate on complex tasks, Select multiple agents based on task type, Manager for agent collaboration (+51 more)
+Nodes (61): LLMConfigModel, BaseModel, CollaborationManager, CollaborationStrategy, MultiAgentStrategy, Multiple agents collaborate on complex tasks, Select multiple agents based on task type, Manager for agent collaboration (+53 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.02
@@ -110,7 +110,7 @@ Nodes (53): BaseHTTPMiddleware, _forward_pipeline_events_to_ws(), RateLimiter, R
 
 ### Community 4 - "Community 4"
 Cohesion: 0.03
-Nodes (40): AssetService, AssetRecipe, BootstrapStageExecutor, Owns the scaffold generation path until a real runtime replaces it., Minimal execution contract for stage executors under the new kernel., Minimal execution contract for stage executors under the new kernel., Owns the scaffold generation path until a real runtime replaces it., Describes one scaffold asset emitted by a bootstrap stage. (+32 more)
+Nodes (39): AssetService, AssetRecipe, BootstrapStageExecutor, Owns the scaffold generation path until a real runtime replaces it., Minimal execution contract for stage executors under the new kernel., Minimal execution contract for stage executors under the new kernel., Owns the scaffold generation path until a real runtime replaces it., Describes one scaffold asset emitted by a bootstrap stage. (+31 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.02
@@ -177,16 +177,16 @@ Cohesion: 0.17
 Nodes (16): get_default_llm_client(), _get_first_provider(), get_llm_client(), get_llm_client_for_agent(), _load_agent_provider(), _load_global_provider(), 解析字符串中的 ${ENV_VAR} 占位符, 从 agents.json 加载指定 Agent 的 provider 配置      优先级：Agent 自身 provider > global_llm p (+8 more)
 
 ### Community 21 - "Community 21"
+Cohesion: 0.12
+Nodes (1): coordinator()
+
+### Community 22 - "Community 22"
 Cohesion: 0.16
 Nodes (9): side-panel 是 flex-col 父容器，必须有 min-h-0。, chat-container 是 flex-col 父容器，必须有 min-h-0。, messages-area 必须有 overflow-y-auto。, logs-content 必须有 overflow-y-auto。, logs-content 必须有 flex-1 以占满父容器剩余空间。, side-panel 的父级（chat-area wrapper）必须有 overflow-hidden。, 系统性检查：所有 flex-col 容器中，有 overflow-y-auto 的子元素，         其父级必须有 min-h-0 或固定高度。, Flex 布局中，overflow-y-auto 的子元素要能滚动，其父级 flex 容器     必须有 min-h-0（或固定 height/max-hei (+1 more)
 
-### Community 22 - "Community 22"
+### Community 23 - "Community 23"
 Cohesion: 0.22
 Nodes (9): execute_tool(), get_workspace(), load_agent_tools(), Load per-agent tool allowlists from agents.json., tool_execute_code(), tool_list_files(), tool_read_file(), tool_write_file() (+1 more)
-
-### Community 23 - "Community 23"
-Cohesion: 0.27
-Nodes (3): AgentRegistry, get_builtin_agent_configs(), register_builtin_agents()
 
 ### Community 24 - "Community 24"
 Cohesion: 0.24
@@ -354,11 +354,11 @@ Nodes (1): 将 engine 事件转发到所有通用 /ws 连接
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Project` connect `Community 1` to `Community 0`, `Community 2`, `Community 4`, `Community 14`, `Community 15`?**
-  _High betweenness centrality (0.119) - this node is a cross-community bridge._
+  _High betweenness centrality (0.121) - this node is a cross-community bridge._
 - **Why does `BaseTool` connect `Community 0` to `Community 8`, `Community 10`, `Community 12`, `Community 6`?**
   _High betweenness centrality (0.097) - this node is a cross-community bridge._
 - **Why does `LLMClient` connect `Community 1` to `Community 18`, `Community 2`, `Community 20`, `Community 14`?**
-  _High betweenness centrality (0.052) - this node is a cross-community bridge._
+  _High betweenness centrality (0.051) - this node is a cross-community bridge._
 - **Are the 182 inferred relationships involving `Project` (e.g. with `StageExecutionResult` and `AssetRecipe`) actually correct?**
   _`Project` has 182 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 129 inferred relationships involving `Pipeline` (e.g. with `TestPipelineCreation` and `TestPipelineStart`) actually correct?**
