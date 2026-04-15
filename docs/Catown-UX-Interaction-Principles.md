@@ -1889,6 +1889,155 @@ It is a short, high-quality progression decision session.
 
 ---
 
+## Standard task-layer example: handle decision or approval
+
+Decision and approval handling should be the third canonical task-layer flow.
+
+It defines how Catown behaves when the system reaches a boundary where human authority is required.
+
+This is not a lightweight approve or reject click.
+It is a contextual handoff of decision power.
+
+### Entry paths
+
+A user may enter this flow through:
+
+- the homepage intervention queue
+- the homepage action-focus module when the most important next step is a decision
+- contextual review entry points elsewhere in the board
+
+### Step 0. Open the task layer
+
+The centered task layer should establish:
+
+- decision title
+- related project or stage context
+- high-level decision type
+- exit or pause controls
+
+### Step 1. Explain why the user is needed
+
+Before presenting options, the system should clarify why this decision cannot be made automatically.
+
+Guidance direction:
+
+- explain what the decision is
+- explain why Catown cannot safely choose on the user's behalf
+- explain what progress is blocked or gated until the choice is made
+
+This is the moment where the user should feel that their authority is being respected rather than their time being wasted.
+
+### Step 2. Present the decision card
+
+The decision itself should be rendered as a focused primary card.
+
+Common card types include:
+
+#### A. Path or direction choice card
+
+Use for:
+
+- scope direction
+- execution path choice
+- release strategy choice
+
+The card may show:
+
+- option name
+- short conclusion
+- expected benefit
+- expected cost
+- risk or tradeoff
+
+#### B. Approval card
+
+Use for:
+
+- release approval
+- publish approval
+- final pack approval
+
+The card may show:
+
+- what is ready
+- what conditions are satisfied
+- what risks remain
+- what the system will do after approval
+
+#### C. Risk tradeoff card
+
+Use for:
+
+- blocker handling choices
+- delay versus scope reduction decisions
+- conservative versus aggressive execution decisions
+
+The card may show:
+
+- the core conflict
+- option impacts
+- recommended direction
+- why Catown recommends but does not automatically execute it
+
+### Step 3. Give a recommendation without taking authority
+
+Catown should not pretend to be neutral.
+It should make a recommendation when it has a meaningful judgment.
+
+But it should not silently take the choice away from the user.
+
+Guidance direction:
+
+- state which option is recommended
+- explain the reason in one short sentence
+- preserve the user's authority over the final decision
+
+This balance is essential.
+The system should feel opinionated but not overreaching.
+
+### Step 4. Confirm with context
+
+The task layer should provide a clear action path such as:
+
+- choose this path
+- approve and continue
+- use recommended option
+- review details first
+
+The user should be able to inspect more context when needed, but the primary flow should still feel compact.
+
+The task layer should not expose raw low-context approval buttons on the homepage itself.
+The real decision belongs inside this contextual review surface.
+
+### Step 5. Write the decision back into project state
+
+After confirmation, the system should explain what it will do next and visibly update the mission board.
+
+Relevant updates may include:
+
+- intervention queue shrinking or clearing
+- action-focus module changing to the next move
+- stage spine advancing or unblocking
+- hero focus updating
+- key changes reflecting the decision outcome
+
+A flat "approved" or "done" message is not enough.
+The user should feel the baton pass back to the system.
+
+### What this flow proves
+
+A strong decision or approval flow proves that Catown can:
+
+- recognize the boundary of system autonomy
+- explain why user authority is required
+- compress a decision into a clear and contextual card
+- provide a recommendation without stealing control
+- resume system execution after the user decides
+
+In short, Catown prepares the decision, and the user owns the final branch.
+
+---
+
 ## When to use conversational guidance
 
 ### Good fit
