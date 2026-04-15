@@ -146,6 +146,8 @@ class TestMissionBoardComposition:
             "No inputs linked yet.",
             "No outputs yet.",
             "No events captured yet.",
+            "Detail context trail",
+            "Board context",
         ]:
             assert token in detail_rail_source
 
@@ -194,6 +196,8 @@ class TestDesignTokensAndStates:
             ".stage-list.is-switching-stage",
             ".next-action-meta",
             ".warning-pill",
+            ".detail-context-trail",
+            ".detail-context-segment",
         ]:
             assert selector in styles_source
 

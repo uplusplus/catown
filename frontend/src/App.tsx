@@ -140,11 +140,13 @@ function App() {
       decisionDetail,
       assetDetail,
       selectedEvent,
+      projectName: overview?.project.name ?? null,
+      currentStageName: stageDetail?.stage_run.stage_type ?? overview?.current_stage_run?.stage_type ?? null,
       onSelectDecision: handleSelectDecision,
       onSelectAsset: handleSelectAsset,
       onSelectEvent: handleSelectEvent,
     }),
-    [assetDetail, decisionDetail, detailFocus, selectedEvent, stageDetail],
+    [assetDetail, decisionDetail, detailFocus, overview, selectedEvent, stageDetail],
   );
 
   async function handleContinue() {

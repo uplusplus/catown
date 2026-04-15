@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { FileText, GitBranch, ListChecks, Loader, Workflow } from 'lucide-react';
+import { ChevronRight, FileText, GitBranch, ListChecks, Loader, Workflow } from 'lucide-react';
 
 import { prettyJson, titleize } from '../lib/format';
 import type { Asset, Decision, EventItem, StageRunDetail } from '../types';
@@ -13,6 +13,8 @@ type Props = {
   decisionDetail: Decision | null;
   assetDetail: Asset | null;
   selectedEvent: EventItem | null;
+  projectName?: string | null;
+  currentStageName?: string | null;
   onSelectDecision: (decisionId: number) => void;
   onSelectAsset: (assetId: number) => void;
   onSelectEvent: (event: EventItem) => void;
@@ -26,6 +28,8 @@ export function DetailRail({
   decisionDetail,
   assetDetail,
   selectedEvent,
+  projectName,
+  currentStageName,
   onSelectDecision,
   onSelectAsset,
   onSelectEvent,
@@ -35,8 +39,10 @@ export function DetailRail({
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
   let body: JSX.Element = <div className="empty-card">Select a stage, decision, asset, or event.</div>;
+  let focusLabel = 'Board context';
 
   if (loading) {
+    focusLabel = loading === 'decision' ? 'Decision detail' : 'Asset detail';
     body = (
       <div className="detail-loading-state">
         <Loader className="spin" size={18} />
@@ -46,12 +52,13 @@ export function DetailRail({
   }
 
   if (!loading && error) {
+    focusLabel = 'Load issue';
     body = <div className="detail-error-state">{error}</div>;
   }
 
   if (!loading && !error && focus === 'stage' && stageDetail) {
-
     title = `${titleize(stageDetail.stage_run.stage_type)} Run`;
+    focusLabel = `${titleize(stageDetail.stage_run.stage_type)} stage`;
     icon = <Workflow size={18} />;
     body = (
       <div className="detail-stack">
@@ -132,6 +139,7 @@ export function DetailRail({
 
   if (!loading && !error && focus === 'decision' && decisionDetail) {
     title = 'Decision Detail';
+    focusLabel = decisionDetail.title;
     icon = <ListChecks size={18} />;
     body = (
       <div className="detail-stack">
@@ -176,6 +184,7 @@ export function DetailRail({
 
   if (!loading && !error && focus === 'asset' && assetDetail) {
     title = 'Asset Detail';
+    focusLabel = assetDetail.title || titleize(assetDetail.asset_type);
     icon = <FileText size={18} />;
     body = (
       <div className="detail-stack">
@@ -225,6 +234,7 @@ export function DetailRail({
 
   if (!loading && !error && focus === 'event' && selectedEvent) {
     title = 'Event Detail';
+    focusLabel = selectedEvent.summary || titleize(selectedEvent.event_type);
     icon = <GitBranch size={18} />;
     body = (
       <div className="detail-stack">
@@ -258,11 +268,21 @@ export function DetailRail({
     );
   }
 
+  const trail = [projectName || 'Mission board', currentStageName ? titleize(currentStageName) : null, focusLabel].filter(Boolean);
+
   return (
     <aside className="detail-rail panel-shell">
       <div className="section-header detail-header">
         <div>
           <p className="eyebrow">Focused Inspection</p>
+          <div className="detail-context-trail" aria-label="Detail context trail">
+            {trail.map((segment, index) => (
+              <span key={`${segment}-${index}`} className="detail-context-segment">
+                {index > 0 ? <ChevronRight size={14} /> : null}
+                <span>{segment}</span>
+              </span>
+            ))}
+          </div>
           <h3>{title}</h3>
         </div>
         <span className="detail-icon">{icon}</span>

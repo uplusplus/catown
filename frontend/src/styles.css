@@ -566,22 +566,26 @@ button.event-card {
   color: var(--accent);
 }
 
-.detail-block pre {
-  margin: 0;
-  padding: 14px;
-  border-radius: 18px;
-  background: rgba(4, 11, 18, 0.62);
-  color: #cfe2f5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 360px;
-  overflow: auto;
+.detail-context-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 10px;
+  color: var(--soft);
+  font-size: 0.82rem;
 }
 
-.loading-state,
-.empty-board,
-.error-banner,
-.notice-banner {
+.detail-context-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-context-segment:last-child {
+  color: var(--muted);
+}
+
   padding: 18px 20px;
 }
 
