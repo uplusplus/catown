@@ -1014,6 +1014,20 @@ This shifts the default emphasis from "what would you like to do" toward "what i
 
 Because Catown is multi-agent by design, this cockpit view should make orchestration visible rather than flattening everything into one assistant voice.
 
+### Flight-deck reframing
+
+A stronger framing for the homepage is to treat it like a flight deck.
+
+Under this metaphor:
+
+- navigation system -> mission goal, route, current phase, next gate
+- power or compute system -> model, reasoning mode, token burn, remaining budget
+- ship systems -> active agents and module health
+- captain station -> human intervention and command authority
+
+This metaphor is not decorative.
+It is a structural information architecture for the product.
+
 ### Default monitoring priorities
 
 The homepage should therefore balance around these monitoring priorities:
@@ -1485,11 +1499,11 @@ It is the structural blueprint for the default desktop mission-board state.
 +------------------+------------------------------------------------------+-----------------------+
 | Left rail        | Center stage                                         | Right band            |
 |                  |                                                      |                       |
-| Projects         | [ Project Hero ]                                     | [ Needs your decision ]
+| Projects         | [ Navigation Core ]                                  | [ Captain Intervention ]
 | - Project A      |                                                      | - item 1              |
-| - Project B      | [ Action-focus module ]                              | - item 2              |
+| - Project B      | [ Agent Systems / Autonomy Status ]                  | - item 2              |
 | - Project C      |                                                      | - item 3 / view all   |
-|                  | [ Stage spine ]                                      |                       |
+|                  | [ System Pulse ]                                     |                       |
 | + New (light)    |                                                      | [ Key changes ]       |
 +------------------+------------------------------------------------------+-----------------------+
 ```
@@ -1498,11 +1512,11 @@ It is the structural blueprint for the default desktop mission-board state.
 
 The intended reading sequence is:
 
-1. identify the active project in the hero
-2. understand the best next move in the action-focus module
-3. inspect where the project sits in the stage spine
-4. check whether user intervention is waiting in the right band
-5. scan key changes only after the operational picture is clear
+1. identify the active project context
+2. understand the mission route and current position in `Navigation Core`
+3. inspect autonomous execution health and active agent systems
+4. check whether captain intervention is required
+5. scan filtered pulse and changes only after the operational picture is clear
 
 ### Width guidance
 
@@ -1537,38 +1551,37 @@ Rules:
 ### Center stage
 
 ```text
-[ Project Hero ]
-  - project name
-  - short objective
-  - stage
-  - health/risk
-  - current system focus
-  - latest meaningful change
+[ Navigation Core ]
+  - mission target
+  - flight state
+  - current position
+  - next gate
+  - route visualization
+  - current segment view
 
-[ Action-focus module ]
-  - short action label
-  - reason statement
-  - primary action
-  - optional secondary context entry
+[ Agent Systems / Autonomy Status ]
+  - auto-mode state
+  - active agents
+  - stalled or waiting signals
 
-[ Stage spine ]
-  - done stages
-  - current active stage (expanded)
-  - upcoming stages
+[ System Pulse ]
+  - latest meaningful progress
+  - current anomaly signal when relevant
 ```
 
 Rules:
 
-- the hero sets context, not action overload
-- the action-focus module owns the main forward move
-- the stage spine provides structural progression, not narrative logs
+- `Navigation Core` is the main visual anchor
+- route visualization is part of the center navigation system, not a decorative progress bar
+- `Current Segment` is a local route view, not a task checklist
+- autonomy and agent state should support the navigation picture rather than replacing it
 
 ### Right band
 
 ```text
-[ Needs your decision ]
-  - top 1 to 3 intervention items
-  - review / resolve entry
+[ Captain Intervention ]
+  - top 1 to 3 required decisions
+  - take-control / review entry
 
 [ Key changes ]
   - small list of filtered meaningful updates
@@ -1576,33 +1589,129 @@ Rules:
 
 Rules:
 
-- intervention items outrank passive updates
+- human intervention is framed as captain authority, not generic inbox work
 - key changes remain compact
 - the right side stays visually weaker than the center stage
 
 ---
 
-## Homepage visual hierarchy rules
+## Navigation Core
 
-### 1. The hero is the visual anchor
+`Navigation Core` should replace the idea of a static hero card.
 
-It should be the first stable orientation point.
+It is the homepage's central navigation screen.
 
-### 2. The action-focus module is the strongest operational cue
+Its job is to show:
 
-It should be the most decisive module on the page, even if it is not the visually largest block.
+- where the mission is going
+- where the project currently is
+- what gate comes next
+- whether the route is healthy or drifting
 
-### 3. The intervention queue should feel important but bounded
+### Navigation Core structure
 
-It should communicate that the user's authority is required without turning the page into an alarm surface.
+The recommended internal structure is:
 
-### 4. The stage spine should feel like structure, not spectacle
+1. mission layer
+2. flight-state layer
+3. route-visualization layer
+4. current-segment layer
 
-It should visually support understanding, not compete with the hero.
+### Mission layer
 
-### 5. Key changes should be compressed and filtered
+This establishes the overall direction.
 
-They are supporting pulse, not the main story.
+It should include:
+
+- project name
+- mission statement
+
+### Flight-state layer
+
+This establishes overall route health.
+
+It should include:
+
+- flight state
+- current position
+- next gate
+- drift or route-risk signal
+
+### Route visualization layer
+
+This is the main-route view.
+
+It should show:
+
+- major project gates
+- completed route points
+- current route point
+- waiting or blocked gate states
+- upcoming major route points
+
+It should behave like navigation, not like a generic timeline.
+
+### Current-segment layer
+
+This is the local zoomed-in route view for the currently active stage.
+
+It should show:
+
+- current stage goal
+- the active local segment track
+- key subtask points inside the stage
+- responsible agent labels
+- remaining conditions for the next gate
+
+This should not become a full task database.
+It is the local tactical navigation view for the current route segment.
+
+---
+
+## Current Segment
+
+`Current Segment` is the local navigation panel inside `Navigation Core`.
+
+It is the equivalent of a route zoom-in at a complex intersection.
+
+### Purpose
+
+It should help the user understand:
+
+- what the current stage is trying to achieve
+- which sub-progress points are active
+- which agents are driving each point
+- what is waiting, blocked, or nearly complete
+- what still prevents the next gate from being crossed
+
+### Recommended structure
+
+The best model is a guided local segment track.
+
+It should not be:
+
+- a generic checklist
+- a full graph visualization
+- a database-style list of all tasks
+
+It should be:
+
+- directional
+- compact
+- local to the current stage
+- legible at a glance
+
+### Segment-track guidance
+
+A good segment track should:
+
+- show 3 to 5 key local nodes
+- give each node a simple state
+- attach the responsible agent lightly
+- highlight the current tension point
+- surface the remaining gate conditions at the bottom
+
+This keeps the structure navigational instead of project-manager-like.
 
 ---
 
@@ -1612,17 +1721,17 @@ On smaller widths, the homepage should stack in this order:
 
 ```text
 [ Project switcher ]
-[ Project Hero ]
-[ Action-focus module ]
-[ Needs your decision ]
-[ Stage spine ]
+[ Power / Compute Bar ]
+[ Navigation Core ]
+[ Agent Systems / Autonomy Status ]
+[ Captain Intervention ]
+[ System Pulse ]
 [ Key changes ]
 ```
 
-The mobile version should preserve the same priority model even when the columns collapse.
+The mobile version should preserve the same cockpit logic even when columns collapse.
 
-The action-focus module must still remain near the top.
-The user should not have to scroll through passive context before reaching the main move.
+The navigation picture must still come before passive historical detail.
 
 ---
 
