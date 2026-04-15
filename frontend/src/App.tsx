@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { AlertCircle, CheckCircle2, Compass, Loader } from 'lucide-react';
 
 import { ActivityFeed } from './components/ActivityFeed';
@@ -10,14 +10,14 @@ import { ProjectHero } from './components/ProjectHero';
 import { ProjectRail } from './components/ProjectRail';
 import { StageLane } from './components/StageLane';
 import { useBoardSelection } from './hooks/useBoardSelection';
+import { useDetailFeedback } from './hooks/useDetailFeedback';
 import { useProjectBoardData } from './hooks/useProjectBoardData';
 import type { EventItem } from './types';
 
 function App() {
   const board = useProjectBoardData();
   const selection = useBoardSelection();
-  const [detailLoading, setDetailLoading] = useState<'decision' | 'asset' | null>(null);
-  const [notice, setNotice] = useState<{ tone: 'success' | 'info'; message: string } | null>(null);
+  const feedback = useDetailFeedback();
 
   const {
     projects,
@@ -59,6 +59,17 @@ function App() {
     setDetailFocus,
   } = selection;
 
+  const {
+    detailLoading,
+    detailError,
+    notice,
+    setNotice,
+    beginDetailLoad,
+    finishDetailLoad,
+    failDetailLoad,
+    clearDetailError,
+  } = feedback;
+
   async function loadProjectsAndSelect() {
     const projectList = await loadProjects();
     const nextProjectId = selectedProjectId ?? projectList[0]?.id ?? null;
@@ -70,12 +81,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 2600);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
-  useEffect(() => {
     if (selectedProjectId == null) return;
 
     let cancelled = false;
@@ -83,6 +88,7 @@ function App() {
       const preferredStageId = await hydrateProject(projectId);
       if (cancelled) return;
       resetForProject(preferredStageId);
+      clearDetailError();
     }
 
     void loadProjectBoard(selectedProjectId);
@@ -134,6 +140,7 @@ function App() {
     const preferredStageId = await hydrateProject(selectedProjectId);
     resetForProject(preferredStageId);
     setDetailFocus('stage');
+    clearDetailError();
     setNotice({ tone: 'success', message: 'Project advanced. Mission board refreshed.' });
   }
 
@@ -147,6 +154,7 @@ function App() {
     }
     await loadDecision(decisionId);
     setDecision(decisionId);
+    clearDetailError();
     setNotice({
       tone: 'success',
       message: resolution === 'approved' ? 'Decision approved and board refreshed.' : 'Decision rejected and board refreshed.',
@@ -154,32 +162,42 @@ function App() {
   }
 
   async function handleSelectDecision(decisionId: number) {
-    setDetailLoading('decision');
+    beginDetailLoad('decision');
     try {
       const detail = await loadDecision(decisionId);
-      if (!detail) return;
+      if (!detail) {
+        failDetailLoad('Decision detail failed to load.');
+        return;
+      }
       setDecision(decisionId);
+      clearDetailError();
     } finally {
-      setDetailLoading(null);
+      finishDetailLoad();
     }
   }
 
   async function handleSelectAsset(assetId: number) {
-    setDetailLoading('asset');
+    beginDetailLoad('asset');
     try {
       const detail = await loadAsset(assetId);
-      if (!detail) return;
+      if (!detail) {
+        failDetailLoad('Asset detail failed to load.');
+        return;
+      }
       setAsset(assetId);
+      clearDetailError();
     } finally {
-      setDetailLoading(null);
+      finishDetailLoad();
     }
   }
 
   function handleSelectStage(stageRunId: number) {
+    clearDetailError();
     setStage(stageRunId);
   }
 
   function handleSelectEvent(event: EventItem) {
+    clearDetailError();
     setEvent(event);
   }
 
@@ -252,7 +270,7 @@ function App() {
           )}
         </main>
 
-        <DetailRail {...detailProps} loading={detailLoading} />
+        <DetailRail {...detailProps} loading={detailLoading} error={detailError} />
       </div>
     </div>
   );

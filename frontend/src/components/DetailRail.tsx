@@ -17,6 +17,7 @@ type Props = {
   onSelectAsset: (assetId: number) => void;
   onSelectEvent: (event: EventItem) => void;
   loading: 'decision' | 'asset' | null;
+  error: string | null;
 };
 
 export function DetailRail({
@@ -29,6 +30,7 @@ export function DetailRail({
   onSelectAsset,
   onSelectEvent,
   loading,
+  error,
 }: Props) {
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
@@ -43,7 +45,11 @@ export function DetailRail({
     );
   }
 
-  if (!loading && focus === 'stage' && stageDetail) {
+  if (!loading && error) {
+    body = <div className="detail-error-state">{error}</div>;
+  }
+
+  if (!loading && !error && focus === 'stage' && stageDetail) {
 
     title = `${titleize(stageDetail.stage_run.stage_type)} Run`;
     icon = <Workflow size={18} />;
@@ -124,7 +130,7 @@ export function DetailRail({
     );
   }
 
-  if (!loading && focus === 'decision' && decisionDetail) {
+  if (!loading && !error && focus === 'decision' && decisionDetail) {
     title = 'Decision Detail';
     icon = <ListChecks size={18} />;
     body = (
@@ -168,7 +174,7 @@ export function DetailRail({
     );
   }
 
-  if (!loading && focus === 'asset' && assetDetail) {
+  if (!loading && !error && focus === 'asset' && assetDetail) {
     title = 'Asset Detail';
     icon = <FileText size={18} />;
     body = (
@@ -217,7 +223,7 @@ export function DetailRail({
     );
   }
 
-  if (!loading && focus === 'event' && selectedEvent) {
+  if (!loading && !error && focus === 'event' && selectedEvent) {
     title = 'Event Detail';
     icon = <GitBranch size={18} />;
     body = (

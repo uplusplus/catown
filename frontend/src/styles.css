@@ -555,17 +555,29 @@ button.event-card {
   opacity: 0.9;
 }
 
-.detail-loading-state {
+.detail-loading-state,
+.detail-error-state {
   display: inline-flex;
   align-items: center;
   gap: 12px;
   width: 100%;
   min-height: 160px;
   justify-content: center;
-  border: 1px dashed var(--line-strong);
   border-radius: 22px;
-  color: var(--muted);
   background: rgba(255, 255, 255, 0.025);
+}
+
+.detail-loading-state {
+  border: 1px dashed var(--line-strong);
+  color: var(--muted);
+}
+
+.detail-error-state {
+  border: 1px solid rgba(255, 107, 107, 0.24);
+  color: #ffd5d5;
+  padding: 18px;
+  text-align: center;
+  background: rgba(255, 107, 107, 0.08);
 }
 
 .spin {
