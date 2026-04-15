@@ -1531,6 +1531,210 @@ It is the doorway into guided interaction.
 
 ---
 
+## Centered task-layer wireframe
+
+The centered task layer is the default active-state work surface for complex interaction.
+
+It should feel like a task panel rising out of the mission board, not like a detached page or a small modal.
+
+### Outer-frame intent
+
+The task layer should be:
+
+- centered
+- large enough to feel like a real work surface
+- visually elevated above the board
+- still clearly connected to the board behind it
+
+Recommended desktop direction:
+
+- width: roughly 64% to 72% of the main content zone
+- max width: approximately 960px to 1120px
+- height: roughly 72% to 84% of viewport height
+
+The background mission board should remain visible in a softened state.
+
+### Outer-frame wireframe
+
+```text
+                   ┌──────────────────────────────────────────────┐
+                   │ Centered Task Layer                         │
+                   │                                              │
+                   │ Header                                       │
+                   │ Main Step Area                               │
+                   │ History Summary                              │
+                   │ Bottom Action Bar                            │
+                   │                                              │
+                   └──────────────────────────────────────────────┘
+
+      Background mission board remains visible, dimmed, and de-emphasized
+```
+
+### Internal proportion guidance
+
+The internal structure should follow a strong emphasis model:
+
+- header: 10% to 12%
+- main step area: 58% to 68%
+- history summary: 10% to 14%
+- bottom action bar: 12% to 14%
+
+This should not feel evenly divided.
+The main step area must clearly dominate.
+
+---
+
+## Task-layer header wireframe
+
+The header is a task context bar, not a page header.
+
+Its role is to keep the user anchored in:
+
+- what task is happening
+- what project or stage it belongs to
+- what the current convergence status is
+- how to pause or exit
+
+### Header wireframe
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Create project                                                            │
+│ AI Recruitment Site / Initial planning     Goal understood, choosing path │
+│                                                              Later   Close│
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Header rules:
+
+- the task title is the strongest element
+- project or stage context stays secondary
+- progress language should feel like live convergence, not wizard numbering
+- pause or close actions must exist but stay visually quiet
+
+---
+
+## Main-step area wireframe
+
+The main-step area is the center of the task layer.
+
+It should function as a current-step focus area, not a content dump.
+
+### Main-step template
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ I’ll first help narrow the starting direction.                            │
+│ Confirm this step and I’ll generate the first project draft.              │
+│                                                                            │
+│   ┌────────────────────────────────────────────────────────────────────┐   │
+│   │ Primary Card                                                      │   │
+│   │                                                                    │   │
+│   │  [ option / draft / comparison / risk / confirmation ]            │   │
+│   │                                                                    │   │
+│   └────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│ Optional lightweight supporting note                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Rules:
+
+- one short guidance block only
+- one primary card only
+- optional support note only when genuinely needed
+- the user's eye should land on the primary card immediately after reading the guidance
+
+The main-step area should support local scrolling when complex cards need more space, while header, summary, and bottom action bar remain stable.
+
+---
+
+## History-summary wireframe
+
+The history-summary area exists to provide convergence feel without turning the task layer into a transcript.
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Goal defined        Prototype-first selected        Draft almost ready     │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Rules:
+
+- compressed, short summaries only
+- default collapsed or lightweight presentation
+- enough to reassure the user that the flow is progressing
+- never large enough to become a scrolling conversation log
+
+---
+
+## Bottom action-bar wireframe
+
+The bottom bar is the task rhythm controller.
+
+It should remain fixed and stable.
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Back                                              Later     Create project │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Rules:
+
+- one primary action only
+- primary action should describe forward movement, not generic submission
+- secondary action is usually back only when a true prior decision surface exists
+- weak actions such as later should remain visibly subordinate
+- the bar should not turn into a toolbar
+
+### Action-bar principle
+
+"Back" is not mandatory everywhere.
+It should appear when returning to a previous decision surface is more natural than making a local correction.
+
+In many cases, local correction is the better dialogue-first pattern.
+
+---
+
+## Full task-layer wireframe
+
+```text
+                   ┌──────────────────────────────────────────────────────┐
+                   │ Create project                                      │
+                   │ AI Recruitment Site / Initial planning   Narrowing  │
+                   │                                               ×      │
+                   ├──────────────────────────────────────────────────────┤
+                   │ I’ll first help narrow the starting direction.      │
+                   │ Confirm this step and I’ll generate the first draft.│
+                   │                                                      │
+                   │   ┌──────────────────────────────────────────────┐   │
+                   │   │ Direction Choice Card                        │   │
+                   │   │ ○ Product planning first                     │   │
+                   │   │ ● Page prototype first                       │   │
+                   │   │ ○ Technical plan first                       │   │
+                   │   └──────────────────────────────────────────────┘   │
+                   │                                                      │
+                   │ Optional support note                               │
+                   ├──────────────────────────────────────────────────────┤
+                   │ Goal defined     Path selected     Draft next        │
+                   ├──────────────────────────────────────────────────────┤
+                   │ Back                                Later   Continue │
+                   └──────────────────────────────────────────────────────┘
+```
+
+### What this wireframe establishes
+
+This structure establishes that the task layer should feel:
+
+- dialogue-first rather than wizard-like
+- focused on one current decision at a time
+- anchored in task context
+- stable in its exits and controls
+- visibly connected to the mission board behind it
+
+---
+
 ## Progressive conversational flow pattern
 
 The standard pattern should be:
