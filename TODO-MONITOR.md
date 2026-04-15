@@ -96,7 +96,21 @@
     6. 交付链路固化
        - [x] 确认后端根路径优先消费 `frontend/dist/index.html`
        - [x] 把 `npm run build` 纳入前端回归步骤
-  - 后续剩余重点：继续清理文档/兼容层中的旧主壳叙述，并视需要进一步正规化请求资源结构
+  - 后续剩余重点：
+    1. 文档与兼容叙述清理
+       - [ ] 继续清理 docs 中把 `frontend/index.html` / Pipeline Dashboard 当主前端实现的历史描述
+       - [ ] 把 remaining legacy frontend audit 结论改成“历史背景 + 当前状态”，避免误导后续开发
+    2. 请求资源结构再正规化一层
+       - [ ] 评估是否将 `useProjectBoardData()` 继续拆成 overview / stage / detail 三级 resource hook
+       - [ ] 收口 board 级 error 与 detail 级 error 的职责边界，减少 `App.tsx` 编排分支
+       - [ ] 为 project/stage 切换补更明确的局部 loading 语义，减少“整板一起忙碌”的反馈粒度
+    3. Mission Board 交互收尾
+       - [ ] 定型 `ActivityFeed` 应保持 stage 级还是提升为 project 级聚合视图
+       - [ ] 继续强化 `ProjectHero / NextActionStrip` 的信息优先级，减少重复信息和低价值文案
+       - [ ] 评估是否需要为 stage / event / asset 跳转补面包屑或上下文提示，降低 detail rail 迷失感
+    4. 前端测试与回归补强
+       - [ ] 视新增交互补更多 Mission Board UI 状态断言，重点覆盖错误态、切换态、空数据态
+       - [ ] 保持 `npm run build` + `tests/test_frontend.py` + `tests/test_visual_rendering.py` 为每轮前端改动的最低回归集
 
 ---
 
