@@ -98,7 +98,7 @@
        - [x] 把 `npm run build` 纳入前端回归步骤
   - 后续剩余重点：
     1. 文档与兼容叙述清理
-       - [ ] 继续清理 docs 中把 `frontend/index.html` / Pipeline Dashboard 当主前端实现的历史描述
+       - [x] 继续清理 docs 中把 `frontend/index.html` / Pipeline Dashboard 当主前端实现的历史描述
        - [ ] 把 remaining legacy frontend audit 结论改成“历史背景 + 当前状态”，避免误导后续开发
     2. 请求资源结构再正规化一层
        - [x] 将 `useProjectBoardData()` 进一步拆成 overview / detail 资源 hook，并保留组合层作为对外入口
@@ -110,7 +110,7 @@
        - [ ] 评估是否需要为 stage / event / asset 跳转补面包屑或上下文提示，降低 detail rail 迷失感
        - 执行顺序：先收顶部 Hero/Next Action，再补测试锚点，再清文档旧主壳叙述，最后视需要补细粒度交互
     4. 前端测试与回归补强
-       - [ ] 视新增交互补更多 Mission Board UI 状态断言，重点覆盖错误态、切换态、空数据态
+       - [x] 视新增交互补更多 Mission Board UI 状态断言，重点覆盖错误态、切换态、空数据态
        - [ ] 保持 `npm run build` + `tests/test_frontend.py` + `tests/test_visual_rendering.py` 为每轮前端改动的最低回归集
        - 完成标准：顶部信息不重复、关键状态有测试锚点、TODO 前端剩余项继续减少、文档不再把当前主前端描述成旧 Pipeline Dashboard
 

@@ -63,6 +63,21 @@ def activity_feed_source() -> str:
     return (SRC_ROOT / "components" / "ActivityFeed.tsx").read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def next_action_source() -> str:
+    return (SRC_ROOT / "components" / "NextActionStrip.tsx").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def project_hero_source() -> str:
+    return (SRC_ROOT / "components" / "ProjectHero.tsx").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def detail_rail_source() -> str:
+    return (SRC_ROOT / "components" / "DetailRail.tsx").read_text(encoding="utf-8")
+
+
 class TestMissionBoardShell:
     def test_vite_shell_has_root_mount(self, shell_html: str):
         assert "<div id=\"root\"></div>" in shell_html
@@ -110,8 +125,29 @@ class TestMissionBoardComposition:
 
     def test_activity_feed_is_described_as_project_activity(self, activity_feed_source: str):
         assert "Project Activity" in activity_feed_source
-        assert "Activity" in activity_feed_source
         assert "No project activity yet." in activity_feed_source
+
+    def test_next_action_strip_is_framed_as_action_focus(self, next_action_source: str):
+        assert "Action Focus" in next_action_source
+        assert "Execution can keep moving." in next_action_source
+        assert "Blocked:" in next_action_source
+
+    def test_project_hero_keeps_status_and_stage_context(self, project_hero_source: str):
+        assert "Selected Mission" in project_hero_source
+        assert "Syncing mission board" in project_hero_source
+        assert "Current stage" in project_hero_source
+        assert "Release Readiness" in project_hero_source
+
+    def test_detail_rail_includes_loading_error_and_empty_guidance(self, detail_rail_source: str):
+        for token in [
+            "Loading decision detail...",
+            "Loading asset detail...",
+            "Select a stage, decision, asset, or event.",
+            "No inputs linked yet.",
+            "No outputs yet.",
+            "No events captured yet.",
+        ]:
+            assert token in detail_rail_source
 
 
 class TestDesignTokensAndStates:
@@ -156,6 +192,8 @@ class TestDesignTokensAndStates:
             ".hero-shell.is-switching-project",
             ".stage-lane.is-switching-stage",
             ".stage-list.is-switching-stage",
+            ".next-action-meta",
+            ".warning-pill",
         ]:
             assert selector in styles_source
 
