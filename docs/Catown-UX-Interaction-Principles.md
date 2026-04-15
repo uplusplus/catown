@@ -2478,6 +2478,306 @@ Catown should feel like a project-operating interface that can both think and st
 
 ---
 
+## Frontend implementation breakdown
+
+The design is now specific enough to translate into an implementation-oriented frontend plan.
+
+This section turns the interaction model into concrete frontend responsibilities.
+
+### 1. Top-level page structure
+
+The default application shell should be built from two primary UI states:
+
+#### A. Mission-board state
+
+The resting state of the application.
+
+Primary regions:
+
+- `ProjectRail`
+- `MissionBoardCenter`
+- `MissionBoardRightBand`
+- optional `CommandTrigger`
+
+#### B. Centered-task-layer state
+
+The active collaboration state displayed above the mission board.
+
+Primary regions:
+
+- `TaskLayerShell`
+- `TaskHeader`
+- `TaskStepArea`
+- `TaskHistorySummary`
+- `TaskActionBar`
+
+The task layer should be mounted as a high-level overlay state, not as a separate route-first page by default.
+
+---
+
+### 2. Homepage component map
+
+A practical component breakdown for the default homepage is:
+
+```text
+AppShell
+  ProjectRail
+    ProjectSearch
+    ProjectList
+    CreateProjectEntry
+
+  MissionBoardCenter
+    ProjectHero
+    ActionFocusModule
+    StageSpine
+
+  MissionBoardRightBand
+    InterventionQueue
+    KeyChangesList
+
+  CommandTrigger
+  TaskLayerShell (conditional)
+```
+
+Recommended responsibilities:
+
+- `ProjectRail`: context switching only
+- `ProjectHero`: project situation compression
+- `ActionFocusModule`: main forward move
+- `StageSpine`: progression structure
+- `InterventionQueue`: human-authority queue
+- `KeyChangesList`: filtered pulse
+- `CommandTrigger`: opens intent entry into the task layer
+- `TaskLayerShell`: hosts all complex guided interaction
+
+---
+
+### 3. Task-layer component map
+
+The centered task layer should not become one giant monolith.
+
+A practical breakdown is:
+
+```text
+TaskLayerShell
+  TaskBackdrop
+  TaskPanel
+    TaskHeader
+    TaskStepArea
+      TaskGuidance
+      TaskPrimaryCardHost
+      TaskSupportNote
+    TaskHistorySummary
+    TaskActionBar
+```
+
+Then inside `TaskPrimaryCardHost`, the frontend should swap focused card types such as:
+
+- `IntentInputCard`
+- `ChoiceCard`
+- `DraftCard`
+- `ComparisonCard`
+- `RiskCard`
+- `ApprovalCard`
+- `BlockerCard`
+- `ContinuationCard`
+
+This keeps the task-layer shell stable while allowing card-level specialization.
+
+---
+
+### 4. Frontend state model
+
+The frontend state should separate board state from task-layer state.
+
+#### A. Board state
+
+This covers the resting mission-board view.
+
+Suggested state buckets:
+
+- selected project id
+- project overview data
+- action-focus data
+- intervention queue data
+- stage spine data
+- key changes data
+
+#### B. Task-layer state
+
+This covers active guided interaction.
+
+Suggested state buckets:
+
+- task layer open or closed
+- task type
+- task context object
+- current step id
+- current primary card type
+- current draft or decision payload
+- summarized completed steps
+- available actions for the current step
+
+#### C. Async state
+
+Keep async state explicit rather than burying it in each component.
+
+Suggested buckets:
+
+- board loading state
+- task action pending state
+- refresh state after task completion
+- optimistic write-back state where appropriate
+- recoverable error state
+
+---
+
+### 5. Suggested task-layer state shape
+
+A useful mental model is:
+
+```ts
+interface TaskLayerState {
+  open: boolean
+  taskType: 'create_project' | 'continue_project' | 'decision_review' | null
+  context: {
+    projectId?: string
+    stageRunId?: string
+    decisionId?: string
+  }
+  currentStep: {
+    id: string
+    cardType: string
+    guidance: string[]
+    supportNote?: string
+  } | null
+  draft: Record<string, unknown>
+  summaryChips: string[]
+  actions: {
+    primary?: { label: string; action: string }
+    secondary?: { label: string; action: string }
+    weak?: { label: string; action: string }
+  }
+}
+```
+
+The exact shape can evolve, but the conceptual split should remain.
+
+---
+
+### 6. Interaction-flow to component mapping
+
+#### Create project
+
+Typical mapping:
+
+- initial expression -> `IntentInputCard`
+- direction selection -> `ChoiceCard`
+- readiness selection -> `ChoiceCard`
+- draft confirmation -> `DraftCard`
+- local correction -> focused card swap
+
+#### Continue project
+
+Typical mapping:
+
+- system scan -> `TaskGuidance` + loading or transition state
+- continuation judgment -> `ContinuationCard` or `BlockerCard` or `ChoiceCard`
+- local handoff -> route to a focused sub-card
+- completion -> board refresh and task-layer close or success state
+
+#### Decision or approval
+
+Typical mapping:
+
+- why user is needed -> `TaskGuidance`
+- decision context -> `ApprovalCard` or `ComparisonCard` or `RiskCard`
+- recommendation -> card-level recommendation treatment
+- confirmation -> `TaskActionBar` primary action
+- post-confirmation -> board write-back and queue update
+
+---
+
+### 7. Data-contract implications
+
+The frontend should avoid raw backend leakage into display components.
+
+Use a frontend adapter layer to normalize backend data into view-friendly objects for:
+
+- hero state
+- action-focus state
+- intervention items
+- stage spine nodes
+- task-layer card payloads
+
+This avoids coupling UI semantics directly to backend field noise.
+
+---
+
+### 8. Design-token application points
+
+The token system already defined in this document should be applied through semantic usage, not one-off styling decisions.
+
+Suggested token application map:
+
+- mission-board background -> `--bg-board`
+- standard cards -> `--bg-panel`
+- raised modules -> `--bg-elevated`
+- task layer -> `--bg-task-layer`
+- primary text -> `--text-primary`
+- secondary text -> `--text-secondary`
+- main action emphasis -> `--accent-primary`
+- focused selection ring -> `--accent-ring`
+- warnings and blockers -> semantic state tokens only
+
+The frontend should centralize these tokens in one theme source rather than scattering values across components.
+
+---
+
+### 9. Implementation order
+
+A sensible frontend implementation sequence is:
+
+1. stabilize the mission-board shell
+2. implement `ProjectHero`, `ActionFocusModule`, `InterventionQueue`, and `StageSpine`
+3. build `TaskLayerShell` with static wireframe structure
+4. implement reusable task cards
+5. wire create-project flow end to end
+6. wire continue-project flow end to end
+7. wire decision or approval flow end to end
+8. tighten board write-back and refresh behavior
+9. refine empty, loading, and error states
+
+This order follows product importance instead of component novelty.
+
+---
+
+### 10. Implementation risk to avoid
+
+The biggest frontend risk is slipping back into either of these two failures:
+
+#### Failure A. Chat-first collapse
+
+Symptoms:
+
+- task layer becomes a transcript stack
+- current-step focus weakens
+- cards become decoration instead of the decision surface
+
+#### Failure B. Wizard-first collapse
+
+Symptoms:
+
+- rigid previous/next flow dominates
+- local correction becomes hard
+- the interface feels like a classic funnel instead of AI dialogue
+
+The implementation should preserve the middle path:
+
+**dialogue-first, card-centered, stateful, and visibly connected to the mission board.**
+
+---
+
 ## One-line summary
 
 **Catown should feel like an AI mission control system where users express intent naturally, the system guides them through only the necessary decisions, and every interaction resolves into visible project state.**
