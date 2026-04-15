@@ -1,86 +1,66 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { AlertCircle, Compass, Loader } from 'lucide-react';
 
-import {
-  continueProject,
-  getAsset,
-  getDecision,
-  getProjectOverview,
-  getStageRun,
-  listProjectAssets,
-  listProjectDecisions,
-  listProjects,
-  listStageEvents,
-  listStageRuns,
-  resolveDecision,
-} from './api/client';
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
 import { DecisionPanel } from './components/DecisionPanel';
-import { DetailRail, type DetailFocus } from './components/DetailRail';
+import { DetailRail } from './components/DetailRail';
 import { NextActionStrip } from './components/NextActionStrip';
 import { ProjectHero } from './components/ProjectHero';
 import { ProjectRail } from './components/ProjectRail';
 import { StageLane } from './components/StageLane';
-import type { Asset, Decision, EventItem, ProjectOverview, StageRun, StageRunDetail } from './types';
+import { useBoardSelection } from './hooks/useBoardSelection';
+import { useProjectBoardData } from './hooks/useProjectBoardData';
+import type { EventItem } from './types';
 
 function App() {
-  const [projects, setProjects] = useState<ProjectOverview['project'][]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
-  const [overview, setOverview] = useState<ProjectOverview | null>(null);
-  const [stageRuns, setStageRuns] = useState<StageRun[]>([]);
-  const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [events, setEvents] = useState<EventItem[]>([]);
-  const [stageDetail, setStageDetail] = useState<StageRunDetail | null>(null);
-  const [decisionDetail, setDecisionDetail] = useState<Decision | null>(null);
-  const [assetDetail, setAssetDetail] = useState<Asset | null>(null);
-  const [selectedStageRunId, setSelectedStageRunId] = useState<number | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
-  const [detailFocus, setDetailFocus] = useState<DetailFocus>('stage');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [continuing, setContinuing] = useState(false);
-  const [resolvingId, setResolvingId] = useState<number | null>(null);
+  const board = useProjectBoardData();
+  const selection = useBoardSelection();
+
+  const {
+    projects,
+    overview,
+    stageRuns,
+    decisions,
+    assets,
+    events,
+    stageDetail,
+    decisionDetail,
+    assetDetail,
+    loading,
+    error,
+    continuing,
+    resolvingId,
+    loadProjects,
+    hydrateProject,
+    hydrateStage,
+    clearStageDetail,
+    loadDecision,
+    loadAsset,
+    runContinue,
+    runResolve,
+  } = board;
+
+  const {
+    selectedProjectId,
+    selectedStageRunId,
+    selectedEvent,
+    detailFocus,
+    selectedIds,
+    setProject,
+    setStage,
+    setDecision,
+    setAsset,
+    setEvent,
+    resetForProject,
+    syncSelectedEvent,
+    setDetailFocus,
+  } = selection;
 
   async function loadProjectsAndSelect() {
-    setLoading(true);
-    setError(null);
-    try {
-      const projectList = await listProjects();
-      setProjects(projectList);
-      const nextProjectId = selectedProjectId ?? projectList[0]?.id ?? null;
-      setSelectedProjectId(nextProjectId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load projects');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function hydrateProject(projectId: number) {
-    setError(null);
-    try {
-      const [overviewData, stageRunData, decisionData, assetData] = await Promise.all([
-        getProjectOverview(projectId),
-        listStageRuns(projectId),
-        listProjectDecisions(projectId),
-        listProjectAssets(projectId),
-      ]);
-      setOverview(overviewData);
-      setStageRuns(stageRunData);
-      setDecisions(decisionData);
-      setAssets(assetData);
-
-      const preferredStageId = overviewData.current_stage_run?.id ?? stageRunData[0]?.id ?? null;
-      setSelectedStageRunId(preferredStageId);
-      setDecisionDetail(null);
-      setAssetDetail(null);
-      setSelectedEvent(null);
-      setDetailFocus('stage');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load project board');
-    }
+    const projectList = await loadProjects();
+    const nextProjectId = selectedProjectId ?? projectList[0]?.id ?? null;
+    setProject(nextProjectId);
   }
 
   useEffect(() => {
@@ -89,35 +69,38 @@ function App() {
 
   useEffect(() => {
     if (selectedProjectId == null) return;
-    void hydrateProject(selectedProjectId);
-  }, [selectedProjectId]);
+
+    let cancelled = false;
+    async function loadProjectBoard(projectId: number) {
+      const preferredStageId = await hydrateProject(projectId);
+      if (cancelled) return;
+      resetForProject(preferredStageId);
+    }
+
+    void loadProjectBoard(selectedProjectId);
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateProject, resetForProject, selectedProjectId]);
 
   useEffect(() => {
     if (selectedStageRunId == null) {
-      setStageDetail(null);
-      setEvents([]);
+      clearStageDetail();
       return;
     }
 
     let cancelled = false;
-    async function hydrateStage(stageRunId: number) {
-      try {
-        const [detailData, eventData] = await Promise.all([getStageRun(stageRunId), listStageEvents(stageRunId)]);
-        if (cancelled) return;
-        setStageDetail(detailData);
-        setEvents(eventData);
-        setSelectedEvent((current) => eventData.find((item) => item.id === current?.id) ?? eventData[0] ?? null);
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load stage detail');
-      }
+    async function loadStageBoard(stageRunId: number) {
+      const eventData = await hydrateStage(stageRunId);
+      if (cancelled) return;
+      syncSelectedEvent(eventData);
     }
 
-    void hydrateStage(selectedStageRunId);
+    void loadStageBoard(selectedStageRunId);
     return () => {
       cancelled = true;
     };
-  }, [selectedStageRunId]);
+  }, [clearStageDetail, hydrateStage, selectedStageRunId, syncSelectedEvent]);
 
   const boardReady = overview && selectedProjectId != null;
 
@@ -136,72 +119,44 @@ function App() {
 
   async function handleContinue() {
     if (selectedProjectId == null) return;
-    setContinuing(true);
-    try {
-      await continueProject(selectedProjectId);
-      await hydrateProject(selectedProjectId);
-      setDetailFocus('stage');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to continue project');
-    } finally {
-      setContinuing(false);
-    }
-  }
+    const ok = await runContinue(selectedProjectId);
+    if (!ok) return;
 
-  async function handleResolve(decisionId: number, resolution: 'approved' | 'rejected') {
-    setResolvingId(decisionId);
-    try {
-      await resolveDecision(decisionId, {
-        resolution,
-        selected_option: resolution === 'approved' ? 'approve' : 'reject',
-      });
-      if (selectedProjectId != null) {
-        await hydrateProject(selectedProjectId);
-      }
-      setDecisionDetail(await getDecision(decisionId));
-      setDetailFocus('decision');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve decision');
-    } finally {
-      setResolvingId(null);
-    }
-  }
-
-  async function handleSelectDecision(decisionId: number) {
-    try {
-      setDecisionDetail(await getDecision(decisionId));
-      setAssetDetail(null);
-      setSelectedEvent(null);
-      setDetailFocus('decision');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load decision detail');
-    }
-  }
-
-  async function handleSelectAsset(assetId: number) {
-    try {
-      setAssetDetail(await getAsset(assetId));
-      setDecisionDetail(null);
-      setSelectedEvent(null);
-      setDetailFocus('asset');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load asset detail');
-    }
-  }
-
-  function handleSelectStage(stageRunId: number) {
-    setSelectedStageRunId(stageRunId);
-    setDecisionDetail(null);
-    setAssetDetail(null);
-    setSelectedEvent(null);
+    const preferredStageId = await hydrateProject(selectedProjectId);
+    resetForProject(preferredStageId);
     setDetailFocus('stage');
   }
 
+  async function handleResolve(decisionId: number, resolution: 'approved' | 'rejected') {
+    const ok = await runResolve(decisionId, resolution);
+    if (!ok) return;
+
+    if (selectedProjectId != null) {
+      const preferredStageId = await hydrateProject(selectedProjectId);
+      resetForProject(preferredStageId);
+    }
+    await loadDecision(decisionId);
+    setDecision(decisionId);
+  }
+
+  async function handleSelectDecision(decisionId: number) {
+    const detail = await loadDecision(decisionId);
+    if (!detail) return;
+    setDecision(decisionId);
+  }
+
+  async function handleSelectAsset(assetId: number) {
+    const detail = await loadAsset(assetId);
+    if (!detail) return;
+    setAsset(assetId);
+  }
+
+  function handleSelectStage(stageRunId: number) {
+    setStage(stageRunId);
+  }
+
   function handleSelectEvent(event: EventItem) {
-    setSelectedEvent(event);
-    setDecisionDetail(null);
-    setAssetDetail(null);
-    setDetailFocus('event');
+    setEvent(event);
   }
 
   return (
@@ -232,7 +187,7 @@ function App() {
       ) : null}
 
       <div className="board-layout">
-        <ProjectRail projects={projects} selectedProjectId={selectedProjectId} onSelect={setSelectedProjectId} />
+        <ProjectRail projects={projects} selectedProjectId={selectedProjectId} onSelect={setProject} />
 
         <main className="main-board">
           {boardReady && overview ? (
@@ -243,18 +198,18 @@ function App() {
               <section className="board-row two-up">
                 <DecisionPanel
                   decisions={decisions}
-                  selectedDecisionId={detailFocus === 'decision' ? decisionDetail?.id ?? null : null}
+                  selectedDecisionId={selectedIds.decisionId}
                   onSelect={handleSelectDecision}
                   onResolve={handleResolve}
                   resolvingId={resolvingId}
                 />
                 <AssetPanel
                   assets={assets}
-                  selectedAssetId={detailFocus === 'asset' ? assetDetail?.id ?? null : null}
+                  selectedAssetId={selectedIds.assetId}
                   onSelect={handleSelectAsset}
                 />
               </section>
-              <ActivityFeed events={events} selectedEventId={detailFocus === 'event' ? selectedEvent?.id ?? null : null} onSelect={handleSelectEvent} />
+              <ActivityFeed events={events} selectedEventId={selectedIds.eventId} onSelect={handleSelectEvent} />
             </>
           ) : (
             <section className="panel-shell empty-board">
