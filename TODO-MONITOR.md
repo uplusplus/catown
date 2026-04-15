@@ -64,37 +64,16 @@
   - decisions 的 list/get/resolve payload 入口已统一到 `ProjectService`
 - [x] 让 `routes/*_v2.py` 尽量只保留参数校验 + service 调用，减少 route 层重复查询/404 模式
   - `projects_v2.py` / `assets_v2.py` / `stage_runs_v2.py` / `decisions_v2.py` 已完成一轮收薄
-- [ ] 明确并冻结一版 v2 frontend contract，避免前端继续依赖 `/api/pipelines/*`
-  - 当前结论见 `docs/Frontend-Mission-Board-Migration-Audit.md`
-  - 决策方向已改为：不迁就旧 Pipeline Dashboard，而是抽取仍有产品价值的交互块，重组为 project-first Mission Board
-  - 当前前端盘点结论：`frontend/index.html` 仍深度绑定 legacy `pipeline/chatroom` 心智
-  - 旧 pipeline API 直接依赖至少包括：
-    - `/api/pipelines`
-    - `/api/pipelines/{id}`
-    - `/api/pipelines/{id}/start`
-    - `/api/pipelines/{id}/pause|resume|approve|reject`
-    - `/api/pipelines/{id}/messages`
-    - `/api/pipelines/{id}/artifacts`
-    - `/api/pipelines/{id}/instruct`
-    - `/api/pipelines/{id}/files`
-    - `/api/pipelines/config/templates`
-    - `/api/pipelines/ws`
-  - 旧 chatroom API 直接依赖包括：
-    - `/api/chatrooms/{id}/messages`
-    - `/api/chatrooms/{id}/messages/stream`
-  - 前端主问题不是“少量旧接口残留”，而是仍存在一整块 Pipeline Dashboard / chatroom 交互壳
-  - 下一步改成两件事：
-    1. 先冻结 Mission Board 所需最小 `/api/v2/*` contract（已落地：`docs/Mission-Board-Minimum-V2-Contract.md`）
-    2. 新建 project-first 主视图，再逐步删除 pipeline/chatroom 主壳
-  - 页面信息架构已落地：`docs/Mission-Board-Information-Architecture.md`
-  - 前端架构决策已切到方案 C：`docs/ADR-023-frontend-react-mission-board-architecture.md`
-  - 当前执行策略已改为：不做兼容迁移，直接以 `React + Vite + TypeScript` 重建 project-first Mission Board
-  - 当前已完成首个骨架：`frontend/index.html` 已改为 Vite shell，`frontend/src/` 已建立 Mission Board 主结构并接入核心 `/api/v2/*` 读流与基本 continue / decision resolve 动作
-  - React Mission Board 下一阶段计划：
-    1. 主工作面收口
-       - 稳定 `ProjectRail / ProjectHero / NextActionStrip` 的信息层级
-       - 强化 `StageLane` 的 active / waiting / completed / failed 视觉区分
-       - 定型 `ActivityFeed` 第一版是 stage 级还是 project 级
+- [x] 明确并冻结一版 v2 frontend contract，避免前端继续依赖 `/api/pipelines/*`
+  - 审计与决策见 `docs/Frontend-Mission-Board-Migration-Audit.md`、`docs/ADR-023-frontend-react-mission-board-architecture.md`
+  - 最小 v2 contract 已冻结：`docs/Mission-Board-Minimum-V2-Contract.md`
+  - 页面信息架构已冻结：`docs/Mission-Board-Information-Architecture.md`
+  - 当前执行策略已切到：不做兼容迁移，直接以 `React + Vite + TypeScript` 重建 project-first Mission Board
+  - 当前状态：`frontend/index.html` 已降级为 Vite shell，主前端实现位于 `frontend/src/`
+  - 当前主视图已接入核心 `/api/v2/*` 读流与基本 continue / decision resolve 动作
+  - 当前 React Mission Board 已完成：
+    1. 主工作面骨架
+       - `ProjectRail / ProjectHero / NextActionStrip / StageLane / DecisionPanel / AssetPanel / ActivityFeed / DetailRail` 已接线
     2. `DetailRail` 工作台化
        - [x] `stage detail`：summary、input/output assets、linked decisions、events 摘要
        - [x] `decision detail`：context、recommended option、impact、关联 stage/asset
@@ -104,6 +83,7 @@
        - [x] 把 `App.tsx` 当前集中状态继续下沉为更清晰的 store / query 结构
        - [x] 分离 board state、selected entity state、async loading/error state
        - [x] 避免新前端重新膨胀成单文件控制器
+       - [x] 失败时清理 stale board/detail state，避免旧数据残留
     4. 主动作与反馈收口
        - [x] 补全 continue / resolve 后的局部刷新策略
        - [x] 补全错误态、空态、loading 态与动作反馈
@@ -111,10 +91,11 @@
     5. 测试重写
        - [x] 重写 `tests/test_frontend.py`
        - [x] 把断言从 legacy Pipeline Dashboard 切到 React Mission Board 的 `project / stage-run / decision / asset` 主流程
+       - [x] 重写 `tests/test_visual_rendering.py`，移除旧 DOM / chatroom / dashboard 壳断言
     6. 交付链路固化
-       - 确认后端根路径优先消费 `frontend/dist/index.html`
-       - 把 `npm run build` 纳入前端回归步骤
-       - 新板足够稳定后，再删旧 dashboard 假设与残余测试
+       - [x] 确认后端根路径优先消费 `frontend/dist/index.html`
+       - [x] 把 `npm run build` 纳入前端回归步骤
+  - 后续剩余重点：继续清理文档/兼容层中的旧主壳叙述，并视需要进一步正规化请求资源结构
 
 ---
 

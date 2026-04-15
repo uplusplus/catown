@@ -2198,7 +2198,7 @@ Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效
 | `agents/registry.py` | 注册新角色（已由 agents.json 自动加载） | 小 | ✅ 完成 |
 | `agents/core.py` | Agent 基类不变 | 无 | — |
 | `routes/api.py` | 保留现有 API，新增 pipeline 路由 | 小 | ✅ 完成 |
-| `frontend/index.html` | 新增 Pipeline Dashboard section | 中 | ✅ 完成 |
+| `frontend/index.html` | 历史上承载过 Pipeline Dashboard；当前已降级为 React/Vite Mission Board shell | 中 | ✅ 已迁移 |
 
 ### B. 参考文档
 
