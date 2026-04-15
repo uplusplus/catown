@@ -131,6 +131,15 @@ class TestDesignTokensAndStates:
         ]:
             assert selector in styles_source
 
+    def test_styles_define_stage_lane_state_variants(self, styles_source: str):
+        for selector in [
+            ".stage-card-active",
+            ".stage-card-idle",
+            ".stage-card-terminal",
+            ".stage-card-attention",
+        ]:
+            assert selector in styles_source
+
 
 class TestBackendFrontendDelivery:
     def test_root_serves_built_frontend_artifact(self, client):

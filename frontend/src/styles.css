@@ -205,6 +205,51 @@ button {
   background: linear-gradient(180deg, rgba(255, 122, 69, 0.12), rgba(255, 255, 255, 0.04));
 }
 
+.stage-card {
+  position: relative;
+}
+
+.stage-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 22px 0 0 22px;
+  opacity: 0.9;
+}
+
+.stage-card-active::after {
+  background: linear-gradient(180deg, rgba(67, 198, 185, 0.2), rgba(67, 198, 185, 0.95));
+}
+
+.stage-card-idle::after {
+  background: linear-gradient(180deg, rgba(255, 184, 77, 0.14), rgba(255, 184, 77, 0.72));
+}
+
+.stage-card-terminal::after {
+  background: linear-gradient(180deg, rgba(116, 217, 159, 0.16), rgba(116, 217, 159, 0.88));
+}
+
+.stage-card-attention::after {
+  background: linear-gradient(180deg, rgba(255, 107, 107, 0.18), rgba(255, 107, 107, 0.92));
+}
+
+.stage-card-active {
+  background: linear-gradient(180deg, rgba(67, 198, 185, 0.11), rgba(255, 255, 255, 0.03));
+}
+
+.stage-card-idle {
+  background: linear-gradient(180deg, rgba(255, 184, 77, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.stage-card-terminal {
+  background: linear-gradient(180deg, rgba(116, 217, 159, 0.1), rgba(255, 255, 255, 0.03));
+}
+
+.stage-card-attention {
+  background: linear-gradient(180deg, rgba(255, 107, 107, 0.11), rgba(255, 255, 255, 0.03));
+}
+
 .project-card strong,
 .stage-card strong,
 .asset-card strong,

@@ -22,10 +22,11 @@ export function StageLane({ stageRuns, selectedStageRunId, onSelect }: Props) {
       <div className="stage-list">
         {stageRuns.map((stageRun) => {
           const active = stageRun.id === selectedStageRunId;
+          const stateClass = `stage-card-${stageRun.lifecycle.requires_attention ? 'attention' : stageRun.lifecycle.is_terminal ? 'terminal' : stageRun.lifecycle.is_active ? 'active' : 'idle'}`;
           return (
             <button
               key={stageRun.id}
-              className={`stage-card ${active ? 'is-active' : ''}`}
+              className={`stage-card ${stateClass} ${active ? 'is-active' : ''}`}
               onClick={() => onSelect(stageRun.id)}
               type="button"
             >

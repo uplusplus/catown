@@ -74,6 +74,7 @@
   - 当前 React Mission Board 已完成：
     1. 主工作面骨架
        - `ProjectRail / ProjectHero / NextActionStrip / StageLane / DecisionPanel / AssetPanel / ActivityFeed / DetailRail` 已接线
+       - [x] 强化 `StageLane` 的 active / waiting / completed / failed 视觉区分
     2. `DetailRail` 工作台化
        - [x] `stage detail`：summary、input/output assets、linked decisions、events 摘要
        - [x] `decision detail`：context、recommended option、impact、关联 stage/asset
