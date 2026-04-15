@@ -28,6 +28,15 @@ Catown should behave like an AI operating system for project execution:
 - the user is asked for decisions only when needed
 - every interaction pushes project state forward
 
+Catown must also be designed as a multi-agent operating system, not as the interface of a single assistant.
+
+That means the product should make it legible that:
+
+- multiple agents may be active across the same project
+- agents may hand work off to one another
+- orchestration quality matters as much as single-response quality
+- the user intervenes at the system boundary rather than micromanaging every internal step
+
 In one sentence:
 
 **Catown is a stable task stage with progressive conversational guidance and structured stateful outcomes.**
@@ -181,6 +190,20 @@ The main surface should emphasize:
 - taking the next valuable step
 
 Low-frequency environment actions should remain easy to reach, but they should not dominate the home screen.
+
+### 11. Multi-agent orchestration should remain visible
+
+Catown should not collapse the product experience into the illusion of one assistant continuously speaking.
+
+The interface should preserve legibility around:
+
+- agent activity
+- handoffs between agents
+- autonomy health
+- orchestration bottlenecks
+- human intervention boundaries
+
+The user should perceive a coordinated system, not a single chat persona pretending to do everything alone.
 
 ---
 
@@ -988,6 +1011,8 @@ The homepage should primarily help the user monitor:
 - whether human authority is currently needed
 
 This shifts the default emphasis from "what would you like to do" toward "what is the autonomous system doing and when should you step in".
+
+Because Catown is multi-agent by design, this cockpit view should make orchestration visible rather than flattening everything into one assistant voice.
 
 ### Default monitoring priorities
 
@@ -2590,6 +2615,13 @@ This is the layer that guarantees:
 - component-level testing
 
 This rendering strategy is essential to keep Catown dynamic without turning it into arbitrary HTML generation.
+
+Because Catown is multi-agent, this same semantic layer should also support orchestration-facing structures such as:
+
+- autonomy status summaries
+- agent activity summaries
+- handoff and blockage indicators
+- intervention-boundary signals
 
 ---
 
