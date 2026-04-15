@@ -69,6 +69,11 @@ def project_rail_source() -> str:
 
 
 @pytest.fixture(scope="module")
+def help_panel_source() -> str:
+    return (SRC_ROOT / "components" / "HelpPanel.tsx").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
 def next_action_source() -> str:
     return (SRC_ROOT / "components" / "NextActionStrip.tsx").read_text(encoding="utf-8")
 
@@ -136,6 +141,12 @@ class TestMissionBoardComposition:
         assert "Create Project" in project_rail_source
         assert "New project name" in project_rail_source
         assert "One-line vision (optional)" in project_rail_source
+
+    def test_help_panel_exposes_usage_guidance(self, app_source: str, help_panel_source: str):
+        assert "Help / 使用说明" in app_source
+        assert "How to use Mission Board" in help_panel_source
+        assert "Core loop" in help_panel_source
+        assert "What Continue Project means" in help_panel_source
 
     def test_next_action_strip_is_framed_as_action_focus(self, next_action_source: str):
         assert "Action Focus" in next_action_source
@@ -211,6 +222,9 @@ class TestDesignTokensAndStates:
             ".project-create-form",
             ".project-create-input",
             ".project-create-button",
+            ".topbar-help-button",
+            ".help-overlay",
+            ".help-panel",
         ]:
             assert selector in styles_source
 

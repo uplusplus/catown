@@ -1,10 +1,11 @@
-import { useEffect, useMemo } from 'react';
-import { AlertCircle, CheckCircle2, Compass, Loader } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, CheckCircle2, Compass, HelpCircle, Loader } from 'lucide-react';
 
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
 import { DecisionPanel } from './components/DecisionPanel';
 import { DetailRail } from './components/DetailRail';
+import { HelpPanel } from './components/HelpPanel';
 import { NextActionStrip } from './components/NextActionStrip';
 import { ProjectHero } from './components/ProjectHero';
 import { ProjectRail } from './components/ProjectRail';
@@ -20,6 +21,7 @@ function App() {
   const selection = useBoardSelection();
   const feedback = useDetailFeedback();
   const transitions = useBoardTransitions();
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const {
     projects,
@@ -237,11 +239,19 @@ function App() {
           <p className="eyebrow">Catown Command Surface</p>
           <h1>Project-first Mission Board</h1>
         </div>
-        <div className="topbar-badge">
-          <Compass size={16} />
-          <span>React/Vite frontend reset</span>
+        <div className="topbar-actions">
+          <button className="topbar-help-button" type="button" onClick={() => setHelpOpen(true)}>
+            <HelpCircle size={16} />
+            <span>Help / 使用说明</span>
+          </button>
+          <div className="topbar-badge">
+            <Compass size={16} />
+            <span>React/Vite frontend reset</span>
+          </div>
         </div>
       </div>
+
+      <HelpPanel open={helpOpen} onClose={() => setHelpOpen(false)} />
 
       {loading ? (
         <div className="loading-state panel-shell">
