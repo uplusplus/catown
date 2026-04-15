@@ -1321,6 +1321,160 @@ It should help the user feel that the project is growing along a clear backbone,
 
 ---
 
+## Homepage wireframe structure
+
+The homepage should now be concrete enough to describe as a first-pass wireframe.
+
+This wireframe is not the final visual design.
+It is the structural blueprint for the default desktop mission-board state.
+
+### First-screen desktop structure
+
+```text
++------------------+------------------------------------------------------+-----------------------+
+| Left rail        | Center stage                                         | Right band            |
+|                  |                                                      |                       |
+| Projects         | [ Project Hero ]                                     | [ Needs your decision ]
+| - Project A      |                                                      | - item 1              |
+| - Project B      | [ Action-focus module ]                              | - item 2              |
+| - Project C      |                                                      | - item 3 / view all   |
+|                  | [ Stage spine ]                                      |                       |
+| + New (light)    |                                                      | [ Key changes ]       |
++------------------+------------------------------------------------------+-----------------------+
+```
+
+### Reading order
+
+The intended reading sequence is:
+
+1. identify the active project in the hero
+2. understand the best next move in the action-focus module
+3. inspect where the project sits in the stage spine
+4. check whether user intervention is waiting in the right band
+5. scan key changes only after the operational picture is clear
+
+### Width guidance
+
+For desktop, the visual balance should roughly feel like:
+
+- left rail: 14% to 18%
+- center stage: 62% to 72%
+- right band: 14% to 20%
+
+This should remain center-dominant.
+The center stage must clearly own the page.
+
+---
+
+## Homepage module stack
+
+### Left rail
+
+```text
+[ Project search / light filter ]
+[ Project list ]
+[ Low-emphasis create project entry ]
+```
+
+Rules:
+
+- no heavy analytics
+- no large narrative blocks
+- no event-feed duplication
+- keep it navigational and quiet
+
+### Center stage
+
+```text
+[ Project Hero ]
+  - project name
+  - short objective
+  - stage
+  - health/risk
+  - current system focus
+  - latest meaningful change
+
+[ Action-focus module ]
+  - short action label
+  - reason statement
+  - primary action
+  - optional secondary context entry
+
+[ Stage spine ]
+  - done stages
+  - current active stage (expanded)
+  - upcoming stages
+```
+
+Rules:
+
+- the hero sets context, not action overload
+- the action-focus module owns the main forward move
+- the stage spine provides structural progression, not narrative logs
+
+### Right band
+
+```text
+[ Needs your decision ]
+  - top 1 to 3 intervention items
+  - review / resolve entry
+
+[ Key changes ]
+  - small list of filtered meaningful updates
+```
+
+Rules:
+
+- intervention items outrank passive updates
+- key changes remain compact
+- the right side stays visually weaker than the center stage
+
+---
+
+## Homepage visual hierarchy rules
+
+### 1. The hero is the visual anchor
+
+It should be the first stable orientation point.
+
+### 2. The action-focus module is the strongest operational cue
+
+It should be the most decisive module on the page, even if it is not the visually largest block.
+
+### 3. The intervention queue should feel important but bounded
+
+It should communicate that the user's authority is required without turning the page into an alarm surface.
+
+### 4. The stage spine should feel like structure, not spectacle
+
+It should visually support understanding, not compete with the hero.
+
+### 5. Key changes should be compressed and filtered
+
+They are supporting pulse, not the main story.
+
+---
+
+## Homepage mobile adaptation
+
+On smaller widths, the homepage should stack in this order:
+
+```text
+[ Project switcher ]
+[ Project Hero ]
+[ Action-focus module ]
+[ Needs your decision ]
+[ Stage spine ]
+[ Key changes ]
+```
+
+The mobile version should preserve the same priority model even when the columns collapse.
+
+The action-focus module must still remain near the top.
+The user should not have to scroll through passive context before reaching the main move.
+
+---
+
 ## Command entry model
 
 Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
