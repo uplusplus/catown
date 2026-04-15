@@ -2,6 +2,22 @@
 
 _Last updated: 2026-04-15_
 
+> **Status note (current state)**
+>
+> This document started as a migration audit while `frontend/index.html` was still the dominant legacy shell.
+>
+> That is no longer the current frontend state.
+>
+> **Today, the default Catown frontend is the React/Vite/TypeScript Mission Board implemented in `frontend/src/`.**
+> `frontend/index.html` now serves as the Vite shell, and the primary board already runs on core `/api/v2/*` project-first flows.
+>
+> Read the sections below as:
+>
+> - **historical evidence** explaining why the old shell had to be retired,
+> - plus **migration guidance** for demoting remaining legacy pipeline/chatroom surfaces to compatibility or debug roles.
+>
+> This document should no longer be read as saying the legacy Pipeline Dashboard is still the active main frontend.
+
 ## Purpose
 
 This document answers a narrower question than "how do we wire the old frontend to the new backend?"
@@ -24,13 +40,13 @@ So the frontend should now be reorganized around those objects instead of preser
 
 ---
 
-## Audit conclusion
+## Audit conclusion (historical finding, now largely executed)
 
-`frontend/index.html` is still deeply coupled to the legacy pipeline model.
+At audit time, `frontend/index.html` was still deeply coupled to the legacy pipeline model.
 
-This is not a case of a few stale endpoints.
+This was not a case of a few stale endpoints.
 
-It still contains:
+It still contained:
 
 - a dedicated Pipeline tab in the status modal
 - a standalone Pipeline Dashboard shell
@@ -39,14 +55,16 @@ It still contains:
 - pipeline artifacts and pipeline file-browser panels
 - pipeline websocket subscription logic
 
-That means the correct next move is **not** to make the new backend imitate the old page.
+That meant the correct next move was **not** to make the new backend imitate the old page.
 
-The correct next move is to:
+That next move has now largely been carried out:
 
-1. audit current UI blocks for product value
-2. define a new Mission Board information architecture
-3. bind that new screen to `/api/v2/*`
-4. retire the old Pipeline Dashboard incrementally
+1. current UI blocks were audited for product value
+2. a Mission Board information architecture was defined
+3. the new primary screen was bound to `/api/v2/*`
+4. the React Mission Board replaced the old dashboard as the default main surface
+
+What remains is the cleanup tail: demoting or retiring remaining legacy pipeline/chatroom surfaces in slices.
 
 ---
 
