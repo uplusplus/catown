@@ -511,6 +511,160 @@ It should feel AI-native without looking gimmicky.
 
 ---
 
+## Typography system
+
+Catown should use a highly restrained type system.
+
+The typography goal is not decorative personality.
+It is operational clarity with premium control.
+
+The recommended model is:
+
+- one modern sans-serif family for almost all interface text
+- one monospace family for structured system details and technical accents
+
+Catown should avoid mixing multiple display personalities.
+Too many font voices weaken system quality.
+
+### Primary sans direction
+
+Recommended stack direction:
+
+```css
+font-family: Inter, "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+```
+
+Why:
+
+- modern and precise
+- strong UI legibility
+- good weight range
+- stable mixed-language behavior
+- premium but not ornamental
+
+### Monospace direction
+
+Recommended stack direction:
+
+```css
+font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+```
+
+Use monospace selectively for:
+
+- timestamps
+- IDs
+- token-like labels
+- command fragments
+- system metadata
+- highly structured micro-information
+
+It should not dominate the interface.
+It is a precision accent, not the main voice.
+
+---
+
+## Typography principles
+
+### 1. Typography should direct attention
+
+Catown needs command-grade hierarchy.
+The user should immediately understand what deserves focus, what is supporting context, and what is only metadata.
+
+### 2. Headlines should be short and decisive
+
+Headlines should feel like system cues, not marketing copy.
+
+Good direction:
+
+- Current focus
+- Pending decisions
+- Release blocked
+- Continue project
+
+Bad direction:
+
+- conversationally padded or over-explanatory section titles
+
+### 3. Body copy should stay compact
+
+Explanatory copy exists to reduce uncertainty and unblock action.
+It should be concise, high-signal, and structured for scanning.
+
+### 4. Metadata should feel tighter and more structured
+
+Status tags, timestamps, counters, and system labels should feel more compact and disciplined than ordinary prose.
+
+### 5. Depth should come from spacing and contrast, not font variety
+
+Catown should feel refined because hierarchy is well controlled, not because the product uses many font styles.
+
+---
+
+## Typography tokens
+
+The initial typography scale should stay compact and controlled.
+
+### Font families
+
+```css
+--font-sans: Inter, "PingFang SC", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+--font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+```
+
+### Font sizes
+
+```css
+--text-display: 32px;
+--text-h1:      24px;
+--text-h2:      20px;
+--text-title:   16px;
+--text-body:    14px;
+--text-meta:    12px;
+```
+
+### Line heights
+
+```css
+--leading-display: 1.15;
+--leading-h1:      1.2;
+--leading-h2:      1.25;
+--leading-title:   1.35;
+--leading-body:    1.5;
+--leading-meta:    1.4;
+```
+
+### Font weights
+
+```css
+--weight-regular: 400;
+--weight-medium:  500;
+--weight-semibold:600;
+--weight-bold:    700;
+```
+
+### Suggested token usage
+
+- `--text-display`: major task-layer titles or primary hero emphasis
+- `--text-h1`: main board section anchors or project hero titles
+- `--text-h2`: sub-section headers and important panel titles
+- `--text-title`: card titles, action labels, emphasized body headings
+- `--text-body`: standard descriptive copy and task guidance
+- `--text-meta`: timestamps, status microcopy, IDs, and compact labels
+
+### Weight guidance
+
+Use weights conservatively:
+
+- `regular` for most body copy
+- `medium` for important inline emphasis and labels
+- `semibold` for section titles, card titles, and action hierarchy
+- `bold` only for rare key moments where stronger emphasis is truly needed
+
+Thin or ornamental weights should be avoided, especially in dark mode where they become fragile.
+
+---
+
 ## Interaction layers
 
 ## A. Stable Mission Board
