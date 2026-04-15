@@ -15,6 +15,7 @@ type Props = {
   selectedEvent: EventItem | null;
   onSelectDecision: (decisionId: number) => void;
   onSelectAsset: (assetId: number) => void;
+  onSelectEvent: (event: EventItem) => void;
   loading: 'decision' | 'asset' | null;
 };
 
@@ -26,6 +27,7 @@ export function DetailRail({
   selectedEvent,
   onSelectDecision,
   onSelectAsset,
+  onSelectEvent,
   loading,
 }: Props) {
   let title = 'Detail Rail';
@@ -71,12 +73,24 @@ export function DetailRail({
           </div>
         </section>
         <section className="detail-block">
+          <h4>Inputs</h4>
+          <div className="detail-linked-list">
+            {stageDetail.input_assets.map((asset) => (
+              <button key={asset.id} className="detail-link-card" onClick={() => onSelectAsset(asset.id)} type="button">
+                <strong>{asset.title || titleize(asset.asset_type)}</strong>
+                <span>Input - {titleize(asset.asset_type)}</span>
+              </button>
+            ))}
+            {stageDetail.input_assets.length === 0 ? <div className="empty-card">No inputs linked yet.</div> : null}
+          </div>
+        </section>
+        <section className="detail-block">
           <h4>Outputs</h4>
           <div className="detail-linked-list">
             {stageDetail.output_assets.map((asset) => (
               <button key={asset.id} className="detail-link-card" onClick={() => onSelectAsset(asset.id)} type="button">
                 <strong>{asset.title || titleize(asset.asset_type)}</strong>
-                <span>{titleize(asset.asset_type)}</span>
+                <span>Output - {titleize(asset.asset_type)}</span>
               </button>
             ))}
             {stageDetail.output_assets.length === 0 ? <div className="empty-card">No outputs yet.</div> : null}
@@ -92,6 +106,18 @@ export function DetailRail({
               </button>
             ))}
             {stageDetail.decisions.length === 0 ? <div className="empty-card">No linked decisions.</div> : null}
+          </div>
+        </section>
+        <section className="detail-block">
+          <h4>Events</h4>
+          <div className="detail-linked-list">
+            {stageDetail.events.slice(0, 5).map((event) => (
+              <button key={event.id} className="detail-link-card" onClick={() => onSelectEvent(event)} type="button">
+                <strong>{event.summary || titleize(event.event_type)}</strong>
+                <span>{titleize(event.event_type)}</span>
+              </button>
+            ))}
+            {stageDetail.events.length === 0 ? <div className="empty-card">No events captured yet.</div> : null}
           </div>
         </section>
       </div>

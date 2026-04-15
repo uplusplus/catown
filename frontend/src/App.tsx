@@ -121,6 +121,7 @@ function App() {
       selectedEvent,
       onSelectDecision: handleSelectDecision,
       onSelectAsset: handleSelectAsset,
+      onSelectEvent: handleSelectEvent,
     }),
     [assetDetail, decisionDetail, detailFocus, selectedEvent, stageDetail],
   );
