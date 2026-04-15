@@ -1559,6 +1559,175 @@ Without state write-back, the experience collapses into disposable chat.
 
 ---
 
+## Standard task-layer example: create project
+
+Project creation should be the first canonical example of the centered task-layer model.
+
+It demonstrates how Catown should turn a vague user idea into a structured project object without forcing the user through a traditional form.
+
+### Entry paths
+
+A user may enter the flow through either:
+
+- natural language, such as "create a new project" or "start an AI recruitment site project"
+- a UI trigger, such as a command surface, low-emphasis create entry, or empty-state CTA
+
+In either case, the centered task layer should open and take over the progression rhythm.
+
+### Step 0. Open the task layer
+
+The task layer appears in centered mode.
+It should establish:
+
+- task title
+- current context
+- lightweight progress state
+- clear exit or pause controls
+
+### Step 1. Capture the initial idea
+
+Goal:
+
+- let the user express the project in ordinary language
+- avoid making the user think in schema terms too early
+
+Guidance direction:
+
+- invite the user to describe the project goal in one sentence
+- explain that Catown will turn it into an executable draft
+
+Primary interaction unit:
+
+- a command-style natural-language input card
+
+This is an exception where open-ended input is the right first move, because the system is still collecting raw intent rather than asking for structured confirmation.
+
+### Step 2. Confirm the first directional framing
+
+After the user's first description, the system should make an initial interpretation.
+
+Example system move:
+
+- identify the likely project type
+- reduce ambiguity
+- propose the next dimension that actually matters
+
+Guidance direction:
+
+- explain the initial understanding in one short sentence
+- ask the user what kind of output should be prioritized first
+
+Primary interaction unit:
+
+- a direction-choice card
+
+Example options:
+
+- product planning first
+- page prototype first
+- technical implementation plan first
+
+This is the first strong moment of structured convergence.
+
+### Step 3. Determine starting readiness
+
+Once the user chooses a direction, the system should determine how far along the user already is.
+
+Guidance direction:
+
+- explain that the system needs to know the project's starting readiness to place it correctly
+
+Primary interaction unit:
+
+- a readiness-choice card
+
+Example options:
+
+- just an idea, not yet detailed
+- direction is known, ready to break down pages or work
+- already in progress, Catown should take over continuation
+
+This lets the system infer a reasonable initial stage without requiring the user to learn Catown's internal lifecycle model.
+
+### Step 4. Generate the initial draft
+
+At this point, the system should stop asking and start synthesizing.
+
+Guidance direction:
+
+- explain that an initial project draft is now ready
+- frame the next step as confirmation or correction, not more data entry
+
+Primary interaction unit:
+
+- a project draft card
+
+The draft card should show only the highest-value structured fields, such as:
+
+- project name
+- project objective
+- initial stage
+- first output direction
+- recommended next action
+
+Primary actions may include:
+
+- confirm creation
+- revise name
+- revise direction
+- redefine objective
+
+This is where the user should feel that the system is doing the modeling work.
+
+### Step 5. Support local corrections
+
+If the user changes one part of the draft, the system should enter local correction mode rather than resetting the whole flow.
+
+Examples:
+
+- rename the project
+- switch from prototype-first to planning-first
+- tighten or reframe the objective
+
+Primary interaction unit:
+
+- one focused correction card at a time
+
+The system should preserve already-good decisions while adjusting only the targeted part.
+
+This local-edit behavior is a major quality marker for the task-layer design.
+
+### Step 6. Confirm and write back
+
+After confirmation, the system should:
+
+- create the project object
+- assign its initial stage or state
+- establish the next recommended action
+- return the result to the homepage mission board
+
+The UI should not stop at a plain success message.
+It should visibly update the board so the user can see:
+
+- the new project in the hero context
+- the updated action-focus module
+- the initial stage reflected in the stage spine
+
+### What this flow proves
+
+A strong create-project flow proves that Catown can:
+
+- accept vague intent in natural language
+- progressively reduce ambiguity
+- use cards for focused convergence
+- generate structure on the user's behalf
+- support local correction without collapse
+- write the outcome back into visible system state
+
+In short, the user provides the idea and Catown builds the project skeleton.
+
+---
+
 ## When to use conversational guidance
 
 ### Good fit
