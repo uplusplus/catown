@@ -1394,6 +1394,49 @@ The current node may carry slightly richer information than other nodes, such as
 
 Completed and future nodes should remain legible but clearly subordinate.
 
+### Homepage evolution into Navigation Core
+
+For the more advanced cockpit-oriented homepage, the stage spine should no longer appear as a separate generic module beneath the hero.
+
+Instead, it should evolve into the route-visualization layer inside the `Navigation Core`.
+
+That means the homepage center should increasingly be treated as:
+
+- mission target
+- flight state
+- current position
+- next gate
+- route visualization
+
+rather than hero plus separate stage module.
+
+### Route visualization role
+
+Inside `Navigation Core`, the route visualization should serve three jobs at once:
+
+1. show the overall route through major stages or gates
+2. show the current position and route health
+3. act as a drill-down entry into stage detail
+
+This route view is not a decorative progress bar.
+It is the system's main navigation surface for project progression.
+
+### Drill-down behavior
+
+Each major route node should support stage-level inspection.
+
+Typical drill-down expectations:
+
+- current node -> current stage detail and blockers
+- completed node -> what was produced or cleared in that stage
+- upcoming node -> what conditions or decisions are needed to reach it
+
+This makes the route a true navigation system rather than a passive display.
+
+### Homepage placement implication
+
+In the cockpit-first homepage, the route visualization belongs inside the center `Navigation Core`, not as a disconnected lower module.
+
 ### Orientation guidance
 
 For the homepage default state, a vertical or near-vertical spine is preferred over a broad horizontal roadmap.
