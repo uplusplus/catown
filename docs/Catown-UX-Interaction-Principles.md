@@ -209,6 +209,179 @@ It is calm high-end operational clarity.
 
 ---
 
+## Visual tone
+
+Catown visual design should feel:
+
+- calm
+- sharp
+- restrained
+- futuristic
+- premium
+
+This does not mean flashy "AI" aesthetics.
+It means a composed interface with strong judgment, clean emphasis, and a sense of system-level quality.
+
+Catown should not look like:
+
+- a chat app with bubbles as the main visual grammar
+- a generic enterprise dashboard with equal-weight panels everywhere
+- a neon cyberpunk demo overloaded with glow and gradients
+
+The intended effect is:
+
+- calm enough to think clearly
+- sharp enough to reveal priorities fast
+- restrained enough to feel mature
+- futuristic enough to feel like a next-generation work surface
+- premium enough to build trust through precision
+
+In one line:
+
+**Catown should feel like a calm, sharp, premium AI operating interface.**
+
+---
+
+## Dark theme direction
+
+Catown should design around a primary dark theme first.
+
+Theme switching may be supported later, but the core visual system should first become excellent in one primary theme instead of becoming diluted by trying to make dark and light equally mature too early.
+
+The dark theme direction should be:
+
+**deep graphite base + cool neutral surfaces + minimal electric accent energy**
+
+This is not a pure-black hacker aesthetic.
+It is a high-end operational dark system.
+
+### Dark theme goals
+
+The dark theme should make Catown feel:
+
+- stable
+- focused
+- high-trust
+- system-like
+- quietly futuristic
+
+### Dark theme anti-goals
+
+Avoid:
+
+- pure black everywhere
+- neon-heavy cyberpunk treatment
+- excessive glass effects
+- colorful surfaces competing for attention
+- weak contrast that turns the interface muddy
+
+---
+
+## Dark palette structure
+
+Catown dark mode should use a tightly controlled palette with five roles.
+
+### 1. Base
+
+The deepest background layer that defines the overall atmosphere.
+
+Direction:
+
+- graphite
+- obsidian
+- slate-charcoal
+
+It should feel cool and neutral, not purple, not glossy, and not dead black.
+
+### 2. Surface
+
+A clear stack of surface tones should separate:
+
+- app background
+- board background
+- panels and cards
+- raised cards and hover states
+- task layers and modal surfaces
+
+Deep UI quality depends on these surface steps being clean and readable.
+
+### 3. Content
+
+Text and icon colors should have clear hierarchy:
+
+- primary content
+- secondary content
+- tertiary content
+- muted or disabled content
+
+The interface should avoid blasting pure white text across the whole product.
+Readable contrast should come from controlled hierarchy, not brute force.
+
+### 4. Accent
+
+Catown should use one main accent personality.
+
+Recommended direction:
+
+- cool electric cyan-teal
+
+Why:
+
+- futuristic without becoming cliché
+- clean on dark backgrounds
+- precise rather than playful
+- technical without becoming sterile
+
+The accent should be used sparingly for:
+
+- primary CTA emphasis
+- current focus
+- selected states
+- active input or command states
+- key guidance highlights
+
+### 5. Semantic colors
+
+Status colors should remain controlled and purposeful.
+
+- danger: controlled crimson
+- warning: muted amber
+- success: restrained emerald
+- info: accent-tinted cool blue
+
+Semantic colors should communicate state, not decorate empty space.
+
+---
+
+## Color usage principles
+
+### 1. Most of the interface should stay neutral
+
+Roughly 90% of the product should read as neutral dark surfaces, text hierarchy, and restrained borders.
+
+### 2. Color should signal action or meaning
+
+Use color mainly for:
+
+- action priority
+- state
+- focus
+- risk
+- confirmation
+
+Do not use color as a filler material.
+
+### 3. Luxury comes from restraint, not spectacle
+
+Catown should earn visual sophistication through spacing, hierarchy, proportion, and tonal control, not through constant visual effects.
+
+### 4. The dark theme should feel like a high-end operations room
+
+The target mood is not a sci-fi gimmick.
+It is a composed mission-control environment that feels trustworthy under complexity.
+
+---
+
 ## Interaction layers
 
 ## A. Stable Mission Board
