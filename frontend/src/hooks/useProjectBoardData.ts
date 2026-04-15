@@ -30,6 +30,17 @@ export function useProjectBoardData() {
   const [continuing, setContinuing] = useState(false);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
 
+  const resetBoard = useCallback(() => {
+    setOverview(null);
+    setStageRuns([]);
+    setDecisions([]);
+    setAssets([]);
+    setEvents([]);
+    setStageDetail(null);
+    setDecisionDetail(null);
+    setAssetDetail(null);
+  }, []);
+
   const loadProjects = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -58,15 +69,18 @@ export function useProjectBoardData() {
       setStageRuns(stageRunData);
       setDecisions(decisionData);
       setAssets(assetData);
+      setEvents([]);
+      setStageDetail(null);
       setDecisionDetail(null);
       setAssetDetail(null);
 
       return overviewData.current_stage_run?.id ?? stageRunData[0]?.id ?? null;
     } catch (err) {
+      resetBoard();
       setError(err instanceof Error ? err.message : 'Failed to load project board');
       return null;
     }
-  }, []);
+  }, [resetBoard]);
 
   const hydrateStage = useCallback(async (stageRunId: number) => {
     try {
@@ -75,6 +89,8 @@ export function useProjectBoardData() {
       setEvents(eventData);
       return eventData;
     } catch (err) {
+      setStageDetail(null);
+      setEvents([]);
       setError(err instanceof Error ? err.message : 'Failed to load stage detail');
       return [];
     }
@@ -92,6 +108,7 @@ export function useProjectBoardData() {
       setAssetDetail(null);
       return detail;
     } catch (err) {
+      setDecisionDetail(null);
       setError(err instanceof Error ? err.message : 'Failed to load decision detail');
       return null;
     }
@@ -104,6 +121,7 @@ export function useProjectBoardData() {
       setDecisionDetail(null);
       return detail;
     } catch (err) {
+      setAssetDetail(null);
       setError(err instanceof Error ? err.message : 'Failed to load asset detail');
       return null;
     }
