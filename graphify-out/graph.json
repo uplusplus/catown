@@ -81,7 +81,7 @@
       "source_file": "backend/main.py",
       "source_location": "L1",
       "id": "backend_main_py",
-      "community": 3,
+      "community": 4,
       "norm_label": "main.py"
     },
     {
@@ -90,7 +90,7 @@
       "source_file": "backend/main.py",
       "source_location": "L53",
       "id": "main_ratelimiter",
-      "community": 3,
+      "community": 4,
       "norm_label": "ratelimiter"
     },
     {
@@ -99,7 +99,7 @@
       "source_file": "backend/main.py",
       "source_location": "L55",
       "id": "main_ratelimiter_init",
-      "community": 3,
+      "community": 4,
       "norm_label": ".__init__()"
     },
     {
@@ -108,7 +108,7 @@
       "source_file": "backend/main.py",
       "source_location": "L60",
       "id": "main_ratelimiter_is_allowed",
-      "community": 3,
+      "community": 4,
       "norm_label": ".is_allowed()"
     },
     {
@@ -117,7 +117,7 @@
       "source_file": "backend/main.py",
       "source_location": "L76",
       "id": "main_ratelimitmiddleware",
-      "community": 3,
+      "community": 4,
       "norm_label": "ratelimitmiddleware"
     },
     {
@@ -126,7 +126,7 @@
       "source_file": "",
       "source_location": "",
       "id": "basehttpmiddleware",
-      "community": 3,
+      "community": 4,
       "norm_label": "basehttpmiddleware"
     },
     {
@@ -135,7 +135,7 @@
       "source_file": "backend/main.py",
       "source_location": "L77",
       "id": "main_ratelimitmiddleware_dispatch",
-      "community": 3,
+      "community": 4,
       "norm_label": ".dispatch()"
     },
     {
@@ -144,7 +144,7 @@
       "source_file": "backend/main.py",
       "source_location": "L115",
       "id": "main_requestloggingmiddleware",
-      "community": 3,
+      "community": 4,
       "norm_label": "requestloggingmiddleware"
     },
     {
@@ -153,7 +153,7 @@
       "source_file": "backend/main.py",
       "source_location": "L118",
       "id": "main_requestloggingmiddleware_dispatch",
-      "community": 3,
+      "community": 4,
       "norm_label": ".dispatch()"
     },
     {
@@ -162,7 +162,7 @@
       "source_file": "backend/main.py",
       "source_location": "L175",
       "id": "main_forward_pipeline_events_to_ws",
-      "community": 3,
+      "community": 4,
       "norm_label": "_forward_pipeline_events_to_ws()"
     },
     {
@@ -171,7 +171,7 @@
       "source_file": "backend/main.py",
       "source_location": "L187",
       "id": "main_start_file_watcher",
-      "community": 3,
+      "community": 4,
       "norm_label": "_start_file_watcher()"
     },
     {
@@ -180,7 +180,7 @@
       "source_file": "backend/main.py",
       "source_location": "L192",
       "id": "main_stop_file_watcher",
-      "community": 3,
+      "community": 4,
       "norm_label": "_stop_file_watcher()"
     },
     {
@@ -189,7 +189,7 @@
       "source_file": "backend/main.py",
       "source_location": "L207",
       "id": "main_websocket_endpoint",
-      "community": 3,
+      "community": 4,
       "norm_label": "websocket_endpoint()"
     },
     {
@@ -198,7 +198,7 @@
       "source_file": "backend/main.py",
       "source_location": "L216",
       "id": "main_health_check",
-      "community": 3,
+      "community": 4,
       "norm_label": "health_check()"
     },
     {
@@ -207,7 +207,7 @@
       "source_file": "backend/main.py",
       "source_location": "L221",
       "id": "main_root",
-      "community": 3,
+      "community": 4,
       "norm_label": "root()"
     },
     {
@@ -215,7 +215,7 @@
       "file_type": "rationale",
       "source_file": "backend/main.py",
       "source_location": "L176",
-      "community": 3,
+      "community": 4,
       "norm_label": "\u5c06 engine \u4e8b\u4ef6\u8f6c\u53d1\u5230\u6240\u6709\u901a\u7528 /ws \u8fde\u63a5",
       "id": "main_rationale_176"
     },
@@ -747,7 +747,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L1",
       "id": "backend_routes_stage_runs_v2_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "stage_runs_v2.py"
     },
     {
@@ -756,7 +756,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L15",
       "id": "stage_runs_v2_stageruninstructionpayload",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageruninstructionpayload"
     },
     {
@@ -774,7 +774,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L21",
       "id": "stage_runs_v2_list_stage_runs",
-      "community": 4,
+      "community": 3,
       "norm_label": "list_stage_runs()"
     },
     {
@@ -783,7 +783,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L29",
       "id": "stage_runs_v2_get_stage_run",
-      "community": 4,
+      "community": 3,
       "norm_label": "get_stage_run()"
     },
     {
@@ -792,7 +792,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L35",
       "id": "stage_runs_v2_list_stage_run_events",
-      "community": 4,
+      "community": 3,
       "norm_label": "list_stage_run_events()"
     },
     {
@@ -801,7 +801,7 @@
       "source_file": "backend/routes/stage_runs_v2.py",
       "source_location": "L42",
       "id": "stage_runs_v2_add_stage_run_instruction",
-      "community": 4,
+      "community": 3,
       "norm_label": "add_stage_run_instruction()"
     },
     {
@@ -1116,7 +1116,7 @@
       "source_file": "backend/routes/api.py",
       "source_location": "L27",
       "id": "api_llmconfigmodel",
-      "community": 2,
+      "community": 0,
       "norm_label": "llmconfigmodel"
     },
     {
@@ -1710,7 +1710,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L1",
       "id": "backend_routes_projects_v2_py",
-      "community": 4,
+      "community": 2,
       "norm_label": "projects_v2.py"
     },
     {
@@ -1719,7 +1719,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L15",
       "id": "projects_v2_projectcreatev2",
-      "community": 4,
+      "community": 2,
       "norm_label": "projectcreatev2"
     },
     {
@@ -1728,7 +1728,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L25",
       "id": "projects_v2_projectpatchv2",
-      "community": 4,
+      "community": 2,
       "norm_label": "projectpatchv2"
     },
     {
@@ -1737,7 +1737,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L36",
       "id": "projects_v2_create_project",
-      "community": 4,
+      "community": 2,
       "norm_label": "create_project()"
     },
     {
@@ -1746,7 +1746,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L51",
       "id": "projects_v2_list_projects",
-      "community": 4,
+      "community": 2,
       "norm_label": "list_projects()"
     },
     {
@@ -1755,7 +1755,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L57",
       "id": "projects_v2_get_project",
-      "community": 4,
+      "community": 2,
       "norm_label": "get_project()"
     },
     {
@@ -1764,7 +1764,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L64",
       "id": "projects_v2_patch_project",
-      "community": 4,
+      "community": 2,
       "norm_label": "patch_project()"
     },
     {
@@ -1773,7 +1773,7 @@
       "source_file": "backend/routes/projects_v2.py",
       "source_location": "L71",
       "id": "projects_v2_continue_project",
-      "community": 4,
+      "community": 2,
       "norm_label": "continue_project()"
     },
     {
@@ -1971,7 +1971,7 @@
       "source_file": "backend/routes/decisions_v2.py",
       "source_location": "L1",
       "id": "backend_routes_decisions_v2_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "decisions_v2.py"
     },
     {
@@ -1980,7 +1980,7 @@
       "source_file": "backend/routes/decisions_v2.py",
       "source_location": "L15",
       "id": "decisions_v2_decisionresolvepayload",
-      "community": 4,
+      "community": 3,
       "norm_label": "decisionresolvepayload"
     },
     {
@@ -1989,7 +1989,7 @@
       "source_file": "backend/routes/decisions_v2.py",
       "source_location": "L22",
       "id": "decisions_v2_list_project_decisions",
-      "community": 4,
+      "community": 3,
       "norm_label": "list_project_decisions()"
     },
     {
@@ -1998,7 +1998,7 @@
       "source_file": "backend/routes/decisions_v2.py",
       "source_location": "L30",
       "id": "decisions_v2_get_decision",
-      "community": 4,
+      "community": 3,
       "norm_label": "get_decision()"
     },
     {
@@ -2007,7 +2007,7 @@
       "source_file": "backend/routes/decisions_v2.py",
       "source_location": "L39",
       "id": "decisions_v2_resolve_decision",
-      "community": 4,
+      "community": 3,
       "norm_label": "resolve_decision()"
     },
     {
@@ -2142,7 +2142,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L1",
       "id": "backend_execution_stage_execution_kernel_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "stage_execution_kernel.py"
     },
     {
@@ -2151,7 +2151,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L15",
       "id": "stage_execution_kernel_stageexecutor",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageexecutor"
     },
     {
@@ -2160,7 +2160,7 @@
       "source_file": "",
       "source_location": "",
       "id": "protocol",
-      "community": 4,
+      "community": 3,
       "norm_label": "protocol"
     },
     {
@@ -2169,7 +2169,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L18",
       "id": "stage_execution_kernel_stageexecutor_supports",
-      "community": 4,
+      "community": 3,
       "norm_label": ".supports()"
     },
     {
@@ -2178,7 +2178,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L21",
       "id": "stage_execution_kernel_stageexecutor_execute",
-      "community": 4,
+      "community": 3,
       "norm_label": ".execute()"
     },
     {
@@ -2187,7 +2187,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L26",
       "id": "stage_execution_kernel_stageexecutionkernel",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageexecutionkernel"
     },
     {
@@ -2196,7 +2196,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L31",
       "id": "stage_execution_kernel_stageexecutionkernel_post_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__post_init__()"
     },
     {
@@ -2205,7 +2205,7 @@
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L36",
       "id": "stage_execution_kernel_stageexecutionkernel_execute",
-      "community": 4,
+      "community": 3,
       "norm_label": ".execute()"
     },
     {
@@ -2213,7 +2213,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L16",
-      "community": 4,
+      "community": 3,
       "norm_label": "executor contract for a stagerun implementation.",
       "id": "stage_execution_kernel_rationale_16"
     },
@@ -2222,7 +2222,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/stage_execution_kernel.py",
       "source_location": "L27",
-      "community": 4,
+      "community": 3,
       "norm_label": "resolves a stagerun to the executor that owns its runtime behavior.",
       "id": "stage_execution_kernel_rationale_27"
     },
@@ -2295,7 +2295,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L1",
       "id": "home_sun_openclaw_workspace_catown_backend_execution_bootstrap_stage_executor_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "bootstrap_stage_executor.py"
     },
     {
@@ -2304,7 +2304,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L12",
       "id": "bootstrap_stage_executor_stageexecutionresult",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageexecutionresult"
     },
     {
@@ -2313,7 +2313,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L23",
       "id": "bootstrap_stage_executor_assetrecipe",
-      "community": 4,
+      "community": 3,
       "norm_label": "assetrecipe"
     },
     {
@@ -2322,7 +2322,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L35",
       "id": "bootstrap_stage_executor_stageplan",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageplan"
     },
     {
@@ -2331,7 +2331,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L50",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor",
-      "community": 4,
+      "community": 3,
       "norm_label": "bootstrapstageexecutor"
     },
     {
@@ -2340,7 +2340,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L241",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -2349,7 +2349,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L246",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_supports",
-      "community": 4,
+      "community": 3,
       "norm_label": ".supports()"
     },
     {
@@ -2358,7 +2358,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L249",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_execute",
-      "community": 4,
+      "community": 3,
       "norm_label": ".execute()"
     },
     {
@@ -2367,7 +2367,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L271",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_emit_assets",
-      "community": 4,
+      "community": 3,
       "norm_label": "._emit_assets()"
     },
     {
@@ -2376,7 +2376,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L296",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_finalize_stage",
-      "community": 4,
+      "community": 3,
       "norm_label": "._finalize_stage()"
     },
     {
@@ -2385,7 +2385,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L306",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_queue_next_stage",
-      "community": 4,
+      "community": 3,
       "norm_label": "._queue_next_stage()"
     },
     {
@@ -2394,7 +2394,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L320",
       "id": "bootstrap_stage_executor_bootstrapstageexecutor_attach_release_approval",
-      "community": 4,
+      "community": 3,
       "norm_label": "._attach_release_approval()"
     },
     {
@@ -2402,7 +2402,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L13",
-      "community": 4,
+      "community": 3,
       "norm_label": "minimal execution contract for stage executors under the new kernel.",
       "id": "bootstrap_stage_executor_rationale_13"
     },
@@ -2411,7 +2411,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L24",
-      "community": 4,
+      "community": 3,
       "norm_label": "describes one scaffold asset emitted by a bootstrap stage.",
       "id": "bootstrap_stage_executor_rationale_24"
     },
@@ -2420,7 +2420,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L36",
-      "community": 4,
+      "community": 3,
       "norm_label": "static bootstrap plan for a stage before special-case side effects run.",
       "id": "bootstrap_stage_executor_rationale_36"
     },
@@ -2429,7 +2429,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/execution/bootstrap_stage_executor.py",
       "source_location": "L51",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns the scaffold generation path until a real runtime replaces it.",
       "id": "bootstrap_stage_executor_rationale_51"
     },
@@ -2574,7 +2574,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L1",
       "id": "backend_services_asset_service_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "asset_service.py"
     },
     {
@@ -2583,7 +2583,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L10",
       "id": "asset_service_assetservice",
-      "community": 4,
+      "community": 3,
       "norm_label": "assetservice"
     },
     {
@@ -2592,7 +2592,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L11",
       "id": "asset_service_assetservice_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -2601,7 +2601,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L15",
       "id": "asset_service_assetservice_get_current_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": ".get_current_asset()"
     },
     {
@@ -2610,7 +2610,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L22",
       "id": "asset_service_assetservice_build_source_refs",
-      "community": 4,
+      "community": 3,
       "norm_label": ".build_source_refs()"
     },
     {
@@ -2619,7 +2619,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L30",
       "id": "asset_service_assetservice_replace_current_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": ".replace_current_asset()"
     },
     {
@@ -2628,7 +2628,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L77",
       "id": "asset_service_assetservice_link_dependency",
-      "community": 4,
+      "community": 3,
       "norm_label": ".link_dependency()"
     },
     {
@@ -2637,7 +2637,7 @@
       "source_file": "backend/services/asset_service.py",
       "source_location": "L95",
       "id": "asset_service_assetservice_set_asset_status",
-      "community": 4,
+      "community": 3,
       "norm_label": ".set_asset_status()"
     },
     {
@@ -2646,304 +2646,304 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
       "source_location": "L1",
       "id": "home_sun_openclaw_workspace_catown_backend_services_project_service_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "project_service.py"
     },
     {
       "label": "ProjectService",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L22",
+      "source_location": "L23",
       "id": "project_service_projectservice",
-      "community": 4,
+      "community": 3,
       "norm_label": "projectservice"
     },
     {
       "label": ".__init__()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L27",
+      "source_location": "L28",
       "id": "project_service_projectservice_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
       "label": "._slugify()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L31",
+      "source_location": "L32",
       "id": "project_service_projectservice_slugify",
-      "community": 4,
+      "community": 3,
       "norm_label": "._slugify()"
     },
     {
       "label": ".create_project()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L40",
+      "source_location": "L41",
       "id": "project_service_projectservice_create_project",
-      "community": 4,
+      "community": 3,
       "norm_label": ".create_project()"
     },
     {
       "label": ".list_projects_v2()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L85",
+      "source_location": "L86",
       "id": "project_service_projectservice_list_projects_v2",
-      "community": 4,
+      "community": 3,
       "norm_label": ".list_projects_v2()"
     },
     {
       "label": ".get_project_or_404()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L88",
+      "source_location": "L89",
       "id": "project_service_projectservice_get_project_or_404",
-      "community": 4,
+      "community": 3,
       "norm_label": ".get_project_or_404()"
     },
     {
       "label": ".update_project()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L94",
+      "source_location": "L95",
       "id": "project_service_projectservice_update_project",
-      "community": 4,
+      "community": 3,
       "norm_label": ".update_project()"
     },
     {
       "label": ".get_pending_decisions()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L113",
+      "source_location": "L114",
       "id": "project_service_projectservice_get_pending_decisions",
-      "community": 4,
+      "community": 3,
       "norm_label": ".get_pending_decisions()"
     },
     {
       "label": ".resolve_decision()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L116",
+      "source_location": "L117",
       "id": "project_service_projectservice_resolve_decision",
-      "community": 4,
+      "community": 3,
       "norm_label": ".resolve_decision()"
     },
     {
       "label": "._next_stage_run_index()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L141",
+      "source_location": "L142",
       "id": "project_service_projectservice_next_stage_run_index",
-      "community": 4,
+      "community": 3,
       "norm_label": "._next_stage_run_index()"
     },
     {
       "label": ".continue_project()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L150",
+      "source_location": "L151",
       "id": "project_service_projectservice_continue_project",
-      "community": 4,
+      "community": 3,
       "norm_label": ".continue_project()"
     },
     {
       "label": "._queue_stage_run()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L159",
+      "source_location": "L160",
       "id": "project_service_projectservice_queue_stage_run",
-      "community": 4,
+      "community": 3,
       "norm_label": "._queue_stage_run()"
     },
     {
       "label": "._stage_phase()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L191",
+      "source_location": "L192",
       "id": "project_service_projectservice_stage_phase",
-      "community": 4,
+      "community": 3,
       "norm_label": "._stage_phase()"
     },
     {
       "label": "._link_stage_run_asset()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L203",
+      "source_location": "L204",
       "id": "project_service_projectservice_link_stage_run_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": "._link_stage_run_asset()"
     },
     {
       "label": "._link_decision_asset()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L212",
+      "source_location": "L213",
       "id": "project_service_projectservice_link_decision_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": "._link_decision_asset()"
     },
     {
       "label": "._link_asset_dependency()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L221",
+      "source_location": "L222",
       "id": "project_service_projectservice_link_asset_dependency",
-      "community": 4,
+      "community": 3,
       "norm_label": "._link_asset_dependency()"
     },
     {
       "label": "._sync_stage_inputs_for_stage()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L224",
+      "source_location": "L225",
       "id": "project_service_projectservice_sync_stage_inputs_for_stage",
-      "community": 4,
+      "community": 3,
       "norm_label": "._sync_stage_inputs_for_stage()"
     },
     {
       "label": ".build_dashboard()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L240",
+      "source_location": "L241",
       "id": "project_service_projectservice_build_dashboard",
-      "community": 4,
+      "community": 3,
       "norm_label": ".build_dashboard()"
     },
     {
       "label": ".build_project_overview()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L243",
+      "source_location": "L244",
       "id": "project_service_projectservice_build_project_overview",
-      "community": 4,
+      "community": 3,
       "norm_label": ".build_project_overview()"
     },
     {
       "label": ".serialize_project()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L246",
+      "source_location": "L247",
       "id": "project_service_projectservice_serialize_project",
-      "community": 4,
+      "community": 3,
       "norm_label": ".serialize_project()"
     },
     {
       "label": "._build_release_readiness()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L269",
+      "source_location": "L250",
       "id": "project_service_projectservice_build_release_readiness",
-      "community": 4,
+      "community": 3,
       "norm_label": "._build_release_readiness()"
     },
     {
       "label": "._recommended_decision_action()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L294",
+      "source_location": "L275",
       "id": "project_service_projectservice_recommended_decision_action",
-      "community": 4,
+      "community": 3,
       "norm_label": "._recommended_decision_action()"
     },
     {
       "label": "._serialize_stage_asset_links()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L302",
+      "source_location": "L283",
       "id": "project_service_projectservice_serialize_stage_asset_links",
-      "community": 4,
+      "community": 3,
       "norm_label": "._serialize_stage_asset_links()"
     },
     {
       "label": "._serialize_decision_asset_links()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L321",
+      "source_location": "L302",
       "id": "project_service_projectservice_serialize_decision_asset_links",
-      "community": 4,
+      "community": 3,
       "norm_label": "._serialize_decision_asset_links()"
     },
     {
       "label": "._serialize_asset_dependencies()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L340",
+      "source_location": "L321",
       "id": "project_service_projectservice_serialize_asset_dependencies",
-      "community": 4,
+      "community": 3,
       "norm_label": "._serialize_asset_dependencies()"
     },
     {
       "label": ".serialize_asset()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L364",
+      "source_location": "L345",
       "id": "project_service_projectservice_serialize_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": ".serialize_asset()"
     },
     {
       "label": ".serialize_decision()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L383",
+      "source_location": "L348",
       "id": "project_service_projectservice_serialize_decision",
-      "community": 4,
+      "community": 3,
       "norm_label": ".serialize_decision()"
     },
     {
       "label": ".build_stage_run_detail()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L402",
+      "source_location": "L351",
       "id": "project_service_projectservice_build_stage_run_detail",
-      "community": 4,
+      "community": 3,
       "norm_label": ".build_stage_run_detail()"
     },
     {
       "label": ".list_stage_run_events()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L405",
+      "source_location": "L354",
       "id": "project_service_projectservice_list_stage_run_events",
-      "community": 4,
+      "community": 3,
       "norm_label": ".list_stage_run_events()"
     },
     {
       "label": ".append_stage_run_event()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L413",
+      "source_location": "L362",
       "id": "project_service_projectservice_append_stage_run_event",
-      "community": 4,
+      "community": 3,
       "norm_label": ".append_stage_run_event()"
     },
     {
       "label": ".add_stage_run_instruction()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L432",
+      "source_location": "L381",
       "id": "project_service_projectservice_add_stage_run_instruction",
-      "community": 4,
+      "community": 3,
       "norm_label": ".add_stage_run_instruction()"
     },
     {
       "label": ".serialize_event()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L444",
+      "source_location": "L393",
       "id": "project_service_projectservice_serialize_event",
-      "community": 4,
+      "community": 3,
       "norm_label": ".serialize_event()"
     },
     {
       "label": ".serialize_stage_run()",
       "file_type": "code",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L458",
+      "source_location": "L396",
       "id": "project_service_projectservice_serialize_stage_run",
-      "community": 4,
+      "community": 3,
       "norm_label": ".serialize_stage_run()"
     },
     {
@@ -2952,7 +2952,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L1",
       "id": "backend_tools_base_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "base.py"
     },
     {
@@ -2961,7 +2961,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L10",
       "id": "base_toolschema",
-      "community": 8,
+      "community": 6,
       "norm_label": "toolschema"
     },
     {
@@ -2979,7 +2979,7 @@
       "source_file": "",
       "source_location": "",
       "id": "abc",
-      "community": 8,
+      "community": 6,
       "norm_label": "abc"
     },
     {
@@ -2988,7 +2988,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L24",
       "id": "base_execute",
-      "community": 8,
+      "community": 6,
       "norm_label": "execute()"
     },
     {
@@ -2997,7 +2997,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L28",
       "id": "base_basetool_get_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": ".get_schema()"
     },
     {
@@ -3006,7 +3006,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L39",
       "id": "base_basetool_get_parameters_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": "._get_parameters_schema()"
     },
     {
@@ -3015,7 +3015,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L48",
       "id": "base_toolregistry",
-      "community": 8,
+      "community": 9,
       "norm_label": "toolregistry"
     },
     {
@@ -3024,7 +3024,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L51",
       "id": "base_toolregistry_init",
-      "community": 8,
+      "community": 9,
       "norm_label": ".__init__()"
     },
     {
@@ -3033,7 +3033,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L54",
       "id": "base_toolregistry_register",
-      "community": 8,
+      "community": 9,
       "norm_label": ".register()"
     },
     {
@@ -3042,7 +3042,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L58",
       "id": "base_toolregistry_get",
-      "community": 8,
+      "community": 9,
       "norm_label": ".get()"
     },
     {
@@ -3051,7 +3051,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L62",
       "id": "base_toolregistry_list_tools",
-      "community": 8,
+      "community": 9,
       "norm_label": ".list_tools()"
     },
     {
@@ -3060,7 +3060,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L66",
       "id": "base_toolregistry_get_schemas",
-      "community": 8,
+      "community": 9,
       "norm_label": ".get_schemas()"
     },
     {
@@ -3069,7 +3069,7 @@
       "source_file": "backend/tools/base.py",
       "source_location": "L72",
       "id": "base_toolregistry_execute",
-      "community": 8,
+      "community": 9,
       "norm_label": ".execute()"
     },
     {
@@ -3077,7 +3077,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L11",
-      "community": 8,
+      "community": 6,
       "norm_label": "json schema for a tool",
       "id": "base_rationale_11"
     },
@@ -3095,7 +3095,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L29",
-      "community": 8,
+      "community": 9,
       "norm_label": "get openai-compatible tool schema",
       "id": "base_rationale_29"
     },
@@ -3104,7 +3104,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L40",
-      "community": 8,
+      "community": 9,
       "norm_label": "override this to define parameters schema",
       "id": "base_rationale_40"
     },
@@ -3113,7 +3113,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L49",
-      "community": 8,
+      "community": 9,
       "norm_label": "registry for managing tools",
       "id": "base_rationale_49"
     },
@@ -3122,7 +3122,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L63",
-      "community": 8,
+      "community": 9,
       "norm_label": "list all registered tool names",
       "id": "base_rationale_63"
     },
@@ -3131,7 +3131,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L67",
-      "community": 8,
+      "community": 9,
       "norm_label": "get schemas for specified tools (or all if not specified)",
       "id": "base_rationale_67"
     },
@@ -3140,7 +3140,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/base.py",
       "source_location": "L73",
-      "community": 8,
+      "community": 9,
       "norm_label": "execute a tool by name",
       "id": "base_rationale_73"
     },
@@ -3150,7 +3150,7 @@
       "source_file": "backend/tools/retrieve_memory.py",
       "source_location": "L1",
       "id": "backend_tools_retrieve_memory_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "retrieve_memory.py"
     },
     {
@@ -3213,7 +3213,7 @@
       "source_file": "backend/tools/__init__.py",
       "source_location": "L1",
       "id": "backend_tools_init_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "__init__.py"
     },
     {
@@ -3222,7 +3222,7 @@
       "source_file": "backend/tools/__init__.py",
       "source_location": "L41",
       "id": "init_set_collaboration_coordinator",
-      "community": 8,
+      "community": 6,
       "norm_label": "set_collaboration_coordinator()"
     },
     {
@@ -3231,7 +3231,7 @@
       "source_file": "backend/tools/__init__.py",
       "source_location": "L74",
       "id": "init_init_collaboration_tools",
-      "community": 8,
+      "community": 6,
       "norm_label": "init_collaboration_tools()"
     },
     {
@@ -3258,7 +3258,7 @@
       "source_file": "backend/tools/query_agent.py",
       "source_location": "L1",
       "id": "backend_tools_query_agent_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "query_agent.py"
     },
     {
@@ -3726,7 +3726,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L1",
       "id": "backend_tools_screenshot_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "screenshot.py"
     },
     {
@@ -3735,7 +3735,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L12",
       "id": "screenshot_screenshottool",
-      "community": 8,
+      "community": 0,
       "norm_label": "screenshottool"
     },
     {
@@ -3744,7 +3744,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L31",
       "id": "screenshot_screenshottool_find_browser",
-      "community": 8,
+      "community": 0,
       "norm_label": "._find_browser()"
     },
     {
@@ -3753,7 +3753,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L41",
       "id": "screenshot_screenshottool_execute",
-      "community": 8,
+      "community": 0,
       "norm_label": ".execute()"
     },
     {
@@ -3762,7 +3762,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L169",
       "id": "screenshot_screenshottool_element_screenshot",
-      "community": 8,
+      "community": 0,
       "norm_label": "._element_screenshot()"
     },
     {
@@ -3771,7 +3771,7 @@
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L235",
       "id": "screenshot_screenshottool_get_parameters_schema",
-      "community": 8,
+      "community": 0,
       "norm_label": "._get_parameters_schema()"
     },
     {
@@ -3779,7 +3779,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L13",
-      "community": 8,
+      "community": 0,
       "norm_label": "tool for capturing screenshots of web pages or html content",
       "id": "screenshot_rationale_13"
     },
@@ -3788,7 +3788,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L32",
-      "community": 8,
+      "community": 0,
       "norm_label": "find available chromium/chrome binary",
       "id": "screenshot_rationale_32"
     },
@@ -3797,7 +3797,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L53",
-      "community": 8,
+      "community": 0,
       "norm_label": "capture a screenshot.          args:             url: web page url or local file",
       "id": "screenshot_rationale_53"
     },
@@ -3806,7 +3806,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/screenshot.py",
       "source_location": "L172",
-      "community": 8,
+      "community": 0,
       "norm_label": "use node.js to capture a specific element via puppeteer-core",
       "id": "screenshot_rationale_172"
     },
@@ -4167,7 +4167,7 @@
       "source_file": "backend/tools/save_memory.py",
       "source_location": "L1",
       "id": "backend_tools_save_memory_py",
-      "community": 0,
+      "community": 6,
       "norm_label": "save_memory.py"
     },
     {
@@ -4221,7 +4221,7 @@
       "source_file": "backend/tools/web_search.py",
       "source_location": "L1",
       "id": "backend_tools_web_search_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "web_search.py"
     },
     {
@@ -4230,7 +4230,7 @@
       "source_file": "backend/tools/web_search.py",
       "source_location": "L11",
       "id": "web_search_websearchtool",
-      "community": 8,
+      "community": 9,
       "norm_label": "websearchtool"
     },
     {
@@ -4239,7 +4239,7 @@
       "source_file": "backend/tools/web_search.py",
       "source_location": "L17",
       "id": "web_search_websearchtool_execute",
-      "community": 8,
+      "community": 9,
       "norm_label": ".execute()"
     },
     {
@@ -4248,7 +4248,7 @@
       "source_file": "backend/tools/web_search.py",
       "source_location": "L70",
       "id": "web_search_websearchtool_get_parameters_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": "._get_parameters_schema()"
     },
     {
@@ -4256,7 +4256,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/web_search.py",
       "source_location": "L12",
-      "community": 8,
+      "community": 9,
       "norm_label": "tool for searching the web via duckduckgo",
       "id": "web_search_rationale_12"
     },
@@ -4265,7 +4265,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/web_search.py",
       "source_location": "L18",
-      "community": 8,
+      "community": 9,
       "norm_label": "execute web search via duckduckgo instant answer api                  args:",
       "id": "web_search_rationale_18"
     },
@@ -4275,7 +4275,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L1",
       "id": "backend_tools_execute_code_py",
-      "community": 8,
+      "community": 9,
       "norm_label": "execute_code.py"
     },
     {
@@ -4284,7 +4284,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L74",
       "id": "execute_code_executecodetool",
-      "community": 8,
+      "community": 9,
       "norm_label": "executecodetool"
     },
     {
@@ -4293,7 +4293,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L85",
       "id": "execute_code_executecodetool_execute",
-      "community": 8,
+      "community": 9,
       "norm_label": ".execute()"
     },
     {
@@ -4302,7 +4302,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L107",
       "id": "execute_code_executecodetool_exec_python",
-      "community": 8,
+      "community": 9,
       "norm_label": "._exec_python()"
     },
     {
@@ -4311,7 +4311,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L153",
       "id": "execute_code_executecodetool_exec_node",
-      "community": 8,
+      "community": 9,
       "norm_label": "._exec_node()"
     },
     {
@@ -4320,7 +4320,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L206",
       "id": "execute_code_executecodetool_find_node",
-      "community": 8,
+      "community": 9,
       "norm_label": "._find_node()"
     },
     {
@@ -4329,7 +4329,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L228",
       "id": "execute_code_clean_stderr",
-      "community": 8,
+      "community": 9,
       "norm_label": "_clean_stderr()"
     },
     {
@@ -4338,7 +4338,7 @@
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L241",
       "id": "execute_code_executecodetool_get_parameters_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": "._get_parameters_schema()"
     },
     {
@@ -4346,7 +4346,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L75",
-      "community": 8,
+      "community": 9,
       "norm_label": "tool for executing code snippets with sandbox restrictions",
       "id": "execute_code_rationale_75"
     },
@@ -4355,7 +4355,7 @@
       "file_type": "rationale",
       "source_file": "backend/tools/execute_code.py",
       "source_location": "L86",
-      "community": 8,
+      "community": 9,
       "norm_label": "execute code snippet in sandbox.          args:             code: code to execut",
       "id": "execute_code_rationale_86"
     },
@@ -4770,7 +4770,7 @@
       "source_file": "backend/tools/web_fetch.py",
       "source_location": "L1",
       "id": "backend_tools_web_fetch_py",
-      "community": 8,
+      "community": 6,
       "norm_label": "web_fetch.py"
     },
     {
@@ -6138,7 +6138,7 @@
       "source_file": "backend/chatrooms/manager.py",
       "source_location": "L67",
       "id": "manager_chatroommanager_send_message",
-      "community": 15,
+      "community": 0,
       "norm_label": ".send_message()"
     },
     {
@@ -6264,7 +6264,7 @@
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L1",
       "id": "backend_orchestration_stage_execution_coordinator_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "stage_execution_coordinator.py"
     },
     {
@@ -6273,7 +6273,7 @@
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L8",
       "id": "stage_execution_coordinator_stageexecutioncoordinator",
-      "community": 4,
+      "community": 3,
       "norm_label": "stageexecutioncoordinator"
     },
     {
@@ -6282,7 +6282,7 @@
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L11",
       "id": "stage_execution_coordinator_stageexecutioncoordinator_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -6291,7 +6291,7 @@
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L14",
       "id": "stage_execution_coordinator_stageexecutioncoordinator_run",
-      "community": 4,
+      "community": 3,
       "norm_label": ".run()"
     },
     {
@@ -6299,7 +6299,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L1",
-      "community": 4,
+      "community": 3,
       "norm_label": "stage execution/bootstrap handlers for the v2 project-first flow.",
       "id": "stage_execution_coordinator_rationale_1"
     },
@@ -6308,7 +6308,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/stage_execution_coordinator.py",
       "source_location": "L9",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns stage-specific bootstrap outputs and follow-up queueing.",
       "id": "stage_execution_coordinator_rationale_9"
     },
@@ -6318,7 +6318,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L1",
       "id": "home_sun_openclaw_workspace_catown_backend_orchestration_project_bootstrap_coordinator_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "project_bootstrap_coordinator.py"
     },
     {
@@ -6327,7 +6327,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L8",
       "id": "project_bootstrap_coordinator_projectbootstrapcoordinator",
-      "community": 4,
+      "community": 3,
       "norm_label": "projectbootstrapcoordinator"
     },
     {
@@ -6336,7 +6336,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L11",
       "id": "project_bootstrap_coordinator_projectbootstrapcoordinator_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -6345,7 +6345,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L15",
       "id": "project_bootstrap_coordinator_projectbootstrapcoordinator_bootstrap",
-      "community": 4,
+      "community": 3,
       "norm_label": ".bootstrap()"
     },
     {
@@ -6353,7 +6353,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L1",
-      "community": 4,
+      "community": 3,
       "norm_label": "initial project bootstrap coordinator for the v2 project-first flow.",
       "id": "project_bootstrap_coordinator_rationale_1"
     },
@@ -6362,7 +6362,7 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/orchestration/project_bootstrap_coordinator.py",
       "source_location": "L9",
-      "community": 4,
+      "community": 3,
       "norm_label": "creates the initial briefing stage, brief asset, and scope decision.",
       "id": "project_bootstrap_coordinator_rationale_9"
     },
@@ -6372,7 +6372,7 @@
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L1",
       "id": "backend_orchestration_project_flow_coordinator_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "project_flow_coordinator.py"
     },
     {
@@ -6381,7 +6381,7 @@
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L9",
       "id": "project_flow_coordinator_projectflowcoordinator",
-      "community": 4,
+      "community": 3,
       "norm_label": "projectflowcoordinator"
     },
     {
@@ -6390,7 +6390,7 @@
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L12",
       "id": "project_flow_coordinator_projectflowcoordinator_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -6399,7 +6399,7 @@
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L16",
       "id": "project_flow_coordinator_projectflowcoordinator_continue_project",
-      "community": 4,
+      "community": 3,
       "norm_label": ".continue_project()"
     },
     {
@@ -6407,7 +6407,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L10",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns stage-run execution progression so service routes stay thinner.",
       "id": "project_flow_coordinator_rationale_10"
     },
@@ -6417,7 +6417,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L1",
       "id": "backend_orchestration_decision_effects_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "decision_effects.py"
     },
     {
@@ -6426,7 +6426,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L7",
       "id": "decision_effects_decisioneffectscoordinator",
-      "community": 4,
+      "community": 3,
       "norm_label": "decisioneffectscoordinator"
     },
     {
@@ -6435,7 +6435,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L10",
       "id": "decision_effects_decisioneffectscoordinator_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -6444,7 +6444,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L14",
       "id": "decision_effects_decisioneffectscoordinator_apply",
-      "community": 4,
+      "community": 3,
       "norm_label": ".apply()"
     },
     {
@@ -6453,7 +6453,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L20",
       "id": "decision_effects_decisioneffectscoordinator_apply_scope_confirmation",
-      "community": 4,
+      "community": 3,
       "norm_label": "._apply_scope_confirmation()"
     },
     {
@@ -6462,7 +6462,7 @@
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L47",
       "id": "decision_effects_decisioneffectscoordinator_apply_release_approval",
-      "community": 4,
+      "community": 3,
       "norm_label": "._apply_release_approval()"
     },
     {
@@ -6470,7 +6470,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L1",
-      "community": 4,
+      "community": 3,
       "norm_label": "decision side-effect handlers for the v2 project-first flow.",
       "id": "decision_effects_rationale_1"
     },
@@ -6479,7 +6479,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/decision_effects.py",
       "source_location": "L8",
-      "community": 4,
+      "community": 3,
       "norm_label": "applies project/asset side effects after a decision is resolved.",
       "id": "decision_effects_rationale_8"
     },
@@ -6992,7 +6992,7 @@
       "file_type": "rationale",
       "source_file": "backend/agents/core.py",
       "source_location": "L42",
-      "community": 0,
+      "community": 2,
       "norm_label": "ai agent \u6838\u5fc3\u7c7b          \u6301\u6709 agent \u914d\u7f6e\u3001\u8bb0\u5fc6\u548c\u5bf9\u8bdd\u5386\u53f2\u3002     \u5b9e\u9645\u7684 llm \u8c03\u7528\u548c\u5de5\u5177\u6267\u884c\u5728 routes/api.py \u4e2d\u5b8c",
       "id": "core_rationale_42"
     },
@@ -9522,7 +9522,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L1",
       "id": "backend_tests_test_tools_py",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_tools.py"
     },
     {
@@ -9531,7 +9531,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L20",
       "id": "test_tools_testtoolregistry",
-      "community": 8,
+      "community": 9,
       "norm_label": "testtoolregistry"
     },
     {
@@ -9540,7 +9540,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L23",
       "id": "test_tools_testtoolregistry_test_register_tool",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_register_tool()"
     },
     {
@@ -9549,7 +9549,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L29",
       "id": "test_tools_testtoolregistry_test_get_tool",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_get_tool()"
     },
     {
@@ -9558,7 +9558,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L36",
       "id": "test_tools_testtoolregistry_test_get_schemas",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_get_schemas()"
     },
     {
@@ -9567,7 +9567,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L45",
       "id": "test_tools_testtoolregistry_test_get_schemas_filtered",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_get_schemas_filtered()"
     },
     {
@@ -9576,7 +9576,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L56",
       "id": "test_tools_testwebsearchtool",
-      "community": 8,
+      "community": 9,
       "norm_label": "testwebsearchtool"
     },
     {
@@ -9585,7 +9585,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L59",
       "id": "test_tools_testwebsearchtool_test_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_schema()"
     },
     {
@@ -9594,7 +9594,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L67",
       "id": "test_tools_test_execute_returns_string",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_returns_string()"
     },
     {
@@ -9603,7 +9603,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L74",
       "id": "test_tools_test_execute_with_empty_query",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_with_empty_query()"
     },
     {
@@ -9612,7 +9612,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L82",
       "id": "test_tools_testexecutecodetool",
-      "community": 8,
+      "community": 9,
       "norm_label": "testexecutecodetool"
     },
     {
@@ -9621,7 +9621,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L85",
       "id": "test_tools_testexecutecodetool_test_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_schema()"
     },
     {
@@ -9630,7 +9630,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L92",
       "id": "test_tools_test_execute_simple_code",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_simple_code()"
     },
     {
@@ -9639,7 +9639,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L98",
       "id": "test_tools_test_execute_math_code",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_math_code()"
     },
     {
@@ -9648,7 +9648,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L104",
       "id": "test_tools_test_execute_error_code",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_error_code()"
     },
     {
@@ -9657,7 +9657,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L110",
       "id": "test_tools_test_execute_unsupported_language",
-      "community": 8,
+      "community": 9,
       "norm_label": "test_execute_unsupported_language()"
     },
     {
@@ -9666,7 +9666,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L118",
       "id": "test_tools_testretrievememorytool",
-      "community": 8,
+      "community": 9,
       "norm_label": "testretrievememorytool"
     },
     {
@@ -9675,7 +9675,7 @@
       "source_file": "backend/tests/test_tools.py",
       "source_location": "L121",
       "id": "test_tools_testretrievememorytool_test_schema",
-      "community": 8,
+      "community": 9,
       "norm_label": ".test_schema()"
     },
     {
@@ -10799,7 +10799,7 @@
       "file_type": "rationale",
       "source_file": "backend/tests/test_core.py",
       "source_location": "L1",
-      "community": 2,
+      "community": 0,
       "norm_label": "catown \u6838\u5fc3\u94fe\u8def\u6d4b\u8bd5 \u2014 \u5e26 llm mock  \u8986\u76d6: 1. agent \u54cd\u5e94\u5faa\u73af(\u542b\u5de5\u5177\u8c03\u7528) 2. \u8bb0\u5fc6\u63d0\u53d6 3. sse \u6d41\u5f0f\u7aef\u70b9 4. @men",
       "id": "test_core_rationale_1"
     },
@@ -10808,7 +10808,7 @@
       "file_type": "rationale",
       "source_file": "backend/tests/test_core.py",
       "source_location": "L251",
-      "community": 2,
+      "community": 0,
       "norm_label": "list_collaborators \u5728\u65e0\u534f\u4f5c\u8005\u65f6\u56de\u9000\u5230\u5168\u5c40 db",
       "id": "test_core_rationale_251"
     },
@@ -10818,7 +10818,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L1",
       "id": "backend_tests_test_api_routes_py",
-      "community": 9,
+      "community": 8,
       "norm_label": "test_api_routes.py"
     },
     {
@@ -10827,7 +10827,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L14",
       "id": "test_api_routes_make_app",
-      "community": 9,
+      "community": 8,
       "norm_label": "_make_app()"
     },
     {
@@ -10836,7 +10836,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L66",
       "id": "test_api_routes_client",
-      "community": 9,
+      "community": 8,
       "norm_label": "client()"
     },
     {
@@ -10845,7 +10845,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L75",
       "id": "test_api_routes_testhealthendpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testhealthendpoints"
     },
     {
@@ -10854,7 +10854,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L76",
       "id": "test_api_routes_testhealthendpoints_test_health",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_health()"
     },
     {
@@ -10863,7 +10863,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L81",
       "id": "test_api_routes_testhealthendpoints_test_api_health",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_api_health()"
     },
     {
@@ -10872,7 +10872,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L89",
       "id": "test_api_routes_teststatusendpoint",
-      "community": 9,
+      "community": 8,
       "norm_label": "teststatusendpoint"
     },
     {
@@ -10881,7 +10881,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L90",
       "id": "test_api_routes_teststatusendpoint_test_status",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_status()"
     },
     {
@@ -10890,7 +10890,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L103",
       "id": "test_api_routes_testagentendpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testagentendpoints"
     },
     {
@@ -10899,7 +10899,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L104",
       "id": "test_api_routes_testagentendpoints_test_list_agents",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_list_agents()"
     },
     {
@@ -10908,7 +10908,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L113",
       "id": "test_api_routes_testagentendpoints_test_get_agent_by_id",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_agent_by_id()"
     },
     {
@@ -10917,7 +10917,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L120",
       "id": "test_api_routes_testagentendpoints_test_get_agent_not_found",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_agent_not_found()"
     },
     {
@@ -10926,7 +10926,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L124",
       "id": "test_api_routes_testagentendpoints_test_get_agent_memory",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_agent_memory()"
     },
     {
@@ -10935,7 +10935,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L134",
       "id": "test_api_routes_testtoolsendpoint",
-      "community": 9,
+      "community": 8,
       "norm_label": "testtoolsendpoint"
     },
     {
@@ -10944,7 +10944,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L135",
       "id": "test_api_routes_testtoolsendpoint_test_list_tools",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_list_tools()"
     },
     {
@@ -10953,7 +10953,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L147",
       "id": "test_api_routes_testconfigendpoint",
-      "community": 9,
+      "community": 8,
       "norm_label": "testconfigendpoint"
     },
     {
@@ -10962,7 +10962,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L148",
       "id": "test_api_routes_testconfigendpoint_test_get_config",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_config()"
     },
     {
@@ -10971,7 +10971,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L155",
       "id": "test_api_routes_testconfigendpoint_test_update_config_validation_empty_key",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_update_config_validation_empty_key()"
     },
     {
@@ -10980,7 +10980,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L161",
       "id": "test_api_routes_testconfigendpoint_test_update_config_invalid_url",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_update_config_invalid_url()"
     },
     {
@@ -10989,7 +10989,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L167",
       "id": "test_api_routes_testconfigendpoint_test_update_config_invalid_temperature",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_update_config_invalid_temperature()"
     },
     {
@@ -10998,7 +10998,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L176",
       "id": "test_api_routes_testprojectendpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testprojectendpoints"
     },
     {
@@ -11007,7 +11007,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L177",
       "id": "test_api_routes_testprojectendpoints_test_list_projects_empty",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_list_projects_empty()"
     },
     {
@@ -11016,7 +11016,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L182",
       "id": "test_api_routes_testprojectendpoints_test_create_project",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_create_project()"
     },
     {
@@ -11025,7 +11025,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L192",
       "id": "test_api_routes_testprojectendpoints_test_create_project_invalid_agent",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_create_project_invalid_agent()"
     },
     {
@@ -11034,7 +11034,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L198",
       "id": "test_api_routes_testprojectendpoints_test_create_project_multiple_agents",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_create_project_multiple_agents()"
     },
     {
@@ -11043,7 +11043,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L205",
       "id": "test_api_routes_testprojectendpoints_test_get_project",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_project()"
     },
     {
@@ -11052,7 +11052,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L214",
       "id": "test_api_routes_testprojectendpoints_test_get_project_not_found",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_project_not_found()"
     },
     {
@@ -11061,7 +11061,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L218",
       "id": "test_api_routes_testprojectendpoints_test_delete_project",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_delete_project()"
     },
     {
@@ -11070,7 +11070,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L231",
       "id": "test_api_routes_testprojectv2endpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testprojectv2endpoints"
     },
     {
@@ -11079,7 +11079,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L232",
       "id": "test_api_routes_testprojectv2endpoints_test_create_project_v2_bootstraps_brief_and_decision",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_create_project_v2_bootstraps_brief_and_decision()"
     },
     {
@@ -11088,7 +11088,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L263",
       "id": "test_api_routes_testprojectv2endpoints_test_resolve_scope_confirmation_moves_project_forward",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_resolve_scope_confirmation_moves_project_forward()"
     },
     {
@@ -11097,7 +11097,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L290",
       "id": "test_api_routes_testprojectv2endpoints_test_continue_project_promotes_queued_stage_run",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_continue_project_promotes_queued_stage_run()"
     },
     {
@@ -11106,7 +11106,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L316",
       "id": "test_api_routes_testprojectv2endpoints_test_project_overview_v2_returns_mission_board_shape",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_project_overview_v2_returns_mission_board_shape()"
     },
     {
@@ -11115,7 +11115,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L340",
       "id": "test_api_routes_testprojectv2endpoints_test_release_ready_chain_generates_build_test_and_release_assets",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_release_ready_chain_generates_build_test_and_release_assets()"
     },
     {
@@ -11124,7 +11124,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L384",
       "id": "test_api_routes_testprojectv2endpoints_test_release_approval_marks_project_released",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_release_approval_marks_project_released()"
     },
     {
@@ -11133,7 +11133,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L415",
       "id": "test_api_routes_testprojectv2endpoints_test_stage_run_detail_returns_inputs_outputs_and_decisions",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_stage_run_detail_returns_inputs_outputs_and_decisions()"
     },
     {
@@ -11142,7 +11142,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L436",
       "id": "test_api_routes_testprojectv2endpoints_test_asset_dependencies_capture_multi_input_stage_refs",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_asset_dependencies_capture_multi_input_stage_refs()"
     },
     {
@@ -11151,7 +11151,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L460",
       "id": "test_api_routes_testprojectv2endpoints_test_reject_release_approval_requeues_release_preparation",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_reject_release_approval_requeues_release_preparation()"
     },
     {
@@ -11160,7 +11160,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L485",
       "id": "test_api_routes_testprojectv2endpoints_test_stage_run_instructions_and_events_use_project_first_event_shape",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_stage_run_instructions_and_events_use_project_first_event_shape()"
     },
     {
@@ -11169,7 +11169,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L520",
       "id": "test_api_routes_testprojectv2endpoints_test_dashboard_v2_returns_project_first_view",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_dashboard_v2_returns_project_first_view()"
     },
     {
@@ -11178,7 +11178,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L539",
       "id": "test_api_routes_testchatendpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testchatendpoints"
     },
     {
@@ -11187,7 +11187,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L540",
       "id": "test_api_routes_testchatendpoints_test_send_message",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_send_message()"
     },
     {
@@ -11196,7 +11196,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L548",
       "id": "test_api_routes_testchatendpoints_test_get_messages",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_messages()"
     },
     {
@@ -11205,7 +11205,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L562",
       "id": "test_api_routes_testssestreaming",
-      "community": 9,
+      "community": 8,
       "norm_label": "testssestreaming"
     },
     {
@@ -11214,7 +11214,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L563",
       "id": "test_api_routes_testssestreaming_test_stream_returns_sse",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_stream_returns_sse()"
     },
     {
@@ -11223,7 +11223,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L576",
       "id": "test_api_routes_testssestreaming_test_stream_has_data_events",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_stream_has_data_events()"
     },
     {
@@ -11232,7 +11232,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L590",
       "id": "test_api_routes_testcollaborationendpoints",
-      "community": 9,
+      "community": 8,
       "norm_label": "testcollaborationendpoints"
     },
     {
@@ -11241,7 +11241,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L591",
       "id": "test_api_routes_testcollaborationendpoints_test_collaboration_status",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_collaboration_status()"
     },
     {
@@ -11250,7 +11250,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L597",
       "id": "test_api_routes_testcollaborationendpoints_test_list_collaboration_tasks",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_list_collaboration_tasks()"
     },
     {
@@ -11259,7 +11259,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L602",
       "id": "test_api_routes_testcollaborationendpoints_test_get_task_not_found",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_get_task_not_found()"
     },
     {
@@ -11268,7 +11268,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L609",
       "id": "test_api_routes_testmultiagentpipeline",
-      "community": 9,
+      "community": 8,
       "norm_label": "testmultiagentpipeline"
     },
     {
@@ -11277,7 +11277,7 @@
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L610",
       "id": "test_api_routes_testmultiagentpipeline_test_multi_mention_stream",
-      "community": 9,
+      "community": 8,
       "norm_label": ".test_multi_mention_stream()"
     },
     {
@@ -11285,7 +11285,7 @@
       "file_type": "rationale",
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L1",
-      "community": 9,
+      "community": 8,
       "norm_label": "api \u8def\u7531\u6d4b\u8bd5  \u4f7f\u7528 fastapi testclient \u6d4b\u8bd5 rest \u7aef\u70b9(mock llm)",
       "id": "test_api_routes_rationale_1"
     },
@@ -11294,7 +11294,7 @@
       "file_type": "rationale",
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L15",
-      "community": 9,
+      "community": 8,
       "norm_label": "\u5728\u6307\u5b9a\u4e34\u65f6\u76ee\u5f55\u4e0b\u521b\u5efa\u5168\u65b0\u7684 fastapi app(\u9694\u79bb\u6d4b\u8bd5)",
       "id": "test_api_routes_rationale_15"
     },
@@ -11303,7 +11303,7 @@
       "file_type": "rationale",
       "source_file": "backend/tests/test_api_routes.py",
       "source_location": "L67",
-      "community": 9,
+      "community": 8,
       "norm_label": "\u521b\u5efa fastapi testclient(\u5b8c\u5168\u9694\u79bb)",
       "id": "test_api_routes_rationale_67"
     },
@@ -11322,7 +11322,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/stage_run_views.py",
       "source_location": "L1",
       "id": "home_sun_openclaw_workspace_catown_backend_read_models_stage_run_views_py",
-      "community": 4,
+      "community": 3,
       "norm_label": "stage_run_views.py"
     },
     {
@@ -11331,7 +11331,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/stage_run_views.py",
       "source_location": "L8",
       "id": "stage_run_views_stagerunviewbuilder",
-      "community": 4,
+      "community": 3,
       "norm_label": "stagerunviewbuilder"
     },
     {
@@ -11340,7 +11340,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/stage_run_views.py",
       "source_location": "L9",
       "id": "stage_run_views_stagerunviewbuilder_init",
-      "community": 4,
+      "community": 3,
       "norm_label": ".__init__()"
     },
     {
@@ -11349,7 +11349,7 @@
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/stage_run_views.py",
       "source_location": "L13",
       "id": "stage_run_views_stagerunviewbuilder_build_stage_run_detail",
-      "community": 4,
+      "community": 3,
       "norm_label": ".build_stage_run_detail()"
     },
     {
@@ -11357,9 +11357,90 @@
       "file_type": "rationale",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/stage_run_views.py",
       "source_location": "L1",
-      "id": "stage_run_views_rationale_1",
-      "community": 4,
-      "norm_label": "read-model builder for v2 stage-run detail responses."
+      "community": 3,
+      "norm_label": "read-model builder for v2 stage-run detail responses.",
+      "id": "stage_run_views_rationale_1"
+    },
+    {
+      "label": "serializers.py",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L1",
+      "id": "home_sun_openclaw_workspace_catown_backend_read_models_serializers_py",
+      "community": 3,
+      "norm_label": "serializers.py"
+    },
+    {
+      "label": "ProjectSerializer",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L9",
+      "id": "serializers_projectserializer",
+      "community": 3,
+      "norm_label": "projectserializer"
+    },
+    {
+      "label": ".__init__()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L10",
+      "id": "serializers_projectserializer_init",
+      "community": 3,
+      "norm_label": ".__init__()"
+    },
+    {
+      "label": ".serialize_project()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L13",
+      "id": "serializers_projectserializer_serialize_project",
+      "community": 3,
+      "norm_label": ".serialize_project()"
+    },
+    {
+      "label": ".serialize_asset()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L36",
+      "id": "serializers_projectserializer_serialize_asset",
+      "community": 3,
+      "norm_label": ".serialize_asset()"
+    },
+    {
+      "label": ".serialize_decision()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L55",
+      "id": "serializers_projectserializer_serialize_decision",
+      "community": 3,
+      "norm_label": ".serialize_decision()"
+    },
+    {
+      "label": ".serialize_event()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L74",
+      "id": "serializers_projectserializer_serialize_event",
+      "community": 3,
+      "norm_label": ".serialize_event()"
+    },
+    {
+      "label": ".serialize_stage_run()",
+      "file_type": "code",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L88",
+      "id": "serializers_projectserializer_serialize_stage_run",
+      "community": 3,
+      "norm_label": ".serialize_stage_run()"
+    },
+    {
+      "label": "Serializer helpers for project-first v2 responses.",
+      "file_type": "rationale",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L1",
+      "id": "serializers_rationale_1",
+      "community": 3,
+      "norm_label": "serializer helpers for project-first v2 responses."
     },
     {
       "label": "project_views.py",
@@ -11475,7 +11556,7 @@
       "source_file": "",
       "source_location": "",
       "id": "base",
-      "community": 0,
+      "community": 3,
       "norm_label": "base"
     },
     {
@@ -11502,7 +11583,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L1",
       "id": "backend_models_database_py",
-      "community": 0,
+      "community": 3,
       "norm_label": "database.py"
     },
     {
@@ -11520,7 +11601,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L48",
       "id": "database_system_prompt",
-      "community": 0,
+      "community": 3,
       "norm_label": "system_prompt()"
     },
     {
@@ -11619,7 +11700,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L291",
       "id": "database_asset",
-      "community": 4,
+      "community": 3,
       "norm_label": "asset"
     },
     {
@@ -11628,7 +11709,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L319",
       "id": "database_decision",
-      "community": 4,
+      "community": 3,
       "norm_label": "decision"
     },
     {
@@ -11637,7 +11718,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L346",
       "id": "database_stagerun",
-      "community": 4,
+      "community": 3,
       "norm_label": "stagerun"
     },
     {
@@ -11646,7 +11727,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L370",
       "id": "database_assetlink",
-      "community": 0,
+      "community": 3,
       "norm_label": "assetlink"
     },
     {
@@ -11655,7 +11736,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L382",
       "id": "database_decisionasset",
-      "community": 0,
+      "community": 3,
       "norm_label": "decisionasset"
     },
     {
@@ -11664,7 +11745,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L393",
       "id": "database_stagerunasset",
-      "community": 0,
+      "community": 3,
       "norm_label": "stagerunasset"
     },
     {
@@ -11673,7 +11754,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L404",
       "id": "database_init_database",
-      "community": 0,
+      "community": 3,
       "norm_label": "init_database()"
     },
     {
@@ -11682,7 +11763,7 @@
       "source_file": "backend/models/database.py",
       "source_location": "L412",
       "id": "database_get_db",
-      "community": 0,
+      "community": 3,
       "norm_label": "get_db()"
     },
     {
@@ -12726,7 +12807,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L1",
       "id": "tests_test_frontend_py",
-      "community": 3,
+      "community": 4,
       "norm_label": "test_frontend.py"
     },
     {
@@ -12735,7 +12816,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L29",
       "id": "test_frontend_client",
-      "community": 3,
+      "community": 4,
       "norm_label": "client()"
     },
     {
@@ -12744,7 +12825,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L50",
       "id": "test_frontend_sample_project",
-      "community": 3,
+      "community": 4,
       "norm_label": "sample_project()"
     },
     {
@@ -12753,7 +12834,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L64",
       "id": "test_frontend_sample_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": "sample_pipeline()"
     },
     {
@@ -12762,7 +12843,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L90",
       "id": "test_frontend_teststaticpage",
-      "community": 3,
+      "community": 4,
       "norm_label": "teststaticpage"
     },
     {
@@ -12771,7 +12852,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L93",
       "id": "test_frontend_teststaticpage_test_index_returns_200",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_index_returns_200()"
     },
     {
@@ -12780,7 +12861,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L96",
       "id": "test_frontend_teststaticpage_test_index_is_html",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_index_is_html()"
     },
     {
@@ -12789,7 +12870,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L99",
       "id": "test_frontend_teststaticpage_test_contains_title",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_title()"
     },
     {
@@ -12798,7 +12879,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L102",
       "id": "test_frontend_teststaticpage_test_contains_sidebar",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_sidebar()"
     },
     {
@@ -12807,7 +12888,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L105",
       "id": "test_frontend_teststaticpage_test_contains_message_input",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_message_input()"
     },
     {
@@ -12816,7 +12897,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L108",
       "id": "test_frontend_teststaticpage_test_contains_pipeline_dashboard",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_pipeline_dashboard()"
     },
     {
@@ -12825,7 +12906,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L111",
       "id": "test_frontend_teststaticpage_test_contains_agent_status_bar",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_agent_status_bar()"
     },
     {
@@ -12834,7 +12915,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L114",
       "id": "test_frontend_teststaticpage_test_contains_side_panel",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_side_panel()"
     },
     {
@@ -12843,7 +12924,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L117",
       "id": "test_frontend_teststaticpage_test_contains_websocket_config",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_websocket_config()"
     },
     {
@@ -12852,7 +12933,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L120",
       "id": "test_frontend_teststaticpage_test_contains_markdown_renderer",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_markdown_renderer()"
     },
     {
@@ -12861,7 +12942,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L123",
       "id": "test_frontend_teststaticpage_test_contains_highlight_js",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_highlight_js()"
     },
     {
@@ -12870,7 +12951,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L126",
       "id": "test_frontend_teststaticpage_test_contains_tailwind",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_tailwind()"
     },
     {
@@ -12879,7 +12960,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L129",
       "id": "test_frontend_teststaticpage_test_contains_font_awesome",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_contains_font_awesome()"
     },
     {
@@ -12888,7 +12969,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L137",
       "id": "test_frontend_testprojectsapi",
-      "community": 3,
+      "community": 4,
       "norm_label": "testprojectsapi"
     },
     {
@@ -12897,7 +12978,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L140",
       "id": "test_frontend_testprojectsapi_test_list_projects",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_list_projects()"
     },
     {
@@ -12906,7 +12987,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L145",
       "id": "test_frontend_testprojectsapi_test_create_project",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_create_project()"
     },
     {
@@ -12915,7 +12996,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L154",
       "id": "test_frontend_testprojectsapi_test_get_project_detail",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_get_project_detail()"
     },
     {
@@ -12924,7 +13005,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L159",
       "id": "test_frontend_testprojectsapi_test_delete_project",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_delete_project()"
     },
     {
@@ -12933,7 +13014,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L164",
       "id": "test_frontend_testprojectsapi_test_project_has_chatroom_id",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_project_has_chatroom_id()"
     },
     {
@@ -12942,7 +13023,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L174",
       "id": "test_frontend_testagentsapi",
-      "community": 3,
+      "community": 4,
       "norm_label": "testagentsapi"
     },
     {
@@ -12951,7 +13032,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L177",
       "id": "test_frontend_testagentsapi_test_list_agents",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_list_agents()"
     },
     {
@@ -12960,7 +13041,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L184",
       "id": "test_frontend_testagentsapi_test_agents_have_required_fields",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_agents_have_required_fields()"
     },
     {
@@ -12969,7 +13050,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L189",
       "id": "test_frontend_testagentsapi_test_pipeline_roles_present",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pipeline_roles_present()"
     },
     {
@@ -12978,7 +13059,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L194",
       "id": "test_frontend_testagentsapi_test_agent_has_role_field",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_agent_has_role_field()"
     },
     {
@@ -12987,7 +13068,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L203",
       "id": "test_frontend_testmessagesapi",
-      "community": 3,
+      "community": 4,
       "norm_label": "testmessagesapi"
     },
     {
@@ -12996,7 +13077,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L206",
       "id": "test_frontend_testmessagesapi_test_load_messages",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_load_messages()"
     },
     {
@@ -13005,7 +13086,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L212",
       "id": "test_frontend_testmessagesapi_test_send_user_message",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_send_user_message()"
     },
     {
@@ -13014,7 +13095,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L221",
       "id": "test_frontend_testmessagesapi_test_message_persists",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_message_persists()"
     },
     {
@@ -13023,7 +13104,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L235",
       "id": "test_frontend_testpipelinedashboard",
-      "community": 3,
+      "community": 4,
       "norm_label": "testpipelinedashboard"
     },
     {
@@ -13032,7 +13113,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L238",
       "id": "test_frontend_testpipelinedashboard_test_list_pipelines",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_list_pipelines()"
     },
     {
@@ -13041,7 +13122,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L241",
       "id": "test_frontend_testpipelinedashboard_test_create_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_create_pipeline()"
     },
     {
@@ -13050,7 +13131,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L245",
       "id": "test_frontend_testpipelinedashboard_test_get_pipeline_detail",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_get_pipeline_detail()"
     },
     {
@@ -13059,7 +13140,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L252",
       "id": "test_frontend_testpipelinedashboard_test_start_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_start_pipeline()"
     },
     {
@@ -13068,7 +13149,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L259",
       "id": "test_frontend_testpipelinedashboard_test_pause_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pause_pipeline()"
     },
     {
@@ -13077,7 +13158,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L267",
       "id": "test_frontend_testpipelinedashboard_test_resume_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_resume_pipeline()"
     },
     {
@@ -13086,7 +13167,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L274",
       "id": "test_frontend_testpipelinedashboard_test_approve_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_approve_pipeline()"
     },
     {
@@ -13095,7 +13176,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L284",
       "id": "test_frontend_testpipelinedashboard_test_reject_pipeline",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_reject_pipeline()"
     },
     {
@@ -13104,7 +13185,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L295",
       "id": "test_frontend_testpipelinedashboard_test_pipeline_stages_order",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pipeline_stages_order()"
     },
     {
@@ -13113,7 +13194,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L304",
       "id": "test_frontend_testpipelinedashboard_test_pipeline_stage_has_agent",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pipeline_stage_has_agent()"
     },
     {
@@ -13122,7 +13203,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L317",
       "id": "test_frontend_testpipelinemessagesartifacts",
-      "community": 3,
+      "community": 4,
       "norm_label": "testpipelinemessagesartifacts"
     },
     {
@@ -13131,7 +13212,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L320",
       "id": "test_frontend_testpipelinemessagesartifacts_test_pipeline_messages_endpoint",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pipeline_messages_endpoint()"
     },
     {
@@ -13140,7 +13221,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L325",
       "id": "test_frontend_testpipelinemessagesartifacts_test_pipeline_artifacts_endpoint",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_pipeline_artifacts_endpoint()"
     },
     {
@@ -13149,7 +13230,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L330",
       "id": "test_frontend_testpipelinemessagesartifacts_test_instruct_agent",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_instruct_agent()"
     },
     {
@@ -13158,7 +13239,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L346",
       "id": "test_frontend_testconfigapi",
-      "community": 3,
+      "community": 4,
       "norm_label": "testconfigapi"
     },
     {
@@ -13167,7 +13248,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L349",
       "id": "test_frontend_testconfigapi_test_get_config",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_get_config()"
     },
     {
@@ -13176,7 +13257,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L355",
       "id": "test_frontend_testconfigapi_test_config_has_expected_keys",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_config_has_expected_keys()"
     },
     {
@@ -13185,7 +13266,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L360",
       "id": "test_frontend_testconfigapi_test_get_effective_llm_configs",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_get_effective_llm_configs()"
     },
     {
@@ -13194,7 +13275,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L364",
       "id": "test_frontend_testconfigapi_test_update_global_config",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_update_global_config()"
     },
     {
@@ -13203,7 +13284,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L375",
       "id": "test_frontend_testconfigapi_test_reload_config",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_reload_config()"
     },
     {
@@ -13212,7 +13293,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L383",
       "id": "test_frontend_testwebsocket",
-      "community": 3,
+      "community": 4,
       "norm_label": "testwebsocket"
     },
     {
@@ -13221,7 +13302,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L386",
       "id": "test_frontend_testwebsocket_test_ws_connect",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_ws_connect()"
     },
     {
@@ -13230,7 +13311,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L390",
       "id": "test_frontend_testwebsocket_test_ws_join_room",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_ws_join_room()"
     },
     {
@@ -13239,7 +13320,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L396",
       "id": "test_frontend_testwebsocket_test_ws_broadcast_on_message",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_ws_broadcast_on_message()"
     },
     {
@@ -13248,7 +13329,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L417",
       "id": "test_frontend_testcollaborationstatus",
-      "community": 3,
+      "community": 4,
       "norm_label": "testcollaborationstatus"
     },
     {
@@ -13257,7 +13338,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L420",
       "id": "test_frontend_testcollaborationstatus_test_collaboration_status_endpoint",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_collaboration_status_endpoint()"
     },
     {
@@ -13266,7 +13347,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L431",
       "id": "test_frontend_testssestreaming",
-      "community": 3,
+      "community": 4,
       "norm_label": "testssestreaming"
     },
     {
@@ -13275,7 +13356,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L434",
       "id": "test_frontend_testssestreaming_test_stream_endpoint_exists",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_stream_endpoint_exists()"
     },
     {
@@ -13284,7 +13365,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L443",
       "id": "test_frontend_testssestreaming_test_sync_fallback_works",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_sync_fallback_works()"
     },
     {
@@ -13293,7 +13374,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L457",
       "id": "test_frontend_testerrorhandling",
-      "community": 3,
+      "community": 4,
       "norm_label": "testerrorhandling"
     },
     {
@@ -13302,7 +13383,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L460",
       "id": "test_frontend_testerrorhandling_test_invalid_pipeline_id",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_invalid_pipeline_id()"
     },
     {
@@ -13311,7 +13392,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L464",
       "id": "test_frontend_testerrorhandling_test_invalid_project_id",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_invalid_project_id()"
     },
     {
@@ -13320,7 +13401,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L468",
       "id": "test_frontend_testerrorhandling_test_create_project_empty_name",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_create_project_empty_name()"
     },
     {
@@ -13329,7 +13410,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L472",
       "id": "test_frontend_testerrorhandling_test_send_message_no_chatroom",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_send_message_no_chatroom()"
     },
     {
@@ -13338,7 +13419,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L481",
       "id": "test_frontend_testerrorhandling_test_instruct_invalid_agent",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_instruct_invalid_agent()"
     },
     {
@@ -13347,7 +13428,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L488",
       "id": "test_frontend_testerrorhandling_test_start_pipeline_twice",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_start_pipeline_twice()"
     },
     {
@@ -13356,7 +13437,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L502",
       "id": "test_frontend_testhealthstatus",
-      "community": 3,
+      "community": 4,
       "norm_label": "testhealthstatus"
     },
     {
@@ -13365,7 +13446,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L505",
       "id": "test_frontend_testhealthstatus_test_status_endpoint",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_status_endpoint()"
     },
     {
@@ -13374,7 +13455,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L508",
       "id": "test_frontend_testhealthstatus_test_status_is_dict",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_status_is_dict()"
     },
     {
@@ -13383,7 +13464,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L518",
       "id": "test_frontend_testtoolsregistry",
-      "community": 3,
+      "community": 4,
       "norm_label": "testtoolsregistry"
     },
     {
@@ -13392,7 +13473,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L521",
       "id": "test_frontend_testtoolsregistry_test_list_tools",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_list_tools()"
     },
     {
@@ -13401,7 +13482,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L529",
       "id": "test_frontend_testtoolsregistry_test_tools_have_names",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_tools_have_names()"
     },
     {
@@ -13410,7 +13491,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L539",
       "id": "test_frontend_testfrontendworkflow",
-      "community": 3,
+      "community": 4,
       "norm_label": "testfrontendworkflow"
     },
     {
@@ -13419,7 +13500,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L542",
       "id": "test_frontend_testfrontendworkflow_test_full_dashboard_workflow",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_full_dashboard_workflow()"
     },
     {
@@ -13428,7 +13509,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L626",
       "id": "test_frontend_testratelimiting",
-      "community": 3,
+      "community": 4,
       "norm_label": "testratelimiting"
     },
     {
@@ -13437,7 +13518,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L632",
       "id": "test_frontend_testratelimiting_test_rate_limiter_class",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_rate_limiter_class()"
     },
     {
@@ -13446,7 +13527,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L643",
       "id": "test_frontend_testratelimiting_test_rate_limiter_window_expiry",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_rate_limiter_window_expiry()"
     },
     {
@@ -13455,7 +13536,7 @@
       "source_file": "tests/test_frontend.py",
       "source_location": "L653",
       "id": "test_frontend_testratelimiting_test_disabled_by_default",
-      "community": 3,
+      "community": 4,
       "norm_label": ".test_disabled_by_default()"
     },
     {
@@ -13463,7 +13544,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L1",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend e2e tests \u2014 catown pipeline dashboard =================================",
       "id": "test_frontend_rationale_1"
     },
@@ -13472,7 +13553,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L30",
-      "community": 3,
+      "community": 4,
       "norm_label": "shared testclient backed by the real fastapi app.     uses isolated tmp db and c",
       "id": "test_frontend_rationale_30"
     },
@@ -13481,7 +13562,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L51",
-      "community": 3,
+      "community": 4,
       "norm_label": "create a throwaway project for tests that need one.",
       "id": "test_frontend_rationale_51"
     },
@@ -13490,7 +13571,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L65",
-      "community": 3,
+      "community": 4,
       "norm_label": "create a pipeline linked to the sample project.",
       "id": "test_frontend_rationale_65"
     },
@@ -13499,7 +13580,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L91",
-      "community": 3,
+      "community": 4,
       "norm_label": "verify the frontend html is served and contains critical elements.",
       "id": "test_frontend_rationale_91"
     },
@@ -13508,7 +13589,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L138",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend sidebar loads projects, creates rooms, selects them.",
       "id": "test_frontend_rationale_138"
     },
@@ -13517,7 +13598,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L165",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend uses chatroom_id to load messages.",
       "id": "test_frontend_rationale_165"
     },
@@ -13526,7 +13607,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L175",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend renders agent chips and @mention dropdown from this endpoint.",
       "id": "test_frontend_rationale_175"
     },
@@ -13535,7 +13616,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L204",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend loads and sends messages via these endpoints.",
       "id": "test_frontend_rationale_204"
     },
@@ -13544,7 +13625,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L236",
-      "community": 3,
+      "community": 4,
       "norm_label": "tests for pipeline tab \u2014 create, start, pause, resume, approve.",
       "id": "test_frontend_rationale_236"
     },
@@ -13553,7 +13634,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L275",
-      "community": 3,
+      "community": 4,
       "norm_label": "approve requires the first stage to be blocked (manual gate).         without ll",
       "id": "test_frontend_rationale_275"
     },
@@ -13562,7 +13643,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L285",
-      "community": 3,
+      "community": 4,
       "norm_label": "reject requires a blocked stage. accept 400 when no llm available.",
       "id": "test_frontend_rationale_285"
     },
@@ -13571,7 +13652,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L318",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend shows agent messages and artifacts in pipeline tab.",
       "id": "test_frontend_rationale_318"
     },
@@ -13580,7 +13661,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L331",
-      "community": 3,
+      "community": 4,
       "norm_label": "instruct needs an active run. start pipeline first, then send instruction.",
       "id": "test_frontend_rationale_331"
     },
@@ -13589,7 +13670,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L347",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend config tab loads and saves llm configuration.",
       "id": "test_frontend_rationale_347"
     },
@@ -13598,7 +13679,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L384",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend connects to websocket for real-time updates.",
       "id": "test_frontend_rationale_384"
     },
@@ -13607,7 +13688,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L418",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend collab tab shows collaboration state.",
       "id": "test_frontend_rationale_418"
     },
@@ -13616,7 +13697,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L432",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend falls back to sse streaming for agent responses.",
       "id": "test_frontend_rationale_432"
     },
@@ -13625,7 +13706,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L444",
-      "community": 3,
+      "community": 4,
       "norm_label": "when sse fails, frontend falls back to sync endpoint.",
       "id": "test_frontend_rationale_444"
     },
@@ -13634,7 +13715,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L458",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend must handle these gracefully.",
       "id": "test_frontend_rationale_458"
     },
@@ -13643,7 +13724,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L473",
-      "community": 3,
+      "community": 4,
       "norm_label": "sending to non-existent chatroom \u2014 backend may return 200 or error.",
       "id": "test_frontend_rationale_473"
     },
@@ -13652,7 +13733,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L503",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend checks /api/status on load to confirm backend is ready.",
       "id": "test_frontend_rationale_503"
     },
@@ -13661,7 +13742,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L519",
-      "community": 3,
+      "community": 4,
       "norm_label": "frontend logs available tools on init.",
       "id": "test_frontend_rationale_519"
     },
@@ -13670,7 +13751,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L540",
-      "community": 3,
+      "community": 4,
       "norm_label": "simulates a complete user interaction sequence from the browser.",
       "id": "test_frontend_rationale_540"
     },
@@ -13679,7 +13760,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L543",
-      "community": 3,
+      "community": 4,
       "norm_label": "simulate: open page \u2192 load agents \u2192 create room \u2192 send msg \u2192         create pipe",
       "id": "test_frontend_rationale_543"
     },
@@ -13688,7 +13769,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L627",
-      "community": 3,
+      "community": 4,
       "norm_label": "rate limiting is disabled by default (rate_limit_max=0).     these tests verify",
       "id": "test_frontend_rationale_627"
     },
@@ -13697,7 +13778,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L633",
-      "community": 3,
+      "community": 4,
       "norm_label": "unit test: ratelimiter logic works correctly.",
       "id": "test_frontend_rationale_633"
     },
@@ -13706,7 +13787,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L644",
-      "community": 3,
+      "community": 4,
       "norm_label": "rate limiter resets after window expires.",
       "id": "test_frontend_rationale_644"
     },
@@ -13715,7 +13796,7 @@
       "file_type": "rationale",
       "source_file": "tests/test_frontend.py",
       "source_location": "L654",
-      "community": 3,
+      "community": 4,
       "norm_label": "with rate_limit_max=0 (default), requests are never blocked.",
       "id": "test_frontend_rationale_654"
     },
@@ -14417,7 +14498,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/bootstrap_stage_executor.py",
       "source_location": "L12",
-      "community": 4,
+      "community": 3,
       "norm_label": "minimal execution contract for stage executors under the new kernel.",
       "id": "bootstrap_stage_executor_rationale_12"
     },
@@ -14426,7 +14507,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/bootstrap_stage_executor.py",
       "source_location": "L22",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns the scaffold generation path until a real runtime replaces it.",
       "id": "bootstrap_stage_executor_rationale_22"
     },
@@ -14948,7 +15029,7 @@
       "file_type": "rationale",
       "source_file": "backend/execution/bootstrap_stage_executor.py",
       "source_location": "L10",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns the scaffold generation path until a real runtime replaces it.",
       "id": "bootstrap_stage_executor_rationale_10"
     },
@@ -15110,7 +15191,7 @@
       "file_type": "rationale",
       "source_file": "backend/orchestration/project_flow_coordinator.py",
       "source_location": "L9",
-      "community": 4,
+      "community": 3,
       "norm_label": "owns stage-run execution progression so service routes stay thinner.",
       "id": "project_flow_coordinator_rationale_9"
     },
@@ -26133,7 +26214,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L22",
+      "source_location": "L23",
       "weight": 1.0,
       "_src": "home_sun_openclaw_workspace_catown_backend_services_project_service_py",
       "_tgt": "project_service_projectservice",
@@ -26145,7 +26226,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L27",
+      "source_location": "L28",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_init",
@@ -26157,7 +26238,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L31",
+      "source_location": "L32",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_slugify",
@@ -26169,7 +26250,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L40",
+      "source_location": "L41",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_create_project",
@@ -26181,7 +26262,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L85",
+      "source_location": "L86",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_list_projects_v2",
@@ -26193,7 +26274,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L88",
+      "source_location": "L89",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_get_project_or_404",
@@ -26205,7 +26286,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L94",
+      "source_location": "L95",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_update_project",
@@ -26217,7 +26298,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L113",
+      "source_location": "L114",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_get_pending_decisions",
@@ -26229,7 +26310,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L116",
+      "source_location": "L117",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_resolve_decision",
@@ -26241,7 +26322,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L141",
+      "source_location": "L142",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_next_stage_run_index",
@@ -26253,7 +26334,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L150",
+      "source_location": "L151",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_continue_project",
@@ -26265,7 +26346,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L159",
+      "source_location": "L160",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_queue_stage_run",
@@ -26277,7 +26358,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L191",
+      "source_location": "L192",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_stage_phase",
@@ -26289,7 +26370,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L203",
+      "source_location": "L204",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_link_stage_run_asset",
@@ -26301,7 +26382,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L212",
+      "source_location": "L213",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_link_decision_asset",
@@ -26313,7 +26394,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L221",
+      "source_location": "L222",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_link_asset_dependency",
@@ -26325,7 +26406,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L224",
+      "source_location": "L225",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_sync_stage_inputs_for_stage",
@@ -26337,7 +26418,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L240",
+      "source_location": "L241",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_build_dashboard",
@@ -26349,7 +26430,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L243",
+      "source_location": "L244",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_build_project_overview",
@@ -26361,7 +26442,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L246",
+      "source_location": "L247",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_project",
@@ -26373,7 +26454,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L269",
+      "source_location": "L250",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_build_release_readiness",
@@ -26385,7 +26466,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L294",
+      "source_location": "L275",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_recommended_decision_action",
@@ -26397,7 +26478,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L302",
+      "source_location": "L283",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_stage_asset_links",
@@ -26409,7 +26490,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L321",
+      "source_location": "L302",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_decision_asset_links",
@@ -26421,7 +26502,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L340",
+      "source_location": "L321",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_asset_dependencies",
@@ -26433,7 +26514,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L364",
+      "source_location": "L345",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_asset",
@@ -26445,7 +26526,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L383",
+      "source_location": "L348",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_decision",
@@ -26457,7 +26538,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L402",
+      "source_location": "L351",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_build_stage_run_detail",
@@ -26469,7 +26550,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L405",
+      "source_location": "L354",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_list_stage_run_events",
@@ -26481,7 +26562,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L413",
+      "source_location": "L362",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_append_stage_run_event",
@@ -26493,7 +26574,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L432",
+      "source_location": "L381",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_add_stage_run_instruction",
@@ -26505,7 +26586,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L444",
+      "source_location": "L393",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_event",
@@ -26517,7 +26598,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L458",
+      "source_location": "L396",
       "weight": 1.0,
       "_src": "project_service_projectservice",
       "_tgt": "project_service_projectservice_serialize_stage_run",
@@ -26676,10 +26757,22 @@
       "source_location": "L18",
       "weight": 0.8,
       "_src": "project_service_projectservice",
-      "_tgt": "stage_run_views_stagerunviewbuilder",
+      "_tgt": "serializers_projectserializer",
       "source": "project_service_projectservice",
-      "target": "stage_run_views_stagerunviewbuilder",
+      "target": "serializers_projectserializer",
       "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
+      "source_location": "L18",
+      "weight": 0.8,
+      "_src": "project_service_projectservice",
+      "_tgt": "stage_run_views_stagerunviewbuilder",
+      "confidence_score": 0.5,
+      "source": "project_service_projectservice",
+      "target": "stage_run_views_stagerunviewbuilder"
     },
     {
       "relation": "uses",
@@ -26697,7 +26790,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L54",
+      "source_location": "L55",
       "weight": 1.0,
       "_src": "project_service_projectservice_create_project",
       "_tgt": "project_service_projectservice_slugify",
@@ -26709,7 +26802,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L95",
+      "source_location": "L96",
       "weight": 1.0,
       "_src": "project_service_projectservice_update_project",
       "_tgt": "project_service_projectservice_get_project_or_404",
@@ -26721,7 +26814,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L125",
+      "source_location": "L126",
       "weight": 1.0,
       "_src": "project_service_projectservice_resolve_decision",
       "_tgt": "project_service_projectservice_get_project_or_404",
@@ -26733,7 +26826,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L151",
+      "source_location": "L152",
       "weight": 1.0,
       "_src": "project_service_projectservice_continue_project",
       "_tgt": "project_service_projectservice_get_project_or_404",
@@ -26745,7 +26838,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L179",
+      "source_location": "L180",
       "weight": 1.0,
       "_src": "project_service_projectservice_queue_stage_run",
       "_tgt": "project_service_projectservice_next_stage_run_index",
@@ -26757,19 +26850,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L460",
-      "weight": 1.0,
-      "_src": "project_service_projectservice_serialize_stage_run",
-      "_tgt": "project_service_projectservice_stage_phase",
-      "source": "project_service_projectservice_stage_phase",
-      "target": "project_service_projectservice_serialize_stage_run",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L238",
+      "source_location": "L239",
       "weight": 1.0,
       "_src": "project_service_projectservice_sync_stage_inputs_for_stage",
       "_tgt": "project_service_projectservice_link_stage_run_asset",
@@ -26781,19 +26862,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L378",
-      "weight": 1.0,
-      "_src": "project_service_projectservice_serialize_asset",
-      "_tgt": "project_service_projectservice_serialize_asset_dependencies",
-      "source": "project_service_projectservice_serialize_asset_dependencies",
-      "target": "project_service_projectservice_serialize_asset",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "confidence": "EXTRACTED",
-      "source_file": "/home/sun/.openclaw/workspace/catown/backend/services/project_service.py",
-      "source_location": "L436",
+      "source_location": "L385",
       "weight": 1.0,
       "_src": "project_service_projectservice_add_stage_run_instruction",
       "_tgt": "project_service_projectservice_append_stage_run_event",
@@ -52153,9 +52222,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_stagerunviewbuilder",
       "_tgt": "database_asset",
+      "confidence_score": 0.5,
       "source": "stage_run_views_stagerunviewbuilder",
-      "target": "database_asset",
-      "confidence_score": 0.5
+      "target": "database_asset"
     },
     {
       "relation": "uses",
@@ -52165,9 +52234,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_stagerunviewbuilder",
       "_tgt": "database_decision",
+      "confidence_score": 0.5,
       "source": "stage_run_views_stagerunviewbuilder",
-      "target": "database_decision",
-      "confidence_score": 0.5
+      "target": "database_decision"
     },
     {
       "relation": "uses",
@@ -52177,9 +52246,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_stagerunviewbuilder",
       "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
       "source": "stage_run_views_stagerunviewbuilder",
-      "target": "database_stagerun",
-      "confidence_score": 0.5
+      "target": "database_stagerun"
     },
     {
       "relation": "uses",
@@ -52189,9 +52258,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_stagerunviewbuilder",
       "_tgt": "database_stagerunasset",
+      "confidence_score": 0.5,
       "source": "stage_run_views_stagerunviewbuilder",
-      "target": "database_stagerunasset",
-      "confidence_score": 0.5
+      "target": "database_stagerunasset"
     },
     {
       "relation": "uses",
@@ -52201,9 +52270,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_rationale_1",
       "_tgt": "database_asset",
+      "confidence_score": 0.5,
       "source": "stage_run_views_rationale_1",
-      "target": "database_asset",
-      "confidence_score": 0.5
+      "target": "database_asset"
     },
     {
       "relation": "uses",
@@ -52213,9 +52282,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_rationale_1",
       "_tgt": "database_decision",
+      "confidence_score": 0.5,
       "source": "stage_run_views_rationale_1",
-      "target": "database_decision",
-      "confidence_score": 0.5
+      "target": "database_decision"
     },
     {
       "relation": "uses",
@@ -52225,9 +52294,9 @@
       "weight": 0.8,
       "_src": "stage_run_views_rationale_1",
       "_tgt": "database_stagerun",
+      "confidence_score": 0.5,
       "source": "stage_run_views_rationale_1",
-      "target": "database_stagerun",
-      "confidence_score": 0.5
+      "target": "database_stagerun"
     },
     {
       "relation": "uses",
@@ -52237,8 +52306,224 @@
       "weight": 0.8,
       "_src": "stage_run_views_rationale_1",
       "_tgt": "database_stagerunasset",
+      "confidence_score": 0.5,
       "source": "stage_run_views_rationale_1",
-      "target": "database_stagerunasset",
+      "target": "database_stagerunasset"
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L9",
+      "weight": 1.0,
+      "_src": "home_sun_openclaw_workspace_catown_backend_read_models_serializers_py",
+      "_tgt": "serializers_projectserializer",
+      "source": "home_sun_openclaw_workspace_catown_backend_read_models_serializers_py",
+      "target": "serializers_projectserializer",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L1",
+      "weight": 1.0,
+      "_src": "serializers_rationale_1",
+      "_tgt": "home_sun_openclaw_workspace_catown_backend_read_models_serializers_py",
+      "source": "home_sun_openclaw_workspace_catown_backend_read_models_serializers_py",
+      "target": "serializers_rationale_1",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_init",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_init",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_serialize_project",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_serialize_project",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L36",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_serialize_asset",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_serialize_asset",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L55",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_serialize_decision",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_serialize_decision",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L74",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_serialize_event",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_serialize_event",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "method",
+      "confidence": "EXTRACTED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L88",
+      "weight": 1.0,
+      "_src": "serializers_projectserializer",
+      "_tgt": "serializers_projectserializer_serialize_stage_run",
+      "source": "serializers_projectserializer",
+      "target": "serializers_projectserializer_serialize_stage_run",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L5",
+      "weight": 0.8,
+      "_src": "serializers_projectserializer",
+      "_tgt": "audit_event",
+      "source": "serializers_projectserializer",
+      "target": "audit_event",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_projectserializer",
+      "_tgt": "database_asset",
+      "source": "serializers_projectserializer",
+      "target": "database_asset",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_projectserializer",
+      "_tgt": "database_decision",
+      "source": "serializers_projectserializer",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_projectserializer",
+      "_tgt": "database_project",
+      "source": "serializers_projectserializer",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_projectserializer",
+      "_tgt": "database_stagerun",
+      "source": "serializers_projectserializer",
+      "target": "database_stagerun",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L5",
+      "weight": 0.8,
+      "_src": "serializers_rationale_1",
+      "_tgt": "audit_event",
+      "source": "serializers_rationale_1",
+      "target": "audit_event",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_rationale_1",
+      "_tgt": "database_asset",
+      "source": "serializers_rationale_1",
+      "target": "database_asset",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_rationale_1",
+      "_tgt": "database_decision",
+      "source": "serializers_rationale_1",
+      "target": "database_decision",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_rationale_1",
+      "_tgt": "database_project",
+      "source": "serializers_rationale_1",
+      "target": "database_project",
+      "confidence_score": 0.5
+    },
+    {
+      "relation": "uses",
+      "confidence": "INFERRED",
+      "source_file": "/home/sun/.openclaw/workspace/catown/backend/read_models/serializers.py",
+      "source_location": "L6",
+      "weight": 0.8,
+      "_src": "serializers_rationale_1",
+      "_tgt": "database_stagerun",
+      "source": "serializers_rationale_1",
+      "target": "database_stagerun",
       "confidence_score": 0.5
     },
     {
