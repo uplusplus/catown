@@ -15,6 +15,15 @@ const api = axios.create({
   timeout: 15000,
 });
 
+function extractApiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 export async function createProject(payload: {
   name: string;
   one_line_vision?: string;
@@ -78,6 +87,10 @@ export async function getAsset(assetId: number): Promise<Asset> {
 }
 
 export async function continueProject(projectId: number): Promise<Record<string, unknown>> {
-  const { data } = await api.post<Record<string, unknown>>(`/projects/${projectId}/continue`);
-  return data;
+  try {
+    const { data } = await api.post<Record<string, unknown>>(`/projects/${projectId}/continue`);
+    return data;
+  } catch (error) {
+    throw new Error(extractApiErrorMessage(error, 'Failed to continue project'));
+  }
 }

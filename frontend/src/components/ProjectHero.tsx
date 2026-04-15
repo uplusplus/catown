@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader, Play, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Loader, Play, Scale, ShieldCheck } from 'lucide-react';
 
 import { formatRelative, titleize } from '../lib/format';
 import type { ProjectOverview } from '../types';
@@ -6,12 +6,14 @@ import type { ProjectOverview } from '../types';
 type Props = {
   overview: ProjectOverview;
   onContinue: () => void;
+  onReviewDecision: () => void;
   continuing: boolean;
   switchingProject?: boolean;
 };
 
-export function ProjectHero({ overview, onContinue, continuing, switchingProject = false }: Props) {
-  const { project, release_readiness: readiness } = overview;
+export function ProjectHero({ overview, onContinue, onReviewDecision, continuing, switchingProject = false }: Props) {
+  const { project, pending_decisions: pendingDecisions, release_readiness: readiness } = overview;
+  const hasPendingDecision = pendingDecisions.length > 0;
 
   return (
     <section className={`hero-shell panel-shell ${switchingProject ? 'is-switching-project' : ''}`}>
@@ -83,9 +85,24 @@ export function ProjectHero({ overview, onContinue, continuing, switchingProject
           </div>
         ) : null}
 
-        <button className="primary-cta" onClick={onContinue} type="button" disabled={continuing}>
-          <Play size={18} />
-          <span>{continuing ? 'Continuing...' : 'Continue Project'}</span>
+        {hasPendingDecision ? (
+          <div className="warning-card hero-guidance-card">
+            <Scale size={18} />
+            <div>
+              <strong>Decision required before continue</strong>
+              <p>{pendingDecisions[0]?.title || 'A pending decision is blocking project progress.'}</p>
+            </div>
+          </div>
+        ) : null}
+
+        <button
+          className={`primary-cta ${hasPendingDecision ? 'is-secondary' : ''}`}
+          onClick={hasPendingDecision ? onReviewDecision : onContinue}
+          type="button"
+          disabled={continuing}
+        >
+          {hasPendingDecision ? <Scale size={18} /> : <Play size={18} />}
+          <span>{continuing ? 'Continuing...' : hasPendingDecision ? 'Review Pending Decision' : 'Continue Project'}</span>
         </button>
       </div>
     </section>

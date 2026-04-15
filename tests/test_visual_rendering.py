@@ -158,6 +158,8 @@ class TestMissionBoardComposition:
         assert "Syncing mission board" in project_hero_source
         assert "Current stage" in project_hero_source
         assert "Release Readiness" in project_hero_source
+        assert "Decision required before continue" in project_hero_source
+        assert "Review Pending Decision" in project_hero_source
 
     def test_detail_rail_includes_loading_error_and_empty_guidance(self, detail_rail_source: str):
         for token in [
@@ -225,6 +227,8 @@ class TestDesignTokensAndStates:
             ".topbar-help-button",
             ".help-overlay",
             ".help-panel",
+            ".primary-cta.is-secondary",
+            ".notice-banner.is-warning",
         ]:
             assert selector in styles_source
 

@@ -12,6 +12,10 @@ import {
 } from '../api/client';
 import type { Asset, Decision, ProjectOverview, StageRun } from '../types';
 
+export type ContinueResult =
+  | { ok: true }
+  | { ok: false; reason: 'blocked_by_decision' | 'error'; message: string };
+
 export function useProjectBoardOverview() {
   const [projects, setProjects] = useState<ProjectOverview['project'][]>([]);
   const [overview, setOverview] = useState<ProjectOverview | null>(null);
@@ -83,14 +87,21 @@ export function useProjectBoardOverview() {
     }
   }, []);
 
-  const runContinue = useCallback(async (projectId: number) => {
+  const runContinue = useCallback(async (projectId: number): Promise<ContinueResult> => {
     setContinuing(true);
+    setError(null);
     try {
       await continueProject(projectId);
-      return true;
+      return { ok: true };
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to continue project');
-      return false;
+      const message = err instanceof Error ? err.message : 'Failed to continue project';
+      const blocked = message.toLowerCase().includes('pending decisions') || message.toLowerCase().includes('cannot continue yet');
+      setError(message);
+      return {
+        ok: false,
+        reason: blocked ? 'blocked_by_decision' : 'error',
+        message,
+      };
     } finally {
       setContinuing(false);
     }

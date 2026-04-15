@@ -1,7 +1,7 @@
 export type DetailLoadTarget = 'decision' | 'asset' | null;
 
 export type NoticeState = {
-  tone: 'success' | 'info';
+  tone: 'success' | 'info' | 'warning';
   message: string;
 } | null;
 

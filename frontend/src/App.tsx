@@ -163,8 +163,19 @@ function App() {
 
   async function handleContinue() {
     if (selectedProjectId == null) return;
-    const ok = await runContinue(selectedProjectId);
-    if (!ok) return;
+    const result = await runContinue(selectedProjectId);
+    if (!result.ok) {
+      if (result.reason === 'blocked_by_decision') {
+        const firstPendingDecisionId = overview?.pending_decisions[0]?.id ?? decisions.find((decision) => decision.status === 'pending')?.id ?? null;
+        if (firstPendingDecisionId != null) {
+          await handleSelectDecision(firstPendingDecisionId);
+        }
+        setNotice({ tone: 'warning', message: 'Continue is blocked by a pending decision. Review and resolve it first.' });
+        return;
+      }
+      setNotice({ tone: 'warning', message: result.message || 'Unable to continue the project right now.' });
+      return;
+    }
 
     const preferredStageId = await hydrateProject(selectedProjectId);
     resetForProject(preferredStageId);
@@ -232,6 +243,16 @@ function App() {
 
   const boardBusy = continuing || resolvingId != null;
 
+  function handleReviewPendingDecision() {
+    const firstPendingDecisionId = overview?.pending_decisions[0]?.id ?? decisions.find((decision) => decision.status === 'pending')?.id ?? null;
+    if (firstPendingDecisionId != null) {
+      void handleSelectDecision(firstPendingDecisionId);
+      setNotice({ tone: 'warning', message: 'This mission is waiting on a decision. Resolve it before continuing.' });
+      return;
+    }
+    setNotice({ tone: 'warning', message: 'No pending decision detail is available yet. Check the Decision Panel.' });
+  }
+
   return (
     <div className="app-shell">
       <div className="app-topbar">
@@ -286,7 +307,13 @@ function App() {
         <main className={`main-board ${boardBusy ? 'is-busy' : ''}`}>
           {boardReady && overview ? (
             <>
-              <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} switchingProject={switchingProject} />
+              <ProjectHero
+                overview={overview}
+                onContinue={handleContinue}
+                onReviewDecision={handleReviewPendingDecision}
+                continuing={continuing}
+                switchingProject={switchingProject}
+              />
               <NextActionStrip
                 action={overview.recommended_next_action}
                 blockingReason={overview.project.blocking_reason}
