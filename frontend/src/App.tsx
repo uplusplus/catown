@@ -17,7 +17,7 @@ import {
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
 import { DecisionPanel } from './components/DecisionPanel';
-import { DetailRail } from './components/DetailRail';
+import { DetailRail, type DetailFocus } from './components/DetailRail';
 import { NextActionStrip } from './components/NextActionStrip';
 import { ProjectHero } from './components/ProjectHero';
 import { ProjectRail } from './components/ProjectRail';
@@ -37,6 +37,7 @@ function App() {
   const [assetDetail, setAssetDetail] = useState<Asset | null>(null);
   const [selectedStageRunId, setSelectedStageRunId] = useState<number | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
+  const [detailFocus, setDetailFocus] = useState<DetailFocus>('stage');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [continuing, setContinuing] = useState(false);
@@ -76,6 +77,7 @@ function App() {
       setDecisionDetail(null);
       setAssetDetail(null);
       setSelectedEvent(null);
+      setDetailFocus('stage');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project board');
     }
@@ -104,7 +106,7 @@ function App() {
         if (cancelled) return;
         setStageDetail(detailData);
         setEvents(eventData);
-        setSelectedEvent(eventData[0] ?? null);
+        setSelectedEvent((current) => eventData.find((item) => item.id === current?.id) ?? eventData[0] ?? null);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Failed to load stage detail');
@@ -121,12 +123,13 @@ function App() {
 
   const detailProps = useMemo(
     () => ({
+      focus: detailFocus,
       stageDetail,
       decisionDetail,
       assetDetail,
       selectedEvent,
     }),
-    [assetDetail, decisionDetail, selectedEvent, stageDetail],
+    [assetDetail, decisionDetail, detailFocus, selectedEvent, stageDetail],
   );
 
   async function handleContinue() {
@@ -135,6 +138,7 @@ function App() {
     try {
       await continueProject(selectedProjectId);
       await hydrateProject(selectedProjectId);
+      setDetailFocus('stage');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to continue project');
     } finally {
@@ -153,6 +157,7 @@ function App() {
         await hydrateProject(selectedProjectId);
       }
       setDecisionDetail(await getDecision(decisionId));
+      setDetailFocus('decision');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resolve decision');
     } finally {
@@ -164,6 +169,8 @@ function App() {
     try {
       setDecisionDetail(await getDecision(decisionId));
       setAssetDetail(null);
+      setSelectedEvent(null);
+      setDetailFocus('decision');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load decision detail');
     }
@@ -173,9 +180,26 @@ function App() {
     try {
       setAssetDetail(await getAsset(assetId));
       setDecisionDetail(null);
+      setSelectedEvent(null);
+      setDetailFocus('asset');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load asset detail');
     }
+  }
+
+  function handleSelectStage(stageRunId: number) {
+    setSelectedStageRunId(stageRunId);
+    setDecisionDetail(null);
+    setAssetDetail(null);
+    setSelectedEvent(null);
+    setDetailFocus('stage');
+  }
+
+  function handleSelectEvent(event: EventItem) {
+    setSelectedEvent(event);
+    setDecisionDetail(null);
+    setAssetDetail(null);
+    setDetailFocus('event');
   }
 
   return (
@@ -213,7 +237,7 @@ function App() {
             <>
               <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} />
               <NextActionStrip action={overview.recommended_next_action} />
-              <StageLane stageRuns={stageRuns} selectedStageRunId={selectedStageRunId} onSelect={setSelectedStageRunId} />
+              <StageLane stageRuns={stageRuns} selectedStageRunId={selectedStageRunId} onSelect={handleSelectStage} />
               <section className="board-row two-up">
                 <DecisionPanel
                   decisions={decisions}
@@ -223,7 +247,7 @@ function App() {
                 />
                 <AssetPanel assets={assets} onSelect={handleSelectAsset} />
               </section>
-              <ActivityFeed events={events} />
+              <ActivityFeed events={events} selectedEventId={detailFocus === 'event' ? selectedEvent?.id ?? null : null} onSelect={handleSelectEvent} />
             </>
           ) : (
             <section className="panel-shell empty-board">

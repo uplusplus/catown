@@ -5,19 +5,22 @@ import { FileText, GitBranch, ListChecks, Workflow } from 'lucide-react';
 import { prettyJson, titleize } from '../lib/format';
 import type { Asset, Decision, EventItem, StageRunDetail } from '../types';
 
+export type DetailFocus = 'stage' | 'decision' | 'asset' | 'event';
+
 type Props = {
+  focus: DetailFocus;
   stageDetail: StageRunDetail | null;
   decisionDetail: Decision | null;
   assetDetail: Asset | null;
   selectedEvent: EventItem | null;
 };
 
-export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedEvent }: Props) {
+export function DetailRail({ focus, stageDetail, decisionDetail, assetDetail, selectedEvent }: Props) {
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
   let body: JSX.Element = <div className="empty-card">Select a stage, decision, asset, or event.</div>;
 
-  if (stageDetail) {
+  if (focus === 'stage' && stageDetail) {
     title = `${titleize(stageDetail.stage_run.stage_type)} Run`;
     icon = <Workflow size={18} />;
     body = (
@@ -27,9 +30,27 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
           <p>{titleize(stageDetail.stage_run.status)}</p>
           <small>{stageDetail.stage_run.summary || 'No stage summary yet.'}</small>
         </section>
+        <section className="detail-block detail-grid-block">
+          <div>
+            <label>Phase</label>
+            <strong>{titleize(stageDetail.stage_run.lifecycle.phase)}</strong>
+          </div>
+          <div>
+            <label>Inputs</label>
+            <strong>{stageDetail.summary.input_count}</strong>
+          </div>
+          <div>
+            <label>Outputs</label>
+            <strong>{stageDetail.summary.output_count}</strong>
+          </div>
+          <div>
+            <label>Events</label>
+            <strong>{stageDetail.summary.event_count}</strong>
+          </div>
+        </section>
         <section className="detail-block">
           <h4>Outputs</h4>
-          <ul>
+          <ul className="detail-list">
             {stageDetail.output_assets.map((asset) => (
               <li key={asset.id}>{asset.title || titleize(asset.asset_type)}</li>
             ))}
@@ -38,7 +59,7 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
         </section>
         <section className="detail-block">
           <h4>Decisions</h4>
-          <ul>
+          <ul className="detail-list">
             {stageDetail.decisions.map((decision) => (
               <li key={decision.id}>{decision.title}</li>
             ))}
@@ -49,7 +70,7 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
     );
   }
 
-  if (decisionDetail) {
+  if (focus === 'decision' && decisionDetail) {
     title = 'Decision Detail';
     icon = <ListChecks size={18} />;
     body = (
@@ -58,16 +79,42 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
           <h4>{decisionDetail.title}</h4>
           <p>{decisionDetail.context_summary || decisionDetail.requested_action || 'No context summary yet.'}</p>
         </section>
+        <section className="detail-block detail-grid-block">
+          <div>
+            <label>Status</label>
+            <strong>{titleize(decisionDetail.status)}</strong>
+          </div>
+          <div>
+            <label>Type</label>
+            <strong>{titleize(decisionDetail.decision_type)}</strong>
+          </div>
+          <div>
+            <label>Recommended</label>
+            <strong>{decisionDetail.recommended_option || 'None'}</strong>
+          </div>
+          <div>
+            <label>Resolved</label>
+            <strong>{decisionDetail.resolved_option || 'Pending'}</strong>
+          </div>
+        </section>
         <section className="detail-block">
-          <h4>Recommendation</h4>
-          <p>{decisionDetail.recommended_option || 'No recommended option.'}</p>
-          <small>{decisionDetail.impact_summary || 'No impact summary yet.'}</small>
+          <h4>Impact</h4>
+          <p>{decisionDetail.impact_summary || 'No impact summary yet.'}</p>
+        </section>
+        <section className="detail-block">
+          <h4>Alternative Options</h4>
+          <ul className="detail-list">
+            {decisionDetail.alternative_options.map((option) => (
+              <li key={option}>{option}</li>
+            ))}
+            {decisionDetail.alternative_options.length === 0 ? <li>No alternatives recorded.</li> : null}
+          </ul>
         </section>
       </div>
     );
   }
 
-  if (assetDetail) {
+  if (focus === 'asset' && assetDetail) {
     title = 'Asset Detail';
     icon = <FileText size={18} />;
     body = (
@@ -76,15 +123,47 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
           <h4>{assetDetail.title || titleize(assetDetail.asset_type)}</h4>
           <p>{assetDetail.summary || 'No asset summary yet.'}</p>
         </section>
+        <section className="detail-block detail-grid-block">
+          <div>
+            <label>Type</label>
+            <strong>{titleize(assetDetail.asset_type)}</strong>
+          </div>
+          <div>
+            <label>Version</label>
+            <strong>v{assetDetail.version}</strong>
+          </div>
+          <div>
+            <label>Status</label>
+            <strong>{titleize(assetDetail.status)}</strong>
+          </div>
+          <div>
+            <label>Current</label>
+            <strong>{assetDetail.is_current ? 'Yes' : 'No'}</strong>
+          </div>
+        </section>
         <section className="detail-block">
-          <h4>Markdown</h4>
+          <h4>Relationships</h4>
+          <ul className="detail-list">
+            {assetDetail.relationships?.upstream.map((link) => (
+              <li key={`up-${link.asset_id}`}>Upstream #{link.asset_id} - {titleize(link.relation_type)}</li>
+            ))}
+            {assetDetail.relationships?.downstream.map((link) => (
+              <li key={`down-${link.asset_id}`}>Downstream #{link.asset_id} - {titleize(link.relation_type)}</li>
+            ))}
+            {!assetDetail.relationships?.upstream.length && !assetDetail.relationships?.downstream.length ? (
+              <li>No asset relationships yet.</li>
+            ) : null}
+          </ul>
+        </section>
+        <section className="detail-block">
+          <h4>Content</h4>
           <pre>{assetDetail.content_markdown || prettyJson(assetDetail.content_json)}</pre>
         </section>
       </div>
     );
   }
 
-  if (selectedEvent) {
+  if (focus === 'event' && selectedEvent) {
     title = 'Event Detail';
     icon = <GitBranch size={18} />;
     body = (
@@ -92,6 +171,24 @@ export function DetailRail({ stageDetail, decisionDetail, assetDetail, selectedE
         <section className="detail-block">
           <h4>{titleize(selectedEvent.event_type)}</h4>
           <p>{selectedEvent.summary || 'No event summary yet.'}</p>
+        </section>
+        <section className="detail-block detail-grid-block">
+          <div>
+            <label>Stage</label>
+            <strong>{selectedEvent.stage_name ? titleize(selectedEvent.stage_name) : 'None'}</strong>
+          </div>
+          <div>
+            <label>Agent</label>
+            <strong>{selectedEvent.agent_name || 'System'}</strong>
+          </div>
+          <div>
+            <label>Stage Run</label>
+            <strong>{selectedEvent.stage_run_id ?? 'None'}</strong>
+          </div>
+          <div>
+            <label>Asset</label>
+            <strong>{selectedEvent.asset_id ?? 'None'}</strong>
+          </div>
         </section>
         <section className="detail-block">
           <h4>Payload</h4>

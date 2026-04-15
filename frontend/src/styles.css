@@ -197,7 +197,8 @@ button {
 }
 
 .project-card.is-active,
-.stage-card.is-active {
+.stage-card.is-active,
+.event-card.is-active {
   border-color: rgba(255, 122, 69, 0.55);
   background: linear-gradient(180deg, rgba(255, 122, 69, 0.12), rgba(255, 255, 255, 0.04));
 }
@@ -413,6 +414,39 @@ button {
   gap: 10px;
 }
 
+button.event-card {
+  cursor: pointer;
+}
+
+.detail-grid-block {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-grid-block label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--soft);
+}
+
+.detail-grid-block strong {
+  margin: 0;
+}
+
+.detail-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.detail-list li + li {
+  margin-top: 8px;
+}
+
 .event-card-top {
   gap: 10px;
 }
@@ -527,7 +561,8 @@ button {
 
   .hero-shell,
   .board-row.two-up,
-  .hero-summary-grid {
+  .hero-summary-grid,
+  .detail-grid-block {
     grid-template-columns: 1fr;
   }
 }
