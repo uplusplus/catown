@@ -1117,6 +1117,101 @@ Not from oversized color blocks or excessive visual dramatics.
 
 ---
 
+## Intervention queue
+
+The homepage should include a dedicated area for decisions that truly require human authority.
+
+This area should not behave like a notification center or a generic todo list.
+
+It should behave like a human intervention queue.
+
+Its message is:
+
+**the system has advanced as far as it safely can, and now it needs your decision**
+
+### What belongs here
+
+Only items that genuinely require user judgment should appear here, such as:
+
+- scope or direction decisions
+- release approvals
+- high-risk blocker tradeoffs
+- missing critical inputs
+- option selection where no safe automatic default exists
+- unresolved conflicts the system cannot adjudicate responsibly
+
+This queue should stay small and expensive.
+If it becomes a dump for ordinary updates, it loses authority.
+
+### What does not belong here
+
+Do not include:
+
+- routine status updates
+- low-risk reminders
+- actions the system can safely take itself
+- minor configuration choices with obvious defaults
+- generic event feed items
+
+### Core questions each intervention item should answer
+
+Every item should make four things clear:
+
+1. what the user is being asked to decide
+2. why that decision is needed now
+3. what the impact of delay or action will be
+4. how much effort the decision is likely to require
+
+### Recommended item structure
+
+Each intervention card should include:
+
+1. a plain-language decision title
+2. one short explanation of why the user is needed now
+3. a compact impact statement
+4. a lightweight effort indicator
+5. one main review or resolve entry
+6. one weaker context entry when needed
+
+The homepage should not expose raw approve or reject controls without context.
+The preferred pattern is to send the user into the centered task layer for the actual decision flow.
+
+### Naming direction
+
+This area should use strong system language, not weak inbox language.
+
+Good directions include:
+
+- `Needs your decision`
+- `Waiting on you`
+- `Your call`
+
+The Chinese direction discussed so far is:
+
+- `待你决断`
+
+### Priority strategy
+
+If multiple intervention items exist, the queue should prioritize them roughly by:
+
+1. blockers that stop current progress
+2. decisions that materially affect current-stage quality or direction
+3. lower-impact authorizations that still require explicit user approval
+
+The homepage should usually emphasize only the top 1 to 3 intervention items.
+Anything larger should compress into a deeper queue or dedicated review surface.
+
+### Visual intent
+
+The intervention queue should feel alert, but not alarmist.
+
+It should be noticeable enough that users know when it is their turn, but not so loud that it overpowers the homepage hero or the main action-focus module.
+
+Its role is not to create anxiety.
+Its role is to mark the boundary of system autonomy and hand decision authority back to the user with clarity.
+
+---
+
 ## Command entry model
 
 Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
