@@ -84,7 +84,7 @@
     - `/api/chatrooms/{id}/messages/stream`
   - 前端主问题不是“少量旧接口残留”，而是仍存在一整块 Pipeline Dashboard / chatroom 交互壳
   - 下一步改成两件事：
-    1. 先冻结 Mission Board 所需最小 `/api/v2/*` contract
+    1. 先冻结 Mission Board 所需最小 `/api/v2/*` contract（已落地：`docs/Mission-Board-Minimum-V2-Contract.md`）
     2. 新建 project-first 主视图，再逐步删除 pipeline/chatroom 主壳
 
 ---

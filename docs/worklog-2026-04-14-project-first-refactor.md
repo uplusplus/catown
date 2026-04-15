@@ -69,6 +69,7 @@
   - 保留有产品价值的交互块
   - 重建 project-first Mission Board
   - 让主视图围绕 `Project / StageRun / Decision / Asset / Event`
+- 进一步补充：已新增 `docs/Mission-Board-Minimum-V2-Contract.md`，冻结第一版 Mission Board 所需最小 `/api/v2/*` 字段面，避免前后端继续互相猜字段
 
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`
