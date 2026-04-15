@@ -106,11 +106,13 @@
        - [x] 为 project/stage 切换补更明确的局部 loading 语义，减少“整板一起忙碌”的反馈粒度
     3. Mission Board 交互收尾
        - [x] 定型 `ActivityFeed` 为 project-aware 聚合视图；当前先展示所选阶段事件切片，并用文案明确其项目语义
-       - [ ] 继续强化 `ProjectHero / NextActionStrip` 的信息优先级，减少重复信息和低价值文案
+       - [x] 继续强化 `ProjectHero / NextActionStrip` 的信息优先级，减少重复信息和低价值文案
        - [ ] 评估是否需要为 stage / event / asset 跳转补面包屑或上下文提示，降低 detail rail 迷失感
+       - 执行顺序：先收顶部 Hero/Next Action，再补测试锚点，再清文档旧主壳叙述，最后视需要补细粒度交互
     4. 前端测试与回归补强
        - [ ] 视新增交互补更多 Mission Board UI 状态断言，重点覆盖错误态、切换态、空数据态
        - [ ] 保持 `npm run build` + `tests/test_frontend.py` + `tests/test_visual_rendering.py` 为每轮前端改动的最低回归集
+       - 完成标准：顶部信息不重复、关键状态有测试锚点、TODO 前端剩余项继续减少、文档不再把当前主前端描述成旧 Pipeline Dashboard
 
 ---
 

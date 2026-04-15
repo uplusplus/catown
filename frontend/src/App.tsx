@@ -259,7 +259,10 @@ function App() {
           {boardReady && overview ? (
             <>
               <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} switchingProject={switchingProject} />
-              <NextActionStrip action={overview.recommended_next_action} />
+              <NextActionStrip
+                action={overview.recommended_next_action}
+                blockingReason={overview.project.blocking_reason}
+              />
               <StageLane
                 stageRuns={stageRuns}
                 selectedStageRunId={selectedStageRunId}

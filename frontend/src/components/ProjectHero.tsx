@@ -37,12 +37,12 @@ export function ProjectHero({ overview, onContinue, continuing, switchingProject
             <p>{project.current_focus || 'No focus summary yet.'}</p>
           </div>
           <div>
-            <label>Last movement</label>
-            <p>{formatRelative(project.last_activity_at)}</p>
+            <label>Current stage</label>
+            <p>{titleize(project.current_stage)}</p>
           </div>
           <div>
-            <label>Readiness</label>
-            <p>{titleize(readiness.status)}</p>
+            <label>Last movement</label>
+            <p>{formatRelative(project.last_activity_at)}</p>
           </div>
           <div>
             <label>Latest summary</label>
