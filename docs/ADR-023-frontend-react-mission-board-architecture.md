@@ -170,6 +170,42 @@ Then it can grow more controls.
 
 ---
 
+## Implementation plan
+
+### Phase 1: Foundation reset
+
+Already started:
+
+- convert `frontend/index.html` into the Vite shell
+- establish `frontend/src/` React/TypeScript entry structure
+- connect the first Mission Board read flow to `/api/v2/*`
+
+### Phase 2: Board interaction deepening
+
+Next focus:
+
+- deepen `DetailRail` so stage, decision, asset, and event modes are all genuinely useful
+- reduce `App.tsx` orchestration weight by moving state/query concerns into clearer frontend modules
+- improve empty states, loading states, and action-result feedback
+
+### Phase 3: Workflow completion
+
+Then:
+
+- tighten continue / resolve refresh behavior
+- decide whether the activity feed should remain stage-scoped or gain a dedicated project-level event aggregation path
+- align the frontend field usage against the frozen Mission Board contract
+
+### Phase 4: Test and delivery switch
+
+Finally:
+
+- rewrite `tests/test_frontend.py` around React Mission Board behavior instead of Pipeline Dashboard behavior
+- keep `npm run build` as the frontend release check
+- treat `frontend/dist/index.html` as the production root artifact served by the backend
+
+---
+
 ## One-line summary
 
 The frontend now officially moves to a React/Vite/TypeScript Mission Board organized around `Project / StageRun / Decision / Asset / Event`, with no compatibility-first commitment to the legacy Pipeline Dashboard.
