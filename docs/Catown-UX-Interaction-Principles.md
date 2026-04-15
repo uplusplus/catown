@@ -1212,6 +1212,115 @@ Its role is to mark the boundary of system autonomy and hand decision authority 
 
 ---
 
+## Stage spine
+
+The homepage should include a stage-progress region that behaves like a progression spine, not a generic timeline.
+
+Its purpose is to help the user quickly understand:
+
+- where the project currently sits in its progression structure
+- what major gates have already been crossed
+- what the current phase is blocked on or waiting for
+- what major gates are still ahead
+
+This area should express project growth structure, not historical exhaust.
+
+### What the stage spine is
+
+The stage spine is a structural progress view.
+It is not:
+
+- a raw event stream
+- a PM-style gantt or milestone chart
+- a checklist of micro-actions
+- a full process diagram
+
+It should feel like the backbone of the project's advancement.
+
+### What it should show
+
+The stage spine should focus on high-value structural signals:
+
+- major stage nodes
+- the current active stage
+- completed stages
+- blocked or waiting states
+- the next major gate
+
+### What it should avoid
+
+Do not overload it with:
+
+- small operational steps
+- long narrative explanations
+- timestamp-heavy history
+- many inline actions on each node
+- full event details
+
+### Recommended state model
+
+A simple state vocabulary is preferred.
+For the homepage view, stage nodes should usually map to one of:
+
+- `done`
+- `active`
+- `blocked`
+- `awaiting_decision`
+- `upcoming`
+
+This keeps the structure understandable at a glance.
+
+### Current-stage emphasis
+
+The current stage must be visually dominant within the spine.
+
+Users should immediately see where the project currently sits.
+
+The current node may carry slightly richer information than other nodes, such as:
+
+- stage name
+- current state
+- a short current objective
+- a blocker or decision pointer when relevant
+- a context or inspect entry
+
+Completed and future nodes should remain legible but clearly subordinate.
+
+### Orientation guidance
+
+For the homepage default state, a vertical or near-vertical spine is preferred over a broad horizontal roadmap.
+
+Why:
+
+- it supports stronger current-stage emphasis
+- it fits the homepage reading rhythm more naturally
+- it adapts better to responsive layouts
+- it avoids turning into a wide project-plan banner
+
+### Relationship to other modules
+
+The stage spine should stay distinct from the homepage hero and the event feed.
+
+- the hero explains the overall project situation
+- the stage spine explains where the project sits in its progression structure
+- the event feed explains what changed over time
+
+The spine provides structural position, not chronological narration.
+
+### Visual intent
+
+The spine should feel:
+
+- structured
+- calm
+- legible
+- current-stage centered
+- resistant to project-management-tool clichés
+
+It should help the user feel that the project is growing along a clear backbone, not dissolving into a stream of disconnected activity.
+
+---
+
 ## Command entry model
 
 Catown should support command-driven interaction, but the command entry should not feel like a dead text box.
