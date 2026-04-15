@@ -65,6 +65,27 @@
 - [x] 让 `routes/*_v2.py` 尽量只保留参数校验 + service 调用，减少 route 层重复查询/404 模式
   - `projects_v2.py` / `assets_v2.py` / `stage_runs_v2.py` / `decisions_v2.py` 已完成一轮收薄
 - [ ] 明确并冻结一版 v2 frontend contract，避免前端继续依赖 `/api/pipelines/*`
+  - 当前结论见 `docs/Frontend-Mission-Board-Migration-Audit.md`
+  - 决策方向已改为：不迁就旧 Pipeline Dashboard，而是抽取仍有产品价值的交互块，重组为 project-first Mission Board
+  - 当前前端盘点结论：`frontend/index.html` 仍深度绑定 legacy `pipeline/chatroom` 心智
+  - 旧 pipeline API 直接依赖至少包括：
+    - `/api/pipelines`
+    - `/api/pipelines/{id}`
+    - `/api/pipelines/{id}/start`
+    - `/api/pipelines/{id}/pause|resume|approve|reject`
+    - `/api/pipelines/{id}/messages`
+    - `/api/pipelines/{id}/artifacts`
+    - `/api/pipelines/{id}/instruct`
+    - `/api/pipelines/{id}/files`
+    - `/api/pipelines/config/templates`
+    - `/api/pipelines/ws`
+  - 旧 chatroom API 直接依赖包括：
+    - `/api/chatrooms/{id}/messages`
+    - `/api/chatrooms/{id}/messages/stream`
+  - 前端主问题不是“少量旧接口残留”，而是仍存在一整块 Pipeline Dashboard / chatroom 交互壳
+  - 下一步改成两件事：
+    1. 先冻结 Mission Board 所需最小 `/api/v2/*` contract
+    2. 新建 project-first 主视图，再逐步删除 pipeline/chatroom 主壳
 
 ---
 

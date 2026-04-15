@@ -166,10 +166,10 @@ So the current sequence is intentional:
 
 ## Near-term next steps
 
-1. Thin `decisions_v2.py` the same way as other v2 routes
-2. Continue auditing `ProjectService` for read-model leakage
-3. Keep contract tests aligned with refactors
-4. Start frontend migration only after v2 contracts are stable enough
+1. Freeze the minimum `/api/v2/*` contract needed by the future Mission Board
+2. Audit the current frontend for which interaction blocks should be kept, dropped, or rebuilt
+3. Build a new project-first Mission Board instead of extending the legacy Pipeline Dashboard
+4. Rewrite frontend tests around project/stage-run/decision/asset flows once the new board exists
 
 ---
 

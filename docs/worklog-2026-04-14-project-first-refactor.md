@@ -61,10 +61,20 @@
   - 防止 `ProjectService` 重新膨胀成上帝类
   - 稳定 `/api/v2/*` contract，给前端一个可靠靶子
 
+## 8. 前端迁移判断进一步明确：不迁就旧 Pipeline Dashboard
+- 新增文档：`docs/Frontend-Mission-Board-Migration-Audit.md`
+- 审计结论：`frontend/index.html` 不是“残留少量旧接口”，而是仍由整块 `pipeline + chatroom` 主壳组织
+- `tests/test_frontend.py` 也仍然把产品主流程编码成 `project -> chatroom -> pipeline`
+- 当前更合理的方向不是让后端兼容旧前端心智，而是：
+  - 保留有产品价值的交互块
+  - 重建 project-first Mission Board
+  - 让主视图围绕 `Project / StageRun / Decision / Asset / Event`
+
 ## 当前判断
 - 新主轴已经从 `legacy pipeline adapter` 转到 `project-first stage execution kernel`
-- 下一步重点不再是给旧 pipeline 做桥，而是继续抽 runtime primitive，并补真实 executor contract
+- 下一步重点不再是给旧 pipeline 做桥，而是继续抽 runtime primitive，并同时冻结 Mission Board 所需最小 v2 contract
 - 后端继续下拆的直接目标，是把 project-first v2 后端整理成可继续演进、可稳定对接前端的分层底座
+- 前端迁移的直接目标，不是“把旧 Pipeline Dashboard 接上新后端”，而是用新后端支撑一个新的 project-first 主工作面
 
 ## Wiki 同步状态
 - 目标：把这份过程记录同步到外部 wiki
