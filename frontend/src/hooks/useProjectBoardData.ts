@@ -1,182 +1,25 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 
-import {
-  continueProject,
-  getAsset,
-  getDecision,
-  getProjectOverview,
-  getStageRun,
-  listProjectAssets,
-  listProjectDecisions,
-  listProjects,
-  listStageEvents,
-  listStageRuns,
-  resolveDecision,
-} from '../api/client';
-import type { Asset, Decision, EventItem, ProjectOverview, StageRun, StageRunDetail } from '../types';
+import { useProjectBoardDetail } from './useProjectBoardDetail';
+import { useProjectBoardOverview } from './useProjectBoardOverview';
 
 export function useProjectBoardData() {
-  const [projects, setProjects] = useState<ProjectOverview['project'][]>([]);
-  const [overview, setOverview] = useState<ProjectOverview | null>(null);
-  const [stageRuns, setStageRuns] = useState<StageRun[]>([]);
-  const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [events, setEvents] = useState<EventItem[]>([]);
-  const [stageDetail, setStageDetail] = useState<StageRunDetail | null>(null);
-  const [decisionDetail, setDecisionDetail] = useState<Decision | null>(null);
-  const [assetDetail, setAssetDetail] = useState<Asset | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [continuing, setContinuing] = useState(false);
-  const [resolvingId, setResolvingId] = useState<number | null>(null);
-
-  const resetBoard = useCallback(() => {
-    setOverview(null);
-    setStageRuns([]);
-    setDecisions([]);
-    setAssets([]);
-    setEvents([]);
-    setStageDetail(null);
-    setDecisionDetail(null);
-    setAssetDetail(null);
-  }, []);
-
-  const loadProjects = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const projectList = await listProjects();
-      setProjects(projectList);
-      return projectList;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load projects');
-      return [];
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const overview = useProjectBoardOverview();
+  const detail = useProjectBoardDetail();
+  const { hydrateProject: hydrateOverviewProject } = overview;
+  const { resetForProject } = detail;
 
   const hydrateProject = useCallback(async (projectId: number) => {
-    setError(null);
-    try {
-      const [overviewData, stageRunData, decisionData, assetData] = await Promise.all([
-        getProjectOverview(projectId),
-        listStageRuns(projectId),
-        listProjectDecisions(projectId),
-        listProjectAssets(projectId),
-      ]);
-      setOverview(overviewData);
-      setStageRuns(stageRunData);
-      setDecisions(decisionData);
-      setAssets(assetData);
-      setEvents([]);
-      setStageDetail(null);
-      setDecisionDetail(null);
-      setAssetDetail(null);
-
-      return overviewData.current_stage_run?.id ?? stageRunData[0]?.id ?? null;
-    } catch (err) {
-      resetBoard();
-      setError(err instanceof Error ? err.message : 'Failed to load project board');
-      return null;
-    }
-  }, [resetBoard]);
-
-  const hydrateStage = useCallback(async (stageRunId: number) => {
-    try {
-      const [detailData, eventData] = await Promise.all([getStageRun(stageRunId), listStageEvents(stageRunId)]);
-      setStageDetail(detailData);
-      setEvents(eventData);
-      return eventData;
-    } catch (err) {
-      setStageDetail(null);
-      setEvents([]);
-      setError(err instanceof Error ? err.message : 'Failed to load stage detail');
-      return [];
-    }
-  }, []);
-
-  const clearStageDetail = useCallback(() => {
-    setStageDetail(null);
-    setEvents([]);
-  }, []);
-
-  const loadDecision = useCallback(async (decisionId: number) => {
-    try {
-      const detail = await getDecision(decisionId);
-      setDecisionDetail(detail);
-      setAssetDetail(null);
-      return detail;
-    } catch (err) {
-      setDecisionDetail(null);
-      setError(err instanceof Error ? err.message : 'Failed to load decision detail');
-      return null;
-    }
-  }, []);
-
-  const loadAsset = useCallback(async (assetId: number) => {
-    try {
-      const detail = await getAsset(assetId);
-      setAssetDetail(detail);
-      setDecisionDetail(null);
-      return detail;
-    } catch (err) {
-      setAssetDetail(null);
-      setError(err instanceof Error ? err.message : 'Failed to load asset detail');
-      return null;
-    }
-  }, []);
-
-  const runContinue = useCallback(async (projectId: number) => {
-    setContinuing(true);
-    try {
-      await continueProject(projectId);
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to continue project');
-      return false;
-    } finally {
-      setContinuing(false);
-    }
-  }, []);
-
-  const runResolve = useCallback(async (decisionId: number, resolution: 'approved' | 'rejected') => {
-    setResolvingId(decisionId);
-    try {
-      await resolveDecision(decisionId, {
-        resolution,
-        selected_option: resolution === 'approved' ? 'approve' : 'reject',
-      });
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve decision');
-      return false;
-    } finally {
-      setResolvingId(null);
-    }
-  }, []);
+    const preferredStageId = await hydrateOverviewProject(projectId);
+    resetForProject();
+    return preferredStageId;
+  }, [hydrateOverviewProject, resetForProject]);
 
   return {
-    projects,
-    overview,
-    stageRuns,
-    decisions,
-    assets,
-    events,
-    stageDetail,
-    decisionDetail,
-    assetDetail,
-    loading,
-    error,
-    continuing,
-    resolvingId,
-    loadProjects,
+    ...overview,
+    ...detail,
+    error: overview.error,
+    detailError: detail.detailError,
     hydrateProject,
-    hydrateStage,
-    clearStageDetail,
-    loadDecision,
-    loadAsset,
-    runContinue,
-    runResolve,
   };
 }

@@ -31,6 +31,7 @@ function App() {
     assetDetail,
     loading,
     error,
+    detailError: boardDetailError,
     continuing,
     resolvingId,
     loadProjects,
@@ -270,7 +271,7 @@ function App() {
           )}
         </main>
 
-        <DetailRail {...detailProps} loading={detailLoading} error={detailError} />
+        <DetailRail {...detailProps} loading={detailLoading} error={detailError ?? boardDetailError} />
       </div>
     </div>
   );
