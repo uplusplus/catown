@@ -5,12 +5,13 @@ import type { Decision } from '../types';
 
 type Props = {
   decisions: Decision[];
+  selectedDecisionId: number | null;
   onSelect: (decisionId: number) => void;
   onResolve: (decisionId: number, resolution: 'approved' | 'rejected') => void;
   resolvingId: number | null;
 };
 
-export function DecisionPanel({ decisions, onSelect, onResolve, resolvingId }: Props) {
+export function DecisionPanel({ decisions, selectedDecisionId, onSelect, onResolve, resolvingId }: Props) {
   return (
     <section className="panel-shell decision-panel">
       <div className="section-header">
@@ -24,7 +25,10 @@ export function DecisionPanel({ decisions, onSelect, onResolve, resolvingId }: P
         {decisions.map((decision) => {
           const busy = resolvingId === decision.id;
           return (
-            <article key={decision.id} className={`decision-card ${decision.status === 'pending' ? 'is-pending' : ''}`}>
+            <article
+              key={decision.id}
+              className={`decision-card ${decision.status === 'pending' ? 'is-pending' : ''} ${decision.id === selectedDecisionId ? 'is-active' : ''}`}
+            >
               <button className="decision-open" onClick={() => onSelect(decision.id)} type="button">
                 <div className="decision-card-top">
                   <strong>{decision.title}</strong>

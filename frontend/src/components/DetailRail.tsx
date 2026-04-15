@@ -13,9 +13,19 @@ type Props = {
   decisionDetail: Decision | null;
   assetDetail: Asset | null;
   selectedEvent: EventItem | null;
+  onSelectDecision: (decisionId: number) => void;
+  onSelectAsset: (assetId: number) => void;
 };
 
-export function DetailRail({ focus, stageDetail, decisionDetail, assetDetail, selectedEvent }: Props) {
+export function DetailRail({
+  focus,
+  stageDetail,
+  decisionDetail,
+  assetDetail,
+  selectedEvent,
+  onSelectDecision,
+  onSelectAsset,
+}: Props) {
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
   let body: JSX.Element = <div className="empty-card">Select a stage, decision, asset, or event.</div>;
@@ -50,21 +60,27 @@ export function DetailRail({ focus, stageDetail, decisionDetail, assetDetail, se
         </section>
         <section className="detail-block">
           <h4>Outputs</h4>
-          <ul className="detail-list">
+          <div className="detail-linked-list">
             {stageDetail.output_assets.map((asset) => (
-              <li key={asset.id}>{asset.title || titleize(asset.asset_type)}</li>
+              <button key={asset.id} className="detail-link-card" onClick={() => onSelectAsset(asset.id)} type="button">
+                <strong>{asset.title || titleize(asset.asset_type)}</strong>
+                <span>{titleize(asset.asset_type)}</span>
+              </button>
             ))}
-            {stageDetail.output_assets.length === 0 ? <li>No outputs yet.</li> : null}
-          </ul>
+            {stageDetail.output_assets.length === 0 ? <div className="empty-card">No outputs yet.</div> : null}
+          </div>
         </section>
         <section className="detail-block">
           <h4>Decisions</h4>
-          <ul className="detail-list">
+          <div className="detail-linked-list">
             {stageDetail.decisions.map((decision) => (
-              <li key={decision.id}>{decision.title}</li>
+              <button key={decision.id} className="detail-link-card" onClick={() => onSelectDecision(decision.id)} type="button">
+                <strong>{decision.title}</strong>
+                <span>{titleize(decision.status)}</span>
+              </button>
             ))}
-            {stageDetail.decisions.length === 0 ? <li>No linked decisions.</li> : null}
-          </ul>
+            {stageDetail.decisions.length === 0 ? <div className="empty-card">No linked decisions.</div> : null}
+          </div>
         </section>
       </div>
     );

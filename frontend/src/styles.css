@@ -198,7 +198,9 @@ button {
 
 .project-card.is-active,
 .stage-card.is-active,
-.event-card.is-active {
+.asset-card.is-active,
+.event-card.is-active,
+.decision-card.is-active .decision-open {
   border-color: rgba(255, 122, 69, 0.55);
   background: linear-gradient(180deg, rgba(255, 122, 69, 0.12), rgba(255, 255, 255, 0.04));
 }
@@ -416,6 +418,32 @@ button {
 
 button.event-card {
   cursor: pointer;
+}
+
+.detail-linked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-link-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  padding: 12px 14px;
+}
+
+.detail-link-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.detail-link-card span {
+  color: var(--soft);
+  font-size: 0.84rem;
 }
 
 .detail-grid-block {

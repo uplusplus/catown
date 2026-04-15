@@ -128,6 +128,8 @@ function App() {
       decisionDetail,
       assetDetail,
       selectedEvent,
+      onSelectDecision: handleSelectDecision,
+      onSelectAsset: handleSelectAsset,
     }),
     [assetDetail, decisionDetail, detailFocus, selectedEvent, stageDetail],
   );
@@ -241,11 +243,16 @@ function App() {
               <section className="board-row two-up">
                 <DecisionPanel
                   decisions={decisions}
+                  selectedDecisionId={detailFocus === 'decision' ? decisionDetail?.id ?? null : null}
                   onSelect={handleSelectDecision}
                   onResolve={handleResolve}
                   resolvingId={resolvingId}
                 />
-                <AssetPanel assets={assets} onSelect={handleSelectAsset} />
+                <AssetPanel
+                  assets={assets}
+                  selectedAssetId={detailFocus === 'asset' ? assetDetail?.id ?? null : null}
+                  onSelect={handleSelectAsset}
+                />
               </section>
               <ActivityFeed events={events} selectedEventId={detailFocus === 'event' ? selectedEvent?.id ?? null : null} onSelect={handleSelectEvent} />
             </>
