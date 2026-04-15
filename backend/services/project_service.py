@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from execution.event_log import append_event
 from models.audit import Event
-from models.database import Asset, AssetLink, Decision, DecisionAsset, Project, StageRun, StageRunAsset
+from models.database import Asset, Decision, DecisionAsset, Project, StageRun, StageRunAsset
 from orchestration.decision_effects import DecisionEffectsCoordinator
 from orchestration.project_bootstrap_coordinator import ProjectBootstrapCoordinator
 from orchestration.project_flow_coordinator import ProjectFlowCoordinator
+from read_models.asset_views import AssetViewBuilder
 from read_models.project_views import ProjectViewBuilder
 from read_models.serializers import ProjectSerializer
 from read_models.stage_run_views import StageRunViewBuilder
@@ -23,7 +24,9 @@ from services.asset_service import AssetService
 class ProjectService:
     Asset = Asset
     Decision = Decision
+    DecisionAsset = DecisionAsset
     StageRun = StageRun
+    StageRunAsset = StageRunAsset
 
     def __init__(self, db: Session):
         self.db = db
@@ -86,11 +89,38 @@ class ProjectService:
     def list_projects_v2(self) -> list[Project]:
         return self.db.query(Project).filter(Project.legacy_mode == False).order_by(Project.last_activity_at.desc()).all()
 
+    def list_project_payloads(self) -> list[dict[str, Any]]:
+        return [self.serialize_project(project) for project in self.list_projects_v2()]
+
     def get_project_or_404(self, project_id: int) -> Project:
         project = self.db.query(Project).filter(Project.id == project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+
+    def build_create_project_response(
+        self,
+        name: str,
+        one_line_vision: str,
+        description: str,
+        target_platforms: list[str],
+        target_users: list[str],
+        references: list[str],
+        execution_mode: str,
+    ) -> dict[str, Any]:
+        project = self.create_project(
+            name=name,
+            one_line_vision=one_line_vision,
+            description=description,
+            target_platforms=target_platforms,
+            target_users=target_users,
+            references=references,
+            execution_mode=execution_mode,
+        )
+        return {"project": self.serialize_project(project), "next_action": "review_scope_confirmation"}
+
+    def build_project_payload(self, project_id: int) -> dict[str, Any]:
+        return self.serialize_project(self.get_project_or_404(project_id))
 
     def update_project(self, project_id: int, patch: dict[str, Any]) -> Project:
         project = self.get_project_or_404(project_id)
@@ -156,6 +186,14 @@ class ProjectService:
         self.db.refresh(project)
         self.db.refresh(stage_run)
         return project, stage_run
+
+    def build_continue_project_response(self, project_id: int) -> dict[str, Any]:
+        project, stage_run = self.continue_project(project_id)
+        return {
+            "project": self.serialize_project(project),
+            "stage_run": self.serialize_stage_run(stage_run),
+            "message": f"{stage_run.stage_type} is now running",
+        }
 
     def _queue_stage_run(
         self,
@@ -244,103 +282,21 @@ class ProjectService:
     def build_project_overview(self, project_id: int) -> dict[str, Any]:
         return ProjectViewBuilder(self).build_project_overview(project_id)
 
+    def build_asset_detail(self, asset_id: int) -> dict[str, Any]:
+        return AssetViewBuilder(self).build_asset_detail(asset_id)
+
+    def list_project_stage_runs(self, project_id: int) -> list[dict[str, Any]]:
+        return StageRunViewBuilder(self).list_stage_runs(project_id)
+
+    def build_updated_project_payload(self, project_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        project = self.update_project(project_id, patch)
+        return self.serialize_project(project)
+
     def serialize_project(self, project: Project) -> dict[str, Any]:
         return ProjectSerializer(self).serialize_project(project)
 
-    def _build_release_readiness(self, assets_by_type: dict[str, Any], decisions: list[Decision]) -> dict[str, Any]:
-        pending_release_decision = any(
-            decision.decision_type == "release_approval" and decision.status == "pending"
-            for decision in decisions
-        )
-        readiness = {
-            "has_prd": "prd" in assets_by_type,
-            "has_release_pack": "release_pack" in assets_by_type,
-            "pending_release_decision": pending_release_decision,
-            "status": "not_ready",
-            "next_gate": None,
-        }
-        if readiness["has_release_pack"] and pending_release_decision:
-            readiness["status"] = "awaiting_release_approval"
-            readiness["next_gate"] = "release_approval"
-        elif readiness["has_release_pack"]:
-            readiness["status"] = "ready_for_review"
-        elif "test_report" in assets_by_type:
-            readiness["status"] = "qa_complete"
-        elif "task_plan" in assets_by_type or "build_artifact" in assets_by_type:
-            readiness["status"] = "in_build"
-        elif readiness["has_prd"]:
-            readiness["status"] = "in_definition"
-        return readiness
-
-    def _recommended_decision_action(self, decision_type: str) -> str:
-        action_map = {
-            "scope_confirmation": "resolve_scope_confirmation",
-            "direction_confirmation": "resolve_direction_confirmation",
-            "release_approval": "resolve_release_approval",
-        }
-        return action_map.get(decision_type, "resolve_decision")
-
-    def _serialize_stage_asset_links(self, project_id: int) -> list[dict[str, Any]]:
-        rows = (
-            self.db.query(StageRunAsset, Asset, StageRun)
-            .join(Asset, StageRunAsset.asset_id == Asset.id)
-            .join(StageRun, StageRunAsset.stage_run_id == StageRun.id)
-            .filter(StageRun.project_id == project_id)
-            .all()
-        )
-        return [
-            {
-                "stage_run_id": stage_run.id,
-                "stage_type": stage_run.stage_type,
-                "asset_id": asset.id,
-                "asset_type": asset.asset_type,
-                "direction": link.direction,
-            }
-            for link, asset, stage_run in rows
-        ]
-
-    def _serialize_decision_asset_links(self, project_id: int) -> list[dict[str, Any]]:
-        rows = (
-            self.db.query(DecisionAsset, Asset, Decision)
-            .join(Asset, DecisionAsset.asset_id == Asset.id)
-            .join(Decision, DecisionAsset.decision_id == Decision.id)
-            .filter(Decision.project_id == project_id)
-            .all()
-        )
-        return [
-            {
-                "decision_id": decision.id,
-                "decision_type": decision.decision_type,
-                "asset_id": asset.id,
-                "asset_type": asset.asset_type,
-                "relation_role": link.relation_role,
-            }
-            for link, asset, decision in rows
-        ]
-
-    def _serialize_asset_dependencies(self, asset_id: int) -> dict[str, list[dict[str, Any]]]:
-        upstream_rows = (
-            self.db.query(AssetLink, Asset)
-            .join(Asset, AssetLink.from_asset_id == Asset.id)
-            .filter(AssetLink.to_asset_id == asset_id)
-            .all()
-        )
-        downstream_rows = (
-            self.db.query(AssetLink, Asset)
-            .join(Asset, AssetLink.to_asset_id == Asset.id)
-            .filter(AssetLink.from_asset_id == asset_id)
-            .all()
-        )
-        return {
-            "upstream": [
-                {"asset_id": asset.id, "asset_type": asset.asset_type, "relation_type": link.relation_type}
-                for link, asset in upstream_rows
-            ],
-            "downstream": [
-                {"asset_id": asset.id, "asset_type": asset.asset_type, "relation_type": link.relation_type}
-                for link, asset in downstream_rows
-            ],
-        }
+    def serialize_asset_dependencies(self, asset_id: int) -> dict[str, list[dict[str, Any]]]:
+        return AssetViewBuilder(self).serialize_asset_dependencies(asset_id)
 
     def serialize_asset(self, asset: Asset) -> dict[str, Any]:
         return ProjectSerializer(self).serialize_asset(asset)
@@ -350,6 +306,9 @@ class ProjectService:
 
     def build_stage_run_detail(self, stage_run_id: int) -> dict[str, Any]:
         return StageRunViewBuilder(self).build_stage_run_detail(stage_run_id)
+
+    def build_stage_run_events(self, stage_run_id: int) -> list[dict[str, Any]]:
+        return StageRunViewBuilder(self).list_stage_run_events(stage_run_id)
 
     def list_stage_run_events(self, stage_run_id: int) -> list[Event]:
         return (

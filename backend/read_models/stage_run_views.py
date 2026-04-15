@@ -10,6 +10,25 @@ class StageRunViewBuilder:
         self.service = service
         self.db = service.db
 
+    def list_stage_runs(self, project_id: int):
+        self.service.get_project_or_404(project_id)
+        rows = (
+            self.db.query(StageRun)
+            .filter(StageRun.project_id == project_id)
+            .order_by(StageRun.created_at.desc())
+            .all()
+        )
+        return [self.service.serialize_stage_run(stage_run) for stage_run in rows]
+
+    def list_stage_run_events(self, stage_run_id: int):
+        stage_run = self.db.query(StageRun).filter(StageRun.id == stage_run_id).first()
+        if not stage_run:
+            raise HTTPException(status_code=404, detail="Stage run not found")
+        return [
+            self.service.serialize_event(event)
+            for event in self.service.list_stage_run_events(stage_run_id)
+        ]
+
     def build_stage_run_detail(self, stage_run_id: int):
         stage_run = self.db.query(StageRun).filter(StageRun.id == stage_run_id).first()
         if not stage_run:

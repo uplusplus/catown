@@ -2,7 +2,7 @@
 """Project-first v2 routes."""
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,7 @@ class ProjectPatchV2(BaseModel):
 @router.post("/projects")
 def create_project(payload: ProjectCreateV2, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    project = service.create_project(
+    return service.build_create_project_response(
         name=payload.name,
         one_line_vision=payload.one_line_vision,
         description=payload.description or "",
@@ -44,35 +44,27 @@ def create_project(payload: ProjectCreateV2, db: Session = Depends(get_db)) -> d
         references=payload.references,
         execution_mode=payload.execution_mode,
     )
-    return {"project": service.serialize_project(project), "next_action": "review_scope_confirmation"}
 
 
 @router.get("/projects")
 def list_projects(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     service = ProjectService(db)
-    return [service.serialize_project(project) for project in service.list_projects_v2()]
+    return service.list_project_payloads()
 
 
 @router.get("/projects/{project_id}")
 def get_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    project = service.get_project_or_404(project_id)
-    return service.serialize_project(project)
+    return service.build_project_payload(project_id)
 
 
 @router.patch("/projects/{project_id}")
 def patch_project(project_id: int, payload: ProjectPatchV2, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    project = service.update_project(project_id, payload.model_dump(exclude_unset=True))
-    return service.serialize_project(project)
+    return service.build_updated_project_payload(project_id, payload.model_dump(exclude_unset=True))
 
 
 @router.post("/projects/{project_id}/continue")
 def continue_project(project_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     service = ProjectService(db)
-    project, stage_run = service.continue_project(project_id)
-    return {
-        "project": service.serialize_project(project),
-        "stage_run": service.serialize_stage_run(stage_run),
-        "message": f"{stage_run.stage_type} is now running",
-    }
+    return service.build_continue_project_response(project_id)

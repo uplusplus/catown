@@ -47,7 +47,7 @@ class ProjectSerializer:
             "is_current": asset.is_current,
             "approval_decision_id": asset.approval_decision_id,
             "produced_by_stage_run_id": asset.produced_by_stage_run_id,
-            "relationships": self.service._serialize_asset_dependencies(asset.id),
+            "relationships": self.service.serialize_asset_dependencies(asset.id),
             "updated_at": asset.updated_at.isoformat() if asset.updated_at else None,
             "created_at": asset.created_at.isoformat() if asset.created_at else None,
         }
