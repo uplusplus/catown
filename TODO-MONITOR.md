@@ -57,8 +57,13 @@
 - [x] 给 v2 后端补一组最小 contract 验证：`/api/v2/dashboard`、`/api/v2/projects`、`/api/v2/projects/{id}/overview`、`/api/v2/stage-runs/{id}`
 
 ### Phase G — Service / Read Model 收口
-- [ ] 继续抽 `ProjectService` 剩余的 asset/decision/stage-run link 查询，压缩 service 的读模型职责
-- [ ] 让 `routes/*_v2.py` 尽量只保留参数校验 + service 调用，减少 route 层重复查询/404 模式
+- [x] 继续抽 `ProjectService` 剩余的 asset/decision/stage-run link 查询，压缩 service 的读模型职责
+  - `asset detail/dependencies` 已下沉到 `backend/read_models/asset_views.py`
+  - `project overview/dashboard` 的 readiness / link aggregation 已收回 `backend/read_models/project_views.py`
+  - `stage-run list/detail/events` 已收回 `backend/read_models/stage_run_views.py`
+  - decisions 的 list/get/resolve payload 入口已统一到 `ProjectService`
+- [x] 让 `routes/*_v2.py` 尽量只保留参数校验 + service 调用，减少 route 层重复查询/404 模式
+  - `projects_v2.py` / `assets_v2.py` / `stage_runs_v2.py` / `decisions_v2.py` 已完成一轮收薄
 - [ ] 明确并冻结一版 v2 frontend contract，避免前端继续依赖 `/api/pipelines/*`
 
 ---

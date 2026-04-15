@@ -482,6 +482,37 @@ class TestProjectV2Endpoints:
         stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
         assert any(item["stage_type"] == "release_preparation" and item["status"] == "queued" for item in stage_runs)
 
+    def test_decision_routes_keep_project_first_shape(self, client):
+        project = client.post("/api/v2/projects", json={
+            "name": "DecisionShape",
+            "one_line_vision": "Validate decision route contracts"
+        }).json()["project"]
+        project_id = project["id"]
+
+        decisions = client.get(f"/api/v2/projects/{project_id}/decisions")
+        assert decisions.status_code == 200
+        items = decisions.json()
+        assert len(items) == 1
+        decision = items[0]
+        assert set(["id", "project_id", "stage_run_id", "decision_type", "status", "recommended_option"]).issubset(decision.keys())
+
+        detail = client.get(f"/api/v2/decisions/{decision['id']}")
+        assert detail.status_code == 200
+        assert detail.json()["id"] == decision["id"]
+        assert detail.json()["project_id"] == project_id
+
+        resolved = client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={
+            "resolution": "approved",
+            "selected_option": decision["recommended_option"],
+            "note": "contract route check"
+        })
+        assert resolved.status_code == 200
+        payload = resolved.json()
+        assert set(["project", "decision"]).issubset(payload.keys())
+        assert payload["project"]["id"] == project_id
+        assert payload["decision"]["id"] == decision["id"]
+        assert payload["decision"]["status"] == "approved"
+
     def test_stage_run_instructions_and_events_use_project_first_event_shape(self, client):
         project = client.post("/api/v2/projects", json={
             "name": "StageEvents",

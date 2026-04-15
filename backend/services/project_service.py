@@ -141,13 +141,27 @@ class ProjectService:
         self.db.refresh(project)
         return project
 
+    def list_project_decisions(self, project_id: int) -> list[Decision]:
+        self.get_project_or_404(project_id)
+        return self.db.query(Decision).filter(Decision.project_id == project_id).order_by(Decision.created_at.desc()).all()
+
+    def list_project_decision_payloads(self, project_id: int) -> list[dict[str, Any]]:
+        return [self.serialize_decision(decision) for decision in self.list_project_decisions(project_id)]
+
     def get_pending_decisions(self, project_id: int) -> list[Decision]:
         return self.db.query(Decision).filter(Decision.project_id == project_id, Decision.status == "pending").all()
 
-    def resolve_decision(self, decision_id: int, resolution: str, selected_option: str | None, note: str | None):
+    def get_decision_or_404(self, decision_id: int) -> Decision:
         decision = self.db.query(Decision).filter(Decision.id == decision_id).first()
         if not decision:
             raise HTTPException(status_code=404, detail="Decision not found")
+        return decision
+
+    def build_decision_payload(self, decision_id: int) -> dict[str, Any]:
+        return self.serialize_decision(self.get_decision_or_404(decision_id))
+
+    def resolve_decision(self, decision_id: int, resolution: str, selected_option: str | None, note: str | None):
+        decision = self.get_decision_or_404(decision_id)
         if decision.status != "pending":
             raise HTTPException(status_code=409, detail="Decision has already been resolved")
         if resolution not in {"approved", "rejected"}:
@@ -168,6 +182,24 @@ class ProjectService:
         self.db.refresh(project)
         self.db.refresh(decision)
         return project, decision
+
+    def build_resolve_decision_response(
+        self,
+        decision_id: int,
+        resolution: str,
+        selected_option: str | None,
+        note: str | None,
+    ) -> dict[str, Any]:
+        project, decision = self.resolve_decision(
+            decision_id=decision_id,
+            resolution=resolution,
+            selected_option=selected_option,
+            note=note,
+        )
+        return {
+            "project": self.serialize_project(project),
+            "decision": self.serialize_decision(decision),
+        }
 
     def _next_stage_run_index(self, project_id: int, stage_type: str) -> int:
         existing = (
