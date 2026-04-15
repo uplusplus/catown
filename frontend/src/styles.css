@@ -485,11 +485,48 @@ button {
   border: 1px solid var(--line);
 }
 
-.event-card {
+.project-create-form {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  margin: 0 0 16px;
 }
+
+.project-create-input,
+.project-create-textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.project-create-textarea {
+  resize: vertical;
+  min-height: 84px;
+}
+
+.project-create-input::placeholder,
+.project-create-textarea::placeholder {
+  color: var(--soft);
+}
+
+.project-create-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(67, 198, 185, 0.18);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.project-create-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 
 button.event-card {
   cursor: pointer;

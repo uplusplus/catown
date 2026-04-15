@@ -76,6 +76,13 @@ class TestFrontendEntry:
         html = client.get("/").text
         assert '<script type="module" crossorigin' in html
 
+    def test_root_serves_built_asset_references(self, client):
+        html = client.get("/").text
+        asset_path = html.split('src="', 1)[1].split('"', 1)[0]
+        asset_response = client.get(asset_path)
+        assert asset_response.status_code == 200
+        assert asset_response.text
+
     def test_root_serves_mission_board_shell(self, client):
         html = client.get("/").text
         assert '<div id="root"></div>' in html

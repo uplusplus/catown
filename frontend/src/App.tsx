@@ -35,6 +35,7 @@ function App() {
     error,
     detailError: boardDetailError,
     continuing,
+    creating,
     resolvingId,
     loadProjects,
     hydrateProject,
@@ -42,6 +43,7 @@ function App() {
     clearStageDetail,
     loadDecision,
     loadAsset,
+    runCreateProject,
     runContinue,
     runResolve,
   } = board;
@@ -149,6 +151,14 @@ function App() {
     [assetDetail, decisionDetail, detailFocus, overview, selectedEvent, stageDetail],
   );
 
+  async function handleCreateProject(payload: { name: string; one_line_vision?: string }) {
+    const created = await runCreateProject(payload);
+    if (!created) return;
+    setProject(created.id);
+    clearDetailError();
+    setNotice({ tone: 'success', message: 'Project created. Mission board ready.' });
+  }
+
   async function handleContinue() {
     if (selectedProjectId == null) return;
     const ok = await runContinue(selectedProjectId);
@@ -255,7 +265,13 @@ function App() {
       ) : null}
 
       <div className="board-layout">
-        <ProjectRail projects={projects} selectedProjectId={selectedProjectId} onSelect={setProject} />
+        <ProjectRail
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          onSelect={setProject}
+          onCreate={handleCreateProject}
+          creating={creating}
+        />
 
         <main className={`main-board ${boardBusy ? 'is-busy' : ''}`}>
           {boardReady && overview ? (

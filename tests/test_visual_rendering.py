@@ -64,6 +64,11 @@ def activity_feed_source() -> str:
 
 
 @pytest.fixture(scope="module")
+def project_rail_source() -> str:
+    return (SRC_ROOT / "components" / "ProjectRail.tsx").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
 def next_action_source() -> str:
     return (SRC_ROOT / "components" / "NextActionStrip.tsx").read_text(encoding="utf-8")
 
@@ -126,6 +131,11 @@ class TestMissionBoardComposition:
     def test_activity_feed_is_described_as_project_activity(self, activity_feed_source: str):
         assert "Project Activity" in activity_feed_source
         assert "No project activity yet." in activity_feed_source
+
+    def test_project_rail_exposes_project_creation_entry(self, project_rail_source: str):
+        assert "Create Project" in project_rail_source
+        assert "New project name" in project_rail_source
+        assert "One-line vision (optional)" in project_rail_source
 
     def test_next_action_strip_is_framed_as_action_focus(self, next_action_source: str):
         assert "Action Focus" in next_action_source
@@ -198,6 +208,9 @@ class TestDesignTokensAndStates:
             ".warning-pill",
             ".detail-context-trail",
             ".detail-context-segment",
+            ".project-create-form",
+            ".project-create-input",
+            ".project-create-button",
         ]:
             assert selector in styles_source
 

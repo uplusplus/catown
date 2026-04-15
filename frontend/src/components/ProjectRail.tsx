@@ -1,3 +1,5 @@
+import { useState, type FormEvent } from 'react';
+
 import type { Project } from '../types';
 import { formatRelative, titleize } from '../lib/format';
 
@@ -5,9 +7,27 @@ type Props = {
   projects: Project[];
   selectedProjectId: number | null;
   onSelect: (projectId: number) => void;
+  onCreate: (payload: { name: string; one_line_vision?: string }) => Promise<void>;
+  creating?: boolean;
 };
 
-export function ProjectRail({ projects, selectedProjectId, onSelect }: Props) {
+export function ProjectRail({ projects, selectedProjectId, onSelect, onCreate, creating = false }: Props) {
+  const [name, setName] = useState('');
+  const [vision, setVision] = useState('');
+
+  async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    const trimmedVision = vision.trim();
+    if (!trimmedName) return;
+    await onCreate({
+      name: trimmedName,
+      one_line_vision: trimmedVision || undefined,
+    });
+    setName('');
+    setVision('');
+  }
+
   return (
     <aside className="project-rail panel-shell">
       <div className="rail-header">
@@ -17,6 +37,27 @@ export function ProjectRail({ projects, selectedProjectId, onSelect }: Props) {
         </div>
         <span className="rail-count">{projects.length}</span>
       </div>
+      <form className="project-create-form" onSubmit={handleCreateSubmit}>
+        <input
+          className="project-create-input"
+          type="text"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="New project name"
+          disabled={creating}
+        />
+        <textarea
+          className="project-create-textarea"
+          value={vision}
+          onChange={(event) => setVision(event.target.value)}
+          placeholder="One-line vision (optional)"
+          rows={3}
+          disabled={creating}
+        />
+        <button className="project-create-button" type="submit" disabled={creating || !name.trim()}>
+          {creating ? 'Creating...' : 'Create Project'}
+        </button>
+      </form>
       <div className="rail-list">
         {projects.map((project) => {
           const active = project.id === selectedProjectId;
@@ -43,7 +84,7 @@ export function ProjectRail({ projects, selectedProjectId, onSelect }: Props) {
             </button>
           );
         })}
-        {projects.length === 0 ? <div className="empty-card">No projects yet.</div> : null}
+        {projects.length === 0 ? <div className="empty-card">No projects yet. Create one to start the board.</div> : null}
       </div>
     </aside>
   );

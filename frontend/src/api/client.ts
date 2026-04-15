@@ -15,6 +15,15 @@ const api = axios.create({
   timeout: 15000,
 });
 
+export async function createProject(payload: {
+  name: string;
+  one_line_vision?: string;
+  description?: string;
+}): Promise<{ project: Project; next_action?: string | null }> {
+  const { data } = await api.post<{ project: Project; next_action?: string | null }>('/projects', payload);
+  return data;
+}
+
 export async function listProjects(): Promise<Project[]> {
   const { data } = await api.get<Project[]>('/projects');
   return data;

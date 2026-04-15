@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import {
   continueProject,
+  createProject,
   getProjectOverview,
   listProjectAssets,
   listProjectDecisions,
@@ -20,6 +21,7 @@ export function useProjectBoardOverview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [continuing, setContinuing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
 
   const resetBoard = useCallback(() => {
@@ -65,6 +67,22 @@ export function useProjectBoardOverview() {
     }
   }, [resetBoard]);
 
+  const runCreateProject = useCallback(async (payload: { name: string; one_line_vision?: string; description?: string }) => {
+    setCreating(true);
+    setError(null);
+    try {
+      const created = await createProject(payload);
+      const projectList = await listProjects();
+      setProjects(projectList);
+      return created.project;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project');
+      return null;
+    } finally {
+      setCreating(false);
+    }
+  }, []);
+
   const runContinue = useCallback(async (projectId: number) => {
     setContinuing(true);
     try {
@@ -103,9 +121,11 @@ export function useProjectBoardOverview() {
     loading,
     error,
     continuing,
+    creating,
     resolvingId,
     loadProjects,
     hydrateProject,
+    runCreateProject,
     runContinue,
     runResolve,
     clearBoardError: () => setError(null),

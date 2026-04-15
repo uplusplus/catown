@@ -186,6 +186,21 @@ app.include_router(stage_runs_v2_router)
 app.include_router(dashboard_v2_router)
 app.include_router(audit_router)
 
+
+def _frontend_dist_assets_dir() -> Path | None:
+    for candidate in [
+        Path("frontend/dist/assets"),
+        Path("../frontend/dist/assets"),
+    ]:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+_frontend_assets_dir = _frontend_dist_assets_dir()
+if _frontend_assets_dir is not None:
+    app.mount("/assets", StaticFiles(directory=str(_frontend_assets_dir)), name="frontend-assets")
+
 # WebSocket 路由
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
