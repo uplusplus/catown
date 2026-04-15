@@ -45,6 +45,22 @@
 - [ ] 前端逐步去 pipeline 化，Mission Board 替代旧 pipeline dashboard 主视图
 - [x] 将过程记录同步到外部 wiki（GitHub wiki: `catown.wiki.git`，提交 `06c139d`）
 
+### Phase F — 运行底座收口（当前优先）
+- [x] 建立正式数据库迁移链路（补 `alembic/versions/`，把当前 project-first schema 变更固化为 revision）
+  - 已落地：`backend/alembic/versions/20260415_1015_project_first_projects_schema.py`
+- [x] 清理 `init_database()` 临时 SQLite 补列 shim，迁回正式 migration 驱动
+- [x] 盘点并修复现有库对 `assets / decisions / stage_runs / events` 的 schema 漂移风险
+  - `assets / decisions / stage_runs` 当前库结构与模型一致
+  - `events` 已通过 `20260415_1028_project_first_event_fields.py` 补齐 `project_id / stage_run_id / asset_id`
+- [x] 清理 `backend/main.py` 的 legacy 入口装配，只保留仍然必须兼容的 router / ws / audit 挂载
+  - 当前已摘除旧 `pipeline` router 与 pipeline event-bus 桥接，主入口不再因 `pipeline.engine` 导入失败而阻塞启动
+- [x] 给 v2 后端补一组最小 contract 验证：`/api/v2/dashboard`、`/api/v2/projects`、`/api/v2/projects/{id}/overview`、`/api/v2/stage-runs/{id}`
+
+### Phase G — Service / Read Model 收口
+- [ ] 继续抽 `ProjectService` 剩余的 asset/decision/stage-run link 查询，压缩 service 的读模型职责
+- [ ] 让 `routes/*_v2.py` 尽量只保留参数校验 + service 调用，减少 route 层重复查询/404 模式
+- [ ] 明确并冻结一版 v2 frontend contract，避免前端继续依赖 `/api/pipelines/*`
+
 ---
 
 ## P0 — 数据管道

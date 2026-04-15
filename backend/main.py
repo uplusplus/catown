@@ -35,7 +35,6 @@ logger = logging.getLogger("catown")
 
 # 导入路由
 from routes.api import router as api_router
-from routes.pipeline import router as pipeline_router
 from routes.audit import router as audit_router
 from routes.projects_v2 import router as projects_v2_router
 from routes.assets_v2 import router as assets_v2_router
@@ -169,20 +168,6 @@ logger.info("[Collab] Collaboration tools connected to coordinator")
 import asyncio as _asyncio
 from routes.file_watcher import file_watcher
 
-# 将 Pipeline 事件总线转发到通用 WebSocket（聊天窗口可实时接收）
-from pipeline.engine import event_bus
-
-async def _forward_pipeline_events_to_ws(event_type: str, data: dict):
-    """将 engine 事件转发到所有通用 /ws 连接"""
-    try:
-        msg = {"type": f"pipeline_{event_type}", **data}
-        await websocket_manager.broadcast(msg)
-    except Exception:
-        pass
-
-event_bus.on(_forward_pipeline_events_to_ws)
-logger.info("[Events] Pipeline event bus connected to general WebSocket")
-
 @app.on_event("startup")
 async def _start_file_watcher():
     loop = _asyncio.get_event_loop()
@@ -199,7 +184,6 @@ app.include_router(assets_v2_router)
 app.include_router(decisions_v2_router)
 app.include_router(stage_runs_v2_router)
 app.include_router(dashboard_v2_router)
-app.include_router(pipeline_router)
 app.include_router(audit_router)
 
 # WebSocket 路由

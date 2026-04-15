@@ -535,6 +535,44 @@ class TestProjectV2Endpoints:
         assert "recommended_next_action" in data["project_cards"][0]
         assert "lifecycle" in data["project_cards"][0]["current_stage_run"]
 
+    def test_v2_contract_core_endpoints_keep_expected_shape(self, client):
+        created = client.post("/api/v2/projects", json={
+            "name": "ContractShape",
+            "one_line_vision": "Lock v2 response contracts"
+        })
+        assert created.status_code == 200
+        project = created.json()["project"]
+        project_id = project["id"]
+
+        dashboard = client.get("/api/v2/dashboard")
+        assert dashboard.status_code == 200
+        dashboard_data = dashboard.json()
+        assert set(["projects", "project_cards", "pending_decisions", "recent_assets", "active_stage_runs", "summary", "alerts"]).issubset(dashboard_data.keys())
+
+        projects = client.get("/api/v2/projects")
+        assert projects.status_code == 200
+        project_row = next(item for item in projects.json() if item["id"] == project_id)
+        assert set(["id", "slug", "name", "status", "current_stage", "execution_mode", "health_status", "current_focus", "latest_summary", "last_decision_id", "legacy_mode"]).issubset(project_row.keys())
+
+        overview = client.get(f"/api/v2/projects/{project_id}/overview")
+        assert overview.status_code == 200
+        overview_data = overview.json()
+        assert set(["project", "current_stage_run", "key_assets", "assets_by_type", "pending_decisions", "decision_history", "stage_summary", "stage_asset_links", "decision_asset_links", "open_tasks_summary", "recent_activity", "release_readiness", "recommended_next_action"]).issubset(overview_data.keys())
+        assert overview_data["release_readiness"]["status"] == "not_ready"
+        assert overview_data["recommended_next_action"] == "resolve_scope_confirmation"
+
+        decision = client.get(f"/api/v2/projects/{project_id}/decisions").json()[0]
+        client.post(f"/api/v2/decisions/{decision['id']}/resolve", json={"resolution": "approved"})
+        client.post(f"/api/v2/projects/{project_id}/continue")
+        stage_runs = client.get(f"/api/v2/projects/{project_id}/stage-runs").json()
+        current_stage_run = next(item for item in stage_runs if item["stage_type"] == "product_definition")
+
+        stage_detail = client.get(f"/api/v2/stage-runs/{current_stage_run['id']}")
+        assert stage_detail.status_code == 200
+        detail_data = stage_detail.json()
+        assert set(["stage_run", "project", "input_assets", "output_assets", "decisions", "events", "summary"]).issubset(detail_data.keys())
+        assert set(["input_count", "output_count", "decision_count", "event_count"]).issubset(detail_data["summary"].keys())
+
 
 class TestChatEndpoints:
     def test_send_message(self, client):
