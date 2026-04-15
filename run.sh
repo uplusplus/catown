@@ -39,6 +39,8 @@ fi
 
 if ! python3 -c "import fastapi" &>/dev/null; then
     echo "Installing dependencies..."
+    python3 -m venv .env
+    source .env/bin/activate
     (cd "$BACKEND" && pip3 install -r requirements.txt)
 fi
 
