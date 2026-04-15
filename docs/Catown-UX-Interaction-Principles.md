@@ -973,6 +973,34 @@ That means:
 The visual center of gravity should remain in the middle.
 The homepage must not devolve into equal-weight multi-column noise.
 
+### Cockpit-first clarification
+
+After project kickoff, Catown should assume that the user spends most of their time supervising autonomous execution rather than manually operating every step.
+
+That means the default homepage should feel like an auto-mode mission cockpit.
+
+The homepage should primarily help the user monitor:
+
+- what the system is currently doing
+- which agents are active and what they are doing
+- whether execution is healthy or abnormal
+- whether progress is smooth or blocked
+- whether human authority is currently needed
+
+This shifts the default emphasis from "what would you like to do" toward "what is the autonomous system doing and when should you step in".
+
+### Default monitoring priorities
+
+The homepage should therefore balance around these monitoring priorities:
+
+1. system situation
+2. agent and execution activity
+3. intervention needs
+4. progression health
+5. filtered recent changes
+
+The interface should feel closer to a mission-control cockpit than to an app launcher or chat home.
+
 ### Layout intent
 
 #### Left rail
@@ -1013,6 +1041,25 @@ It should carry supporting attention items such as:
 - lightweight situational alerts
 
 It should not compete with the center stage for primary attention.
+
+### Agent and autonomy status
+
+The homepage should include a lightweight execution-monitoring surface for autonomy status.
+
+This can appear either as:
+
+- an `AutonomyStatusBand` near the top of the center stage
+- or a compact `AgentActivityStrip` embedded near the hero/action-focus relationship
+
+Its purpose is to show:
+
+- whether the system is actively running in auto mode
+- which major agents are currently active
+- whether any agent is stalled, waiting, or abnormal
+- the latest meaningful execution pulse
+
+This area should not become a raw log.
+It should act like a cockpit pulse indicator for autonomous activity.
 
 ### Visual priority order
 
@@ -2484,6 +2531,68 @@ The design is now specific enough to translate into an implementation-oriented f
 
 This section turns the interaction model into concrete frontend responsibilities.
 
+### Semantic rendering architecture
+
+Because the system brain is an LLM and most raw output begins as text, Catown should include a semantic rendering layer rather than relying on raw text dumps or freeform model-generated HTML.
+
+The correct model is:
+
+- LLM output expresses UI intent
+- a rendering adapter translates that intent into stable semantic card payloads
+- the frontend renders those payloads through controlled design-system components
+
+Catown should not treat model-generated HTML as the primary rendering strategy.
+
+That would create instability in:
+
+- hierarchy
+- design consistency
+- interaction safety
+- testability
+- component reuse
+
+Instead, the rendering architecture should be:
+
+### Layer 1. LLM intent output
+
+The model expresses:
+
+- guidance copy
+- recommendation copy
+- rationale
+- options
+- action labels
+- decision structure
+- semantic card type
+
+### Layer 2. Semantic UI adapter
+
+A translation layer normalizes model output into frontend-safe semantic objects such as:
+
+- `choice_card`
+- `draft_card`
+- `approval_card`
+- `risk_card`
+- `comparison_card`
+- `continuation_card`
+- `blocker_card`
+
+### Layer 3. Controlled component rendering
+
+The frontend maps semantic card objects into stable components from the Catown design system.
+
+This is the layer that guarantees:
+
+- consistent visual language
+- safe interaction behavior
+- predictable state wiring
+- shared token usage
+- component-level testing
+
+This rendering strategy is essential to keep Catown dynamic without turning it into arbitrary HTML generation.
+
+---
+
 ### 1. Top-level page structure
 
 The default application shell should be built from two primary UI states:
@@ -2528,6 +2637,7 @@ AppShell
 
   MissionBoardCenter
     ProjectHero
+    AutonomyStatusBand / AgentActivityStrip
     ActionFocusModule
     StageSpine
 
@@ -2543,6 +2653,7 @@ Recommended responsibilities:
 
 - `ProjectRail`: context switching only
 - `ProjectHero`: project situation compression
+- `AutonomyStatusBand` or `AgentActivityStrip`: autonomous execution pulse and agent status
 - `ActionFocusModule`: main forward move
 - `StageSpine`: progression structure
 - `InterventionQueue`: human-authority queue
@@ -2598,6 +2709,7 @@ Suggested state buckets:
 
 - selected project id
 - project overview data
+- autonomy or agent activity data
 - action-focus data
 - intervention queue data
 - stage spine data
@@ -2705,12 +2817,36 @@ The frontend should avoid raw backend leakage into display components.
 Use a frontend adapter layer to normalize backend data into view-friendly objects for:
 
 - hero state
+- autonomy status
+- agent activity summaries
 - action-focus state
 - intervention items
 - stage spine nodes
 - task-layer card payloads
 
 This avoids coupling UI semantics directly to backend field noise.
+
+For model-driven task rendering specifically, prefer a structured semantic payload over raw HTML.
+
+A useful target shape is closer to:
+
+```json
+{
+  "type": "risk_card",
+  "title": "Release strategy decision",
+  "guidance": ["Current release requires a scope and stability tradeoff."],
+  "recommendation": "conservative",
+  "options": [
+    {"id": "fast", "label": "Ship fast", "risk": "high"},
+    {"id": "conservative", "label": "Ship conservatively", "risk": "medium"}
+  ],
+  "actions": {
+    "primary": {"label": "Use recommended option", "action": "choose_recommended"}
+  }
+}
+```
+
+Then the frontend renders this through a controlled `RiskCard` component.
 
 ---
 
