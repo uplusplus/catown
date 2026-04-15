@@ -91,12 +91,30 @@
   - 当前执行策略已改为：不做兼容迁移，直接以 `React + Vite + TypeScript` 重建 project-first Mission Board
   - 当前已完成首个骨架：`frontend/index.html` 已改为 Vite shell，`frontend/src/` 已建立 Mission Board 主结构并接入核心 `/api/v2/*` 读流与基本 continue / decision resolve 动作
   - React Mission Board 下一阶段计划：
-    1. 收口 detail rail：补全 stage / decision / asset / event 四类 detail 态的切换、上下文映射与更完整字段展示
-    2. 收口前端 state：把 `App.tsx` 当前集中状态继续下沉为更清晰的 store / query 结构，避免新前端重新膨胀成单文件控制器
-    3. 收口主动作：补全 continue / resolve 后的局部刷新策略与错误态/空态反馈
-    4. 收口事件面：决定第一版 activity feed 是继续基于 selected stage-run events，还是补 project-level events 聚合接口
-    5. 收口测试：重写 `tests/test_frontend.py`，把断言从 legacy Pipeline Dashboard 切到 React Mission Board 的 project/stage-run/decision/asset 主流程
-    6. 收口交付：确认后端根路径优先消费 `frontend/dist/index.html` 的发布链路，并把 `npm run build` 纳入前端回归步骤
+    1. 主工作面收口
+       - 稳定 `ProjectRail / ProjectHero / NextActionStrip` 的信息层级
+       - 强化 `StageLane` 的 active / waiting / completed / failed 视觉区分
+       - 定型 `ActivityFeed` 第一版是 stage 级还是 project 级
+    2. `DetailRail` 工作台化
+       - `stage detail`：summary、input/output assets、linked decisions、events 摘要
+       - `decision detail`：context、recommended option、impact、关联 stage/asset
+       - `asset detail`：markdown/content、relationships、stage links、decision links
+       - `event detail`：summary、payload、关联对象跳转
+    3. 前端 state/query 收口
+       - 把 `App.tsx` 当前集中状态继续下沉为更清晰的 store / query 结构
+       - 分离 board state、selected entity state、async loading/error state
+       - 避免新前端重新膨胀成单文件控制器
+    4. 主动作与反馈收口
+       - 补全 continue / resolve 后的局部刷新策略
+       - 补全错误态、空态、loading 态与动作反馈
+       - 避免每次全量重拉或局部状态失真
+    5. 测试重写
+       - 重写 `tests/test_frontend.py`
+       - 把断言从 legacy Pipeline Dashboard 切到 React Mission Board 的 `project / stage-run / decision / asset` 主流程
+    6. 交付链路固化
+       - 确认后端根路径优先消费 `frontend/dist/index.html`
+       - 把 `npm run build` 纳入前端回归步骤
+       - 新板足够稳定后，再删旧 dashboard 假设与残余测试
 
 ---
 

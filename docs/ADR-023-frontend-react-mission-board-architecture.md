@@ -180,29 +180,38 @@ Already started:
 - establish `frontend/src/` React/TypeScript entry structure
 - connect the first Mission Board read flow to `/api/v2/*`
 
-### Phase 2: Board interaction deepening
+### Phase 2: Main board stabilization
 
 Next focus:
 
-- deepen `DetailRail` so stage, decision, asset, and event modes are all genuinely useful
-- reduce `App.tsx` orchestration weight by moving state/query concerns into clearer frontend modules
-- improve empty states, loading states, and action-result feedback
+- stabilize `ProjectRail`, `ProjectHero`, and `NextActionStrip` as the persistent board context
+- sharpen `StageLane` so project progression is visually obvious
+- decide whether the first `ActivityFeed` is stage-scoped or project-scoped
 
-### Phase 3: Workflow completion
+### Phase 3: Detail workbench deepening
 
 Then:
 
-- tighten continue / resolve refresh behavior
-- decide whether the activity feed should remain stage-scoped or gain a dedicated project-level event aggregation path
-- align the frontend field usage against the frozen Mission Board contract
+- deepen `DetailRail` so stage, decision, asset, and event modes are all genuinely useful
+- ensure each mode exposes enough related context to keep the user inside the board
 
-### Phase 4: Test and delivery switch
+### Phase 4: State and interaction consolidation
+
+Then:
+
+- reduce `App.tsx` orchestration weight by moving state/query concerns into clearer frontend modules
+- separate board state, selected-entity state, and async loading/error state
+- tighten continue / resolve refresh behavior
+- improve empty states, loading states, and action-result feedback
+
+### Phase 5: Test and delivery switch
 
 Finally:
 
 - rewrite `tests/test_frontend.py` around React Mission Board behavior instead of Pipeline Dashboard behavior
 - keep `npm run build` as the frontend release check
 - treat `frontend/dist/index.html` as the production root artifact served by the backend
+- delete legacy dashboard assumptions only after the new board is stable enough to be the default surface
 
 ---
 
