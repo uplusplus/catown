@@ -2154,6 +2154,87 @@ A weak Catown interaction feels like this:
 
 ---
 
+## Interaction system summary
+
+At this point, the Catown interaction model can be summarized as one coherent system.
+
+### 1. Resting state: homepage mission board
+
+The default homepage is the calm operational surface.
+
+Its job is to show:
+
+- the current project situation through the hero
+- the best next move through the action-focus module
+- human-required decisions through the intervention queue
+- progression structure through the stage spine
+- filtered pulse through key changes
+
+This is the system-at-rest view.
+It should orient the user before asking anything from them.
+
+### 2. Active state: centered task layer
+
+When the user issues a command, opens a key action, or enters a decision boundary, Catown shifts into a centered task layer.
+
+That layer should follow the four-part structure already defined:
+
+- task header
+- current-step main area
+- compressed history summary
+- fixed bottom action bar
+
+This is the system-in-collaboration view.
+It should feel like one focused task is being advanced, not like a generic chat transcript.
+
+### 3. Language and UI work together
+
+The interaction engine is dual-channel:
+
+- natural language captures intent, revision, interruption, and correction
+- UI cards compress choices, expose structure, and accelerate confirmation
+
+The target behavior is fluid mixing, not forced mode switching.
+Users should be able to start with language, continue with cards, and correct with language again.
+
+### 4. Canonical task flows
+
+The first three canonical flows now define the core product behavior:
+
+- create project
+- continue project
+- handle decision or approval
+
+Together they cover:
+
+- turning vague intent into structured work
+- moving active work forward through system judgment
+- returning authority to the user at the boundary of automation
+
+### 5. Control model
+
+The control philosophy should remain consistent across the product:
+
+- the system should do as much interpretation and preparation as it safely can
+- the user should only be pulled in for the next necessary decision
+- once the user decides, Catown should resume forward motion and visibly update state
+
+This is the core loop:
+
+**show state -> focus the next move -> gather only the needed decision -> update visible project state**
+
+### 6. Product identity implication
+
+This unified interaction model is what separates Catown from:
+
+- dashboard software that only displays status
+- chat products that never solidify state
+- workflow tools that dump structure work onto the user
+
+Catown should feel like a project-operating interface that can both think and stage work clearly.
+
+---
+
 ## One-line summary
 
 **Catown should feel like an AI mission control system where users express intent naturally, the system guides them through only the necessary decisions, and every interaction resolves into visible project state.**
