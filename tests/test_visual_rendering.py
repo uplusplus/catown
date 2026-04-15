@@ -141,6 +141,14 @@ class TestDesignTokensAndStates:
         ]:
             assert selector in styles_source
 
+    def test_styles_define_transition_feedback_states(self, styles_source: str):
+        for selector in [
+            ".hero-shell.is-switching-project",
+            ".stage-lane.is-switching-stage",
+            ".stage-list.is-switching-stage",
+        ]:
+            assert selector in styles_source
+
 
 class TestBackendFrontendDelivery:
     def test_root_serves_built_frontend_artifact(self, client):

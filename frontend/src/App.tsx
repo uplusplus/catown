@@ -10,6 +10,7 @@ import { ProjectHero } from './components/ProjectHero';
 import { ProjectRail } from './components/ProjectRail';
 import { StageLane } from './components/StageLane';
 import { useBoardSelection } from './hooks/useBoardSelection';
+import { useBoardTransitions } from './hooks/useBoardTransitions';
 import { useDetailFeedback } from './hooks/useDetailFeedback';
 import { useProjectBoardData } from './hooks/useProjectBoardData';
 import type { EventItem } from './types';
@@ -18,6 +19,7 @@ function App() {
   const board = useProjectBoardData();
   const selection = useBoardSelection();
   const feedback = useDetailFeedback();
+  const transitions = useBoardTransitions();
 
   const {
     projects,
@@ -71,6 +73,8 @@ function App() {
     clearDetailError,
   } = feedback;
 
+  const { switchingProject, switchingStage, beginProjectSwitch, finishProjectSwitch, beginStageSwitch, finishStageSwitch } = transitions;
+
   async function loadProjectsAndSelect() {
     const projectList = await loadProjects();
     const nextProjectId = selectedProjectId ?? projectList[0]?.id ?? null;
@@ -86,10 +90,15 @@ function App() {
 
     let cancelled = false;
     async function loadProjectBoard(projectId: number) {
-      const preferredStageId = await hydrateProject(projectId);
-      if (cancelled) return;
-      resetForProject(preferredStageId);
-      clearDetailError();
+      beginProjectSwitch();
+      try {
+        const preferredStageId = await hydrateProject(projectId);
+        if (cancelled) return;
+        resetForProject(preferredStageId);
+        clearDetailError();
+      } finally {
+        if (!cancelled) finishProjectSwitch();
+      }
     }
 
     void loadProjectBoard(selectedProjectId);
@@ -106,9 +115,14 @@ function App() {
 
     let cancelled = false;
     async function loadStageBoard(stageRunId: number) {
-      const eventData = await hydrateStage(stageRunId);
-      if (cancelled) return;
-      syncSelectedEvent(eventData);
+      beginStageSwitch();
+      try {
+        const eventData = await hydrateStage(stageRunId);
+        if (cancelled) return;
+        syncSelectedEvent(eventData);
+      } finally {
+        if (!cancelled) finishStageSwitch();
+      }
     }
 
     void loadStageBoard(selectedStageRunId);
@@ -244,9 +258,14 @@ function App() {
         <main className={`main-board ${boardBusy ? 'is-busy' : ''}`}>
           {boardReady && overview ? (
             <>
-              <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} />
+              <ProjectHero overview={overview} onContinue={handleContinue} continuing={continuing} switchingProject={switchingProject} />
               <NextActionStrip action={overview.recommended_next_action} />
-              <StageLane stageRuns={stageRuns} selectedStageRunId={selectedStageRunId} onSelect={handleSelectStage} />
+              <StageLane
+                stageRuns={stageRuns}
+                selectedStageRunId={selectedStageRunId}
+                onSelect={handleSelectStage}
+                switchingStage={switchingStage}
+              />
               <section className="board-row two-up">
                 <DecisionPanel
                   decisions={decisions}

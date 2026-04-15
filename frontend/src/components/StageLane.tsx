@@ -7,19 +7,23 @@ type Props = {
   stageRuns: StageRun[];
   selectedStageRunId: number | null;
   onSelect: (stageRunId: number) => void;
+  switchingStage?: boolean;
 };
 
-export function StageLane({ stageRuns, selectedStageRunId, onSelect }: Props) {
+export function StageLane({ stageRuns, selectedStageRunId, onSelect, switchingStage = false }: Props) {
   return (
-    <section className="panel-shell stage-lane">
+    <section className={`panel-shell stage-lane ${switchingStage ? 'is-switching-stage' : ''}`}>
       <div className="section-header">
         <div>
           <p className="eyebrow">Project Progression</p>
           <h3>Stage Lane</h3>
         </div>
-        <span className="section-stat">{stageRuns.length} runs</span>
+        <span className="section-stat">
+          {switchingStage ? <Loader className="spin" size={14} /> : null}
+          {stageRuns.length} runs
+        </span>
       </div>
-      <div className="stage-list">
+      <div className={`stage-list ${switchingStage ? 'is-switching-stage' : ''}`}>
         {stageRuns.map((stageRun) => {
           const active = stageRun.id === selectedStageRunId;
           const stateClass = `stage-card-${stageRun.lifecycle.requires_attention ? 'attention' : stageRun.lifecycle.is_terminal ? 'terminal' : stageRun.lifecycle.is_active ? 'active' : 'idle'}`;

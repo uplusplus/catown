@@ -103,7 +103,7 @@
     2. 请求资源结构再正规化一层
        - [x] 将 `useProjectBoardData()` 进一步拆成 overview / detail 资源 hook，并保留组合层作为对外入口
        - [x] 收口 board 级 error 与 detail 级 error 的职责边界，减少 `App.tsx` 编排分支
-       - [ ] 为 project/stage 切换补更明确的局部 loading 语义，减少“整板一起忙碌”的反馈粒度
+       - [x] 为 project/stage 切换补更明确的局部 loading 语义，减少“整板一起忙碌”的反馈粒度
     3. Mission Board 交互收尾
        - [ ] 定型 `ActivityFeed` 应保持 stage 级还是提升为 project 级聚合视图
        - [ ] 继续强化 `ProjectHero / NextActionStrip` 的信息优先级，减少重复信息和低价值文案

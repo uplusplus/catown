@@ -1,4 +1,4 @@
-import { AlertTriangle, Play, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Loader, Play, ShieldCheck } from 'lucide-react';
 
 import { formatRelative, titleize } from '../lib/format';
 import type { ProjectOverview } from '../types';
@@ -7,19 +7,26 @@ type Props = {
   overview: ProjectOverview;
   onContinue: () => void;
   continuing: boolean;
+  switchingProject?: boolean;
 };
 
-export function ProjectHero({ overview, onContinue, continuing }: Props) {
+export function ProjectHero({ overview, onContinue, continuing, switchingProject = false }: Props) {
   const { project, release_readiness: readiness } = overview;
 
   return (
-    <section className="hero-shell panel-shell">
+    <section className={`hero-shell panel-shell ${switchingProject ? 'is-switching-project' : ''}`}>
       <div className="hero-copy">
         <p className="eyebrow">Selected Mission</p>
         <h1>{project.name}</h1>
         <p className="hero-vision">{project.one_line_vision || project.description || 'No project vision yet.'}</p>
         <div className="hero-meta-row">
           <span className="pill">{titleize(project.status)}</span>
+          {switchingProject ? (
+            <span className="pill muted">
+              <Loader className="spin" size={14} />
+              Syncing mission board
+            </span>
+          ) : null}
           <span className="pill muted">Stage: {titleize(project.current_stage)}</span>
           <span className="pill muted">Mode: {titleize(project.execution_mode)}</span>
           {project.health_status ? <span className="pill muted">Health: {titleize(project.health_status)}</span> : null}
