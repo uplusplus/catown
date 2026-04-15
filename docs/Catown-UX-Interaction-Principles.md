@@ -1728,6 +1728,167 @@ In short, the user provides the idea and Catown builds the project skeleton.
 
 ---
 
+## Standard task-layer example: continue project
+
+Continuing a project should be the second canonical task-layer flow.
+
+It expresses Catown's core operating value: not just creating project shells, but actively helping existing work move forward.
+
+This flow is different from project creation.
+It usually starts from known system state, so the system should judge first and ask second.
+
+### Entry paths
+
+A user may enter the flow through:
+
+- the homepage action-focus module
+- a light continue entry in hero context
+- natural language such as "continue this project" or "help me move this forward"
+
+### Step 0. Open the task layer
+
+The task layer opens in centered mode and establishes:
+
+- task title
+- project context
+- current stage context
+- exit or pause controls
+
+### Step 1. System situation scan
+
+Before asking the user for anything, Catown should assess the current project situation.
+
+It should check:
+
+- current stage
+- blockers
+- pending decisions
+- recommended next action
+- recent meaningful changes
+- whether there is a safe direct continuation path
+
+Guidance direction:
+
+- briefly tell the user that Catown is reviewing the best continuation path
+- avoid asking questions before this judgment is formed
+
+This is where the system earns trust by demonstrating situational awareness.
+
+### Step 2. Present the continuation judgment
+
+After the scan, the system should present a clear judgment about how continuation should proceed.
+
+Common judgment types include:
+
+1. direct continuation is safe
+2. a blocker must be resolved first
+3. several valid paths exist and the user must choose one
+4. continuation should pause until a risk or decision is reviewed
+
+Guidance direction:
+
+- explain the recommended path in one short decisive sentence
+- explain why this is the right continuation move now
+
+This is the key AI-OS moment of the flow.
+The system is not just exposing controls, it is forming a continuation judgment.
+
+### Step 3. Route to the correct primary card
+
+Based on the judgment, the flow should route to one primary interaction card.
+
+#### Case A. Direct continuation
+
+Primary unit:
+
+- continuation confirmation card
+
+This card may show:
+
+- current stage
+- what will happen next
+- expected output
+- low-risk indication when relevant
+
+#### Case B. Resolve blocker first
+
+Primary unit:
+
+- blocker analysis card
+
+This card may show:
+
+- blocker summary
+- why it is blocking progress
+- what delay affects
+- what the system recommends resolving first
+
+#### Case C. Choose between valid paths
+
+Primary unit:
+
+- path selection card
+
+This card may show:
+
+- option A
+- option B
+- option C
+- cost, speed, or risk differences
+
+#### Case D. Review risk before continuing
+
+Primary unit:
+
+- risk review or state-review card
+
+This card may show:
+
+- why direct continuation is not recommended
+- what risk is currently dominant
+- what should be reviewed before action proceeds
+
+The important rule is that "continue project" is not one card shape.
+It is a routing flow that chooses the right card based on system judgment.
+
+### Step 4. Enter local subflow when needed
+
+If the judgment leads to blocker resolution, path choice, or risk review, the flow should continue into a shorter local subflow.
+
+This means continue-project is a parent flow that can hand off into a more specific guided interaction.
+
+That handoff is a feature, not a flaw.
+It reflects real project progression logic.
+
+### Step 5. Execute and write back
+
+After the user confirms continuation, resolves the blocker, or chooses the path, the system should write the result back into visible board state.
+
+That should update, when relevant:
+
+- hero focus
+- action-focus module
+- intervention queue
+- stage spine
+- key changes
+
+The user should be able to feel that the project state actually moved.
+
+### What this flow proves
+
+A strong continue-project flow proves that Catown can:
+
+- inspect existing project state before asking for input
+- form a judgment about the best continuation path
+- explain when continuation is safe versus premature
+- route the user into the right local decision flow
+- update visible system state after the decision is made
+
+In short, continuing a project is not a blind "go" action.
+It is a short, high-quality progression decision session.
+
+---
+
 ## When to use conversational guidance
 
 ### Good fit
