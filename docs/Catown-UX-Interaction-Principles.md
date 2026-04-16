@@ -1453,14 +1453,17 @@ In the cockpit-first homepage, the route visualization belongs inside the center
 
 ### Orientation guidance
 
-For the homepage default state, a vertical or near-vertical spine is preferred over a broad horizontal roadmap.
+For the cockpit-first homepage, the strongest default form is:
 
-Why:
+- a horizontal main route across the upper portion of `Navigation Core`
+- a lower `Current Segment` panel expanding beneath the selected current route node
 
-- it supports stronger current-stage emphasis
-- it fits the homepage reading rhythm more naturally
-- it adapts better to responsive layouts
-- it avoids turning into a wide project-plan banner
+This is preferred over a purely vertical default spine because:
+
+- the macro route reads more naturally as a journey from start to destination
+- the route remains visible even when local stage detail expands
+- local detail can appear beneath the route without pushing the remaining route off-screen
+- it feels closer to navigation software than to a classic process tree
 
 ### Relationship to other modules
 
@@ -1651,6 +1654,14 @@ It should show:
 
 It should behave like navigation, not like a generic timeline.
 
+The preferred form is a restrained horizontal route track, not a flat percentage bar and not a workflow chart.
+
+The route should emphasize:
+
+- the current route point
+- the next critical gate
+- the remaining route silhouette
+
 ### Current-segment layer
 
 This is the local zoomed-in route view for the currently active stage.
@@ -1686,13 +1697,14 @@ It should help the user understand:
 
 ### Recommended structure
 
-The best model is a guided local segment track.
+The best model is a guided local segment track shown beneath the selected route point.
 
 It should not be:
 
 - a generic checklist
 - a full graph visualization
 - a database-style list of all tasks
+- a strict parent-child tree
 
 It should be:
 
@@ -1700,6 +1712,7 @@ It should be:
 - compact
 - local to the current stage
 - legible at a glance
+- focused on relationship and convergence rather than hierarchy
 
 ### Segment-track guidance
 
@@ -1710,6 +1723,7 @@ A good segment track should:
 - attach the responsible agent lightly
 - highlight the current tension point
 - surface the remaining gate conditions at the bottom
+- make convergence on the next gate legible
 
 This keeps the structure navigational instead of project-manager-like.
 
