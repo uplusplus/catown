@@ -38,7 +38,7 @@ export function DetailRail({
 }: Props) {
   let title = 'Detail Rail';
   let icon = <Workflow size={18} />;
-  let body: JSX.Element = <div className="empty-card">Select a stage, decision, asset, or event.</div>;
+  let body: JSX.Element = <div className="empty-card">Select a decision, asset, or event.</div>;
   let focusLabel = 'Board context';
 
   if (loading) {
@@ -56,85 +56,11 @@ export function DetailRail({
     body = <div className="detail-error-state">{error}</div>;
   }
 
-  if (!loading && !error && focus === 'stage' && stageDetail) {
-    title = `${titleize(stageDetail.stage_run.stage_type)} Run`;
-    focusLabel = `${titleize(stageDetail.stage_run.stage_type)} stage`;
+  if (!loading && !error && focus === 'stage') {
+    title = 'Detail Rail';
+    focusLabel = currentStageName ? `${titleize(currentStageName)} segment` : 'Current segment';
     icon = <Workflow size={18} />;
-    body = (
-      <div className="detail-stack">
-        <section className="detail-block">
-          <h4>Status</h4>
-          <p>{titleize(stageDetail.stage_run.status)}</p>
-          <small>{stageDetail.stage_run.summary || 'No stage summary yet.'}</small>
-        </section>
-        <section className="detail-block detail-grid-block">
-          <div>
-            <label>Phase</label>
-            <strong>{titleize(stageDetail.stage_run.lifecycle.phase)}</strong>
-          </div>
-          <div>
-            <label>Inputs</label>
-            <strong>{stageDetail.summary.input_count}</strong>
-          </div>
-          <div>
-            <label>Outputs</label>
-            <strong>{stageDetail.summary.output_count}</strong>
-          </div>
-          <div>
-            <label>Events</label>
-            <strong>{stageDetail.summary.event_count}</strong>
-          </div>
-        </section>
-        <section className="detail-block">
-          <h4>Inputs</h4>
-          <div className="detail-linked-list">
-            {stageDetail.input_assets.map((asset) => (
-              <button key={asset.id} className="detail-link-card" onClick={() => onSelectAsset(asset.id)} type="button">
-                <strong>{asset.title || titleize(asset.asset_type)}</strong>
-                <span>Input - {titleize(asset.asset_type)}</span>
-              </button>
-            ))}
-            {stageDetail.input_assets.length === 0 ? <div className="empty-card">No inputs linked yet.</div> : null}
-          </div>
-        </section>
-        <section className="detail-block">
-          <h4>Outputs</h4>
-          <div className="detail-linked-list">
-            {stageDetail.output_assets.map((asset) => (
-              <button key={asset.id} className="detail-link-card" onClick={() => onSelectAsset(asset.id)} type="button">
-                <strong>{asset.title || titleize(asset.asset_type)}</strong>
-                <span>Output - {titleize(asset.asset_type)}</span>
-              </button>
-            ))}
-            {stageDetail.output_assets.length === 0 ? <div className="empty-card">No outputs yet.</div> : null}
-          </div>
-        </section>
-        <section className="detail-block">
-          <h4>Decisions</h4>
-          <div className="detail-linked-list">
-            {stageDetail.decisions.map((decision) => (
-              <button key={decision.id} className="detail-link-card" onClick={() => onSelectDecision(decision.id)} type="button">
-                <strong>{decision.title}</strong>
-                <span>{titleize(decision.status)}</span>
-              </button>
-            ))}
-            {stageDetail.decisions.length === 0 ? <div className="empty-card">No linked decisions.</div> : null}
-          </div>
-        </section>
-        <section className="detail-block">
-          <h4>Events</h4>
-          <div className="detail-linked-list">
-            {stageDetail.events.slice(0, 5).map((event) => (
-              <button key={event.id} className="detail-link-card" onClick={() => onSelectEvent(event)} type="button">
-                <strong>{event.summary || titleize(event.event_type)}</strong>
-                <span>{titleize(event.event_type)}</span>
-              </button>
-            ))}
-            {stageDetail.events.length === 0 ? <div className="empty-card">No events captured yet.</div> : null}
-          </div>
-        </section>
-      </div>
-    );
+    body = <div className="empty-card">Stage detail now lives in Current Segment beneath the route view.</div>;
   }
 
   if (!loading && !error && focus === 'decision' && decisionDetail) {
@@ -268,7 +194,7 @@ export function DetailRail({
     );
   }
 
-  const trail = [projectName || 'Mission board', currentStageName ? titleize(currentStageName) : null, focusLabel].filter(Boolean);
+  const trail = [projectName || 'Cockpit homepage', currentStageName ? titleize(currentStageName) : null, focusLabel].filter(Boolean);
 
   return (
     <aside className="detail-rail panel-shell">

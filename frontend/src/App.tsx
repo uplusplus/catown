@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Compass, HelpCircle, Loader } from 'lucide-r
 
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
+import { CurrentSegment } from './components/CurrentSegment';
 import { DecisionPanel } from './components/DecisionPanel';
 import { DetailRail } from './components/DetailRail';
 import { HelpPanel } from './components/HelpPanel';
@@ -137,6 +138,8 @@ function App() {
 
   const boardReady = overview && selectedProjectId != null;
 
+  const currentStageName = stageDetail?.stage_run.stage_type ?? overview?.current_stage_run?.stage_type ?? null;
+
   const detailProps = useMemo(
     () => ({
       focus: detailFocus,
@@ -145,12 +148,12 @@ function App() {
       assetDetail,
       selectedEvent,
       projectName: overview?.project.name ?? null,
-      currentStageName: stageDetail?.stage_run.stage_type ?? overview?.current_stage_run?.stage_type ?? null,
+      currentStageName,
       onSelectDecision: handleSelectDecision,
       onSelectAsset: handleSelectAsset,
       onSelectEvent: handleSelectEvent,
     }),
-    [assetDetail, decisionDetail, detailFocus, overview, selectedEvent, stageDetail],
+    [assetDetail, decisionDetail, detailFocus, overview, selectedEvent, stageDetail, currentStageName],
   );
 
   async function handleCreateProject(payload: { name: string; one_line_vision?: string }) {
@@ -324,6 +327,15 @@ function App() {
                 onSelect={handleSelectStage}
                 switchingStage={switchingStage}
               />
+              <CurrentSegment
+                stageDetail={stageDetail}
+                projectName={overview.project.name}
+                loading={detailFocus === 'stage' && switchingStage}
+                error={detailFocus === 'stage' ? detailError ?? boardDetailError : null}
+                onSelectDecision={handleSelectDecision}
+                onSelectAsset={handleSelectAsset}
+                onSelectEvent={handleSelectEvent}
+              />
               <section className="board-row two-up">
                 <DecisionPanel
                   decisions={decisions}
@@ -343,7 +355,7 @@ function App() {
                 selectedEventId={selectedIds.eventId}
                 onSelect={handleSelectEvent}
                 projectName={overview.project.name}
-                currentStageName={stageDetail?.stage_run.stage_type ?? overview.current_stage_run?.stage_type ?? null}
+                currentStageName={currentStageName}
               />
             </>
           ) : (

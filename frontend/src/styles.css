@@ -202,6 +202,16 @@ button {
   gap: 12px;
 }
 
+.current-segment-shell {
+  padding: 20px;
+}
+
+.current-segment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .stage-list.is-switching-stage {
   opacity: 0.72;
 }
@@ -850,7 +860,8 @@ button.event-card {
   .hero-shell,
   .board-row.two-up,
   .hero-summary-grid,
-  .detail-grid-block {
+  .detail-grid-block,
+  .current-segment-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -871,7 +882,8 @@ button.event-card {
   .asset-panel,
   .activity-feed,
   .hero-shell,
-  .next-action {
+  .next-action,
+  .current-segment-shell {
     padding: 16px;
     border-radius: 22px;
   }
