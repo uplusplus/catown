@@ -1,6 +1,6 @@
 # Frontend Mission Board Migration Audit
 
-_Last updated: 2026-04-15_
+_Last updated: 2026-04-16_
 
 > **Status note (current state)**
 >
@@ -8,15 +8,18 @@ _Last updated: 2026-04-15_
 >
 > That is no longer the current frontend state.
 >
-> **Today, the default Catown frontend is the React/Vite/TypeScript Mission Board implemented in `frontend/src/`.**
-> `frontend/index.html` now serves as the Vite shell, and the primary board already runs on core `/api/v2/*` project-first flows.
+> **Today, the implemented Catown frontend baseline is the React/Vite/TypeScript shell in `frontend/src/`.**
+> Historically in this document, that shell is called the `Mission Board`; more precisely now, it should be understood as the **React Mission Board shell**.
+>
+> The product target has moved one step further: the target homepage is now the `cockpit-first homepage` centered on `Navigation Core`, as defined in `docs/Frontend-UX-Freeze-Cockpit-Homepage.md`.
 >
 > Read the sections below as:
 >
 > - **historical evidence** explaining why the old shell had to be retired,
-> - plus **migration guidance** for demoting remaining legacy pipeline/chatroom surfaces to compatibility or debug roles.
+> - **migration guidance** for demoting remaining legacy pipeline/chatroom surfaces to compatibility or debug roles,
+> - and **background context** for the first React shell that preceded the newer cockpit-first UX target.
 >
-> This document should no longer be read as saying the legacy Pipeline Dashboard is still the active main frontend.
+> This document should no longer be read as defining the latest homepage UX name or structure.
 
 ## Purpose
 
@@ -26,7 +29,7 @@ That is the wrong optimization target.
 
 The real question is:
 
-**Which parts of the current frontend still have product value, which parts are legacy pipeline shell, and what should the new project-first Mission Board look like?**
+**Which parts of the current frontend still have product value, which parts are legacy pipeline shell, and what should the new project-first React shell look like before it evolves into the cockpit-first homepage?**
 
 The backend refactor already moved the domain center of gravity to:
 
@@ -62,7 +65,7 @@ That next move has now largely been carried out:
 1. current UI blocks were audited for product value
 2. a Mission Board information architecture was defined
 3. the new primary screen was bound to `/api/v2/*`
-4. the React Mission Board replaced the old dashboard as the default main surface
+4. the React Mission Board shell replaced the old dashboard as the default main surface
 
 What remains is the cleanup tail: demoting or retiring remaining legacy pipeline/chatroom surfaces in slices.
 

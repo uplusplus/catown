@@ -2,7 +2,26 @@
 
 **Date**: 2026-04-15
 **Status**: Accepted
-**Related**: `docs/Frontend-Mission-Board-Migration-Audit.md`, `docs/Mission-Board-Minimum-V2-Contract.md`, `docs/Mission-Board-Information-Architecture.md`
+**Related**: `docs/Frontend-Mission-Board-Migration-Audit.md`, `docs/Mission-Board-Minimum-V2-Contract.md`, `docs/Mission-Board-Information-Architecture.md`, `docs/Frontend-UX-Freeze-Cockpit-Homepage.md`
+
+---
+
+## Status note (2026-04-16)
+
+This ADR remains the accepted implementation-architecture decision for the React/Vite frontend reset.
+
+However, its product-language center of gravity is now historical.
+The `React + Vite + TypeScript` Mission Board described here should now be read as the **React Mission Board shell**: the implementation baseline that replaced the legacy Pipeline Dashboard.
+
+The newer product-level UX target is the `cockpit-first homepage` centered on `Navigation Core`, as frozen in `docs/Frontend-UX-Freeze-Cockpit-Homepage.md`.
+
+So this ADR still answers:
+
+- why the frontend moved to React/Vite/TypeScript
+- why legacy pipeline/chatroom shells were deprecated
+- what implementation shell was first established in `frontend/src/`
+
+But it should no longer be read as the final homepage UX definition.
 
 ---
 
@@ -218,3 +237,6 @@ Finally:
 ## One-line summary
 
 The frontend now officially moves to a React/Vite/TypeScript Mission Board organized around `Project / StageRun / Decision / Asset / Event`, with no compatibility-first commitment to the legacy Pipeline Dashboard.
+
+As of `2026-04-16`, treat that Mission Board wording as the name of the first React implementation shell, not the latest product-target homepage name.
+The current UX target now lives in the cockpit-first homepage definition.
