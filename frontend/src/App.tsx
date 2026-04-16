@@ -3,14 +3,11 @@ import { AlertCircle, CheckCircle2, Compass, HelpCircle, Loader } from 'lucide-r
 
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetPanel } from './components/AssetPanel';
-import { CurrentSegment } from './components/CurrentSegment';
 import { DecisionPanel } from './components/DecisionPanel';
-import { DetailRail } from './components/DetailRail';
 import { HelpPanel } from './components/HelpPanel';
-import { NextActionStrip } from './components/NextActionStrip';
-import { ProjectHero } from './components/ProjectHero';
+import { NavigationCore } from './components/NavigationCore';
 import { ProjectRail } from './components/ProjectRail';
-import { StageLane } from './components/StageLane';
+import { StatusRail } from './components/StatusRail';
 import { useBoardSelection } from './hooks/useBoardSelection';
 import { useBoardTransitions } from './hooks/useBoardTransitions';
 import { useDetailFeedback } from './hooks/useDetailFeedback';
@@ -140,22 +137,6 @@ function App() {
 
   const currentStageName = stageDetail?.stage_run.stage_type ?? overview?.current_stage_run?.stage_type ?? null;
 
-  const detailProps = useMemo(
-    () => ({
-      focus: detailFocus,
-      stageDetail,
-      decisionDetail,
-      assetDetail,
-      selectedEvent,
-      projectName: overview?.project.name ?? null,
-      currentStageName,
-      onSelectDecision: handleSelectDecision,
-      onSelectAsset: handleSelectAsset,
-      onSelectEvent: handleSelectEvent,
-    }),
-    [assetDetail, decisionDetail, detailFocus, overview, selectedEvent, stageDetail, currentStageName],
-  );
-
   async function handleCreateProject(payload: { name: string; one_line_vision?: string }) {
     const created = await runCreateProject(payload);
     if (!created) return;
@@ -245,6 +226,7 @@ function App() {
   }
 
   const boardBusy = continuing || resolvingId != null;
+  const stageSurfaceError = detailFocus === 'stage' ? detailError ?? boardDetailError : null;
 
   function handleReviewPendingDecision() {
     const firstPendingDecisionId = overview?.pending_decisions[0]?.id ?? decisions.find((decision) => decision.status === 'pending')?.id ?? null;
@@ -310,28 +292,18 @@ function App() {
         <main className={`main-board ${boardBusy ? 'is-busy' : ''}`}>
           {boardReady && overview ? (
             <>
-              <ProjectHero
+              <NavigationCore
                 overview={overview}
+                stageRuns={stageRuns}
+                stageDetail={stageDetail}
+                selectedStageRunId={selectedStageRunId}
+                switchingProject={switchingProject}
+                switchingStage={switchingStage}
+                continuing={continuing}
+                detailError={stageSurfaceError}
                 onContinue={handleContinue}
                 onReviewDecision={handleReviewPendingDecision}
-                continuing={continuing}
-                switchingProject={switchingProject}
-              />
-              <NextActionStrip
-                action={overview.recommended_next_action}
-                blockingReason={overview.project.blocking_reason}
-              />
-              <StageLane
-                stageRuns={stageRuns}
-                selectedStageRunId={selectedStageRunId}
-                onSelect={handleSelectStage}
-                switchingStage={switchingStage}
-              />
-              <CurrentSegment
-                stageDetail={stageDetail}
-                projectName={overview.project.name}
-                loading={detailFocus === 'stage' && switchingStage}
-                error={detailFocus === 'stage' ? detailError ?? boardDetailError : null}
+                onSelectStage={handleSelectStage}
                 onSelectDecision={handleSelectDecision}
                 onSelectAsset={handleSelectAsset}
                 onSelectEvent={handleSelectEvent}
@@ -366,7 +338,7 @@ function App() {
           )}
         </main>
 
-        <DetailRail {...detailProps} loading={detailLoading} error={detailError ?? boardDetailError} />
+        <StatusRail overview={overview} stageDetail={stageDetail} selectedStageName={currentStageName} />
       </div>
     </div>
   );

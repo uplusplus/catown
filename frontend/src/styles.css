@@ -202,6 +202,97 @@ button {
   gap: 12px;
 }
 
+.navigation-core {
+  padding: 22px;
+}
+
+.navigation-core-header {
+  margin-bottom: 18px;
+}
+
+.navigation-core-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.navigation-core-route {
+  margin-bottom: 18px;
+}
+
+.navigation-action-area {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.navigation-action-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  gap: 16px;
+}
+
+.action-cta-block,
+.operator-signal-block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.action-cta-copy,
+.action-cta-meta,
+.operator-signal-grid,
+.operator-signal-head,
+.status-row-head {
+  display: flex;
+  gap: 12px;
+}
+
+.action-cta-copy {
+  flex-direction: column;
+}
+
+.action-cta-copy strong,
+.operator-signal-head strong,
+.status-row-head strong {
+  margin: 0;
+}
+
+.action-cta-meta {
+  flex-wrap: wrap;
+}
+
+.operator-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.inline-link-button,
+.inline-status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.inline-link-button {
+  justify-content: flex-start;
+  padding: 0;
+  background: transparent;
+}
+
+.status-rail {
+  padding: 20px;
+}
+
+.status-warning-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
 .current-segment-shell {
   padding: 20px;
 }
@@ -1004,8 +1095,14 @@ button.event-card {
   .detail-grid-block,
   .current-segment-grid,
   .route-focus-card,
-  .route-focus-meta {
+  .route-focus-meta,
+  .navigation-action-grid,
+  .operator-signal-grid {
     grid-template-columns: 1fr;
+  }
+
+  .navigation-core-badges {
+    justify-content: flex-start;
   }
 
   .route-stop {
@@ -1038,7 +1135,8 @@ button.event-card {
   .activity-feed,
   .hero-shell,
   .next-action,
-  .current-segment-shell {
+  .current-segment-shell,
+  .navigation-core {
     padding: 16px;
     border-radius: 22px;
   }
