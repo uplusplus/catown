@@ -33,7 +33,7 @@ export function ProjectRail({ projects, selectedProjectId, onSelect, onCreate, c
       <div className="rail-header">
         <div>
           <p className="eyebrow">Project Roster</p>
-          <h2>Mission Board</h2>
+          <h2>Navigation Core</h2>
         </div>
         <span className="rail-count">{projects.length}</span>
       </div>
@@ -84,7 +84,7 @@ export function ProjectRail({ projects, selectedProjectId, onSelect, onCreate, c
             </button>
           );
         })}
-        {projects.length === 0 ? <div className="empty-card">No projects yet. Create one to start the board.</div> : null}
+        {projects.length === 0 ? <div className="empty-card">No projects yet. Create one to start the cockpit.</div> : null}
       </div>
     </aside>
   );

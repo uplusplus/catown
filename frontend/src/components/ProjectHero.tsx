@@ -26,7 +26,7 @@ export function ProjectHero({ overview, onContinue, onReviewDecision, continuing
           {switchingProject ? (
             <span className="pill muted">
               <Loader className="spin" size={14} />
-              Syncing mission board
+              Syncing cockpit
             </span>
           ) : null}
           <span className="pill muted">Stage: {titleize(project.current_stage)}</span>

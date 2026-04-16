@@ -258,7 +258,7 @@ function App() {
       <div className="app-topbar">
         <div>
           <p className="eyebrow">Catown Command Surface</p>
-          <h1>Project-first Mission Board</h1>
+          <h1>Cockpit-First Homepage</h1>
         </div>
         <div className="topbar-actions">
           <button className="topbar-help-button" type="button" onClick={() => setHelpOpen(true)}>
