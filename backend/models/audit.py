@@ -72,6 +72,9 @@ class Event(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
     event_type = Column(String, nullable=False, index=True)
     # event_type 枚举: stage_start, stage_end, stage_retry, gate_blocked,
     #   gate_approved, gate_rejected, rollback, agent_message, boss_instruction,

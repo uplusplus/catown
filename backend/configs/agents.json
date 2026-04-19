@@ -1,31 +1,16 @@
 {
   "global_llm": {
     "provider": {
-      "baseUrl": "https://openrouter.ai/api/v1",
-      "apiKey": "${OPENROUTER_API_KEY}",
-      "auth": "api-key",
-      "api": "openai-completions",
+      "baseUrl": "https://apikey.soxio.me/openai/v1",
+      "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
       "models": [
         {
-          "id": "openrouter/free",
-          "name": "openrouter/free",
-          "api": "openai-completions",
-          "reasoning": false,
-          "input": [
-            "text"
-          ],
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "contextWindow": 128000,
-          "maxTokens": 4096
+          "id": "gpt-5.4-mini",
+          "name": "gpt-5.4-mini"
         }
       ]
     },
-    "default_model": "openrouter/free"
+    "default_model": "gpt-5.4-mini"
   },
   "agents": {
     "analyst": {
@@ -83,29 +68,14 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free",
+      "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "${OPENROUTER_API_KEY}",
-        "auth": "api-key",
-        "api": "openai-completions",
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
         "models": [
           {
-            "id": "openrouter/free",
-            "name": "openrouter/free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 128000,
-            "maxTokens": 4096
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
           }
         ]
       }
@@ -167,29 +137,14 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free",
+      "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "${OPENROUTER_API_KEY}",
-        "auth": "api-key",
-        "api": "openai-completions",
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
         "models": [
           {
-            "id": "openrouter/free",
-            "name": "openrouter/free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 128000,
-            "maxTokens": 4096
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
           }
         ]
       }
@@ -253,29 +208,14 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free",
+      "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "${OPENROUTER_API_KEY}",
-        "auth": "api-key",
-        "api": "openai-completions",
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
         "models": [
           {
-            "id": "openrouter/free",
-            "name": "openrouter/free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 128000,
-            "maxTokens": 4096
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
           }
         ]
       }
@@ -334,29 +274,14 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free",
+      "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "${OPENROUTER_API_KEY}",
-        "auth": "api-key",
-        "api": "openai-completions",
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
         "models": [
           {
-            "id": "openrouter/free",
-            "name": "openrouter/free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 128000,
-            "maxTokens": 4096
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
           }
         ]
       }
@@ -416,29 +341,14 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free",
+      "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "apiKey": "${OPENROUTER_API_KEY}",
-        "auth": "api-key",
-        "api": "openai-completions",
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
         "models": [
           {
-            "id": "openrouter/free",
-            "name": "openrouter/free",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "cost": {
-              "input": 0,
-              "output": 0,
-              "cacheRead": 0,
-              "cacheWrite": 0
-            },
-            "contextWindow": 128000,
-            "maxTokens": 4096
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
           }
         ]
       }
@@ -499,7 +409,17 @@
         "max_retain_days": 30,
         "long_term_max_tokens": 100000
       },
-      "default_model": "openrouter/free"
+      "default_model": "gpt-5.4-mini",
+      "provider": {
+        "baseUrl": "https://apikey.soxio.me/openai/v1",
+        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "models": [
+          {
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini"
+          }
+        ]
+      }
     }
   }
 }

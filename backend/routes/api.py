@@ -7,6 +7,9 @@ import re
 import json
 import os
 import asyncio
+import shutil
+import subprocess
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -20,6 +23,7 @@ from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 from config import settings
+from services.session_service import SessionService
 
 logger = logging.getLogger("catown.api")
 
@@ -66,6 +70,257 @@ router = APIRouter()
 
 # ==================== Agent 响应处理 ====================
 
+def _find_mentioned_agent_name(message: str) -> Optional[str]:
+    """Return the first @mentioned agent name in a message, if any."""
+    mentioned_names = re.findall(r'@(\w+)', message or "")
+    return mentioned_names[0] if mentioned_names else None
+
+
+def _resolve_standalone_target_agent(db: Session, user_message: str) -> Optional[Agent]:
+    """
+    Resolve which agent should answer in a standalone chat.
+
+    Prefer the first @mentioned agent; otherwise fall back to assistant.
+    """
+    target_agent_name = _find_mentioned_agent_name(user_message)
+    if target_agent_name:
+        mentioned_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+        if mentioned_agent:
+            return mentioned_agent
+
+    return db.query(Agent).filter(Agent.name == "assistant").first()
+
+
+def _list_global_agents(db: Session) -> List[Agent]:
+    """List all available agents for standalone chat routing."""
+    return db.query(Agent).order_by(Agent.name.asc()).all()
+
+
+def _snapshot_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Create a JSON-safe snapshot of the exact messages sent to the LLM."""
+    normalized: List[Dict[str, Any]] = []
+    for item in messages or []:
+        if not isinstance(item, dict):
+            normalized.append({"value": str(item)})
+            continue
+        try:
+            normalized.append(json.loads(json.dumps(item, ensure_ascii=False)))
+        except TypeError:
+            fallback: Dict[str, Any] = {}
+            for key, value in item.items():
+                try:
+                    fallback[key] = json.loads(json.dumps(value, ensure_ascii=False))
+                except TypeError:
+                    fallback[key] = str(value)
+            normalized.append(fallback)
+    return normalized
+
+
+def _format_json_block(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _build_llm_card_payload(
+    *,
+    agent_name: str,
+    llm_client: Any,
+    turn: int,
+    duration_ms: int,
+    system_prompt: str,
+    prompt_messages: List[Dict[str, Any]],
+    response_content: str,
+    tool_call_previews: List[Dict[str, Any]],
+    raw_tool_calls: Optional[List[Dict[str, Any]]] = None,
+    usage: Optional[Dict[str, Any]] = None,
+    finish_reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    usage = usage or {}
+    raw_response = {
+        "role": "assistant",
+        "content": response_content or "",
+        "tool_calls": raw_tool_calls or [],
+        "usage": usage,
+        "finish_reason": finish_reason,
+    }
+    return {
+        "agent": agent_name,
+        "model": getattr(llm_client, "model", ""),
+        "turn": turn,
+        "tokens_in": usage.get("prompt_tokens", 0),
+        "tokens_out": usage.get("completion_tokens", 0),
+        "duration_ms": duration_ms,
+        "system_prompt": system_prompt or "",
+        "prompt_messages": _format_json_block(prompt_messages),
+        "response": response_content or "",
+        "raw_response": _format_json_block(raw_response),
+        "tool_calls": tool_call_previews,
+    }
+
+async def _trigger_standalone_assistant_response(db: Session, chatroom_id: int, user_message: str):
+    """Generate a plain assistant reply for standalone chats."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        logger.debug("[ No chatroom found for standalone response")
+        return
+
+    assistant = _resolve_standalone_target_agent(db, user_message)
+
+    if assistant:
+        llm_client = get_llm_client_for_agent(assistant.name)
+        assistant_name = assistant.name
+        assistant_id = assistant.id
+        system_prompt = assistant.system_prompt or "You are assistant, a helpful AI collaborator."
+    else:
+        llm_client = get_default_llm_client()
+        assistant_name = "assistant"
+        assistant_id = None
+        system_prompt = "You are assistant, a helpful AI collaborator."
+
+    system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
+
+    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
+    context_messages = [{"role": "system", "content": system_prompt}]
+    for msg in recent_messages[-10:]:
+        if msg.agent_name:
+            context_messages.append({"role": "assistant", "content": msg.content})
+        else:
+            context_messages.append({"role": "user", "content": msg.content})
+
+    response_content = await llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
+    if not response_content:
+        logger.debug("[ Standalone assistant returned empty response")
+        return
+
+    agent_response = await chatroom_manager.send_message(
+        chatroom_id=chatroom_id,
+        agent_id=assistant_id,
+        content=response_content,
+        message_type="text",
+        agent_name=assistant_name,
+    )
+
+    from routes.websocket import websocket_manager
+    await websocket_manager.broadcast_to_room({
+        "type": "message",
+        "id": agent_response.id,
+        "content": response_content,
+        "agent_name": assistant_name,
+        "message_type": "text",
+        "created_at": agent_response.created_at.isoformat(),
+    }, chatroom_id)
+
+    if assistant_id and len(response_content) > 30:
+        asyncio.create_task(_extract_memories(
+            agent_id=assistant_id,
+            agent_name=assistant_name,
+            user_message=user_message,
+            agent_response=response_content,
+        ))
+
+
+async def _stream_standalone_assistant_response(
+    db: Session,
+    chatroom_id: int,
+    user_message: str,
+    sse_json,
+):
+    """Stream a plain assistant reply for standalone chats."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        yield f"data: {sse_json.dumps({'type': 'error', 'error': 'Chatroom not found'})}\n\n"
+        return
+
+    assistant = _resolve_standalone_target_agent(db, user_message)
+
+    if assistant:
+        llm_client = get_llm_client_for_agent(assistant.name)
+        assistant_name = assistant.name
+        assistant_id = assistant.id
+        system_prompt = assistant.system_prompt or "You are assistant, a helpful AI collaborator."
+    else:
+        llm_client = get_default_llm_client()
+        assistant_name = "assistant"
+        assistant_id = None
+        system_prompt = "You are assistant, a helpful AI collaborator."
+
+    system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
+
+    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
+    context_messages = [{"role": "system", "content": system_prompt}]
+    for msg in recent_messages[-10:]:
+        if msg.agent_name:
+            context_messages.append({"role": "assistant", "content": msg.content})
+        else:
+            context_messages.append({"role": "user", "content": msg.content})
+    prompt_snapshot = _snapshot_llm_messages(context_messages)
+
+    yield f"data: {sse_json.dumps({'type': 'agent_start', 'agent_name': assistant_name, 'model': getattr(llm_client, 'model', ''), 'turn': 1, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(prompt_snapshot)}, ensure_ascii=False)}\n\n"
+
+    final_content = ""
+    async for event in llm_client.chat_stream(context_messages):
+        if event["type"] == "content":
+            final_content += event["delta"]
+            yield f"data: {sse_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
+            continue
+
+        if event["type"] == "done":
+            response_content = event.get("full_content") or final_content
+            llm_payload = _build_llm_card_payload(
+                agent_name=assistant_name,
+                llm_client=llm_client,
+                turn=1,
+                duration_ms=0,
+                system_prompt=system_prompt,
+                prompt_messages=prompt_snapshot,
+                response_content=response_content,
+                tool_call_previews=[],
+                raw_tool_calls=event.get("tool_calls"),
+                usage=event.get("usage"),
+                finish_reason=event.get("finish_reason"),
+            )
+            llm_payload["type"] = "llm_call"
+            llm_payload["source"] = "chatroom"
+            await _store_runtime_card(chatroom_id, llm_payload)
+            yield f"data: {sse_json.dumps(llm_payload, ensure_ascii=False)}\n\n"
+            final_content = response_content
+            break
+
+        if event["type"] == "error":
+            yield f"data: {sse_json.dumps({'type': 'error', 'error': event['error']})}\n\n"
+            return
+
+    if not final_content:
+        final_content = "(Agent returned empty response)"
+
+    agent_response = await chatroom_manager.send_message(
+        chatroom_id=chatroom_id,
+        agent_id=assistant_id,
+        content=final_content,
+        message_type="text",
+        agent_name=assistant_name,
+    )
+
+    from routes.websocket import websocket_manager
+    await websocket_manager.broadcast_to_room({
+        "type": "message",
+        "id": agent_response.id,
+        "content": final_content,
+        "agent_name": assistant_name,
+        "message_type": "text",
+        "created_at": agent_response.created_at.isoformat(),
+    }, chatroom_id)
+
+    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id})}\n\n"
+
+    if assistant_id and len(final_content) > 30:
+        asyncio.create_task(_extract_memories(
+            agent_id=assistant_id,
+            agent_name=assistant_name,
+            user_message=user_message,
+            agent_response=final_content,
+        ))
+
+
 async def trigger_agent_response(chatroom_id: int, user_message: str):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
@@ -78,13 +333,25 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         
         # 1. 获取聊天室关联的项目
         chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-        if not chatroom or not chatroom.project_id:
-            logger.debug(f"[ No chatroom or project_id found")
+        if not chatroom:
+            logger.debug(f"[ No chatroom found")
             return
-        
-        project = db.query(Project).filter(Project.id == chatroom.project_id).first()
+
+        project = _resolve_chatroom_project(db, chatroom)
         if not project:
-            logger.debug(f"[ No project found")
+            mentioned_names = re.findall(r'@(\w+)', user_message) if '@' in user_message else []
+            if len(mentioned_names) > 1:
+                logger.info(f"[Collab] Standalone multi-agent pipeline triggered: {mentioned_names}")
+                await _run_multi_agent_pipeline(
+                    chatroom_id=chatroom_id,
+                    project=None,
+                    agents=_list_global_agents(db),
+                    agent_names=mentioned_names,
+                    user_message=user_message,
+                    db=db,
+                )
+                return
+            await _trigger_standalone_assistant_response(db, chatroom_id, user_message)
             return
         
         logger.debug(f"[ Found project: {project.name}")
@@ -459,18 +726,28 @@ async def _run_single_agent_turn(
 
     # 构建 system prompt
     system_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
-    system_prompt += f"\n\nCurrent project: {project.name}"
-    if project.description:
-        system_prompt += f"\nProject description: {project.description}"
+    if project:
+        system_prompt += f"\n\nCurrent project: {project.name}"
+        if project.description:
+            system_prompt += f"\nProject description: {project.description}"
+    else:
+        system_prompt += (
+            "\n\nThis is a standalone chat. Reply directly, stay concise, "
+            "and coordinate with mentioned teammates when it helps."
+        )
 
     available_tools = tool_registry.list_tools()
     if available_tools:
         system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
 
-    # 注入项目中所有 Agent 列表
+    # 注入当前可用 Agent 列表
     team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
-    system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
-    system_prompt += f"\n\nYou are **{agent.name}** (role: {agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
+    team_label = "Team members in this project" if project else "Available agents in this standalone chat"
+    system_prompt += f"\n\n{team_label}:\n" + "\n".join(team_members)
+    system_prompt += (
+        f"\n\nYou are **{agent.name}** (role: {agent.role}). "
+        "You can use tools to communicate with or delegate tasks to your teammates."
+    )
 
     # 记忆注入
     own_memories = (
@@ -577,13 +854,13 @@ async def _run_multi_agent_pipeline(
     for name in agent_names:
         agent = next((a for a in agents if a.name == name), None)
         if not agent:
-            # 自动分配
             global_agent = db.query(Agent).filter(Agent.name == name).first()
-            if global_agent:
+            if global_agent and project:
                 assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
                 db.add(assignment)
                 db.commit()
                 agents.append(global_agent)
+            if global_agent:
                 agent = global_agent
         if agent and agent not in resolved_agents:
             resolved_agents.append(agent)
@@ -652,7 +929,34 @@ class AgentInfo(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    agent_names: List[str] = ["analyst"]
+    agent_names: List[str] = ["assistant"]
+    workspace_path: Optional[str] = None
+
+
+class ProjectFromChatCreate(ProjectCreate):
+    source_chatroom_id: int
+
+
+class ChatCreate(BaseModel):
+    title: Optional[str] = None
+
+
+class ChatUpdate(BaseModel):
+    title: str
+
+
+class ProjectSubchatCreate(BaseModel):
+    title: Optional[str] = None
+
+
+class ChatInfo(BaseModel):
+    id: int
+    title: str
+    session_type: str
+    is_visible_in_chat_list: bool
+    project_id: Optional[int] = None
+    agent_count: int = 0
+    updated_at: str
 
 
 class ProjectInfo(BaseModel):
@@ -660,8 +964,20 @@ class ProjectInfo(BaseModel):
     name: str
     description: Optional[str]
     status: str
+    display_order: int
     chatroom_id: Optional[int]
+    default_chatroom_id: Optional[int]
+    workspace_path: Optional[str] = None
+    created_from_chatroom_id: Optional[int] = None
     agents: List[AgentInfo]
+
+
+class ProjectUpdate(BaseModel):
+    name: str
+
+
+class ProjectReorderRequest(BaseModel):
+    project_ids: List[int]
 
 
 class MessageRequest(BaseModel):
@@ -673,6 +989,109 @@ class MessageResponse(BaseModel):
     content: str
     agent_name: Optional[str]
     message_type: str
+    created_at: str
+
+
+async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> None:
+    """Persist runtime cards so chat refresh can replay execution history."""
+    card_payload = dict(payload)
+    await chatroom_manager.send_message(
+        chatroom_id=chatroom_id,
+        agent_id=None,
+        content=card_payload.get("type", "runtime_card"),
+        message_type="runtime_card",
+        metadata={"card": card_payload},
+    )
+
+
+def _serialize_project_agents(db: Session, project_id: int) -> List[Agent]:
+    assignments = db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).all()
+    agent_ids = [assignment.agent_id for assignment in assignments]
+    if not agent_ids:
+        return []
+    return db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+
+
+def _open_workspace_path(workspace_path: str) -> None:
+    resolved = Path(workspace_path).expanduser().resolve()
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Workspace path not found")
+
+    if os.name == "nt":
+        subprocess.Popen(["explorer", str(resolved)])
+        return
+
+    if os.getenv("WSL_DISTRO_NAME"):
+        explorer = shutil.which("explorer.exe")
+        wslpath = shutil.which("wslpath")
+        if explorer and wslpath:
+            windows_path = subprocess.check_output([wslpath, "-w", str(resolved)], text=True).strip()
+            subprocess.Popen([explorer, windows_path])
+            return
+
+    opener = "open" if shutil.which("open") else shutil.which("xdg-open")
+    if opener:
+        subprocess.Popen([opener, str(resolved)])
+        return
+
+    raise HTTPException(status_code=500, detail="No file manager opener is available")
+
+
+def _resolve_chatroom_project(db: Session, chatroom: Chatroom | None) -> Optional[Project]:
+    current = chatroom
+    visited_ids: set[int] = set()
+    while current:
+        if current.project_id:
+            return db.query(Project).filter(Project.id == current.project_id).first()
+        if not current.source_chatroom_id or current.source_chatroom_id in visited_ids:
+            return None
+        visited_ids.add(current.source_chatroom_id)
+        current = db.query(Chatroom).filter(Chatroom.id == current.source_chatroom_id).first()
+    return None
+
+
+def _serialize_chat(db: Session, chatroom: Chatroom) -> ChatInfo:
+    project = _resolve_chatroom_project(db, chatroom)
+    agent_count = 0
+    if project:
+        agent_count = db.query(AgentAssignment).filter(AgentAssignment.project_id == project.id).count()
+
+    return ChatInfo(
+        id=chatroom.id,
+        title=chatroom.title or "New Chat",
+        session_type="project-bound" if project else (chatroom.session_type or "standalone"),
+        is_visible_in_chat_list=bool(chatroom.is_visible_in_chat_list),
+        project_id=project.id if project else None,
+        agent_count=agent_count,
+        updated_at=chatroom.created_at.isoformat() if chatroom.created_at else "",
+    )
+
+
+def _serialize_project(db: Session, project: Project) -> ProjectInfo:
+    agents = _serialize_project_agents(db, project.id)
+    default_chatroom = None
+    if project.default_chatroom_id:
+        default_chatroom = db.query(Chatroom).filter(Chatroom.id == project.default_chatroom_id).first()
+    if default_chatroom is None:
+        default_chatroom = db.query(Chatroom).filter(Chatroom.project_id == project.id).first()
+
+    chatroom_id = default_chatroom.id if default_chatroom else None
+
+    return ProjectInfo(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        status=project.status,
+        display_order=int(project.display_order or 0),
+        chatroom_id=chatroom_id,
+        default_chatroom_id=chatroom_id,
+        workspace_path=project.workspace_path,
+        created_from_chatroom_id=default_chatroom.source_chatroom_id if default_chatroom else None,
+        agents=[
+            AgentInfo(id=agent.id, name=agent.name, role=agent.role, is_active=agent.is_active)
+            for agent in agents
+        ],
+    )
 
 
 # ==================== Agent 相关 ====================
@@ -772,90 +1191,144 @@ async def get_agent_memory(agent_id: int, db: Session = Depends(get_db)):
 @router.get("/projects", response_model=List[ProjectInfo])
 async def list_projects(db: Session = Depends(get_db)):
     """获取所有项目列表"""
-    projects = db.query(Project).all()
-    
-    result = []
-    for project in projects:
-        # 获取项目分配的 Agent
-        assignments = db.query(AgentAssignment).filter(AgentAssignment.project_id == project.id).all()
-        agent_ids = [a.agent_id for a in assignments]
-        
-        agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-        
-        result.append(ProjectInfo(
-            id=project.id,
-            name=project.name,
-            description=project.description,
-            status=project.status,
-            chatroom_id=project.chatroom.id if project.chatroom else None,
-            agents=[
-                AgentInfo(id=a.id, name=a.name, role=a.role, is_active=a.is_active)
-                for a in agents
-            ]
-        ))
-    
-    return result
+    projects = db.query(Project).order_by(Project.display_order.asc(), Project.id.asc()).all()
+    return [_serialize_project(db, project) for project in projects]
+
+
+@router.get("/chats", response_model=List[ChatInfo])
+async def list_chats(db: Session = Depends(get_db)):
+    """List visible standalone chats."""
+    service = SessionService(db)
+    return [_serialize_chat(db, chatroom) for chatroom in service.list_visible_chats()]
+
+
+@router.post("/chats", response_model=ChatInfo)
+async def create_chat(chat_create: ChatCreate, db: Session = Depends(get_db)):
+    """Create a standalone chat."""
+    service = SessionService(db)
+    chatroom = service.create_standalone_chat(chat_create.title)
+    return _serialize_chat(db, chatroom)
+
+
+@router.delete("/chats/{chat_id}")
+async def delete_chat(chat_id: int, db: Session = Depends(get_db)):
+    """Delete a standalone chat and its messages."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chat_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if chatroom.session_type != "standalone":
+        raise HTTPException(status_code=400, detail="Only standalone chats can be deleted here")
+
+    db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
+    db.delete(chatroom)
+    chatroom_manager.chatrooms.pop(chatroom.id, None)
+    db.commit()
+
+    return {"message": "Chat deleted successfully"}
+
+
+@router.put("/chats/{chat_id}", response_model=ChatInfo)
+async def update_chat(chat_id: int, chat_update: ChatUpdate, db: Session = Depends(get_db)):
+    """Rename a standalone chat."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chat_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if chatroom.session_type != "standalone":
+        raise HTTPException(status_code=400, detail="Only standalone chats can be renamed here")
+
+    next_title = (chat_update.title or "").strip()
+    if not next_title:
+        raise HTTPException(status_code=400, detail="Chat title cannot be empty")
+
+    chatroom.title = next_title
+    db.add(chatroom)
+    db.commit()
+    db.refresh(chatroom)
+    return _serialize_chat(db, chatroom)
+
+
+def _validate_agent_names(agent_names: List[str]) -> None:
+    registry = get_registry()
+    valid_agent_names = registry.list_agents()
+
+    for agent_name in agent_names:
+        if agent_name not in valid_agent_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid agent name: {agent_name}. Valid agents: {valid_agent_names}",
+            )
+
+
+def _normalize_agent_names(agent_names: List[str] | None) -> List[str]:
+    normalized = [agent_name for agent_name in (agent_names or ["assistant"]) if agent_name]
+    return normalized or ["assistant"]
 
 
 @router.post("/projects", response_model=ProjectInfo)
 async def create_project(project_create: ProjectCreate, db: Session = Depends(get_db)):
     """创建新项目"""
-    # 验证 Agent 名称
-    registry = get_registry()
-    valid_agent_names = registry.list_agents()
-    
-    for agent_name in project_create.agent_names:
-        if agent_name not in valid_agent_names:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid agent name: {agent_name}. Valid agents: {valid_agent_names}"
-            )
-    
-    # 创建项目
-    project = Project(
+    agent_names = _normalize_agent_names(project_create.agent_names)
+    _validate_agent_names(agent_names)
+    service = SessionService(db)
+    project, _, _ = service.create_project_directly(
         name=project_create.name,
-        description=project_create.description
+        description=project_create.description or "",
+        agent_names=agent_names,
+        workspace_path=project_create.workspace_path,
     )
-    db.add(project)
+    return _serialize_project(db, project)
+
+
+@router.get("/projects/self-bootstrap", response_model=ProjectInfo)
+@router.post("/projects/self-bootstrap", response_model=ProjectInfo)
+async def get_or_create_self_bootstrap_project(db: Session = Depends(get_db)):
+    """Open the Catown repo itself as the default self-bootstrap project workspace."""
+    service = SessionService(db)
+    project, _, _ = service.get_or_create_self_bootstrap_project()
+    return _serialize_project(db, project)
+
+
+@router.put("/projects/reorder", response_model=List[ProjectInfo])
+async def reorder_projects(payload: ProjectReorderRequest, db: Session = Depends(get_db)):
+    """Persist project sidebar ordering."""
+    existing_projects = db.query(Project).order_by(Project.display_order.asc(), Project.id.asc()).all()
+    if not existing_projects:
+        return []
+
+    existing_ids = [project.id for project in existing_projects]
+    requested_ids = payload.project_ids or []
+    requested_id_set = set(requested_ids)
+    if len(requested_id_set) != len(requested_ids):
+        raise HTTPException(status_code=400, detail="Duplicate project ids are not allowed")
+
+    ordered_ids = [project_id for project_id in requested_ids if project_id in requested_id_set and project_id in existing_ids]
+    ordered_ids.extend(project_id for project_id in existing_ids if project_id not in requested_id_set)
+
+    project_map = {project.id: project for project in existing_projects}
+    for index, project_id in enumerate(ordered_ids):
+        project = project_map[project_id]
+        project.display_order = index
+        db.add(project)
+
     db.commit()
-    db.refresh(project)
-    
-    # 创建聊天室
-    chatroom_id = await chatroom_manager.create_chatroom(project.id, project_create.name)
-    
-    # 分配 Agent
-    for agent_name in project_create.agent_names:
-        agent = db.query(Agent).filter(Agent.name == agent_name).first()
-        if agent:
-            assignment = AgentAssignment(
-                project_id=project.id,
-                agent_id=agent.id
-            )
-            db.add(assignment)
-            
-            # 添加到聊天室
-            chatroom = chatroom_manager.get_chatroom(chatroom_id)
-            if chatroom:
-                chatroom.add_agent(agent.id)
-    
-    db.commit()
-    
-    # 返回项目信息
-    assignments = db.query(AgentAssignment).filter(AgentAssignment.project_id == project.id).all()
-    agent_ids = [a.agent_id for a in assignments]
-    agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-    
-    return ProjectInfo(
-        id=project.id,
-        name=project.name,
-        description=project.description,
-        status=project.status,
-        chatroom_id=chatroom_id,
-        agents=[
-            AgentInfo(id=a.id, name=a.name, role=a.role, is_active=a.is_active)
-            for a in agents
-        ]
+    reordered = db.query(Project).order_by(Project.display_order.asc(), Project.id.asc()).all()
+    return [_serialize_project(db, project) for project in reordered]
+
+
+@router.post("/projects/from-chat", response_model=ProjectInfo)
+async def create_project_from_chat(project_create: ProjectFromChatCreate, db: Session = Depends(get_db)):
+    """Create a project from the current standalone chat and copy its context."""
+    agent_names = _normalize_agent_names(project_create.agent_names)
+    _validate_agent_names(agent_names)
+    service = SessionService(db)
+    project, _, _ = service.create_project_from_chat(
+        source_chatroom_id=project_create.source_chatroom_id,
+        name=project_create.name,
+        description=project_create.description or "",
+        agent_names=agent_names,
+        workspace_path=project_create.workspace_path,
     )
+    return _serialize_project(db, project)
 
 
 @router.get("/projects/{project_id}", response_model=ProjectInfo)
@@ -864,23 +1337,40 @@ async def get_project(project_id: int, db: Session = Depends(get_db)):
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    # 获取项目分配的 Agent
-    assignments = db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).all()
-    agent_ids = [a.agent_id for a in assignments]
-    agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-    
-    return ProjectInfo(
-        id=project.id,
-        name=project.name,
-        description=project.description,
-        status=project.status,
-        chatroom_id=project.chatroom.id if project.chatroom else None,
-        agents=[
-            AgentInfo(id=a.id, name=a.name, role=a.role, is_active=a.is_active)
-            for a in agents
-        ]
-    )
+    return _serialize_project(db, project)
+
+
+@router.get("/projects/{project_id}/chat", response_model=ChatInfo)
+async def get_project_chat(project_id: int, db: Session = Depends(get_db)):
+    """Return the hidden default chat for a project."""
+    service = SessionService(db)
+    chatroom = service.get_project_chat(project_id)
+    return _serialize_chat(db, chatroom)
+
+
+@router.post("/projects/{project_id}/subchats", response_model=ChatInfo)
+async def create_project_subchat(
+    project_id: int,
+    payload: ProjectSubchatCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a visible sub chat linked to a project's hidden main chat."""
+    service = SessionService(db)
+    chatroom = service.create_project_subchat(project_id, payload.title)
+    return _serialize_chat(db, chatroom)
+
+
+@router.post("/projects/{project_id}/open-workspace")
+async def open_project_workspace(project_id: int, db: Session = Depends(get_db)):
+    """Open the project's workspace folder in the local file manager."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+
+    _open_workspace_path(project.workspace_path)
+    return {"message": "Workspace opened"}
 
 
 @router.delete("/projects/{project_id}")
@@ -896,12 +1386,37 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     if chatroom:
         db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
         db.delete(chatroom)
+        chatroom_manager.chatrooms.pop(chatroom.id, None)
     
     # 删除项目
     db.delete(project)
     db.commit()
     
     return {"message": "Project deleted successfully"}
+
+
+@router.put("/projects/{project_id}", response_model=ProjectInfo)
+async def update_project(project_id: int, project_update: ProjectUpdate, db: Session = Depends(get_db)):
+    """Rename a project and its hidden main chat."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    next_name = (project_update.name or "").strip()
+    if not next_name:
+        raise HTTPException(status_code=400, detail="Project name cannot be empty")
+
+    project.name = next_name
+    db.add(project)
+
+    chatroom = db.query(Chatroom).filter(Chatroom.project_id == project_id).first()
+    if chatroom:
+        chatroom.title = next_name
+        db.add(chatroom)
+
+    db.commit()
+    db.refresh(project)
+    return _serialize_project(db, project)
 
 
 # ==================== 聊天相关 ====================
@@ -916,10 +1431,39 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
             id=msg.id,
             content=msg.content,
             agent_name=msg.agent_name,
-            message_type=msg.message_type
+            message_type=msg.message_type,
+            created_at=msg.created_at.isoformat(),
         )
         for msg in messages
     ]
+
+
+@router.get("/chatrooms/{chatroom_id}/runtime-cards")
+async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = Depends(get_db)):
+    """获取聊天室历史 runtime cards，用于刷新后回放 agent 执行过程。"""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+
+    rows = (
+        db.query(Message)
+        .filter(Message.chatroom_id == chatroom_id, Message.message_type == "runtime_card")
+        .order_by(Message.created_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    cards: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        card = metadata.get("card")
+        if isinstance(card, dict):
+            cards.append(card)
+
+    return cards
 
 
 @router.get("/chatrooms/{chatroom_id}/visibility")
@@ -977,7 +1521,8 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         id=response_msg.id,
         content=response_msg.content,
         agent_name=response_msg.agent_name,
-        message_type=response_msg.message_type
+        message_type=response_msg.message_type,
+        created_at=response_msg.created_at.isoformat(),
     )
 
 
@@ -996,17 +1541,19 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
     import asyncio
     import json as _json
 
-    async def event_generator():
+    async def raw_event_generator():
         from models.database import get_db as _get_db
         from tools import tool_registry
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
         from routes.websocket import websocket_manager
 
-        def _sse_card(event_type, data):
+        async def _sse_card(event_type, data):
             """格式化卡片事件 SSE，附带 source=chatroom"""
-            data["type"] = event_type
-            data["source"] = "chatroom"
-            return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+            payload = dict(data)
+            payload["type"] = event_type
+            payload["source"] = "chatroom"
+            await _store_runtime_card(chatroom_id, payload)
+            return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
 
         db = next(_get_db())
         try:
@@ -1022,13 +1569,164 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
             # 2. 获取聊天室和项目
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-            if not chatroom or not chatroom.project_id:
-                yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom or project'})}\n\n"
+            if not chatroom:
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom found'})}\n\n"
                 return
 
-            project = db.query(Project).filter(Project.id == chatroom.project_id).first()
+            project = _resolve_chatroom_project(db, chatroom)
             if not project:
-                yield f"data: {_json.dumps({'type': 'error', 'error': 'No project found'})}\n\n"
+                mentioned_names = re.findall(r'@(\w+)', message.content) if '@' in message.content else []
+                if len(mentioned_names) > 1:
+                    yield f"data: {_json.dumps({'type': 'collab_start', 'agents': mentioned_names})}\n\n"
+
+                    agents = _list_global_agents(db)
+                    previous_context = None
+
+                    for step_idx, agent_name in enumerate(mentioned_names):
+                        agent = next((a for a in agents if a.name == agent_name), None)
+                        if not agent:
+                            yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
+                            continue
+
+                        yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_name})}\n\n"
+
+                        llm_client = get_llm_client_for_agent(agent.name)
+                        sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+                        sys_prompt += (
+                            "\n\nThis is a standalone chat. Reply directly, stay concise, "
+                            "and coordinate with the other mentioned agents."
+                        )
+                        team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+                        sys_prompt += f"\n\nAvailable agents in this standalone chat:\n" + "\n".join(team_members)
+                        if previous_context:
+                            sys_prompt += f"\n\nPrevious agent ({mentioned_names[step_idx-1]}) output:\n{previous_context[:1500]}"
+
+                        msgs = [{"role": "system", "content": sys_prompt}]
+                        recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
+                        for msg in recent[-3:]:
+                            an = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                            if msg.message_type == "user" or not an:
+                                msgs.append({"role": "user", "content": msg.content})
+                            else:
+                                msgs.append({"role": "assistant", "content": msg.content})
+                        msgs.append({"role": "user", "content": message.content})
+
+                        import time as _time
+                        step_content = ""
+                        tool_schemas = tool_registry.get_schemas()
+                        for iteration in range(5):
+                            tool_calls_found = False
+                            _llm_start = _time.time()
+                            _llm_content = ""
+                            _llm_tool_calls = []
+                            llm_prompt_messages = _snapshot_llm_messages(msgs)
+                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
+                            async for event in llm_client.chat_stream(msgs, tool_schemas or None):
+                                if event["type"] == "content":
+                                    step_content += event["delta"]
+                                    _llm_content += event["delta"]
+                                    yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_name})}\n\n"
+                                elif event["type"] == "done":
+                                    tc = event.get("tool_calls")
+                                    _llm_full = event.get("full_content", _llm_content)
+                                    if tc:
+                                        tool_calls_found = True
+                                        msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
+                                        for t in tc:
+                                            tname = t["function"]["name"]
+                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name})}\n\n"
+                                            _tool_start = _time.time()
+                                            try:
+                                                targs = json.loads(t["function"]["arguments"])
+                                                tres = await tool_registry.execute(tname, **targs)
+                                                tres_str = str(tres)[:2000] if tres else "(no output)"
+                                            except Exception as te:
+                                                tres_str = f"Error: {te}"
+                                            _tool_ms = int((_time.time() - _tool_start) * 1000)
+                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name})}\n\n"
+                                            msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
+                                            _args_str = t["function"].get("arguments", "{}")
+                                            yield await _sse_card("tool_call", {
+                                                "agent": agent_name, "tool": tname,
+                                                "arguments": _args_str,
+                                                "success": True, "result": tres_str[:1500],
+                                                "duration_ms": _tool_ms,
+                                            })
+                                            _llm_tool_calls.append({"name": tname, "args_preview": _args_str[:120]})
+                                    _llm_ms = int((_time.time() - _llm_start) * 1000)
+                                    yield await _sse_card(
+                                        "llm_call",
+                                        _build_llm_card_payload(
+                                            agent_name=agent_name,
+                                            llm_client=llm_client,
+                                            turn=iteration + 1,
+                                            duration_ms=_llm_ms,
+                                            system_prompt=sys_prompt,
+                                            prompt_messages=llm_prompt_messages,
+                                            response_content=_llm_full or _llm_content,
+                                            tool_call_previews=_llm_tool_calls,
+                                            raw_tool_calls=tc,
+                                            usage=event.get("usage"),
+                                            finish_reason=event.get("finish_reason"),
+                                        ),
+                                    )
+                                elif event["type"] == "error":
+                                    yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
+                                    break
+
+                            if not tool_calls_found:
+                                if _llm_content:
+                                    _llm_ms = int((_time.time() - _llm_start) * 1000)
+                                    yield await _sse_card(
+                                        "llm_call",
+                                        _build_llm_card_payload(
+                                            agent_name=agent_name,
+                                            llm_client=llm_client,
+                                            turn=iteration + 1,
+                                            duration_ms=_llm_ms,
+                                            system_prompt=sys_prompt,
+                                            prompt_messages=llm_prompt_messages,
+                                            response_content=_llm_content,
+                                            tool_call_previews=[],
+                                            raw_tool_calls=[],
+                                            usage=event.get("usage") if isinstance(event, dict) else None,
+                                            finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
+                                        ),
+                                    )
+                                break
+
+                        saved = None
+                        if step_content:
+                            saved = await chatroom_manager.send_message(
+                                chatroom_id=chatroom_id,
+                                agent_id=agent.id,
+                                content=step_content,
+                                message_type="text",
+                                agent_name=agent.name,
+                            )
+                            await websocket_manager.broadcast_to_room({
+                                "type": "message",
+                                "id": saved.id,
+                                "content": step_content,
+                                "agent_name": agent.name,
+                                "message_type": "text",
+                            }, chatroom_id)
+                            if len(step_content) > 30:
+                                asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
+                            previous_context = step_content
+
+                        yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
+
+                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True})}\n\n"
+                    return
+
+                async for chunk in _stream_standalone_assistant_response(
+                    db=db,
+                    chatroom_id=chatroom_id,
+                    user_message=message.content,
+                    sse_json=_json,
+                ):
+                    yield chunk
                 return
 
             # 3. 解析 @mention（支持多 Agent 流水线）
@@ -1109,6 +1807,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         _llm_start = _time.time()
                         _llm_content = ""
                         _llm_tool_calls = []
+                        llm_prompt_messages = _snapshot_llm_messages(msgs)
+                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
                         async for event in llm_client.chat_stream(msgs, tool_schemas or None):
                             if event["type"] == "content":
                                 step_content += event["delta"]
@@ -1135,7 +1835,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
                                         # 工具卡片事件
                                         _args_str = t["function"].get("arguments", "{}")
-                                        yield _sse_card("tool_call", {
+                                        yield await _sse_card("tool_call", {
                                             "agent": agent_name, "tool": tname,
                                             "arguments": _args_str,
                                             "success": True, "result": tres_str[:1500],
@@ -1144,16 +1844,22 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         _llm_tool_calls.append({"name": tname, "args_preview": _args_str[:120]})
                                 # LLM 调用卡片事件
                                 _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                yield _sse_card("llm_call", {
-                                    "agent": agent_name,
-                                    "model": getattr(llm_client, 'model', ''),
-                                    "turn": iteration + 1,
-                                    "tokens_in": 0, "tokens_out": 0,
-                                    "duration_ms": _llm_ms,
-                                    "system_prompt": sys_prompt[:5000],
-                                    "response": _llm_full[:3000] if _llm_full else _llm_content[:3000],
-                                    "tool_calls": _llm_tool_calls,
-                                })
+                                yield await _sse_card(
+                                    "llm_call",
+                                    _build_llm_card_payload(
+                                        agent_name=agent_name,
+                                        llm_client=llm_client,
+                                        turn=iteration + 1,
+                                        duration_ms=_llm_ms,
+                                        system_prompt=sys_prompt,
+                                        prompt_messages=llm_prompt_messages,
+                                        response_content=_llm_full or _llm_content,
+                                        tool_call_previews=_llm_tool_calls,
+                                        raw_tool_calls=tc,
+                                        usage=event.get("usage"),
+                                        finish_reason=event.get("finish_reason"),
+                                    ),
+                                )
                             elif event["type"] == "error":
                                 yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
                                 break
@@ -1161,16 +1867,22 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             # 无工具调用的最终 LLM 回复卡片
                             if _llm_content:
                                 _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                yield _sse_card("llm_call", {
-                                    "agent": agent_name,
-                                    "model": getattr(llm_client, 'model', ''),
-                                    "turn": iteration + 1,
-                                    "tokens_in": 0, "tokens_out": 0,
-                                    "duration_ms": _llm_ms,
-                                    "system_prompt": sys_prompt[:5000],
-                                    "response": _llm_content[:3000],
-                                    "tool_calls": [],
-                                })
+                                yield await _sse_card(
+                                    "llm_call",
+                                    _build_llm_card_payload(
+                                        agent_name=agent_name,
+                                        llm_client=llm_client,
+                                        turn=iteration + 1,
+                                        duration_ms=_llm_ms,
+                                        system_prompt=sys_prompt,
+                                        prompt_messages=llm_prompt_messages,
+                                        response_content=_llm_content,
+                                        tool_call_previews=[],
+                                        raw_tool_calls=[],
+                                        usage=event.get("usage") if isinstance(event, dict) else None,
+                                        finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
+                                    ),
+                                )
                             break
 
                     # 保存
@@ -1303,14 +2015,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             iteration = 0
             final_content = ""
 
-            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name})}\n\n"
-
             while iteration < max_tool_iterations:
                 iteration += 1
                 tool_calls_found = False
                 _llm_start = _time2.time()
                 _llm_content = ""
                 _llm_tool_calls = []
+                llm_prompt_messages = _snapshot_llm_messages(messages)
+                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
 
                 async for event in llm_client.chat_stream(
                     messages, tool_schemas if tool_schemas else None
@@ -1328,16 +2040,22 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             # 无工具调用，结束 — 发 LLM 卡片
                             if _llm_content:
                                 _llm_ms = int((_time2.time() - _llm_start) * 1000)
-                                yield _sse_card("llm_call", {
-                                    "agent": target_agent.name,
-                                    "model": getattr(llm_client, 'model', ''),
-                                    "turn": iteration,
-                                    "tokens_in": 0, "tokens_out": 0,
-                                    "duration_ms": _llm_ms,
-                                    "system_prompt": system_prompt[:5000],
-                                    "response": _llm_content[:3000],
-                                    "tool_calls": [],
-                                })
+                                yield await _sse_card(
+                                    "llm_call",
+                                    _build_llm_card_payload(
+                                        agent_name=target_agent.name,
+                                        llm_client=llm_client,
+                                        turn=iteration,
+                                        duration_ms=_llm_ms,
+                                        system_prompt=system_prompt,
+                                        prompt_messages=llm_prompt_messages,
+                                        response_content=_llm_content,
+                                        tool_call_previews=[],
+                                        raw_tool_calls=[],
+                                        usage=event.get("usage"),
+                                        finish_reason=event.get("finish_reason"),
+                                    ),
+                                )
                             break
 
                         tool_calls_found = True
@@ -1381,7 +2099,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             })
 
                             # 工具卡片事件
-                            yield _sse_card("tool_call", {
+                            yield await _sse_card("tool_call", {
                                 "agent": target_agent.name,
                                 "tool": tool_name,
                                 "arguments": tool_args_str,
@@ -1393,16 +2111,22 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                         # LLM 调用卡片事件（含工具调用）
                         _llm_ms = int((_time2.time() - _llm_start) * 1000)
-                        yield _sse_card("llm_call", {
-                            "agent": target_agent.name,
-                            "model": getattr(llm_client, 'model', ''),
-                            "turn": iteration,
-                            "tokens_in": 0, "tokens_out": 0,
-                            "duration_ms": _llm_ms,
-                            "system_prompt": system_prompt[:5000],
-                            "response": full_content[:3000] if full_content else _llm_content[:3000],
-                            "tool_calls": _llm_tool_calls,
-                        })
+                        yield await _sse_card(
+                            "llm_call",
+                            _build_llm_card_payload(
+                                agent_name=target_agent.name,
+                                llm_client=llm_client,
+                                turn=iteration,
+                                duration_ms=_llm_ms,
+                                system_prompt=system_prompt,
+                                prompt_messages=llm_prompt_messages,
+                                response_content=full_content or _llm_content,
+                                tool_call_previews=_llm_tool_calls,
+                                raw_tool_calls=tool_calls,
+                                usage=event.get("usage"),
+                                finish_reason=event.get("finish_reason"),
+                            ),
+                        )
 
                     elif event["type"] == "error":
                         yield f"data: {_json.dumps({'type': 'error', 'error': event['error']})}\n\n"
@@ -1451,6 +2175,50 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
         finally:
             db.close()
+
+    async def event_generator():
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=256)
+        client_connected = True
+
+        async def producer():
+            nonlocal client_connected
+            try:
+                async for chunk in raw_event_generator():
+                    if not client_connected:
+                        continue
+                    try:
+                        queue.put_nowait(chunk)
+                    except asyncio.QueueFull:
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        try:
+                            queue.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            # If the client is lagging badly, drop intermediate chunks
+                            # and let the persisted runtime cards/final message catch up.
+                            pass
+            finally:
+                if client_connected:
+                    try:
+                        queue.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+
+        asyncio.create_task(producer())
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        except asyncio.CancelledError:
+            client_connected = False
+            raise
+        finally:
+            client_connected = False
 
     return StreamingResponse(
         event_generator(),
@@ -1643,7 +2411,7 @@ async def update_global_llm_config(config: Dict[str, Any]):
 @router.put("/config/agent/{agent_name}")
 async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
     """
-    更新指定 Agent 的 LLM 配置
+    更新指定 Agent 的完整配置
 
     请求体：
     {
@@ -1655,7 +2423,8 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
         "default_model": "gpt-4"
     }
 
-    设置 provider 为空对象 {} 可清除 Agent 级配置，回退到全局。
+    支持更新 provider/default_model/role/soul/tools/skills。
+    设置 provider 为空对象 {} 可清除 Agent 级 LLM 配置，回退到全局。
     """
     from pathlib import Path
 
@@ -1671,11 +2440,10 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
         if agent_name not in agents:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
-        # 更新 Agent 的 provider 和 default_model
-        if "provider" in config:
-            agents[agent_name]["provider"] = config["provider"]
-        if "default_model" in config:
-            agents[agent_name]["default_model"] = config["default_model"]
+        # 更新 Agent 的完整配置字段
+        for field_name in ("provider", "default_model", "role", "soul", "tools", "skills"):
+            if field_name in config:
+                agents[agent_name][field_name] = config[field_name]
 
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)

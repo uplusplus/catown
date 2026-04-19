@@ -86,3 +86,6 @@ backend/data/
 .env
 
 data/
+
+#codex
+.codex

@@ -8,6 +8,13 @@ set -e
 
 BACKEND="$(cd "$(dirname "$0")/backend" && pwd)"
 PID=""
+PYTHON_CMD="python3"
+PIP_CMD="pip3"
+
+if [ -x "$BACKEND/.venv/bin/python3" ]; then
+    PYTHON_CMD="$BACKEND/.venv/bin/python3"
+    PIP_CMD="$BACKEND/.venv/bin/pip"
+fi
 
 cleanup() {
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
@@ -25,21 +32,21 @@ start_server() {
     echo "  API Docs: http://localhost:8000/docs"
     echo ""
 
-    (cd "$BACKEND" && python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000) &
+    (cd "$BACKEND" && "$PYTHON_CMD" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000) &
     PID=$!
     echo "  PID: $PID"
     echo ""
 }
 
 # --- Dependencies ---
-if ! command -v python3 &>/dev/null; then
+if ! command -v "$PYTHON_CMD" &>/dev/null && [ ! -x "$PYTHON_CMD" ]; then
     echo "[ERROR] python3 not found. Install Python 3.10+"
     exit 1
 fi
 
-if ! python3 -c "import fastapi" &>/dev/null; then
+if ! "$PYTHON_CMD" -c "import fastapi, uvicorn" &>/dev/null; then
     echo "Installing dependencies..."
-    (cd "$BACKEND" && pip3 install -r requirements.txt)
+    (cd "$BACKEND" && "$PIP_CMD" install -r requirements.txt)
 fi
 
 # --- .env ---

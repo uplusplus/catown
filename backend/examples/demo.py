@@ -175,7 +175,7 @@ if __name__ == "__main__":
         
         print_section("Demo Complete!")
         print("You can now:")
-        print("1. Visit http://localhost:3000 to use the Web interface")
+        print("1. Visit http://localhost:8000 to use the Web interface")
         print("2. Visit http://localhost:8000/docs to view API documentation")
         print("3. Run this script with interactive mode: python examples/demo.py --interactive")
         

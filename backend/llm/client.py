@@ -17,6 +17,9 @@ logger = logging.getLogger("catown.llm")
 # 缓存已创建的客户端：agent_name → LLMClient
 _client_cache: Dict[str, "LLMClient"] = {}
 
+# 旧测试夹具仍会直接注入这个全局 mock。
+_llm_client: Optional["LLMClient"] = None
+
 
 class LLMClient:
     """
@@ -122,6 +125,7 @@ class LLMClient:
             full_content = ""
             accumulated_tool_calls = []
             usage = None
+            finish_reason = None
 
             async for chunk in await self.client.chat.completions.create(**kwargs):
                 choice = chunk.choices[0] if chunk.choices else None
@@ -162,6 +166,7 @@ class LLMClient:
                                 accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
 
                 if choice.finish_reason in ("stop", "tool_calls", "length"):
+                    finish_reason = choice.finish_reason
                     break
 
             yield {
@@ -169,6 +174,7 @@ class LLMClient:
                 "full_content": full_content,
                 "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
                 "usage": usage,
+                "finish_reason": finish_reason,
             }
 
         except Exception as e:
@@ -255,6 +261,9 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
 
     配置来源：agents.json → 该 Agent 的 provider 配置
     """
+    if _llm_client is not None:
+        return _llm_client
+
     # 命中缓存
     if agent_name in _client_cache:
         return _client_cache[agent_name]
@@ -295,6 +304,9 @@ def get_default_llm_client() -> LLMClient:
 
     配置来源：agents.json 中第一个有 provider 的 Agent
     """
+    if _llm_client is not None:
+        return _llm_client
+
     # 尝试找一个已缓存的
     if _client_cache:
         return next(iter(_client_cache.values()))

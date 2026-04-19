@@ -25,6 +25,12 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from config import settings
 
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+FRONTEND_DIR = REPO_ROOT / "frontend"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+FRONTEND_DIST_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
+
 # 结构化日志配置
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
@@ -37,6 +43,11 @@ logger = logging.getLogger("catown")
 from routes.api import router as api_router
 from routes.pipeline import router as pipeline_router
 from routes.audit import router as audit_router
+from routes.projects_v2 import router as projects_v2_router
+from routes.assets_v2 import router as assets_v2_router
+from routes.decisions_v2 import router as decisions_v2_router
+from routes.stage_runs_v2 import router as stage_runs_v2_router
+from routes.dashboard_v2 import router as dashboard_v2_router
 from routes.websocket import websocket_manager
 
 # 导入初始化模块
@@ -84,6 +95,9 @@ app = FastAPI(
     description="Multi-Agent Collaboration Platform",
     version="1.0.0"
 )
+
+if FRONTEND_DIST_ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_ASSETS_DIR), name="frontend-assets")
 
 # CORS 配置（白名单，不再允许所有来源）
 allowed_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001")
@@ -191,6 +205,11 @@ async def _stop_file_watcher():
 app.include_router(api_router, prefix="/api")
 app.include_router(pipeline_router)
 app.include_router(audit_router)
+app.include_router(projects_v2_router)
+app.include_router(assets_v2_router)
+app.include_router(decisions_v2_router)
+app.include_router(stage_runs_v2_router)
+app.include_router(dashboard_v2_router)
 
 # WebSocket 路由
 @app.websocket("/ws")
@@ -211,8 +230,8 @@ async def health_check():
 async def root():
     """返回前端首页"""
     try:
-        # 优先找 dist 版本，回退到源文件
-        for candidate in [Path("frontend/dist/index.html"), Path("../frontend/index.html"), Path("frontend/index.html")]:
+        if FRONTEND_DIST_DIR.exists():
+            candidate = FRONTEND_DIST_DIR / "index.html"
             if candidate.exists():
                 return HTMLResponse(content=candidate.read_text(encoding="utf-8"))
     except Exception as e:
@@ -232,6 +251,7 @@ async def root():
     <body>
         <h1>Catown - Multi-Agent Platform</h1>
         <p class="status">Backend service is running</p>
+        <p>Frontend build not found. Keep using <a href="http://localhost:8000">http://localhost:8000</a> after running a frontend build or starting the app with <code>./run.sh</code>.</p>
         <p>See <a href="/docs">/docs</a> for API documentation</p>
     </body>
     </html>

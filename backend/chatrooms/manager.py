@@ -38,13 +38,27 @@ class ChatroomManager:
         self.chatrooms: Dict[int, 'Chatroom'] = {}
         self.message_queue: asyncio.Queue = asyncio.Queue()
     
-    async def create_chatroom(self, project_id: int, project_name: str) -> int:
+    async def create_chatroom(
+        self,
+        project_id: Optional[int],
+        project_name: str,
+        title: Optional[str] = None,
+        session_type: str = "project-bound",
+        is_visible_in_chat_list: bool = False,
+        source_chatroom_id: Optional[int] = None,
+    ) -> int:
         """创建新的聊天室"""
         from models.database import get_db, Chatroom
         
         db = next(get_db())
         try:
-            chatroom = Chatroom(project_id=project_id)
+            chatroom = Chatroom(
+                project_id=project_id,
+                title=title or project_name,
+                session_type=session_type,
+                is_visible_in_chat_list=is_visible_in_chat_list,
+                source_chatroom_id=source_chatroom_id,
+            )
             db.add(chatroom)
             db.commit()
             db.refresh(chatroom)
@@ -130,6 +144,7 @@ class ChatroomManager:
                 db.query(Message)
                 .join(Agent, Message.agent_id == Agent.id, isouter=True)
                 .filter(Message.chatroom_id == chatroom_id)
+                .filter(Message.message_type.notin_(["runtime_card", "runtime_event"]))
                 .order_by(Message.created_at.desc())
                 .limit(limit)
                 .all()
@@ -180,12 +195,27 @@ class ChatroomManager:
 
         db = next(get_db())
         try:
-            # 查找聊天室关联的项目
+            # 查找聊天室关联的项目；可通过 source_chatroom_id 继承主项目上下文
             db_chatroom = db.query(ChatroomDB).filter(ChatroomDB.id == chatroom_id).first()
-            if not db_chatroom or not db_chatroom.project_id:
+            if not db_chatroom:
                 return responses
 
-            project = db.query(Project).filter(Project.id == db_chatroom.project_id).first()
+            project_id = db_chatroom.project_id
+            parent_chatroom = db_chatroom
+            visited_ids = set()
+            while not project_id and parent_chatroom and parent_chatroom.source_chatroom_id:
+                if parent_chatroom.source_chatroom_id in visited_ids:
+                    break
+                visited_ids.add(parent_chatroom.source_chatroom_id)
+                parent_chatroom = db.query(ChatroomDB).filter(
+                    ChatroomDB.id == parent_chatroom.source_chatroom_id
+                ).first()
+                project_id = parent_chatroom.project_id if parent_chatroom else None
+
+            if not project_id:
+                return responses
+
+            project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return responses
 
