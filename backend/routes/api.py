@@ -120,6 +120,69 @@ def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def _trim_prompt_context(value: Any, limit: int = 600) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
+
+
+def _build_runtime_context_block(db: Session, chatroom: Optional[Chatroom], project: Optional[Project]) -> str:
+    blocks: List[str] = []
+
+    if project:
+        project_lines = [f"- Project ID: {project.id}", f"- Name: {project.name}"]
+        optional_project_fields = [
+            ("Description", _trim_prompt_context(project.description, 800)),
+            ("Workspace path", _trim_prompt_context(project.workspace_path, 260)),
+            ("Status", project.status),
+            ("Current stage", project.current_stage),
+            ("Execution mode", project.execution_mode),
+            ("Health status", project.health_status),
+            ("Vision", _trim_prompt_context(project.one_line_vision, 320)),
+            ("Primary outcome", _trim_prompt_context(project.primary_outcome, 320)),
+            ("Current focus", _trim_prompt_context(project.current_focus, 500)),
+            ("Blocking reason", _trim_prompt_context(project.blocking_reason, 320)),
+            ("Latest summary", _trim_prompt_context(project.latest_summary, 700)),
+        ]
+        for label, value in optional_project_fields:
+            if value:
+                project_lines.append(f"- {label}: {value}")
+        blocks.append("Current project context:\n" + "\n".join(project_lines))
+
+    if chatroom:
+        source_chat = None
+        if chatroom.source_chatroom_id:
+            source_chat = db.query(Chatroom).filter(Chatroom.id == chatroom.source_chatroom_id).first()
+
+        chat_role = "standalone chat"
+        if project:
+            if project.default_chatroom_id and chatroom.id == project.default_chatroom_id:
+                chat_role = "project main chat"
+            elif chatroom.source_chatroom_id == project.default_chatroom_id:
+                chat_role = "project subchat"
+            else:
+                chat_role = "project-linked chat"
+
+        chat_lines = [
+            f"- Chat ID: {chatroom.id}",
+            f"- Title: {chatroom.title or 'New Chat'}",
+            f"- Chat role: {chat_role}",
+            f"- Session type: {chatroom.session_type or ('project-bound' if project else 'standalone')}",
+            f"- Message visibility: {chatroom.message_visibility or 'all'}",
+            f"- Visible in chat list: {'yes' if chatroom.is_visible_in_chat_list else 'no'}",
+        ]
+        if source_chat:
+            chat_lines.append(f"- Source chat: #{source_chat.id} {source_chat.title or 'New Chat'}")
+        blocks.append("Current chat context:\n" + "\n".join(chat_lines))
+
+    if not blocks:
+        return ""
+    return "\n\n" + "\n\n".join(blocks)
+
+
 def _build_llm_card_payload(
     *,
     agent_name: str,
@@ -177,6 +240,7 @@ async def _trigger_standalone_assistant_response(db: Session, chatroom_id: int, 
         system_prompt = "You are assistant, a helpful AI collaborator."
 
     system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
+    system_prompt += _build_runtime_context_block(db, chatroom, None)
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
     context_messages = [{"role": "system", "content": system_prompt}]
@@ -244,6 +308,7 @@ async def _stream_standalone_assistant_response(
         system_prompt = "You are assistant, a helpful AI collaborator."
 
     system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
+    system_prompt += _build_runtime_context_block(db, chatroom, None)
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
     context_messages = [{"role": "system", "content": system_prompt}]
@@ -432,9 +497,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         messages = []
         
         system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
-        system_prompt += f"\n\nCurrent project: {project.name}"
-        if project.description:
-            system_prompt += f"\nProject description: {project.description}"
+        system_prompt += _build_runtime_context_block(db, chatroom, project)
         
         available_tools = tool_registry.list_tools()
         if available_tools:
@@ -716,6 +779,7 @@ async def _run_single_agent_turn(
     from models.database import Memory
 
     llm_client = get_llm_client_for_agent(agent.name)
+    current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
 
     # 注册协作者
     for a in agents:
@@ -727,14 +791,13 @@ async def _run_single_agent_turn(
     # 构建 system prompt
     system_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
     if project:
-        system_prompt += f"\n\nCurrent project: {project.name}"
-        if project.description:
-            system_prompt += f"\nProject description: {project.description}"
+        system_prompt += _build_runtime_context_block(db, current_chatroom, project)
     else:
         system_prompt += (
             "\n\nThis is a standalone chat. Reply directly, stay concise, "
             "and coordinate with mentioned teammates when it helps."
         )
+        system_prompt += _build_runtime_context_block(db, current_chatroom, None)
 
     available_tools = tool_registry.list_tools()
     if available_tools:
@@ -1596,6 +1659,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             "\n\nThis is a standalone chat. Reply directly, stay concise, "
                             "and coordinate with the other mentioned agents."
                         )
+                        sys_prompt += _build_runtime_context_block(db, chatroom, None)
                         team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
                         sys_prompt += f"\n\nAvailable agents in this standalone chat:\n" + "\n".join(team_members)
                         if previous_context:
@@ -1777,9 +1841,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     llm_client = get_llm_client_for_agent(agent.name)
 
                     sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
-                    sys_prompt += f"\n\nCurrent project: {project.name}"
-                    if project.description:
-                        sys_prompt += f"\nProject description: {project.description}"
+                    sys_prompt += _build_runtime_context_block(db, chatroom, project)
                     if tool_registry.list_tools():
                         sys_prompt += f"\n\nTools: {', '.join(tool_registry.list_tools())}"
                     # 注入团队列表
@@ -1950,9 +2012,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             messages = []
 
             system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
-            system_prompt += f"\n\nCurrent project: {project.name}"
-            if project.description:
-                system_prompt += f"\nProject description: {project.description}"
+            system_prompt += _build_runtime_context_block(db, chatroom, project)
 
             available_tools = tool_registry.list_tools()
             if available_tools:

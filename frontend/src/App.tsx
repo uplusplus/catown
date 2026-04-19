@@ -526,7 +526,7 @@ function buildLiveLlmDetailContent(
   }
 
   if (options?.systemPrompt?.trim()) {
-    sections.push(markdownSection("System Prompt", options.systemPrompt, { language: "text" }));
+    sections.push(markdownSection("System Prompt", options.systemPrompt, { asMarkdown: true }));
   }
 
   if (options?.promptMessages?.trim()) {
@@ -630,7 +630,7 @@ function buildCardStepDetailContent(card: ChatCardItem) {
         .filter(Boolean)
         .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
-      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { language: "text" }));
+      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }));
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(

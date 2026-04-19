@@ -364,7 +364,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
         .filter(Boolean)
         .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
-      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { language: "text" }));
+      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }));
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(
@@ -954,7 +954,7 @@ function renderCompactCardBody(card: ThreadCard) {
         .filter(Boolean)
         .join(" · ");
       const outboundSections = [
-        card.system_prompt ? markdownSection("System Prompt", card.system_prompt, { language: "text" }) : "",
+        card.system_prompt ? markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }) : "",
         card.prompt_messages ? markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }) : "",
         buildPlannedToolsMarkdown(card.tool_calls),
       ]
