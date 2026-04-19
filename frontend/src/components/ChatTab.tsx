@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -16,6 +16,7 @@ import type {
 
 const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
 const THREAD_AUTO_SCROLL_THRESHOLD = 72;
+const LARGE_MARKDOWN_HIGHLIGHT_LIMIT = 12000;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -119,6 +120,11 @@ type ToolMergeCard = {
 };
 
 type ThreadCard = ChatCardItem | ToolMergeCard;
+type ParsedLlmConversation = {
+  meta: string;
+  outbound: string;
+  inbound: string;
+};
 
 type ThreadItem =
   | {
@@ -139,6 +145,20 @@ type ThreadItem =
       kind: "activity_batch";
       cards: ThreadCard[];
     };
+
+const EMPTY_THREAD_CARDS: ThreadCard[] = [];
+const llmConversationMarkdownCache = new Map<string, ParsedLlmConversation>();
+
+function rememberLlmConversationMarkdown(content: string, parsed: ParsedLlmConversation) {
+  if (content.length < 256) return;
+  if (llmConversationMarkdownCache.size >= 120) {
+    const oldestKey = llmConversationMarkdownCache.keys().next().value;
+    if (typeof oldestKey === "string") {
+      llmConversationMarkdownCache.delete(oldestKey);
+    }
+  }
+  llmConversationMarkdownCache.set(content, parsed);
+}
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -563,6 +583,9 @@ function buildPlannedToolsMarkdown(toolCalls: ChatCardItem["tool_calls"]) {
 }
 
 function parseLlmConversationMarkdown(content: string) {
+  const cached = llmConversationMarkdownCache.get(content);
+  if (cached) return cached;
+
   const sections = splitMarkdownHeadingSections(content);
   const metaSections: string[] = [];
   const outboundSections: string[] = [];
@@ -614,11 +637,13 @@ function parseLlmConversationMarkdown(content: string) {
     }
   }
 
-  return {
+  const parsed = {
     meta: metaSections.join("\n\n"),
     outbound: outboundSections.join("\n\n"),
     inbound: inboundSections.join("\n\n"),
   };
+  rememberLlmConversationMarkdown(content, parsed);
+  return parsed;
 }
 
 function renderLlmExchangePanel(
@@ -691,7 +716,7 @@ function renderLlmExchangePanel(
         {metaLabel ? <span className="llm-exchange-card__meta">{metaLabel}</span> : null}
       </div>
       <div className="llm-exchange-card__body">
-        {renderMarkdownContent(content, "llm-exchange-card__markdown")}
+        {renderMarkdownContent(content, "llm-exchange-card__markdown", { highlight: false })}
       </div>
     </section>
   );
@@ -732,14 +757,15 @@ function renderLlmDetailLayout(
   );
 }
 
-function renderMarkdownContent(content: string | undefined, className: string) {
+function renderMarkdownContent(content: string | undefined, className: string, options?: { highlight?: boolean }) {
   if (!content) return null;
+  const enableHighlight = options?.highlight ?? content.length <= LARGE_MARKDOWN_HIGHLIGHT_LIMIT;
   return (
     <div className={className}>
       <ReactMarkdown
         className="message-markdown"
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={enableHighlight ? [rehypeHighlight] : []}
         components={{
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
           table: ({ node: _node, ...props }) => (
@@ -1431,7 +1457,7 @@ function renderMessage(
               ▸
             </span>
           </summary>
-          {step.detailContent || step.detail ? (
+          {expandedStepId === step.id && (step.detailContent || step.detail) ? (
             <div className="message-stream-step__detail">
               {(() => {
                 const detailSource = step.detailContent || step.detail || "";
@@ -1441,14 +1467,14 @@ function renderMessage(
                   const structuredDetail = renderLlmDetailLayout(inferAgentNameFromLlmStepLabel(step.label), llmDetail, {
                     className: "message-stream-step__detail-content llm-exchange-stack",
                   });
-                  return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content");
+                  return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
                 }
 
                 if (step.state === "live") {
                   return renderStreamingTextContent(detailSource, "message-stream-step__detail-content");
                 }
 
-                return renderMarkdownContent(detailSource, "message-stream-step__detail-content");
+                return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
               })()}
             </div>
           ) : null}
@@ -1458,7 +1484,7 @@ function renderMessage(
   ) : null;
 
   return (
-    <div key={`message-${message.id}`} className={`chat-group ${isAssistant ? "" : "user"}`}>
+    <div className={`chat-group ${isAssistant ? "" : "user"}`}>
       <div className={`chat-avatar ${isAssistant ? "assistant" : "user"}`}>{initials(sender)}</div>
 
       <div className="chat-group-messages">
@@ -1492,6 +1518,38 @@ function renderMessage(
     </div>
   );
 }
+
+type MessageRowProps = {
+  message: MessageItem;
+  copiedMessageId: number | null;
+  onCopyMessage: (message: MessageItem) => void | Promise<void>;
+  expandedStepId: string | null;
+  onToggleStep: (messageId: number, stepId: string) => void;
+  fallbackStepCards: ThreadCard[];
+};
+
+const MessageRow = memo(
+  function MessageRow({
+    message,
+    copiedMessageId,
+    onCopyMessage,
+    expandedStepId,
+    onToggleStep,
+    fallbackStepCards,
+  }: MessageRowProps) {
+    return renderMessage(message, copiedMessageId, onCopyMessage, expandedStepId, onToggleStep, fallbackStepCards);
+  },
+  (prev, next) => {
+    const prevIsCopied = prev.copiedMessageId === prev.message.id;
+    const nextIsCopied = next.copiedMessageId === next.message.id;
+    return (
+      prev.message === next.message &&
+      prev.expandedStepId === next.expandedStepId &&
+      prev.fallbackStepCards === next.fallbackStepCards &&
+      prevIsCopied === nextIsCopied
+    );
+  },
+);
 
 export function ChatTab({
   chat,
@@ -2246,13 +2304,16 @@ export function ChatTab({
         <>
           {threadItems.map((item) =>
             item.kind === "message"
-              ? renderMessage(
-                  item.message,
-                  copiedMessageId,
-                  handleCopyMessage,
-                  resolveExpandedMessageStepId(item.message),
-                  toggleMessageStep,
-                  fallbackStepCardsByMessageId.get(item.message.id) ?? [],
+              ? (
+                  <MessageRow
+                    key={`message-${item.message.id}`}
+                    message={item.message}
+                    copiedMessageId={copiedMessageId}
+                    onCopyMessage={handleCopyMessage}
+                    expandedStepId={resolveExpandedMessageStepId(item.message)}
+                    onToggleStep={toggleMessageStep}
+                    fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
+                  />
                 )
               : item.kind === "activity_batch"
                 ? renderActivityBatch(
@@ -2268,16 +2329,17 @@ export function ChatTab({
                   )
                 : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
           )}
-          {localOverlayMessages.map((message) =>
-            renderMessage(
-              message,
-              copiedMessageId,
-              handleCopyMessage,
-              resolveExpandedMessageStepId(message),
-              toggleMessageStep,
-              [],
-            ),
-          )}
+          {localOverlayMessages.map((message) => (
+            <MessageRow
+              key={`message-${message.id}`}
+              message={message}
+              copiedMessageId={copiedMessageId}
+              onCopyMessage={handleCopyMessage}
+              expandedStepId={resolveExpandedMessageStepId(message)}
+              onToggleStep={toggleMessageStep}
+              fallbackStepCards={EMPTY_THREAD_CARDS}
+            />
+          ))}
         </>
       );
     }
