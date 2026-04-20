@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -30,6 +31,7 @@ REPO_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
 FRONTEND_DIST_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
+DOCS_STATIC_DIR = BACKEND_DIR / "static" / "docs"
 
 # 结构化日志配置
 logging.basicConfig(
@@ -88,11 +90,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app = FastAPI(
     title="Catown API",
     description="Multi-Agent Collaboration Platform",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
 )
 
 if FRONTEND_DIST_ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_ASSETS_DIR), name="frontend-assets")
+if DOCS_STATIC_DIR.exists():
+    app.mount("/_docs_static", StaticFiles(directory=DOCS_STATIC_DIR), name="docs-assets")
 
 # CORS 配置（白名单，不再允许所有来源）
 allowed_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001")
@@ -214,6 +220,25 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/_docs_static/swagger-ui-bundle.js",
+        swagger_css_url="/_docs_static/swagger-ui.css",
+    )
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_ui():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="/_docs_static/redoc.standalone.js",
+    )
 
 # 根路径
 @app.get("/", response_class=HTMLResponse)

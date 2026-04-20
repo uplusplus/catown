@@ -7,6 +7,42 @@ from typing import Optional, List
 import os
 import glob as glob_module
 import json
+from contextvars import ContextVar, Token
+
+
+_ACTIVE_WORKSPACE: ContextVar[Optional[str]] = ContextVar("catown_active_workspace", default=None)
+
+
+def set_active_workspace(workspace: Optional[str]) -> Token:
+    if workspace:
+        normalized = os.path.realpath(os.path.expanduser(workspace))
+    else:
+        normalized = None
+    return _ACTIVE_WORKSPACE.set(normalized)
+
+
+def reset_active_workspace(token: Token) -> None:
+    _ACTIVE_WORKSPACE.reset(token)
+
+
+def _effective_workspace(default_workspace: str) -> str:
+    active = _ACTIVE_WORKSPACE.get()
+    return active or os.path.realpath(default_workspace)
+
+
+def _resolve_workspace_path(base_workspace: str, path: str) -> str:
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    return os.path.normpath(os.path.join(base_workspace, path))
+
+
+def _is_path_within_workspace(base_workspace: str, path: str) -> bool:
+    try:
+        real_path = os.path.realpath(path)
+        real_workspace = os.path.realpath(base_workspace)
+        return os.path.commonpath([real_path, real_workspace]) == real_workspace
+    except Exception:
+        return False
 
 
 class ReadFileTool(BaseTool):
@@ -22,7 +58,7 @@ class ReadFileTool(BaseTool):
         Args:
             workspace: Base directory for file operations (for security)
         """
-        self.workspace = workspace or os.getcwd()
+        self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, encoding: str = "utf-8", **kwargs) -> str:
         """
@@ -67,18 +103,11 @@ class ReadFileTool(BaseTool):
     
     def _resolve_path(self, file_path: str) -> str:
         """Resolve relative path to absolute path"""
-        if os.path.isabs(file_path):
-            return os.path.normpath(file_path)
-        return os.path.normpath(os.path.join(self.workspace, file_path))
+        return _resolve_workspace_path(_effective_workspace(self.workspace), file_path)
     
     def _is_safe_path(self, path: str) -> bool:
         """Check if path is within workspace"""
-        try:
-            real_path = os.path.realpath(path)
-            real_workspace = os.path.realpath(self.workspace)
-            return real_path.startswith(real_workspace)
-        except:
-            return False
+        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
     
     def _get_parameters_schema(self) -> dict:
         return {
@@ -105,7 +134,7 @@ class WriteFileTool(BaseTool):
     description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Use for creating or updating files."
     
     def __init__(self, workspace: str = None):
-        self.workspace = workspace or os.getcwd()
+        self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, content: str, mode: str = "write", **kwargs) -> str:
         """
@@ -143,17 +172,10 @@ class WriteFileTool(BaseTool):
             return f"[Write File] Error: {str(e)}"
     
     def _resolve_path(self, file_path: str) -> str:
-        if os.path.isabs(file_path):
-            return os.path.normpath(file_path)
-        return os.path.normpath(os.path.join(self.workspace, file_path))
+        return _resolve_workspace_path(_effective_workspace(self.workspace), file_path)
     
     def _is_safe_path(self, path: str) -> bool:
-        try:
-            real_path = os.path.realpath(path)
-            real_workspace = os.path.realpath(self.workspace)
-            return real_path.startswith(real_workspace)
-        except:
-            return False
+        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
     
     def _get_parameters_schema(self) -> dict:
         return {
@@ -185,7 +207,7 @@ class ListFilesTool(BaseTool):
     description = "List files and directories in a given path. Returns file names, sizes, and types."
     
     def __init__(self, workspace: str = None):
-        self.workspace = workspace or os.getcwd()
+        self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, directory: str = ".", pattern: str = "*", recursive: bool = False, **kwargs) -> str:
         """
@@ -244,17 +266,10 @@ class ListFilesTool(BaseTool):
             return f"[List Files] Error: {str(e)}"
     
     def _resolve_path(self, path: str) -> str:
-        if os.path.isabs(path):
-            return os.path.normpath(path)
-        return os.path.normpath(os.path.join(self.workspace, path))
+        return _resolve_workspace_path(_effective_workspace(self.workspace), path)
     
     def _is_safe_path(self, path: str) -> bool:
-        try:
-            real_path = os.path.realpath(path)
-            real_workspace = os.path.realpath(self.workspace)
-            return real_path.startswith(real_workspace)
-        except:
-            return False
+        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
     
     def _get_file_info(self, path: str, display_name: str) -> dict:
         """Get file info dict"""
@@ -314,7 +329,7 @@ class DeleteFileTool(BaseTool):
     description = "Delete a file or empty directory. Use with caution - this operation cannot be undone."
     
     def __init__(self, workspace: str = None):
-        self.workspace = workspace or os.getcwd()
+        self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, force: bool = False, **kwargs) -> str:
         """
@@ -359,17 +374,10 @@ class DeleteFileTool(BaseTool):
             return f"[Delete File] Error: {str(e)}"
     
     def _resolve_path(self, file_path: str) -> str:
-        if os.path.isabs(file_path):
-            return os.path.normpath(file_path)
-        return os.path.normpath(os.path.join(self.workspace, file_path))
+        return _resolve_workspace_path(_effective_workspace(self.workspace), file_path)
     
     def _is_safe_path(self, path: str) -> bool:
-        try:
-            real_path = os.path.realpath(path)
-            real_workspace = os.path.realpath(self.workspace)
-            return real_path.startswith(real_workspace)
-        except:
-            return False
+        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
     
     def _get_parameters_schema(self) -> dict:
         return {
@@ -396,7 +404,7 @@ class SearchFilesTool(BaseTool):
     description = "Search for text within files. Returns files and lines containing the search term."
     
     def __init__(self, workspace: str = None):
-        self.workspace = workspace or os.getcwd()
+        self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, search_term: str, directory: str = ".", file_pattern: str = "*", **kwargs) -> str:
         """
@@ -466,17 +474,10 @@ class SearchFilesTool(BaseTool):
             return f"[Search Files] Error: {str(e)}"
     
     def _resolve_path(self, path: str) -> str:
-        if os.path.isabs(path):
-            return os.path.normpath(path)
-        return os.path.normpath(os.path.join(self.workspace, path))
+        return _resolve_workspace_path(_effective_workspace(self.workspace), path)
     
     def _is_safe_path(self, path: str) -> bool:
-        try:
-            real_path = os.path.realpath(path)
-            real_workspace = os.path.realpath(self.workspace)
-            return real_path.startswith(real_workspace)
-        except:
-            return False
+        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
     
     def _get_parameters_schema(self) -> dict:
         return {

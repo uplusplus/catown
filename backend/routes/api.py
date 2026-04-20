@@ -390,9 +390,11 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
     from tools import tool_registry
+    from tools.file_operations import reset_active_workspace, set_active_workspace
     import json
     
     db = next(get_db())
+    workspace_token = None
     try:
         logger.debug(f"[ trigger_agent_response called: chatroom_id={chatroom_id}, message={user_message[:50]}...")
         
@@ -403,6 +405,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             return
 
         project = _resolve_chatroom_project(db, chatroom)
+        workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
         if not project:
             mentioned_names = re.findall(r'@(\w+)', user_message) if '@' in user_message else []
             if len(mentioned_names) > 1:
@@ -681,6 +684,8 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         import traceback
         traceback.print_exc()
     finally:
+        if workspace_token is not None:
+            reset_active_workspace(workspace_token)
         db.close()
 
 
@@ -1607,6 +1612,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
     async def raw_event_generator():
         from models.database import get_db as _get_db
         from tools import tool_registry
+        from tools.file_operations import reset_active_workspace, set_active_workspace
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
         from routes.websocket import websocket_manager
 
@@ -1619,6 +1625,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
 
         db = next(_get_db())
+        workspace_token = None
         try:
             # 1. 保存用户消息
             user_msg = await chatroom_manager.send_message(
@@ -1637,6 +1644,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 return
 
             project = _resolve_chatroom_project(db, chatroom)
+            workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
             if not project:
                 mentioned_names = re.findall(r'@(\w+)', message.content) if '@' in message.content else []
                 if len(mentioned_names) > 1:
@@ -2234,6 +2242,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             traceback.print_exc()
             yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
         finally:
+            if workspace_token is not None:
+                reset_active_workspace(workspace_token)
             db.close()
 
     async def event_generator():

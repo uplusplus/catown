@@ -187,6 +187,25 @@ class TestListFilesTool:
         result = await tool.execute(directory="../../etc")
         assert "denied" in result.lower()
 
+    @pytest.mark.asyncio
+    async def test_list_uses_active_workspace_override(self, tmp_path):
+        from tools.file_operations import ListFilesTool, reset_active_workspace, set_active_workspace
+
+        fallback = tmp_path / "fallback"
+        project = tmp_path / "project"
+        fallback.mkdir()
+        project.mkdir()
+        (project / "README.md").write_text("hello")
+
+        tool = ListFilesTool(workspace=str(fallback))
+        token = set_active_workspace(str(project))
+        try:
+            result = await tool.execute(directory=".")
+        finally:
+            reset_active_workspace(token)
+
+        assert "README.md" in result
+
 
 class TestDeleteFileTool:
     """DeleteFileTool 测试"""
@@ -294,3 +313,24 @@ class TestSearchFilesTool:
         (tmp_path / "safe").mkdir()
         result = await tool.execute(search_term="x", directory="../../etc")
         assert "denied" in result.lower()
+
+
+class TestWorkspaceOverride:
+    @pytest.mark.asyncio
+    async def test_read_uses_active_workspace_override(self, tmp_path):
+        from tools.file_operations import ReadFileTool, reset_active_workspace, set_active_workspace
+
+        fallback = tmp_path / "fallback"
+        project = tmp_path / "project"
+        fallback.mkdir()
+        project.mkdir()
+        (project / "notes.md").write_text("project context")
+
+        tool = ReadFileTool(workspace=str(fallback))
+        token = set_active_workspace(str(project))
+        try:
+            result = await tool.execute(file_path="notes.md")
+        finally:
+            reset_active_workspace(token)
+
+        assert "project context" in result
