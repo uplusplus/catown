@@ -5,6 +5,7 @@ import { AppSidebar } from "./components/AppSidebar";
 import { ChatTab } from "./components/ChatTab";
 import { ConfigTab } from "./components/ConfigTab";
 import { ProjectsTab } from "./components/ProjectsTab";
+import { UI_VERSION } from "./uiVersion";
 import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTimings";
 import type {
   AppTab,
@@ -23,6 +24,21 @@ import type {
 const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
 const OPTIMISTIC_MESSAGES_STORAGE_KEY = "catown:optimistic-messages";
 const STREAM_STEP_LIMIT = 8;
+
+function debugConsole(level: "info" | "warn", event: string, details: Record<string, unknown>) {
+  if (typeof window === "undefined") return;
+  const payload = {
+    uiVersion: UI_VERSION,
+    origin: window.location.origin,
+    path: window.location.pathname,
+    ...details,
+  };
+  console[level](`[CatownDebug] ${event}`, payload);
+  (window as Window & { __CATOWN_DEBUG__?: Record<string, unknown> }).__CATOWN_DEBUG__ = {
+    event,
+    ...payload,
+  };
+}
 
 function readLastChatId(): number | null {
   if (typeof window === "undefined") return null;
@@ -151,6 +167,18 @@ function resolveRestoredSelection(
   };
 }
 
+function isKnownChatId(
+  chatId: number | null | undefined,
+  projects: ProjectSummary[],
+  chats: ChatSummary[],
+) {
+  if (!chatId) return false;
+  return (
+    projects.some((project) => project.default_chatroom_id === chatId) ||
+    chats.some((chat) => chat.id === chatId)
+  );
+}
+
 function buildEvent(message: string, tone: ChatEventTone = "info"): ChatEventItem {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -241,6 +269,10 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         turn: typeof payload.turn === "number" ? payload.turn : undefined,
         tokens_in: typeof payload.tokens_in === "number" ? payload.tokens_in : undefined,
         tokens_out: typeof payload.tokens_out === "number" ? payload.tokens_out : undefined,
+        tokens_total: typeof payload.tokens_total === "number" ? payload.tokens_total : undefined,
+        context_window: typeof payload.context_window === "number" ? payload.context_window : undefined,
+        context_usage_ratio:
+          typeof payload.context_usage_ratio === "number" ? payload.context_usage_ratio : undefined,
         duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : undefined,
         system_prompt: typeof payload.system_prompt === "string" ? payload.system_prompt : undefined,
         prompt_messages: typeof payload.prompt_messages === "string" ? payload.prompt_messages : undefined,
@@ -374,6 +406,19 @@ function replaceMessageId(
 
 function mergeMessages(current: MessageItem[], incoming: MessageItem[]) {
   const merged = new Map<number, MessageItem>();
+  for (const item of current) {
+    merged.set(item.id, item);
+  }
+  for (const item of incoming) {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  }
+  return Array.from(merged.values()).sort(
+    (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+  );
+}
+
+function mergeCards(current: ChatCardItem[], incoming: ChatCardItem[]) {
+  const merged = new Map<string, ChatCardItem>();
   for (const item of current) {
     merged.set(item.id, item);
   }
@@ -1265,8 +1310,12 @@ function App() {
   const [error, setError] = useState<string>("");
 
   const socketRef = useRef<WebSocket | null>(null);
+  const bootstrappedRef = useRef<boolean>(bootstrapped);
   const selectedChatIdRef = useRef<number | null>(selectedChatId);
   const selectedProjectIdRef = useRef<number | null>(selectedProjectId);
+  const chatsRef = useRef<ChatSummary[]>(chats);
+  const projectsRef = useRef<ProjectSummary[]>(projects);
+  const activeChatRef = useRef<ChatSummary | null>(null);
   const optimisticScopeRef = useRef<string>(optimisticScopeKey(selectedChatId));
   const joinedRoomRef = useRef<number | null>(null);
   const tempMessageIdRef = useRef(-1);
@@ -1278,7 +1327,7 @@ function App() {
   }
 
   function pushCard(card: ChatCardItem) {
-    setChatCards((current) => [...current.slice(-39), card]);
+    setChatCards((current) => mergeCards(current, [card]).slice(-40));
   }
 
   function nextTempMessageId() {
@@ -1297,6 +1346,21 @@ function App() {
     setOptimisticMessages((current) => (typeof updater === "function" ? updater(current) : updater));
   }
 
+  function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
+    debugConsole("info", "applyChatSelection", {
+      previousChatId: selectedChatIdRef.current,
+      previousProjectId: selectedProjectIdRef.current,
+      nextChatId,
+      nextProjectId,
+      lastChatStorage: readLastChatId(),
+    });
+    selectedChatIdRef.current = nextChatId;
+    selectedProjectIdRef.current = nextProjectId;
+    writeLastChatId(nextChatId);
+    setSelectedChatId(nextChatId);
+    setSelectedProjectId(nextProjectId);
+  }
+
   function toggleConfigTab() {
     setActiveTab((currentTab) => (currentTab === "config" ? "chat" : "config"));
   }
@@ -1306,8 +1370,7 @@ function App() {
     setProjects((current) => upsertProject(current, project));
     migrateOptimisticMessages(selectedChatIdRef.current, project.default_chatroom_id);
     optimisticScopeRef.current = optimisticScopeKey(project.default_chatroom_id);
-    setSelectedProjectId(project.id);
-    setSelectedChatId(project.default_chatroom_id);
+    applyChatSelection(project.default_chatroom_id, project.id);
     setActiveTab("chat");
     return project;
   }
@@ -1336,6 +1399,10 @@ function App() {
   }, [selectedProject, selectedStandaloneChat, selectedChatId]);
 
   useEffect(() => {
+    bootstrappedRef.current = bootstrapped;
+  }, [bootstrapped]);
+
+  useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
@@ -1344,10 +1411,54 @@ function App() {
   }, [selectedProjectId]);
 
   useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  useEffect(() => {
     if (!bootstrapped) return;
     optimisticScopeRef.current = optimisticScopeKey(selectedChatId);
     setOptimisticMessages(readOptimisticMessages(selectedChatId));
   }, [bootstrapped, selectedChatId]);
+
+  function repairUnknownChatSelection(staleChatId: number | null, source: string) {
+    if (!staleChatId) return false;
+    if (isKnownChatId(staleChatId, projectsRef.current, chatsRef.current)) {
+      return true;
+    }
+
+    const fallbackSelection = resolveRestoredSelection(projectsRef.current, chatsRef.current, null);
+    const nextChatId = fallbackSelection.chatId ?? null;
+    const nextProjectId = fallbackSelection.projectId ?? null;
+
+    debugConsole("warn", "repairUnknownChatSelection", {
+      source,
+      staleChatId,
+      fallbackChatId: nextChatId,
+      fallbackProjectId: nextProjectId,
+      knownProjectChatIds: projectsRef.current.map((project) => project.default_chatroom_id),
+      knownStandaloneChatIds: chatsRef.current.map((chat) => chat.id),
+    });
+    applyChatSelection(nextChatId, nextProjectId);
+
+    if (joinedRoomRef.current === staleChatId) {
+      joinedRoomRef.current = null;
+    }
+    if (nextChatId === null) {
+      setMessages([]);
+      setChatCards([]);
+    }
+
+    pushEvent(`Recovered stale chat #${staleChatId} from ${source}`, "warning");
+    return false;
+  }
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -1370,13 +1481,26 @@ function App() {
       const selfProject = await api.getOrCreateSelfBootstrapProject();
       const projectRows = await api.getProjects();
       const restoredSelection = resolveRestoredSelection(projectRows, chatRows, preferredChatId);
+      const nextSelectedChatId = restoredSelection.chatId ?? selfProject.default_chatroom_id;
+      const nextSelectedProjectId = restoredSelection.projectId ?? selfProject.id;
+
+      debugConsole("info", "bootstrapSelection", {
+        preferredChatId,
+        projectDefaultChatIds: projectRows.map((project) => project.default_chatroom_id),
+        standaloneChatIds: chatRows.map((chat) => chat.id),
+        resolvedChatId: nextSelectedChatId,
+        resolvedProjectId: nextSelectedProjectId,
+      });
+
+      if (preferredChatId !== nextSelectedChatId) {
+        writeLastChatId(nextSelectedChatId);
+      }
 
       setChats(chatRows);
       setProjects(projectRows);
       setAgents(agentRows);
       setConfig(configData);
-      setSelectedChatId(restoredSelection.chatId ?? selfProject.default_chatroom_id);
-      setSelectedProjectId(restoredSelection.projectId ?? selfProject.id);
+      applyChatSelection(nextSelectedChatId, nextSelectedProjectId);
       setActiveTab("chat");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load app data");
@@ -1403,6 +1527,14 @@ function App() {
 
   useEffect(() => {
     if (!bootstrapped) return;
+    if (selectedChatId !== null && !activeChat) {
+      repairUnknownChatSelection(selectedChatId, "selection sync");
+      return;
+    }
+  }, [activeChat, bootstrapped, chats, projects, selectedChatId]);
+
+  useEffect(() => {
+    if (!bootstrapped) return;
     if (!selectedChatId) {
       setMessages([]);
       optimisticScopeRef.current = optimisticScopeKey(null);
@@ -1410,6 +1542,7 @@ function App() {
       setChatCards([]);
       return;
     }
+    if (!activeChat) return;
     const activeChatId = selectedChatId;
 
     let cancelled = false;
@@ -1449,23 +1582,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [bootstrapped, selectedChatId]);
-
-  useEffect(() => {
-    if (!bootstrapped) return;
-    if (!selectedChatId) return;
-
-    const hasRecoverableStreamingTurn = optimisticMessages.some(
-      (message) => Boolean(message.isStreaming && message.client_turn_id),
-    );
-    const refreshIntervalMs = hasRecoverableStreamingTurn && !sendingMessage ? 1000 : 5000;
-
-    const timer = window.setInterval(() => {
-      void refreshMessages(false);
-    }, refreshIntervalMs);
-
-    return () => window.clearInterval(timer);
-  }, [bootstrapped, optimisticMessages, selectedChatId, sendingMessage]);
+  }, [activeChat, bootstrapped, selectedChatId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1487,9 +1604,19 @@ function App() {
         pushEvent("Realtime connection established", "success");
 
         const roomId = selectedChatIdRef.current;
-        if (roomId) {
+        debugConsole("info", "socketOpen", {
+          roomId,
+          bootstrapped: bootstrappedRef.current,
+          selectedChatId: selectedChatIdRef.current,
+          selectedProjectId: selectedProjectIdRef.current,
+        });
+        if (bootstrappedRef.current && roomId) {
+          if (!repairUnknownChatSelection(roomId, "websocket open")) {
+            return;
+          }
           socket.send(JSON.stringify({ type: "join", chatroom_id: roomId }));
           joinedRoomRef.current = roomId;
+          void refreshMessages(false, roomId);
         }
       };
 
@@ -1497,7 +1624,7 @@ function App() {
         try {
           const data = JSON.parse(event.data) as Record<string, unknown>;
 
-          if (data.type === "message" && typeof data.id === "number") {
+          if (data.type === "chat_message" && typeof data.id === "number") {
             const incoming: MessageItem = {
               id: data.id,
               content: typeof data.content === "string" ? data.content : "",
@@ -1509,7 +1636,7 @@ function App() {
             };
             setMessages((current) => {
               const streamingId = streamingAssistantIdRef.current;
-              if (streamingId !== null) {
+              if (streamingId !== null && incoming.agent_name) {
                 const next = updateMessage(current, streamingId, (message) => ({
                   ...finalizeStreamingTrace(
                     {
@@ -1528,6 +1655,19 @@ function App() {
               return mergeMessages(current, [incoming]);
             });
             commitOptimisticMessages((current) => {
+              if (!incoming.agent_name) {
+                return current.filter(
+                  (item) =>
+                    !(
+                      item.optimisticKind === "user" &&
+                      (
+                        (incoming.client_turn_id && item.client_turn_id === incoming.client_turn_id) ||
+                        item.id === incoming.id
+                      )
+                    ),
+                );
+              }
+
               let matched = false;
               const next = current.map((item) => {
                 const isMatchingPlaceholder =
@@ -1555,7 +1695,34 @@ function App() {
                   ),
               );
             });
-            pushEvent(`Incoming reply from ${incoming.agent_name || "assistant"}`, "success");
+            if (incoming.agent_name) {
+              pushEvent(`Incoming reply from ${incoming.agent_name || "assistant"}`, "success");
+            }
+            return;
+          }
+
+          if (data.type === "runtime_card" && data.card && typeof data.card === "object") {
+            const card = buildCard(data.card as Record<string, unknown>);
+            if (card) {
+              pushCard(card);
+              if (streamingAssistantIdRef.current !== null) {
+                commitOptimisticMessages((current) =>
+                  updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) =>
+                    applyRuntimeCardStep(
+                      {
+                        ...message,
+                        agent_name:
+                          card.agent ||
+                          card.from_agent ||
+                          card.to_agent ||
+                          message.agent_name,
+                      },
+                      card,
+                    ),
+                  ),
+                );
+              }
+            }
             return;
           }
 
@@ -1695,6 +1862,8 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!bootstrapped) return;
+
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
@@ -1703,15 +1872,35 @@ function App() {
     }
 
     if (selectedChatId) {
+      if (!repairUnknownChatSelection(selectedChatId, "room join")) {
+        return;
+      }
       socket.send(JSON.stringify({ type: "join", chatroom_id: selectedChatId }));
       joinedRoomRef.current = selectedChatId;
     } else {
       joinedRoomRef.current = null;
     }
-  }, [selectedChatId]);
+  }, [bootstrapped, selectedChatId]);
 
   async function refreshMessages(showSpinner = true, chatId = selectedChatId) {
     if (!chatId) return;
+    const isCurrentSelection = chatId === selectedChatIdRef.current;
+    debugConsole("info", "refreshMessages", {
+      chatId,
+      showSpinner,
+      isCurrentSelection,
+      selectedChatId: selectedChatIdRef.current,
+      selectedProjectId: selectedProjectIdRef.current,
+      knownProjectChatIds: projectsRef.current.map((project) => project.default_chatroom_id),
+      knownStandaloneChatIds: chatsRef.current.map((chat) => chat.id),
+    });
+    if (!isKnownChatId(chatId, projectsRef.current, chatsRef.current)) {
+      if (isCurrentSelection) {
+        repairUnknownChatSelection(chatId, "message refresh");
+      }
+      return;
+    }
+    if (isCurrentSelection && !activeChatRef.current) return;
     try {
       if (showSpinner) {
         setRefreshingMessages(true);
@@ -2419,10 +2608,9 @@ function App() {
               );
             }
             pushEvent(`${finalAgentName} replied`, "success");
-            await refreshMessages(false, chatId);
-            commitOptimisticMessages((current) =>
-              current.filter((item) => item.id !== userTempId && item.id !== (savedMessageId ?? assistantTempId)),
-            );
+            if (connectionState !== "connected" || joinedRoomRef.current !== chatId) {
+              await refreshMessages(false, chatId);
+            }
             break;
           }
           case "error": {
@@ -2498,10 +2686,9 @@ function App() {
             ),
           ),
         );
-        await refreshMessages(false, chatId);
-        commitOptimisticMessages((current) =>
-          current.filter((item) => item.id !== userTempId && item.id !== assistantTempId),
-        );
+        if (connectionState !== "connected" || joinedRoomRef.current !== chatId) {
+          await refreshMessages(false, chatId);
+        }
       }
     } catch (nextError) {
       if (contentFlushTimer !== null) {
@@ -2517,10 +2704,9 @@ function App() {
         try {
           const saved = await api.sendMessage(chatId, content, clientTurnId);
           setMessages((current) => mergeMessages(current, [saved]));
-          commitOptimisticMessages((current) =>
-            current.filter((item) => item.id !== userTempId && item.id !== assistantTempId),
-          );
-          await refreshMessages(false, chatId);
+          if (connectionState !== "connected") {
+            await refreshMessages(false, chatId);
+          }
           return;
         } catch (fallbackError) {
           const fallbackMessage =
@@ -2562,8 +2748,7 @@ function App() {
       const created = await api.createProject(payload);
       const nextProjects = await api.getProjects();
       setProjects(nextProjects);
-      setSelectedProjectId(created.id);
-      setSelectedChatId(created.default_chatroom_id);
+      applyChatSelection(created.default_chatroom_id, created.id);
       setActiveTab("chat");
       setNotice(`Created project "${created.name}" and opened its chat room.`);
       pushEvent(`Project "${created.name}" created`, "success");
@@ -2595,8 +2780,7 @@ function App() {
       setError("");
       const created = await api.createProjectSubchat(projectId);
       setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
-      setSelectedProjectId(projectId);
-      setSelectedChatId(created.id);
+      applyChatSelection(created.id, projectId);
       setActiveTab("chat");
       setNotice(`Created sub chat "${created.title}" in "${targetProject.name}".`);
       pushEvent(`Created sub chat in "${targetProject.name}"`, "success");
@@ -2653,8 +2837,7 @@ function App() {
       });
       const nextProjects = await api.getProjects();
       setProjects(nextProjects);
-      setSelectedProjectId(created.id);
-      setSelectedChatId(created.default_chatroom_id);
+      applyChatSelection(created.default_chatroom_id, created.id);
       setActiveTab("chat");
       setNotice(`Created project "${created.name}" from "${activeChat.title}".`);
       pushEvent(`Converted chat "${activeChat.title}" into project "${created.name}"`, "success");
@@ -2715,8 +2898,9 @@ function App() {
         const fallbackProject = targetChat.project_id
           ? projects.find((project) => project.id === targetChat.project_id) ?? null
           : null;
-        setSelectedProjectId(fallbackProject?.id ?? null);
-        setSelectedChatId(fallbackProject?.default_chatroom_id ?? remainingChats[0]?.id ?? null);
+        const nextProjectId = fallbackProject?.id ?? null;
+        const nextChatId = fallbackProject?.default_chatroom_id ?? remainingChats[0]?.id ?? null;
+        applyChatSelection(nextChatId, nextProjectId);
         if (!fallbackProject && remainingChats.length === 0) {
           setMessages([]);
           setChatCards([]);
@@ -2743,8 +2927,8 @@ function App() {
       setProjects(remainingProjects);
 
       if (selectedProjectId === projectId || selectedChatId === targetProject.default_chatroom_id) {
-        setSelectedProjectId(null);
-        setSelectedChatId(chats[0]?.id ?? null);
+        const nextChatId = chats[0]?.id ?? null;
+        applyChatSelection(nextChatId, null);
         if (chats.length === 0) {
           setMessages([]);
           setChatCards([]);
@@ -2784,8 +2968,7 @@ function App() {
 
       const nextProjects = await api.getProjects();
       setProjects(nextProjects);
-      setSelectedProjectId(created.id);
-      setSelectedChatId(created.default_chatroom_id);
+      applyChatSelection(created.default_chatroom_id, created.id);
       setActiveTab("chat");
       setNotice(`Created project "${created.name}" from selected directory.`);
       pushEvent(`Created project "${created.name}" from directory picker`, "success");
@@ -2929,8 +3112,7 @@ function App() {
         selectedChatId={selectedChatId}
         onSelectChat={(chatId) => {
           const nextChat = chats.find((chat) => chat.id === chatId) ?? null;
-          setSelectedChatId(chatId);
-          setSelectedProjectId(nextChat?.project_id ?? null);
+          applyChatSelection(chatId, nextChat?.project_id ?? null);
           setActiveTab("chat");
           setSidebarDrawerOpen(false);
           pushEvent(`Opened chat #${chatId}`, "info");
@@ -2942,8 +3124,7 @@ function App() {
         selectedProjectId={selectedProjectId}
         onSelectProject={(projectId) => {
           const nextProject = projects.find((project) => project.id === projectId) ?? null;
-          setSelectedProjectId(projectId);
-          setSelectedChatId(nextProject?.default_chatroom_id ?? null);
+          applyChatSelection(nextProject?.default_chatroom_id ?? null, nextProject?.id ?? null);
           setActiveTab("chat");
           setSidebarDrawerOpen(false);
           pushEvent(`Opened project "${nextProject?.name || projectId}"`, "info");
@@ -3068,8 +3249,7 @@ function App() {
             onCreateProject={handleCreateProject}
             onSelectProject={(projectId) => {
               const nextProject = projects.find((project) => project.id === projectId) ?? null;
-              setSelectedProjectId(projectId);
-              setSelectedChatId(nextProject?.default_chatroom_id ?? null);
+              applyChatSelection(nextProject?.default_chatroom_id ?? null, nextProject?.id ?? null);
               setActiveTab("chat");
               pushEvent(`Opened project "${nextProject?.name || projectId}"`, "info");
             }}

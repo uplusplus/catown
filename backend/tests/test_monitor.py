@@ -64,7 +64,7 @@ def _make_app(tmp_path):
 def client(tmp_path):
     from fastapi.testclient import TestClient
 
-    return TestClient(_make_app(tmp_path), base_url="http://testserver")
+    return TestClient(_make_app(tmp_path), base_url="http://testserver", headers={"X-Catown-Client": "test"})
 
 
 class TestMonitorOverview:

@@ -341,7 +341,10 @@ class TestConfigAPIEndpoints:
         main_mod.RequestLoggingMiddleware.dispatch = passthrough
 
         from fastapi.testclient import TestClient
-        return TestClient(main_mod.app, base_url="http://testserver"), config_file
+        return (
+            TestClient(main_mod.app, base_url="http://testserver", headers={"X-Catown-Client": "test"}),
+            config_file,
+        )
 
     def test_get_config_returns_global_llm(self, client_with_config):
         """GET /config 返回 global_llm 段"""

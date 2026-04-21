@@ -37,7 +37,7 @@ from models.database import init_database, get_db, Base, engine
 @pytest.fixture(scope="module")
 def client():
     """创建测试客户端"""
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-Catown-Client": "test"}) as c:
         yield c
 
 

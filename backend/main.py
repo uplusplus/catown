@@ -10,6 +10,8 @@ import logging
 import time
 import os
 from pathlib import Path
+from functools import lru_cache
+import re
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
@@ -122,13 +124,14 @@ if DOCS_STATIC_DIR.exists():
 allowed_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001")
 ALLOWED_ORIGINS = [o.strip() for o in allowed_origins_str.split(",") if o.strip()]
 logger.info(f"[Config] CORS allowed origins: {ALLOWED_ORIGINS}")
+ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-Catown-Client"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=ALLOWED_HEADERS,
 )
 
 # 速率限制
@@ -139,6 +142,91 @@ logger.info(f"[Config] Rate limiter: {rate_limiter.max_requests} req / {rate_lim
 # ==================== 请求日志 & 错误追踪中间件 ====================
 
 import traceback as _traceback
+import re as _re
+
+_CLIENT_SOURCE_RE = _re.compile(r"^[a-z0-9_-]{1,32}$")
+_UI_VERSION_RE = _re.compile(r"^[a-z0-9._-]{1,32}$")
+_UI_VERSION_FILE = FRONTEND_DIR / "src" / "uiVersion.ts"
+_UI_VERSION_VALUE_RE = re.compile(r'UI_VERSION\s*=\s*"([^"]+)"')
+_HTML_ASSET_RE = re.compile(r"/assets/([^\"']+)")
+
+_NO_STORE_PATHS = ("/", "/monitor", "/docs", "/redoc")
+
+def _request_client_source(request: Request) -> str:
+    explicit_source = request.headers.get("x-catown-client", "").strip().lower()
+    if _CLIENT_SOURCE_RE.fullmatch(explicit_source):
+        return explicit_source
+
+    referer = request.headers.get("referer", "").lower()
+    if "/monitor" in referer:
+        return "monitor"
+    if referer:
+        return "home"
+    return "unknown"
+
+def _request_ui_version(request: Request) -> str:
+    ui_version = request.headers.get("x-catown-ui-version", "").strip().lower()
+    if _UI_VERSION_RE.fullmatch(ui_version):
+        return ui_version
+    return "unknown"
+
+def _frontend_page_from_request(request: Request) -> str:
+    path = request.url.path
+    if path.startswith("/monitor"):
+        return "monitor"
+    if _request_client_source(request) == "monitor":
+        return "monitor"
+    return "home"
+
+def _file_mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return 0
+
+@lru_cache(maxsize=8)
+def _cached_frontend_meta(page: str, ui_version_mtime_ns: int, html_mtime_ns: int) -> dict[str, str]:
+    ui_version = "unknown"
+    try:
+        raw = _UI_VERSION_FILE.read_text(encoding="utf-8")
+        match = _UI_VERSION_VALUE_RE.search(raw)
+        if match:
+            ui_version = match.group(1)
+    except Exception:
+        pass
+
+    html_name = "monitor.html" if page == "monitor" else "index.html"
+    html_path = FRONTEND_DIST_DIR / html_name
+    build_assets: list[str] = []
+    try:
+        html = html_path.read_text(encoding="utf-8")
+        build_assets = sorted(set(_HTML_ASSET_RE.findall(html)))
+    except Exception:
+        build_assets = []
+
+    build_id = "|".join(build_assets) or f"{html_name}:{html_mtime_ns}"
+    return {
+        "page": page,
+        "ui_version": ui_version,
+        "build_id": build_id,
+    }
+
+def _frontend_meta(page: str) -> dict[str, str]:
+    html_name = "monitor.html" if page == "monitor" else "index.html"
+    html_path = FRONTEND_DIST_DIR / html_name
+    return _cached_frontend_meta(
+        page,
+        _file_mtime_ns(_UI_VERSION_FILE),
+        _file_mtime_ns(html_path),
+    )
+
+def _should_disable_cache(request: Request) -> bool:
+    if request.method.upper() != "GET":
+        return False
+    path = request.url.path
+    if path.startswith("/api/"):
+        return True
+    return path in _NO_STORE_PATHS
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """记录请求耗时和错误"""
@@ -146,12 +234,24 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         import time as _time
         start = _time.time()
-        path = request.url.path
+        path = (
+            f"source={_request_client_source(request)} "
+            f"ui={_request_ui_version(request)} "
+            f"{request.url.path}"
+        )
         method = request.method
 
         try:
             response = await call_next(request)
+            frontend_meta = _frontend_meta(_frontend_page_from_request(request))
+            response.headers["X-Catown-Server-UI-Version"] = frontend_meta["ui_version"]
+            response.headers["X-Catown-Server-Build-Id"] = frontend_meta["build_id"]
+            if _should_disable_cache(request):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
             duration_ms = (_time.time() - start) * 1000
+            logger.info(f"[Access] {method} {path} -> {response.status_code} ({duration_ms:.0f}ms)")
 
             if response.status_code >= 400:
                 logger.warning(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
@@ -239,6 +339,11 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/frontend-meta", include_in_schema=False)
+async def frontend_meta(request: Request):
+    return _frontend_meta(_frontend_page_from_request(request))
 
 
 @app.get("/docs", include_in_schema=False)

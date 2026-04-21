@@ -62,7 +62,7 @@ def _make_app(tmp_path):
 def client(tmp_path):
     from fastapi.testclient import TestClient
     app = _make_app(tmp_path)
-    return TestClient(app, base_url="http://testserver")
+    return TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"})
 
 
 class TestStartupHealthCheck:

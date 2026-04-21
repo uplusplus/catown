@@ -331,6 +331,27 @@ function threadItemSortWeight(item: Extract<ThreadItem, { kind: "message" | "car
   return 2;
 }
 
+function threadItemClientTurnId(item: Extract<ThreadItem, { kind: "message" | "card" }>) {
+  if (item.kind === "card") return item.card.client_turn_id ?? null;
+  return item.message.client_turn_id ?? null;
+}
+
+function compareThreadTimelineItems(
+  left: Extract<ThreadItem, { kind: "message" | "card" }>,
+  right: Extract<ThreadItem, { kind: "message" | "card" }>,
+) {
+  const leftTurnId = threadItemClientTurnId(left);
+  const rightTurnId = threadItemClientTurnId(right);
+  if (leftTurnId && rightTurnId && leftTurnId === rightTurnId) {
+    const weightDiff = threadItemSortWeight(left) - threadItemSortWeight(right);
+    if (weightDiff !== 0) return weightDiff;
+  }
+
+  const timeDiff = new Date(left.sortKey).getTime() - new Date(right.sortKey).getTime();
+  if (timeDiff !== 0) return timeDiff;
+  return threadItemSortWeight(left) - threadItemSortWeight(right);
+}
+
 function cardBadge(card: ThreadCard) {
   switch (card.kind) {
     case "llm_call":
@@ -462,6 +483,120 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+type LlmUsageSummary = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  contextWindow?: number;
+  contextUsageRatio?: number;
+  llmCalls: number;
+};
+
+function formatUsageNumber(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return value.toLocaleString("en-US");
+}
+
+function formatUsagePercent(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  const percent = value * 100;
+  return `${percent.toFixed(percent >= 10 ? 0 : 1)}%`;
+}
+
+function summarizeLlmUsage(cards: ThreadCard[]): LlmUsageSummary | null {
+  let llmCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let totalTokens = 0;
+  let hasInput = false;
+  let hasOutput = false;
+  let hasTotal = false;
+  let contextWindow: number | undefined;
+  let contextUsageRatio: number | undefined;
+
+  cards.forEach((card) => {
+    if (card.kind !== "llm_call") return;
+    llmCalls += 1;
+
+    if (typeof card.tokens_in === "number" && Number.isFinite(card.tokens_in) && card.tokens_in > 0) {
+      inputTokens += card.tokens_in;
+      hasInput = true;
+    }
+    if (typeof card.tokens_out === "number" && Number.isFinite(card.tokens_out) && card.tokens_out > 0) {
+      outputTokens += card.tokens_out;
+      hasOutput = true;
+    }
+    if (typeof card.tokens_total === "number" && Number.isFinite(card.tokens_total) && card.tokens_total > 0) {
+      totalTokens += card.tokens_total;
+      hasTotal = true;
+    }
+
+    if (typeof card.context_window === "number" && Number.isFinite(card.context_window) && card.context_window > 0) {
+      contextWindow = card.context_window;
+    }
+    if (typeof card.context_usage_ratio === "number" && Number.isFinite(card.context_usage_ratio) && card.context_usage_ratio > 0) {
+      contextUsageRatio = card.context_usage_ratio;
+    } else if (
+      typeof card.tokens_in === "number" &&
+      Number.isFinite(card.tokens_in) &&
+      card.tokens_in > 0 &&
+      typeof card.context_window === "number" &&
+      Number.isFinite(card.context_window) &&
+      card.context_window > 0
+    ) {
+      contextUsageRatio = card.tokens_in / card.context_window;
+    }
+  });
+
+  if (llmCalls === 0) return null;
+  if (!hasTotal && (hasInput || hasOutput)) {
+    totalTokens = inputTokens + outputTokens;
+    hasTotal = totalTokens > 0;
+  }
+
+  if (!hasInput && !hasOutput && !hasTotal && contextWindow === undefined && contextUsageRatio === undefined) {
+    return null;
+  }
+
+  return {
+    llmCalls,
+    inputTokens: hasInput ? inputTokens : undefined,
+    outputTokens: hasOutput ? outputTokens : undefined,
+    totalTokens: hasTotal ? totalTokens : undefined,
+    contextWindow,
+    contextUsageRatio,
+  };
+}
+
+function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat-usage-footer") {
+  if (!summary) return null;
+
+  const items: string[] = [];
+  if (typeof summary.inputTokens === "number") items.push(`input ${formatUsageNumber(summary.inputTokens)}`);
+  if (typeof summary.outputTokens === "number") items.push(`output ${formatUsageNumber(summary.outputTokens)}`);
+  if (typeof summary.totalTokens === "number") items.push(`total ${formatUsageNumber(summary.totalTokens)}`);
+  if (summary.contextUsageRatio !== undefined && summary.contextWindow !== undefined) {
+    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} of ${formatUsageNumber(summary.contextWindow)}`);
+  } else if (summary.contextUsageRatio !== undefined) {
+    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)}`);
+  } else if (summary.contextWindow !== undefined) {
+    items.push(`window ${formatUsageNumber(summary.contextWindow)}`);
+  }
+  if (summary.llmCalls > 1) items.push(`${summary.llmCalls} llm calls`);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className={className}>
+      {items.map((item) => (
+        <span key={item} className="chat-usage-footer__item">
+          {item}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function messageStepStateFromCard(card: ThreadCard): MessageStreamStep["state"] {
@@ -1233,6 +1368,7 @@ function renderCardBody(card: ThreadCard) {
           {renderJsonCollapse("RAW", "Raw LLM response", card.raw_response, {
             copyLabel: "Copy raw LLM response",
           })}
+          {renderLlmUsageFooter(summarizeLlmUsage([card]), "chat-usage-footer chat-usage-footer--card")}
         </>
       );
     case "tool_call":
@@ -1882,6 +2018,10 @@ function renderMessage(
       ))}
     </div>
   ) : null;
+  const messageUsageFooter =
+    isAssistant && fallbackCards.length > 0
+      ? renderLlmUsageFooter(summarizeLlmUsage(fallbackCards), "chat-usage-footer chat-usage-footer--message")
+      : null;
 
   return (
     <div className={`chat-group ${isAssistant ? "" : "user"}`}>
@@ -1893,11 +2033,13 @@ function renderMessage(
             <>
               {messageTrace}
               {messageBody}
+              {messageUsageFooter}
             </>
           ) : (
             <>
               {messageBody}
               {messageTrace}
+              {messageUsageFooter}
             </>
           )}
         </div>
@@ -2015,6 +2157,9 @@ export function ChatTab({
   const fallbackStepCardsByMessageId = useMemo(() => {
     const pendingByActor = new Map<string, ThreadCard[]>();
     const mapped = new Map<number, ThreadCard[]>();
+    const visibleMessages = [...messages, ...localOverlayMessages].sort(
+      (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+    );
 
     const timeline = [
       ...cardsWithPromptPresentation.map((card) => ({
@@ -2022,12 +2167,12 @@ export function ChatTab({
         kind: "card" as const,
         card,
       })),
-      ...messages.map((message) => ({
+      ...visibleMessages.map((message) => ({
         sortKey: message.created_at,
         kind: "message" as const,
         message,
       })),
-    ].sort((left, right) => new Date(left.sortKey).getTime() - new Date(right.sortKey).getTime());
+    ].sort(compareThreadTimelineItems);
 
     for (const item of timeline) {
       if (item.kind === "card") {
@@ -2036,7 +2181,7 @@ export function ChatTab({
         continue;
       }
 
-      if (!item.message.agent_name || (item.message.streamSteps?.length ?? 0) > 0) {
+      if (!item.message.agent_name) {
         continue;
       }
 
@@ -2068,10 +2213,8 @@ export function ChatTab({
       }
       flushGroup();
 
-      for (const message of [...messages].sort(
-        (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
-      )) {
-        if (!message.agent_name || (message.streamSteps?.length ?? 0) > 0) continue;
+      for (const message of visibleMessages) {
+        if (!message.agent_name) continue;
         const actorGroups = groupedCardsByActor.get(message.agent_name) ?? [];
         if (actorGroups.length === 0) continue;
         const [nextGroup, ...rest] = actorGroups;
@@ -2081,15 +2224,22 @@ export function ChatTab({
     }
 
     return mapped;
-  }, [cardsWithPromptPresentation, messages]);
+  }, [cardsWithPromptPresentation, localOverlayMessages, messages]);
   const consumedFallbackCardIds = useMemo(
     () => new Set(Array.from(fallbackStepCardsByMessageId.values()).flatMap((group) => group.map((card) => card.id))),
     [fallbackStepCardsByMessageId],
   );
 
   const threadItems = useMemo<ThreadItem[]>(() => {
+    const hasLiveMessage = [...messages, ...localOverlayMessages].some((message) => Boolean(message.isStreaming));
     const orderedItems: ThreadItem[] = [
       ...messages.map((message) => ({
+        id: `message-${message.id}`,
+        sortKey: message.created_at,
+        kind: "message" as const,
+        message,
+      })),
+      ...localOverlayMessages.map((message) => ({
         id: `message-${message.id}`,
         sortKey: message.created_at,
         kind: "message" as const,
@@ -2105,11 +2255,7 @@ export function ChatTab({
         })),
     ];
 
-    orderedItems.sort((left, right) => {
-      const timeDiff = new Date(left.sortKey).getTime() - new Date(right.sortKey).getTime();
-      if (timeDiff !== 0) return timeDiff;
-      return threadItemSortWeight(left) - threadItemSortWeight(right);
-    });
+    orderedItems.sort(compareThreadTimelineItems);
 
     const mergedItems: ThreadItem[] = [];
     let streak: DecoratedChatCardItem[] = [];
@@ -2174,6 +2320,18 @@ export function ChatTab({
 
     const flushActivityBatch = () => {
       if (activityBatch.length === 0) return;
+      if (!hasLiveMessage) {
+        batchedItems.push(
+          ...activityBatch.map((card) => ({
+            id: `card-${card.id}`,
+            sortKey: card.created_at,
+            kind: "card" as const,
+            card,
+          })),
+        );
+        activityBatch = [];
+        return;
+      }
       batchedItems.push({
         id: `activity-${activityBatch[0].id}`,
         sortKey: activityBatch[0].created_at,
@@ -2195,7 +2353,7 @@ export function ChatTab({
 
     flushActivityBatch();
     return batchedItems;
-  }, [cardsWithPromptPresentation, consumedFallbackCardIds, messages]);
+  }, [cardsWithPromptPresentation, consumedFallbackCardIds, localOverlayMessages, messages]);
 
   const currentActivityAgentName = useMemo(() => {
     const streamingAgent =
@@ -2306,36 +2464,8 @@ export function ChatTab({
           if (!hasServerReply) {
             return [item];
           }
-
-          const nextItem: MessageItem = {
-            ...item,
-            agent_name: matchedServerReply?.agent_name || item.agent_name,
-            content: matchedServerReply?.content || item.content || "Execution trace",
-            isStreaming: false,
-            streamSteps: item.isStreaming
-              ? [
-                  ...(item.streamSteps ?? []),
-                  {
-                    id: `${Date.now()}-done`,
-                    label: "Completed",
-                    detail: "Server reply received.",
-                    state: "done",
-                  },
-                ]
-              : item.streamSteps,
-          };
-
-          if (
-            nextItem.agent_name !== item.agent_name ||
-            nextItem.content !== item.content ||
-            nextItem.isStreaming !== item.isStreaming ||
-            JSON.stringify(nextItem.streamSteps ?? []) !== JSON.stringify(item.streamSteps ?? [])
-          ) {
-            changed = true;
-            return [nextItem];
-          }
-
-          return [item];
+          changed = true;
+          return [];
         }
 
         return [item];
@@ -2353,8 +2483,32 @@ export function ChatTab({
     setLocalOverlayMessages((current) => {
       let changed = false;
       const usedMatches = new Set<number>();
+      const seeded = [...current];
 
-      const next = current.map((item) => {
+      optimisticMessages.forEach((candidate) => {
+        const alreadyExists = seeded.some(
+          (item) =>
+            item.optimisticKind === candidate.optimisticKind &&
+            (
+              (item.client_turn_id && candidate.client_turn_id && item.client_turn_id === candidate.client_turn_id) ||
+              (
+                !item.client_turn_id &&
+                !candidate.client_turn_id &&
+                item.message_type === candidate.message_type &&
+                item.content === candidate.content &&
+                Math.abs(new Date(item.created_at).getTime() - new Date(candidate.created_at).getTime()) < 30_000
+              )
+            ),
+        );
+        if (alreadyExists) return;
+        changed = true;
+        seeded.push({
+          ...candidate,
+          localOnly: true,
+        });
+      });
+
+      const next = seeded.map((item) => {
         if (item.optimisticKind === "user") {
           const matchedIndex = optimisticMessages.findIndex(
             (candidate, index) =>
@@ -2422,6 +2576,7 @@ export function ChatTab({
       });
 
       if (!changed) return current;
+      next.sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
       writeOverlayMessages(chat?.id ?? null, next);
       return next;
     });
@@ -2729,7 +2884,7 @@ export function ChatTab({
       );
     }
 
-    if (threadItems.length > 0 || localOverlayMessages.length > 0) {
+    if (threadItems.length > 0) {
       return (
         <>
           {threadItems.map((item) =>
@@ -2759,17 +2914,6 @@ export function ChatTab({
                   )
                 : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
           )}
-          {localOverlayMessages.map((message) => (
-            <MessageRow
-              key={`message-${message.id}`}
-              message={message}
-              copiedMessageId={copiedMessageId}
-              onCopyMessage={handleCopyMessage}
-              expandedStepId={resolveExpandedMessageStepId(message)}
-              onToggleStep={toggleMessageStep}
-              fallbackStepCards={EMPTY_THREAD_CARDS}
-            />
-          ))}
         </>
       );
     }

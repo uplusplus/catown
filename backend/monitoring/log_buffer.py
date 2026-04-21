@@ -56,6 +56,9 @@ class MonitorLogBuffer:
             self._next_id = 1
 
     def append(self, record: logging.LogRecord, formatted: str) -> None:
+        if record.name == "uvicorn.access":
+            return
+
         timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).astimezone().isoformat()
         entry = {
             "id": 0,
@@ -94,7 +97,7 @@ class MonitorLogBuffer:
         query_text = (query or "").strip().lower()
 
         with self._lock:
-            snapshot = list(self._entries)
+            snapshot = [entry for entry in self._entries if entry.get("logger") != "uvicorn.access"]
 
         if after_id is not None:
             snapshot = [entry for entry in snapshot if int(entry["id"]) > after_id]

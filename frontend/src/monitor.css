@@ -1375,7 +1375,7 @@ textarea {
 
 .log-line {
   display: grid;
-  grid-template-columns: 88px 70px minmax(0, 1fr);
+  grid-template-columns: 88px 70px 86px minmax(0, 1fr);
   gap: 12px;
   padding: 7px 12px;
   border-bottom: 1px solid var(--border-secondary);
@@ -1399,6 +1399,34 @@ textarea {
 
 .log-line .level.error {
   color: var(--text-error);
+}
+
+.log-source {
+  justify-self: start;
+  align-self: start;
+  min-width: 70px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.log-source--home {
+  border-color: rgba(15, 111, 255, 0.18);
+  background: rgba(15, 111, 255, 0.08);
+  color: var(--text-accent);
+}
+
+.log-source--monitor {
+  border-color: rgba(21, 128, 61, 0.18);
+  background: rgba(21, 128, 61, 0.08);
+  color: var(--text-success);
 }
 
 .flow-stats {

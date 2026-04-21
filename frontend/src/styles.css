@@ -1409,8 +1409,10 @@ a {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1 1 auto;
-  max-width: min(900px, 68%);
+  flex: 0 1 min(920px, calc(100% - 72px));
+  width: min(920px, calc(100% - 72px));
+  max-width: min(920px, calc(100% - 72px));
+  min-width: 0;
   align-items: flex-start;
 }
 
@@ -1454,7 +1456,8 @@ a {
   transition:
     background var(--duration-fast) ease-out,
     border-color var(--duration-fast) ease-out;
-  width: auto;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
   word-wrap: break-word;
@@ -1845,6 +1848,7 @@ a {
   padding: 8px 10px;
   cursor: pointer;
   list-style: none;
+  min-width: 0;
 }
 
 .message-stream-step__summary::-webkit-details-marker {
@@ -1895,6 +1899,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow: hidden;
 }
 
 .message-stream-step__toggle {
@@ -1922,6 +1927,10 @@ a {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.45;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .message-stream-step__detail {
@@ -2274,6 +2283,38 @@ a {
 .chat-card-chip--accent {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--accent);
+}
+
+.chat-usage-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.chat-usage-footer--message {
+  margin-top: 14px;
+}
+
+.chat-usage-footer--card {
+  margin-top: 10px;
+}
+
+.chat-usage-footer__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  background: color-mix(in srgb, var(--secondary) 52%, transparent);
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
 }
 
 .chat-skill-list {
@@ -3848,7 +3889,7 @@ a {
   }
 
   .chat-group-messages {
-    max-width: 82%;
+    max-width: 80%;
   }
 
   .chat-controls__separator {

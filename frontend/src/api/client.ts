@@ -12,15 +12,30 @@ import type {
   ProjectFromChatPayload,
   ProjectSummary,
 } from "../types";
+import { UI_VERSION } from "../uiVersion";
+import { handleServerVersionHeaders } from "../versionGuard";
+
+function getClientSource() {
+  if (typeof window === "undefined") return "unknown";
+  const path = window.location.pathname.toLowerCase();
+  if (path === "/monitor" || path === "/monitor/" || path.endsWith("/monitor.html")) {
+    return "monitor";
+  }
+  return "home";
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
+      "X-Catown-Client": getClientSource(),
+      "X-Catown-UI-Version": UI_VERSION,
       ...(init?.headers ?? {}),
     },
     ...init,
   });
+  handleServerVersionHeaders(response.headers, `api:${path}`);
 
   if (!response.ok) {
     let detail = `Request failed: ${response.status}`;
@@ -136,9 +151,14 @@ export const api = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "X-Catown-Client": getClientSource(),
+        "X-Catown-UI-Version": UI_VERSION,
       },
       body: JSON.stringify({ content, client_turn_id: clientTurnId }),
       signal,
+    }).then((response) => {
+      handleServerVersionHeaders(response.headers, `/api/chatrooms/${chatroomId}/messages/stream`);
+      return response;
     });
   },
   getAgents() {

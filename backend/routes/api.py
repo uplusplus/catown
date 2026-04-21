@@ -9,6 +9,7 @@ import os
 import asyncio
 import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,11 @@ from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 from config import settings
+from services.monitor_projection import (
+    resolve_chatroom_project as monitor_resolve_chatroom_project,
+    serialize_monitor_message_item,
+    serialize_monitor_runtime_item,
+)
 from services.session_service import SessionService
 
 logger = logging.getLogger("catown.api")
@@ -301,6 +307,77 @@ def _build_runtime_context_block(db: Session, chatroom: Optional[Chatroom], proj
     return "\n\n" + "\n\n".join(blocks)
 
 
+@lru_cache(maxsize=8)
+def _load_agent_config_snapshot(config_path: str, modified_ns: int) -> Dict[str, Any]:
+    with open(config_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _load_agent_config_data() -> Dict[str, Any]:
+    config_path = Path(settings.AGENT_CONFIG_FILE)
+    if not config_path.exists():
+        return {}
+    try:
+        stat = config_path.stat()
+        return _load_agent_config_snapshot(str(config_path.resolve()), stat.st_mtime_ns)
+    except Exception as exc:
+        logger.warning(f"Failed to load agent config for runtime card metadata: {exc}")
+        return {}
+
+
+def _context_window_from_provider(provider_data: Any, model_id: str) -> Optional[int]:
+    if not isinstance(provider_data, dict):
+        return None
+    models = provider_data.get("models", [])
+    if not isinstance(models, list):
+        return None
+    for model in models:
+        if not isinstance(model, dict) or model.get("id") != model_id:
+            continue
+        context_window = model.get("contextWindow")
+        if isinstance(context_window, (int, float)) and context_window > 0:
+            return int(context_window)
+    return None
+
+
+def _resolve_llm_context_window(agent_name: str, model_id: str) -> Optional[int]:
+    if not model_id:
+        return None
+
+    registry = get_registry()
+    registered_agent = registry.get(agent_name) if agent_name else None
+    if registered_agent:
+        try:
+            model_info = registered_agent.get_model_info(model_id)
+        except Exception:
+            model_info = None
+        if isinstance(model_info, dict):
+            context_window = model_info.get("context_window")
+            if isinstance(context_window, (int, float)) and context_window > 0:
+                return int(context_window)
+
+    config_data = _load_agent_config_data()
+    if not config_data:
+        return None
+
+    agents_data = config_data.get("agents", {})
+    if agent_name:
+        context_window = _context_window_from_provider((agents_data.get(agent_name) or {}).get("provider"), model_id)
+        if context_window:
+            return context_window
+
+    context_window = _context_window_from_provider((config_data.get("global_llm") or {}).get("provider"), model_id)
+    if context_window:
+        return context_window
+
+    for agent_data in agents_data.values():
+        context_window = _context_window_from_provider(agent_data.get("provider"), model_id)
+        if context_window:
+            return context_window
+
+    return None
+
+
 def _build_llm_card_payload(
     *,
     agent_name: str,
@@ -317,6 +394,14 @@ def _build_llm_card_payload(
     timings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     usage = usage or {}
+    model = getattr(llm_client, "model", "")
+    tokens_in = int(usage.get("prompt_tokens", 0) or 0)
+    tokens_out = int(usage.get("completion_tokens", 0) or 0)
+    tokens_total = int(usage.get("total_tokens", 0) or (tokens_in + tokens_out))
+    context_window = _resolve_llm_context_window(agent_name, model)
+    context_usage_ratio = None
+    if context_window and tokens_in > 0:
+        context_usage_ratio = round(tokens_in / context_window, 6)
     raw_response = {
         "role": "assistant",
         "content": response_content or "",
@@ -327,10 +412,13 @@ def _build_llm_card_payload(
     }
     return {
         "agent": agent_name,
-        "model": getattr(llm_client, "model", ""),
+        "model": model,
         "turn": turn,
-        "tokens_in": usage.get("prompt_tokens", 0),
-        "tokens_out": usage.get("completion_tokens", 0),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "tokens_total": tokens_total,
+        "context_window": context_window,
+        "context_usage_ratio": context_usage_ratio,
         "duration_ms": duration_ms,
         "system_prompt": system_prompt or "",
         "prompt_messages": _format_json_block(prompt_messages),
@@ -389,17 +477,16 @@ async def _trigger_standalone_assistant_response(
         metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=assistant_name,
     )
-
-    from routes.websocket import websocket_manager
-    await websocket_manager.broadcast_to_room({
-        "type": "message",
-        "id": agent_response.id,
-        "content": response_content,
-        "agent_name": assistant_name,
-        "message_type": "text",
-        "created_at": agent_response.created_at.isoformat(),
-        "client_turn_id": client_turn_id,
-    }, chatroom_id)
+    await _publish_saved_chat_message(
+        db,
+        chatroom_id,
+        message_id=agent_response.id,
+        content=response_content,
+        agent_name=assistant_name,
+        message_type="text",
+        created_at=agent_response.created_at,
+        metadata=_message_metadata_with_turn(client_turn_id),
+    )
 
     if assistant_id and len(response_content) > 30:
         asyncio.create_task(_extract_memories(
@@ -508,17 +595,16 @@ async def _stream_standalone_assistant_response(
         metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=assistant_name,
     )
-
-    from routes.websocket import websocket_manager
-    await websocket_manager.broadcast_to_room({
-        "type": "message",
-        "id": agent_response.id,
-        "content": final_content,
-        "agent_name": assistant_name,
-        "message_type": "text",
-        "created_at": agent_response.created_at.isoformat(),
-        "client_turn_id": client_turn_id,
-    }, chatroom_id)
+    await _publish_saved_chat_message(
+        db,
+        chatroom_id,
+        message_id=agent_response.id,
+        content=final_content,
+        agent_name=assistant_name,
+        message_type="text",
+        created_at=agent_response.created_at,
+        metadata=_message_metadata_with_turn(client_turn_id),
+    )
 
     yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id, 'client_turn_id': client_turn_id})}\n\n"
 
@@ -800,17 +886,16 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         
         logger.debug(f"[ Agent response saved: id={agent_response.id}")
         
-        # 10. 通过 WebSocket 广播
-        from routes.websocket import websocket_manager
-        await websocket_manager.broadcast_to_room({
-            "type": "message",
-            "id": agent_response.id,
-            "content": response_content,
-            "agent_name": target_agent.name,
-            "message_type": "text",
-            "created_at": agent_response.created_at.isoformat(),
-            "client_turn_id": client_turn_id,
-        }, chatroom_id)
+        await _publish_saved_chat_message(
+            db,
+            chatroom_id,
+            message_id=agent_response.id,
+            content=response_content,
+            agent_name=target_agent.name,
+            message_type="text",
+            created_at=agent_response.created_at,
+            metadata=_message_metadata_with_turn(client_turn_id),
+        )
         
         logger.info(f"[Agent] {target_agent.name} responded to message successfully")
 
@@ -1057,8 +1142,6 @@ async def _run_multi_agent_pipeline(
     流程：每个按序 @mention 的 Agent 依次响应，后一个看到前一个的输出。
     最终通过 WebSocket 广播所有响应。
     """
-    from routes.websocket import websocket_manager
-
     resolved_agents = []
     for name in agent_names:
         agent = next((a for a in agents if a.name == name), None)
@@ -1106,16 +1189,16 @@ async def _run_multi_agent_pipeline(
         )
 
         if content:
-            # WebSocket 广播
-            await websocket_manager.broadcast_to_room({
-                "type": "message",
-                "id": msg.id,
-                "content": content,
-                "agent_name": agent.name,
-                "message_type": "text",
-                "created_at": msg.created_at.isoformat(),
-                "client_turn_id": client_turn_id,
-            }, chatroom_id)
+            await _publish_saved_chat_message(
+                db,
+                chatroom_id,
+                message_id=msg.id,
+                content=content,
+                agent_name=agent.name,
+                message_type="text",
+                created_at=msg.created_at,
+                metadata=_message_metadata_with_turn(client_turn_id),
+            )
 
             results.append({"agent": agent.name, "content": content})
             previous_context = content
@@ -1206,16 +1289,130 @@ class MessageResponse(BaseModel):
     client_turn_id: Optional[str] = None
 
 
-async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> None:
+async def _publish_saved_chat_message(
+    db: Session,
+    chatroom_id: int,
+    *,
+    message_id: int,
+    content: str,
+    agent_name: Optional[str],
+    message_type: str,
+    created_at: Any,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    from routes.websocket import websocket_manager
+
+    created_value = created_at.isoformat() if hasattr(created_at, "isoformat") else created_at
+    room_payload = {
+        "type": "chat_message",
+        "chatroom_id": chatroom_id,
+        "id": message_id,
+        "content": content,
+        "agent_name": agent_name,
+        "message_type": message_type,
+        "created_at": created_value,
+        "client_turn_id": (metadata or {}).get("client_turn_id"),
+    }
+    await websocket_manager.broadcast_to_room(room_payload, chatroom_id)
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        return
+
+    project = monitor_resolve_chatroom_project(db, chatroom)
+    monitor_payload = serialize_monitor_message_item(
+        message_id=message_id,
+        chatroom_id=chatroom_id,
+        chat_title=chatroom.title,
+        project_id=project.id if project else None,
+        project_name=project.name if project else None,
+        agent_name=agent_name,
+        content=content,
+        message_type=message_type,
+        created_at=created_value,
+        metadata=metadata,
+    )
+    await websocket_manager.broadcast_to_topic(
+        {
+            "type": "monitor_message",
+            "payload": monitor_payload,
+        },
+        "monitor",
+    )
+
+
+async def _publish_runtime_card_event(
+    db: Session,
+    chatroom_id: int,
+    *,
+    runtime_message_id: int,
+    created_at: Any,
+    card_payload: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    from routes.websocket import websocket_manager
+
+    created_value = created_at.isoformat() if hasattr(created_at, "isoformat") else created_at
+    room_card_payload = dict(card_payload)
+    room_card_payload.setdefault("created_at", created_value)
+    room_card_payload.setdefault("runtime_message_id", runtime_message_id)
+
+    await websocket_manager.broadcast_to_room(
+        {
+            "type": "runtime_card",
+            "chatroom_id": chatroom_id,
+            "card": room_card_payload,
+        },
+        chatroom_id,
+    )
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        return
+
+    project = monitor_resolve_chatroom_project(db, chatroom)
+    monitor_payload = serialize_monitor_runtime_item(
+        runtime_message_id=runtime_message_id,
+        chatroom_id=chatroom_id,
+        chat_title=chatroom.title,
+        project_id=project.id if project else None,
+        project_name=project.name if project else None,
+        card=room_card_payload,
+        created_at=created_value,
+        metadata=metadata,
+    )
+    await websocket_manager.broadcast_to_topic(
+        {
+            "type": "monitor_runtime",
+            "payload": monitor_payload,
+        },
+        "monitor",
+    )
+
+
+async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> Any:
     """Persist runtime cards so chat refresh can replay execution history."""
     card_payload = dict(payload)
-    await chatroom_manager.send_message(
+    runtime_message = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
         agent_id=None,
         content=card_payload.get("type", "runtime_card"),
         message_type="runtime_card",
         metadata={"card": card_payload},
     )
+    db = next(get_db())
+    try:
+        await _publish_runtime_card_event(
+            db,
+            chatroom_id,
+            runtime_message_id=runtime_message.id,
+            created_at=runtime_message.created_at,
+            card_payload=card_payload,
+            metadata={"card": card_payload},
+        )
+    finally:
+        db.close()
+    return runtime_message
 
 
 def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1665,6 +1862,12 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
     """获取聊天室历史 runtime cards，用于刷新后回放 agent 执行过程。"""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
     if not chatroom:
+        available_chatrooms = [row[0] for row in db.query(Chatroom.id).order_by(Chatroom.id.asc()).limit(20).all()]
+        logger.warning(
+            "[RuntimeCards] chatroom not found: id=%s available=%s",
+            chatroom_id,
+            available_chatrooms,
+        )
         raise HTTPException(status_code=404, detail="Chatroom not found")
 
     rows = (
@@ -1731,6 +1934,16 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         message_type="text",
         metadata=_message_metadata_with_turn(message.client_turn_id),
     )
+    await _publish_saved_chat_message(
+        db,
+        chatroom_id,
+        message_id=response_msg.id,
+        content=response_msg.content,
+        agent_name=None,
+        message_type=response_msg.message_type,
+        created_at=response_msg.created_at,
+        metadata=_message_metadata_with_turn(message.client_turn_id),
+    )
     
     logger.info(f"[API] User message saved: id={response_msg.id}")
     
@@ -1773,8 +1986,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
         from tools import tool_registry
         from tools.file_operations import reset_active_workspace, set_active_workspace
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
-        from routes.websocket import websocket_manager
-
         async def _sse_card(event_type, data):
             """格式化卡片事件 SSE，附带 source=chatroom"""
             payload = dict(data)
@@ -1794,6 +2005,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 agent_id=None,
                 content=message.content,
                 message_type="text",
+                metadata=_message_metadata_with_turn(message.client_turn_id),
+            )
+            await _publish_saved_chat_message(
+                db,
+                chatroom_id,
+                message_id=user_msg.id,
+                content=user_msg.content,
+                agent_name=None,
+                message_type=user_msg.message_type,
+                created_at=user_msg.created_at,
                 metadata=_message_metadata_with_turn(message.client_turn_id),
             )
 
@@ -1961,14 +2182,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 metadata=_message_metadata_with_turn(message.client_turn_id),
                                 agent_name=agent.name,
                             )
-                            await websocket_manager.broadcast_to_room({
-                                "type": "message",
-                                "id": saved.id,
-                                "content": step_content,
-                                "agent_name": agent.name,
-                                "message_type": "text",
-                                "client_turn_id": message.client_turn_id,
-                            }, chatroom_id)
+                            await _publish_saved_chat_message(
+                                db,
+                                chatroom_id,
+                                message_id=saved.id,
+                                content=step_content,
+                                agent_name=agent.name,
+                                message_type="text",
+                                created_at=saved.created_at,
+                                metadata=_message_metadata_with_turn(message.client_turn_id),
+                            )
                             if len(step_content) > 30:
                                 asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
                             previous_context = step_content
@@ -2174,11 +2397,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             metadata=_message_metadata_with_turn(message.client_turn_id),
                             agent_name=agent.name,
                         )
-                        await websocket_manager.broadcast_to_room({
-                            "type": "message", "id": saved.id, "content": step_content,
-                            "agent_name": agent.name, "message_type": "text",
-                            "client_turn_id": message.client_turn_id,
-                        }, chatroom_id)
+                        await _publish_saved_chat_message(
+                            db,
+                            chatroom_id,
+                            message_id=saved.id,
+                            content=step_content,
+                            agent_name=agent.name,
+                            message_type="text",
+                            created_at=saved.created_at,
+                            metadata=_message_metadata_with_turn(message.client_turn_id),
+                        )
                         if len(step_content) > 30:
                             asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
                         previous_context = step_content
@@ -2450,16 +2678,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 agent_name=target_agent.name
             )
 
-            # WebSocket 广播
-            from routes.websocket import websocket_manager
-            await websocket_manager.broadcast_to_room({
-                "type": "message",
-                "id": agent_response.id,
-                "content": final_content,
-                "agent_name": target_agent.name,
-                "message_type": "text",
-                "client_turn_id": message.client_turn_id,
-            }, chatroom_id)
+            await _publish_saved_chat_message(
+                db,
+                chatroom_id,
+                message_id=agent_response.id,
+                content=final_content,
+                agent_name=target_agent.name,
+                message_type="text",
+                created_at=agent_response.created_at,
+                metadata=_message_metadata_with_turn(message.client_turn_id),
+            )
 
             yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
 

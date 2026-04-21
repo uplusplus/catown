@@ -68,7 +68,7 @@ def client(tmp_path):
     """创建 FastAPI TestClient（完全隔离）"""
     from fastapi.testclient import TestClient
     app = _make_app(tmp_path)
-    return TestClient(app, base_url="http://testserver")
+    return TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"})
 
 
 # ==================== 健康检查 ====================
@@ -153,6 +153,87 @@ class TestConfigEndpoint:
         assert "llm" in data
         assert "server" in data
 
+    def test_llm_card_payload_includes_usage_context(self, tmp_path):
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "global_llm": {
+                        "provider": {
+                            "baseUrl": "https://api.openai.com/v1",
+                            "apiKey": "sk-test",
+                            "models": [
+                                {
+                                    "id": "gpt-5.4-mini",
+                                    "name": "GPT-5.4 Mini",
+                                    "contextWindow": 128000,
+                                    "maxTokens": 8192,
+                                }
+                            ],
+                        },
+                        "default_model": "gpt-5.4-mini",
+                    },
+                    "agents": {
+                        "assistant": {
+                            "name": "assistant",
+                            "provider": {
+                                "baseUrl": "https://api.openai.com/v1",
+                                "apiKey": "sk-test",
+                                "models": [
+                                    {
+                                        "id": "gpt-5.4-mini",
+                                        "name": "GPT-5.4 Mini",
+                                        "contextWindow": 128000,
+                                        "maxTokens": 8192,
+                                    }
+                                ],
+                            },
+                            "default_model": "gpt-5.4-mini",
+                            "role": {"title": "Assistant", "responsibilities": [], "rules": []},
+                            "soul": {"identity": "Helpful", "values": [], "style": "", "quirks": ""},
+                            "tools": [],
+                            "skills": [],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        try:
+            os.environ["AGENT_CONFIG_FILE"] = str(config_path)
+            _make_app(tmp_path)
+
+            import routes.api as api_mod
+
+            payload = api_mod._build_llm_card_payload(
+                agent_name="assistant",
+                llm_client=MagicMock(model="gpt-5.4-mini"),
+                turn=2,
+                duration_ms=321,
+                system_prompt="system",
+                prompt_messages=[{"role": "user", "content": "hello"}],
+                response_content="world",
+                tool_call_previews=[],
+                usage={
+                    "prompt_tokens": 64000,
+                    "completion_tokens": 1200,
+                    "total_tokens": 65200,
+                },
+            )
+
+            assert payload["tokens_in"] == 64000
+            assert payload["tokens_out"] == 1200
+            assert payload["tokens_total"] == 65200
+            assert payload["context_window"] == 128000
+            assert payload["context_usage_ratio"] == 0.5
+        finally:
+            if previous_config_file is None:
+                os.environ.pop("AGENT_CONFIG_FILE", None)
+            else:
+                os.environ["AGENT_CONFIG_FILE"] = previous_config_file
+
     def test_update_agent_full_config(self, tmp_path):
         from fastapi.testclient import TestClient
 
@@ -186,7 +267,11 @@ class TestConfigEndpoint:
         previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
         try:
             os.environ["AGENT_CONFIG_FILE"] = str(config_path)
-            client = TestClient(_make_app(tmp_path), base_url="http://testserver")
+            client = TestClient(
+                _make_app(tmp_path),
+                base_url="http://testserver",
+                headers={"X-Catown-Client": "test"},
+            )
 
             response = client.put(
                 "/api/config/agent/assistant",

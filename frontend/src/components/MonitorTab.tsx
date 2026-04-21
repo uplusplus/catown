@@ -15,8 +15,10 @@ import type {
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
 
-const POLL_INTERVAL_MS = 5000;
 const DEFAULT_CONTEXT_WINDOW = 128000;
+const MONITOR_RUNTIME_LIMIT = 80;
+const MONITOR_MESSAGE_LIMIT = 40;
+const MONITOR_USAGE_WINDOW_LIMIT = 400;
 
 type MonitorPage = {
   id: string;
@@ -215,6 +217,12 @@ function normalizeLogLevel(level: string) {
   return normalized;
 }
 
+function logClientSource(entry: MonitorLogEntry) {
+  const text = `${entry.message} ${entry.line}`;
+  const match = text.match(/\bsource=([a-z0-9_-]{1,32})\b/i);
+  return match?.[1]?.toLowerCase() ?? "unknown";
+}
+
 function formatTimeAgo(value: string | null | undefined) {
   if (!value) return "--";
   const date = new Date(value);
@@ -266,8 +274,218 @@ function mergeMonitorLogs(current: MonitorLogEntry[], incoming: MonitorLogEntry[
     merged.set(entry.id, entry);
   });
   return [...merged.values()]
-    .sort((left, right) => left.id - right.id)
-    .slice(-500);
+    .sort((left, right) => right.id - left.id)
+    .slice(0, 500);
+}
+
+function mergeMonitorMessages(
+  current: MonitorOverview["recent_messages"],
+  incoming: MonitorOverview["recent_messages"],
+) {
+  const merged = new Map<number, MonitorOverview["recent_messages"][number]>();
+  current.forEach((item) => {
+    merged.set(item.id, item);
+  });
+  incoming.forEach((item) => {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  });
+  return [...merged.values()]
+    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .slice(0, MONITOR_MESSAGE_LIMIT);
+}
+
+function mergeMonitorRuntime(
+  current: MonitorOverview["recent_runtime"],
+  incoming: MonitorOverview["recent_runtime"],
+) {
+  const merged = new Map<number, MonitorOverview["recent_runtime"][number]>();
+  current.forEach((item) => {
+    merged.set(item.id, item);
+  });
+  incoming.forEach((item) => {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  });
+  return [...merged.values()]
+    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .slice(0, MONITOR_RUNTIME_LIMIT);
+}
+
+function maxIsoTimestamp(current: string | null | undefined, candidate: string | null | undefined) {
+  if (!current) return candidate ?? current ?? null;
+  if (!candidate) return current;
+  return new Date(candidate).getTime() > new Date(current).getTime() ? candidate : current;
+}
+
+function updateMonitorAgentUsage(
+  current: MonitorOverview["usage_window"]["by_agent"],
+  item: MonitorOverview["recent_runtime"][number],
+  pricing: MonitorOverview["usage_window"]["pricing"],
+) {
+  const agentName = item.agent || item.from_entity || "system";
+  const next = [...current];
+  const index = next.findIndex((entry) => entry.agent_name === agentName);
+  const base =
+    index >= 0
+      ? { ...next[index] }
+      : {
+          agent_name: agentName,
+          llm_calls: 0,
+          tool_calls: 0,
+          errors: 0,
+          token_input: 0,
+          token_output: 0,
+          token_total: 0,
+          estimated_cost_usd: 0,
+        };
+
+  if (item.type === "llm_call") {
+    base.llm_calls += 1;
+    base.token_input += item.tokens_in ?? 0;
+    base.token_output += item.tokens_out ?? 0;
+  } else if (item.type === "tool_call") {
+    base.tool_calls += 1;
+    if (item.success === false) {
+      base.errors += 1;
+    }
+  } else if (item.type.includes("rejected") || item.type.includes("error")) {
+    base.errors += 1;
+  }
+
+  base.token_total = base.token_input + base.token_output;
+  base.estimated_cost_usd = Number(
+    (
+      (base.token_input / 1000) * pricing.input_per_1k +
+      (base.token_output / 1000) * pricing.output_per_1k
+    ).toFixed(4),
+  );
+
+  if (index >= 0) {
+    next[index] = base;
+  } else {
+    next.push(base);
+  }
+
+  return next.sort(
+    (left, right) =>
+      right.llm_calls + right.tool_calls - (left.llm_calls + left.tool_calls) ||
+      right.token_total - left.token_total ||
+      left.agent_name.localeCompare(right.agent_name),
+  );
+}
+
+function updateMonitorTopTools(
+  current: MonitorOverview["usage_window"]["top_tools"],
+  item: MonitorOverview["recent_runtime"][number],
+) {
+  if (item.type !== "tool_call") return current;
+  const toolName = item.tool_name || "tool";
+  const next = [...current];
+  const index = next.findIndex((entry) => entry.tool_name === toolName);
+  const base =
+    index >= 0
+      ? { ...next[index] }
+      : {
+          tool_name: toolName,
+          call_count: 0,
+          failure_count: 0,
+          avg_duration_ms: 0,
+        };
+
+  const totalDuration = base.avg_duration_ms * base.call_count + (item.duration_ms ?? 0);
+  base.call_count += 1;
+  if (item.success === false) {
+    base.failure_count += 1;
+  }
+  base.avg_duration_ms = Number((totalDuration / Math.max(base.call_count, 1)).toFixed(1));
+
+  if (index >= 0) {
+    next[index] = base;
+  } else {
+    next.push(base);
+  }
+
+  return next
+    .sort((left, right) => right.call_count - left.call_count || left.tool_name.localeCompare(right.tool_name))
+    .slice(0, 8);
+}
+
+function applyMonitorMessageUpdate(
+  current: MonitorOverview | null,
+  item: MonitorOverview["recent_messages"][number],
+) {
+  if (!current) return current;
+  const exists = current.recent_messages.some((entry) => entry.id === item.id);
+  return {
+    ...current,
+    system: {
+      ...current.system,
+      stats: {
+        ...current.system.stats,
+        messages: exists ? current.system.stats.messages : current.system.stats.messages + 1,
+      },
+      last_message_at: maxIsoTimestamp(current.system.last_message_at, item.created_at),
+    },
+    recent_messages: mergeMonitorMessages(current.recent_messages, [item]),
+  };
+}
+
+function applyMonitorRuntimeUpdate(
+  current: MonitorOverview | null,
+  item: MonitorOverview["recent_runtime"][number],
+) {
+  if (!current) return current;
+  const exists = current.recent_runtime.some((entry) => entry.id === item.id);
+  if (exists) {
+    return {
+      ...current,
+      recent_runtime: mergeMonitorRuntime(current.recent_runtime, [item]),
+      system: {
+        ...current.system,
+        last_message_at: maxIsoTimestamp(current.system.last_message_at, item.created_at),
+      },
+    };
+  }
+
+  const pricing = current.usage_window.pricing;
+  const nextInputTokens = current.usage_window.input_tokens + (item.tokens_in ?? 0);
+  const nextOutputTokens = current.usage_window.output_tokens + (item.tokens_out ?? 0);
+  const nextTotalTokens = nextInputTokens + nextOutputTokens;
+  const nextEstimatedCost = Number(
+    (
+      (nextInputTokens / 1000) * pricing.input_per_1k +
+      (nextOutputTokens / 1000) * pricing.output_per_1k
+    ).toFixed(4),
+  );
+
+  return {
+    ...current,
+    system: {
+      ...current.system,
+      stats: {
+        ...current.system.stats,
+        runtime_cards: current.system.stats.runtime_cards + 1,
+      },
+      last_message_at: maxIsoTimestamp(current.system.last_message_at, item.created_at),
+    },
+    usage_window: {
+      ...current.usage_window,
+      runtime_cards_considered: Math.min(
+        current.usage_window.runtime_cards_considered + 1,
+        MONITOR_USAGE_WINDOW_LIMIT,
+      ),
+      llm_calls: current.usage_window.llm_calls + (item.type === "llm_call" ? 1 : 0),
+      tool_calls: current.usage_window.tool_calls + (item.type === "tool_call" ? 1 : 0),
+      tool_errors:
+        current.usage_window.tool_errors + (item.type === "tool_call" && item.success === false ? 1 : 0),
+      input_tokens: nextInputTokens,
+      output_tokens: nextOutputTokens,
+      total_tokens: nextTotalTokens,
+      estimated_cost_usd: nextEstimatedCost,
+      by_agent: updateMonitorAgentUsage(current.usage_window.by_agent, item, pricing),
+      top_tools: updateMonitorTopTools(current.usage_window.top_tools, item),
+    },
+    recent_runtime: mergeMonitorRuntime(current.recent_runtime, [item]),
+  };
 }
 
 function formatUnknownDetail(value: unknown) {
@@ -1108,6 +1326,36 @@ export function MonitorTab() {
   const [brainRuntimeDetailLoading, setBrainRuntimeDetailLoading] = useState<Record<number, boolean>>({});
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const logCursorRef = useRef(0);
+  const monitorSocketRef = useRef<WebSocket | null>(null);
+
+  const loadMonitor = useCallback(async (silent = false) => {
+    if (silent) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+
+    try {
+      const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
+        api.getMonitorOverview(),
+        api.getProjects(),
+        api.getAgents(),
+        api.getConfig(),
+      ]);
+      setOverview(nextOverview);
+      setProjects(nextProjects);
+      setAgents(nextAgents);
+      setConfig(nextConfig);
+      setConnectionState("connected");
+      setError("");
+    } catch (nextError) {
+      setConnectionState("disconnected");
+      setError(nextError instanceof Error ? nextError.message : "Failed to load Catown monitor");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
     function handleHashChange() {
@@ -1140,89 +1388,139 @@ export function MonitorTab() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadMonitor(silent = false) {
-      if (silent) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-
-      try {
-        const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
-          api.getMonitorOverview(),
-          api.getProjects(),
-          api.getAgents(),
-          api.getConfig(),
-        ]);
-        if (!cancelled) {
-          setOverview(nextOverview);
-          setProjects(nextProjects);
-          setAgents(nextAgents);
-          setConfig(nextConfig);
-          setConnectionState("connected");
-          setError("");
-        }
-      } catch (nextError) {
-        if (!cancelled) {
-          setConnectionState("disconnected");
-          setError(nextError instanceof Error ? nextError.message : "Failed to load Catown monitor");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      }
-    }
-
     void loadMonitor(false);
-    const timer = window.setInterval(() => {
-      void loadMonitor(true);
-    }, POLL_INTERVAL_MS);
+  }, [loadMonitor]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let cancelled = false;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsUrl = `${protocol}://${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+      monitorSocketRef.current = socket;
+      setConnectionState("disconnected");
+
+      socket.onopen = () => {
+        if (cancelled) return;
+        socket.send(JSON.stringify({ type: "subscribe", topic: "monitor" }));
+        setConnectionState("connected");
+        void loadMonitor(true);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as Record<string, unknown>;
+          if (data.type === "monitor_message" && data.payload && typeof data.payload === "object") {
+            setOverview((current) =>
+              applyMonitorMessageUpdate(
+                current,
+                data.payload as MonitorOverview["recent_messages"][number],
+              ),
+            );
+            return;
+          }
+
+          if (data.type === "monitor_runtime" && data.payload && typeof data.payload === "object") {
+            setOverview((current) =>
+              applyMonitorRuntimeUpdate(
+                current,
+                data.payload as MonitorOverview["recent_runtime"][number],
+              ),
+            );
+          }
+        } catch {
+          // Ignore malformed realtime frames and keep the socket alive.
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        setConnectionState("disconnected");
+        reconnectTimer = window.setTimeout(connect, 3000);
+      };
+
+      socket.onerror = () => {
+        if (cancelled) return;
+        setConnectionState("disconnected");
+      };
+    };
+
+    connect();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      monitorSocketRef.current?.close();
+      monitorSocketRef.current = null;
     };
-  }, []);
+  }, [loadMonitor]);
 
   useEffect(() => {
     let cancelled = false;
-    let eventSource: EventSource | null = null;
+    let streamAbortController: AbortController | null = null;
 
     async function loadAndStreamLogs() {
       try {
         const response = await api.getMonitorLogs();
         if (cancelled) return;
 
-        setLogEntries(response.entries);
+        setLogEntries(mergeMonitorLogs([], response.entries));
         logCursorRef.current = response.latest_id;
         setLogStreamState("connecting");
 
-        eventSource = new EventSource(`/api/monitor/logs/stream?cursor=${response.latest_id}`);
-        eventSource.onopen = () => {
-          if (!cancelled) {
-            setLogStreamState("connected");
-          }
-        };
-        eventSource.onmessage = (event) => {
-          try {
-            const nextEntry = JSON.parse(event.data) as MonitorLogEntry;
-            logCursorRef.current = Math.max(logCursorRef.current, nextEntry.id);
-            if (!cancelled) {
-              setLogEntries((current) => mergeMonitorLogs(current, [nextEntry]));
+        streamAbortController = new AbortController();
+        const streamResponse = await fetch(`/api/monitor/logs/stream?cursor=${response.latest_id}`, {
+          headers: { "X-Catown-Client": "monitor" },
+          signal: streamAbortController.signal,
+        });
+        if (!streamResponse.ok || !streamResponse.body) {
+          throw new Error("Failed to open monitor log stream");
+        }
+
+        if (!cancelled) {
+          setLogStreamState("connected");
+        }
+
+        const reader = streamResponse.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = "";
+
+        while (!cancelled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffered += decoder.decode(value, { stream: true });
+          const frames = buffered.split("\n\n");
+          buffered = frames.pop() ?? "";
+
+          for (const frame of frames) {
+            const dataLine = frame
+              .split("\n")
+              .find((line) => line.startsWith("data: "));
+            if (!dataLine) continue;
+
+            try {
+              const nextEntry = JSON.parse(dataLine.slice(6)) as MonitorLogEntry;
+              logCursorRef.current = Math.max(logCursorRef.current, nextEntry.id);
+              if (!cancelled) {
+                setLogEntries((current) => mergeMonitorLogs(current, [nextEntry]));
+              }
+            } catch {
+              // Ignore malformed frames without breaking the stream.
             }
-          } catch {
-            // Ignore malformed frames without breaking the stream.
           }
-        };
-        eventSource.onerror = () => {
-          if (!cancelled) {
-            setLogStreamState("disconnected");
-          }
-        };
+        }
+
+        if (!cancelled) {
+          setLogStreamState("disconnected");
+        }
       } catch {
         if (!cancelled) {
           setLogStreamState("disconnected");
@@ -1234,7 +1532,7 @@ export function MonitorTab() {
 
     return () => {
       cancelled = true;
-      eventSource?.close();
+      streamAbortController?.abort();
     };
   }, []);
 
@@ -1501,32 +1799,13 @@ export function MonitorTab() {
   const currentMoreLabel = MORE_PAGES.find((page) => page.id === activePage)?.label ?? "More";
 
   async function refreshMonitor() {
-    setRefreshing(true);
-    try {
-      const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
-        api.getMonitorOverview(),
-        api.getProjects(),
-        api.getAgents(),
-        api.getConfig(),
-      ]);
-      setOverview(nextOverview);
-      setProjects(nextProjects);
-      setAgents(nextAgents);
-      setConfig(nextConfig);
-      setConnectionState("connected");
-      setError("");
-    } catch (nextError) {
-      setConnectionState("disconnected");
-      setError(nextError instanceof Error ? nextError.message : "Failed to refresh Catown monitor");
-    } finally {
-      setRefreshing(false);
-    }
+    await loadMonitor(true);
   }
 
   async function refreshLogs() {
     try {
       const response = await api.getMonitorLogs();
-      setLogEntries(response.entries);
+      setLogEntries(mergeMonitorLogs([], response.entries));
       logCursorRef.current = Math.max(logCursorRef.current, response.latest_id);
       setLogStreamState((current) => (current === "connected" ? current : "connecting"));
     } catch {
@@ -1638,7 +1917,7 @@ export function MonitorTab() {
           </button>
           <span className="pulse" />
           <span className="live-badge">Live</span>
-          <span className="refresh-time">Refresh every 5s · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
+          <span className="refresh-time">Live subscription · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
         </div>
 
         <div className="stats-footer">
@@ -2061,10 +2340,7 @@ export function MonitorTab() {
                   {selectedTranscript.projectName} · {selectedTranscript.chatTitle} · {selectedTranscript.messages.length} recent messages
                 </div>
                 <div className="transcript-messages">
-                  {selectedTranscript.messages
-                    .slice()
-                    .reverse()
-                    .map((message) => (
+                  {selectedTranscript.messages.map((message) => (
                       <div
                         key={message.id}
                         className={`transcript-message ${message.agent_name ? "transcript-message--assistant" : "transcript-message--user"}`}
@@ -2121,10 +2397,12 @@ export function MonitorTab() {
             {filteredLogEntries.length > 0 ? (
               filteredLogEntries.map((entry) => {
                 const level = normalizeLogLevel(entry.level);
+                const source = logClientSource(entry);
                 return (
                 <div key={entry.id} className="log-line">
                   <span className="ts">{shortDate(entry.created_at)}</span>
                   <span className={`level ${level}`}>{level}</span>
+                  <span className={`log-source log-source--${source}`}>{source}</span>
                   <span>
                     <strong>{entry.logger}</strong> · {entry.message}
                     <br />

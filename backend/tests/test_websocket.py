@@ -183,6 +183,21 @@ class TestBroadcast:
         await manager.send_personal_message({"type": "private"}, ws)
         ws.send_json.assert_called_once_with({"type": "private"})
 
+    @pytest.mark.asyncio
+    async def test_broadcast_to_topic(self):
+        from routes.websocket import WebSocketManager
+        manager = WebSocketManager()
+
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+
+        await manager.connect(ws)
+        await manager.subscribe_topic(ws, "monitor")
+        await manager.broadcast_to_topic({"type": "monitor_message"}, "monitor")
+
+        ws.send_json.assert_called_once_with({"type": "monitor_message"})
+
 
 class TestReceive:
     """消息接收循环测试"""
@@ -226,3 +241,24 @@ class TestReceive:
         await manager.receive(ws)
 
         assert ws not in manager.room_connections[100]
+
+    @pytest.mark.asyncio
+    async def test_receive_subscribe(self):
+        from routes.websocket import WebSocketManager
+        manager = WebSocketManager()
+
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_json = AsyncMock(
+            side_effect=[
+                {"type": "subscribe", "topic": "monitor"},
+                Exception("break"),
+            ]
+        )
+
+        await manager.connect(ws)
+        await manager.receive(ws)
+
+        assert ws in manager.topic_connections["monitor"]
+        ws.send_json.assert_called_with({"type": "subscribed", "topic": "monitor"})

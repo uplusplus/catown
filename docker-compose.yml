@@ -24,7 +24,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; req=urllib.request.Request('http://localhost:8000/health', headers={'X-Catown-Client':'healthcheck'}); urllib.request.urlopen(req)"]
       interval: 30s
       timeout: 5s
       retries: 3

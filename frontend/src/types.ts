@@ -125,6 +125,9 @@ export type ChatCardItem = {
   turn?: number;
   tokens_in?: number;
   tokens_out?: number;
+  tokens_total?: number;
+  context_window?: number;
+  context_usage_ratio?: number;
   duration_ms?: number;
   system_prompt?: string;
   prompt_messages?: string;

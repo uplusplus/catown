@@ -5,7 +5,6 @@ WebSocket 管理器
 import logging
 from typing import Dict, Set
 from fastapi import WebSocket
-import json
 
 logger = logging.getLogger("catown.websocket")
 
@@ -16,6 +15,7 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self.room_connections: Dict[int, Set[WebSocket]] = {}  # chatroom_id -> connections
+        self.topic_connections: Dict[str, Set[WebSocket]] = {}  # topic -> connections
     
     async def connect(self, websocket: WebSocket):
         """接受 WebSocket 连接"""
@@ -30,6 +30,8 @@ class WebSocketManager:
         # 从所有房间移除
         for room_connections in self.room_connections.values():
             room_connections.discard(websocket)
+        for topic_connections in self.topic_connections.values():
+            topic_connections.discard(websocket)
         
         logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
     
@@ -43,6 +45,21 @@ class WebSocketManager:
         """离开聊天室"""
         if chatroom_id in self.room_connections:
             self.room_connections[chatroom_id].discard(websocket)
+
+    async def subscribe_topic(self, websocket: WebSocket, topic: str):
+        """订阅通用主题。"""
+        normalized_topic = (topic or "").strip().lower()
+        if not normalized_topic:
+            return
+        if normalized_topic not in self.topic_connections:
+            self.topic_connections[normalized_topic] = set()
+        self.topic_connections[normalized_topic].add(websocket)
+
+    async def unsubscribe_topic(self, websocket: WebSocket, topic: str):
+        """取消订阅通用主题。"""
+        normalized_topic = (topic or "").strip().lower()
+        if normalized_topic in self.topic_connections:
+            self.topic_connections[normalized_topic].discard(websocket)
     
     async def send_personal_message(self, message: Dict, websocket: WebSocket):
         """发送个人消息"""
@@ -70,6 +87,20 @@ class WebSocketManager:
                     dead.append(connection)
             for conn in dead:
                 self.room_connections[chatroom_id].discard(conn)
+
+    async def broadcast_to_topic(self, message: Dict, topic: str):
+        """广播消息到订阅主题。"""
+        normalized_topic = (topic or "").strip().lower()
+        if normalized_topic not in self.topic_connections:
+            return
+        dead = []
+        for connection in self.topic_connections[normalized_topic]:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for conn in dead:
+            self.topic_connections[normalized_topic].discard(conn)
     
     async def receive(self, websocket: WebSocket):
         """处理接收消息的循环"""
@@ -91,6 +122,20 @@ class WebSocketManager:
                     chatroom_id = data.get('chatroom_id')
                     if chatroom_id:
                         await self.leave_room(websocket, chatroom_id)
+
+                elif message_type == 'subscribe':
+                    topic = data.get('topic')
+                    if topic:
+                        await self.subscribe_topic(websocket, str(topic))
+                        await self.send_personal_message({
+                            'type': 'subscribed',
+                            'topic': str(topic).strip().lower(),
+                        }, websocket)
+
+                elif message_type == 'unsubscribe':
+                    topic = data.get('topic')
+                    if topic:
+                        await self.unsubscribe_topic(websocket, str(topic))
                 
                 elif message_type == 'message':
                     # 广播消息到房间

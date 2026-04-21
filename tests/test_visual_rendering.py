@@ -50,7 +50,7 @@ def client():
     os.environ["LOG_LEVEL"] = "WARNING"
 
     from main import app
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with TestClient(app, raise_server_exceptions=False, headers={"X-Catown-Client": "test"}) as c:
         yield c
 
 
