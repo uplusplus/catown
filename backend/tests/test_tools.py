@@ -3,8 +3,10 @@
 """
 import pytest
 import asyncio
+import subprocess
 import sys
 import os
+from unittest.mock import patch
 
 # 添加 backend 目录到 path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -111,6 +113,32 @@ class TestExecuteCodeTool:
         tool = ExecuteCodeTool()
         result = await tool.execute(code="puts 'hi'", language="ruby")
         assert "not supported" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_active_workspace_as_cwd(self, tmp_path):
+        from tools.file_operations import reset_active_workspace, set_active_workspace
+
+        fallback = tmp_path / "fallback"
+        project = tmp_path / "project"
+        fallback.mkdir()
+        project.mkdir()
+
+        tool = ExecuteCodeTool(workspace=str(fallback))
+        token = set_active_workspace(str(project))
+        try:
+            with patch("tools.execute_code.subprocess.run") as mocked_run:
+                mocked_run.return_value = subprocess.CompletedProcess(
+                    args=["python"],
+                    returncode=0,
+                    stdout="ok\n",
+                    stderr="",
+                )
+                result = await tool.execute(code="print('ok')")
+        finally:
+            reset_active_workspace(token)
+
+        assert "ok" in result
+        assert mocked_run.call_args.kwargs["cwd"] == os.path.realpath(project)
 
 
 # ==================== RetrieveMemoryTool ====================

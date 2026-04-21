@@ -22,7 +22,16 @@ from collections import defaultdict
 # 加载 .env 文件（仅基础设施配置：HOST, PORT, DATABASE_URL, LOG_LEVEL）
 # LLM 配置已迁移至 agents.json
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent / ".env")
+
+
+def _default_catown_home() -> Path:
+    configured = os.getenv("CATOWN_HOME")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / ".catown").resolve()
+
+
+load_dotenv(_default_catown_home() / ".env")
 
 from config import settings
 
@@ -40,11 +49,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger("catown")
+logger.info(
+    "[Paths] CATOWN_HOME=%s CONFIG_DIR=%s STATE_DIR=%s PROJECTS_ROOT=%s WORKSPACES_DIR=%s",
+    settings.CATOWN_HOME,
+    settings.CONFIG_DIR,
+    settings.STATE_DIR,
+    settings.PROJECTS_ROOT,
+    settings.WORKSPACES_DIR,
+)
 
 # 导入路由
 from routes.api import router as api_router
 from routes.pipeline import router as pipeline_router
 from routes.audit import router as audit_router
+from routes.monitor import router as monitor_router
 from routes.websocket import websocket_manager
 
 # 导入初始化模块
@@ -206,6 +224,7 @@ async def _stop_file_watcher():
 app.include_router(api_router, prefix="/api")
 app.include_router(pipeline_router)
 app.include_router(audit_router)
+app.include_router(monitor_router)
 
 # WebSocket 路由
 @app.websocket("/ws")
@@ -238,6 +257,33 @@ async def redoc_ui():
         openapi_url=app.openapi_url,
         title=f"{app.title} - ReDoc",
         redoc_js_url="/_docs_static/redoc.standalone.js",
+    )
+
+
+@app.get("/monitor", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/monitor/", response_class=HTMLResponse, include_in_schema=False)
+async def monitor_root():
+    """Return the standalone monitor frontend."""
+    try:
+        if FRONTEND_DIST_DIR.exists():
+            candidate = FRONTEND_DIST_DIR / "monitor.html"
+            if candidate.exists():
+                return HTMLResponse(content=candidate.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug(f"Monitor frontend not found: {e}")
+
+    return HTMLResponse(
+        content="""
+        <html>
+        <head><title>Catown Monitor</title></head>
+        <body style="font-family: Arial, sans-serif; max-width: 720px; margin: 48px auto; padding: 24px;">
+            <h1>Catown Monitor</h1>
+            <p>The standalone monitor build is not available yet.</p>
+            <p>Run the frontend build and reopen <code>/monitor</code>.</p>
+            <p><a href="/">Back to Catown</a></p>
+        </body>
+        </html>
+        """
     )
 
 # 根路径

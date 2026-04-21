@@ -3,9 +3,8 @@
 Web Search Tool - DuckDuckGo Instant Answer API
 """
 from .base import BaseTool
-import urllib.request
-import urllib.parse
 import json
+import httpx
 
 
 class WebSearchTool(BaseTool):
@@ -26,19 +25,17 @@ class WebSearchTool(BaseTool):
         """
         try:
             # Use DuckDuckGo Instant Answer API (no API key needed)
-            url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+            params = {
                 "q": query,
                 "format": "json",
                 "no_html": 1,
-                "skip_disambig": 1
-            })
-            
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0"
-            })
-            
-            with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                "skip_disambig": 1,
+            }
+
+            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                response = await client.get("https://api.duckduckgo.com/", params=params)
+                response.raise_for_status()
+                data = response.json()
             
             results = []
             

@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from config import settings
 from models.database import (
     SessionLocal, Pipeline, PipelineRun, PipelineStage,
     StageArtifact, PipelineMessage, Project,
@@ -40,7 +41,7 @@ AGENT_TOOLS: Dict[str, List[str]] = {}  # 运行时从 agents.json 填充
 def _load_agent_tools():
     """从 agents.json 加载每个 Agent 的工具列表"""
     global AGENT_TOOLS
-    config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+    config_file = settings.AGENT_CONFIG_FILE
     if not os.path.exists(config_file):
         return
     try:
@@ -61,7 +62,7 @@ TOOLS_DIR = Path(__file__).parent.parent / "tools"
 
 def _get_workspace(run: PipelineRun) -> Path:
     """获取 pipeline run 的 workspace 目录"""
-    ws = Path(run.workspace_path) if run.workspace_path else Path("data") / "workspaces" / f"run_{run.id}"
+    ws = Path(run.workspace_path) if run.workspace_path else settings.WORKSPACES_DIR / f"run_{run.id}"
     ws.mkdir(parents=True, exist_ok=True)
     return ws
 
@@ -449,7 +450,7 @@ class PipelineEngine:
         # 创建 run
         run_number = len(pipeline.runs) + 1
         workspace_path = str(
-            Path("data") / "workspaces" / f"project_{pipeline.project_id}" / f"run_{run_number}"
+            settings.WORKSPACES_DIR / f"project_{pipeline.project_id}" / f"run_{run_number}"
         )
         run = PipelineRun(
             pipeline_id=pipeline_id,
@@ -902,7 +903,7 @@ class PipelineEngine:
             skills_config = self._load_skills_config()
             agent_data_skills = []
             try:
-                config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+                config_file = settings.AGENT_CONFIG_FILE
                 with open(config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 agent_data_skills = data.get("agents", {}).get(stage_cfg.agent, {}).get("skills", [])
@@ -1449,8 +1450,7 @@ class PipelineEngine:
 
     def _load_skills_config(self) -> Dict:
         """加载 skills.json"""
-        config_dir = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
-        skills_file = os.path.join(os.path.dirname(config_dir), "skills.json")
+        skills_file = settings.SKILLS_CONFIG_FILE
         try:
             with open(skills_file, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -1468,7 +1468,7 @@ class PipelineEngine:
         - guide: 仅 active_skills 注入（当前阶段需要的详细指引）
         - full: 不注入，写入 .catown/skills/ 按需 read_file
         """
-        config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+        config_file = settings.AGENT_CONFIG_FILE
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1538,7 +1538,7 @@ class PipelineEngine:
         将 Agent 配置的所有 skill 的 full 内容写入 .catown/skills/ 目录。
         Agent 通过 read_file 按需读取。
         """
-        config_file = os.environ.get("AGENT_CONFIG_FILE", "configs/agents.json")
+        config_file = settings.AGENT_CONFIG_FILE
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)

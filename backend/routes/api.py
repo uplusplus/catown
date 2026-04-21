@@ -27,6 +27,48 @@ from services.session_service import SessionService
 
 logger = logging.getLogger("catown.api")
 
+_HEARTBEAT_EVENT_TYPE = "__heartbeat__"
+_RESULT_EVENT_TYPE = "__result__"
+
+
+async def _iter_with_heartbeat(stream, timeout: float = 1.0):
+    """Yield stream events, inserting heartbeat markers while waiting."""
+    iterator = stream.__aiter__()
+    pending = asyncio.create_task(iterator.__anext__())
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
+            except asyncio.TimeoutError:
+                yield {"type": _HEARTBEAT_EVENT_TYPE}
+                continue
+            except StopAsyncIteration:
+                break
+
+            yield event
+            pending = asyncio.create_task(iterator.__anext__())
+    finally:
+        if pending and not pending.done():
+            pending.cancel()
+
+
+async def _await_with_heartbeat(awaitable, timeout: float = 1.0):
+    """Await a coroutine, yielding heartbeat markers while it is still running."""
+    pending = asyncio.create_task(awaitable)
+    try:
+        while True:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
+            except asyncio.TimeoutError:
+                yield {"type": _HEARTBEAT_EVENT_TYPE}
+                continue
+
+            yield {"type": _RESULT_EVENT_TYPE, "result": result}
+            break
+    finally:
+        if pending and not pending.done():
+            pending.cancel()
+
 
 class LLMConfigModel(BaseModel):
     """LLM 配置验证模型"""
@@ -116,8 +158,84 @@ def _snapshot_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any
     return normalized
 
 
+def _chat_message_agent_name(message: Any) -> Optional[str]:
+    agent_name = getattr(message, "agent_name", None)
+    return agent_name if isinstance(agent_name, str) and agent_name else None
+
+
+def _append_recent_llm_history(
+    messages: List[Dict[str, Any]],
+    recent_messages: List[Any],
+    *,
+    limit: int,
+    visibility: str = "all",
+    target_agent_name: Optional[str] = None,
+    prefix_assistant_name: bool = False,
+) -> None:
+    for msg in recent_messages[-limit:]:
+        agent_name = _chat_message_agent_name(msg)
+        if getattr(msg, "message_type", "") == "user" or not agent_name:
+            messages.append({"role": "user", "content": msg.content})
+            continue
+
+        if visibility == "target" and target_agent_name and agent_name != target_agent_name:
+            continue
+
+        assistant_content = f"[{agent_name}]: {msg.content}" if prefix_assistant_name else msg.content
+        messages.append({"role": "assistant", "content": assistant_content})
+
+
+def _append_current_user_message(messages: List[Dict[str, Any]], user_message: str) -> None:
+    normalized_user = (user_message or "").strip()
+    if not normalized_user:
+        return
+
+    if messages:
+        last_message = messages[-1]
+        if (
+            isinstance(last_message, dict)
+            and last_message.get("role") == "user"
+            and str(last_message.get("content") or "").strip() == normalized_user
+        ):
+            return
+
+    messages.append({"role": "user", "content": user_message})
+
+
 def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _message_client_turn_id(message_like: Any) -> Optional[str]:
+    metadata: Dict[str, Any] = {}
+    if hasattr(message_like, "metadata") and isinstance(getattr(message_like, "metadata"), dict):
+        metadata = getattr(message_like, "metadata")
+    elif hasattr(message_like, "metadata_json"):
+        try:
+            metadata = json.loads(getattr(message_like, "metadata_json") or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+
+    client_turn_id = metadata.get("client_turn_id")
+    return client_turn_id if isinstance(client_turn_id, str) and client_turn_id else None
+
+
+def _preview_tool_calls(raw_tool_calls: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    previews: List[Dict[str, Any]] = []
+    for index, tool_call in enumerate(raw_tool_calls or []):
+        function = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        if not isinstance(function, dict):
+            function = {}
+        arguments = str(function.get("arguments") or "")
+        previews.append(
+            {
+                "index": index,
+                "id": tool_call.get("id") if isinstance(tool_call, dict) else None,
+                "name": function.get("name") or "tool",
+                "args_preview": arguments[:120],
+            }
+        )
+    return previews
 
 
 def _trim_prompt_context(value: Any, limit: int = 600) -> str:
@@ -196,6 +314,7 @@ def _build_llm_card_payload(
     raw_tool_calls: Optional[List[Dict[str, Any]]] = None,
     usage: Optional[Dict[str, Any]] = None,
     finish_reason: Optional[str] = None,
+    timings: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     usage = usage or {}
     raw_response = {
@@ -204,6 +323,7 @@ def _build_llm_card_payload(
         "tool_calls": raw_tool_calls or [],
         "usage": usage,
         "finish_reason": finish_reason,
+        "timings": timings or {},
     }
     return {
         "agent": agent_name,
@@ -216,10 +336,16 @@ def _build_llm_card_payload(
         "prompt_messages": _format_json_block(prompt_messages),
         "response": response_content or "",
         "raw_response": _format_json_block(raw_response),
-        "tool_calls": tool_call_previews,
+        "tool_calls": tool_call_previews or _preview_tool_calls(raw_tool_calls),
+        "timings": timings or {},
     }
 
-async def _trigger_standalone_assistant_response(db: Session, chatroom_id: int, user_message: str):
+async def _trigger_standalone_assistant_response(
+    db: Session,
+    chatroom_id: int,
+    user_message: str,
+    client_turn_id: Optional[str] = None,
+):
     """Generate a plain assistant reply for standalone chats."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
     if not chatroom:
@@ -260,6 +386,7 @@ async def _trigger_standalone_assistant_response(db: Session, chatroom_id: int, 
         agent_id=assistant_id,
         content=response_content,
         message_type="text",
+        metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=assistant_name,
     )
 
@@ -271,6 +398,7 @@ async def _trigger_standalone_assistant_response(db: Session, chatroom_id: int, 
         "agent_name": assistant_name,
         "message_type": "text",
         "created_at": agent_response.created_at.isoformat(),
+        "client_turn_id": client_turn_id,
     }, chatroom_id)
 
     if assistant_id and len(response_content) > 30:
@@ -287,6 +415,7 @@ async def _stream_standalone_assistant_response(
     chatroom_id: int,
     user_message: str,
     sse_json,
+    client_turn_id: Optional[str] = None,
 ):
     """Stream a plain assistant reply for standalone chats."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -319,10 +448,21 @@ async def _stream_standalone_assistant_response(
             context_messages.append({"role": "user", "content": msg.content})
     prompt_snapshot = _snapshot_llm_messages(context_messages)
 
-    yield f"data: {sse_json.dumps({'type': 'agent_start', 'agent_name': assistant_name, 'model': getattr(llm_client, 'model', ''), 'turn': 1, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(prompt_snapshot)}, ensure_ascii=False)}\n\n"
+    yield f"data: {sse_json.dumps({'type': 'agent_start', 'agent_name': assistant_name, 'model': getattr(llm_client, 'model', ''), 'turn': 1, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(prompt_snapshot), 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
 
+    import time as _time
     final_content = ""
-    async for event in llm_client.chat_stream(context_messages):
+    _llm_start = _time.time()
+    async for event in _iter_with_heartbeat(llm_client.chat_stream(context_messages)):
+        if event["type"] == _HEARTBEAT_EVENT_TYPE:
+            elapsed_ms = int((_time.time() - _llm_start) * 1000)
+            yield f"data: {sse_json.dumps({'type': 'llm_wait', 'agent': assistant_name, 'elapsed_ms': elapsed_ms, 'turn': 1})}\n\n"
+            continue
+
+        if event["type"] in {"request_sent", "first_chunk", "first_content"}:
+            yield f"data: {sse_json.dumps({'type': event['type'], 'agent': assistant_name, 'turn': 1, 'elapsed_ms': event.get('elapsed_ms')})}\n\n"
+            continue
+
         if event["type"] == "content":
             final_content += event["delta"]
             yield f"data: {sse_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
@@ -334,7 +474,7 @@ async def _stream_standalone_assistant_response(
                 agent_name=assistant_name,
                 llm_client=llm_client,
                 turn=1,
-                duration_ms=0,
+                duration_ms=int(event.get("timings", {}).get("completed_ms") or 0),
                 system_prompt=system_prompt,
                 prompt_messages=prompt_snapshot,
                 response_content=response_content,
@@ -342,9 +482,12 @@ async def _stream_standalone_assistant_response(
                 raw_tool_calls=event.get("tool_calls"),
                 usage=event.get("usage"),
                 finish_reason=event.get("finish_reason"),
+                timings=event.get("timings"),
             )
             llm_payload["type"] = "llm_call"
             llm_payload["source"] = "chatroom"
+            if client_turn_id:
+                llm_payload["client_turn_id"] = client_turn_id
             await _store_runtime_card(chatroom_id, llm_payload)
             yield f"data: {sse_json.dumps(llm_payload, ensure_ascii=False)}\n\n"
             final_content = response_content
@@ -362,6 +505,7 @@ async def _stream_standalone_assistant_response(
         agent_id=assistant_id,
         content=final_content,
         message_type="text",
+        metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=assistant_name,
     )
 
@@ -373,9 +517,10 @@ async def _stream_standalone_assistant_response(
         "agent_name": assistant_name,
         "message_type": "text",
         "created_at": agent_response.created_at.isoformat(),
+        "client_turn_id": client_turn_id,
     }, chatroom_id)
 
-    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id})}\n\n"
+    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id, 'client_turn_id': client_turn_id})}\n\n"
 
     if assistant_id and len(final_content) > 30:
         asyncio.create_task(_extract_memories(
@@ -386,7 +531,7 @@ async def _stream_standalone_assistant_response(
         ))
 
 
-async def trigger_agent_response(chatroom_id: int, user_message: str):
+async def trigger_agent_response(chatroom_id: int, user_message: str, client_turn_id: Optional[str] = None):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
     from tools import tool_registry
@@ -417,9 +562,10 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
                     agent_names=mentioned_names,
                     user_message=user_message,
                     db=db,
+                    client_turn_id=client_turn_id,
                 )
                 return
-            await _trigger_standalone_assistant_response(db, chatroom_id, user_message)
+            await _trigger_standalone_assistant_response(db, chatroom_id, user_message, client_turn_id)
             return
         
         logger.debug(f"[ Found project: {project.name}")
@@ -447,7 +593,8 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
                 agents=agents,
                 agent_names=mentioned_names,
                 user_message=user_message,
-                db=db
+                db=db,
+                client_turn_id=client_turn_id,
             )
             return
 
@@ -560,24 +707,18 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
         recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
 
         if visibility == "all":
-            # 所有 agent 可见：包含所有消息，标注发言者
-            for msg in recent_messages[-10:]:
-                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-                if msg.message_type == "user" or not agent_name:
-                    messages.append({"role": "user", "content": msg.content})
-                else:
-                    messages.append({"role": "assistant", "content": f"[{agent_name}]: {msg.content}"})
+            _append_recent_llm_history(messages, recent_messages, limit=10, prefix_assistant_name=True)
         else:
-            # 仅目标可见：只包含用户消息和该 agent 自己的消息
-            for msg in recent_messages[-10:]:
-                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-                if msg.message_type == "user" or not agent_name:
-                    messages.append({"role": "user", "content": msg.content})
-                elif agent_name == target_agent.name:
-                    messages.append({"role": "assistant", "content": msg.content})
+            _append_recent_llm_history(
+                messages,
+                recent_messages,
+                limit=10,
+                visibility="target",
+                target_agent_name=target_agent.name,
+            )
         
-        # 追加当前用户消息
-        messages.append({"role": "user", "content": user_message})
+        # 追加当前用户消息；如果最近历史里已经包含这条刚保存的消息，则避免重复。
+        _append_current_user_message(messages, user_message)
         
         logger.debug(f"[ Context messages: {len(messages)} messages")
         
@@ -653,6 +794,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             agent_id=target_agent.id,
             content=response_content,
             message_type="text",
+            metadata=_message_metadata_with_turn(client_turn_id),
             agent_name=target_agent.name
         )
         
@@ -665,7 +807,9 @@ async def trigger_agent_response(chatroom_id: int, user_message: str):
             "id": agent_response.id,
             "content": response_content,
             "agent_name": target_agent.name,
-            "message_type": "text"
+            "message_type": "text",
+            "created_at": agent_response.created_at.isoformat(),
+            "client_turn_id": client_turn_id,
         }, chatroom_id)
         
         logger.info(f"[Agent] {target_agent.name} responded to message successfully")
@@ -772,7 +916,7 @@ async def _extract_memories(agent_id: int, agent_name: str, user_message: str, a
 
 
 async def _run_single_agent_turn(
-    agent, chatroom_id, project, agents, user_message, extra_context, db
+    agent, chatroom_id, project, agents, user_message, extra_context, db, client_turn_id: Optional[str] = None
 ):
     """
     执行单个 Agent 的一次响应（供多 Agent 流水线调用）
@@ -849,14 +993,8 @@ async def _run_single_agent_turn(
 
     # 近期对话
     recent_msgs = await chatroom_manager.get_messages(chatroom_id, limit=6)
-    for msg in recent_msgs[-4:]:
-        a_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-        if msg.message_type == "user" or not a_name:
-            messages.append({"role": "user", "content": msg.content})
-        else:
-            messages.append({"role": "assistant", "content": msg.content})
-
-    messages.append({"role": "user", "content": user_message})
+    _append_recent_llm_history(messages, recent_msgs, limit=4)
+    _append_current_user_message(messages, user_message)
 
     tool_schemas = tool_registry.get_schemas()
     response_content = ""
@@ -897,7 +1035,10 @@ async def _run_single_agent_turn(
     # 保存到数据库
     agent_msg = await chatroom_manager.send_message(
         chatroom_id=chatroom_id, agent_id=agent.id,
-        content=response_content, message_type="text", agent_name=agent.name
+        content=response_content,
+        message_type="text",
+        metadata=_message_metadata_with_turn(client_turn_id),
+        agent_name=agent.name,
     )
 
     # 异步提取记忆
@@ -908,7 +1049,7 @@ async def _run_single_agent_turn(
 
 
 async def _run_multi_agent_pipeline(
-    chatroom_id, project, agents, agent_names, user_message, db
+    chatroom_id, project, agents, agent_names, user_message, db, client_turn_id: Optional[str] = None
 ):
     """
     多 Agent 协作流水线
@@ -960,7 +1101,8 @@ async def _run_multi_agent_pipeline(
             agents=agents,
             user_message=extra_msg,
             extra_context=previous_context,
-            db=db
+            db=db,
+            client_turn_id=client_turn_id,
         )
 
         if content:
@@ -970,7 +1112,9 @@ async def _run_multi_agent_pipeline(
                 "id": msg.id,
                 "content": content,
                 "agent_name": agent.name,
-                "message_type": "text"
+                "message_type": "text",
+                "created_at": msg.created_at.isoformat(),
+                "client_turn_id": client_turn_id,
             }, chatroom_id)
 
             results.append({"agent": agent.name, "content": content})
@@ -1050,6 +1194,7 @@ class ProjectReorderRequest(BaseModel):
 
 class MessageRequest(BaseModel):
     content: str
+    client_turn_id: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -1058,6 +1203,7 @@ class MessageResponse(BaseModel):
     agent_name: Optional[str]
     message_type: str
     created_at: str
+    client_turn_id: Optional[str] = None
 
 
 async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> None:
@@ -1070,6 +1216,13 @@ async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> None
         message_type="runtime_card",
         metadata={"card": card_payload},
     )
+
+
+def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    metadata = dict(extra or {})
+    if client_turn_id:
+        metadata["client_turn_id"] = client_turn_id
+    return metadata
 
 
 def _serialize_project_agents(db: Session, project_id: int) -> List[Agent]:
@@ -1501,6 +1654,7 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
             agent_name=msg.agent_name,
             message_type=msg.message_type,
             created_at=msg.created_at.isoformat(),
+            client_turn_id=_message_client_turn_id(msg),
         )
         for msg in messages
     ]
@@ -1529,7 +1683,10 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
             metadata = {}
         card = metadata.get("card")
         if isinstance(card, dict):
-            cards.append(card)
+            card_payload = dict(card)
+            card_payload.setdefault("created_at", row.created_at.isoformat())
+            card_payload.setdefault("runtime_message_id", row.id)
+            cards.append(card_payload)
 
     return cards
 
@@ -1571,14 +1728,15 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         chatroom_id=chatroom_id,
         agent_id=None,  # None 表示用户
         content=message.content,
-        message_type="text"
+        message_type="text",
+        metadata=_message_metadata_with_turn(message.client_turn_id),
     )
     
     logger.info(f"[API] User message saved: id={response_msg.id}")
     
     # 触发 Agent 响应（同步等待，方便调试）
     try:
-        await trigger_agent_response(chatroom_id, message.content)
+        await trigger_agent_response(chatroom_id, message.content, message.client_turn_id)
         logger.info(f"[API] Agent response completed")
     except Exception as e:
         logger.info(f"[API] Agent response error: {e}")
@@ -1591,6 +1749,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         agent_name=response_msg.agent_name,
         message_type=response_msg.message_type,
         created_at=response_msg.created_at.isoformat(),
+        client_turn_id=message.client_turn_id,
     )
 
 
@@ -1621,6 +1780,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             payload = dict(data)
             payload["type"] = event_type
             payload["source"] = "chatroom"
+            if message.client_turn_id:
+                payload["client_turn_id"] = message.client_turn_id
             await _store_runtime_card(chatroom_id, payload)
             return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -1632,10 +1793,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 chatroom_id=chatroom_id,
                 agent_id=None,
                 content=message.content,
-                message_type="text"
+                message_type="text",
+                metadata=_message_metadata_with_turn(message.client_turn_id),
             )
 
-            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id, 'client_turn_id': message.client_turn_id})}\n\n"
 
             # 2. 获取聊天室和项目
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -1675,13 +1837,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                         msgs = [{"role": "system", "content": sys_prompt}]
                         recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
-                        for msg in recent[-3:]:
-                            an = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-                            if msg.message_type == "user" or not an:
-                                msgs.append({"role": "user", "content": msg.content})
-                            else:
-                                msgs.append({"role": "assistant", "content": msg.content})
-                        msgs.append({"role": "user", "content": message.content})
+                        _append_recent_llm_history(msgs, recent, limit=3)
+                        _append_current_user_message(msgs, message.content)
 
                         import time as _time
                         step_content = ""
@@ -1692,8 +1849,25 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             _llm_content = ""
                             _llm_tool_calls = []
                             llm_prompt_messages = _snapshot_llm_messages(msgs)
-                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
-                            async for event in llm_client.chat_stream(msgs, tool_schemas or None):
+                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                            async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
+                                if event["type"] == _HEARTBEAT_EVENT_TYPE:
+                                    elapsed_ms = int((_time.time() - _llm_start) * 1000)
+                                    yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
+                                    continue
+
+                                if event["type"] in {"request_sent", "first_chunk", "first_content"}:
+                                    yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
+                                    continue
+
+                                if event["type"] == "tool_call_delta":
+                                    yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                                    continue
+
+                                if event["type"] == "tool_call_ready":
+                                    yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                                    continue
+
                                 if event["type"] == "content":
                                     step_content += event["delta"]
                                     _llm_content += event["delta"]
@@ -1703,28 +1877,36 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                     _llm_full = event.get("full_content", _llm_content)
                                     if tc:
                                         tool_calls_found = True
+                                        _llm_tool_calls = _preview_tool_calls(tc)
                                         msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
-                                        for t in tc:
+                                        for tool_index, t in enumerate(tc):
                                             tname = t["function"]["name"]
-                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name})}\n\n"
+                                            _args_str = t["function"].get("arguments", "{}")
+                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                             _tool_start = _time.time()
                                             try:
                                                 targs = json.loads(t["function"]["arguments"])
-                                                tres = await tool_registry.execute(tname, **targs)
-                                                tres_str = str(tres)[:2000] if tres else "(no output)"
+                                                async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
+                                                    if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
+                                                        elapsed_ms = int((_time.time() - _tool_start) * 1000)
+                                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                                        continue
+                                                    tres = tool_event["result"]
+                                                    tres_str = str(tres)[:2000] if tres else "(no output)"
+                                                    break
                                             except Exception as te:
                                                 tres_str = f"Error: {te}"
                                             _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name})}\n\n"
+                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                             msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
-                                            _args_str = t["function"].get("arguments", "{}")
                                             yield await _sse_card("tool_call", {
                                                 "agent": agent_name, "tool": tname,
                                                 "arguments": _args_str,
                                                 "success": True, "result": tres_str[:1500],
                                                 "duration_ms": _tool_ms,
+                                                "tool_call_index": tool_index,
+                                                "tool_call_id": t.get("id"),
                                             })
-                                            _llm_tool_calls.append({"name": tname, "args_preview": _args_str[:120]})
                                     _llm_ms = int((_time.time() - _llm_start) * 1000)
                                     yield await _sse_card(
                                         "llm_call",
@@ -1740,6 +1922,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                             raw_tool_calls=tc,
                                             usage=event.get("usage"),
                                             finish_reason=event.get("finish_reason"),
+                                            timings=event.get("timings"),
                                         ),
                                     )
                                 elif event["type"] == "error":
@@ -1763,6 +1946,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                             raw_tool_calls=[],
                                             usage=event.get("usage") if isinstance(event, dict) else None,
                                             finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
+                                            timings=event.get("timings") if isinstance(event, dict) else None,
                                         ),
                                     )
                                 break
@@ -1774,6 +1958,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 agent_id=agent.id,
                                 content=step_content,
                                 message_type="text",
+                                metadata=_message_metadata_with_turn(message.client_turn_id),
                                 agent_name=agent.name,
                             )
                             await websocket_manager.broadcast_to_room({
@@ -1782,6 +1967,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 "content": step_content,
                                 "agent_name": agent.name,
                                 "message_type": "text",
+                                "client_turn_id": message.client_turn_id,
                             }, chatroom_id)
                             if len(step_content) > 30:
                                 asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
@@ -1789,7 +1975,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                         yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
 
-                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
                     return
 
                 async for chunk in _stream_standalone_assistant_response(
@@ -1797,6 +1983,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     chatroom_id=chatroom_id,
                     user_message=message.content,
                     sse_json=_json,
+                    client_turn_id=message.client_turn_id,
                 ):
                     yield chunk
                 return
@@ -1860,13 +2047,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                     msgs = [{"role": "system", "content": sys_prompt}]
                     recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
-                    for msg in recent[-3:]:
-                        an = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-                        if msg.message_type == "user" or not an:
-                            msgs.append({"role": "user", "content": msg.content})
-                        else:
-                            msgs.append({"role": "assistant", "content": msg.content})
-                    msgs.append({"role": "user", "content": message.content})
+                    _append_recent_llm_history(msgs, recent, limit=3)
+                    _append_current_user_message(msgs, message.content)
 
                     # 流式输出
                     import time as _time
@@ -1878,8 +2060,25 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         _llm_content = ""
                         _llm_tool_calls = []
                         llm_prompt_messages = _snapshot_llm_messages(msgs)
-                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
-                        async for event in llm_client.chat_stream(msgs, tool_schemas or None):
+                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                        async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
+                            if event["type"] == _HEARTBEAT_EVENT_TYPE:
+                                elapsed_ms = int((_time.time() - _llm_start) * 1000)
+                                yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
+                                continue
+
+                            if event["type"] in {"request_sent", "first_chunk", "first_content"}:
+                                yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
+                                continue
+
+                            if event["type"] == "tool_call_delta":
+                                yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                                continue
+
+                            if event["type"] == "tool_call_ready":
+                                yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                                continue
+
                             if event["type"] == "content":
                                 step_content += event["delta"]
                                 _llm_content += event["delta"]
@@ -1889,29 +2088,37 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 _llm_full = event.get("full_content", _llm_content)
                                 if tc:
                                     tool_calls_found = True
+                                    _llm_tool_calls = _preview_tool_calls(tc)
                                     msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
-                                    for t in tc:
+                                    for tool_index, t in enumerate(tc):
                                         tname = t["function"]["name"]
-                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name})}\n\n"
+                                        _args_str = t["function"].get("arguments", "{}")
+                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                         _tool_start = _time.time()
                                         try:
                                             targs = json.loads(t["function"]["arguments"])
-                                            tres = await tool_registry.execute(tname, **targs)
-                                            tres_str = str(tres)[:2000] if tres else "(no output)"
+                                            async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
+                                                if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
+                                                    elapsed_ms = int((_time.time() - _tool_start) * 1000)
+                                                    yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                                    continue
+                                                tres = tool_event["result"]
+                                                tres_str = str(tres)[:2000] if tres else "(no output)"
+                                                break
                                         except Exception as te:
                                             tres_str = f"Error: {te}"
                                         _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name})}\n\n"
+                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                         msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
                                         # 工具卡片事件
-                                        _args_str = t["function"].get("arguments", "{}")
                                         yield await _sse_card("tool_call", {
                                             "agent": agent_name, "tool": tname,
                                             "arguments": _args_str,
                                             "success": True, "result": tres_str[:1500],
                                             "duration_ms": _tool_ms,
+                                            "tool_call_index": tool_index,
+                                            "tool_call_id": t.get("id"),
                                         })
-                                        _llm_tool_calls.append({"name": tname, "args_preview": _args_str[:120]})
                                 # LLM 调用卡片事件
                                 _llm_ms = int((_time.time() - _llm_start) * 1000)
                                 yield await _sse_card(
@@ -1928,6 +2135,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         raw_tool_calls=tc,
                                         usage=event.get("usage"),
                                         finish_reason=event.get("finish_reason"),
+                                        timings=event.get("timings"),
                                     ),
                                 )
                             elif event["type"] == "error":
@@ -1951,6 +2159,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         raw_tool_calls=[],
                                         usage=event.get("usage") if isinstance(event, dict) else None,
                                         finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
+                                        timings=event.get("timings") if isinstance(event, dict) else None,
                                     ),
                                 )
                             break
@@ -1960,11 +2169,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     if step_content:
                         saved = await chatroom_manager.send_message(
                             chatroom_id=chatroom_id, agent_id=agent.id,
-                            content=step_content, message_type="text", agent_name=agent.name
+                            content=step_content,
+                            message_type="text",
+                            metadata=_message_metadata_with_turn(message.client_turn_id),
+                            agent_name=agent.name,
                         )
                         await websocket_manager.broadcast_to_room({
                             "type": "message", "id": saved.id, "content": step_content,
-                            "agent_name": agent.name, "message_type": "text"
+                            "agent_name": agent.name, "message_type": "text",
+                            "client_turn_id": message.client_turn_id,
                         }, chatroom_id)
                         if len(step_content) > 30:
                             asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
@@ -1972,7 +2185,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                     yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
 
-                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True})}\n\n"
+                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
                 return
 
             # 单 Agent 模式（原有逻辑）
@@ -2066,14 +2279,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             messages.append({"role": "system", "content": system_prompt})
 
             recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
-            for msg in recent_messages[-6:]:
-                agent_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
-                if msg.message_type == "user" or not agent_name:
-                    messages.append({"role": "user", "content": msg.content})
-                else:
-                    messages.append({"role": "assistant", "content": msg.content})
-
-            messages.append({"role": "user", "content": message.content})
+            _append_recent_llm_history(messages, recent_messages, limit=6)
+            _append_current_user_message(messages, message.content)
 
             tool_schemas = tool_registry.get_schemas()
 
@@ -2090,11 +2297,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 _llm_content = ""
                 _llm_tool_calls = []
                 llm_prompt_messages = _snapshot_llm_messages(messages)
-                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages)}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
 
-                async for event in llm_client.chat_stream(
-                    messages, tool_schemas if tool_schemas else None
+                async for event in _iter_with_heartbeat(
+                    llm_client.chat_stream(messages, tool_schemas if tool_schemas else None)
                 ):
+                    if event["type"] == _HEARTBEAT_EVENT_TYPE:
+                        elapsed_ms = int((_time2.time() - _llm_start) * 1000)
+                        yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': target_agent.name, 'elapsed_ms': elapsed_ms, 'turn': iteration})}\n\n"
+                        continue
+
+                    if event["type"] in {"request_sent", "first_chunk", "first_content"}:
+                        yield f"data: {_json.dumps({'type': event['type'], 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration})}\n\n"
+                        continue
+
+                    if event["type"] == "tool_call_delta":
+                        yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                        continue
+
+                    if event["type"] == "tool_call_ready":
+                        yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                        continue
+
                     if event["type"] == "content":
                         final_content += event["delta"]
                         _llm_content += event["delta"]
@@ -2122,11 +2346,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         raw_tool_calls=[],
                                         usage=event.get("usage"),
                                         finish_reason=event.get("finish_reason"),
+                                        timings=event.get("timings"),
                                     ),
                                 )
                             break
 
                         tool_calls_found = True
+                        _llm_tool_calls = _preview_tool_calls(tool_calls)
 
                         # 将 assistant 消息加入上下文
                         assistant_msg = {
@@ -2137,18 +2363,24 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         messages.append(assistant_msg)
 
                         # 执行工具
-                        for tc in tool_calls:
+                        for tool_index, tc in enumerate(tool_calls):
                             tool_name = tc["function"]["name"]
                             tool_args_str = tc["function"]["arguments"]
                             tool_call_id = tc["id"]
 
-                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str})}\n\n"
+                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str, 'agent': target_agent.name, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
                             _tool_start = _time2.time()
 
                             try:
                                 tool_args = json.loads(tool_args_str)
-                                tool_result = await tool_registry.execute(tool_name, **tool_args)
-                                result_str = str(tool_result) if tool_result is not None else "(no output)"
+                                async for tool_event in _await_with_heartbeat(tool_registry.execute(tool_name, **tool_args)):
+                                    if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
+                                        elapsed_ms = int((_time2.time() - _tool_start) * 1000)
+                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tool_name, 'agent': target_agent.name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
+                                        continue
+                                    tool_result = tool_event["result"]
+                                    result_str = str(tool_result) if tool_result is not None else "(no output)"
+                                    break
                             except Exception as te:
                                 result_str = f"Error: {str(te)}"
 
@@ -2157,7 +2389,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 result_str = result_str[:2000] + "\n...(truncated)"
                             _tool_ms = int((_time2.time() - _tool_start) * 1000)
 
-                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500]})}\n\n"
+                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500], 'agent': target_agent.name, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
 
                             messages.append({
                                 "role": "tool",
@@ -2174,8 +2406,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 "success": True,
                                 "result": result_str[:1500],
                                 "duration_ms": _tool_ms,
+                                "tool_call_index": tool_index,
+                                "tool_call_id": tool_call_id,
                             })
-                            _llm_tool_calls.append({"name": tool_name, "args_preview": tool_args_str[:120]})
 
                         # LLM 调用卡片事件（含工具调用）
                         _llm_ms = int((_time2.time() - _llm_start) * 1000)
@@ -2193,6 +2426,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 raw_tool_calls=tool_calls,
                                 usage=event.get("usage"),
                                 finish_reason=event.get("finish_reason"),
+                                timings=event.get("timings"),
                             ),
                         )
 
@@ -2212,6 +2446,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 agent_id=target_agent.id,
                 content=final_content,
                 message_type="text",
+                metadata=_message_metadata_with_turn(message.client_turn_id),
                 agent_name=target_agent.name
             )
 
@@ -2222,10 +2457,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 "id": agent_response.id,
                 "content": final_content,
                 "agent_name": target_agent.name,
-                "message_type": "text"
+                "message_type": "text",
+                "client_turn_id": message.client_turn_id,
             }, chatroom_id)
 
-            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
 
             # 异步提取记忆
             if len(final_content) > 30:
@@ -2466,6 +2702,7 @@ async def update_global_llm_config(config: Dict[str, Any]):
 
         # 更新全局配置
         data["global_llm"] = config
+        config_file.parent.mkdir(parents=True, exist_ok=True)
 
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -2515,6 +2752,7 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
             if field_name in config:
                 agents[agent_name][field_name] = config[field_name]
 
+        config_file.parent.mkdir(parents=True, exist_ok=True)
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 

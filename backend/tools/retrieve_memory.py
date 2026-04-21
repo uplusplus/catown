@@ -3,6 +3,7 @@
 Retrieve Memory Tool - Uses both Message history and Memory table
 """
 from .base import BaseTool
+import asyncio
 from typing import Optional
 
 
@@ -13,6 +14,9 @@ class RetrieveMemoryTool(BaseTool):
     description = "Retrieve relevant memories or past information from the agent's memory store. Use this to recall previous conversations, learned facts, or context."
     
     async def execute(self, query: str, agent_id: Optional[int] = None, **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, query, agent_id)
+
+    def _execute_sync(self, query: str, agent_id: Optional[int] = None) -> str:
         """
         Retrieve memories from the database
         

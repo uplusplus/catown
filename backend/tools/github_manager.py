@@ -44,10 +44,12 @@ Repository:     set GITHUB_REPO env var as "owner/repo", or pass repo param per 
 """
 from .base import BaseTool
 from typing import Optional, Dict, Any, List
+import asyncio
 import os
 import json
 import base64
 import logging
+import subprocess
 
 logger = logging.getLogger("catown.github")
 
@@ -70,7 +72,6 @@ def _get_default_repo() -> Optional[str]:
     if repo:
         return repo
     try:
-        import subprocess
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=5,
@@ -132,7 +133,7 @@ class GitHubManagerTool(BaseTool):
     )
 
     async def execute(self, action: str, repo: str = "", **kwargs) -> str:
-        repo = repo.strip() or (_get_default_repo() or "")
+        repo = repo.strip() or (await asyncio.to_thread(_get_default_repo) or "")
 
         # clone_repo / search_code don't need repo pre-resolved
         if action == "clone_repo":
@@ -627,8 +628,6 @@ class GitHubManagerTool(BaseTool):
         self, repo: str, dest: str = "", branch: str = "", **kw
     ) -> str:
         """Clone a repo to the local workspace directory."""
-        import subprocess
-
         if not repo:
             return "[github_manager] Error: 'repo' is required for clone_repo."
 
@@ -650,9 +649,13 @@ class GitHubManagerTool(BaseTool):
         cmd.extend(["--depth", "1", clone_url, target])
 
         try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120,
-                cwd=workspace
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=workspace,
             )
             if result.returncode != 0:
                 return f"[github_manager] Clone failed: {result.stderr[:500]}"

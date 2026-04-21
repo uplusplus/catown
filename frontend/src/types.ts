@@ -48,6 +48,7 @@ export type MessageItem = {
   message_type: string;
   created_at: string;
   agent_name?: string | null;
+  client_turn_id?: string;
   isStreaming?: boolean;
   streamSteps?: MessageStreamStep[];
   optimisticKind?: "user" | "assistant_placeholder";
@@ -60,6 +61,11 @@ export type MessageStreamStep = {
   detail?: string;
   detailContent?: string;
   state: "live" | "done" | "error";
+  kind?: "llm_outbound" | "llm_inbound" | "tool_call" | "tool_result_to_llm";
+  agent?: string;
+  tool?: string;
+  toolCallIndex?: number;
+  toolCallId?: string | null;
 };
 
 export type ChatEventTone = "neutral" | "success" | "warning" | "error" | "info";
@@ -86,6 +92,17 @@ export type ChatCardKind =
 export type ChatCardToolPreview = {
   name?: string;
   args_preview?: string;
+  index?: number;
+  id?: string | null;
+};
+
+export type ChatCardLlmTimings = {
+  request_sent_ms?: number;
+  first_chunk_ms?: number;
+  first_content_ms?: number;
+  first_tool_call_ms?: number;
+  tool_call_ready_ms?: number;
+  completed_ms?: number;
 };
 
 export type ChatCardSkillDetail = {
@@ -100,6 +117,7 @@ export type ChatCardItem = {
   kind: ChatCardKind;
   created_at: string;
   source?: string;
+  client_turn_id?: string;
   pipeline_id?: number;
   run_id?: number;
   agent?: string;
@@ -113,6 +131,7 @@ export type ChatCardItem = {
   response?: string;
   raw_response?: string;
   tool_calls?: ChatCardToolPreview[];
+  timings?: ChatCardLlmTimings;
   display_name?: string;
   summary?: string;
   active_skills?: string[];
@@ -121,6 +140,8 @@ export type ChatCardItem = {
   arguments?: string;
   success?: boolean;
   result?: string;
+  tool_call_index?: number;
+  tool_call_id?: string | null;
   stage?: string;
   skills?: ChatCardSkillDetail[];
   agent_all_skills?: string[];
@@ -211,4 +232,135 @@ export type AgentConfigPayload = {
   soul?: AgentSoul;
   tools?: string[];
   skills?: string[];
+};
+
+export type MonitorToolSummary = {
+  tool_name: string;
+  call_count: number;
+  failure_count: number;
+  avg_duration_ms: number;
+};
+
+export type MonitorAgentUsage = {
+  agent_name: string;
+  llm_calls: number;
+  tool_calls: number;
+  errors: number;
+  token_input: number;
+  token_output: number;
+  token_total: number;
+  estimated_cost_usd: number;
+};
+
+export type MonitorRuntimeItem = {
+  id: number;
+  type: string;
+  title: string;
+  preview: string;
+  created_at: string;
+  chatroom_id: number;
+  chat_title: string;
+  project_id?: number | null;
+  project_name?: string | null;
+  agent?: string | null;
+  from_entity?: string | null;
+  to_entity?: string | null;
+  model?: string | null;
+  tool_name?: string | null;
+  success?: boolean | null;
+  tokens_in?: number;
+  tokens_out?: number;
+  duration_ms?: number;
+  turn?: number | null;
+  client_turn_id?: string | null;
+  prompt_preview?: string | null;
+  response_preview?: string | null;
+  arguments_preview?: string | null;
+  stage?: string | null;
+};
+
+export type MonitorMessageItem = {
+  id: number;
+  chatroom_id: number;
+  chat_title: string;
+  project_id?: number | null;
+  project_name?: string | null;
+  agent_name?: string | null;
+  content: string;
+  content_preview: string;
+  message_type: string;
+  created_at: string;
+  client_turn_id?: string | null;
+};
+
+export type MonitorRuntimeDetail = {
+  id: number;
+  created_at: string;
+  chatroom_id: number;
+  chat_title: string;
+  project_id?: number | null;
+  project_name?: string | null;
+  card: Record<string, unknown>;
+};
+
+export type MonitorLogEntry = {
+  id: number;
+  created_at: string;
+  level: string;
+  logger: string;
+  message: string;
+  line: string;
+  pathname?: string | null;
+  lineno?: number | null;
+  thread_name?: string | null;
+  process?: number | null;
+};
+
+export type MonitorLogsResponse = {
+  captured_at: string;
+  latest_id: number;
+  entries: MonitorLogEntry[];
+};
+
+export type MonitorOverview = {
+  captured_at: string;
+  system: {
+    status: string;
+    version: string;
+    stats: {
+      agents: number;
+      active_agents: number;
+      projects: number;
+      chatrooms: number;
+      visible_chats: number;
+      messages: number;
+      runtime_cards: number;
+    };
+    features: Record<string, boolean>;
+    collaboration: {
+      active_collaborators: number;
+      chatrooms: number;
+      pending_tasks: number;
+      status: string;
+    };
+    last_message_at?: string | null;
+  };
+  usage_window: {
+    runtime_cards_considered: number;
+    llm_calls: number;
+    tool_calls: number;
+    tool_errors: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    estimated_cost_usd: number;
+    pricing: {
+      input_per_1k: number;
+      output_per_1k: number;
+    };
+    by_agent: MonitorAgentUsage[];
+    top_tools: MonitorToolSummary[];
+  };
+  recent_runtime: MonitorRuntimeItem[];
+  recent_messages: MonitorMessageItem[];
 };

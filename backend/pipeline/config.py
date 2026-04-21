@@ -2,12 +2,10 @@
 """
 Pipeline 配置加载
 
-从 configs/pipelines.json 加载 Pipeline 模板定义。
+默认从 Catown data root 下的 pipelines.json 加载 Pipeline 模板定义。
 """
 import json
-import os
 from typing import Dict, List, Optional, Any
-from pathlib import Path
 from pydantic import BaseModel, Field
 
 from config import settings
@@ -42,10 +40,7 @@ class PipelineConfigManager:
     """Pipeline 配置管理器"""
 
     def __init__(self, config_file: str = None):
-        self.config_file = config_file or os.path.join(
-            os.path.dirname(settings.AGENT_CONFIG_FILE),
-            "pipelines.json"
-        )
+        self.config_file = config_file or settings.PIPELINE_CONFIG_FILE
         self.configs: Dict[str, PipelineConfig] = {}
 
     def load(self) -> Dict[str, PipelineConfig]:

@@ -449,8 +449,18 @@ class TestChatEndpoints:
             "name": "ChatTest", "agent_names": ["analyst"]
         })
         cid = r.json()["chatroom_id"]
-        r2 = client.post(f"/api/chatrooms/{cid}/messages", json={"content": "Hello!"})
+        r2 = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={"content": "Hello!", "client_turn_id": "turn-sync-1"},
+        )
         assert r2.status_code == 200
+        assert r2.json()["client_turn_id"] == "turn-sync-1"
+
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+        assert any(
+            message.get("client_turn_id") == "turn-sync-1" and not message.get("agent_name")
+            for message in messages
+        )
 
     def test_get_messages(self, client):
         r = client.post("/api/projects", json={
@@ -582,15 +592,24 @@ class TestSSEStreaming:
 
         r = client.post("/api/projects", json={"name": "Runtime Replay", "agent_names": ["analyst"]})
         cid = r.json()["chatroom_id"]
-        stream = client.post(f"/api/chatrooms/{cid}/messages/stream", json={"content": "inspect repo"})
+        stream = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={"content": "inspect repo", "client_turn_id": "turn-stream-1"},
+        )
         body = stream.text
 
         assert stream.status_code == 200
         cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
 
         assert "tool_call" in body
         assert any(card.get("type") == "tool_call" for card in cards), cards
         assert any(card.get("type") == "llm_call" for card in cards)
+        assert all(card.get("client_turn_id") == "turn-stream-1" for card in cards)
+        assert any(
+            message.get("agent_name") and message.get("client_turn_id") == "turn-stream-1"
+            for message in messages
+        )
 
 
 # ==================== 协作 API ====================

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from chatrooms.manager import ChatroomInstance, chatroom_manager
+from config import settings
 from models.database import Agent, AgentAssignment, Chatroom, Message, Project
 
 
@@ -292,12 +293,7 @@ class SessionService:
             resolved.mkdir(parents=True, exist_ok=True)
             return str(resolved)
 
-        workspace_root = Path(
-            os.getenv(
-                "CATOWN_PROJECTS_ROOT",
-                str(Path(__file__).resolve().parent.parent / "data" / "projects"),
-            )
-        )
+        workspace_root = Path(settings.PROJECTS_ROOT)
         try:
             workspace_root.mkdir(parents=True, exist_ok=True)
         except OSError:

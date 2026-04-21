@@ -6,9 +6,11 @@ LLM 客户端封装
 """
 from typing import List, Dict, Any, Optional
 from openai import AsyncOpenAI
+from copy import deepcopy
 import json
 import os
 import logging
+import time
 
 from config import settings
 
@@ -110,8 +112,11 @@ class LLMClient:
         流式聊天（SSE generator）
 
         Yields:
-            dict: {"type": "content"|"tool_call"|"done"|"error", ...}
+            dict: {"type": "request_sent"|"first_chunk"|"first_content"|
+                   "tool_call_delta"|"tool_call_ready"|"content"|"done"|"error", ...}
         """
+        request_started_at = time.perf_counter()
+        timings: Dict[str, int] = {}
         try:
             kwargs = {
                 "model": self.model,
@@ -122,12 +127,23 @@ class LLMClient:
             if tools:
                 kwargs["tools"] = tools
 
+            stream = await self.client.chat.completions.create(**kwargs)
+            timings["request_sent_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+            yield {"type": "request_sent", "elapsed_ms": timings["request_sent_ms"]}
+
             full_content = ""
             accumulated_tool_calls = []
             usage = None
             finish_reason = None
+            first_chunk_seen = False
 
-            async for chunk in await self.client.chat.completions.create(**kwargs):
+            async for chunk in stream:
+                elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+                if not first_chunk_seen:
+                    first_chunk_seen = True
+                    timings["first_chunk_ms"] = elapsed_ms
+                    yield {"type": "first_chunk", "elapsed_ms": elapsed_ms}
+
                 choice = chunk.choices[0] if chunk.choices else None
 
                 # 捕获 usage（流式模式下通常在最后一个 chunk）
@@ -144,10 +160,15 @@ class LLMClient:
                 delta = choice.delta
 
                 if delta.content:
+                    if "first_content_ms" not in timings:
+                        timings["first_content_ms"] = elapsed_ms
+                        yield {"type": "first_content", "elapsed_ms": elapsed_ms}
                     full_content += delta.content
                     yield {"type": "content", "delta": delta.content}
 
                 if delta.tool_calls:
+                    if "first_tool_call_ms" not in timings:
+                        timings["first_tool_call_ms"] = elapsed_ms
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
                         while len(accumulated_tool_calls) <= idx:
@@ -165,20 +186,41 @@ class LLMClient:
                             if tc_delta.function.arguments:
                                 accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
 
+                        snapshot = deepcopy(accumulated_tool_calls[idx])
+                        yield {
+                            "type": "tool_call_delta",
+                            "tool_call_index": idx,
+                            "tool_call": snapshot,
+                            "tool_name": snapshot.get("function", {}).get("name") or "",
+                            "arguments": snapshot.get("function", {}).get("arguments") or "",
+                            "elapsed_ms": elapsed_ms,
+                        }
+
                 if choice.finish_reason in ("stop", "tool_calls", "length"):
                     finish_reason = choice.finish_reason
+                    if finish_reason == "tool_calls":
+                        timings["tool_call_ready_ms"] = elapsed_ms
+                        yield {
+                            "type": "tool_call_ready",
+                            "elapsed_ms": elapsed_ms,
+                            "tool_calls": deepcopy(accumulated_tool_calls),
+                        }
                     break
 
+            timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
             yield {
                 "type": "done",
                 "full_content": full_content,
                 "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
                 "usage": usage,
                 "finish_reason": finish_reason,
+                "timings": timings,
             }
 
         except Exception as e:
-            yield {"type": "error", "error": str(e)}
+            if "completed_ms" not in timings:
+                timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+            yield {"type": "error", "error": str(e), "timings": timings}
 
 
 def _resolve_env_vars(value: str) -> str:

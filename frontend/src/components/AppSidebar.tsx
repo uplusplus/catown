@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { ChatSummary, ProjectSummary } from "../types";
+import { UI_VERSION } from "../uiVersion";
 
 type AppSidebarProps = {
   chats: ChatSummary[];
@@ -419,6 +420,13 @@ export function AppSidebar({
           </div>
         </section>
       ) : null}
+
+      <div className="app-sidebar__footer">
+        <div className="app-sidebar__version" title={`UI version ${UI_VERSION}`}>
+          <span className="app-sidebar__version-label">UI</span>
+          <strong>v{UI_VERSION}</strong>
+        </div>
+      </div>
     </aside>
   );
 }

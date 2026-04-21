@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -8,6 +10,14 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        input: {
+          main: resolve(__dirname, 'index.html'),
+          monitor: resolve(__dirname, 'monitor.html'),
+        },
+      },
+    },
     server: {
       host: '0.0.0.0',
       port: 3000,

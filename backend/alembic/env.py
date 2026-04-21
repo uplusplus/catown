@@ -15,11 +15,12 @@ from config import settings
 # Alembic Config
 config = context.config
 
-# 动态设置数据库 URL（优先环境变量，回退 .env 配置）
-db_url = os.getenv("DATABASE_URL", settings.DATABASE_URL)
-if db_url and not db_url.startswith("sqlite") and not db_url.startswith("postgresql"):
-    # 相对路径 → SQLite URL
-    db_url = f"sqlite:///{db_url}"
+# 动态设置数据库 URL（优先环境变量，回退统一 data root 配置）
+db_url = os.getenv("DATABASE_URL")
+if db_url:
+    db_url = db_url if "://" in db_url else f"sqlite:///{db_url}"
+else:
+    db_url = settings.SQLALCHEMY_DATABASE_URL
 config.set_main_option("sqlalchemy.url", db_url)
 
 # 日志

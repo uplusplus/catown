@@ -1,8 +1,8 @@
 {
   "global_llm": {
     "provider": {
-      "baseUrl": "https://apikey.soxio.me/openai/v1",
-      "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+      "apiKey": "${LLM_API_KEY}",
       "models": [
         {
           "id": "gpt-5.4-mini",
@@ -70,8 +70,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",
@@ -139,8 +139,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",
@@ -210,8 +210,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",
@@ -276,8 +276,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",
@@ -343,8 +343,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",
@@ -411,8 +411,8 @@
       },
       "default_model": "gpt-5.4-mini",
       "provider": {
-        "baseUrl": "https://apikey.soxio.me/openai/v1",
-        "apiKey": "cr_a63f8725ce6e61f96a9c927a3184664120b15918d40678fc9424748a499fee6b",
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
         "models": [
           {
             "id": "gpt-5.4-mini",

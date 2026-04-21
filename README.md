@@ -24,22 +24,31 @@
 cd backend && pip install -r requirements.txt
 ```
 
-配置 LLM（编辑 `backend/configs/agents.json`）：
+推荐先运行一次 `./run.sh`（Windows 用 `run.bat`），它会初始化运行时目录 `${CATOWN_HOME:-~/.catown}`。
+
+配置 LLM 时，编辑运行时配置 `${CATOWN_HOME:-~/.catown}/config/agents.json`
+（源码模板位于 `backend/configs/agents.json`），并按需在 `${CATOWN_HOME:-~/.catown}/.env` 中填写密钥：
 
 ```json
 {
   "global_llm": {
     "provider": {
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-your-key",
-      "models": [{"id": "gpt-4", "name": "GPT-4", "maxTokens": 8192}]
+      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+      "apiKey": "${LLM_API_KEY}",
+      "models": [{"id": "your-model-id", "name": "Your Model"}]
     },
-    "default_model": "gpt-4"
+    "default_model": "your-model-id"
   }
 }
 ```
 
 启动：
+
+```bash
+./run.sh
+```
+
+或手动启动：
 
 ```bash
 cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -55,7 +64,7 @@ catown/
 ├── backend/
 │   ├── agents/          # Agent 核心（SOUL 体系、注册、协作）
 │   ├── chatrooms/       # 聊天室系统
-│   ├── configs/         # 配置文件（agents.json, pipelines.json, skills.json）
+│   ├── configs/         # 配置模板（首次启动复制到 ~/.catown/config/）
 │   ├── llm/             # LLM 客户端（OpenAI 兼容，per-agent 配置）
 │   ├── models/          # 数据库模型（含 Pipeline 表）
 │   ├── pipeline/        # Pipeline 引擎（核心）

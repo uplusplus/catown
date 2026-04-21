@@ -155,6 +155,12 @@ class TestLLMClientChatStream:
         done_events = [e for e in events if e["type"] == "done"]
         assert len(done_events) == 1
         assert done_events[0]["full_content"] == "Hello world"
+        assert any(e["type"] == "request_sent" for e in events)
+        assert any(e["type"] == "first_chunk" for e in events)
+        assert any(e["type"] == "first_content" for e in events)
+        assert done_events[0]["timings"]["request_sent_ms"] >= 0
+        assert done_events[0]["timings"]["first_chunk_ms"] >= 0
+        assert done_events[0]["timings"]["first_content_ms"] >= 0
 
     @pytest.mark.asyncio
     async def test_stream_with_tool_calls(self):
@@ -186,6 +192,17 @@ class TestLLMClientChatStream:
         done = [e for e in events if e["type"] == "done"][0]
         assert done["tool_calls"] is not None
         assert done["tool_calls"][0]["function"]["name"] == "web_search"
+
+        assert any(e["type"] == "request_sent" for e in events)
+        assert any(e["type"] == "first_chunk" for e in events)
+        tool_delta = [e for e in events if e["type"] == "tool_call_delta"][0]
+        assert tool_delta["tool_name"] == "web_search"
+        assert tool_delta["tool_call_index"] == 0
+        assert any(e["type"] == "tool_call_ready" for e in events)
+        assert done["timings"]["request_sent_ms"] >= 0
+        assert done["timings"]["first_chunk_ms"] >= 0
+        assert done["timings"]["first_tool_call_ms"] >= 0
+        assert done["timings"]["tool_call_ready_ms"] >= 0
 
     @pytest.mark.asyncio
     async def test_stream_error(self):

@@ -81,7 +81,7 @@ Pipeline 由 5 个专业 Agent + 1 个人角色组成：
 
 ### 4.2 角色配置
 
-每个 Agent 的配置存储在 `configs/agents.json`，采用三层结构：**灵魂 → 角色 → 规则**。
+每个 Agent 的运行时配置默认存储在 `${CATOWN_HOME}/config/agents.json`，源码模板位于 `backend/configs/agents.json`。配置结构采用三层：**灵魂 → 角色 → 规则**。
 
 **当前问题**：现有 `system_prompt` 是一段静态扁平文本，只有职责和规则，没有个性、价值观、沟通风格。各 Agent 辨识度低，读起来像岗位说明书。
 
@@ -1520,7 +1520,7 @@ BOSS 发现 Pipeline 运行异常
 
 ### 10.1 配置能力
 
-✅ **已实现**。唯一配置源：`configs/agents.json`，两级配置架构。
+✅ **已实现**。运行时主配置源为 `${CATOWN_HOME}/config/agents.json`，首次启动由 `backend/configs/agents.json` 初始化，两级配置架构。
 
 **配置优先级**：Agent 自身 provider → global_llm provider → 环境变量
 
@@ -2031,7 +2031,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 
 ### 15.2 技术验收
 
-- [x] 所有配置来源 agents.json（无 .env LLM 依赖）
+- [x] LLM 主配置来源 agents.json，密钥可通过 `${LLM_API_KEY}` / `.env` 注入
 - [x] Pipeline 状态持久化到数据库
 - [x] Agent 协作消息持久化到数据库
 - [x] WebSocket 实时推送 Pipeline 状态变更
@@ -2196,8 +2196,8 @@ Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效
 | `config.py` | 已去掉 LLM 配置，仅保留基础设施 | — | ✅ 完成 |
 | `llm/client.py` | 已改为 per-agent 客户端工厂 | — | ✅ 完成 |
 | `models/database.py` | 新增 5 张 Pipeline 表 | 中 | ✅ 完成 |
-| `configs/agents.json` | 改为 6 个 Agent 角色（5 个 Pipeline + 1 个助理） | — | ✅ 完成 |
-| `configs/pipelines.json` | 新增，默认 5 阶段模板 | — | ✅ 完成 |
+| `backend/configs/agents.json` | 改为 6 个 Agent 角色模板（5 个 Pipeline + 1 个助理），运行时复制到 `${CATOWN_HOME}/config/agents.json` | — | ✅ 完成 |
+| `backend/configs/pipelines.json` | 新增，默认 5 阶段模板，运行时复制到 `${CATOWN_HOME}/config/pipelines.json` | — | ✅ 完成 |
 | `pipeline/config.py` | 新增，配置加载器 | — | ✅ 完成 |
 | `pipeline/engine.py` | 新增，Pipeline 引擎核心 | 大 | ✅ 完成 |
 | `routes/pipeline.py` | 新增，Pipeline API 路由 | 中 | ✅ 完成 |
@@ -2391,24 +2391,32 @@ cd backend && pip install -r requirements.txt
 
 ### 17.2 配置 LLM
 
-编辑 `backend/configs/agents.json`，在 `global_llm` 段设置 LLM 连接信息：
+推荐先运行 `./run.sh`（Windows 用 `run.bat`）初始化 `${CATOWN_HOME:-~/.catown}`，然后编辑 `${CATOWN_HOME:-~/.catown}/config/agents.json`。
+
+源码模板位于 `backend/configs/agents.json`，首次启动会自动复制到运行时目录。在 `global_llm` 段设置 LLM 连接信息：
 
 ```json
 {
   "global_llm": {
     "provider": {
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKey": "sk-your-api-key",
-      "models": [{ "id": "gpt-4", ... }]
+      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+      "apiKey": "${LLM_API_KEY}",
+      "models": [{ "id": "your-model-id", ... }]
     },
-    "default_model": "gpt-4"
+    "default_model": "your-model-id"
   }
 }
 ```
 
-也可使用 `.env` 中的环境变量回退：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
+也可在 `${CATOWN_HOME:-~/.catown}/.env` 中配置：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
 
 ### 17.3 启动
+
+```bash
+./run.sh
+```
+
+或手动启动：
 
 ```bash
 cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -2423,11 +2431,11 @@ cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ### Q: Agent 没有回复
 
-检查 `agents.json` 中的 LLM 配置是否正确，API Key 是否有效。可通过 `GET /api/config` 确认当前配置。
+检查 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中的 LLM 配置是否正确，API Key 是否有效。可通过 `GET /api/config` 确认当前配置。
 
 ### Q: 测试失败，提示 agent 名称找不到
 
-确认 `agents.json` 中包含 6 个角色：`analyst`、`architect`、`developer`、`tester`、`release`、`assistant`。
+确认 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中包含 6 个角色：`analyst`、`architect`、`developer`、`tester`、`release`、`assistant`。
 
 ### Q: Pipeline 启动后卡在某个阶段
 
@@ -2439,4 +2447,4 @@ cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
 docker-compose up -d
 ```
 
-需配置环境变量或挂载 `configs/agents.json`。
+需挂载 `/var/lib/catown` 持久化运行时数据；如需自定义配置，可挂载 `/var/lib/catown/config/agents.json` 或设置 `CATOWN_HOME`。

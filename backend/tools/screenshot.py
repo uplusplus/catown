@@ -3,6 +3,7 @@
 Screenshot Tool — 使用 Headless Chromium 截取网页截图
 """
 from .base import BaseTool
+import asyncio
 import subprocess
 import tempfile
 import os
@@ -112,7 +113,8 @@ class ScreenshotTool(BaseTool):
 
             cmd.append(url)
 
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 cmd,
                 capture_output=True,
                 text=True,
@@ -123,7 +125,8 @@ class ScreenshotTool(BaseTool):
             # 如果 --headless=new 不支持，fallback 到老版 --headless
             if result.returncode != 0 and "--headless=new" in " ".join(cmd):
                 cmd[1] = "--headless"
-                result = subprocess.run(
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     cmd,
                     capture_output=True,
                     text=True,
@@ -208,7 +211,8 @@ const puppeteer = require('puppeteer-core');
 
         try:
             # 检查 puppeteer-core 是否可用
-            check = subprocess.run(
+            check = await asyncio.to_thread(
+                subprocess.run,
                 ["node", "-e", "require('puppeteer-core')"],
                 capture_output=True,
                 text=True,
@@ -217,7 +221,8 @@ const puppeteer = require('puppeteer-core');
             if check.returncode != 0:
                 return None  # 没有 puppeteer-core，跳过元素截图
 
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["node", script_path],
                 capture_output=True,
                 text=True,

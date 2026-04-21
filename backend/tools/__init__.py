@@ -46,7 +46,7 @@ def set_collaboration_coordinator(coordinator):
 # Register built-in tools
 tool_registry.register(WebSearchTool())
 tool_registry.register(WebFetchTool())
-tool_registry.register(ExecuteCodeTool())
+tool_registry.register(ExecuteCodeTool(workspace=WORKSPACE))
 tool_registry.register(RetrieveMemoryTool())
 from .save_memory import SaveMemoryTool
 tool_registry.register(SaveMemoryTool())

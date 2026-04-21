@@ -4,7 +4,10 @@ import type {
   ChatSummary,
   ConfigResponse,
   GlobalConfigPayload,
+  MonitorLogsResponse,
+  MonitorRuntimeDetail,
   MessageItem,
+  MonitorOverview,
   ProjectCreatePayload,
   ProjectFromChatPayload,
   ProjectSummary,
@@ -122,19 +125,19 @@ export const api = {
   getRuntimeCards(chatroomId: number) {
     return request<Record<string, unknown>[]>(`/api/chatrooms/${chatroomId}/runtime-cards`);
   },
-  sendMessage(chatroomId: number, content: string) {
+  sendMessage(chatroomId: number, content: string, clientTurnId?: string) {
     return request<MessageItem>(`/api/chatrooms/${chatroomId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, client_turn_id: clientTurnId }),
     });
   },
-  streamMessage(chatroomId: number, content: string, signal?: AbortSignal) {
+  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string) {
     return fetch(`/api/chatrooms/${chatroomId}/messages/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, client_turn_id: clientTurnId }),
       signal,
     });
   },
@@ -143,6 +146,15 @@ export const api = {
   },
   getConfig() {
     return request<ConfigResponse>("/api/config");
+  },
+  getMonitorOverview() {
+    return request<MonitorOverview>("/api/monitor/overview?runtime_limit=80&summary_window=400&message_limit=40");
+  },
+  getMonitorLogs(limit = 250) {
+    return request<MonitorLogsResponse>(`/api/monitor/logs?limit=${limit}`);
+  },
+  getMonitorRuntimeCardDetail(messageId: number) {
+    return request<MonitorRuntimeDetail>(`/api/monitor/runtime-cards/${messageId}`);
   },
   saveGlobalConfig(payload: GlobalConfigPayload) {
     return request<{ message: string }>("/api/config/global", {

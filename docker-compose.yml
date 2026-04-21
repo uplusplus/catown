@@ -7,22 +7,18 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      - HOST=0.0.0.0
-      - PORT=8000
-      # SQLite (default): data/catown.db
-      # PostgreSQL: postgresql://catown:catown@db:5432/catown
-      - DATABASE_URL=${DATABASE_URL:-data/catown.db}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
-      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-60}
-      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
-      # Agent 配置文件路径（所有 LLM 配置来源）
-      - AGENT_CONFIG_FILE=${AGENT_CONFIG_FILE:-configs/agents.json}
+      HOST: 0.0.0.0
+      PORT: 8000
+      CATOWN_HOME: ${CATOWN_HOME:-/var/lib/catown}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-60}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+      # Optional overrides:
+      # DATABASE_URL: postgresql://catown:catown@db:5432/catown
+      # AGENT_CONFIG_FILE: /var/lib/catown/config/agents.json
     volumes:
-      - catown-data:/app/backend/data
-      - catown-logs:/app/backend/logs
-      - catown-workspaces:/app/backend/data/workspaces
-      - ./backend/configs:/app/backend/configs:ro
+      - catown-home:/var/lib/catown
     depends_on:
       db:
         condition: service_healthy
@@ -53,7 +49,5 @@ services:
       retries: 5
 
 volumes:
-  catown-data:
-  catown-logs:
-  catown-workspaces:
+  catown-home:
   postgres-data:

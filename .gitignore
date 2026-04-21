@@ -82,10 +82,10 @@ dmypy.json
 
 # Pyre
 .pyre/
-backend/data/
-.env
 
-data/
+# Catown runtime data (only relevant if CATOWN_HOME is pointed into the repo)
+.catown/
+.env
 
 #codex
 .codex

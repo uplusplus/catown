@@ -56,10 +56,11 @@ for route_path in important_routes:
 print("\n[3/5] Checking config file...")
 try:
     import json
-    with open('configs/agents.json', 'r', encoding='utf-8') as f:
+    from config import settings
+    with open(settings.AGENT_CONFIG_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
     agent_count = len(config.get('agents', {}))
-    print("  ✓ configs/agents.json loaded")
+    print(f"  ✓ {settings.AGENT_CONFIG_FILE} loaded")
     print("    Agents:", list(config.get('agents', {}).keys()))
 except Exception as e:
     print("  ✗ Error:", str(e)[:50])

@@ -12,14 +12,41 @@ setlocal enabledelayedexpansion
 set "BACKEND=%~dp0backend"
 if "%BACKEND:~-1%"=="\" set "BACKEND=%BACKEND:~0,-1%"
 set "PYTHON_CMD=python"
-set "RUN_PORT=%PORT%"
+if not defined CATOWN_HOME set "CATOWN_HOME=%USERPROFILE%\.catown"
+if not defined CATOWN_CONFIG_DIR set "CATOWN_CONFIG_DIR=%CATOWN_HOME%\config"
+if not defined CATOWN_STATE_DIR set "CATOWN_STATE_DIR=%CATOWN_HOME%\state"
+if not defined CATOWN_PROJECTS_ROOT set "CATOWN_PROJECTS_ROOT=%CATOWN_HOME%\projects"
+if not defined CATOWN_WORKSPACES_DIR set "CATOWN_WORKSPACES_DIR=%CATOWN_HOME%\workspaces"
+set "CATOWN_ENV_FILE=%CATOWN_HOME%\.env"
 
-if not defined RUN_PORT if exist "%BACKEND%\.env" (
-    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /C:"PORT=" "%BACKEND%\.env"`) do (
-        set "RUN_PORT=%%B"
+if not exist "%CATOWN_HOME%" mkdir "%CATOWN_HOME%" >nul 2>&1
+if not exist "%CATOWN_CONFIG_DIR%" mkdir "%CATOWN_CONFIG_DIR%" >nul 2>&1
+if not exist "%CATOWN_STATE_DIR%" mkdir "%CATOWN_STATE_DIR%" >nul 2>&1
+if not exist "%CATOWN_PROJECTS_ROOT%" mkdir "%CATOWN_PROJECTS_ROOT%" >nul 2>&1
+if not exist "%CATOWN_WORKSPACES_DIR%" mkdir "%CATOWN_WORKSPACES_DIR%" >nul 2>&1
+
+if not exist "%CATOWN_ENV_FILE%" (
+    if exist "%BACKEND%\.env.example" (
+        copy "%BACKEND%\.env.example" "%CATOWN_ENV_FILE%" >nul
+        echo Created %CATOWN_ENV_FILE% - edit it to set LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
     )
 )
 
+for %%F in (agents.json pipelines.json skills.json) do (
+    if not exist "%CATOWN_CONFIG_DIR%\%%F" (
+        if exist "%BACKEND%\configs\%%F" (
+            copy "%BACKEND%\configs\%%F" "%CATOWN_CONFIG_DIR%\%%F" >nul
+            echo Installed %CATOWN_CONFIG_DIR%\%%F
+        )
+    )
+)
+
+set "RUN_PORT=%PORT%"
+if not defined RUN_PORT if exist "%CATOWN_ENV_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /B /C:"PORT=" "%CATOWN_ENV_FILE%"`) do (
+        set "RUN_PORT=%%B"
+    )
+)
 if not defined RUN_PORT set "RUN_PORT=8000"
 
 :: --- Python ---
@@ -57,14 +84,6 @@ call :FIND_AVAILABLE_PORT
 if errorlevel 1 (
     echo [ERROR] No available port found near %RUN_PORT%.
     exit /b 1
-)
-
-:: --- .env ---
-if not exist "%BACKEND%\.env" (
-    if exist "%BACKEND%\.env.example" (
-        copy "%BACKEND%\.env.example" "%BACKEND%\.env" >nul
-        echo Created backend\.env - edit it to set LLM_API_KEY
-    )
 )
 
 :: ==========================================

@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
+import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
 import type {
   AgentInfo,
   ChatCardItem,
@@ -20,6 +21,10 @@ const LARGE_MARKDOWN_HIGHLIGHT_LIMIT = 12000;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
+}
+
+function createClientTurnId() {
+  return `turn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
 function readOverlayStore() {
@@ -91,7 +96,7 @@ type ChatTabProps = {
   creatingProjectFromChat: boolean;
   connectionState: "connected" | "connecting" | "disconnected";
   events: ChatEventItem[];
-  onSend: (content: string) => Promise<void>;
+  onSend: (content: string, options?: { clientTurnId?: string }) => Promise<void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
   onOpenActivity: () => void;
@@ -108,6 +113,17 @@ type ChatTabProps = {
   }) => Promise<void>;
 };
 
+type SystemPromptPresentation = {
+  label: string;
+  markdown: string;
+  copyText: string;
+  mode: "full" | "delta" | "unchanged";
+};
+
+type DecoratedChatCardItem = ChatCardItem & {
+  systemPromptPresentation?: SystemPromptPresentation;
+};
+
 type ToolMergeCard = {
   id: string;
   kind: "tool_merge";
@@ -116,10 +132,10 @@ type ToolMergeCard = {
   agent?: string;
   tool?: string;
   count: number;
-  items: ChatCardItem[];
+  items: DecoratedChatCardItem[];
 };
 
-type ThreadCard = ChatCardItem | ToolMergeCard;
+type ThreadCard = DecoratedChatCardItem | ToolMergeCard;
 type ParsedLlmConversation = {
   meta: string;
   outbound: string;
@@ -226,6 +242,87 @@ function oneLinePreview(value: string | undefined, fallback: string, limit = 96)
   if (!normalized) return fallback;
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit)}...`;
+}
+
+function normalizePromptText(value: string) {
+  return value.replace(/\r\n/g, "\n").trimEnd();
+}
+
+const SYSTEM_PROMPT_DYNAMIC_MARKERS = [
+  "\n\nThis is a standalone chat.",
+  "\n\nCurrent project context:",
+  "\n\nCurrent chat context:",
+  "\n\nYou have access to the following tools:",
+  "\n\nTeam members in this project:",
+  "\n\nAvailable agents in this standalone chat:",
+  "\n\nYour memories:",
+  "\n\nYour memories (context for your responses):",
+  "\n\nShared context from other agents:",
+  "\n\nPrevious agent's work for you to build upon:",
+];
+
+function extractDisplayableSystemPrompt(value: string) {
+  const normalized = normalizePromptText(value);
+  let firstMarkerIndex = -1;
+
+  for (const marker of SYSTEM_PROMPT_DYNAMIC_MARKERS) {
+    const markerIndex = normalized.indexOf(marker);
+    if (markerIndex === -1) continue;
+    if (firstMarkerIndex === -1 || markerIndex < firstMarkerIndex) {
+      firstMarkerIndex = markerIndex;
+    }
+  }
+
+  if (firstMarkerIndex === -1) return "";
+  return normalized.slice(firstMarkerIndex).trim();
+}
+
+function buildSystemPromptPresentation(current: string | undefined, _previous: string | undefined): SystemPromptPresentation | undefined {
+  if (!current?.trim()) return undefined;
+
+  const normalizedCurrent = normalizePromptText(current);
+  const displayCurrent = extractDisplayableSystemPrompt(normalizedCurrent);
+  if (!displayCurrent) return undefined;
+
+  return {
+    label: "System prompt context",
+    markdown: markdownSection("System Prompt Context", displayCurrent, { asMarkdown: true }),
+    copyText: normalizedCurrent,
+    mode: "full",
+  };
+}
+
+function decorateCardsWithSystemPromptPresentation(cards: ChatCardItem[]): DecoratedChatCardItem[] {
+  const previousPromptByAgent = new Map<string, string>();
+  const decoratedById = new Map<string, DecoratedChatCardItem>();
+
+  const orderedCards = [...cards].sort((left, right) => {
+    const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return left.id.localeCompare(right.id);
+  });
+
+  for (const card of orderedCards) {
+    if (card.kind !== "llm_call") {
+      decoratedById.set(card.id, card);
+      continue;
+    }
+
+    const agentName = card.agent || "assistant";
+    const previousPrompt = previousPromptByAgent.get(agentName);
+    const systemPromptPresentation = buildSystemPromptPresentation(card.system_prompt, previousPrompt);
+
+    decoratedById.set(card.id, {
+      ...card,
+      systemPromptPresentation,
+    });
+
+    if (card.system_prompt?.trim()) {
+      previousPromptByAgent.set(agentName, card.system_prompt);
+    }
+  }
+
+  return cards.map((card) => decoratedById.get(card.id) ?? card);
 }
 
 function threadItemSortWeight(item: Extract<ThreadItem, { kind: "message" | "card" }>) {
@@ -342,6 +439,31 @@ function cardActorName(card: ThreadCard) {
   return "system";
 }
 
+function llmOutboundStepLabel(actor: string, toolName?: string) {
+  return toolName ? `${actor} -> LLM (${toolName} result)` : `${actor} -> LLM`;
+}
+
+function llmInboundStepLabel(actor: string) {
+  return `LLM -> ${actor}`;
+}
+
+function toolCallStepLabel(actor: string, toolName: string) {
+  return `${actor} calls ${toolName}`;
+}
+
+function toolOutputStepLabel(actor: string, toolName: string) {
+  return `Tool Output · ${actor} · ${toolName}`;
+}
+
+function buildLlmMetaSummary(model?: string, turn?: number) {
+  return [
+    model,
+    typeof turn === "number" ? `turn ${turn}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function messageStepStateFromCard(card: ThreadCard): MessageStreamStep["state"] {
   if ("success" in card && card.success === false) return "error";
   if (card.kind === "gate_blocked" || card.kind === "gate_rejected") return "error";
@@ -364,7 +486,11 @@ function messageStepDetailFromCard(card: ThreadCard) {
         .filter(Boolean)
         .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
-      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }));
+      {
+        const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
+        if (timingsMarkdown) sections.push(timingsMarkdown);
+      }
+      if (card.systemPromptPresentation?.markdown) sections.push(card.systemPromptPresentation.markdown);
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(
@@ -416,6 +542,109 @@ function messageStepDetailFromCard(card: ThreadCard) {
       return `Rollback target: ${card.to_stage || "previous stage"}`;
     default:
       return cardSummary(card);
+  }
+}
+
+function messageLlmPromptDetailFromCard(card: DecoratedChatCardItem) {
+  const sections: string[] = [];
+  const meta = buildLlmMetaSummary(card.model, card.turn);
+  if (meta) sections.push(`### Meta\n\n- ${meta}`);
+  {
+    const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
+    if (timingsMarkdown) sections.push(timingsMarkdown);
+  }
+  if (card.systemPromptPresentation?.markdown) sections.push(card.systemPromptPresentation.markdown);
+  if (card.prompt_messages) {
+    sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
+  }
+  return sections.join("\n\n");
+}
+
+function messageLlmResponseDetailFromCard(card: DecoratedChatCardItem) {
+  const sections: string[] = [];
+  {
+    const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
+    if (timingsMarkdown) sections.push(timingsMarkdown);
+  }
+  const plannedToolsMarkdown = buildPlannedToolsMarkdown(card.tool_calls);
+  if (plannedToolsMarkdown) sections.push(plannedToolsMarkdown);
+  if (card.response) sections.push(markdownSection("Response", card.response, { asMarkdown: true }));
+  if (card.raw_response) sections.push(markdownSection("Raw Response", prettyJson(card.raw_response), { language: "json" }));
+  return sections.join("\n\n");
+}
+
+function messageToolCallDetailFromCard(card: DecoratedChatCardItem) {
+  if (!card.arguments) return "";
+  return markdownSection("Arguments", prettyJson(card.arguments), { language: "json" });
+}
+
+function messageToolResultDetailFromCard(card: DecoratedChatCardItem) {
+  if (!card.result) return "";
+  return isJsonContent(card.result)
+    ? markdownSection(card.success === false ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
+    : markdownSection(card.success === false ? "Error" : "Tool Result", card.result, { asMarkdown: true });
+}
+
+function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: number): MessageStreamStep[] {
+  const actor = cardActorName(card);
+
+  switch (card.kind) {
+    case "llm_call":
+      return [
+        {
+          id: `${messageId}-card-${card.id}-${index}-prompt`,
+          label: llmOutboundStepLabel(actor),
+          detail: buildLlmMetaSummary(card.model, card.turn),
+          detailContent: messageLlmPromptDetailFromCard(card),
+          state: "done",
+          kind: "llm_outbound",
+          agent: actor,
+        },
+        {
+          id: `${messageId}-card-${card.id}-${index}-response`,
+          label: llmInboundStepLabel(actor),
+          detail: compactCardSummary(card),
+          detailContent: messageLlmResponseDetailFromCard(card),
+          state: "done",
+          kind: "llm_inbound",
+          agent: actor,
+        },
+      ];
+    case "tool_call": {
+      const toolName = card.tool || "tool";
+      return [
+        {
+          id: `${messageId}-card-${card.id}-${index}-tool`,
+          label: toolCallStepLabel(actor, toolName),
+          detail: card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool.",
+          detailContent: messageToolCallDetailFromCard(card),
+          state: card.success === false ? "error" : "done",
+          kind: "tool_call",
+          agent: actor,
+          tool: toolName,
+        },
+        {
+          id: `${messageId}-card-${card.id}-${index}-tool-result`,
+          label: toolOutputStepLabel(actor, toolName),
+          detail: compactCardSummary(card),
+          detailContent: messageToolResultDetailFromCard(card),
+          state: "done",
+          kind: "tool_result_to_llm",
+          agent: actor,
+          tool: toolName,
+        },
+      ];
+    }
+    default:
+      return [
+        {
+          id: `${messageId}-card-${card.id}-${index}`,
+          label: cardTitle(card),
+          detail: messageStepSummaryFromCard(card),
+          detailContent: messageStepDetailFromCard(card),
+          state: messageStepStateFromCard(card),
+        },
+      ];
   }
 }
 
@@ -478,6 +707,27 @@ function renderJsonCollapse(
         <CopyTextButton content={prepared} title={options?.copyLabel || `Copy ${label}`} />
       </summary>
       <pre className="chat-json-content">{prepared}</pre>
+    </details>
+  );
+}
+
+function renderMarkdownCollapse(
+  badge: string,
+  label: string,
+  content: string | undefined,
+  options?: { open?: boolean; copyLabel?: string; copyText?: string },
+) {
+  if (!content?.trim()) return null;
+  return (
+    <details className="chat-json-collapse" open={options?.open}>
+      <summary className="chat-json-summary">
+        <span className="chat-json-summary__main">
+          <span className="chat-json-badge">{badge}</span>
+          <span className="chat-json-label">{label}</span>
+        </span>
+        <CopyTextButton content={options?.copyText || content} title={options?.copyLabel || `Copy ${label}`} />
+      </summary>
+      {renderMarkdownContent(content, "chat-json-markdown-content")}
     </details>
   );
 }
@@ -556,6 +806,8 @@ function isLikelyLlmStep(label: string, detailContent: string | undefined) {
   const sample = `${label}\n${detailContent ?? ""}`.toLowerCase();
   return (
     sample.includes("contacting llm") ||
+    sample.includes("-> llm") ||
+    sample.includes("llm ->") ||
     sample.includes("full prompt payload") ||
     sample.includes("raw response") ||
     sample.includes("current response draft") ||
@@ -564,6 +816,10 @@ function isLikelyLlmStep(label: string, detailContent: string | undefined) {
 }
 
 function inferAgentNameFromLlmStepLabel(label: string) {
+  const outboundMatch = label.match(/^(.+?)\s*->\s*llm(?:\s*\(|$)/i);
+  if (outboundMatch?.[1]) return outboundMatch[1].trim();
+  const inboundMatch = label.match(/^llm\s*->\s*(.+)$/i);
+  if (inboundMatch?.[1]) return inboundMatch[1].trim();
   const matched = label.match(/^(.+?)\s+contacting\s+llm$/i);
   if (matched?.[1]) return matched[1].trim();
   const firstWord = label.trim().split(/\s+/)[0];
@@ -605,15 +861,17 @@ function parseLlmConversationMarkdown(content: string) {
     if (
       title === "user message" ||
       title === "system prompt" ||
+      title === "system prompt context" ||
       title === "full prompt payload" ||
       title === "prompt sent to llm" ||
-      title === "planned tools"
+      title === "tool result"
     ) {
       outboundSections.push(rendered);
       continue;
     }
 
     if (
+      title === "planned tools" ||
       title === "current response draft" ||
       title === "response" ||
       title === "llm response" ||
@@ -736,20 +994,11 @@ function renderLlmDetailLayout(
 ) {
   if (!content.meta && !content.outbound && !content.inbound) return null;
 
+  const outboundContent = [content.meta?.trim(), content.outbound?.trim()].filter(Boolean).join("\n\n");
+
   return (
     <div className={options?.className ?? "llm-exchange-stack"}>
-      {content.meta ? (
-        <section className="llm-exchange-meta">
-          <div className="llm-exchange-meta__header">
-            <div className="llm-exchange-meta__heading">
-              <span className="chat-json-badge">META</span>
-              <strong>Execution Meta</strong>
-            </div>
-          </div>
-          {renderMarkdownContent(content.meta, "llm-exchange-meta__content")}
-        </section>
-      ) : null}
-      {content.outbound ? renderLlmExchangePanel("outbound", agentName, content.outbound) : null}
+      {outboundContent ? renderLlmExchangePanel("outbound", agentName, outboundContent) : null}
       {content.inbound
         ? renderLlmExchangePanel("inbound", agentName, content.inbound, options?.responseMetaLabel)
         : null}
@@ -792,6 +1041,166 @@ function renderStreamingTextContent(content: string | undefined, className: stri
   );
 }
 
+type StreamingStatusDescriptor = {
+  mode: "queued" | "llm" | "tool" | "handoff";
+  title: string;
+  subtitle?: string;
+};
+
+function summarizeStreamingDetail(detail: string | undefined) {
+  if (!detail?.trim()) return undefined;
+  return oneLinePreview(detail, "", 112) || undefined;
+}
+
+function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDescriptor {
+  const steps = message.streamSteps ?? [];
+  const activeStep = [...steps].reverse().find((step) => step.state === "live") ?? steps[steps.length - 1];
+  const actor = activeStep?.agent || (message.agent_name && message.agent_name !== "pipeline" ? message.agent_name : "Agent");
+
+  if (!activeStep) {
+    return {
+      mode: "queued",
+      title: `${actor} is preparing the next action`,
+      subtitle: "Waiting for the runtime to begin.",
+    };
+  }
+
+  if (/queued/i.test(activeStep.label)) {
+    return {
+      mode: "queued",
+      title: `${actor} is queued to respond`,
+      subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting to start the first step.",
+    };
+  }
+
+  switch (activeStep.kind) {
+    case "llm_outbound":
+      if (/^Waiting on model\b/i.test(activeStep.detail ?? "")) {
+        return {
+          mode: "llm",
+          title: `${actor} is waiting for the model response`,
+          subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting for the first tokens from the model.",
+        };
+      }
+      return {
+        mode: "llm",
+        title: `${actor} is sending prompt + context to the model`,
+        subtitle: summarizeStreamingDetail(activeStep.detail) || "Packaging the latest chat, project context, and tool list.",
+      };
+    case "llm_inbound":
+      return {
+        mode: "llm",
+        title: `${actor} is waiting for the model response`,
+        subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting for the first tokens from the model.",
+      };
+    case "tool_call":
+      if (/^Planning\b/i.test(activeStep.detail ?? "")) {
+        return {
+          mode: "tool",
+          title: `${actor} is planning ${activeStep.tool || "a tool"} call`,
+          subtitle: summarizeStreamingDetail(activeStep.detail) || "The model is assembling tool arguments.",
+        };
+      }
+      return {
+        mode: "tool",
+        title: `${actor} is calling ${activeStep.tool || "a tool"}`,
+        subtitle: summarizeStreamingDetail(activeStep.detail) || "Executing the tool request now.",
+      };
+    case "tool_result_to_llm":
+      return {
+        mode: "handoff",
+        title: `${actor} is sending ${activeStep.tool || "tool"} output back to the model`,
+        subtitle: summarizeStreamingDetail(activeStep.detail) || "Tool finished; preparing the next LLM round.",
+      };
+    default:
+      return {
+        mode: "handoff",
+        title: activeStep.label,
+        subtitle: summarizeStreamingDetail(activeStep.detail),
+      };
+  }
+}
+
+function renderStreamingStatusIcon(mode: StreamingStatusDescriptor["mode"]) {
+  switch (mode) {
+    case "llm":
+      return (
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path
+            d="m10 2.5 1.52 3.48L15 7.5l-3.48 1.52L10 12.5 8.48 9.02 5 7.5l3.48-1.52L10 2.5Z"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m4.5 11 1 2.25L7.75 14.25 5.5 15.25 4.5 17.5l-1-2.25L1.25 14.25 3.5 13.25 4.5 11Zm11-1.5.8 1.8 1.8.8-1.8.8-.8 1.8-.8-1.8-1.8-.8 1.8-.8.8-1.8Z"
+            stroke="currentColor"
+            strokeWidth="1.15"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    case "tool":
+      return (
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path
+            d="M12.9 3.6a3.25 3.25 0 0 0 3.5 4.36l-6.76 6.76a1.8 1.8 0 1 1-2.54-2.55l6.75-6.75A3.25 3.25 0 0 0 12.9 3.6Z"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="m11.4 5.15 3.45 3.45"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+    case "handoff":
+      return (
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path
+            d="M4 10h9m0 0-3.1-3.1M13 10l-3.1 3.1M16 5v10"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    default:
+      return (
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <circle cx="10" cy="10" r="6.25" stroke="currentColor" strokeWidth="1.35" />
+          <path
+            d="M10 6.8v3.5l2.35 1.45"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+  }
+}
+
+function renderStreamingStatusContent(message: MessageItem, className: string) {
+  const status = buildStreamingStatusDescriptor(message);
+  return (
+    <div className={`${className} message-streaming-status`} aria-live="polite">
+      <span className={`message-streaming-status__icon message-streaming-status__icon--${status.mode}`}>
+        {renderStreamingStatusIcon(status.mode)}
+      </span>
+      <span className="message-streaming-status__copy">
+        <strong>{status.title}</strong>
+        {status.subtitle ? <small>{status.subtitle}</small> : null}
+      </span>
+    </div>
+  );
+}
+
 function renderCardBody(card: ThreadCard) {
   switch (card.kind) {
     case "llm_call":
@@ -808,13 +1217,19 @@ function renderCardBody(card: ThreadCard) {
               ))}
             </div>
           ) : null}
-          {renderJsonCollapse("PROMPT", "System prompt", card.system_prompt, {
-            pretty: false,
-            copyLabel: "Copy system prompt",
-          })}
+          {renderMarkdownCollapse(
+            "PROMPT",
+            card.systemPromptPresentation?.label || "System prompt",
+            card.systemPromptPresentation?.markdown,
+            {
+              copyLabel: "Copy full system prompt",
+              copyText: card.systemPromptPresentation?.copyText || card.system_prompt,
+            },
+          )}
           {renderJsonCollapse("INPUT", "Full prompt payload", card.prompt_messages, {
             copyLabel: "Copy full prompt payload",
           })}
+          {renderMarkdownCollapse("TRACE", "LLM timings", buildLlmTimingsMarkdown(card.timings))}
           {renderJsonCollapse("RAW", "Raw LLM response", card.raw_response, {
             copyLabel: "Copy raw LLM response",
           })}
@@ -954,7 +1369,8 @@ function renderCompactCardBody(card: ThreadCard) {
         .filter(Boolean)
         .join(" · ");
       const outboundSections = [
-        card.system_prompt ? markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }) : "",
+        buildLlmTimingsMarkdown(card.timings),
+        card.systemPromptPresentation?.markdown || "",
         card.prompt_messages ? markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }) : "",
         buildPlannedToolsMarkdown(card.tool_calls),
       ]
@@ -1344,9 +1760,7 @@ function renderActivityBatch(
               const isActiveGroup = group.name === fallbackActiveName;
               const orderedCards = group.cards;
               const groupKey = `${batchId}:${group.name}`;
-              const activeCardId =
-                isActiveGroup && isCurrentBatch ? group.cards[group.cards.length - 1]?.id ?? null : null;
-              const expandedCardId = expandedProgressCards[groupKey] ?? activeCardId;
+              const expandedCardId = expandedProgressCards[groupKey] ?? null;
               return (
                 <section
                   key={`${batchId}-${group.name}`}
@@ -1404,32 +1818,18 @@ function renderMessage(
   const sender = message.agent_name || "You";
   const streamSteps =
     message.streamSteps && message.streamSteps.length > 0
-      ? message.streamSteps.map((step) => ({
-          id: step.id,
-          label: step.label,
-          detail: step.detail,
-          detailContent: step.detailContent,
-          state: step.state,
-        }))
-      : fallbackCards.map((card, index) => ({
-          id: `${message.id}-card-${card.id}-${index}`,
-          label: cardTitle(card),
-          detail: messageStepSummaryFromCard(card),
-          detailContent: messageStepDetailFromCard(card),
-          state: messageStepStateFromCard(card),
-        }));
+      ? message.streamSteps.map((step) => ({ ...step }))
+      : fallbackCards.flatMap((card, index) => buildMessageStepsFromCard(card, message.id, index));
   const hasStreamSteps = streamSteps.length > 0;
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
-  const placeholderCopy =
-    message.agent_name && message.agent_name !== "pipeline"
-      ? `${message.agent_name} is working...`
-      : "Agent is working...";
-  const messageBodyContent = message.content || (message.isStreaming ? placeholderCopy : "");
+  const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
     showReplyAfterTrace ? "message-body--after-trace" : ""
   }`;
   const messageBody = message.isStreaming
-    ? renderStreamingTextContent(messageBodyContent, messageBodyClassName)
+    ? messageBodyContent
+      ? renderStreamingTextContent(messageBodyContent, messageBodyClassName)
+      : renderStreamingStatusContent(message, messageBodyClassName)
     : renderMarkdownContent(messageBodyContent, messageBodyClassName);
   const messageTrace = hasStreamSteps ? (
     <div className={`message-stream-trace ${showReplyAfterTrace ? "message-stream-trace--top" : ""}`}>
@@ -1611,12 +2011,13 @@ export function ChatTab({
   const [projectNameDraft, setProjectNameDraft] = useState(defaultProjectName);
   const [projectDescriptionDraft, setProjectDescriptionDraft] = useState("");
   const [projectAgentNames, setProjectAgentNames] = useState<string[]>(defaultAgentNames);
+  const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
   const fallbackStepCardsByMessageId = useMemo(() => {
     const pendingByActor = new Map<string, ThreadCard[]>();
     const mapped = new Map<number, ThreadCard[]>();
 
     const timeline = [
-      ...cards.map((card) => ({
+      ...cardsWithPromptPresentation.map((card) => ({
         sortKey: card.created_at,
         kind: "card" as const,
         card,
@@ -1646,7 +2047,7 @@ export function ChatTab({
       pendingByActor.delete(actor);
     }
 
-    if (mapped.size === 0 && cards.length > 0) {
+    if (mapped.size === 0 && cardsWithPromptPresentation.length > 0) {
       const groupedCardsByActor = new Map<string, ThreadCard[][]>();
       let currentActor: string | null = null;
       let currentGroup: ThreadCard[] = [];
@@ -1657,7 +2058,7 @@ export function ChatTab({
         currentGroup = [];
       };
 
-      for (const card of cards) {
+      for (const card of cardsWithPromptPresentation) {
         const actor = cardActorName(card);
         if (actor !== currentActor) {
           flushGroup();
@@ -1680,7 +2081,7 @@ export function ChatTab({
     }
 
     return mapped;
-  }, [cards, messages]);
+  }, [cardsWithPromptPresentation, messages]);
   const consumedFallbackCardIds = useMemo(
     () => new Set(Array.from(fallbackStepCardsByMessageId.values()).flatMap((group) => group.map((card) => card.id))),
     [fallbackStepCardsByMessageId],
@@ -1694,14 +2095,14 @@ export function ChatTab({
         kind: "message" as const,
         message,
       })),
-      ...cards
+      ...cardsWithPromptPresentation
         .filter((card) => !consumedFallbackCardIds.has(card.id))
         .map((card) => ({
-        id: `card-${card.id}`,
-        sortKey: card.created_at,
-        kind: "card" as const,
-        card,
-      })),
+          id: `card-${card.id}`,
+          sortKey: card.created_at,
+          kind: "card" as const,
+          card,
+        })),
     ];
 
     orderedItems.sort((left, right) => {
@@ -1711,7 +2112,7 @@ export function ChatTab({
     });
 
     const mergedItems: ThreadItem[] = [];
-    let streak: ChatCardItem[] = [];
+    let streak: DecoratedChatCardItem[] = [];
 
     const flushStreak = () => {
       if (streak.length === 0) return;
@@ -1794,7 +2195,7 @@ export function ChatTab({
 
     flushActivityBatch();
     return batchedItems;
-  }, [cards, consumedFallbackCardIds, messages]);
+  }, [cardsWithPromptPresentation, consumedFallbackCardIds, messages]);
 
   const currentActivityAgentName = useMemo(() => {
     const streamingAgent =
@@ -1804,12 +2205,12 @@ export function ChatTab({
     if (streamingAgent) return streamingAgent;
 
     return (
-      [...cards]
+      [...cardsWithPromptPresentation]
         .reverse()
         .map((card) => cardActorName(card))
         .find((name) => name !== "system") ?? null
     );
-  }, [cards, messages]);
+  }, [cardsWithPromptPresentation, messages]);
 
   const latestActivityBatchId = useMemo(
     () =>
@@ -1869,8 +2270,14 @@ export function ChatTab({
           const hasServerCopy = messages.some(
             (message) =>
               !message.agent_name &&
-              message.message_type === item.message_type &&
-              message.content === item.content,
+              (
+                (item.client_turn_id && message.client_turn_id === item.client_turn_id) ||
+                (
+                  !item.client_turn_id &&
+                  message.message_type === item.message_type &&
+                  message.content === item.content
+                )
+              ),
           );
           if (hasServerCopy) {
             changed = true;
@@ -1885,7 +2292,13 @@ export function ChatTab({
               .filter(
                 (message) =>
                   Boolean(message.agent_name) &&
-                  new Date(message.created_at).getTime() >= new Date(item.created_at).getTime() - 1000,
+                  (
+                    (item.client_turn_id && message.client_turn_id === item.client_turn_id) ||
+                    (
+                      !item.client_turn_id &&
+                      new Date(message.created_at).getTime() >= new Date(item.created_at).getTime() - 1000
+                    )
+                  ),
               )
               .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0] ??
             null;
@@ -1947,9 +2360,17 @@ export function ChatTab({
             (candidate, index) =>
               !usedMatches.has(index) &&
               !candidate.agent_name &&
-              candidate.message_type === item.message_type &&
-              candidate.content === item.content &&
-              Math.abs(new Date(candidate.created_at).getTime() - new Date(item.created_at).getTime()) < 30_000,
+              (
+                (item.client_turn_id && candidate.client_turn_id && candidate.client_turn_id === item.client_turn_id) ||
+                (
+                  !item.client_turn_id &&
+                  !candidate.client_turn_id &&
+                  candidate.message_type === item.message_type &&
+                  candidate.content === item.content &&
+                  Math.abs(new Date(candidate.created_at).getTime() - new Date(item.created_at).getTime()) < 30_000
+                )
+              ) &&
+              candidate.message_type === item.message_type,
           );
           if (matchedIndex === -1) {
             return item;
@@ -1963,7 +2384,14 @@ export function ChatTab({
             (candidate, index) =>
               !usedMatches.has(index) &&
               Boolean(candidate.agent_name) &&
-              Math.abs(new Date(candidate.created_at).getTime() - new Date(item.created_at).getTime()) < 30_000,
+              (
+                (item.client_turn_id && candidate.client_turn_id && candidate.client_turn_id === item.client_turn_id) ||
+                (
+                  !item.client_turn_id &&
+                  !candidate.client_turn_id &&
+                  Math.abs(new Date(candidate.created_at).getTime() - new Date(item.created_at).getTime()) < 30_000
+                )
+              ),
           );
           if (matchedIndex === -1) {
             return item;
@@ -2066,12 +2494,14 @@ export function ChatTab({
     setDraft("");
     const now = new Date();
     const baseId = -Math.floor(now.getTime());
+    const clientTurnId = createClientTurnId();
     const userLocalMessage: MessageItem = {
       id: baseId,
       content: next,
       message_type: "user",
       created_at: now.toISOString(),
       agent_name: null,
+      client_turn_id: clientTurnId,
       optimisticKind: "user",
       localOnly: true,
     };
@@ -2081,6 +2511,7 @@ export function ChatTab({
       message_type: "text",
       created_at: new Date(now.getTime() + 1).toISOString(),
       agent_name: "assistant",
+      client_turn_id: clientTurnId,
       isStreaming: true,
       streamSteps: [
         {
@@ -2104,7 +2535,7 @@ export function ChatTab({
     });
 
     window.requestAnimationFrame(() => {
-      void onSend(next).catch((error) => {
+      void onSend(next, { clientTurnId }).catch((error) => {
         const message = error instanceof Error ? error.message : "Send failed";
         setLocalOverlayMessages((current) => {
           const nextMessages = current.map((item) =>
@@ -2280,8 +2711,7 @@ export function ChatTab({
   const threadContent = useMemo(() => {
     const resolveExpandedMessageStepId = (message: MessageItem) => {
       const explicit = expandedMessageSteps[message.id];
-      if (explicit !== undefined) return explicit;
-      return [...(message.streamSteps ?? [])].reverse().find((step) => step.state === "live")?.id ?? null;
+      return explicit ?? null;
     };
 
     if (!chat && threadItems.length === 0) {
@@ -2676,7 +3106,7 @@ export function ChatTab({
                   <li>{chat ? `Chat: ${chat.title}` : "No chat selected"}</li>
                   <li>{project ? `Project: ${project.name}` : "Standalone mode"}</li>
                   <li>{messages.length} messages loaded</li>
-                  <li>{cards.length} runtime cards</li>
+                  <li>{cardsWithPromptPresentation.length} runtime cards</li>
                   <li>{activeAgents.length} active agents</li>
                 </ul>
               </div>

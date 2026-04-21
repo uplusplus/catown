@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Save Memory Tool"""
 from .base import BaseTool
+import asyncio
 from typing import Optional
 
 
@@ -11,6 +12,9 @@ class SaveMemoryTool(BaseTool):
     description = "Save important information to long-term memory for future recall. Use this for key decisions, facts, or learnings."
     
     async def execute(self, content: str, agent_id: Optional[int] = None, importance: Optional[int] = None) -> str:
+        return await asyncio.to_thread(self._execute_sync, content, agent_id, importance)
+
+    def _execute_sync(self, content: str, agent_id: Optional[int] = None, importance: Optional[int] = None) -> str:
         """
         Save a memory to the database
         

@@ -5,7 +5,15 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).parent / ".env")
+
+def _default_catown_home() -> Path:
+    configured = os.getenv("CATOWN_HOME")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.home() / ".catown").resolve()
+
+
+load_dotenv(_default_catown_home() / ".env")
 
 async def test_llm():
     print("=== LLM Connection Test ===")

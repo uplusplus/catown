@@ -10,6 +10,12 @@ BACKEND="$(cd "$(dirname "$0")/backend" && pwd)"
 PID=""
 PYTHON_CMD="python3"
 PIP_CMD="pip3"
+CATOWN_HOME="${CATOWN_HOME:-$HOME/.catown}"
+CATOWN_CONFIG_DIR="${CATOWN_CONFIG_DIR:-$CATOWN_HOME/config}"
+CATOWN_STATE_DIR="${CATOWN_STATE_DIR:-$CATOWN_HOME/state}"
+CATOWN_PROJECTS_ROOT="${CATOWN_PROJECTS_ROOT:-$CATOWN_HOME/projects}"
+CATOWN_WORKSPACES_DIR="${CATOWN_WORKSPACES_DIR:-$CATOWN_HOME/workspaces}"
+CATOWN_ENV_FILE="$CATOWN_HOME/.env"
 
 if [ -x "$BACKEND/.venv/bin/python3" ]; then
     PYTHON_CMD="$BACKEND/.venv/bin/python3"
@@ -24,6 +30,22 @@ cleanup() {
     fi
     echo "Done."
     exit 0
+}
+
+prepare_runtime_layout() {
+    mkdir -p "$CATOWN_HOME" "$CATOWN_CONFIG_DIR" "$CATOWN_STATE_DIR" "$CATOWN_PROJECTS_ROOT" "$CATOWN_WORKSPACES_DIR"
+
+    if [ ! -f "$CATOWN_ENV_FILE" ] && [ -f "$BACKEND/.env.example" ]; then
+        cp "$BACKEND/.env.example" "$CATOWN_ENV_FILE"
+        echo "Created $CATOWN_ENV_FILE - edit it to set LLM_API_KEY / LLM_BASE_URL / LLM_MODEL"
+    fi
+
+    for config_name in agents.json pipelines.json skills.json; do
+        if [ ! -f "$CATOWN_CONFIG_DIR/$config_name" ] && [ -f "$BACKEND/configs/$config_name" ]; then
+            cp "$BACKEND/configs/$config_name" "$CATOWN_CONFIG_DIR/$config_name"
+            echo "Installed $CATOWN_CONFIG_DIR/$config_name"
+        fi
+    done
 }
 
 start_server() {
@@ -49,11 +71,9 @@ if ! "$PYTHON_CMD" -c "import fastapi, uvicorn" &>/dev/null; then
     (cd "$BACKEND" && "$PIP_CMD" install -r requirements.txt)
 fi
 
-# --- .env ---
-if [ ! -f "$BACKEND/.env" ] && [ -f "$BACKEND/.env.example" ]; then
-    cp "$BACKEND/.env.example" "$BACKEND/.env"
-    echo "Created backend/.env - edit it to set LLM_API_KEY"
-fi
+# --- Runtime data ---
+export CATOWN_HOME CATOWN_CONFIG_DIR CATOWN_STATE_DIR CATOWN_PROJECTS_ROOT CATOWN_WORKSPACES_DIR
+prepare_runtime_layout
 
 # --- Main ---
 trap cleanup EXIT INT TERM

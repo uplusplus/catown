@@ -3,6 +3,8 @@
 Execute Code Tool — 带安全沙箱限制，支持 Python 和 Node.js
 """
 from .base import BaseTool
+from .file_operations import get_active_workspace
+import asyncio
 import subprocess
 import tempfile
 import os
@@ -82,6 +84,9 @@ class ExecuteCodeTool(BaseTool):
         "Timeout: 15s, max output: 50KB."
     )
 
+    def __init__(self, workspace: str = None):
+        self.workspace = os.path.realpath(workspace or os.environ.get("CATOWN_WORKSPACE", os.getcwd()))
+
     async def execute(self, code: str, language: str = "python", **kwargs) -> str:
         """
         Execute code snippet in sandbox.
@@ -106,6 +111,7 @@ class ExecuteCodeTool(BaseTool):
 
     async def _exec_python(self, code: str) -> str:
         try:
+            working_dir = self._working_directory()
             # 文本扫描拦截明显恶意代码
             for keyword in ["__import__", "subprocess", "eval(", "exec(", "os.system", "shutil"]:
                 if keyword in code:
@@ -123,11 +129,13 @@ class ExecuteCodeTool(BaseTool):
                 temp_path = f.name
 
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     [sys.executable, "-u", temp_path],
                     capture_output=True,
                     text=True,
                     timeout=TIMEOUT_SECONDS,
+                    cwd=working_dir,
                     env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 )
             finally:
@@ -152,11 +160,12 @@ class ExecuteCodeTool(BaseTool):
 
     async def _exec_node(self, code: str) -> str:
         # 检查 node 是否可用
-        node_bin = self._find_node()
+        node_bin = await self._find_node()
         if not node_bin:
             return "[Execute Code] Error: Node.js not found. Install node or set NODE_PATH env var."
 
         try:
+            working_dir = self._working_directory()
             # 文本扫描
             for keyword in ["child_process", "cluster.fork", "eval(", ".exec("]:
                 if keyword in code:
@@ -176,11 +185,13 @@ class ExecuteCodeTool(BaseTool):
                 temp_path = f.name
 
             try:
-                result = subprocess.run(
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     [node_bin, temp_path],
                     capture_output=True,
                     text=True,
                     timeout=TIMEOUT_SECONDS,
+                    cwd=working_dir,
                     env={**os.environ, "NODE_NO_WARNINGS": "1"},
                 )
             finally:
@@ -203,7 +214,10 @@ class ExecuteCodeTool(BaseTool):
 
     # ─── 辅助方法 ────────────────────────────────────────────
 
-    def _find_node(self) -> str | None:
+    async def _find_node(self) -> str | None:
+        return await asyncio.to_thread(self._find_node_sync)
+
+    def _find_node_sync(self) -> str | None:
         """Find Node.js binary"""
         candidates = [
             os.environ.get("NODE_PATH", ""),
@@ -223,6 +237,9 @@ class ExecuteCodeTool(BaseTool):
         except Exception:
             pass
         return None
+
+    def _working_directory(self) -> str:
+        return os.path.realpath(get_active_workspace() or self.workspace)
 
     @staticmethod
     def _clean_stderr(stderr: str) -> str:

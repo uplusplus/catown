@@ -5,10 +5,12 @@ import { AppSidebar } from "./components/AppSidebar";
 import { ChatTab } from "./components/ChatTab";
 import { ConfigTab } from "./components/ConfigTab";
 import { ProjectsTab } from "./components/ProjectsTab";
+import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTimings";
 import type {
   AppTab,
   AgentInfo,
   ChatCardItem,
+  ChatCardLlmTimings,
   ChatEventItem,
   ChatEventTone,
   ChatSummary,
@@ -182,6 +184,25 @@ function readSkillDetails(value: unknown) {
     );
 }
 
+function readLlmTimings(value: unknown): ChatCardLlmTimings | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const timings: ChatCardLlmTimings = {};
+  for (const key of [
+    "request_sent_ms",
+    "first_chunk_ms",
+    "first_content_ms",
+    "first_tool_call_ms",
+    "tool_call_ready_ms",
+    "completed_ms",
+  ] as const) {
+    if (typeof record[key] === "number") {
+      timings[key] = record[key];
+    }
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
+
 function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
   const type = typeof payload.type === "string" ? payload.type : "";
   if (!type) return null;
@@ -190,12 +211,22 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
     typeof payload.created_at === "string" && payload.created_at
       ? payload.created_at
       : new Date().toISOString();
+  const runtimeMessageId =
+    typeof payload.runtime_message_id === "number" ? payload.runtime_message_id : undefined;
+  const clientTurnId =
+    typeof payload.client_turn_id === "string" && payload.client_turn_id
+      ? payload.client_turn_id
+      : undefined;
 
   const baseCard = {
-    id: `${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id:
+      runtimeMessageId !== undefined
+        ? `${type}-${runtimeMessageId}`
+        : `${type}-${createdAt}-${Math.random().toString(16).slice(2)}`,
     kind: type as ChatCardItem["kind"],
     created_at: createdAt,
     source: typeof payload.source === "string" ? payload.source : "chatroom",
+    client_turn_id: clientTurnId,
     pipeline_id: typeof payload.pipeline_id === "number" ? payload.pipeline_id : undefined,
     run_id: typeof payload.run_id === "number" ? payload.run_id : undefined,
   };
@@ -223,12 +254,15 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
                 return {
                   name: typeof record.name === "string" ? record.name : undefined,
                   args_preview: typeof record.args_preview === "string" ? record.args_preview : undefined,
+                  index: typeof record.index === "number" ? record.index : undefined,
+                  id: typeof record.id === "string" ? record.id : null,
                 };
               })
               .filter(
-                (item): item is { name?: string; args_preview?: string } => item !== null,
+                (item): item is { name?: string; args_preview?: string; index?: number; id?: string | null } => item !== null,
               )
           : [],
+        timings: readLlmTimings(payload.timings),
       };
     case "tool_call":
       return {
@@ -240,6 +274,8 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         success: typeof payload.success === "boolean" ? payload.success : undefined,
         result: typeof payload.result === "string" ? payload.result : undefined,
         duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : undefined,
+        tool_call_index: typeof payload.tool_call_index === "number" ? payload.tool_call_index : undefined,
+        tool_call_id: typeof payload.tool_call_id === "string" ? payload.tool_call_id : null,
       };
     case "stage_started":
       return {
@@ -354,6 +390,7 @@ function buildStreamStep(
   detail?: string,
   state: MessageStreamStep["state"] = "live",
   detailContent?: string,
+  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId">>,
 ): MessageStreamStep {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -361,6 +398,7 @@ function buildStreamStep(
     detail,
     detailContent,
     state,
+    ...meta,
   };
 }
 
@@ -414,8 +452,9 @@ function pushStreamingStep(
   detail?: string,
   state: MessageStreamStep["state"] = "live",
   detailContent?: string,
+  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool">>,
 ) {
-  const nextSteps = [...settleLiveStreamSteps(message.streamSteps), buildStreamStep(label, detail, state, detailContent)];
+  const nextSteps = [...settleLiveStreamSteps(message.streamSteps), buildStreamStep(label, detail, state, detailContent, meta)];
   return {
     ...message,
     streamSteps: trimStreamSteps(nextSteps),
@@ -443,7 +482,13 @@ function patchLatestStreamingStep(
     ...message,
     streamSteps: trimStreamSteps([
       ...nextSteps,
-      buildStreamStep(fallbackLabel, patch.detail, patch.state ?? "done", patch.detailContent),
+      buildStreamStep(fallbackLabel, patch.detail, patch.state ?? "done", patch.detailContent, {
+        kind: patch.kind,
+        agent: patch.agent,
+        tool: patch.tool,
+        toolCallIndex: patch.toolCallIndex,
+        toolCallId: patch.toolCallId,
+      }),
     ]),
   };
 }
@@ -469,7 +514,13 @@ function patchMatchingStreamingStep(
     ...message,
     streamSteps: trimStreamSteps([
       ...nextSteps,
-      buildStreamStep(fallbackLabel, patch.detail, patch.state ?? "done", patch.detailContent),
+      buildStreamStep(fallbackLabel, patch.detail, patch.state ?? "done", patch.detailContent, {
+        kind: patch.kind,
+        agent: patch.agent,
+        tool: patch.tool,
+        toolCallIndex: patch.toolCallIndex,
+        toolCallId: patch.toolCallId,
+      }),
     ]),
   };
 }
@@ -501,67 +552,310 @@ function summarizeStepDetail(value: string | undefined, limit = 140) {
   return `${normalized.slice(0, limit)}...`;
 }
 
-function buildLiveLlmDetailContent(
+function formatStreamingElapsed(elapsedMs?: number) {
+  return formatTimingDuration(elapsedMs);
+}
+
+function buildStatusMarkdown(status: string) {
+  return `### Status\n\n${status}`;
+}
+
+function llmOutboundStepLabel(actor: string, toolName?: string) {
+  return toolName ? `${actor} -> LLM (${toolName} result)` : `${actor} -> LLM`;
+}
+
+function llmInboundStepLabel(actor: string) {
+  return `LLM -> ${actor}`;
+}
+
+function toolCallStepLabel(actor: string, toolName: string) {
+  return `${actor} calls ${toolName}`;
+}
+
+function toolOutputStepLabel(actor: string, toolName: string) {
+  return `Tool Output · ${actor} · ${toolName}`;
+}
+
+function buildToolWaitKey(actor: string, toolCallIndex?: number, toolName?: string) {
+  if (typeof toolCallIndex === "number") {
+    return `${actor}::${toolCallIndex}`;
+  }
+  return `${actor}::${toolName || "tool"}`;
+}
+
+function buildLlmMetaSummary(model?: string, turn?: number) {
+  return [
+    model,
+    typeof turn === "number" ? `turn ${turn}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildLlmPlannedToolsMarkdown(toolCalls?: ChatCardItem["tool_calls"]) {
+  if (!toolCalls || toolCalls.length === 0) return "";
+  return `### Planned Tools\n\n${toolCalls
+    .map(
+      (tool) =>
+        `- **${tool.name || "tool"}**${
+          tool.args_preview ? `\n  - args preview: \`${tool.args_preview.replace(/`/g, "'").replace(/\n/g, " ")}\`` : ""
+        }`,
+    )
+    .join("\n")}`;
+}
+
+function isActorOutboundStep(step: MessageStreamStep, actor: string) {
+  return (
+    (step.agent === actor && step.kind === "llm_outbound") ||
+    step.label === llmOutboundStepLabel(actor) ||
+    (!step.tool && step.label.startsWith(`${actor} -> LLM (`))
+  );
+}
+
+function isActorInboundStep(step: MessageStreamStep, actor: string) {
+  return (
+    (step.agent === actor && step.kind === "llm_inbound") ||
+    step.label === llmInboundStepLabel(actor)
+  );
+}
+
+function isActorToolCallStep(step: MessageStreamStep, actor: string, toolName: string) {
+  return (
+    (step.agent === actor &&
+      step.kind === "tool_call" &&
+      (step.tool === toolName || (toolName === "tool" && !step.tool))) ||
+    step.label === toolCallStepLabel(actor, toolName)
+  );
+}
+
+function isActorToolCallStepByRef(
+  step: MessageStreamStep,
+  actor: string,
+  toolName: string,
+  toolCallIndex?: number,
+  toolCallId?: string | null,
+) {
+  if (step.agent !== actor || step.kind !== "tool_call") return false;
+  if (toolCallId && step.toolCallId && step.toolCallId === toolCallId) return true;
+  if (typeof toolCallIndex === "number" && typeof step.toolCallIndex === "number") {
+    return step.toolCallIndex === toolCallIndex;
+  }
+  return isActorToolCallStep(step, actor, toolName);
+}
+
+function isActorToolResultStep(step: MessageStreamStep, actor: string, toolName: string, toolCallIndex?: number) {
+  return (
+    (step.agent === actor &&
+      step.kind === "tool_result_to_llm" &&
+      ((typeof toolCallIndex === "number" && step.toolCallIndex === toolCallIndex) || step.tool === toolName)) ||
+    step.label === toolOutputStepLabel(actor, toolName)
+  );
+}
+
+const SYSTEM_PROMPT_DYNAMIC_MARKERS = [
+  "\n\nThis is a standalone chat.",
+  "\n\nCurrent project context:",
+  "\n\nCurrent chat context:",
+  "\n\nYou have access to the following tools:",
+  "\n\nTeam members in this project:",
+  "\n\nAvailable agents in this standalone chat:",
+  "\n\nYour memories:",
+  "\n\nYour memories (context for your responses):",
+  "\n\nShared context from other agents:",
+  "\n\nPrevious agent's work for you to build upon:",
+];
+
+function extractDisplayableSystemPrompt(value: string | undefined) {
+  const normalized = (value || "").replace(/\r\n/g, "\n").trimEnd();
+  if (!normalized) return "";
+
+  let firstMarkerIndex = -1;
+  for (const marker of SYSTEM_PROMPT_DYNAMIC_MARKERS) {
+    const markerIndex = normalized.indexOf(marker);
+    if (markerIndex === -1) continue;
+    if (firstMarkerIndex === -1 || markerIndex < firstMarkerIndex) {
+      firstMarkerIndex = markerIndex;
+    }
+  }
+
+  if (firstMarkerIndex === -1) return "";
+  return normalized.slice(firstMarkerIndex).trim();
+}
+
+function buildLiveLlmPromptDetailContent(
   userContent: string,
-  currentDraft: string,
   options?: {
     systemPrompt?: string;
     promptMessages?: string;
     model?: string;
     turn?: number;
+    waitStatus?: string;
+    timings?: ChatCardLlmTimings;
   },
 ) {
   const sections: string[] = [];
   const normalizedUser = userContent.trim();
-  const normalizedDraft = currentDraft.trim();
-  const meta = [
-    options?.model,
-    typeof options?.turn === "number" ? `turn ${options.turn}` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const meta = buildLlmMetaSummary(options?.model, options?.turn);
+
+  if (options?.waitStatus) {
+    sections.push(buildStatusMarkdown(options.waitStatus));
+  }
 
   if (meta) {
     sections.push(`### Meta\n\n- ${meta}`);
   }
 
-  if (options?.systemPrompt?.trim()) {
-    sections.push(markdownSection("System Prompt", options.systemPrompt, { asMarkdown: true }));
+  const timingsMarkdown = buildLlmTimingsMarkdown(options?.timings);
+  if (timingsMarkdown) {
+    sections.push(timingsMarkdown);
+  }
+
+  const displaySystemPrompt = extractDisplayableSystemPrompt(options?.systemPrompt);
+  if (displaySystemPrompt) {
+    sections.push(markdownSection("System Prompt Context", displaySystemPrompt, { asMarkdown: true }));
   }
 
   if (options?.promptMessages?.trim()) {
     sections.push(markdownSection("Full Prompt Payload", prettyJson(options.promptMessages), { language: "json" }));
-  }
-
-  if (normalizedUser) {
+  } else if (normalizedUser) {
     sections.push(markdownSection("User Message", normalizedUser, { language: "text" }));
   }
 
+  if (sections.length === 0) {
+    sections.push("### Status\n\nPreparing prompt for the model.");
+  }
+
+  return sections.join("\n\n");
+}
+
+function buildLiveLlmResponseDetailContent(currentDraft: string, waitStatus?: string, timings?: ChatCardLlmTimings) {
+  const sections: string[] = [];
+  const normalizedDraft = currentDraft.trim();
+  if (waitStatus) sections.push(buildStatusMarkdown(waitStatus));
+
+  const timingsMarkdown = buildLlmTimingsMarkdown(timings);
+  if (timingsMarkdown) sections.push(timingsMarkdown);
+
   if (normalizedDraft) {
     sections.push(markdownSection("Current Response Draft", normalizedDraft, { asMarkdown: true }));
-  } else {
+  }
+
+  if (sections.length === 0) {
     sections.push("### Status\n\nWaiting for the model to return tokens.");
   }
 
   return sections.join("\n\n");
 }
 
-function buildLiveToolDetailContent(args?: string, result?: string, failed = false) {
+function buildLiveToolCallDetailContent(args?: string, waitStatus?: string) {
   const sections: string[] = [];
+
+  if (waitStatus) {
+    sections.push(buildStatusMarkdown(waitStatus));
+  }
 
   if (args && args.trim()) {
     sections.push(markdownSection("Arguments", prettyJson(args), { language: "json" }));
   }
 
-  if (result && result.trim()) {
-    sections.push(
-      isJsonContent(result)
-        ? markdownSection(failed ? "Error" : "Result", prettyJson(result), { language: "json" })
-        : markdownSection(failed ? "Error" : "Result", result.trim(), { asMarkdown: true }),
-    );
+  if (sections.length === 0) {
+    sections.push("### Status\n\nPreparing tool call.");
   }
 
   return sections.join("\n\n");
+}
+
+function buildToolResultToLlmDetailContent(result?: string, failed = false) {
+  const sections: string[] = [];
+
+  if (result && result.trim()) {
+    sections.push(
+      isJsonContent(result)
+        ? markdownSection(failed ? "Error" : "Tool Result", prettyJson(result), { language: "json" })
+        : markdownSection(failed ? "Error" : "Tool Result", result.trim(), { asMarkdown: true }),
+    );
+  }
+
+  if (sections.length === 0) {
+    sections.push("### Status\n\nWaiting for tool output.");
+  }
+
+  return sections.join("\n\n");
+}
+
+function buildCardLlmPromptDetailContent(card: ChatCardItem) {
+  const sections: string[] = [];
+  const meta = buildLlmMetaSummary(card.model, card.turn);
+  if (meta) sections.push(`### Meta\n\n- ${meta}`);
+
+  const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
+  if (timingsMarkdown) sections.push(timingsMarkdown);
+
+  const displaySystemPrompt = extractDisplayableSystemPrompt(card.system_prompt);
+  if (displaySystemPrompt) {
+    sections.push(markdownSection("System Prompt Context", displaySystemPrompt, { asMarkdown: true }));
+  }
+
+  if (card.prompt_messages) {
+    sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
+  }
+
+  return sections.join("\n\n");
+}
+
+function buildCardLlmResponseDetailContent(card: ChatCardItem) {
+  const sections: string[] = [];
+  const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
+  if (timingsMarkdown) sections.push(timingsMarkdown);
+  const plannedToolsMarkdown = buildLlmPlannedToolsMarkdown(card.tool_calls);
+  if (plannedToolsMarkdown) sections.push(plannedToolsMarkdown);
+  if (card.response) sections.push(markdownSection("Response", card.response, { asMarkdown: true }));
+  if (card.raw_response) sections.push(markdownSection("Raw Response", prettyJson(card.raw_response), { language: "json" }));
+  return sections.join("\n\n");
+}
+
+function buildCardToolCallDetailContent(card: ChatCardItem) {
+  const sections: string[] = [];
+  if (card.arguments) sections.push(markdownSection("Arguments", prettyJson(card.arguments), { language: "json" }));
+  return sections.join("\n\n");
+}
+
+function buildCardToolResultDetailContent(card: ChatCardItem) {
+  const sections: string[] = [];
+  if (card.result) {
+    sections.push(
+      isJsonContent(card.result)
+        ? markdownSection(card.success === false ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
+        : markdownSection(card.success === false ? "Error" : "Tool Result", card.result, { asMarkdown: true }),
+    );
+  }
+  return sections.join("\n\n");
+}
+
+function buildLlmResponseStepDetail(card: ChatCardItem) {
+  const bits: string[] = [];
+  if (card.tool_calls && card.tool_calls.length > 0) {
+    bits.push(`tools: ${card.tool_calls.map((tool) => tool.name || "tool").join(", ")}`);
+  }
+  if (card.response) bits.push(summarizeStepDetail(card.response));
+  if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
+  return bits.filter(Boolean).join(" · ");
+}
+
+function buildToolCallStepDetail(card: ChatCardItem) {
+  const bits: string[] = [];
+  if (card.arguments) bits.push(`args: ${summarizeStepDetail(card.arguments, 90)}`);
+  if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
+  if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
+  return bits.filter(Boolean).join(" · ");
+}
+
+function buildToolResultStepDetail(card: ChatCardItem) {
+  const bits: string[] = [];
+  if (card.result) bits.push(summarizeStepDetail(card.result));
+  if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
+  if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
+  return bits.filter(Boolean).join(" · ");
 }
 
 function buildCardStepDetail(card: ChatCardItem) {
@@ -630,7 +924,10 @@ function buildCardStepDetailContent(card: ChatCardItem) {
         .filter(Boolean)
         .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
-      if (card.system_prompt) sections.push(markdownSection("System Prompt", card.system_prompt, { asMarkdown: true }));
+      const displaySystemPrompt = extractDisplayableSystemPrompt(card.system_prompt);
+      if (displaySystemPrompt) {
+        sections.push(markdownSection("System Prompt Context", displaySystemPrompt, { asMarkdown: true }));
+      }
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(
@@ -690,32 +987,66 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
 
   switch (card.kind) {
     case "llm_call": {
-      const label = `${actor} contacting LLM`;
-      return patchMatchingStreamingStep(
+      const outboundLabel = llmOutboundStepLabel(actor);
+      const nextMessage = patchMatchingStreamingStep(
         message,
-        (step) => step.state === "live" || /llm|drafting|contacting/i.test(step.label),
+        (step) => isActorOutboundStep(step, actor),
         {
-          label,
-          detail: buildCardStepDetail(card),
-          detailContent: buildCardStepDetailContent(card),
+          detailContent: buildCardLlmPromptDetailContent(card),
           state: "done",
+          kind: "llm_outbound",
+          agent: actor,
         },
-        label,
+        outboundLabel,
+      );
+
+      return patchMatchingStreamingStep(
+        nextMessage,
+        (step) => isActorInboundStep(step, actor),
+        {
+          detail: buildLlmResponseStepDetail(card),
+          detailContent: buildCardLlmResponseDetailContent(card),
+          state: "done",
+          kind: "llm_inbound",
+          agent: actor,
+        },
+        llmInboundStepLabel(actor),
       );
     }
     case "tool_call": {
       const toolName = card.tool || "tool";
-      const label = `${actor} ran ${toolName}`;
-      return patchMatchingStreamingStep(
+      const toolCallIndex = card.tool_call_index;
+      const toolCallId = card.tool_call_id;
+      const nextMessage = patchMatchingStreamingStep(
         message,
-        (step) => step.label.toLowerCase().includes(toolName.toLowerCase()),
+        (step) => isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
         {
-          label,
-          detail: buildCardStepDetail(card),
-          detailContent: buildCardStepDetailContent(card),
+          detail: buildToolCallStepDetail(card),
+          detailContent: buildCardToolCallDetailContent(card),
           state: card.success === false ? "error" : "done",
+          kind: "tool_call",
+          agent: actor,
+          tool: toolName,
+          toolCallIndex,
+          toolCallId,
         },
-        label,
+        toolCallStepLabel(actor, toolName),
+      );
+
+      return patchMatchingStreamingStep(
+        nextMessage,
+        (step) => isActorToolResultStep(step, actor, toolName, toolCallIndex),
+        {
+          detail: buildToolResultStepDetail(card),
+          detailContent: buildCardToolResultDetailContent(card),
+          state: "done",
+          kind: "tool_result_to_llm",
+          agent: actor,
+          tool: toolName,
+          toolCallIndex,
+          toolCallId,
+        },
+        toolOutputStepLabel(actor, toolName),
       );
     }
     case "stage_start": {
@@ -772,6 +1103,117 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
     default:
       return message;
   }
+}
+
+function sameClientTurn(left?: string, right?: string) {
+  return Boolean(left) && Boolean(right) && left === right;
+}
+
+function findMatchingServerUserMessage(rows: MessageItem[], optimisticMessage: MessageItem) {
+  return rows.find((row) => {
+    if (row.agent_name) return false;
+    if (sameClientTurn(row.client_turn_id, optimisticMessage.client_turn_id)) {
+      return true;
+    }
+    if (optimisticMessage.client_turn_id) return false;
+    return (
+      row.message_type === optimisticMessage.message_type &&
+      row.content === optimisticMessage.content &&
+      Math.abs(new Date(row.created_at).getTime() - new Date(optimisticMessage.created_at).getTime()) < 30_000
+    );
+  }) ?? null;
+}
+
+function findMatchingServerAssistantMessage(rows: MessageItem[], optimisticMessage: MessageItem) {
+  return rows.find((row) => {
+    if (!row.agent_name) return false;
+    if (sameClientTurn(row.client_turn_id, optimisticMessage.client_turn_id)) {
+      return true;
+    }
+    if (optimisticMessage.client_turn_id) return false;
+    return new Date(row.created_at).getTime() >= new Date(optimisticMessage.created_at).getTime() - 1_000;
+  }) ?? null;
+}
+
+function replayRuntimeCardsForTurn(message: MessageItem, cards: ChatCardItem[]) {
+  if (cards.length === 0) return message;
+  let nextMessage = message;
+  for (const card of cards) {
+    nextMessage = applyRuntimeCardStep(nextMessage, card);
+  }
+  const lastActor =
+    [...cards]
+      .reverse()
+      .map((card) => card.agent || card.from_agent || card.to_agent)
+      .find((actor): actor is string => Boolean(actor)) ?? null;
+  if (lastActor && nextMessage.agent_name !== lastActor) {
+    nextMessage = { ...nextMessage, agent_name: lastActor };
+  }
+  return nextMessage;
+}
+
+function finalizeRecoveredPlaceholder(
+  message: MessageItem,
+  savedMessage: MessageItem,
+  finalDetail = "Recovered from saved server state.",
+) {
+  const alreadyCompleted = (message.streamSteps ?? []).some((step) => step.label === "Completed");
+  return finalizeStreamingTrace(
+    {
+      ...message,
+      id: savedMessage.id,
+      content: savedMessage.content || message.content || "(Agent returned empty response)",
+      created_at: savedMessage.created_at,
+      message_type: savedMessage.message_type,
+      agent_name: savedMessage.agent_name || message.agent_name,
+      client_turn_id: savedMessage.client_turn_id || message.client_turn_id,
+      isStreaming: false,
+    },
+    "done",
+    alreadyCompleted ? undefined : "Completed",
+    alreadyCompleted ? undefined : finalDetail,
+  );
+}
+
+function reconcileOptimisticMessagesWithServer(
+  current: MessageItem[],
+  rows: MessageItem[],
+  cards: ChatCardItem[],
+) {
+  return current.reduce<MessageItem[]>((next, item) => {
+    if (item.optimisticKind === "user") {
+      if (findMatchingServerUserMessage(rows, item)) {
+        return next;
+      }
+      next.push(item);
+      return next;
+    }
+
+    if (item.optimisticKind === "assistant_placeholder") {
+      const turnCards = item.client_turn_id
+        ? cards.filter((card) => sameClientTurn(card.client_turn_id, item.client_turn_id))
+        : [];
+      const replayed = replayRuntimeCardsForTurn(item, turnCards);
+      const savedReply = findMatchingServerAssistantMessage(rows, item);
+      if (savedReply) {
+        next.push(finalizeRecoveredPlaceholder(replayed, savedReply));
+        return next;
+      }
+
+      next.push(
+        turnCards.length > 0
+          ? {
+              ...replayed,
+              isStreaming: true,
+            }
+          : item,
+      );
+      return next;
+    }
+
+    next.push(item);
+    return next;
+  }, []);
 }
 
 function upsertProject(current: ProjectSummary[], nextProject: ProjectSummary) {
@@ -984,12 +1426,12 @@ function App() {
           api.getRuntimeCards(activeChatId),
         ]);
         if (!cancelled) {
+          const nextCards = runtimeRows
+            .map((payload) => buildCard(payload))
+            .filter((card): card is ChatCardItem => card !== null);
           setMessages((current) => mergeMessages(current, rows));
-          setChatCards(
-            runtimeRows
-              .map((payload) => buildCard(payload))
-              .filter((card): card is ChatCardItem => card !== null),
-          );
+          setChatCards(nextCards);
+          commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -1013,12 +1455,17 @@ function App() {
     if (!bootstrapped) return;
     if (!selectedChatId) return;
 
+    const hasRecoverableStreamingTurn = optimisticMessages.some(
+      (message) => Boolean(message.isStreaming && message.client_turn_id),
+    );
+    const refreshIntervalMs = hasRecoverableStreamingTurn && !sendingMessage ? 1000 : 5000;
+
     const timer = window.setInterval(() => {
       void refreshMessages(false);
-    }, 5000);
+    }, refreshIntervalMs);
 
     return () => window.clearInterval(timer);
-  }, [bootstrapped, selectedChatId]);
+  }, [bootstrapped, optimisticMessages, selectedChatId, sendingMessage]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1057,6 +1504,8 @@ function App() {
               agent_name: typeof data.agent_name === "string" ? data.agent_name : null,
               message_type: typeof data.message_type === "string" ? data.message_type : "text",
               created_at: typeof data.created_at === "string" ? data.created_at : new Date().toISOString(),
+              client_turn_id:
+                typeof data.client_turn_id === "string" ? data.client_turn_id : undefined,
             };
             setMessages((current) => {
               const streamingId = streamingAssistantIdRef.current;
@@ -1078,15 +1527,34 @@ function App() {
               }
               return mergeMessages(current, [incoming]);
             });
-            commitOptimisticMessages((current) =>
-              current.filter(
+            commitOptimisticMessages((current) => {
+              let matched = false;
+              const next = current.map((item) => {
+                const isMatchingPlaceholder =
+                  item.optimisticKind === "assistant_placeholder" &&
+                  (
+                    (incoming.client_turn_id && item.client_turn_id === incoming.client_turn_id) ||
+                    item.id === streamingAssistantIdRef.current
+                  );
+                if (!isMatchingPlaceholder) {
+                  return item;
+                }
+                matched = true;
+                return finalizeRecoveredPlaceholder(item, incoming, "Recovered from websocket update.");
+              });
+
+              if (matched) {
+                return next;
+              }
+
+              return current.filter(
                 (item) =>
                   !(
                     item.isStreaming &&
                     (item.agent_name || null) === (incoming.agent_name || null)
                   ),
-              ),
-            );
+              );
+            });
             pushEvent(`Incoming reply from ${incoming.agent_name || "assistant"}`, "success");
             return;
           }
@@ -1253,43 +1721,12 @@ function App() {
         api.getMessages(chatId),
         api.getRuntimeCards(chatId),
       ]);
+      const nextCards = runtimeRows
+        .map((payload) => buildCard(payload))
+        .filter((card): card is ChatCardItem => card !== null);
       setMessages((current) => mergeMessages(current, rows));
-      commitOptimisticMessages((current) =>
-        current.filter(
-          (item) => {
-            const hasMatchingSavedRow = rows.some(
-              (row) =>
-                row.id === item.id ||
-                (
-                  row.content === item.content &&
-                  (row.agent_name || null) === (item.agent_name || null) &&
-                  row.message_type === item.message_type
-                ),
-            );
-            if (hasMatchingSavedRow) {
-              return false;
-            }
-
-            if (item.isStreaming && item.agent_name) {
-              const hasNewerServerReply = rows.some(
-                (row) =>
-                  Boolean(row.agent_name) &&
-                  new Date(row.created_at).getTime() >= new Date(item.created_at).getTime() - 1000,
-              );
-              if (hasNewerServerReply) {
-                return false;
-              }
-            }
-
-            return true;
-          },
-        ),
-      );
-      setChatCards(
-        runtimeRows
-          .map((payload) => buildCard(payload))
-          .filter((card): card is ChatCardItem => card !== null),
-      );
+      commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
+      setChatCards(nextCards);
       if (showSpinner) {
         pushEvent("Conversation refreshed", "info");
       }
@@ -1302,12 +1739,13 @@ function App() {
     }
   }
 
-  async function handleSendMessage(content: string) {
+  async function handleSendMessage(content: string, options?: { clientTurnId?: string }) {
     let chatId = selectedChatId;
     let streamReceivedEvent = false;
     const userTempId = nextTempMessageId();
     const assistantTempId = nextTempMessageId();
     const createdAt = new Date().toISOString();
+    const clientTurnId = options?.clientTurnId;
     let activeAgentName = "assistant";
     let streamCompleted = false;
     let assistantDraftContent = "";
@@ -1317,6 +1755,8 @@ function App() {
     let liveLlmPromptMessages = "";
     let liveLlmModel = "";
     let liveLlmTurn: number | undefined;
+    let liveLlmTimings: ChatCardLlmTimings = {};
+    const liveToolArgs = new Map<string, string>();
 
     try {
       setSendingMessage(true);
@@ -1331,6 +1771,8 @@ function App() {
             message_type: "user",
             created_at: createdAt,
             agent_name: null,
+            client_turn_id: clientTurnId,
+            optimisticKind: "user",
           },
           {
             id: assistantTempId,
@@ -1338,7 +1780,9 @@ function App() {
             message_type: "text",
             created_at: new Date(Date.now() + 1).toISOString(),
             agent_name: activeAgentName,
+            client_turn_id: clientTurnId,
             isStreaming: true,
+            optimisticKind: "assistant_placeholder",
             streamSteps: [buildStreamStep("Queued", "Waiting to start agent response.")],
           },
         ]),
@@ -1356,7 +1800,7 @@ function App() {
       sendAbortRef.current?.abort();
       sendAbortRef.current = controller;
 
-      const response = await api.streamMessage(chatId, content, controller.signal);
+      const response = await api.streamMessage(chatId, content, controller.signal, clientTurnId);
       if (!response.ok || !response.body) {
         let detail = `Request failed: ${response.status}`;
         try {
@@ -1381,24 +1825,28 @@ function App() {
         assistantDraftContent = `${assistantDraftContent}${delta}`;
         commitOptimisticMessages((current) =>
           updateMessage(current, readAssistantMessageId(), (message) => {
-            const nextMessage = patchMatchingStreamingStep(
+            const settledOutboundMessage = patchMatchingStreamingStep(
               {
                 ...message,
                 agent_name: message.agent_name || activeAgentName,
               },
-              (step) => step.state === "live" && /llm|drafting|contacting/i.test(step.label),
+              (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
               {
-                label: `${activeAgentName} contacting LLM`,
-                detail: summarizeStepDetail(assistantDraftContent) || "Streaming tokens from the model.",
-                detailContent: buildLiveLlmDetailContent(content, assistantDraftContent, {
-                  systemPrompt: liveLlmSystemPrompt,
-                  promptMessages: liveLlmPromptMessages,
-                  model: liveLlmModel,
-                  turn: liveLlmTurn,
-                }),
-                state: "live",
+                state: "done",
               },
-              `${activeAgentName} contacting LLM`,
+            );
+
+            const nextMessage = patchMatchingStreamingStep(
+              settledOutboundMessage,
+              (step) => isActorInboundStep(step, activeAgentName),
+              {
+                detail: summarizeStepDetail(assistantDraftContent) || "Streaming tokens from the model.",
+                detailContent: buildLiveLlmResponseDetailContent(assistantDraftContent, undefined, liveLlmTimings),
+                state: "live",
+                kind: "llm_inbound",
+                agent: activeAgentName,
+              },
+              llmInboundStepLabel(activeAgentName),
             );
 
             return {
@@ -1467,6 +1915,7 @@ function App() {
             liveLlmPromptMessages = typeof data.prompt_messages === "string" ? data.prompt_messages : "";
             liveLlmModel = typeof data.model === "string" ? data.model : "";
             liveLlmTurn = typeof data.turn === "number" ? data.turn : undefined;
+            liveLlmTimings = {};
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => ({
                 ...pushStreamingStep(
@@ -1474,15 +1923,20 @@ function App() {
                     ...message,
                     agent_name: activeAgentName,
                   },
-                  `${activeAgentName} contacting LLM`,
-                  "Preparing context and sending prompt.",
+                  llmOutboundStepLabel(activeAgentName),
+                  buildLlmMetaSummary(liveLlmModel, liveLlmTurn) || "Preparing context and sending prompt.",
                   "live",
-                  buildLiveLlmDetailContent(content, "", {
+                  buildLiveLlmPromptDetailContent(content, {
                     systemPrompt: liveLlmSystemPrompt,
                     promptMessages: liveLlmPromptMessages,
                     model: liveLlmModel,
                     turn: liveLlmTurn,
+                    timings: liveLlmTimings,
                   }),
+                  {
+                    kind: "llm_outbound",
+                    agent: activeAgentName,
+                  },
                 ),
               })),
             );
@@ -1554,28 +2008,302 @@ function App() {
             scheduleContentFlush();
             break;
           }
+          case "request_sent":
+          case "first_chunk":
+          case "first_content": {
+            if (typeof data.agent === "string" && data.agent) {
+              activeAgentName = data.agent;
+            }
+            const elapsedMs = typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined;
+            const elapsedText = formatStreamingElapsed(elapsedMs);
+            if (data.type === "request_sent" && elapsedMs !== undefined) {
+              liveLlmTimings = { ...liveLlmTimings, request_sent_ms: elapsedMs };
+            }
+            if (data.type === "first_chunk" && elapsedMs !== undefined) {
+              liveLlmTimings = { ...liveLlmTimings, first_chunk_ms: elapsedMs };
+            }
+            if (data.type === "first_content" && elapsedMs !== undefined) {
+              liveLlmTimings = { ...liveLlmTimings, first_content_ms: elapsedMs };
+            }
+
+            const detail =
+              data.type === "request_sent"
+                ? elapsedText
+                  ? `Request sent · ${elapsedText}`
+                  : "Request sent"
+                : data.type === "first_chunk"
+                  ? elapsedText
+                    ? `First stream chunk · ${elapsedText}`
+                    : "First stream chunk"
+                  : elapsedText
+                    ? `First content token · ${elapsedText}`
+                    : "First content token";
+
+            commitOptimisticMessages((current) =>
+              updateMessage(current, readAssistantMessageId(), (message) =>
+                patchMatchingStreamingStep(
+                  {
+                    ...message,
+                    agent_name: message.agent_name || activeAgentName,
+                  },
+                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
+                  {
+                    detail,
+                    detailContent: buildLiveLlmPromptDetailContent(content, {
+                      systemPrompt: liveLlmSystemPrompt,
+                      promptMessages: liveLlmPromptMessages,
+                      model: liveLlmModel,
+                      turn: liveLlmTurn,
+                      timings: liveLlmTimings,
+                    }),
+                    state: "live",
+                    kind: "llm_outbound",
+                    agent: activeAgentName,
+                  },
+                  llmOutboundStepLabel(activeAgentName),
+                ),
+              ),
+            );
+            break;
+          }
+          case "tool_call_delta": {
+            if (typeof data.agent === "string" && data.agent) {
+              activeAgentName = data.agent;
+            }
+            const toolName = typeof data.tool === "string" && data.tool ? data.tool : "tool";
+            const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
+            const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
+            const rawToolArgs = typeof data.args === "string" ? data.args : "";
+            const elapsedMs = typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined;
+            const elapsedText = formatStreamingElapsed(elapsedMs);
+            if (elapsedMs !== undefined && liveLlmTimings.first_tool_call_ms === undefined) {
+              liveLlmTimings = { ...liveLlmTimings, first_tool_call_ms: elapsedMs };
+            }
+            liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
+            const detail = elapsedText
+              ? `Planning ${toolName} · ${elapsedText}`
+              : `Planning ${toolName}`;
+            commitOptimisticMessages((current) =>
+              updateMessage(current, readAssistantMessageId(), (message) => {
+                const baseMessage = patchMatchingStreamingStep(
+                  {
+                    ...message,
+                    agent_name: message.agent_name || activeAgentName,
+                  },
+                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
+                  {
+                    state: "done",
+                    detail: elapsedText ? `Tool planning started · ${elapsedText}` : "Tool planning started",
+                    detailContent: buildLiveLlmPromptDetailContent(content, {
+                      systemPrompt: liveLlmSystemPrompt,
+                      promptMessages: liveLlmPromptMessages,
+                      model: liveLlmModel,
+                      turn: liveLlmTurn,
+                      timings: liveLlmTimings,
+                    }),
+                    kind: "llm_outbound",
+                    agent: activeAgentName,
+                  },
+                );
+
+                const nextMessage = patchMatchingStreamingStep(
+                  baseMessage,
+                  (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
+                  {
+                    label: toolCallStepLabel(activeAgentName, toolName),
+                    detail,
+                    detailContent: buildLiveToolCallDetailContent(rawToolArgs, detail),
+                    state: "live",
+                    kind: "tool_call",
+                    agent: activeAgentName,
+                    tool: toolName,
+                    toolCallIndex,
+                    toolCallId,
+                  },
+                );
+
+                if (nextMessage !== baseMessage) {
+                  return nextMessage;
+                }
+
+                return pushStreamingStep(
+                  baseMessage,
+                  toolCallStepLabel(activeAgentName, toolName),
+                  detail,
+                  "live",
+                  buildLiveToolCallDetailContent(rawToolArgs, detail),
+                  {
+                    kind: "tool_call",
+                    agent: activeAgentName,
+                    tool: toolName,
+                    toolCallIndex,
+                    toolCallId,
+                  },
+                );
+              }),
+            );
+            break;
+          }
+          case "tool_call_ready":
+            if (typeof data.agent === "string" && data.agent) {
+              activeAgentName = data.agent;
+            }
+            if (typeof data.elapsed_ms === "number") {
+              liveLlmTimings = { ...liveLlmTimings, tool_call_ready_ms: data.elapsed_ms };
+            }
+            break;
           case "tool_start":
             if (typeof data.agent === "string" && data.agent) {
               activeAgentName = data.agent;
             }
             if (typeof data.tool === "string") {
+              const toolName = data.tool;
+              const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
+              const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
               const rawToolArgs = typeof data.args === "string" && data.args.trim() ? data.args.trim() : "";
+              liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
               const toolArgs = rawToolArgs ? rawToolArgs.slice(0, 120) : "Calling tool.";
               commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) => ({
-                  ...pushStreamingStep(
+                updateMessage(current, readAssistantMessageId(), (message) => {
+                  const settledResponseMessage = patchMatchingStreamingStep(
                     {
                       ...message,
                       agent_name: message.agent_name || activeAgentName,
                     },
-                    `${activeAgentName} running ${data.tool}`,
-                    toolArgs,
-                    "live",
-                    buildLiveToolDetailContent(rawToolArgs),
-                  ),
-                })),
+                    (step) => step.state === "live" && isActorInboundStep(step, activeAgentName),
+                    {
+                      state: "done",
+                    },
+                  );
+
+                  const nextMessage = patchMatchingStreamingStep(
+                    settledResponseMessage,
+                    (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
+                    {
+                      label: toolCallStepLabel(activeAgentName, toolName),
+                      detail: toolArgs,
+                      detailContent: buildLiveToolCallDetailContent(rawToolArgs),
+                      state: "live",
+                      kind: "tool_call",
+                      agent: activeAgentName,
+                      tool: toolName,
+                      toolCallIndex,
+                      toolCallId,
+                    },
+                  );
+
+                  if (nextMessage !== settledResponseMessage) {
+                    return nextMessage;
+                  }
+
+                  return {
+                    ...pushStreamingStep(
+                      settledResponseMessage,
+                      toolCallStepLabel(activeAgentName, toolName),
+                      toolArgs,
+                      "live",
+                      buildLiveToolCallDetailContent(rawToolArgs),
+                      {
+                        kind: "tool_call",
+                        agent: activeAgentName,
+                        tool: toolName,
+                        toolCallIndex,
+                        toolCallId,
+                      },
+                    ),
+                  };
+                }),
               );
-              pushEvent(`${activeAgentName} is running ${data.tool}`, "warning");
+              pushEvent(`${activeAgentName} is running ${toolName}`, "warning");
+            }
+            break;
+          case "llm_wait": {
+            if (typeof data.agent === "string" && data.agent) {
+              activeAgentName = data.agent;
+            }
+            const elapsedText = formatStreamingElapsed(
+              typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
+            );
+            const waitStatus = elapsedText ? `Waiting on model · ${elapsedText}` : "Waiting on model";
+            commitOptimisticMessages((current) =>
+              updateMessage(current, readAssistantMessageId(), (message) => {
+                const baseMessage = {
+                  ...message,
+                  agent_name: message.agent_name || activeAgentName,
+                };
+                const inboundMessage = patchMatchingStreamingStep(
+                  baseMessage,
+                  (step) => step.state === "live" && isActorInboundStep(step, activeAgentName),
+                  {
+                    detail: waitStatus,
+                    detailContent: buildLiveLlmResponseDetailContent(assistantDraftContent, waitStatus, liveLlmTimings),
+                    state: "live",
+                    kind: "llm_inbound",
+                    agent: activeAgentName,
+                  },
+                );
+                if (inboundMessage !== baseMessage) {
+                  return inboundMessage;
+                }
+
+                return patchMatchingStreamingStep(
+                  baseMessage,
+                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
+                  {
+                    detail: waitStatus,
+                    detailContent: buildLiveLlmPromptDetailContent(content, {
+                      systemPrompt: liveLlmSystemPrompt,
+                      promptMessages: liveLlmPromptMessages,
+                      model: liveLlmModel,
+                      turn: liveLlmTurn,
+                      waitStatus,
+                      timings: liveLlmTimings,
+                    }),
+                    state: "live",
+                    kind: "llm_outbound",
+                    agent: activeAgentName,
+                  },
+                  llmOutboundStepLabel(activeAgentName),
+                );
+              }),
+            );
+            break;
+          }
+          case "tool_wait":
+            if (typeof data.agent === "string" && data.agent) {
+              activeAgentName = data.agent;
+            }
+            if (typeof data.tool === "string") {
+              const toolName = data.tool;
+              const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
+              const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
+              const elapsedText = formatStreamingElapsed(
+                typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
+              );
+              const waitStatus = elapsedText ? `Running tool · ${elapsedText}` : "Running tool";
+              const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
+              commitOptimisticMessages((current) =>
+                updateMessage(current, readAssistantMessageId(), (message) =>
+                  patchMatchingStreamingStep(
+                    {
+                      ...message,
+                      agent_name: message.agent_name || activeAgentName,
+                    },
+                    (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
+                    {
+                      detail: waitStatus,
+                      detailContent: buildLiveToolCallDetailContent(rawToolArgs, waitStatus),
+                      state: "live",
+                      kind: "tool_call",
+                      agent: activeAgentName,
+                      tool: toolName,
+                      toolCallIndex,
+                      toolCallId,
+                    },
+                    toolCallStepLabel(activeAgentName, toolName),
+                  ),
+                ),
+              );
             }
             break;
           case "tool_result":
@@ -1583,29 +2311,56 @@ function App() {
               activeAgentName = data.agent;
             }
             if (typeof data.tool === "string") {
+              const toolName = data.tool;
+              const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
+              const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
+              liveToolArgs.delete(buildToolWaitKey(activeAgentName, toolCallIndex, toolName));
+              const rawResult = typeof data.result === "string" ? data.result : "";
+              const failed = /^error\b/i.test(rawResult.trim());
               const resultPreview =
-                typeof data.result === "string" && data.result.trim()
-                  ? data.result.replace(/\s+/g, " ").trim().slice(0, 140)
-                  : `${data.tool} completed.`;
+                rawResult.trim()
+                  ? rawResult.replace(/\s+/g, " ").trim().slice(0, 140)
+                  : `${toolName} completed.`;
               commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) =>
-                  patchLatestStreamingStep(
+                updateMessage(current, readAssistantMessageId(), (message) => {
+                  const nextMessage = patchMatchingStreamingStep(
                     message,
+                    (step) => isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
-                      state: "done",
-                      detail: resultPreview,
-                      detailContent: buildLiveToolDetailContent(undefined, typeof data.result === "string" ? data.result : ""),
+                      state: failed ? "error" : "done",
+                      kind: "tool_call",
+                      agent: activeAgentName,
+                      tool: toolName,
+                      toolCallIndex,
+                      toolCallId,
                     },
-                    `${activeAgentName} finished ${data.tool}`,
-                  ),
-                ),
+                    toolCallStepLabel(activeAgentName, toolName),
+                  );
+
+                  return pushStreamingStep(
+                    nextMessage,
+                    toolOutputStepLabel(activeAgentName, toolName),
+                    resultPreview,
+                    "live",
+                    buildToolResultToLlmDetailContent(rawResult, failed),
+                    {
+                      kind: "tool_result_to_llm",
+                      agent: activeAgentName,
+                      tool: toolName,
+                      toolCallIndex,
+                      toolCallId,
+                    },
+                  );
+                }),
               );
-              pushEvent(`${activeAgentName} finished ${data.tool}`, "success");
+              pushEvent(`${activeAgentName} finished ${toolName}`, failed ? "error" : "success");
             }
             break;
           case "done": {
             streamCompleted = true;
             const savedMessageId = typeof data.message_id === "number" ? data.message_id : null;
+            const savedClientTurnId =
+              typeof data.client_turn_id === "string" ? data.client_turn_id : clientTurnId;
             const finalAgentName =
               typeof data.agent_name === "string" && data.agent_name
                 ? data.agent_name
@@ -1619,6 +2374,7 @@ function App() {
                     created_at: new Date().toISOString(),
                     message_type: "text",
                     agent_name: finalAgentName,
+                    client_turn_id: savedClientTurnId,
                     isStreaming: false,
                   },
                 ]),
@@ -1636,6 +2392,7 @@ function App() {
                       message_type: "text",
                       ...current.find((item) => item.id === readAssistantMessageId()),
                       agent_name: finalAgentName,
+                      client_turn_id: savedClientTurnId,
                       isStreaming: false,
                     },
                     "done",
@@ -1758,7 +2515,7 @@ function App() {
         commitOptimisticMessages((current) => current.filter((item) => item.id >= 0));
         pushEvent("Streaming unavailable, falling back to sync send", "warning");
         try {
-          const saved = await api.sendMessage(chatId, content);
+          const saved = await api.sendMessage(chatId, content, clientTurnId);
           setMessages((current) => mergeMessages(current, [saved]));
           commitOptimisticMessages((current) =>
             current.filter((item) => item.id !== userTempId && item.id !== assistantTempId),

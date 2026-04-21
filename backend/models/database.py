@@ -3,24 +3,21 @@
 Database model definitions.
 """
 from datetime import datetime
-import os
-from pathlib import Path
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
-# Database configuration
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
-
-DATABASE_URL = os.getenv("DATABASE_URL", str(DATA_DIR / "catown.db"))
+from config import settings
 
 # Create engine
+_engine_kwargs = {}
+if settings.SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+
 engine = create_engine(
-    f"sqlite:///{DATABASE_URL}",
-    connect_args={"check_same_thread": False},
+    settings.SQLALCHEMY_DATABASE_URL,
+    **_engine_kwargs,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

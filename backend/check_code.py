@@ -95,14 +95,15 @@ except Exception as e:
 # 6. 检查环境变量
 print("\n6. 检查环境配置...")
 from pathlib import Path
-env_file = Path('.env')
+catown_home = Path(os.getenv("CATOWN_HOME", str(Path.home() / ".catown"))).expanduser().resolve()
+env_file = catown_home / '.env'
 if env_file.exists():
-    print(f"   ✓ .env 文件存在")
-    with open('.env', 'r') as f:
+    print(f"   ✓ {env_file} 存在")
+    with open(env_file, 'r', encoding='utf-8') as f:
         lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
         print(f"   - 配置项数量: {len(lines)}")
 else:
-    print(f"   ✗ .env 文件不存在")
+    print(f"   ✗ {env_file} 不存在")
 
 # 7. 代码统计
 print("\n7. 代码统计...")
@@ -137,7 +138,7 @@ else:
 
 print("\n下一步:")
 print("1. 运行: pip install -r requirements.txt")
-print("2. 配置: 编辑 .env 文件设置 API Key")
+print(f"2. 配置: 编辑 {env_file} 设置 API Key")
 print("3. 启动: uvicorn main:app --reload")
 print("4. 访问: http://localhost:8000/docs")
 

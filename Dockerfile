@@ -16,18 +16,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 
-# 创建数据和日志目录
-RUN mkdir -p backend/data backend/logs
+# 创建统一运行时目录
+RUN mkdir -p /var/lib/catown/config /var/lib/catown/state /var/lib/catown/projects /var/lib/catown/workspaces
 
 # 环境变量
 ENV HOST=0.0.0.0
 ENV PORT=8000
-ENV DATABASE_URL=data/catown.db
+ENV CATOWN_HOME=/var/lib/catown
 ENV LOG_LEVEL=INFO
 ENV CORS_ORIGINS=*
 
 # 工作目录切到 backend（匹配代码中的相对 import）
 WORKDIR /app/backend
+
+VOLUME ["/var/lib/catown"]
 
 EXPOSE 8000
 

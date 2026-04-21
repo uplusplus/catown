@@ -3,8 +3,8 @@
 Web Fetch Tool - 抓取网页内容并提取可读文本
 """
 from .base import BaseTool
-import urllib.request
 import urllib.parse
+import httpx
 import re
 import html as html_module
 
@@ -31,14 +31,18 @@ class WebFetchTool(BaseTool):
             if parsed.scheme not in ("http", "https"):
                 return f"[WebFetch] Invalid URL scheme: {parsed.scheme}"
 
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; CatownBot/1.0)",
-                "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
-            })
-
-            with urllib.request.urlopen(req, timeout=15) as response:
+            async with httpx.AsyncClient(
+                timeout=15,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; CatownBot/1.0)",
+                    "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
+                },
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
                 content_type = response.headers.get("Content-Type", "")
-                raw = response.read()
+                raw = response.content
 
             # 尝试解码
             for enc in ("utf-8", "latin-1"):
@@ -60,8 +64,8 @@ class WebFetchTool(BaseTool):
 
             return f"[WebFetch] {url}\n\n{text}"
 
-        except urllib.error.HTTPError as e:
-            return f"[WebFetch] HTTP {e.code}: {e.reason} for {url}"
+        except httpx.HTTPStatusError as e:
+            return f"[WebFetch] HTTP {e.response.status_code}: {e.response.reason_phrase} for {url}"
         except Exception as e:
             return f"[WebFetch] Error fetching {url}: {str(e)}"
 

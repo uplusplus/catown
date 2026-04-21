@@ -2,11 +2,16 @@
 """
 File Operations Tools
 """
-from .base import BaseTool
-from typing import Optional, List
-import os
+import asyncio
+import fnmatch
 import glob as glob_module
 import json
+import os
+import shutil
+import subprocess
+
+from .base import BaseTool
+from typing import Optional, List
 from contextvars import ContextVar, Token
 
 
@@ -23,6 +28,10 @@ def set_active_workspace(workspace: Optional[str]) -> Token:
 
 def reset_active_workspace(token: Token) -> None:
     _ACTIVE_WORKSPACE.reset(token)
+
+
+def get_active_workspace() -> Optional[str]:
+    return _ACTIVE_WORKSPACE.get()
 
 
 def _effective_workspace(default_workspace: str) -> str:
@@ -61,6 +70,9 @@ class ReadFileTool(BaseTool):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, encoding: str = "utf-8", **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, file_path, encoding)
+
+    def _execute_sync(self, file_path: str, encoding: str = "utf-8") -> str:
         """
         Read file contents
         
@@ -137,6 +149,9 @@ class WriteFileTool(BaseTool):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, content: str, mode: str = "write", **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, file_path, content, mode)
+
+    def _execute_sync(self, file_path: str, content: str, mode: str = "write") -> str:
         """
         Write content to file
         
@@ -210,6 +225,9 @@ class ListFilesTool(BaseTool):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, directory: str = ".", pattern: str = "*", recursive: bool = False, **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, directory, pattern, recursive)
+
+    def _execute_sync(self, directory: str = ".", pattern: str = "*", recursive: bool = False) -> str:
         """
         List files in directory
         
@@ -332,6 +350,9 @@ class DeleteFileTool(BaseTool):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, file_path: str, force: bool = False, **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, file_path, force)
+
+    def _execute_sync(self, file_path: str, force: bool = False) -> str:
         """
         Delete file or directory
         
@@ -407,6 +428,9 @@ class SearchFilesTool(BaseTool):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
     async def execute(self, search_term: str, directory: str = ".", file_pattern: str = "*", **kwargs) -> str:
+        return await asyncio.to_thread(self._execute_sync, search_term, directory, file_pattern)
+
+    def _execute_sync(self, search_term: str, directory: str = ".", file_pattern: str = "*") -> str:
         """
         Search for text in files
         
@@ -423,14 +447,29 @@ class SearchFilesTool(BaseTool):
             
             if not self._is_safe_path(full_path):
                 return f"[Search Files] Error: Access denied. Path outside workspace."
+
+            if not os.path.exists(full_path):
+                return f"[Search Files] Error: Directory not found: '{directory}'"
+
+            if not os.path.isdir(full_path):
+                return f"[Search Files] Error: Not a directory: '{directory}'"
             
             results = []
             matches_count = 0
             max_results = 50
+
+            rg_output = self._search_with_ripgrep(
+                search_term=search_term,
+                directory=directory,
+                full_path=full_path,
+                file_pattern=file_pattern,
+                max_results=max_results,
+            )
+            if rg_output is not None:
+                return rg_output
             
             for root, dirs, files in os.walk(full_path):
                 # Filter files by pattern
-                import fnmatch
                 matching_files = fnmatch.filter(files, file_pattern)
                 
                 for filename in matching_files:
@@ -478,6 +517,67 @@ class SearchFilesTool(BaseTool):
     
     def _is_safe_path(self, path: str) -> bool:
         return _is_path_within_workspace(_effective_workspace(self.workspace), path)
+
+    def _search_with_ripgrep(
+        self,
+        search_term: str,
+        directory: str,
+        full_path: str,
+        file_pattern: str,
+        max_results: int,
+    ) -> Optional[str]:
+        rg_path = shutil.which("rg")
+        if not rg_path:
+            return None
+
+        command = [
+            rg_path,
+            "-n",
+            "--no-heading",
+            "--color",
+            "never",
+            "--fixed-strings",
+            "--ignore-case",
+            "--max-count",
+            str(max_results),
+        ]
+        if file_pattern and file_pattern != "*":
+            command.extend(["-g", file_pattern])
+        command.extend([search_term, "."])
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=full_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+        if completed.returncode == 1 and not completed.stdout.strip():
+            return f"[Search Files] No matches found for '{search_term}' in {directory}"
+
+        if completed.returncode not in (0, 1):
+            return None
+
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            return f"[Search Files] No matches found for '{search_term}' in {directory}"
+
+        output_lines = [f"[Search Files] Found {min(len(lines), max_results)} matches for '{search_term}':"]
+        for line in lines[:max_results]:
+            parts = line.split(":", 2)
+            if len(parts) == 3:
+                output_lines.append(f"  {parts[0]}:{parts[1]}: {parts[2].strip()[:100]}")
+            else:
+                output_lines.append(f"  {line[:140]}")
+
+        return "\n".join(output_lines)
     
     def _get_parameters_schema(self) -> dict:
         return {

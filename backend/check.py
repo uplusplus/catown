@@ -76,14 +76,15 @@ except Exception as e:
 # 5. Check .env file
 print("\n5. Checking environment...")
 from pathlib import Path
-env_file = Path('.env')
+catown_home = Path(os.getenv("CATOWN_HOME", str(Path.home() / ".catown"))).expanduser().resolve()
+env_file = catown_home / '.env'
 if env_file.exists():
-    print("   [OK] .env file exists")
-    with open('.env', 'r', encoding='utf-8') as f:
+    print("   [OK] {} exists".format(env_file))
+    with open(env_file, 'r', encoding='utf-8') as f:
         lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
         print("   - Config items: {}".format(len(lines)))
 else:
-    print("   [WARNING] .env file not found")
+    print("   [WARNING] {} not found".format(env_file))
 
 # 6. Code statistics
 print("\n6. Code statistics...")
@@ -118,7 +119,7 @@ else:
 
 print("\nNext steps:")
 print("1. Install: pip install -r requirements.txt")
-print("2. Configure: Edit .env file with your API key")
+print("2. Configure: Edit {} with your API key".format(env_file))
 print("3. Start: uvicorn main:app --reload --host 0.0.0.0 --port 8000")
 print("4. Access: http://localhost:8000/docs")
 
