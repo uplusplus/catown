@@ -24,6 +24,7 @@ function overlayScopeKey(chatId: number | null) {
 }
 
 function createClientTurnId() {
+  // Shared frontend/backend turn anchor: one user send => one stable chat card lineage.
   return `turn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
@@ -350,6 +351,53 @@ function compareThreadTimelineItems(
   const timeDiff = new Date(left.sortKey).getTime() - new Date(right.sortKey).getTime();
   if (timeDiff !== 0) return timeDiff;
   return threadItemSortWeight(left) - threadItemSortWeight(right);
+}
+
+function compareThreadCards(left: ThreadCard, right: ThreadCard) {
+  const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+  if (timeDiff !== 0) return timeDiff;
+  return left.id.localeCompare(right.id);
+}
+
+function appendMappedCards(target: Map<number, ThreadCard[]>, messageId: number, cards: ThreadCard[]) {
+  if (cards.length === 0) return;
+  const existing = target.get(messageId) ?? [];
+  const merged = [...existing, ...cards].sort(compareThreadCards);
+  target.set(messageId, merged);
+}
+
+function visibleMessageKey(message: MessageItem) {
+  if (message.client_turn_id) {
+    return `${message.agent_name ? "assistant" : "user"}:${message.client_turn_id}`;
+  }
+  return `id:${message.id}`;
+}
+
+function mergeVisibleMessagePair(left: MessageItem, right: MessageItem): MessageItem {
+  const server = !left.localOnly ? left : !right.localOnly ? right : null;
+  const local = left.localOnly ? left : right.localOnly ? right : null;
+  const primary = server ?? right;
+  const secondary = primary === left ? right : left;
+  const primarySteps = primary.streamSteps ?? [];
+  const secondarySteps = secondary.streamSteps ?? [];
+
+  return {
+    ...primary,
+    id: server?.id ?? primary.id,
+    created_at:
+      new Date(left.created_at).getTime() <= new Date(right.created_at).getTime() ? left.created_at : right.created_at,
+    content: primary.content || secondary.content,
+    agent_name: primary.agent_name ?? secondary.agent_name,
+    message_type: primary.message_type || secondary.message_type,
+    client_turn_id: primary.client_turn_id ?? secondary.client_turn_id,
+    isStreaming: server ? Boolean(primary.isStreaming) : Boolean(left.isStreaming || right.isStreaming),
+    streamSteps:
+      primarySteps.length >= secondarySteps.length
+        ? primarySteps
+        : secondarySteps,
+    optimisticKind: server ? undefined : primary.optimisticKind ?? secondary.optimisticKind,
+    localOnly: server ? false : Boolean(primary.localOnly || secondary.localOnly),
+  };
 }
 
 function cardBadge(card: ThreadCard) {
@@ -2153,16 +2201,48 @@ export function ChatTab({
   const [projectNameDraft, setProjectNameDraft] = useState(defaultProjectName);
   const [projectDescriptionDraft, setProjectDescriptionDraft] = useState("");
   const [projectAgentNames, setProjectAgentNames] = useState<string[]>(defaultAgentNames);
-  const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
-  const fallbackStepCardsByMessageId = useMemo(() => {
-    const pendingByActor = new Map<string, ThreadCard[]>();
-    const mapped = new Map<number, ThreadCard[]>();
-    const visibleMessages = [...messages, ...localOverlayMessages].sort(
+  const visibleMessages = useMemo(() => {
+    const merged = new Map<string, MessageItem>();
+    [...messages, ...localOverlayMessages]
+      .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime())
+      .forEach((message) => {
+        const key = visibleMessageKey(message);
+        const existing = merged.get(key);
+        merged.set(key, existing ? mergeVisibleMessagePair(existing, message) : message);
+      });
+
+    return Array.from(merged.values()).sort(
       (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
     );
+  }, [localOverlayMessages, messages]);
+  const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
+  const fallbackStepCardsByMessageId = useMemo(() => {
+    const mapped = new Map<number, ThreadCard[]>();
+    const orderedCards = [...cardsWithPromptPresentation].sort(compareThreadCards);
+    const assistantAnchorByTurnId = new Map<string, MessageItem>();
+    const unassignedCards: ThreadCard[] = [];
+
+    // Prefer the frontend-generated client_turn_id as the single card lineage key.
+    for (const message of visibleMessages) {
+      if (!message.agent_name || !message.client_turn_id) continue;
+      assistantAnchorByTurnId.set(message.client_turn_id, message);
+    }
+
+    for (const card of orderedCards) {
+      const turnId = card.client_turn_id;
+      const anchor = turnId ? assistantAnchorByTurnId.get(turnId) : null;
+      if (!anchor) {
+        unassignedCards.push(card);
+        continue;
+      }
+      appendMappedCards(mapped, anchor.id, [card]);
+    }
+
+    const pendingByActor = new Map<string, ThreadCard[]>();
+    const actorMatchedCardIds = new Set<string>();
 
     const timeline = [
-      ...cardsWithPromptPresentation.map((card) => ({
+      ...unassignedCards.map((card) => ({
         sortKey: card.created_at,
         kind: "card" as const,
         card,
@@ -2188,11 +2268,13 @@ export function ChatTab({
       const actor = item.message.agent_name;
       const pending = pendingByActor.get(actor) ?? [];
       if (pending.length === 0) continue;
-      mapped.set(item.message.id, pending);
+      appendMappedCards(mapped, item.message.id, pending);
+      pending.forEach((card) => actorMatchedCardIds.add(card.id));
       pendingByActor.delete(actor);
     }
 
-    if (mapped.size === 0 && cardsWithPromptPresentation.length > 0) {
+    const remainingActorCards = unassignedCards.filter((card) => !actorMatchedCardIds.has(card.id));
+    if (remainingActorCards.length > 0) {
       const groupedCardsByActor = new Map<string, ThreadCard[][]>();
       let currentActor: string | null = null;
       let currentGroup: ThreadCard[] = [];
@@ -2203,7 +2285,7 @@ export function ChatTab({
         currentGroup = [];
       };
 
-      for (const card of cardsWithPromptPresentation) {
+      for (const card of remainingActorCards) {
         const actor = cardActorName(card);
         if (actor !== currentActor) {
           flushGroup();
@@ -2218,35 +2300,38 @@ export function ChatTab({
         const actorGroups = groupedCardsByActor.get(message.agent_name) ?? [];
         if (actorGroups.length === 0) continue;
         const [nextGroup, ...rest] = actorGroups;
-        mapped.set(message.id, nextGroup);
+        appendMappedCards(mapped, message.id, nextGroup);
         groupedCardsByActor.set(message.agent_name, rest);
       }
     }
 
     return mapped;
-  }, [cardsWithPromptPresentation, localOverlayMessages, messages]);
+  }, [cardsWithPromptPresentation, visibleMessages]);
   const consumedFallbackCardIds = useMemo(
     () => new Set(Array.from(fallbackStepCardsByMessageId.values()).flatMap((group) => group.map((card) => card.id))),
     [fallbackStepCardsByMessageId],
   );
 
   const threadItems = useMemo<ThreadItem[]>(() => {
-    const hasLiveMessage = [...messages, ...localOverlayMessages].some((message) => Boolean(message.isStreaming));
+    const hasLiveMessage = visibleMessages.some((message) => Boolean(message.isStreaming));
+    const anchoredAssistantTurnIds = new Set(
+      visibleMessages
+        .filter((message) => Boolean(message.agent_name) && Boolean(message.client_turn_id))
+        .map((message) => message.client_turn_id as string),
+    );
     const orderedItems: ThreadItem[] = [
-      ...messages.map((message) => ({
-        id: `message-${message.id}`,
-        sortKey: message.created_at,
-        kind: "message" as const,
-        message,
-      })),
-      ...localOverlayMessages.map((message) => ({
+      ...visibleMessages.map((message) => ({
         id: `message-${message.id}`,
         sortKey: message.created_at,
         kind: "message" as const,
         message,
       })),
       ...cardsWithPromptPresentation
-        .filter((card) => !consumedFallbackCardIds.has(card.id))
+        .filter(
+          (card) =>
+            !consumedFallbackCardIds.has(card.id) &&
+            !(card.client_turn_id && anchoredAssistantTurnIds.has(card.client_turn_id)),
+        )
         .map((card) => ({
           id: `card-${card.id}`,
           sortKey: card.created_at,
@@ -2353,11 +2438,11 @@ export function ChatTab({
 
     flushActivityBatch();
     return batchedItems;
-  }, [cardsWithPromptPresentation, consumedFallbackCardIds, localOverlayMessages, messages]);
+  }, [cardsWithPromptPresentation, consumedFallbackCardIds, visibleMessages]);
 
   const currentActivityAgentName = useMemo(() => {
     const streamingAgent =
-      [...messages]
+      [...visibleMessages]
         .reverse()
         .find((message) => message.isStreaming && Boolean(message.agent_name))?.agent_name ?? null;
     if (streamingAgent) return streamingAgent;
@@ -2368,7 +2453,7 @@ export function ChatTab({
         .map((card) => cardActorName(card))
         .find((name) => name !== "system") ?? null
     );
-  }, [cardsWithPromptPresentation, messages]);
+  }, [cardsWithPromptPresentation, visibleMessages]);
 
   const latestActivityBatchId = useMemo(
     () =>

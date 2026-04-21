@@ -1417,6 +1417,9 @@ a {
 }
 
 .chat-group.user .chat-group-messages {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: min(720px, calc(100% - 72px));
   align-items: flex-end;
 }
 
@@ -1470,6 +1473,8 @@ a {
 .chat-group.user .chat-bubble {
   background: var(--accent-subtle);
   border-color: transparent;
+  width: fit-content;
+  max-width: min(720px, 100%);
 }
 
 .chat-bubble:hover {
