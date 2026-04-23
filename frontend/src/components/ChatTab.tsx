@@ -2865,6 +2865,14 @@ export function ChatTab({
   }, [chat?.id, messages]);
 
   useEffect(() => {
+    if (!chat?.id || loading || sending) return;
+    if (messages.length > 0 || optimisticMessages.length > 0 || cards.length > 0 || localOverlayMessages.length === 0) return;
+
+    writeOverlayMessages(chat.id, []);
+    setLocalOverlayMessages([]);
+  }, [cards.length, chat?.id, loading, localOverlayMessages.length, messages.length, optimisticMessages.length, sending]);
+
+  useEffect(() => {
     if (optimisticMessages.length === 0) return;
 
     setLocalOverlayMessages((current) => {

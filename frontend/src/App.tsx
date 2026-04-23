@@ -1688,13 +1688,21 @@ function App() {
   }
 
   function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
+    const previousChatId = selectedChatIdRef.current;
     debugConsole("info", "applyChatSelection", {
-      previousChatId: selectedChatIdRef.current,
+      previousChatId,
       previousProjectId: selectedProjectIdRef.current,
       nextChatId,
       nextProjectId,
       lastChatStorage: readLastChatId(),
     });
+    if (previousChatId !== nextChatId) {
+      optimisticScopeRef.current = optimisticScopeKey(nextChatId);
+      setOptimisticMessages(readOptimisticMessages(nextChatId));
+      setMessages([]);
+      setChatCards([]);
+      setChatEvents([]);
+    }
     selectedChatIdRef.current = nextChatId;
     selectedProjectIdRef.current = nextProjectId;
     writeLastChatId(nextChatId);
@@ -1903,7 +1911,7 @@ function App() {
           const nextCards = runtimeRows
             .map((payload) => buildCard(payload))
             .filter((card): card is ChatCardItem => card !== null);
-          setMessages((current) => mergeMessages(current, rows));
+          setMessages(rows);
           setChatCards(nextCards);
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
         }
@@ -2254,7 +2262,7 @@ function App() {
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
         .filter((card): card is ChatCardItem => card !== null);
-      setMessages((current) => mergeMessages(current, rows));
+      setMessages(rows);
       commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
       setChatCards(nextCards);
       if (showSpinner) {
