@@ -1,18 +1,23 @@
 import type {
+  AgentMemoryResponse,
   AgentConfigPayload,
   AgentInfo,
   ChatSummary,
   ConfigResponse,
   GlobalConfigPayload,
+  GitHubProjectImportPayload,
   MonitorLogsResponse,
   MonitorRuntimeDetail,
   MessageItem,
   MonitorOverview,
+  MonitorUsageResponse,
   ProjectCreatePayload,
   ProjectFromChatPayload,
+  ProjectSyncResponse,
   ProjectSummary,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
+import { DEFAULT_AGENT_TYPE } from "../utils/agents";
 import { handleServerVersionHeaders } from "../versionGuard";
 
 function getClientSource() {
@@ -87,6 +92,12 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+  createProjectFromGithub(payload: GitHubProjectImportPayload) {
+    return request<ProjectSummary>("/api/projects/from-github", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   getOrCreateSelfBootstrapProject() {
     return request<ProjectSummary>("/api/projects/self-bootstrap", {
       method: "POST",
@@ -129,6 +140,11 @@ export const api = {
       method: "POST",
     });
   },
+  syncProject(projectId: number) {
+    return request<ProjectSyncResponse>(`/api/projects/${projectId}/sync`, {
+      method: "POST",
+    });
+  },
   deleteProject(projectId: number) {
     return request<{ message: string }>(`/api/projects/${projectId}`, {
       method: "DELETE",
@@ -164,6 +180,9 @@ export const api = {
   getAgents() {
     return request<AgentInfo[]>("/api/agents");
   },
+  getAgentMemory(agentId: number) {
+    return request<AgentMemoryResponse>(`/api/agents/${agentId}/memory`);
+  },
   getConfig() {
     return request<ConfigResponse>("/api/config");
   },
@@ -175,6 +194,9 @@ export const api = {
   },
   getMonitorRuntimeCardDetail(messageId: number) {
     return request<MonitorRuntimeDetail>(`/api/monitor/runtime-cards/${messageId}`);
+  },
+  getMonitorUsage(range = "24h") {
+    return request<MonitorUsageResponse>(`/api/monitor/usage?range=${encodeURIComponent(range)}`);
   },
   saveGlobalConfig(payload: GlobalConfigPayload) {
     return request<{ message: string }>("/api/config/global", {
@@ -193,7 +215,7 @@ export const api = {
       method: "POST",
     });
   },
-  testConfig(agentName = "assistant") {
+  testConfig(agentName = DEFAULT_AGENT_TYPE) {
     return request<{ status: string; agent: string; model: string; baseUrl: string }>(
       `/api/config/test?agent_name=${encodeURIComponent(agentName)}`,
       {

@@ -13,6 +13,7 @@ Agent 核心类
 from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel
 from datetime import datetime
+from agents.identity import default_agent_name, normalize_agent_type
 
 try:
     from agents.config_models import AgentConfigV2
@@ -23,10 +24,15 @@ except ImportError:
 class AgentConfig(BaseModel):
     """Agent 配置（旧版兼容）"""
     name: str
+    type: str = ""
     role: str
     system_prompt: str
     tools: List[str] = []
     metadata: Dict[str, Any] = {}
+
+    def model_post_init(self, __context: Any) -> None:
+        self.type = normalize_agent_type(self.type or self.name)
+        self.name = (self.name or "").strip() or default_agent_name(self.type)
 
 
 class MemoryItem(BaseModel):
@@ -58,10 +64,15 @@ class Agent:
     @property
     def name(self) -> str:
         return self.config.name
+
+    @property
+    def agent_type(self) -> str:
+        return getattr(self.config, "type", "") or normalize_agent_type(self.config.name)
     
     @property
     def role(self) -> str:
-        return self.config.role.title
+        role = getattr(self.config, "role", "")
+        return role.title if hasattr(role, "title") and not isinstance(role, str) else str(role)
 
     @property
     def system_prompt(self) -> str:

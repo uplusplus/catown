@@ -1795,9 +1795,415 @@ backend/
 
 ---
 
-## 21. 上下文压缩系统
+## 15. 验收标准
+
+### 15.1 功能验收
+
+- [x] 提交原始需求后，Pipeline 自动执行 5 个阶段
+- [x] 每个阶段的 Agent 使用正确的 system_prompt 和工具
+- [x] 阶段产出物保存到 workspace，下一阶段能读取
+- [x] Gate=manual 的阶段暂停等待人工审批
+- [x] BOSS 可以通过 Web UI 暂停/继续/打回/审批
+- [x] Agent 间可以互相发消息，BOSS 能实时看到
+- [x] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
+- [x] 错误自动重试，超过阈值暂停等人工
+- [x] 工具白名单运行时校验：Agent 仅能调用 agents.json 中声明的工具
+- [x] 项目 Workspace 隔离：路径穿越检测 + symlink 防护 + .catown 目录保护
+
+### 15.2 技术验收
+
+- [x] LLM 主配置来源 agents.json，密钥可通过 `${LLM_API_KEY}` / `.env` 注入
+- [x] Pipeline 状态持久化到数据库
+- [x] Agent 协作消息持久化到数据库
+- [x] WebSocket 实时推送 Pipeline 状态变更
+- [x] _validate_path 统一路径校验（symlink 解析 + 目录穿越 + .catown 保护）
+- [x] _execute_tool 白名单校验（区分未配置/空列表/白名单三种状态）
+- [~] Docker 部署正常 (Dockerfile/docker-compose.yml 已配置，待有 Docker 环境时验证)
+
+---
+
+## 16. 验证报告
+
+### 16.1 单元测试 (2026-04-08)
+
+- **总用例**: 233
+- **通过**: 233
+- **失败**: 0
+- **通过率**: 100%
+- **覆盖模块**: Agent、API 路由、聊天室、协作工具、配置模型、核心模块、数据库、文件操作、LLM 客户端、两级 LLM 配置、启动流程、工具注册、WebSocket
+
+### 16.2 集成测试 (2026-04-08)
+
+- **总用例**: 24
+- **通过**: 24
+- **失败**: 0
+- **通过率**: 100%
+- **覆盖**: 健康检查、Agent 注册（5 个 Pipeline 角色）、工具注册（14 个工具）、Pipeline API、配置管理、项目 CRUD、消息链路、协作状态
+
+### 16.3 修复记录 (2026-04-08)
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `test_api_integration.py` 引用旧 agent 名称（assistant/coder/reviewer/researcher） | 更新为 Pipeline 角色名（analyst/architect/developer/tester/release） |
+| 2 | `test_api_integration.py` 工具数量断言过时（==13） | 新增 read_file、write_file 工具检查 |
+| 3 | `test_api_integration.py` Agent 响应断言在无 LLM 环境失败 | 增加 LLM 不可用时的优雅跳过 |
+| 4 | `test_api_integration.py` 缺少 Pipeline API 测试 | 新增 Pipeline API 集成测试 |
+| 5 | `test_regression.py` 引用旧 agent 名称 | 更新为新角色名 |
+| 6 | `test_regression_v3.py` agent 数量断言（==4） | 更新为 5 |
+| 7 | `requirements.txt` 与 `requirements-test.txt` pytest 版本冲突 | 统一使用 pytest>=8.0 |
+
+### 16.4 独立验证 (2026-04-08 18:05 CST)
+
+**环境**: Linux 6.8.0-100-generic, Python 3.12, 从 GitHub 重新 clone 独立验证。
+
+#### 单元测试
+
+- **命令**: `python3 -m pytest backend/tests/ -v`
+- **结果**: **233/233 PASSED** ✅
+- **耗时**: 79.17s
+- **警告**: 343（均为 SQLAlchemy/Pydantic/FastAPI 弃用警告，非功能性问题）
+
+#### 集成测试 (test_api_integration.py)
+
+- **命令**: `python3 tests/test_api_integration.py`（需后端运行）
+- **结果**: **24/24 PASSED** ✅
+- **覆盖**: 健康检查、5 个 Pipeline 角色注册、14 个工具注册、Pipeline API、配置管理、项目 CRUD、消息链路、协作状态
+
+#### 回归测试 (test_regression.py)
+
+- **结果**: **10/14 PASSED**（71%）
+- **通过**: API 端点（status/health/agents/tools）、消息发送、web_search、execute_code
+- **失败分析**:
+  - `GET /api/projects` → 预期有项目但无（测试环境无项目数据）
+  - `Agent 自动响应` → 未配置 LLM，Agent 无法生成回复
+  - `retrieve_memory` → 未配置 LLM，Agent 未调用工具
+  - `GET / (前端)` → 前端服务未启动（端口 3001）
+- **结论**: 所有失败均为**环境限制**（无 LLM、无前端），非代码缺陷
+
+#### 代码审查
+
+- **TODO/FIXME**: 仅 2 处
+  - `collaboration.py:80` — 基类抽象方法 `raise NotImplementedError`（设计模式，正确）
+  - `test_chatroom.py:264` — 注释中的旧 TODO，实际协作逻辑已完整实现
+- **未完成功能**: 无
+
+#### 验证结论
+
+系统所有核心功能已实现完成，单元测试和集成测试 100% 通过。回归测试中的失败均为测试环境限制（未配置 LLM、未启动前端），非代码质量问题。
+
+### 16.5 E2E 集成测试 (2026-04-09)
+
+**环境**: Linux 6.8.0-100-generic, Python 3.12.3, pytest 9.0.3。
+
+#### 全量单元测试
+
+- **命令**: `python3 -m pytest backend/tests/ backend/test_pipeline.py -v`
+- **结果**: **252/252 PASSED** ✅
+- **耗时**: 84.28s
+
+#### E2E 集成测试 (test_integration_e2e.py)
+
+- **命令**: `python3 -m pytest tests/test_integration_e2e.py -v`
+- **结果**: **35/35 PASSED** ✅
+- **耗时**: 9.80s
+- **覆盖模块**:
+  - 健康检查与状态 (3)
+  - Agent 注册与角色验证 (4)
+  - 项目 CRUD 完整流程 (5)
+  - 消息发送与接收 (1)
+  - Pipeline API 全生命周期：创建/启动/暂停/恢复/阶段查询 (5)
+  - 两级 LLM 配置管理 (4)
+  - 工具注册与执行 (2)
+  - Agent 间协作与任务委托 (3)
+  - 前端页面 (1)
+  - 完整业务流程：多阶段 Pipeline + 多项目并行 (2)
+  - 错误处理与边界情况 (5)
+
+#### Bug 修复
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `RateLimitMiddleware` 在 TestClient 环境下 `request.client` 为 None 导致 500 | 增加空值保护：`request.client.host if request.client else "testclient"` |
+
+#### 验证结论
+
+所有 287 个测试（252 单元 + 35 E2E 集成）100% 通过。系统功能完整，覆盖 PRD 中所有验收标准。
+
+---
+
+## 17. 已知问题
+
+### 16.1 前端刷新丢失状态
+
+**问题**：页面刷新后，聊天消息和事件卡片全部丢失。
+
+**根因**：
+
+| 数据 | 存储 | 刷新后 | 说明 |
+|------|------|--------|------|
+| `messages` | 数据库（`messages` 表） | ❌ 丢失 | 数据库有数据但前端未调 `loadMessages()` 恢复 |
+| `pipelineCards` | 仅前端内存 | ❌ 丢失 | LLM/工具/Skill 卡片无持久化，仅 SSE/WS 实时推送 |
+
+**待修复**：
+
+1. **Messages 恢复**（简单）：`selectProject()` 时调用 `GET /api/chatrooms/{id}/messages` 拉取历史消息
+2. **Pipeline Cards 恢复**（需后端配合）：
+   - 需要 `GET /api/audit/timeline` 接口回放历史事件
+   - 或在 `pipeline_stages` / `events` 表中存储卡片数据
+   - 前端页面加载时调用该接口恢复卡片流
+
+**优先级**：P2（不影响核心功能，但影响体验）
+
+### 16.2 项目 Workspace 未隔离
+
+**问题**：所有 room 的 Agent 共享同一个文件目录，无项目级隔离。
+
+**现状**：
+
+| 路径 | Workspace | 问题 |
+|------|-----------|------|
+| Pipeline 引擎 | `data/workspaces/run_{id}` | 按 run 隔离，粒度应为 project |
+| 聊天室 Tools | 全局 `CATOWN_WORKSPACE` 或 `os.getcwd()` | 所有 room 共享，完全无隔离 |
+
+**PRD 设计**（§6.1）：
+
+```
+projects/
+└── {project_id}/
+    ├── PRD.md
+    ├── tech-spec.md
+    ├── src/
+    ├── tests/
+    └── .catown/
+```
+
+**待修复**：
+
+1. 项目创建时自动创建 `projects/{project_id}/` 目录
+2. 工具注册改为 per-project：每个 room 的 Agent 拿到指向自己项目目录的工具实例
+3. `_validate_path` 校验确保 Agent 无法跨项目读写
+4. Pipeline 引擎的 workspace 改为 `projects/{project_id}/` 而非 `data/workspaces/run_{id}`
+
+**优先级**：P1（PRD 核心约束，影响多项目并行安全性）
+
+---
+
+## 18. 快速启动
+
+### 17.1 安装依赖
+
+```bash
+cd backend && pip install -r requirements.txt
+```
+
+### 17.2 配置 LLM
+
+推荐先运行 `./run.sh`（Windows 用 `run.bat`）初始化 `${CATOWN_HOME:-~/.catown}`，然后编辑 `${CATOWN_HOME:-~/.catown}/config/agents.json`。
+
+源码模板位于 `backend/configs/agents.json`，首次启动会自动复制到运行时目录。在 `global_llm` 段设置 LLM 连接信息：
+
+```json
+{
+  "global_llm": {
+    "provider": {
+      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+      "apiKey": "${LLM_API_KEY}",
+      "models": [{ "id": "your-model-id", ... }]
+    },
+    "default_model": "your-model-id"
+  }
+}
+```
+
+也可在 `${CATOWN_HOME:-~/.catown}/.env` 中配置：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
+
+### 17.3 启动
+
+```bash
+./run.sh
+```
+
+或手动启动：
+
+```bash
+cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+- **Web 界面**: http://localhost:8000
+- **API 文档**: http://localhost:8000/docs
+
+---
+
+## 19. 常见问题
+
+### Q: Agent 没有回复
+
+检查 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中的 LLM 配置是否正确，API Key 是否有效。可通过 `GET /api/config` 确认当前配置。
+
+### Q: 测试失败，提示 agent 名称找不到
+
+确认 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中包含 6 个角色：`analyst`、`architect`、`developer`、`tester`、`release`、`assistant`。
+
+### Q: Pipeline 启动后卡在某个阶段
+
+查看后端日志，可能是 LLM 超时或工具执行失败。手动审批 Gate 或通过 API 打回重做。
+
+### Q: Docker 部署
+
+```bash
+docker-compose up -d
+```
+
+需挂载 `/var/lib/catown` 持久化运行时数据；如需自定义配置，可挂载 `/var/lib/catown/config/agents.json` 或设置 `CATOWN_HOME`。
+## 20. UI/UX Pro Max Skill 集成规划
 
 ### 20.1 背景
+
+当前 7 个预置 Skill 全部是文本/代码导向。要让 Catown 成为真正的 AI 软件工厂，需要引入 UI/UX 专业设计类 Skill，让 Agent 能生成高质量前端界面并闭环验证。
+
+### 20.2 能力需求
+
+| 能力 | 说明 |
+|------|------|
+| 视觉生成 | 生成 HTML/CSS/组件代码 |
+| 视觉验证 | 截图预览，确认渲染效果 |
+| 迭代闭环 | 生成 → 截图 → 对比 → 修改 |
+| 设计规范注入 | 设计系统/tokens/组件库约束 |
+| 响应式测试 | 多分辨率截图对比 |
+| 设计稿解析 | 读取截图/设计稿并理解 |
+
+### 20.3 现状差距
+
+| 维度 | 现状 | 差距 | 优先级 |
+|------|------|------|--------|
+| Skill 配置框架 | ✅ 够用 | 无 | — |
+| SOUL 注入 | ✅ 够用 | 无 | — |
+| Pipeline 扩展 | ✅ 够用 | 无 | — |
+| 工具层（screenshot/browser） | ✅ 已实现 | screenshot ✅ + browser ✅（Playwright） | — |
+| 执行环境（Node.js/浏览器） | ✅ 已实现 | execute_code 支持 node 语言 | — |
+| 专门 UI Agent 角色 | ❌ 缺失 | 需新增 | P1 |
+| 截图式审计/记忆 | ❌ 缺失 | 需新增 | P1 |
+| 设计资产产出物类型 | ⚠️ 不足 | 需扩展 | P2 |
+| 设计稿解析 | ❌ 缺失 | 需新增 | P2 |
+
+**核心结论**：Skill 配置框架和注入机制完全兼容，但工具层（screenshot + browser）和执行环境（Node.js）是硬瓶颈。
+
+### 20.4 实施阶段
+
+#### Phase 1 — 硬门槛
+
+| 新增 | 说明 |
+|------|------|
+| `screenshot` 工具 | ✅ 已实现 — Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
+| `browser` 工具 | ✅ 已实现 — Playwright 自动化（navigate/click/fill/type/screenshot/evaluate 等 15 个动作） |
+| `execute_code` 增强 | ✅ 已实现 — 支持 Python + Node.js 双语言沙箱 |
+| `ui-designer` Agent | 专门的 UI 设计师角色，独立 SOUL |
+
+#### Phase 2 — 闭环验证
+
+| 新增 | 说明 |
+|------|------|
+| 截图对比能力 | baseline vs actual 差异检测 |
+| 截图式审计 | 截图存入审计日志和记忆体系 |
+| `ui-ux-pro-max` Skill | 完整的 prompt_fragment + 工具绑定 |
+
+#### Phase 3 — 高级能力
+
+| 新增 | 说明 |
+|------|------|
+| 设计稿解析 | 图片 → 结构化需求 |
+| 多分辨率响应式测试 | 自动化 viewport 切换 |
+| 设计资产产出物管理 | design_spec/component/screenshot 类型 |
+
+### 20.5 需修改的模块
+
+| 模块 | 改动 |
+|------|------|
+| 工具注册 (`tools/`) | 新增 screenshot、browser 工具实现 |
+| `execute_code` | 增加 Node.js 运行时支持 |
+| `agents.json` | 新增 ui-designer 角色 |
+| `skills.json` | 新增 ui-ux-pro-max Skill |
+| `pipelines.json` | Pipeline 中可引用 ui-designer |
+| 审计体系 | 支持截图类型的审计记录 |
+| 记忆体系 | 支持截图标注存入长期记忆 |
+| 产出物模型 | 新增设计资产类型 |
+| 前端 Dashboard | 产出物预览支持截图展示 |
+
+> 详见 [ADR-007](docs/ADR-007-ui-ux-skill.md)。
+
+---
+
+## 21. 知识图谱 Skill 集成规划
+
+### 21.1 背景
+
+Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效协作。当前通过 `read_file` 逐个读取文件，效率低、缺乏全局视角、新 Agent 入驻慢。需要引入代码知识图谱能力，让 Agent 快速获取项目的结构化知识。
+
+### 21.2 决策
+
+**采用方案 A：Skills 集成，建图需人控，查询 Agent 自主。**（详见 [ADR-004](../catown.wiki/ADR-004-knowledge-graph.md)）
+
+核心原则：**建图由人决策，查询由 Agent 自主。**
+
+| 操作 | 决策方 | 理由 |
+|------|--------|------|
+| 建图（`graphify . --no-viz`） | BOSS 审批 | 需要 LLM API 调用，有时间和费用成本；不是所有项目都需要知识图谱 |
+| 查询（`graphify query`） | Agent 自主 | 纯本地计算，毫秒级响应，无成本 |
+| 增量更新（`graphify . --update`） | BOSS 审批 | 同样涉及 LLM API 调用 |
+
+### 21.3 Skill 定义
+
+```json
+{
+  "knowledge-graph": {
+    "name": "知识图谱",
+    "description": "基于 graphify 构建和查询项目代码知识图谱",
+    "required_tools": ["execute_code", "read_file", "write_file"],
+    "category": "analysis",
+    "levels": {
+      "hint": "知识图谱: 代码任务前检查 graphify-out/，查询为本地计算无需审批",
+      "guide": "## 知识图谱\n- 处理代码相关任务前，检查项目中是否存在 graphify-out/graph.json\n- 不存在 → 向 BOSS 请求建图许可\n- 已存在 → 可直接读取 GRAPH_REPORT.md 获取项目结构概览\n- 具体查询 → 自主执行 graphify query（无需审批）\n- 项目文件变更后 → 向 BOSS 请求增量更新许可",
+      "full": "## 知识图谱完整指南\n\n### 建图（需 BOSS 审批）\n```bash\ngraphify . --no-viz\n```\n\n### 查询（Agent 自主）\n```bash\ngraphify query \"模块 A 依赖哪些外部库\" --graph graphify-out/graph.json\n```\n\n### 产出物\n- graphify-out/graph.json — 可查询的图数据\n- graphify-out/GRAPH_REPORT.md — 结构概览\n- graphify-out/cache/ — 增量更新缓存"
+    }
+  }
+}
+```
+
+### 21.4 适用 Agent
+
+| Agent | 是否配置 | 理由 |
+|-------|---------|------|
+| developer | ✅ | 核心使用者，编码时频繁需要理解代码结构 |
+| architect | ✅ | 设计架构时需要了解现有代码依赖 |
+| analyst | 可选 | 需求分析阶段可能代码尚未存在 |
+| tester | 可选 | 测试时可能需要理解代码结构 |
+| release | ❌ | 发布阶段不涉及代码理解 |
+
+### 21.5 需修改的模块
+
+| 模块 | 改动 | 状态 |
+|------|------|------|
+| `configs/skills.json` | 新增 knowledge-graph skill 定义（hint/guide/full 三级） | ✅ 完成 |
+| `configs/agents.json` | developer/architect 的 skills 列表加入 knowledge-graph | ⏳ 待做 |
+| `tools/execute_code.py` | 用于执行 graphify 命令 | ✅ 无改动（已支持） |
+| Agent 建图审批流程 | Agent 发起建图请求 → Choice Box → BOSS 审批 | ⏳ 待做（依赖 Choice Box） |
+
+### 21.6 决策理由
+
+**为什么不选方案 B（Pipeline 集成）**：
+- 不是所有项目都需要；BOSS 失去控制权；graphify 快速迭代，锁定在 pipeline 里维护成本高
+
+**为什么不选方案 C（纯手动）**：
+- Agent 无法自主触发；无法融入 Agent 上下文
+
+**为什么方案 A 最优**：
+- 按需激活、成本可控、查询零成本、与 Skills 体系天然契合、独立升级
+
+---
+
+## 22. 上下文压缩系统
+
+### 22.1 背景
 
 Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码读取、测试结果、Git 操作、构建日志），直接进入 LLM 上下文窗口。一个中型项目的完整 Pipeline 执行，工具输出可达 100K+ tokens，导致：
 
@@ -1809,7 +2215,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 
 详细竞品分析见 [ADR-009](ADR-009-context-compression.md)。
 
-### 20.2 需求概述
+### 22.2 需求概述
 
 | 需求 ID | 需求名称 | 优先级 | 描述 |
 |---------|---------|--------|------|
@@ -1825,7 +2231,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 | CC-010 | 跨阶段摘要 | P0 | Agent stage 结束后生成结构化摘要 JSON，注入下一阶段 Agent 上下文 |
 | CC-011 | Dashboard Token Savings 面板 | P1 | 前端展示实时压缩率、累计节省、按命令类型分布、趋势图 |
 
-### 20.3 详细需求
+### 22.3 详细需求
 
 #### CC-001: 工具输出过滤器框架
 
@@ -1986,7 +2392,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 - 面板数据与 token_tracking 表一致
 - 页面加载时间 < 2s
 
-### 20.4 实施计划
+### 22.4 实施计划
 
 | 阶段 | 需求 | 预计工时 | 产出 |
 |------|------|---------|------|
@@ -1995,7 +2401,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 | Phase 3 | CC-005/006 P1 过滤器 + CC-009 Token 追踪 + CC-011 Dashboard | 3 天 | 2 个过滤器 + tracking + 面板 |
 | Phase 4 | CC-007 通用过滤器 | 1 天 | generic_filter.py |
 
-### 20.5 预期收益
+### 22.5 预期收益
 
 | 场景 | 当前 token 消耗 | 压缩后 | 节省 |
 |------|----------------|--------|------|
@@ -2004,7 +2410,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 | 测试输出 (pytest) | ~25K | ~2.5K | -90% |
 | Git 操作 (20 次) | ~15K | ~3K | -80% |
 
-### 20.6 关键约束
+### 22.6 关键约束
 
 1. **Agent 零改动**：过滤在工具执行层完成，不改 Agent prompt、SOUL、配置
 2. **Fail-Safe**：过滤失败必须 fallback 到原始输出
@@ -2014,180 +2420,7 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 ---
 
 
-## 15. 验收标准
-
-### 15.1 功能验收
-
-- [x] 提交原始需求后，Pipeline 自动执行 5 个阶段
-- [x] 每个阶段的 Agent 使用正确的 system_prompt 和工具
-- [x] 阶段产出物保存到 workspace，下一阶段能读取
-- [x] Gate=manual 的阶段暂停等待人工审批
-- [x] BOSS 可以通过 Web UI 暂停/继续/打回/审批
-- [x] Agent 间可以互相发消息，BOSS 能实时看到
-- [x] 每个 Agent 的 LLM 模型独立配置，来源 agents.json
-- [x] 错误自动重试，超过阈值暂停等人工
-- [x] 工具白名单运行时校验：Agent 仅能调用 agents.json 中声明的工具
-- [x] 项目 Workspace 隔离：路径穿越检测 + symlink 防护 + .catown 目录保护
-
-### 15.2 技术验收
-
-- [x] LLM 主配置来源 agents.json，密钥可通过 `${LLM_API_KEY}` / `.env` 注入
-- [x] Pipeline 状态持久化到数据库
-- [x] Agent 协作消息持久化到数据库
-- [x] WebSocket 实时推送 Pipeline 状态变更
-- [x] _validate_path 统一路径校验（symlink 解析 + 目录穿越 + .catown 保护）
-- [x] _execute_tool 白名单校验（区分未配置/空列表/白名单三种状态）
-- [~] Docker 部署正常 (Dockerfile/docker-compose.yml 已配置，待有 Docker 环境时验证)
-
----
-
-## 19. UI/UX Pro Max Skill 集成规划
-
-### 19.1 背景
-
-当前 7 个预置 Skill 全部是文本/代码导向。要让 Catown 成为真正的 AI 软件工厂，需要引入 UI/UX 专业设计类 Skill，让 Agent 能生成高质量前端界面并闭环验证。
-
-### 19.2 能力需求
-
-| 能力 | 说明 |
-|------|------|
-| 视觉生成 | 生成 HTML/CSS/组件代码 |
-| 视觉验证 | 截图预览，确认渲染效果 |
-| 迭代闭环 | 生成 → 截图 → 对比 → 修改 |
-| 设计规范注入 | 设计系统/tokens/组件库约束 |
-| 响应式测试 | 多分辨率截图对比 |
-| 设计稿解析 | 读取截图/设计稿并理解 |
-
-### 19.3 现状差距
-
-| 维度 | 现状 | 差距 | 优先级 |
-|------|------|------|--------|
-| Skill 配置框架 | ✅ 够用 | 无 | — |
-| SOUL 注入 | ✅ 够用 | 无 | — |
-| Pipeline 扩展 | ✅ 够用 | 无 | — |
-| 工具层（screenshot/browser） | ✅ 已实现 | screenshot ✅ + browser ✅（Playwright） | — |
-| 执行环境（Node.js/浏览器） | ✅ 已实现 | execute_code 支持 node 语言 | — |
-| 专门 UI Agent 角色 | ❌ 缺失 | 需新增 | P1 |
-| 截图式审计/记忆 | ❌ 缺失 | 需新增 | P1 |
-| 设计资产产出物类型 | ⚠️ 不足 | 需扩展 | P2 |
-| 设计稿解析 | ❌ 缺失 | 需新增 | P2 |
-
-**核心结论**：Skill 配置框架和注入机制完全兼容，但工具层（screenshot + browser）和执行环境（Node.js）是硬瓶颈。
-
-### 19.4 实施阶段
-
-#### Phase 1 — 硬门槛
-
-| 新增 | 说明 |
-|------|------|
-| `screenshot` 工具 | ✅ 已实现 — Headless Chromium 截图，支持全页面/指定元素/多分辨率 |
-| `browser` 工具 | ✅ 已实现 — Playwright 自动化（navigate/click/fill/type/screenshot/evaluate 等 15 个动作） |
-| `execute_code` 增强 | ✅ 已实现 — 支持 Python + Node.js 双语言沙箱 |
-| `ui-designer` Agent | 专门的 UI 设计师角色，独立 SOUL |
-
-#### Phase 2 — 闭环验证
-
-| 新增 | 说明 |
-|------|------|
-| 截图对比能力 | baseline vs actual 差异检测 |
-| 截图式审计 | 截图存入审计日志和记忆体系 |
-| `ui-ux-pro-max` Skill | 完整的 prompt_fragment + 工具绑定 |
-
-#### Phase 3 — 高级能力
-
-| 新增 | 说明 |
-|------|------|
-| 设计稿解析 | 图片 → 结构化需求 |
-| 多分辨率响应式测试 | 自动化 viewport 切换 |
-| 设计资产产出物管理 | design_spec/component/screenshot 类型 |
-
-### 19.5 需修改的模块
-
-| 模块 | 改动 |
-|------|------|
-| 工具注册 (`tools/`) | 新增 screenshot、browser 工具实现 |
-| `execute_code` | 增加 Node.js 运行时支持 |
-| `agents.json` | 新增 ui-designer 角色 |
-| `skills.json` | 新增 ui-ux-pro-max Skill |
-| `pipelines.json` | Pipeline 中可引用 ui-designer |
-| 审计体系 | 支持截图类型的审计记录 |
-| 记忆体系 | 支持截图标注存入长期记忆 |
-| 产出物模型 | 新增设计资产类型 |
-| 前端 Dashboard | 产出物预览支持截图展示 |
-
-> 详见 [ADR-007](docs/ADR-007-ui-ux-skill.md)。
-
----
-
-## 20. 知识图谱 Skill 集成规划
-
-### 20.1 背景
-
-Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效协作。当前通过 `read_file` 逐个读取文件，效率低、缺乏全局视角、新 Agent 入驻慢。需要引入代码知识图谱能力，让 Agent 快速获取项目的结构化知识。
-
-### 20.2 决策
-
-**采用方案 A：Skills 集成，建图需人控，查询 Agent 自主。**（详见 [ADR-004](../catown.wiki/ADR-004-knowledge-graph.md)）
-
-核心原则：**建图由人决策，查询由 Agent 自主。**
-
-| 操作 | 决策方 | 理由 |
-|------|--------|------|
-| 建图（`graphify . --no-viz`） | BOSS 审批 | 需要 LLM API 调用，有时间和费用成本；不是所有项目都需要知识图谱 |
-| 查询（`graphify query`） | Agent 自主 | 纯本地计算，毫秒级响应，无成本 |
-| 增量更新（`graphify . --update`） | BOSS 审批 | 同样涉及 LLM API 调用 |
-
-### 20.3 Skill 定义
-
-```json
-{
-  "knowledge-graph": {
-    "name": "知识图谱",
-    "description": "基于 graphify 构建和查询项目代码知识图谱",
-    "required_tools": ["execute_code", "read_file", "write_file"],
-    "category": "analysis",
-    "levels": {
-      "hint": "知识图谱: 代码任务前检查 graphify-out/，查询为本地计算无需审批",
-      "guide": "## 知识图谱\n- 处理代码相关任务前，检查项目中是否存在 graphify-out/graph.json\n- 不存在 → 向 BOSS 请求建图许可\n- 已存在 → 可直接读取 GRAPH_REPORT.md 获取项目结构概览\n- 具体查询 → 自主执行 graphify query（无需审批）\n- 项目文件变更后 → 向 BOSS 请求增量更新许可",
-      "full": "## 知识图谱完整指南\n\n### 建图（需 BOSS 审批）\n```bash\ngraphify . --no-viz\n```\n\n### 查询（Agent 自主）\n```bash\ngraphify query \"模块 A 依赖哪些外部库\" --graph graphify-out/graph.json\n```\n\n### 产出物\n- graphify-out/graph.json — 可查询的图数据\n- graphify-out/GRAPH_REPORT.md — 结构概览\n- graphify-out/cache/ — 增量更新缓存"
-    }
-  }
-}
-```
-
-### 20.4 适用 Agent
-
-| Agent | 是否配置 | 理由 |
-|-------|---------|------|
-| developer | ✅ | 核心使用者，编码时频繁需要理解代码结构 |
-| architect | ✅ | 设计架构时需要了解现有代码依赖 |
-| analyst | 可选 | 需求分析阶段可能代码尚未存在 |
-| tester | 可选 | 测试时可能需要理解代码结构 |
-| release | ❌ | 发布阶段不涉及代码理解 |
-
-### 20.5 需修改的模块
-
-| 模块 | 改动 | 状态 |
-|------|------|------|
-| `configs/skills.json` | 新增 knowledge-graph skill 定义（hint/guide/full 三级） | ✅ 完成 |
-| `configs/agents.json` | developer/architect 的 skills 列表加入 knowledge-graph | ⏳ 待做 |
-| `tools/execute_code.py` | 用于执行 graphify 命令 | ✅ 无改动（已支持） |
-| Agent 建图审批流程 | Agent 发起建图请求 → Choice Box → BOSS 审批 | ⏳ 待做（依赖 Choice Box） |
-
-### 20.6 决策理由
-
-**为什么不选方案 B（Pipeline 集成）**：
-- 不是所有项目都需要；BOSS 失去控制权；graphify 快速迭代，锁定在 pipeline 里维护成本高
-
-**为什么不选方案 C（纯手动）**：
-- Agent 无法自主触发；无法融入 Agent 上下文
-
-**为什么方案 A 最优**：
-- 按需激活、成本可控、查询零成本、与 Skills 体系天然契合、独立升级
-
----
-
-## 附录
+## 23. 附录
 
 ### A. 与现有代码的关系
 
@@ -2215,236 +2448,3 @@ Catown 多 Agent 工作流中，Agent 需要理解项目代码结构才能高效
 
 ---
 
-## 16. 验证报告
-
-### 16.1 单元测试 (2026-04-08)
-
-- **总用例**: 233
-- **通过**: 233
-- **失败**: 0
-- **通过率**: 100%
-- **覆盖模块**: Agent、API 路由、聊天室、协作工具、配置模型、核心模块、数据库、文件操作、LLM 客户端、两级 LLM 配置、启动流程、工具注册、WebSocket
-
-### 16.2 集成测试 (2026-04-08)
-
-- **总用例**: 24
-- **通过**: 24
-- **失败**: 0
-- **通过率**: 100%
-- **覆盖**: 健康检查、Agent 注册（5 个 Pipeline 角色）、工具注册（14 个工具）、Pipeline API、配置管理、项目 CRUD、消息链路、协作状态
-
-### 16.3 修复记录 (2026-04-08)
-
-| # | 问题 | 修复 |
-|---|------|------|
-| 1 | `test_api_integration.py` 引用旧 agent 名称（assistant/coder/reviewer/researcher） | 更新为 Pipeline 角色名（analyst/architect/developer/tester/release） |
-| 2 | `test_api_integration.py` 工具数量断言过时（==13） | 新增 read_file、write_file 工具检查 |
-| 3 | `test_api_integration.py` Agent 响应断言在无 LLM 环境失败 | 增加 LLM 不可用时的优雅跳过 |
-| 4 | `test_api_integration.py` 缺少 Pipeline API 测试 | 新增 Pipeline API 集成测试 |
-| 5 | `test_regression.py` 引用旧 agent 名称 | 更新为新角色名 |
-| 6 | `test_regression_v3.py` agent 数量断言（==4） | 更新为 5 |
-| 7 | `requirements.txt` 与 `requirements-test.txt` pytest 版本冲突 | 统一使用 pytest>=8.0 |
-
-### 16.4 独立验证 (2026-04-08 18:05 CST)
-
-**环境**: Linux 6.8.0-100-generic, Python 3.12, 从 GitHub 重新 clone 独立验证。
-
-#### 单元测试
-
-- **命令**: `python3 -m pytest backend/tests/ -v`
-- **结果**: **233/233 PASSED** ✅
-- **耗时**: 79.17s
-- **警告**: 343（均为 SQLAlchemy/Pydantic/FastAPI 弃用警告，非功能性问题）
-
-#### 集成测试 (test_api_integration.py)
-
-- **命令**: `python3 tests/test_api_integration.py`（需后端运行）
-- **结果**: **24/24 PASSED** ✅
-- **覆盖**: 健康检查、5 个 Pipeline 角色注册、14 个工具注册、Pipeline API、配置管理、项目 CRUD、消息链路、协作状态
-
-#### 回归测试 (test_regression.py)
-
-- **结果**: **10/14 PASSED**（71%）
-- **通过**: API 端点（status/health/agents/tools）、消息发送、web_search、execute_code
-- **失败分析**:
-  - `GET /api/projects` → 预期有项目但无（测试环境无项目数据）
-  - `Agent 自动响应` → 未配置 LLM，Agent 无法生成回复
-  - `retrieve_memory` → 未配置 LLM，Agent 未调用工具
-  - `GET / (前端)` → 前端服务未启动（端口 3001）
-- **结论**: 所有失败均为**环境限制**（无 LLM、无前端），非代码缺陷
-
-#### 代码审查
-
-- **TODO/FIXME**: 仅 2 处
-  - `collaboration.py:80` — 基类抽象方法 `raise NotImplementedError`（设计模式，正确）
-  - `test_chatroom.py:264` — 注释中的旧 TODO，实际协作逻辑已完整实现
-- **未完成功能**: 无
-
-#### 验证结论
-
-系统所有核心功能已实现完成，单元测试和集成测试 100% 通过。回归测试中的失败均为测试环境限制（未配置 LLM、未启动前端），非代码质量问题。
-
-### 16.5 E2E 集成测试 (2026-04-09)
-
-**环境**: Linux 6.8.0-100-generic, Python 3.12.3, pytest 9.0.3。
-
-#### 全量单元测试
-
-- **命令**: `python3 -m pytest backend/tests/ backend/test_pipeline.py -v`
-- **结果**: **252/252 PASSED** ✅
-- **耗时**: 84.28s
-
-#### E2E 集成测试 (test_integration_e2e.py)
-
-- **命令**: `python3 -m pytest tests/test_integration_e2e.py -v`
-- **结果**: **35/35 PASSED** ✅
-- **耗时**: 9.80s
-- **覆盖模块**:
-  - 健康检查与状态 (3)
-  - Agent 注册与角色验证 (4)
-  - 项目 CRUD 完整流程 (5)
-  - 消息发送与接收 (1)
-  - Pipeline API 全生命周期：创建/启动/暂停/恢复/阶段查询 (5)
-  - 两级 LLM 配置管理 (4)
-  - 工具注册与执行 (2)
-  - Agent 间协作与任务委托 (3)
-  - 前端页面 (1)
-  - 完整业务流程：多阶段 Pipeline + 多项目并行 (2)
-  - 错误处理与边界情况 (5)
-
-#### Bug 修复
-
-| # | 问题 | 修复 |
-|---|------|------|
-| 1 | `RateLimitMiddleware` 在 TestClient 环境下 `request.client` 为 None 导致 500 | 增加空值保护：`request.client.host if request.client else "testclient"` |
-
-#### 验证结论
-
-所有 287 个测试（252 单元 + 35 E2E 集成）100% 通过。系统功能完整，覆盖 PRD 中所有验收标准。
-
----
-
-## 16. 已知问题
-
-### 16.1 前端刷新丢失状态
-
-**问题**：页面刷新后，聊天消息和事件卡片全部丢失。
-
-**根因**：
-
-| 数据 | 存储 | 刷新后 | 说明 |
-|------|------|--------|------|
-| `messages` | 数据库（`messages` 表） | ❌ 丢失 | 数据库有数据但前端未调 `loadMessages()` 恢复 |
-| `pipelineCards` | 仅前端内存 | ❌ 丢失 | LLM/工具/Skill 卡片无持久化，仅 SSE/WS 实时推送 |
-
-**待修复**：
-
-1. **Messages 恢复**（简单）：`selectProject()` 时调用 `GET /api/chatrooms/{id}/messages` 拉取历史消息
-2. **Pipeline Cards 恢复**（需后端配合）：
-   - 需要 `GET /api/audit/timeline` 接口回放历史事件
-   - 或在 `pipeline_stages` / `events` 表中存储卡片数据
-   - 前端页面加载时调用该接口恢复卡片流
-
-**优先级**：P2（不影响核心功能，但影响体验）
-
-### 16.2 项目 Workspace 未隔离
-
-**问题**：所有 room 的 Agent 共享同一个文件目录，无项目级隔离。
-
-**现状**：
-
-| 路径 | Workspace | 问题 |
-|------|-----------|------|
-| Pipeline 引擎 | `data/workspaces/run_{id}` | 按 run 隔离，粒度应为 project |
-| 聊天室 Tools | 全局 `CATOWN_WORKSPACE` 或 `os.getcwd()` | 所有 room 共享，完全无隔离 |
-
-**PRD 设计**（§6.1）：
-
-```
-projects/
-└── {project_id}/
-    ├── PRD.md
-    ├── tech-spec.md
-    ├── src/
-    ├── tests/
-    └── .catown/
-```
-
-**待修复**：
-
-1. 项目创建时自动创建 `projects/{project_id}/` 目录
-2. 工具注册改为 per-project：每个 room 的 Agent 拿到指向自己项目目录的工具实例
-3. `_validate_path` 校验确保 Agent 无法跨项目读写
-4. Pipeline 引擎的 workspace 改为 `projects/{project_id}/` 而非 `data/workspaces/run_{id}`
-
-**优先级**：P1（PRD 核心约束，影响多项目并行安全性）
-
----
-
-## 17. 快速启动
-
-### 17.1 安装依赖
-
-```bash
-cd backend && pip install -r requirements.txt
-```
-
-### 17.2 配置 LLM
-
-推荐先运行 `./run.sh`（Windows 用 `run.bat`）初始化 `${CATOWN_HOME:-~/.catown}`，然后编辑 `${CATOWN_HOME:-~/.catown}/config/agents.json`。
-
-源码模板位于 `backend/configs/agents.json`，首次启动会自动复制到运行时目录。在 `global_llm` 段设置 LLM 连接信息：
-
-```json
-{
-  "global_llm": {
-    "provider": {
-      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
-      "apiKey": "${LLM_API_KEY}",
-      "models": [{ "id": "your-model-id", ... }]
-    },
-    "default_model": "your-model-id"
-  }
-}
-```
-
-也可在 `${CATOWN_HOME:-~/.catown}/.env` 中配置：`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。
-
-### 17.3 启动
-
-```bash
-./run.sh
-```
-
-或手动启动：
-
-```bash
-cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-- **Web 界面**: http://localhost:8000
-- **API 文档**: http://localhost:8000/docs
-
----
-
-## 18. 常见问题
-
-### Q: Agent 没有回复
-
-检查 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中的 LLM 配置是否正确，API Key 是否有效。可通过 `GET /api/config` 确认当前配置。
-
-### Q: 测试失败，提示 agent 名称找不到
-
-确认 `${CATOWN_HOME:-~/.catown}/config/agents.json` 中包含 6 个角色：`analyst`、`architect`、`developer`、`tester`、`release`、`assistant`。
-
-### Q: Pipeline 启动后卡在某个阶段
-
-查看后端日志，可能是 LLM 超时或工具执行失败。手动审批 Gate 或通过 API 打回重做。
-
-### Q: Docker 部署
-
-```bash
-docker-compose up -d
-```
-
-需挂载 `/var/lib/catown` 持久化运行时数据；如需自定义配置，可挂载 `/var/lib/catown/config/agents.json` 或设置 `CATOWN_HOME`。

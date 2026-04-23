@@ -11,6 +11,7 @@ import type {
   MonitorLogEntry,
   MonitorOverview,
   MonitorRuntimeDetail,
+  MonitorUsageResponse,
   ProjectSummary,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
@@ -57,6 +58,7 @@ type MemoryView = "summary" | "all";
 type SkillsView = "grid" | "browser";
 type SecuritySeverity = "all" | "critical" | "high" | "medium" | "low";
 type BrainFilter = "all" | "runtime" | "tool" | "llm" | "message";
+type BrainTimelineUnit = "minute" | "hour" | "day" | "month";
 type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
 type LogLevel = "all" | "info" | "warn" | "error";
 
@@ -287,6 +289,7 @@ function monitorCreatedAtMs(value: string | null | undefined) {
 function compareMonitorItemsNewest<T extends { id: number; created_at: string | null | undefined }>(left: T, right: T) {
   return monitorCreatedAtMs(right.created_at) - monitorCreatedAtMs(left.created_at) || right.id - left.id;
 }
+
 function mergeMonitorMessages(
   current: MonitorOverview["recent_messages"],
   incoming: MonitorOverview["recent_messages"],
@@ -540,6 +543,7 @@ function brainOperationLabel(event: BrainEvent) {
   }
   if (event.runtimeType === "llm_call") return "llm";
   if (event.runtimeType === "tool_call") return "tool";
+  if (event.runtimeType === "agent_error") return "error";
   return event.runtimeType ? event.runtimeType.replace(/_/g, " ") : "runtime";
 }
 
@@ -770,6 +774,37 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
         variant: "result",
       });
     }
+  } else if (cardType === "agent_error") {
+    const summary = readCardString(card, "summary");
+    const errorText = readCardString(card, "error");
+    const detailMarkdown = readCardString(card, "content");
+    if (summary) {
+      sections.push({
+        label: `Failure Summary · ${routeLabel}`,
+        content: summary,
+        tone: "warning",
+        format: "text",
+        variant: "result",
+      });
+    }
+    if (errorText) {
+      sections.push({
+        label: `Error · ${routeLabel}`,
+        content: errorText,
+        tone: "error",
+        format: "text",
+        variant: "result",
+      });
+    }
+    if (detailMarkdown) {
+      sections.push({
+        label: `Failure Detail · ${routeLabel}`,
+        content: detailMarkdown,
+        tone: "error",
+        format: "text",
+        variant: "raw",
+      });
+    }
   } else {
     const candidates: Array<
       [string, unknown, BrainEventSection["tone"], BrainEventSection["format"], BrainEventSection["variant"]]
@@ -852,25 +887,58 @@ function MetricBar({ value, max = 100 }: { value: number; max?: number }) {
 
 function BarChart({
   items,
+  className = "",
+  barWidth,
+  labelEvery = 1,
+  autoLabels = false,
 }: {
   items: Array<{ label: string; value: number; accent?: string }>;
+  className?: string;
+  barWidth?: number;
+  labelEvery?: number;
+  autoLabels?: boolean;
 }) {
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const [chartWidth, setChartWidth] = useState(0);
   const max = Math.max(1, ...items.map((item) => item.value));
+  const effectiveLabelEvery = autoLabels && chartWidth > 0
+    ? Math.max(1, Math.ceil((items.length * 24) / chartWidth))
+    : labelEvery;
+
+  useEffect(() => {
+    const element = chartRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      setChartWidth(entry.contentRect.width);
+    });
+    observer.observe(element);
+    setChartWidth(element.getBoundingClientRect().width);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="bar-chart">
-      {items.map((item) => {
+    <div
+      ref={chartRef}
+      className={`bar-chart ${className}`.trim()}
+      style={barWidth ? { gridTemplateColumns: `repeat(${items.length}, ${barWidth}px)` } : undefined}
+    >
+      {items.map((item, index) => {
         const height = clamp((item.value / max) * 100, 6, 100);
+        const showLabel = effectiveLabelEvery <= 1 || index % effectiveLabelEvery === 0 || index === items.length - 1;
         return (
-          <div key={item.label} className="bar-column">
+          <div key={`${item.label}-${index}`} className="bar-column">
             <div className="bar-column__value">{formatNumber(item.value)}</div>
-            <div
-              className="bar-column__bar"
-              style={{
-                height: `${height}%`,
-                background: item.accent ?? "linear-gradient(180deg, #71b6ff, #0f6fff)",
-              }}
-            />
-            <div className="bar-column__label">{item.label}</div>
+            <div className="bar-column__plot">
+              <div
+                className="bar-column__bar"
+                style={{
+                  height: `${height}%`,
+                  background: item.accent ?? "linear-gradient(180deg, #71b6ff, #0f6fff)",
+                }}
+              />
+            </div>
+            <div className="bar-column__label">{showLabel ? item.label : ""}</div>
           </div>
         );
       })}
@@ -1200,6 +1268,26 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
     ];
   }
 
+  if (item.type === "agent_error") {
+    const targetEntity = "User";
+    const failureDetail = compactMonitorText(item.response_preview || item.preview) || "Agent stream failed before a final reply was saved.";
+    return [
+      {
+        ...common,
+        id: `runtime-${item.id}-error`,
+        source: fromEntity,
+        operationLabel: "error",
+        fromEntity,
+        toEntity: targetEntity,
+        phase: "inbound",
+        category: "runtime",
+        label: buildCommunicationLabel(fromEntity, targetEntity),
+        detail: failureDetail,
+        tone: "error",
+      },
+    ];
+  }
+
   return [
     {
       ...common,
@@ -1241,6 +1329,7 @@ function compareBrainEventsNewest(left: BrainEvent, right: BrainEvent) {
 
   return right.id.localeCompare(left.id);
 }
+
 function buildBrainEvents(overview: MonitorOverview | null): BrainEvent[] {
   if (!overview) return [];
   const runtimeEvents: BrainEvent[] = overview.recent_runtime.flatMap((item) => buildRuntimeBrainEvents(item));
@@ -1266,7 +1355,6 @@ function buildBrainEvents(overview: MonitorOverview | null): BrainEvent[] {
   }));
 
   return [...runtimeEvents, ...messageEvents].sort(compareBrainEventsNewest);
-
 }
 
 function buildHourlyBuckets(events: BrainEvent[], range: HistoryRange) {
@@ -1302,6 +1390,237 @@ function buildHourlyBuckets(events: BrainEvent[], range: HistoryRange) {
   return buckets;
 }
 
+function buildBrainTimelineBuckets(events: BrainEvent[], unit: BrainTimelineUnit) {
+  const bucketCount = unit === "minute" ? 30 : unit === "hour" ? 24 : unit === "day" ? 30 : 12;
+  if (unit === "month") {
+    const now = new Date();
+    const buckets = Array.from({ length: bucketCount }, (_, index) => {
+      const bucketStart = new Date(now.getFullYear(), now.getMonth() - (bucketCount - 1 - index), 1);
+      return {
+        label: String(bucketStart.getMonth() + 1),
+        year: bucketStart.getFullYear(),
+        month: bucketStart.getMonth(),
+        value: 0,
+      };
+    });
+
+    events.forEach((event) => {
+      if (!event.createdAt) return;
+      const eventDate = new Date(event.createdAt);
+      if (!Number.isFinite(eventDate.getTime())) return;
+      const bucket = buckets.find(
+        (item) => item.year === eventDate.getFullYear() && item.month === eventDate.getMonth(),
+      );
+      if (bucket) bucket.value += 1;
+    });
+
+    return buckets.map(({ label, value }) => ({ label, value }));
+  }
+
+  const now = new Date();
+  const currentBucketStart =
+    unit === "minute"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes())
+      : unit === "hour"
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours())
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const offset = index - (bucketCount - 1);
+    const bucketStart =
+      unit === "minute"
+        ? new Date(
+            currentBucketStart.getFullYear(),
+            currentBucketStart.getMonth(),
+            currentBucketStart.getDate(),
+            currentBucketStart.getHours(),
+            currentBucketStart.getMinutes() + offset,
+          )
+        : unit === "hour"
+          ? new Date(
+              currentBucketStart.getFullYear(),
+              currentBucketStart.getMonth(),
+              currentBucketStart.getDate(),
+              currentBucketStart.getHours() + offset,
+            )
+          : new Date(
+              currentBucketStart.getFullYear(),
+              currentBucketStart.getMonth(),
+              currentBucketStart.getDate() + offset,
+            );
+    const bucketEnd =
+      unit === "minute"
+        ? new Date(
+            bucketStart.getFullYear(),
+            bucketStart.getMonth(),
+            bucketStart.getDate(),
+            bucketStart.getHours(),
+            bucketStart.getMinutes() + 1,
+          )
+        : unit === "hour"
+          ? new Date(
+              bucketStart.getFullYear(),
+              bucketStart.getMonth(),
+              bucketStart.getDate(),
+              bucketStart.getHours() + 1,
+            )
+          : new Date(bucketStart.getFullYear(), bucketStart.getMonth(), bucketStart.getDate() + 1);
+
+    return {
+      label:
+        unit === "minute"
+          ? String(bucketStart.getMinutes()).padStart(2, "0")
+          : unit === "hour"
+            ? String(bucketStart.getHours()).padStart(2, "0")
+            : String(bucketStart.getDate()),
+      start: bucketStart.getTime(),
+      end: bucketEnd.getTime(),
+      value: 0,
+    };
+  });
+
+  events.forEach((event) => {
+    if (!event.createdAt) return;
+    const eventTime = new Date(event.createdAt).getTime();
+    if (!Number.isFinite(eventTime)) return;
+    const bucket = buckets.find((item) => eventTime >= item.start && eventTime < item.end);
+    if (bucket) bucket.value += 1;
+  });
+
+  return buckets.map(({ label, value }) => ({ label, value }));
+}
+
+function brainTimelineLabelStep(unit: BrainTimelineUnit) {
+  if (unit === "minute") return 5;
+  if (unit === "hour") return 3;
+  if (unit === "day") return 5;
+  return 2;
+}
+
+function runtimeTokenTotal(item: MonitorOverview["recent_runtime"][number]) {
+  return (item.tokens_in ?? 0) + (item.tokens_out ?? 0);
+}
+
+function runtimeCost(
+  item: MonitorOverview["recent_runtime"][number],
+  pricing: MonitorOverview["usage_window"]["pricing"],
+) {
+  return ((item.tokens_in ?? 0) / 1000) * pricing.input_per_1k + ((item.tokens_out ?? 0) / 1000) * pricing.output_per_1k;
+}
+
+function isWithinSystemPeriod(value: string | null | undefined, period: "day" | "week" | "month") {
+  if (!value) return false;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return false;
+
+  const now = new Date();
+  const start =
+    period === "day"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      : period === "week"
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7))
+        : new Date(now.getFullYear(), now.getMonth(), 1);
+  const end =
+    period === "day"
+      ? new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1)
+      : period === "week"
+        ? new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7)
+        : new Date(start.getFullYear(), start.getMonth() + 1, 1);
+
+  return date.getTime() >= start.getTime() && date.getTime() < end.getTime();
+}
+
+function buildUsageBuckets(overview: MonitorOverview | null, range: HistoryRange) {
+  const pricing = overview?.usage_window.pricing ?? { input_per_1k: 0, output_per_1k: 0 };
+  const runtime = overview?.recent_runtime ?? [];
+  const bucketCount = range === "1h" ? 12 : range === "6h" ? 6 : range === "24h" ? 24 : range === "7d" ? 7 : 30;
+  const now = new Date();
+  const currentBucketStart =
+    range === "1h"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), Math.floor(now.getMinutes() / 5) * 5)
+      : range === "6h" || range === "24h"
+        ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours())
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const offset = index - (bucketCount - 1);
+    const bucketStart =
+      range === "1h"
+        ? new Date(
+            currentBucketStart.getFullYear(),
+            currentBucketStart.getMonth(),
+            currentBucketStart.getDate(),
+            currentBucketStart.getHours(),
+            currentBucketStart.getMinutes() + offset * 5,
+          )
+        : range === "6h" || range === "24h"
+          ? new Date(
+              currentBucketStart.getFullYear(),
+              currentBucketStart.getMonth(),
+              currentBucketStart.getDate(),
+              currentBucketStart.getHours() + offset,
+            )
+          : new Date(
+              currentBucketStart.getFullYear(),
+              currentBucketStart.getMonth(),
+              currentBucketStart.getDate() + offset,
+            );
+    const bucketEnd =
+      range === "1h"
+        ? new Date(
+            bucketStart.getFullYear(),
+            bucketStart.getMonth(),
+            bucketStart.getDate(),
+            bucketStart.getHours(),
+            bucketStart.getMinutes() + 5,
+          )
+        : range === "6h" || range === "24h"
+          ? new Date(bucketStart.getFullYear(), bucketStart.getMonth(), bucketStart.getDate(), bucketStart.getHours() + 1)
+          : new Date(bucketStart.getFullYear(), bucketStart.getMonth(), bucketStart.getDate() + 1);
+
+    return {
+      label:
+        range === "1h"
+          ? String(bucketStart.getMinutes()).padStart(2, "0")
+          : range === "6h" || range === "24h"
+            ? String(bucketStart.getHours()).padStart(2, "0")
+            : String(bucketStart.getDate()),
+      start: bucketStart.getTime(),
+      end: bucketEnd.getTime(),
+      tokens: 0,
+      cost: 0,
+    };
+  });
+
+  runtime.forEach((item) => {
+    const eventTime = new Date(item.created_at).getTime();
+    if (!Number.isFinite(eventTime)) return;
+    const bucket = buckets.find((candidate) => eventTime >= candidate.start && eventTime < candidate.end);
+    if (!bucket) return;
+    bucket.tokens += runtimeTokenTotal(item);
+    bucket.cost += runtimeCost(item, pricing);
+  });
+
+  return buckets.map(({ label, tokens, cost }) => ({
+    label,
+    tokens,
+    cost: Number(cost.toFixed(4)),
+  }));
+}
+
+function usageTokenTotal(overview: MonitorOverview | null, period: "day" | "week" | "month") {
+  return (overview?.recent_runtime ?? [])
+    .filter((item) => isWithinSystemPeriod(item.created_at, period))
+    .reduce((total, item) => total + runtimeTokenTotal(item), 0);
+}
+
+function usageCostTotal(overview: MonitorOverview | null, period: "day" | "week" | "month") {
+  const pricing = overview?.usage_window.pricing ?? { input_per_1k: 0, output_per_1k: 0 };
+  return (overview?.recent_runtime ?? [])
+    .filter((item) => isWithinSystemPeriod(item.created_at, period))
+    .reduce((total, item) => total + runtimeCost(item, pricing), 0);
+}
+
 function buildAgentDirectory(projects: ProjectSummary[], agents: AgentInfo[]) {
   const directory = new Map<string, AgentInfo & { projects: string[] }>();
 
@@ -1328,6 +1647,7 @@ function buildAgentDirectory(projects: ProjectSummary[], agents: AgentInfo[]) {
 export function MonitorTab() {
   const [activePage, setActivePage] = useState<MonitorPageId>(readInitialPage);
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
+  const [usage, setUsage] = useState<MonitorUsageResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -1340,6 +1660,8 @@ export function MonitorTab() {
   const [skillsView, setSkillsView] = useState<SkillsView>("grid");
   const [securityFilter, setSecurityFilter] = useState<SecuritySeverity>("all");
   const [brainFilter, setBrainFilter] = useState<BrainFilter>("all");
+  const [brainTimelineUnit, setBrainTimelineUnit] = useState<BrainTimelineUnit>("minute");
+  const [brainActivityFilter, setBrainActivityFilter] = useState("");
   const [historyRange, setHistoryRange] = useState<HistoryRange>("24h");
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
   const [logFilter, setLogFilter] = useState("");
@@ -1366,13 +1688,15 @@ export function MonitorTab() {
     }
 
     try {
-      const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
+      const [nextOverview, nextUsage, nextProjects, nextAgents, nextConfig] = await Promise.all([
         api.getMonitorOverview(),
+        api.getMonitorUsage(historyRange),
         api.getProjects(),
         api.getAgents(),
         api.getConfig(),
       ]);
       setOverview(nextOverview);
+      setUsage(nextUsage);
       setProjects(nextProjects);
       setAgents(nextAgents);
       setConfig(nextConfig);
@@ -1385,7 +1709,7 @@ export function MonitorTab() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [historyRange]);
 
   useEffect(() => {
     function handleHashChange() {
@@ -1651,12 +1975,34 @@ export function MonitorTab() {
   const brainEvents = useMemo(() => buildBrainEvents(overview), [overview]);
 
   const filteredBrainEvents = useMemo(
-    () =>
-      brainEvents.filter((event) => {
+    () => {
+      const query = brainActivityFilter.trim().toLowerCase();
+      return brainEvents.filter((event) => {
         if (brainFilter === "all") return true;
         return event.category === brainFilter;
-      }),
-    [brainEvents, brainFilter],
+      }).filter((event) => {
+        if (!query) return true;
+        return [
+          event.label,
+          event.detail,
+          event.source,
+          event.runtimeType,
+          event.operationLabel,
+          event.fromEntity,
+          event.toEntity,
+          event.category,
+          event.phase,
+          event.messageType,
+          event.messageContent,
+          event.projectName,
+          event.chatTitle,
+          event.clientTurnId,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(query));
+      });
+    },
+    [brainActivityFilter, brainEvents, brainFilter],
   );
 
   const filteredSecurityEvents = useMemo(
@@ -1725,23 +2071,42 @@ export function MonitorTab() {
   }, [brainRuntimeDetailLoading, brainRuntimeDetails, expandedBrainEventId, filteredBrainEvents, loadBrainRuntimeDetail]);
 
   const historyBuckets = useMemo(() => buildHourlyBuckets(brainEvents, historyRange), [brainEvents, historyRange]);
+  const brainTimelineBuckets = useMemo(
+    () => buildBrainTimelineBuckets(brainEvents, brainTimelineUnit),
+    [brainEvents, brainTimelineUnit],
+  );
+  const usageBuckets = useMemo(
+    () =>
+      usage?.buckets.map((bucket) => ({
+        label: bucket.label,
+        tokens: bucket.total_tokens,
+        cost: bucket.estimated_cost_usd,
+      })) ?? buildUsageBuckets(overview, historyRange),
+    [historyRange, overview, usage],
+  );
   const tokenBuckets = useMemo(
     () =>
-      historyBuckets.map((bucket, index) => ({
+      usageBuckets.map((bucket) => ({
         label: bucket.label,
-        value: bucket.value * (index + 1) * 120,
+        value: bucket.tokens,
       })),
-    [historyBuckets],
+    [usageBuckets],
   );
   const costBuckets = useMemo(
     () =>
-      historyBuckets.map((bucket, index) => ({
+      usageBuckets.map((bucket) => ({
         label: bucket.label,
-        value: Number((bucket.value * (index + 1) * 0.004).toFixed(3)),
+        value: bucket.cost,
         accent: "linear-gradient(180deg, #7dd3fc, #0ea5e9)",
       })),
-    [historyBuckets],
+    [usageBuckets],
   );
+  const todayTokens = usage?.totals.day.total_tokens ?? usageTokenTotal(overview, "day");
+  const weekTokens = usage?.totals.week.total_tokens ?? usageTokenTotal(overview, "week");
+  const monthTokens = usage?.totals.month.total_tokens ?? usageTokenTotal(overview, "month");
+  const todayCost = usage?.totals.day.estimated_cost_usd ?? usageCostTotal(overview, "day");
+  const weekCost = usage?.totals.week.estimated_cost_usd ?? usageCostTotal(overview, "week");
+  const monthCost = usage?.totals.month.estimated_cost_usd ?? usageCostTotal(overview, "month");
 
   const modelPrimary = modelRows[0]?.name ?? config?.global_llm?.default_model ?? "unknown";
   const autonomyScore = overview
@@ -2166,18 +2531,18 @@ export function MonitorTab() {
         <div className="grid">
           <div className="card">
             <div className="card-title">Today</div>
-            <div className="card-value">{formatNumber(overview?.usage_window.total_tokens)}</div>
-            <div className="card-sub">{formatCost(overview?.usage_window.estimated_cost_usd)}</div>
+            <div className="card-value">{formatNumber(todayTokens)}</div>
+            <div className="card-sub">{formatCost(todayCost)}</div>
           </div>
           <div className="card">
             <div className="card-title">This Week</div>
-            <div className="card-value">{formatNumber((overview?.usage_window.total_tokens ?? 0) * 3)}</div>
-            <div className="card-sub">Temporary projection from current runtime window</div>
+            <div className="card-value">{formatNumber(weekTokens)}</div>
+            <div className="card-sub">{formatCost(weekCost)}</div>
           </div>
           <div className="card">
             <div className="card-title">This Month</div>
-            <div className="card-value">{formatNumber((overview?.usage_window.total_tokens ?? 0) * 10)}</div>
-            <div className="card-sub">TODO real monthly aggregation</div>
+            <div className="card-value">{formatNumber(monthTokens)}</div>
+            <div className="card-sub">{formatCost(monthCost)}</div>
           </div>
           <div className="card">
             <div className="card-title">Trend</div>
@@ -2186,9 +2551,31 @@ export function MonitorTab() {
           </div>
         </div>
 
-        <SectionTitle title="Token Usage (14 days)" subtitle="Using the current monitor snapshot until long-range usage buckets are wired." />
+        <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+          <SectionTitle
+            title="Token Usage"
+            subtitle={`Persisted runtime cards bucketed by system time${usage ? ` · scanned ${formatNumber(usage.scanned_runtime_cards)} LLM calls` : ""}.`}
+          />
+          <div className="inline-actions">
+            {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
+              <button
+                key={range}
+                type="button"
+                className={`time-btn ${historyRange === range ? "active" : ""}`}
+                onClick={() => setHistoryRange(range)}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="card" style={{ marginBottom: 16 }}>
           <BarChart items={tokenBuckets} />
+        </div>
+
+        <SectionTitle title="Estimated Cost Over Time" subtitle="Calculated from bucketed input/output tokens and current pricing." />
+        <div className="card" style={{ marginBottom: 16 }}>
+          <BarChart items={costBuckets} />
         </div>
 
         <SectionTitle title="Cost Breakdown" />
@@ -2601,9 +2988,31 @@ export function MonitorTab() {
           </button>
         </div>
 
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="small-note" style={{ marginBottom: 10 }}>Activity density · last selected range</div>
-          <BarChart items={historyBuckets} />
+        <div className="card activity-timeline-card">
+          <div className="activity-timeline-card__header">
+            <div>
+              <div className="section-title">Activity Timeline</div>
+              <div className="section-subtitle">X-axis: time, grouped by selected unit. Y-axis: event count.</div>
+            </div>
+            <div className="inline-actions">
+              {(["minute", "hour", "day", "month"] as const).map((unit) => (
+                <button
+                  key={unit}
+                  type="button"
+                  className={`time-btn ${brainTimelineUnit === unit ? "active" : ""}`}
+                  onClick={() => setBrainTimelineUnit(unit)}
+                >
+                  {unit}
+                </button>
+              ))}
+            </div>
+          </div>
+          <BarChart
+            items={brainTimelineBuckets}
+            className="bar-chart--compact bar-chart--timeline"
+            labelEvery={brainTimelineLabelStep(brainTimelineUnit)}
+            autoLabels
+          />
         </div>
 
         <div className="filter-row" style={{ marginBottom: 10 }}>
@@ -2617,6 +3026,22 @@ export function MonitorTab() {
               {filter}
             </button>
           ))}
+          <input
+            className="activity-filter-input"
+            type="search"
+            value={brainActivityFilter}
+            onChange={(event) => setBrainActivityFilter(event.target.value)}
+            placeholder="Filter activity..."
+            aria-label="Filter activity list"
+          />
+          {brainActivityFilter ? (
+            <button type="button" className="time-btn" onClick={() => setBrainActivityFilter("")}>
+              Clear
+            </button>
+          ) : null}
+          <span className="small-note" style={{ marginLeft: "auto" }}>
+            {formatNumber(filteredBrainEvents.length)} / {formatNumber(brainEvents.length)}
+          </span>
         </div>
 
         <div className="card">
@@ -2885,7 +3310,7 @@ export function MonitorTab() {
           <div className="card">
             <div className="card-title">Total Turns</div>
             <div className="card-value">{formatNumber(overview?.usage_window.llm_calls)}</div>
-            <div className="card-sub">assistant responses tracked</div>
+            <div className="card-sub">agent responses tracked</div>
           </div>
         </div>
         <div className="split-panels">

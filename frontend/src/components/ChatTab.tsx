@@ -4,7 +4,21 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
+import { FormSuggestionStrip } from "./FormSuggestionStrip";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
+import {
+  DEFAULT_AGENT_TYPE,
+  defaultAgentName,
+  findAgentByType,
+  getAgentDisplayName,
+  getAgentType,
+} from "../utils/agents";
+import {
+  filterAgentSetSuggestions,
+  filterTextSuggestions,
+  readProjectFormSuggestionStore,
+  rememberChatProjectSuggestion,
+} from "../utils/projectFormSuggestions";
 import type {
   AgentInfo,
   ChatCardItem,
@@ -18,6 +32,12 @@ import type {
 const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
 const THREAD_AUTO_SCROLL_THRESHOLD = 72;
 const LARGE_MARKDOWN_HIGHLIGHT_LIMIT = 12000;
+const OVERLAY_MAX_CHATS = 6;
+const OVERLAY_MAX_MESSAGES_PER_CHAT = 2;
+const OVERLAY_MAX_CONTENT_CHARS = 1200;
+const OVERLAY_MAX_STEP_COUNT = 1;
+const OVERLAY_MAX_STEP_LABEL_CHARS = 120;
+const OVERLAY_MAX_STEP_DETAIL_CHARS = 180;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -34,20 +54,148 @@ function readOverlayStore() {
     const raw = window.localStorage.getItem(LOCAL_OVERLAY_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, MessageItem[]>;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return parsed && typeof parsed === "object" ? compactOverlayStore(parsed) : {};
   } catch {
     return {};
   }
 }
 
-function writeOverlayStore(store: Record<string, MessageItem[]>) {
+function trimOverlayText(value: string | undefined, limit: number) {
+  if (!value) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.length > limit ? `${normalized.slice(0, Math.max(limit - 3, 0))}...` : normalized;
+}
+
+function shouldPersistOverlayMessage(message: MessageItem) {
+  return Boolean(message.localOnly || message.optimisticKind || message.isStreaming);
+}
+
+function pickOverlaySteps(message: MessageItem) {
+  const streamSteps = message.streamSteps || [];
+  const liveSteps = streamSteps.filter((step) => step.state === "live");
+  const preferredSteps = liveSteps.length > 0 ? liveSteps.slice(-OVERLAY_MAX_STEP_COUNT) : streamSteps.slice(-OVERLAY_MAX_STEP_COUNT);
+  return preferredSteps.map(sanitizeOverlayStep);
+}
+
+function sanitizeOverlayStep(step: MessageStreamStep): MessageStreamStep {
+  return {
+    id: step.id,
+    label: trimOverlayText(step.label, OVERLAY_MAX_STEP_LABEL_CHARS) || "Step",
+    detail: trimOverlayText(step.detail, OVERLAY_MAX_STEP_DETAIL_CHARS),
+    state: step.state,
+    kind: step.kind,
+    agent: step.agent,
+    tool: step.tool,
+    toolCallIndex: step.toolCallIndex,
+    toolCallId: step.toolCallId,
+  };
+}
+
+function sanitizeOverlayMessage(message: MessageItem): MessageItem {
+  return {
+    id: message.id,
+    agent_id: message.agent_id,
+    content: trimOverlayText(message.content, OVERLAY_MAX_CONTENT_CHARS) || "",
+    message_type: message.message_type,
+    created_at: message.created_at,
+    agent_name: message.agent_name,
+    client_turn_id: message.client_turn_id,
+    isStreaming: message.isStreaming,
+    optimisticKind: message.optimisticKind,
+    localOnly: message.localOnly,
+    streamSteps: pickOverlaySteps(message),
+  };
+}
+
+function compactOverlayStore(store: Record<string, MessageItem[]>, preferredKeys: string[] = []) {
+  const normalizedEntries = Object.entries(store)
+    .map(([key, value]) => {
+      const sanitizedMessages = (Array.isArray(value) ? value : [])
+        .filter(shouldPersistOverlayMessage)
+        .slice(-OVERLAY_MAX_MESSAGES_PER_CHAT)
+        .map(sanitizeOverlayMessage)
+        .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+      return [key, sanitizedMessages] as const;
+    })
+    .filter(([, value]) => value.length > 0);
+
+  const preferredSet = new Set(preferredKeys.filter(Boolean));
+  const preferredEntries = normalizedEntries.filter(([key]) => preferredSet.has(key));
+  const remainingEntries = normalizedEntries
+    .filter(([key]) => !preferredSet.has(key))
+    .sort((left, right) => {
+      const leftLast = left[1][left[1].length - 1];
+      const rightLast = right[1][right[1].length - 1];
+      return new Date(rightLast?.created_at || 0).getTime() - new Date(leftLast?.created_at || 0).getTime();
+    });
+
+  return Object.fromEntries([...preferredEntries, ...remainingEntries].slice(0, OVERLAY_MAX_CHATS));
+}
+
+function writeOverlayStore(store: Record<string, MessageItem[]>, preferredKeys: string[] = []) {
   if (typeof window === "undefined") return;
-  const nextEntries = Object.entries(store).filter(([, value]) => Array.isArray(value) && value.length > 0);
+  let nextStore = compactOverlayStore(store, preferredKeys);
+  const nextEntries = Object.entries(nextStore).filter(([, value]) => Array.isArray(value) && value.length > 0);
   if (nextEntries.length === 0) {
     window.localStorage.removeItem(LOCAL_OVERLAY_STORAGE_KEY);
     return;
   }
-  window.localStorage.setItem(LOCAL_OVERLAY_STORAGE_KEY, JSON.stringify(Object.fromEntries(nextEntries)));
+
+  const persist = (value: Record<string, MessageItem[]>) =>
+    window.localStorage.setItem(LOCAL_OVERLAY_STORAGE_KEY, JSON.stringify(value));
+
+  try {
+    persist(Object.fromEntries(nextEntries));
+  } catch {
+    const orderedKeys = Object.keys(nextStore).sort((left, right) => {
+      const leftMessages = nextStore[left] ?? [];
+      const rightMessages = nextStore[right] ?? [];
+      const leftLast = leftMessages[leftMessages.length - 1];
+      const rightLast = rightMessages[rightMessages.length - 1];
+      return new Date((rightLast?.created_at || 0) as string | number).getTime()
+        - new Date((leftLast?.created_at || 0) as string | number).getTime();
+    });
+    const protectedKeys = new Set(preferredKeys.filter(Boolean));
+    const removableKeys = orderedKeys.filter((key) => !protectedKeys.has(key));
+
+    while (removableKeys.length > 0) {
+      const nextKey = removableKeys.pop();
+      if (!nextKey) continue;
+      delete nextStore[nextKey];
+      try {
+        persist(nextStore);
+        return;
+      } catch {
+        // Keep trimming until the payload fits or nothing remains.
+      }
+    }
+
+    if (preferredKeys.length > 0) {
+      const fallbackStore = compactOverlayStore(
+        Object.fromEntries(
+          preferredKeys
+            .filter((key) => nextStore[key]?.length)
+            .map((key) => [key, (nextStore[key] ?? []).slice(-2).map((message) => ({
+              ...sanitizeOverlayMessage(message),
+              streamSteps: (message.streamSteps || []).slice(-1).map((step) => ({
+                ...sanitizeOverlayStep(step),
+                detail: trimOverlayText(step.detail, 120),
+              })),
+            }))]),
+        ),
+        preferredKeys,
+      );
+      try {
+        persist(fallbackStore);
+        return;
+      } catch {
+        // Fall through to hard reset below.
+      }
+    }
+
+    window.localStorage.removeItem(LOCAL_OVERLAY_STORAGE_KEY);
+  }
 }
 
 function readOverlayMessages(chatId: number | null) {
@@ -58,12 +206,13 @@ function readOverlayMessages(chatId: number | null) {
 function writeOverlayMessages(chatId: number | null, messages: MessageItem[]) {
   const store = readOverlayStore();
   const key = overlayScopeKey(chatId);
-  if (messages.length === 0) {
+  const pendingMessages = messages.filter(shouldPersistOverlayMessage);
+  if (pendingMessages.length === 0) {
     delete store[key];
   } else {
-    store[key] = messages;
+    store[key] = pendingMessages;
   }
-  writeOverlayStore(store);
+  writeOverlayStore(store, [key, "pending"]);
 }
 
 function migrateOverlayMessages(fromChatId: number | null, toChatId: number | null) {
@@ -80,7 +229,7 @@ function migrateOverlayMessages(fromChatId: number | null, toChatId: number | nu
   );
   store[toKey] = nextMessages;
   delete store[fromKey];
-  writeOverlayStore(store);
+  writeOverlayStore(store, [toKey]);
   return nextMessages;
 }
 
@@ -105,6 +254,8 @@ type ChatTabProps = {
   onCloseActivity: () => void;
   onOpenSettings: () => void;
   onRefresh: () => Promise<void>;
+  onSyncProject: () => Promise<void>;
+  syncingProject: boolean;
   onApproveGate: (pipelineId: number) => Promise<void>;
   onRejectGate: (pipelineId: number) => Promise<void>;
   onCreateProjectFromChat: (payload: {
@@ -309,7 +460,7 @@ function decorateCardsWithSystemPromptPresentation(cards: ChatCardItem[]): Decor
       continue;
     }
 
-    const agentName = card.agent || "assistant";
+    const agentName = card.agent || defaultAgentName(DEFAULT_AGENT_TYPE);
     const previousPrompt = previousPromptByAgent.get(agentName);
     const systemPromptPresentation = buildSystemPromptPresentation(card.system_prompt, previousPrompt);
 
@@ -368,7 +519,7 @@ function appendMappedCards(target: Map<number, ThreadCard[]>, messageId: number,
 
 function visibleMessageKey(message: MessageItem) {
   if (message.client_turn_id) {
-    return `${message.agent_name ? "assistant" : "user"}:${message.client_turn_id}`;
+    return `${message.agent_name ? "agent" : "user"}:${message.client_turn_id}`;
   }
   return `id:${message.id}`;
 }
@@ -406,6 +557,8 @@ function cardBadge(card: ThreadCard) {
       return "LLM";
     case "tool_call":
       return "TOOL";
+    case "agent_error":
+      return "ERR";
     case "tool_merge":
       return "TOOLS";
     case "stage_start":
@@ -432,9 +585,20 @@ function cardBadge(card: ThreadCard) {
 function cardTitle(card: ThreadCard) {
   switch (card.kind) {
     case "llm_call":
-      return `${card.agent || "assistant"} contacting LLM`;
+      if (card.finish_reason === "tool_calls") {
+        return `LLM requested tools for ${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)}`;
+      }
+      if (card.finish_reason === "stop") {
+        return `LLM returned final answer to ${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)}`;
+      }
+      if (card.finish_reason === "length") {
+        return `LLM returned partial answer to ${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)}`;
+      }
+      return `${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)} contacting LLM`;
     case "tool_call":
       return card.tool || "Tool call";
+    case "agent_error":
+      return `${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)} stream failed`;
     case "tool_merge":
       return `${card.tool || "tool"} x${card.count}`;
     case "stage_start":
@@ -462,9 +626,19 @@ function cardSummary(card: ThreadCard) {
   const rawSummary = (() => {
     switch (card.kind) {
       case "llm_call":
+        if (card.finish_reason === "tool_calls") {
+          return card.tool_calls && card.tool_calls.length > 0
+            ? `Requested tools: ${card.tool_calls.map((tool) => tool.name || "tool").join(", ")}`
+            : "Model requested tool calls before answering.";
+        }
+        if (card.finish_reason === "length") {
+          return "Model returned a partial answer because the output hit a length limit.";
+        }
         return card.response || "Model response captured.";
       case "tool_call":
         return card.result || "Tool execution recorded.";
+      case "agent_error":
+        return card.error || card.summary || "Agent stream failed before a final reply was saved.";
       case "tool_merge":
         return `${card.count} consecutive ${card.tool || "tool"} calls from ${card.agent || "agent"}.`;
       case "stage_start":
@@ -512,8 +686,17 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
   return toolName ? `${actor} -> LLM (${toolName} result)` : `${actor} -> LLM`;
 }
 
-function llmInboundStepLabel(actor: string) {
-  return `LLM -> ${actor}`;
+function llmInboundStepLabel(actor: string, finishReason?: string) {
+  switch (finishReason) {
+    case "tool_calls":
+      return `LLM -> ${actor} · requested tools`;
+    case "stop":
+      return `LLM -> ${actor} · final answer`;
+    case "length":
+      return `LLM -> ${actor} · partial answer`;
+    default:
+      return `LLM -> ${actor}`;
+  }
 }
 
 function toolCallStepLabel(actor: string, toolName: string) {
@@ -539,12 +722,30 @@ type LlmUsageSummary = {
   totalTokens?: number;
   contextWindow?: number;
   contextUsageRatio?: number;
+  toolCalls?: number;
   llmCalls: number;
 };
 
 function formatUsageNumber(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "";
   return value.toLocaleString("en-US");
+}
+
+function formatCompactTokenCount(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  if (Math.abs(value) < 1000) return `${Math.round(value)}`;
+  const units = [
+    { value: 1_000_000_000, suffix: "b" },
+    { value: 1_000_000, suffix: "m" },
+    { value: 1_000, suffix: "k" },
+  ];
+  for (const unit of units) {
+    if (Math.abs(value) < unit.value) continue;
+    const scaled = value / unit.value;
+    const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 1;
+    return `${scaled.toFixed(digits).replace(/\.0$/, "")}${unit.suffix}`;
+  }
+  return formatUsageNumber(value);
 }
 
 function formatUsagePercent(value?: number) {
@@ -558,13 +759,21 @@ function summarizeLlmUsage(cards: ThreadCard[]): LlmUsageSummary | null {
   let inputTokens = 0;
   let outputTokens = 0;
   let totalTokens = 0;
+  let toolCalls = 0;
   let hasInput = false;
   let hasOutput = false;
   let hasTotal = false;
+  let hasToolCalls = false;
   let contextWindow: number | undefined;
   let contextUsageRatio: number | undefined;
 
   cards.forEach((card) => {
+    if (card.kind === "tool_call") {
+      toolCalls += 1;
+      hasToolCalls = true;
+      return;
+    }
+
     if (card.kind !== "llm_call") return;
     llmCalls += 1;
 
@@ -596,16 +805,16 @@ function summarizeLlmUsage(cards: ThreadCard[]): LlmUsageSummary | null {
     ) {
       contextUsageRatio = card.tokens_in / card.context_window;
     }
+
+    if (!hasToolCalls && Array.isArray(card.tool_calls) && card.tool_calls.length > 0) {
+      toolCalls += card.tool_calls.length;
+    }
   });
 
   if (llmCalls === 0) return null;
   if (!hasTotal && (hasInput || hasOutput)) {
     totalTokens = inputTokens + outputTokens;
     hasTotal = totalTokens > 0;
-  }
-
-  if (!hasInput && !hasOutput && !hasTotal && contextWindow === undefined && contextUsageRatio === undefined) {
-    return null;
   }
 
   return {
@@ -615,6 +824,7 @@ function summarizeLlmUsage(cards: ThreadCard[]): LlmUsageSummary | null {
     totalTokens: hasTotal ? totalTokens : undefined,
     contextWindow,
     contextUsageRatio,
+    toolCalls: toolCalls > 0 ? toolCalls : undefined,
   };
 }
 
@@ -622,17 +832,18 @@ function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat
   if (!summary) return null;
 
   const items: string[] = [];
-  if (typeof summary.inputTokens === "number") items.push(`input ${formatUsageNumber(summary.inputTokens)}`);
-  if (typeof summary.outputTokens === "number") items.push(`output ${formatUsageNumber(summary.outputTokens)}`);
-  if (typeof summary.totalTokens === "number") items.push(`total ${formatUsageNumber(summary.totalTokens)}`);
+  if (typeof summary.inputTokens === "number") items.push(`in ${formatCompactTokenCount(summary.inputTokens)}`);
+  if (typeof summary.outputTokens === "number") items.push(`out ${formatCompactTokenCount(summary.outputTokens)}`);
+  if (typeof summary.totalTokens === "number") items.push(`tok ${formatCompactTokenCount(summary.totalTokens)}`);
   if (summary.contextUsageRatio !== undefined && summary.contextWindow !== undefined) {
-    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} of ${formatUsageNumber(summary.contextWindow)}`);
+    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} · ${formatCompactTokenCount(summary.contextWindow)}`);
   } else if (summary.contextUsageRatio !== undefined) {
     items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)}`);
   } else if (summary.contextWindow !== undefined) {
-    items.push(`window ${formatUsageNumber(summary.contextWindow)}`);
+    items.push(`ctxwin ${formatCompactTokenCount(summary.contextWindow)}`);
   }
-  if (summary.llmCalls > 1) items.push(`${summary.llmCalls} llm calls`);
+  if (typeof summary.toolCalls === "number") items.push(`tools ${summary.toolCalls}`);
+  items.push(`llm ${summary.llmCalls}`);
 
   if (items.length === 0) return null;
 
@@ -649,6 +860,7 @@ function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat
 
 function messageStepStateFromCard(card: ThreadCard): MessageStreamStep["state"] {
   if ("success" in card && card.success === false) return "error";
+  if (card.kind === "agent_error") return "error";
   if (card.kind === "gate_blocked" || card.kind === "gate_rejected") return "error";
   return "done";
 }
@@ -677,7 +889,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(
-          `### Planned Tools\n\n${card.tool_calls
+          `### Requested Tools\n\n${card.tool_calls
             .map(
               (tool) =>
                 `- **${tool.name || "tool"}**${
@@ -701,6 +913,13 @@ function messageStepDetailFromCard(card: ThreadCard) {
             : markdownSection(card.success === false ? "Error" : "Result", card.result, { asMarkdown: true }),
         );
       }
+      return sections.join("\n\n");
+    }
+    case "agent_error": {
+      const sections: string[] = [];
+      if (card.summary) sections.push(markdownSection("Summary", card.summary, { asMarkdown: true }));
+      if (card.error) sections.push(markdownSection("Error", card.error, { asMarkdown: true }));
+      if (card.content) sections.push(markdownSection("Failure Detail", card.content, { asMarkdown: true }));
       return sections.join("\n\n");
     }
     case "tool_merge":
@@ -749,6 +968,11 @@ function messageLlmResponseDetailFromCard(card: DecoratedChatCardItem) {
     const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
     if (timingsMarkdown) sections.push(timingsMarkdown);
   }
+  if (card.finish_reason === "tool_calls") {
+    sections.push("### Status\n\nModel requested more tool output before it could produce a final answer.");
+  } else if (card.finish_reason === "length") {
+    sections.push("### Status\n\nModel returned a partial answer because the output hit a length limit.");
+  }
   const plannedToolsMarkdown = buildPlannedToolsMarkdown(card.tool_calls);
   if (plannedToolsMarkdown) sections.push(plannedToolsMarkdown);
   if (card.response) sections.push(markdownSection("Response", card.response, { asMarkdown: true }));
@@ -785,7 +1009,7 @@ function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: n
         },
         {
           id: `${messageId}-card-${card.id}-${index}-response`,
-          label: llmInboundStepLabel(actor),
+          label: llmInboundStepLabel(actor, card.finish_reason),
           detail: compactCardSummary(card),
           detailContent: messageLlmResponseDetailFromCard(card),
           state: "done",
@@ -818,6 +1042,18 @@ function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: n
         },
       ];
     }
+    case "agent_error":
+      return [
+        {
+          id: `${messageId}-card-${card.id}-${index}-error`,
+          label: `${actor} failed before finishing the turn`,
+          detail: compactCardSummary(card),
+          detailContent: messageStepDetailFromCard(card),
+          state: "error",
+          kind: "agent_message",
+          agent: actor,
+        },
+      ];
     default:
       return [
         {
@@ -1011,7 +1247,7 @@ function inferAgentNameFromLlmStepLabel(label: string) {
 
 function buildPlannedToolsMarkdown(toolCalls: ChatCardItem["tool_calls"]) {
   if (!toolCalls || toolCalls.length === 0) return "";
-  return `### Planned Tools\n\n${toolCalls
+  return `### Requested Tools\n\n${toolCalls
     .map(
       (tool) =>
         `- **${tool.name || "tool"}**${
@@ -1432,6 +1668,16 @@ function renderCardBody(card: ThreadCard) {
           })}
         </>
       );
+    case "agent_error":
+      return (
+        <>
+          {renderMarkdownContent(card.error || card.summary, "message-body chat-card-preview")}
+          {renderMarkdownCollapse("DETAIL", `${card.agent || "agent"} failure detail`, card.content, {
+            copyLabel: "Copy failure detail",
+            copyText: card.content,
+          })}
+        </>
+      );
     case "tool_merge":
       return (
         <details className="chat-json-collapse">
@@ -1580,7 +1826,7 @@ function renderCompactCardBody(card: ThreadCard) {
             <section className="chat-progress-detail-block">
               <div className="chat-progress-detail-block__header">
                 <span className="chat-json-badge">TOOLS</span>
-                <span className="chat-progress-detail-block__label">Tool calls proposed by the model</span>
+                <span className="chat-progress-detail-block__label">Tools requested by the model</span>
               </div>
               <div className="chat-progress-tool-list">
                 {card.tool_calls.map((toolCall, index) => (
@@ -1612,6 +1858,13 @@ function renderCompactCardBody(card: ThreadCard) {
             `${card.tool || "tool"} output`,
             card.result,
           )}
+        </div>
+      );
+    case "agent_error":
+      return (
+        <div className="chat-progress-detail-stack">
+          {renderProgressTextBlock("ERROR", `${card.agent || "agent"} failure`, card.error || card.summary || card.content)}
+          {renderProgressTextBlock("DETAIL", "Failure detail", card.content)}
         </div>
       );
     case "tool_merge":
@@ -1728,6 +1981,7 @@ function compactCardDefaultOpen(card: ThreadCard, isLive: boolean) {
 function compactCardState(card: ThreadCard, isLive: boolean) {
   if (isLive) return "live";
   if (card.kind === "gate_blocked") return "blocked";
+  if (card.kind === "agent_error") return "error";
   if ("success" in card && card.success === false) return "error";
   return "done";
 }
@@ -1750,9 +2004,20 @@ function compactCardSummary(card: ThreadCard) {
   switch (card.kind) {
     case "tool_call":
       return oneLinePreview(card.result, `${card.tool || "Tool"} finished.`);
+    case "agent_error":
+      return oneLinePreview(card.error || card.summary || card.content, "Agent flow failed.");
     case "tool_merge":
       return `${card.count} calls · ${card.tool || "tool"} · latest ${oneLinePreview(card.items[card.items.length - 1]?.result, "completed")}`;
     case "llm_call":
+      if (card.finish_reason === "tool_calls") {
+        return oneLinePreview(
+          card.tool_calls?.map((tool) => tool.name || "tool").join(", "),
+          "Model requested more tool calls.",
+        );
+      }
+      if (card.finish_reason === "length") {
+        return "Model returned a partial answer.";
+      }
       return oneLinePreview(card.response, "Model responded.");
     case "stage_start":
       return oneLinePreview(card.summary || card.content, card.display_name || card.stage || "Stage started");
@@ -2162,6 +2427,8 @@ export function ChatTab({
   onCloseActivity,
   onOpenSettings,
   onRefresh,
+  onSyncProject,
+  syncingProject,
   onApproveGate,
   onRejectGate,
   onCreateProjectFromChat,
@@ -2189,18 +2456,20 @@ export function ChatTab({
     [agents],
   );
   const defaultProjectName = chat?.title?.trim() || (chat ? `Project ${chat.id}` : "");
+  const primaryAgent = useMemo(
+    () => findAgentByType(activeAgents, DEFAULT_AGENT_TYPE) ?? activeAgents[0] ?? null,
+    [activeAgents],
+  );
   const defaultAgentNames = useMemo(() => {
-    if (activeAgents.some((agent) => agent.name === "assistant")) {
-      return ["assistant"];
+    if (primaryAgent) {
+      return [getAgentType(primaryAgent)];
     }
-    if (activeAgents.length > 0) {
-      return [activeAgents[0].name];
-    }
-    return ["assistant"];
-  }, [activeAgents]);
+    return [DEFAULT_AGENT_TYPE];
+  }, [primaryAgent]);
   const [projectNameDraft, setProjectNameDraft] = useState(defaultProjectName);
   const [projectDescriptionDraft, setProjectDescriptionDraft] = useState("");
   const [projectAgentNames, setProjectAgentNames] = useState<string[]>(defaultAgentNames);
+  const [projectSuggestionStore, setProjectSuggestionStore] = useState(() => readProjectFormSuggestionStore());
   const visibleMessages = useMemo(() => {
     const merged = new Map<string, MessageItem>();
     [...messages, ...localOverlayMessages]
@@ -2472,11 +2741,44 @@ export function ChatTab({
     if (!showMentionPicker) return [];
     if (mentionQuery === "") return mentionableAgents;
     return mentionableAgents.filter((agent) => {
-      const name = agent.name.toLowerCase();
+      const displayName = getAgentDisplayName(agent).toLowerCase();
+      const type = getAgentType(agent).toLowerCase();
       const role = agent.role.toLowerCase();
-      return name.includes(mentionQuery) || role.includes(mentionQuery);
+      return displayName.includes(mentionQuery) || type.includes(mentionQuery) || role.includes(mentionQuery);
     });
   }, [mentionQuery, mentionableAgents, showMentionPicker]);
+  const projectNameSuggestions = useMemo(
+    () =>
+      filterTextSuggestions(projectSuggestionStore.chat.names, projectNameDraft).map((value) => ({
+        key: `chat-project-name-${value}`,
+        label: value,
+        value,
+        title: value,
+      })),
+    [projectNameDraft, projectSuggestionStore.chat.names],
+  );
+  const projectDescriptionSuggestions = useMemo(
+    () =>
+      filterTextSuggestions(projectSuggestionStore.chat.descriptions, projectDescriptionDraft, 3).map((value) => ({
+        key: `chat-project-description-${value}`,
+        label: value.length > 48 ? `${value.slice(0, 48)}...` : value,
+        value,
+        title: value,
+      })),
+    [projectDescriptionDraft, projectSuggestionStore.chat.descriptions],
+  );
+  const projectAgentPresetSuggestions = useMemo(
+    () =>
+      filterAgentSetSuggestions(projectSuggestionStore.chat.agentSets, projectAgentNames).map((agentTypes) => ({
+        key: `chat-project-agents-${agentTypes.join("-")}`,
+        label: agentTypes
+          .map((agentType) => getAgentDisplayName(activeAgents.find((agent) => getAgentType(agent) === agentType) ?? null))
+          .join(" + "),
+        value: JSON.stringify(agentTypes),
+        title: agentTypes.map((agentType) => `@${agentType}`).join(", "),
+      })),
+    [activeAgents, projectAgentNames, projectSuggestionStore.chat.agentSets],
+  );
 
   useEffect(() => {
     setProjectNameDraft(defaultProjectName);
@@ -2750,7 +3052,7 @@ export function ChatTab({
       content: "",
       message_type: "text",
       created_at: new Date(now.getTime() + 1).toISOString(),
-      agent_name: "assistant",
+      agent_name: getAgentDisplayName(primaryAgent),
       client_turn_id: clientTurnId,
       isStreaming: true,
       streamSteps: [
@@ -2821,14 +3123,14 @@ export function ChatTab({
     }));
   }, []);
 
-  function insertMention(agentName: string) {
+  function insertMention(agentType: string) {
     setDraft((current) => {
       if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) {
-        return current.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, `$1@${agentName} `);
+        return current.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, `$1@${agentType} `);
       }
 
       const separator = current.length === 0 || /\s$/.test(current) ? "" : " ";
-      return `${current}${separator}@${agentName} `;
+      return `${current}${separator}@${agentType} `;
     });
     setShowMentionPicker(false);
     setSelectedMentionIndex(0);
@@ -2872,7 +3174,7 @@ export function ChatTab({
 
       if ((isEnterKey && !event.shiftKey) || isTabKey) {
         event.preventDefault();
-        insertMention(mentionOptions[selectedMentionIndex]?.name ?? mentionOptions[0].name);
+        insertMention(getAgentType(mentionOptions[selectedMentionIndex] ?? mentionOptions[0]));
         return;
       }
     }
@@ -2900,12 +3202,14 @@ export function ChatTab({
   async function handleConfirmCreateProject() {
     const nextProjectName = projectNameDraft.trim() || defaultProjectName;
     if (!nextProjectName || projectAgentNames.length === 0) return;
-    setShowProjectCreateConfirm(false);
-    await onCreateProjectFromChat({
+    const payload = {
       name: nextProjectName,
       description: projectDescriptionDraft.trim(),
       agent_names: projectAgentNames,
-    });
+    };
+    setShowProjectCreateConfirm(false);
+    await onCreateProjectFromChat(payload);
+    setProjectSuggestionStore((current) => rememberChatProjectSuggestion(current, payload));
   }
 
   const handleApproveGate = useCallback(async (pipelineId: number) => {
@@ -2943,6 +3247,9 @@ export function ChatTab({
   const workspaceCopy = project?.workspace_path?.replace(/\\/g, "/") ?? "";
   const workspaceLabel =
     workspaceCopy.length > 54 ? `...${workspaceCopy.slice(-54)}` : workspaceCopy;
+  const repoLabel = project?.repo_full_name
+    ? `${project.repo_full_name}${project.clone_ref ? ` @ ${project.clone_ref}` : ""}`
+    : "";
   const chatHeading =
     project && chat && chat.id !== project.default_chatroom_id
       ? chat.title
@@ -3049,31 +3356,66 @@ export function ChatTab({
         <div className="chat-header__left">
           <div className="chat-session">
             <h2>{chatHeading}</h2>
-            {project && workspaceLabel ? (
-              <button
-                type="button"
-                className="chat-session__workspace"
-                onClick={() => void onOpenWorkspace()}
-                title={workspaceCopy}
-              >
-                <span className="chat-session__workspace-icon" aria-hidden="true">
-                  <svg viewBox="0 0 16 16" fill="none">
-                    <path
-                      d="M1.75 4.25A1.5 1.5 0 0 1 3.25 2.75H6.1c.34 0 .66.14.9.38l.92.92c.23.24.56.37.9.37h3.93a1.5 1.5 0 0 1 1.5 1.5v5.88a1.5 1.5 0 0 1-1.5 1.5H3.25a1.5 1.5 0 0 1-1.5-1.5V4.25Z"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M1.75 5.5h12.5"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </span>
-                <span>{workspaceLabel}</span>
-              </button>
+            {project ? (
+              <div className="chat-session__meta">
+                {workspaceLabel ? (
+                  <button
+                    type="button"
+                    className="chat-session__workspace"
+                    onClick={() => void onOpenWorkspace()}
+                    title={workspaceCopy}
+                  >
+                    <span className="chat-session__workspace-icon" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none">
+                        <path
+                          d="M1.75 4.25A1.5 1.5 0 0 1 3.25 2.75H6.1c.34 0 .66.14.9.38l.92.92c.23.24.56.37.9.37h3.93a1.5 1.5 0 0 1 1.5 1.5v5.88a1.5 1.5 0 0 1-1.5 1.5H3.25a1.5 1.5 0 0 1-1.5-1.5V4.25Z"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                          strokeLinejoin="round"
+                        />
+                        <path
+                          d="M1.75 5.5h12.5"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    </span>
+                    <span>{workspaceLabel}</span>
+                  </button>
+                ) : null}
+                {project.source_type === "github" && repoLabel ? (
+                  <span className="chat-session__repo" title={project.repo_url || repoLabel}>
+                    <span className="chat-session__repo-icon" aria-hidden="true">
+                      <svg viewBox="0 0 16 16" fill="none">
+                        <path
+                          d="M5.25 3.25h5.5a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-5.5a1.5 1.5 0 0 1-1.5-1.5v-6.5a1.5 1.5 0 0 1 1.5-1.5Z"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                        />
+                        <path
+                          d="M6 6.25h4M6 8h4M6 9.75h2.5"
+                          stroke="currentColor"
+                          strokeWidth="1.2"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    </span>
+                    <span>{repoLabel}</span>
+                  </span>
+                ) : null}
+                {project.source_type === "github" ? (
+                  <button
+                    type="button"
+                    className="chat-session__sync"
+                    onClick={() => void onSyncProject()}
+                    disabled={syncingProject}
+                    title="Fetch and fast-forward the managed GitHub workspace"
+                  >
+                    {syncingProject ? "Syncing..." : "Sync"}
+                  </button>
+                ) : null}
+              </div>
             ) : chatSubheading ? (
               <span>{chatSubheading}</span>
             ) : null}
@@ -3123,7 +3465,8 @@ export function ChatTab({
             <div key={agent.id} className="agent-strip__chip">
               <span className="agent-dot is-active" />
               <div>
-                <strong>{agent.name}</strong>
+                <strong>{getAgentDisplayName(agent)}</strong>
+                <small>@{getAgentType(agent)}</small>
                 <small>{agent.role}</small>
               </div>
             </div>
@@ -3150,16 +3493,21 @@ export function ChatTab({
                       the recent conversation into it.
                     </p>
                   </div>
-                  <div className="project-form chat-inline-decision__form">
-                    <label>
+                  <div className="project-form chat-inline-decision__form settings-form">
+                    <label className="settings-form__field settings-form__field--full">
                       <span>Name</span>
                       <input
                         value={projectNameDraft}
                         onChange={(event) => setProjectNameDraft(event.target.value)}
                         placeholder={defaultProjectName}
                       />
+                      <FormSuggestionStrip
+                        label="Recent"
+                        items={projectNameSuggestions}
+                        onSelect={setProjectNameDraft}
+                      />
                     </label>
-                    <label>
+                    <label className="settings-form__field settings-form__field--full">
                       <span>Description</span>
                       <textarea
                         value={projectDescriptionDraft}
@@ -3167,26 +3515,44 @@ export function ChatTab({
                         placeholder="Optional project brief"
                         rows={3}
                       />
+                      <FormSuggestionStrip
+                        label="Recent"
+                        items={projectDescriptionSuggestions}
+                        onSelect={setProjectDescriptionDraft}
+                      />
                     </label>
-                    <div>
+                    <div className="settings-form__field settings-form__field--full">
                       <span className="field-label">Agents</span>
                       {activeAgents.length === 0 ? (
                         <p className="chat-inline-decision__hint">No active agents are available yet.</p>
                       ) : (
-                        <div className="agent-selector-grid">
+                        <div className="agent-selector-grid settings-chip-row">
                           {activeAgents.map((agent) => (
                             <button
                               key={agent.id}
                               type="button"
-                              className={`agent-select-chip ${projectAgentNames.includes(agent.name) ? "is-selected" : ""}`}
-                              onClick={() => toggleProjectAgent(agent.name)}
+                              className={`agent-select-chip ${projectAgentNames.includes(getAgentType(agent)) ? "is-selected" : ""}`}
+                              onClick={() => toggleProjectAgent(getAgentType(agent))}
                             >
-                              <strong>{agent.name}</strong>
+                              <strong>{getAgentDisplayName(agent)}</strong>
+                              <small>@{getAgentType(agent)}</small>
                               <span>{agent.role}</span>
                             </button>
                           ))}
                         </div>
                       )}
+                      <FormSuggestionStrip
+                        label="Preset"
+                        items={projectAgentPresetSuggestions}
+                        onSelect={(value) => {
+                          try {
+                            const parsed = JSON.parse(value) as string[];
+                            setProjectAgentNames(parsed);
+                          } catch {
+                            // Ignore malformed local suggestion payloads.
+                          }
+                        }}
+                      />
                     </div>
                   </div>
                   <div className="chat-inline-decision__actions">
@@ -3235,14 +3601,14 @@ export function ChatTab({
                         type="button"
                         className={`agent-chat__mention-item ${index === selectedMentionIndex ? "is-selected" : ""}`}
                         onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => insertMention(agent.name)}
+                        onClick={() => insertMention(getAgentType(agent))}
                         role="option"
                         aria-selected={index === selectedMentionIndex}
                       >
-                        <span className="agent-chat__mention-avatar">{initials(agent.name)}</span>
+                        <span className="agent-chat__mention-avatar">{initials(getAgentDisplayName(agent))}</span>
                         <span className="agent-chat__mention-copy">
-                          <span className="agent-chat__mention-name">@{agent.name}</span>
-                          <span className="agent-chat__mention-role">{agent.role}</span>
+                          <span className="agent-chat__mention-name">@{getAgentType(agent)}</span>
+                          <span className="agent-chat__mention-role">{getAgentDisplayName(agent)} · {agent.role}</span>
                         </span>
                         <span className={`agent-chat__mention-state ${agent.is_active ? "is-active" : ""}`}>
                           {agent.is_active ? "online" : "idle"}
@@ -3295,7 +3661,7 @@ export function ChatTab({
                 </div>
 
                 <div className="agent-chat__toolbar-right">
-                  <span className="compose-status">{sending ? "assistant thinking..." : connectionCopy}</span>
+                  <span className="compose-status">{sending ? `${getAgentDisplayName(primaryAgent)} thinking...` : connectionCopy}</span>
                   <button
                     type="submit"
                     className="chat-send-btn"

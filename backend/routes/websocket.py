@@ -4,7 +4,7 @@ WebSocket 管理器
 """
 import logging
 from typing import Dict, Set
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("catown.websocket")
 
@@ -147,6 +147,8 @@ class WebSocketManager:
                             'sender': data.get('sender')
                         }, chatroom_id)
                 
+            except WebSocketDisconnect:
+                raise
             except Exception as e:
                 logger.error(f"WebSocket receive error: {e}")
                 break

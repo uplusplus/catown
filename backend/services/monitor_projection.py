@@ -106,6 +106,8 @@ def build_runtime_title(card: dict[str, Any]) -> str:
     if card_type == "tool_call":
         tool_name = str(card.get("tool") or "tool")
         return f"{agent} used {tool_name}"
+    if card_type == "agent_error":
+        return f"{agent} stream failed"
     if card_type == "stage_started":
         return f"{agent} started {card.get('display_name') or card.get('stage') or 'stage'}"
     if card_type == "stage_completed":
@@ -130,6 +132,7 @@ def build_runtime_title(card: dict[str, Any]) -> str:
 
 def build_runtime_preview(card: dict[str, Any]) -> str:
     candidates = [
+        card.get("error"),
         card.get("response"),
         card.get("result"),
         card.get("content_preview"),
@@ -228,4 +231,3 @@ def serialize_monitor_runtime_item(
         "arguments_preview": compact_preview(card.get("arguments")),
         "stage": card.get("stage") or card.get("display_name"),
     }
-

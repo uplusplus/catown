@@ -333,6 +333,8 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         await websocket_manager.receive(websocket)
     except WebSocketDisconnect:
+        pass
+    finally:
         await websocket_manager.disconnect(websocket)
 
 # 健康检查（顶层路径）

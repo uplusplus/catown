@@ -1,4 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
+export type ConfigSection = "agents" | "skills" | "memory";
 
 export type AgentSoul = {
   identity?: string;
@@ -9,6 +10,7 @@ export type AgentSoul = {
 
 export type AgentInfo = {
   id: number;
+  type: string;
   name: string;
   role: string;
   is_active: boolean;
@@ -16,6 +18,20 @@ export type AgentInfo = {
   tools?: string[];
   skills?: string[];
   system_prompt_preview?: string | null;
+};
+
+export type AgentMemoryItem = {
+  id: number;
+  type: string;
+  content: string;
+  importance: number;
+  created_at: string;
+};
+
+export type AgentMemoryResponse = {
+  agent_name: string;
+  memory_count: number;
+  memories: AgentMemoryItem[];
 };
 
 export type ChatSummary = {
@@ -37,6 +53,10 @@ export type ProjectSummary = {
   chatroom_id: number;
   default_chatroom_id: number;
   workspace_path?: string | null;
+  source_type?: string | null;
+  repo_url?: string | null;
+  repo_full_name?: string | null;
+  clone_ref?: string | null;
   created_from_chatroom_id?: number | null;
   agents: AgentInfo[];
 };
@@ -80,6 +100,7 @@ export type ChatEventItem = {
 export type ChatCardKind =
   | "llm_call"
   | "tool_call"
+  | "agent_error"
   | "stage_start"
   | "stage_end"
   | "gate_blocked"
@@ -133,6 +154,7 @@ export type ChatCardItem = {
   prompt_messages?: string;
   response?: string;
   raw_response?: string;
+  finish_reason?: string;
   tool_calls?: ChatCardToolPreview[];
   timings?: ChatCardLlmTimings;
   display_name?: string;
@@ -143,6 +165,7 @@ export type ChatCardItem = {
   arguments?: string;
   success?: boolean;
   result?: string;
+  error?: string;
   tool_call_index?: number;
   tool_call_id?: string | null;
   stage?: string;
@@ -157,6 +180,7 @@ export type ChatCardItem = {
 };
 
 export type ConfigAgentDefinition = {
+  name?: string;
   provider?: {
     baseUrl?: string;
     apiKey?: string;
@@ -209,6 +233,25 @@ export type ProjectCreatePayload = {
 
 export type ProjectFromChatPayload = ProjectCreatePayload & {
   source_chatroom_id: number;
+};
+
+export type GitHubProjectImportPayload = {
+  repo_url: string;
+  name?: string;
+  description?: string;
+  ref?: string | null;
+  agent_names: string[];
+};
+
+export type ProjectSyncResponse = {
+  project: ProjectSummary;
+  updated: boolean;
+  branch?: string | null;
+  head_commit?: string | null;
+  head_short?: string | null;
+  previous_head_commit?: string | null;
+  detached?: boolean;
+  summary: string;
 };
 
 export type GlobalConfigPayload = {
@@ -304,6 +347,41 @@ export type MonitorRuntimeDetail = {
   project_id?: number | null;
   project_name?: string | null;
   card: Record<string, unknown>;
+};
+
+export type MonitorUsageBucket = {
+  label: string;
+  start: string;
+  end: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  llm_calls: number;
+};
+
+export type MonitorUsageTotals = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  llm_calls: number;
+};
+
+export type MonitorUsageResponse = {
+  captured_at: string;
+  range: string;
+  pricing: {
+    input_per_1k: number;
+    output_per_1k: number;
+  };
+  totals: {
+    day: MonitorUsageTotals;
+    week: MonitorUsageTotals;
+    month: MonitorUsageTotals;
+  };
+  buckets: MonitorUsageBucket[];
+  scanned_runtime_cards: number;
 };
 
 export type MonitorLogEntry = {

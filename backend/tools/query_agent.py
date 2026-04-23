@@ -10,6 +10,15 @@ from typing import Optional, Dict, Any
 import json
 import logging
 
+from sqlalchemy import or_
+
+from agents.identity import (
+    agent_name_of,
+    default_agent_name,
+    legacy_default_agent_names,
+    normalize_agent_type,
+)
+
 logger = logging.getLogger("catown.query_agent")
 
 
@@ -55,10 +64,12 @@ class QueryAgentTool(BaseTool):
         """
         current_agent_name = kwargs.get("agent_name", "unknown")
         chatroom_id = kwargs.get("chatroom_id", 0)
+        target_agent_type = normalize_agent_type(agent_name)
+        current_agent_type = normalize_agent_type(current_agent_name)
 
         # Prevent self-query
-        if agent_name == current_agent_name:
-            return f"[query_agent] Error: Cannot query yourself ({agent_name})."
+        if target_agent_type == current_agent_type:
+            return f"[query_agent] Error: Cannot query yourself ({target_agent_type})."
 
         # 1. Find target agent in DB
         from models.database import get_db, Agent as DBAgent, Chatroom as DBChatroom, Project
@@ -66,9 +77,15 @@ class QueryAgentTool(BaseTool):
 
         db = next(get_db())
         try:
+            candidate_names = {target_agent_type, default_agent_name(target_agent_type)}
+            candidate_names.update({value.title() for value in legacy_default_agent_names(target_agent_type)})
+            candidate_names.update(legacy_default_agent_names(target_agent_type))
             target_db_agent = db.query(DBAgent).filter(
-                DBAgent.name == agent_name,
-                DBAgent.is_active == True
+                or_(
+                    DBAgent.agent_type == target_agent_type,
+                    DBAgent.name.in_(sorted(candidate_names)),
+                ),
+                DBAgent.is_active == True,
             ).first()
 
             if not target_db_agent:
@@ -85,9 +102,9 @@ class QueryAgentTool(BaseTool):
                     ).all() if assigned_ids else []
                 else:
                     room_agents = []
-                available = [a.name for a in room_agents]
+                available = [a.agent_type or a.name for a in room_agents]
                 return (
-                    f"[query_agent] Error: Agent '{agent_name}' not found in this room. "
+                    f"[query_agent] Error: Agent '{target_agent_type}' not found in this room. "
                     f"Agents in this room: {available}"
                 )
 
@@ -101,20 +118,20 @@ class QueryAgentTool(BaseTool):
                 ).first()
                 if not assignment:
                     return (
-                        f"[query_agent] Error: Agent '{agent_name}' is not in this room. "
+                        f"[query_agent] Error: Agent '{target_agent_type}' is not in this room. "
                         f"Use @mention to invite them first."
                     )
 
             # 2. Get the target agent's LLM client
             from llm.client import get_llm_client_for_agent
             try:
-                llm_client = get_llm_client_for_agent(agent_name)
+                llm_client = get_llm_client_for_agent(target_agent_type)
             except RuntimeError as e:
-                return f"[query_agent] Error: Cannot get LLM for '{agent_name}': {e}"
+                return f"[query_agent] Error: Cannot get LLM for '{target_agent_type}': {e}"
 
             # 3. Build the system prompt for the queried agent
             system_prompt = target_db_agent.system_prompt or (
-                f"You are {target_db_agent.name}, a {target_db_agent.role}."
+                f"You are {agent_name_of(target_db_agent)}, a {target_db_agent.role}."
             )
 
             # Inject project context if available
@@ -155,7 +172,7 @@ class QueryAgentTool(BaseTool):
                 from chatrooms.manager import chatroom_manager
                 recent = await chatroom_manager.get_messages(chatroom_id, limit=6)
                 for msg in recent[-4:]:
-                    a_name = msg.agent.name if hasattr(msg, 'agent') and msg.agent else None
+                    a_name = msg.agent_name if hasattr(msg, "agent_name") else None
                     if msg.message_type == "user" or not a_name:
                         messages.append({"role": "user", "content": msg.content})
                     else:
@@ -169,7 +186,7 @@ class QueryAgentTool(BaseTool):
 
             # 5. Call LLM — NO tools to prevent recursion
             logger.info(
-                f"[query_agent] {current_agent_name} → {agent_name}: {question[:80]}"
+                f"[query_agent] {current_agent_type} → {target_agent_type}: {question[:80]}"
             )
 
             response = await llm_client.chat(
@@ -179,7 +196,7 @@ class QueryAgentTool(BaseTool):
             )
 
             if not response:
-                return f"[query_agent] Agent '{agent_name}' returned an empty response."
+                return f"[query_agent] Agent '{target_agent_type}' returned an empty response."
 
             # 6. Log the interaction as a pipeline message if in a pipeline context
             try:
@@ -197,8 +214,8 @@ class QueryAgentTool(BaseTool):
                             pm = PipelineMessage(
                                 run_id=active_run.id,
                                 message_type="AGENT_QUESTION",
-                                from_agent=current_agent_name,
-                                to_agent=agent_name,
+                                from_agent=current_agent_type,
+                                to_agent=target_agent_type,
                                 content=f"Q: {question[:500]}\nA: {response[:500]}"
                             )
                             db.add(pm)
@@ -207,14 +224,14 @@ class QueryAgentTool(BaseTool):
                 pass  # Non-critical, don't fail the query
 
             logger.info(
-                f"[query_agent] {agent_name} responded ({len(response)} chars)"
+                f"[query_agent] {target_agent_type} responded ({len(response)} chars)"
             )
 
-            return f"[Response from {agent_name} ({target_db_agent.role})]:\n{response}"
+            return f"[Response from {target_agent_type} ({target_db_agent.role})]:\n{response}"
 
         except Exception as e:
             logger.error(f"[query_agent] Error: {e}")
-            return f"[query_agent] Error querying agent '{agent_name}': {str(e)}"
+            return f"[query_agent] Error querying agent '{target_agent_type}': {str(e)}"
         finally:
             db.close()
 

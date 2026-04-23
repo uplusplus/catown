@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 
-import type { ChatSummary, ProjectSummary } from "../types";
+import type { ChatSummary, ConfigSection, ProjectSummary } from "../types";
 import { UI_VERSION } from "../uiVersion";
 
+type SettingsSidebarSection = {
+  id: ConfigSection;
+  label: string;
+  description: string;
+  badge?: string;
+};
+
 type AppSidebarProps = {
+  mode?: "workspace" | "settings";
   chats: ChatSummary[];
   selectedChatId: number | null;
   onSelectChat: (chatId: number) => void;
@@ -13,11 +21,14 @@ type AppSidebarProps = {
   projects: ProjectSummary[];
   selectedProjectId: number | null;
   onSelectProject: (projectId: number) => void;
-  onQuickCreateProject: () => Promise<void>;
+  onOpenProjectCreator: () => void;
   onCreateProjectChat: (projectId: number) => Promise<void>;
   onReorderProjects: (draggedProjectId: number, targetProjectId: number) => Promise<void>;
   onRenameProject: (projectId: number, name: string) => Promise<void>;
   onDeleteProject: (projectId: number) => Promise<void>;
+  settingsSections?: SettingsSidebarSection[];
+  selectedSettingsSection?: ConfigSection;
+  onSelectSettingsSection?: (section: ConfigSection) => void;
   drawerOpen?: boolean;
   onCloseDrawer?: () => void;
 };
@@ -111,6 +122,7 @@ function RoomMenu({
 }
 
 export function AppSidebar({
+  mode = "workspace",
   chats,
   selectedChatId,
   onSelectChat,
@@ -120,11 +132,14 @@ export function AppSidebar({
   projects,
   selectedProjectId,
   onSelectProject,
-  onQuickCreateProject,
+  onOpenProjectCreator,
   onCreateProjectChat,
   onReorderProjects,
   onRenameProject,
   onDeleteProject,
+  settingsSections = [],
+  selectedSettingsSection = "agents",
+  onSelectSettingsSection,
   drawerOpen = false,
   onCloseDrawer,
 }: AppSidebarProps) {
@@ -146,6 +161,7 @@ export function AppSidebar({
 
   const legacyChats = chats.filter((chat) => !chat.project_id);
   const hasLegacyChats = legacyChats.length > 0;
+  const isSettingsMode = mode === "settings";
 
   return (
     <aside className={`app-sidebar ${drawerOpen ? "is-mobile-open" : ""}`}>
@@ -170,6 +186,49 @@ export function AppSidebar({
         ) : null}
       </div>
 
+      {isSettingsMode ? (
+        <>
+          <section className="sidebar-section">
+            <div className="section-heading">
+              <h2>Settings</h2>
+            </div>
+
+            <div className="primary-nav settings-nav">
+              {settingsSections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`primary-nav-item settings-nav-item ${selectedSettingsSection === section.id ? "is-active" : ""}`}
+                  onClick={() => onSelectSettingsSection?.(section.id)}
+                >
+                  <div className="settings-nav-item__copy">
+                    <strong>{section.label}</strong>
+                    <span>{section.description}</span>
+                  </div>
+                  {section.badge ? <small className="settings-nav-item__badge">{section.badge}</small> : null}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="sidebar-section sidebar-section--secondary sidebar-section--compact">
+            <div className="section-heading">
+              <h2>Scope</h2>
+            </div>
+            <div className="sidebar-note">
+              Global settings apply to the whole Catown workspace, not just the current chat.
+            </div>
+          </section>
+
+          <div className="app-sidebar__footer">
+            <div className="app-sidebar__version" title={`UI version ${UI_VERSION}`}>
+              <span className="app-sidebar__version-label">UI</span>
+              <strong>v{UI_VERSION}</strong>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
       <section className="sidebar-section">
         <div className="section-heading">
           <h2>Projects</h2>
@@ -177,9 +236,9 @@ export function AppSidebar({
             <button
               type="button"
               className="section-heading__icon-btn"
-              onClick={() => void onQuickCreateProject()}
-              aria-label="Create project"
-              title="Create project"
+              onClick={onOpenProjectCreator}
+              aria-label="Import project from GitHub"
+              title="Import project from GitHub"
             >
               +
             </button>
@@ -427,6 +486,8 @@ export function AppSidebar({
           <strong>v{UI_VERSION}</strong>
         </div>
       </div>
+        </>
+      )}
     </aside>
   );
 }

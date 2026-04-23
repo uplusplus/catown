@@ -8,6 +8,12 @@ from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, T
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
+from agents.identity import (
+    DEFAULT_AGENT_TYPE,
+    default_agent_name,
+    is_legacy_default_agent_name,
+    normalize_agent_type,
+)
 from config import settings
 
 # Create engine
@@ -30,6 +36,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(Integer, primary_key=True, index=True)
+    agent_type = Column(String, unique=True, index=True, nullable=True)
     name = Column(String, unique=True, index=True, nullable=False)
     role = Column(String, nullable=False)
     soul = Column(Text, default="{}")
@@ -88,6 +95,10 @@ class Agent(Base):
 
         return "\n\n".join(parts) if parts else f"You are {self.name}, a {self.role}."
 
+    @property
+    def type(self) -> str:
+        return normalize_agent_type(self.agent_type or self.name)
+
 
 class Project(Base):
     """Project model."""
@@ -101,6 +112,10 @@ class Project(Base):
     display_order = Column(Integer, default=0, nullable=False)
     default_chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=True)
     workspace_path = Column(String, nullable=True)
+    source_type = Column(String, nullable=True)
+    repo_url = Column(String, nullable=True)
+    repo_full_name = Column(String, nullable=True)
+    clone_ref = Column(String, nullable=True)
     slug = Column(String, unique=True, index=True, nullable=True)
     one_line_vision = Column(Text)
     target_users_json = Column(Text, default="[]")
@@ -421,6 +436,79 @@ def init_database():
 
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
+        existing_agent_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(agents)")).fetchall()
+        }
+        if "agent_type" not in existing_agent_columns:
+            connection.execute(text("ALTER TABLE agents ADD COLUMN agent_type VARCHAR"))
+        agent_rows = connection.execute(text("SELECT id, agent_type, name FROM agents ORDER BY id ASC")).fetchall()
+        grouped_agents: dict[str, list[tuple[int, str]]] = {}
+        for agent_id, agent_type, name in agent_rows:
+            normalized_type = normalize_agent_type(agent_type or name)
+            grouped_agents.setdefault(normalized_type, []).append((agent_id, (name or "").strip()))
+
+        chosen_names: dict[str, str] = {}
+        used_names: set[str] = set()
+        for normalized_type, rows in grouped_agents.items():
+            preferred_name = next(
+                (
+                    raw_name
+                    for _, raw_name in rows
+                    if raw_name and not is_legacy_default_agent_name(raw_name, normalized_type)
+                ),
+                default_agent_name(normalized_type),
+            )
+            resolved_name = preferred_name
+            if resolved_name in used_names:
+                resolved_name = default_agent_name(normalized_type)
+            chosen_names[normalized_type] = resolved_name
+            used_names.add(resolved_name)
+
+        for normalized_type, rows in grouped_agents.items():
+            keeper_id, _ = rows[0]
+            duplicate_ids = [agent_id for agent_id, _ in rows[1:]]
+
+            for duplicate_id in duplicate_ids:
+                connection.execute(
+                    text("UPDATE agent_assignments SET agent_id = :keeper_id WHERE agent_id = :duplicate_id"),
+                    {"keeper_id": keeper_id, "duplicate_id": duplicate_id},
+                )
+                connection.execute(
+                    text("UPDATE messages SET agent_id = :keeper_id WHERE agent_id = :duplicate_id"),
+                    {"keeper_id": keeper_id, "duplicate_id": duplicate_id},
+                )
+                connection.execute(
+                    text("UPDATE memories SET agent_id = :keeper_id WHERE agent_id = :duplicate_id"),
+                    {"keeper_id": keeper_id, "duplicate_id": duplicate_id},
+                )
+                connection.execute(text("DELETE FROM agents WHERE id = :duplicate_id"), {"duplicate_id": duplicate_id})
+
+            connection.execute(
+                text("UPDATE agents SET agent_type = :agent_type, name = :name WHERE id = :agent_id"),
+                {
+                    "agent_type": normalized_type,
+                    "name": chosen_names[normalized_type],
+                    "agent_id": keeper_id,
+                },
+            )
+
+        duplicate_assignments = connection.execute(
+            text(
+                "SELECT MIN(id) AS keeper_id, project_id, agent_id "
+                "FROM agent_assignments GROUP BY project_id, agent_id HAVING COUNT(*) > 1"
+            )
+        ).fetchall()
+        for keeper_id, project_id, agent_id in duplicate_assignments:
+            connection.execute(
+                text(
+                    "DELETE FROM agent_assignments "
+                    "WHERE project_id = :project_id AND agent_id = :agent_id AND id != :keeper_id"
+                ),
+                {"project_id": project_id, "agent_id": agent_id, "keeper_id": keeper_id},
+            )
+
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_agents_agent_type ON agents (agent_type)"))
+
         existing_project_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(projects)")).fetchall()
         }
@@ -428,6 +516,14 @@ def init_database():
             connection.execute(text("ALTER TABLE projects ADD COLUMN default_chatroom_id INTEGER"))
         if "workspace_path" not in existing_project_columns:
             connection.execute(text("ALTER TABLE projects ADD COLUMN workspace_path VARCHAR"))
+        if "source_type" not in existing_project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN source_type VARCHAR"))
+        if "repo_url" not in existing_project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN repo_url VARCHAR"))
+        if "repo_full_name" not in existing_project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN repo_full_name VARCHAR"))
+        if "clone_ref" not in existing_project_columns:
+            connection.execute(text("ALTER TABLE projects ADD COLUMN clone_ref VARCHAR"))
         if "display_order" not in existing_project_columns:
             connection.execute(text("ALTER TABLE projects ADD COLUMN display_order INTEGER DEFAULT 0"))
         ordered_project_ids = [
@@ -467,7 +563,76 @@ def init_database():
         if "source_chatroom_id" not in existing_chatroom_columns:
             connection.execute(text("ALTER TABLE chatrooms ADD COLUMN source_chatroom_id INTEGER"))
 
-    print("Database initialized successfully")
+        orphan_message_count = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM messages "
+                "WHERE chatroom_id NOT IN (SELECT id FROM chatrooms)"
+            )
+        ).scalar() or 0
+        if orphan_message_count:
+            connection.execute(
+                text(
+                    "DELETE FROM messages "
+                    "WHERE chatroom_id NOT IN (SELECT id FROM chatrooms)"
+                )
+            )
+
+        dangling_source_count = connection.execute(
+            text(
+                "SELECT COUNT(*) FROM chatrooms "
+                "WHERE source_chatroom_id IS NOT NULL "
+                "AND source_chatroom_id NOT IN (SELECT id FROM chatrooms)"
+            )
+        ).scalar() or 0
+        if dangling_source_count:
+            connection.execute(
+                text(
+                    "UPDATE chatrooms SET source_chatroom_id = NULL "
+                    "WHERE source_chatroom_id IS NOT NULL "
+                    "AND source_chatroom_id NOT IN (SELECT id FROM chatrooms)"
+                )
+            )
+
+        project_rows = connection.execute(
+            text("SELECT id, default_chatroom_id FROM projects ORDER BY id ASC")
+        ).fetchall()
+        repaired_default_chatrooms = 0
+        for project_id, default_chatroom_id in project_rows:
+            if default_chatroom_id is not None:
+                exists = connection.execute(
+                    text("SELECT 1 FROM chatrooms WHERE id = :chatroom_id"),
+                    {"chatroom_id": default_chatroom_id},
+                ).fetchone()
+                if exists:
+                    continue
+
+            fallback = connection.execute(
+                text(
+                    "SELECT id FROM chatrooms "
+                    "WHERE project_id = :project_id "
+                    "ORDER BY id ASC LIMIT 1"
+                ),
+                {"project_id": project_id},
+            ).fetchone()
+            next_default_chatroom_id = fallback[0] if fallback else None
+            connection.execute(
+                text(
+                    "UPDATE projects SET default_chatroom_id = :default_chatroom_id "
+                    "WHERE id = :project_id"
+                ),
+                {
+                    "default_chatroom_id": next_default_chatroom_id,
+                    "project_id": project_id,
+                },
+            )
+            repaired_default_chatrooms += 1
+
+    print(
+        "Database initialized successfully "
+        f"(repaired_messages={orphan_message_count}, "
+        f"repaired_sources={dangling_source_count}, "
+        f"repaired_project_defaults={repaired_default_chatrooms})"
+    )
 
 
 def get_db():

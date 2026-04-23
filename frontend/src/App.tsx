@@ -6,6 +6,7 @@ import { ChatTab } from "./components/ChatTab";
 import { ConfigTab } from "./components/ConfigTab";
 import { ProjectsTab } from "./components/ProjectsTab";
 import { UI_VERSION } from "./uiVersion";
+import { DEFAULT_AGENT_TYPE, defaultAgentName, findAgentByType, getAgentDisplayName } from "./utils/agents";
 import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTimings";
 import type {
   AppTab,
@@ -15,6 +16,7 @@ import type {
   ChatEventItem,
   ChatEventTone,
   ChatSummary,
+  ConfigSection,
   ConfigResponse,
   MessageItem,
   MessageStreamStep,
@@ -25,6 +27,42 @@ const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
 const OPTIMISTIC_MESSAGES_STORAGE_KEY = "catown:optimistic-messages";
 const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
 const STREAM_STEP_LIMIT = 8;
+const OPTIMISTIC_MAX_CHATS = 6;
+const OPTIMISTIC_MAX_MESSAGES_PER_CHAT = 4;
+const OPTIMISTIC_MAX_CONTENT_CHARS = 6000;
+const OPTIMISTIC_MAX_STEP_COUNT = 8;
+const OPTIMISTIC_MAX_STEP_LABEL_CHARS = 160;
+const OPTIMISTIC_MAX_STEP_DETAIL_CHARS = 800;
+const OPTIMISTIC_MAX_STEP_DETAIL_CONTENT_CHARS = 2400;
+
+const CONFIG_SECTION_META: Record<
+  ConfigSection,
+  {
+    sidebarLabel: string;
+    sidebarDescription: string;
+    title: string;
+    subtitle: string;
+  }
+> = {
+  agents: {
+    sidebarLabel: "Agents",
+    sidebarDescription: "Models, roles, tools, skills, and defaults",
+    title: "Agent management",
+    subtitle: "Manage provider defaults, roles, souls, tools, and per-agent runtime behavior.",
+  },
+  skills: {
+    sidebarLabel: "Skills",
+    sidebarDescription: "Skill coverage, bindings, and usage scope",
+    title: "Skill management",
+    subtitle: "Review discovered skills, which agents use them, and how they are distributed today.",
+  },
+  memory: {
+    sidebarLabel: "Memory",
+    sidebarDescription: "Long-term memory, retained context, and summaries",
+    title: "Memory management",
+    subtitle: "Inspect retained memory footprint by agent and understand what long-term context already exists.",
+  },
+};
 
 function debugConsole(level: "info" | "warn", event: string, details: Record<string, unknown>) {
   if (typeof window === "undefined") return;
@@ -65,26 +103,148 @@ function optimisticScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
 }
 
+function trimPersistedText(value: string | undefined, limit: number) {
+  if (!value) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.length > limit ? `${normalized.slice(0, Math.max(limit - 3, 0))}...` : normalized;
+}
+
+function sanitizePersistedStep(step: MessageStreamStep): MessageStreamStep {
+  return {
+    id: step.id,
+    label: trimPersistedText(step.label, OPTIMISTIC_MAX_STEP_LABEL_CHARS) || "Step",
+    detail: trimPersistedText(step.detail, OPTIMISTIC_MAX_STEP_DETAIL_CHARS),
+    detailContent: trimPersistedText(step.detailContent, OPTIMISTIC_MAX_STEP_DETAIL_CONTENT_CHARS),
+    state: step.state,
+    kind: step.kind,
+    agent: step.agent,
+    tool: step.tool,
+    toolCallIndex: step.toolCallIndex,
+    toolCallId: step.toolCallId,
+  };
+}
+
+function sanitizePersistedMessage(message: MessageItem): MessageItem {
+  return {
+    id: message.id,
+    agent_id: message.agent_id,
+    content: trimPersistedText(message.content, OPTIMISTIC_MAX_CONTENT_CHARS) || "",
+    message_type: message.message_type,
+    created_at: message.created_at,
+    agent_name: message.agent_name,
+    client_turn_id: message.client_turn_id,
+    isStreaming: message.isStreaming,
+    optimisticKind: message.optimisticKind,
+    localOnly: message.localOnly,
+    streamSteps: (message.streamSteps || []).slice(-OPTIMISTIC_MAX_STEP_COUNT).map(sanitizePersistedStep),
+  };
+}
+
+function compactOptimisticMessageStore(
+  store: Record<string, MessageItem[]>,
+  preferredKeys: string[] = [],
+) {
+  const normalizedEntries = Object.entries(store)
+    .map(([key, value]) => {
+      const sanitizedMessages = (Array.isArray(value) ? value : [])
+        .slice(-OPTIMISTIC_MAX_MESSAGES_PER_CHAT)
+        .map(sanitizePersistedMessage)
+        .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
+      return [key, sanitizedMessages] as const;
+    })
+    .filter(([, value]) => value.length > 0);
+
+  const preferredSet = new Set(preferredKeys.filter(Boolean));
+  const preferredEntries = normalizedEntries.filter(([key]) => preferredSet.has(key));
+  const remainingEntries = normalizedEntries
+    .filter(([key]) => !preferredSet.has(key))
+    .sort((left, right) => {
+      const leftLast = left[1][left[1].length - 1];
+      const rightLast = right[1][right[1].length - 1];
+      return new Date(rightLast?.created_at || 0).getTime() - new Date(leftLast?.created_at || 0).getTime();
+    });
+
+  return Object.fromEntries([...preferredEntries, ...remainingEntries].slice(0, OPTIMISTIC_MAX_CHATS));
+}
+
 function readOptimisticMessageStore() {
   if (typeof window === "undefined") return {} as Record<string, MessageItem[]>;
   try {
     const rawValue = window.localStorage.getItem(OPTIMISTIC_MESSAGES_STORAGE_KEY);
     if (!rawValue) return {};
     const parsed = JSON.parse(rawValue) as Record<string, MessageItem[]>;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return parsed && typeof parsed === "object" ? compactOptimisticMessageStore(parsed) : {};
   } catch {
     return {};
   }
 }
 
-function writeOptimisticMessageStore(store: Record<string, MessageItem[]>) {
+function writeOptimisticMessageStore(store: Record<string, MessageItem[]>, preferredKeys: string[] = []) {
   if (typeof window === "undefined") return;
-  const nextEntries = Object.entries(store).filter(([, value]) => Array.isArray(value) && value.length > 0);
+  let nextStore = compactOptimisticMessageStore(store, preferredKeys);
+  const nextEntries = Object.entries(nextStore).filter(([, value]) => Array.isArray(value) && value.length > 0);
   if (nextEntries.length === 0) {
     window.localStorage.removeItem(OPTIMISTIC_MESSAGES_STORAGE_KEY);
     return;
   }
-  window.localStorage.setItem(OPTIMISTIC_MESSAGES_STORAGE_KEY, JSON.stringify(Object.fromEntries(nextEntries)));
+
+  const persist = (value: Record<string, MessageItem[]>) =>
+    window.localStorage.setItem(OPTIMISTIC_MESSAGES_STORAGE_KEY, JSON.stringify(value));
+
+  try {
+    persist(Object.fromEntries(nextEntries));
+  } catch {
+    const orderedKeys = Object.keys(nextStore).sort((left, right) => {
+      const leftMessages = nextStore[left] ?? [];
+      const rightMessages = nextStore[right] ?? [];
+      const leftLast = leftMessages[leftMessages.length - 1];
+      const rightLast = rightMessages[rightMessages.length - 1];
+      return new Date((rightLast?.created_at || 0) as string | number).getTime()
+        - new Date((leftLast?.created_at || 0) as string | number).getTime();
+    });
+    const protectedKeys = new Set(preferredKeys.filter(Boolean));
+    const removableKeys = orderedKeys.filter((key) => !protectedKeys.has(key));
+
+    while (removableKeys.length > 0) {
+      const nextKey = removableKeys.pop();
+      if (!nextKey) continue;
+      delete nextStore[nextKey];
+      try {
+        persist(nextStore);
+        return;
+      } catch {
+        // Keep trimming until the payload fits or nothing remains.
+      }
+    }
+
+    if (preferredKeys.length > 0) {
+      const fallbackStore = compactOptimisticMessageStore(
+        Object.fromEntries(
+          preferredKeys
+            .filter((key) => nextStore[key]?.length)
+            .map((key) => [key, (nextStore[key] ?? []).slice(-2).map((message) => ({
+              ...sanitizePersistedMessage(message),
+              content: trimPersistedText(message.content, 1200) || "",
+              streamSteps: (message.streamSteps || []).slice(-2).map((step) => ({
+                ...sanitizePersistedStep(step),
+                detail: trimPersistedText(step.detail, 240),
+                detailContent: trimPersistedText(step.detailContent, 640),
+              })),
+            }))]),
+        ),
+        preferredKeys,
+      );
+      try {
+        persist(fallbackStore);
+        return;
+      } catch {
+        // Fall through to hard reset below.
+      }
+    }
+
+    window.localStorage.removeItem(OPTIMISTIC_MESSAGES_STORAGE_KEY);
+  }
 }
 
 function readOptimisticMessages(chatId: number | null) {
@@ -100,7 +260,7 @@ function writeOptimisticMessages(chatId: number | null, messages: MessageItem[])
   } else {
     store[key] = messages;
   }
-  writeOptimisticMessageStore(store);
+  writeOptimisticMessageStore(store, [key]);
 }
 
 function clearLocalMessageStoreScope(storageKey: string, chatId: number | null) {
@@ -156,7 +316,7 @@ function migrateOptimisticMessages(fromChatId: number | null, toChatId: number |
   const targetMessages = store[toKey] ?? [];
   store[toKey] = mergeMessages(targetMessages, fromMessages);
   delete store[fromKey];
-  writeOptimisticMessageStore(store);
+  writeOptimisticMessageStore(store, [toKey]);
 }
 
 function parseOptimisticScopeChatId(scope: string) {
@@ -273,6 +433,22 @@ function readLlmTimings(value: unknown): ChatCardLlmTimings | undefined {
   return Object.keys(timings).length > 0 ? timings : undefined;
 }
 
+function readLlmFinishReason(payload: Record<string, unknown>) {
+  if (typeof payload.finish_reason === "string" && payload.finish_reason) {
+    return payload.finish_reason;
+  }
+
+  const rawResponse = typeof payload.raw_response === "string" ? payload.raw_response.trim() : "";
+  if (!rawResponse) return undefined;
+
+  try {
+    const parsed = JSON.parse(rawResponse) as Record<string, unknown>;
+    return typeof parsed.finish_reason === "string" && parsed.finish_reason ? parsed.finish_reason : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
   const type = typeof payload.type === "string" ? payload.type : "";
   if (!type) return null;
@@ -320,6 +496,7 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         prompt_messages: typeof payload.prompt_messages === "string" ? payload.prompt_messages : undefined,
         response: typeof payload.response === "string" ? payload.response : undefined,
         raw_response: typeof payload.raw_response === "string" ? payload.raw_response : undefined,
+        finish_reason: readLlmFinishReason(payload),
         tool_calls: Array.isArray(payload.tool_calls)
           ? payload.tool_calls
               .map((item) => {
@@ -350,6 +527,15 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : undefined,
         tool_call_index: typeof payload.tool_call_index === "number" ? payload.tool_call_index : undefined,
         tool_call_id: typeof payload.tool_call_id === "string" ? payload.tool_call_id : null,
+      };
+    case "agent_error":
+      return {
+        ...baseCard,
+        kind: "agent_error",
+        agent: typeof payload.agent === "string" ? payload.agent : undefined,
+        summary: typeof payload.summary === "string" ? payload.summary : undefined,
+        content: typeof payload.content === "string" ? payload.content : undefined,
+        error: typeof payload.error === "string" ? payload.error : undefined,
       };
     case "stage_started":
       return {
@@ -651,8 +837,17 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
   return toolName ? `${actor} -> LLM (${toolName} result)` : `${actor} -> LLM`;
 }
 
-function llmInboundStepLabel(actor: string) {
-  return `LLM -> ${actor}`;
+function llmInboundStepLabel(actor: string, finishReason?: string) {
+  switch (finishReason) {
+    case "tool_calls":
+      return `LLM -> ${actor} · requested tools`;
+    case "stop":
+      return `LLM -> ${actor} · final answer`;
+    case "length":
+      return `LLM -> ${actor} · partial answer`;
+    default:
+      return `LLM -> ${actor}`;
+  }
 }
 
 function toolCallStepLabel(actor: string, toolName: string) {
@@ -681,7 +876,7 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
 
 function buildLlmPlannedToolsMarkdown(toolCalls?: ChatCardItem["tool_calls"]) {
   if (!toolCalls || toolCalls.length === 0) return "";
-  return `### Planned Tools\n\n${toolCalls
+  return `### Requested Tools\n\n${toolCalls
     .map(
       (tool) =>
         `- **${tool.name || "tool"}**${
@@ -702,8 +897,24 @@ function isActorOutboundStep(step: MessageStreamStep, actor: string) {
 function isActorInboundStep(step: MessageStreamStep, actor: string) {
   return (
     (step.agent === actor && step.kind === "llm_inbound") ||
-    step.label === llmInboundStepLabel(actor)
+    step.label === llmInboundStepLabel(actor) ||
+    step.label.startsWith(`LLM -> ${actor} · `)
   );
+}
+
+function llmOutcomeSummary(card: ChatCardItem) {
+  if (card.finish_reason === "tool_calls") {
+    if (card.tool_calls && card.tool_calls.length > 0) {
+      return `Requested tools: ${card.tool_calls.map((tool) => tool.name || "tool").join(", ")}`;
+    }
+    return "Model requested tool calls before answering.";
+  }
+
+  if (card.finish_reason === "length") {
+    return "Model returned a partial answer because the output hit a length limit.";
+  }
+
+  return "";
 }
 
 function isActorToolCallStep(step: MessageStreamStep, actor: string, toolName: string) {
@@ -737,6 +948,12 @@ function isActorToolResultStep(step: MessageStreamStep, actor: string, toolName:
       ((typeof toolCallIndex === "number" && step.toolCallIndex === toolCallIndex) || step.tool === toolName)) ||
     step.label === toolOutputStepLabel(actor, toolName)
   );
+}
+
+function isToolResultFailure(rawResult: string) {
+  const normalized = rawResult.trim();
+  if (!normalized) return false;
+  return /^error\b/i.test(normalized) || /^\[[^\]]+\]\s+error:/i.test(normalized);
 }
 
 const SYSTEM_PROMPT_DYNAMIC_MARKERS = [
@@ -894,6 +1111,8 @@ function buildCardLlmResponseDetailContent(card: ChatCardItem) {
   const sections: string[] = [];
   const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
   if (timingsMarkdown) sections.push(timingsMarkdown);
+  const outcomeSummary = llmOutcomeSummary(card);
+  if (outcomeSummary) sections.push(buildStatusMarkdown(outcomeSummary));
   const plannedToolsMarkdown = buildLlmPlannedToolsMarkdown(card.tool_calls);
   if (plannedToolsMarkdown) sections.push(plannedToolsMarkdown);
   if (card.response) sections.push(markdownSection("Response", card.response, { asMarkdown: true }));
@@ -921,6 +1140,8 @@ function buildCardToolResultDetailContent(card: ChatCardItem) {
 
 function buildLlmResponseStepDetail(card: ChatCardItem) {
   const bits: string[] = [];
+  const outcomeSummary = llmOutcomeSummary(card);
+  if (outcomeSummary) bits.push(outcomeSummary);
   if (card.tool_calls && card.tool_calls.length > 0) {
     bits.push(`tools: ${card.tool_calls.map((tool) => tool.name || "tool").join(", ")}`);
   }
@@ -953,6 +1174,9 @@ function buildCardStepDetail(card: ChatCardItem) {
       if (card.model) bits.push(card.model);
       if (typeof card.turn === "number") bits.push(`turn ${card.turn}`);
       if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
+      if (card.finish_reason === "tool_calls") bits.push("requested tools");
+      if (card.finish_reason === "stop") bits.push("final answer");
+      if (card.finish_reason === "length") bits.push("partial answer");
       if (card.tool_calls && card.tool_calls.length > 0) {
         bits.push(`tools: ${card.tool_calls.map((tool) => tool.name || "tool").join(", ")}`);
       }
@@ -963,6 +1187,11 @@ function buildCardStepDetail(card: ChatCardItem) {
       if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
       if (card.arguments) bits.push(`args: ${summarizeStepDetail(card.arguments, 90)}`);
       if (card.result) bits.push(summarizeStepDetail(card.result));
+      break;
+    case "agent_error":
+      if (card.agent) bits.push(card.agent);
+      if (card.error) bits.push(summarizeStepDetail(card.error));
+      else if (card.summary) bits.push(summarizeStepDetail(card.summary));
       break;
     case "stage_start":
     case "stage_end":
@@ -1007,10 +1236,19 @@ function buildCardStepDetailContent(card: ChatCardItem) {
         card.model,
         typeof card.turn === "number" ? `turn ${card.turn}` : "",
         typeof card.duration_ms === "number" ? `${card.duration_ms}ms` : "",
+        card.finish_reason === "tool_calls"
+          ? "requested tools"
+          : card.finish_reason === "stop"
+            ? "final answer"
+            : card.finish_reason === "length"
+              ? "partial answer"
+              : "",
       ]
         .filter(Boolean)
         .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
+      const outcomeSummary = llmOutcomeSummary(card);
+      if (outcomeSummary) sections.push(buildStatusMarkdown(outcomeSummary));
       const displaySystemPrompt = extractDisplayableSystemPrompt(card.system_prompt);
       if (displaySystemPrompt) {
         sections.push(markdownSection("System Prompt Context", displaySystemPrompt, { asMarkdown: true }));
@@ -1018,7 +1256,7 @@ function buildCardStepDetailContent(card: ChatCardItem) {
       if (card.prompt_messages) sections.push(markdownSection("Full Prompt Payload", prettyJson(card.prompt_messages), { language: "json" }));
       if (card.tool_calls && card.tool_calls.length > 0) {
         sections.push(
-          `### Planned Tools\n\n${card.tool_calls
+          `### Requested Tools\n\n${card.tool_calls
             .map(
               (tool) =>
                 `- **${tool.name || "tool"}**${
@@ -1042,6 +1280,13 @@ function buildCardStepDetailContent(card: ChatCardItem) {
             : markdownSection(card.success === false ? "Error" : "Result", card.result, { asMarkdown: true }),
         );
       }
+      return sections.join("\n\n");
+    }
+    case "agent_error": {
+      const sections: string[] = [];
+      if (card.summary) sections.push(markdownSection("Summary", card.summary, { asMarkdown: true }));
+      if (card.error) sections.push(markdownSection("Error", card.error, { asMarkdown: true }));
+      if (card.content) sections.push(markdownSection("Failure Detail", card.content, { asMarkdown: true }));
       return sections.join("\n\n");
     }
     case "stage_start":
@@ -1097,7 +1342,7 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
           kind: "llm_inbound",
           agent: actor,
         },
-        llmInboundStepLabel(actor),
+        llmInboundStepLabel(actor, card.finish_reason),
       );
     }
     case "tool_call": {
@@ -1134,6 +1379,15 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
           toolCallId,
         },
         toolOutputStepLabel(actor, toolName),
+      );
+    }
+    case "agent_error": {
+      return pushStreamingStep(
+        message,
+        `${card.agent || actor} failed before finishing the turn`,
+        buildCardStepDetail(card),
+        "error",
+        buildCardStepDetailContent(card),
       );
     }
     case "stage_start": {
@@ -1328,6 +1582,7 @@ function reorderProjects(current: ProjectSummary[], draggedProjectId: number, ta
 
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("chat");
+  const [activeConfigSection, setActiveConfigSection] = useState<ConfigSection>("agents");
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
   const [chats, setChats] = useState<ChatSummary[]>([]);
@@ -1347,9 +1602,37 @@ function App() {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [creatingProjectFromChat, setCreatingProjectFromChat] = useState(false);
+  const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
   const [notice, setNotice] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const primaryAgent = useMemo(
+    () => findAgentByType(agents, DEFAULT_AGENT_TYPE) ?? agents[0] ?? null,
+    [agents],
+  );
+  const settingsSections = useMemo(
+    () => [
+      {
+        id: "agents" as const,
+        label: CONFIG_SECTION_META.agents.sidebarLabel,
+        description: CONFIG_SECTION_META.agents.sidebarDescription,
+        badge: `${agents.length}`,
+      },
+      {
+        id: "skills" as const,
+        label: CONFIG_SECTION_META.skills.sidebarLabel,
+        description: CONFIG_SECTION_META.skills.sidebarDescription,
+        badge: `${new Set(agents.flatMap((agent) => agent.skills ?? [])).size}`,
+      },
+      {
+        id: "memory" as const,
+        label: CONFIG_SECTION_META.memory.sidebarLabel,
+        description: CONFIG_SECTION_META.memory.sidebarDescription,
+      },
+    ],
+    [agents],
+  );
+  const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
 
   const socketRef = useRef<WebSocket | null>(null);
   const bootstrappedRef = useRef<boolean>(bootstrapped);
@@ -1388,6 +1671,22 @@ function App() {
     setOptimisticMessages((current) => (typeof updater === "function" ? updater(current) : updater));
   }
 
+  function commitChats(updater: ChatSummary[] | ((current: ChatSummary[]) => ChatSummary[])) {
+    setChats((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      chatsRef.current = next;
+      return next;
+    });
+  }
+
+  function commitProjects(updater: ProjectSummary[] | ((current: ProjectSummary[]) => ProjectSummary[])) {
+    setProjects((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      projectsRef.current = next;
+      return next;
+    });
+  }
+
   function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
     debugConsole("info", "applyChatSelection", {
       previousChatId: selectedChatIdRef.current,
@@ -1409,7 +1708,7 @@ function App() {
 
   async function ensureSelfBootstrapProject() {
     const project = await api.getOrCreateSelfBootstrapProject();
-    setProjects((current) => upsertProject(current, project));
+    commitProjects((current) => upsertProject(current, project));
     migrateOptimisticMessages(selectedChatIdRef.current, project.default_chatroom_id);
     optimisticScopeRef.current = optimisticScopeKey(project.default_chatroom_id);
     applyChatSelection(project.default_chatroom_id, project.id);
@@ -1538,8 +1837,8 @@ function App() {
         writeLastChatId(nextSelectedChatId);
       }
 
-      setChats(chatRows);
-      setProjects(projectRows);
+      commitChats(chatRows);
+      commitProjects(projectRows);
       setAgents(agentRows);
       setConfig(configData);
       applyChatSelection(nextSelectedChatId, nextSelectedProjectId);
@@ -1738,7 +2037,7 @@ function App() {
               );
             });
             if (incoming.agent_name) {
-              pushEvent(`Incoming reply from ${incoming.agent_name || "assistant"}`, "success");
+              pushEvent(`Incoming reply from ${incoming.agent_name || getAgentDisplayName(primaryAgent)}`, "success");
             }
             return;
           }
@@ -1977,7 +2276,7 @@ function App() {
     const assistantTempId = nextTempMessageId();
     const createdAt = new Date().toISOString();
     const clientTurnId = options?.clientTurnId;
-    let activeAgentName = "assistant";
+    let activeAgentName = getAgentDisplayName(primaryAgent);
     let streamCompleted = false;
     let assistantDraftContent = "";
     let pendingContentDelta = "";
@@ -2112,7 +2411,8 @@ function App() {
         if (typeof data.type === "string") {
           const card = buildCard(data);
           if (card) {
-            pushCard(card);
+            // Keep runtime cards single-sourced from websocket/refresh so
+            // llm/tool counters do not double count the same persisted card.
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
                 const nextAgentName =
@@ -2547,7 +2847,8 @@ function App() {
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
               liveToolArgs.delete(buildToolWaitKey(activeAgentName, toolCallIndex, toolName));
               const rawResult = typeof data.result === "string" ? data.result : "";
-              const failed = /^error\b/i.test(rawResult.trim());
+              const failed =
+                typeof data.success === "boolean" ? data.success === false : isToolResultFailure(rawResult);
               const resultPreview =
                 rawResult.trim()
                   ? rawResult.replace(/\s+/g, " ").trim().slice(0, 140)
@@ -2783,20 +3084,26 @@ function App() {
     }
   }
 
-  async function handleCreateProject(payload: { name: string; description: string; agent_names: string[] }) {
+  async function handleCreateProject(payload: {
+    repo_url: string;
+    name?: string;
+    description: string;
+    ref?: string;
+    agent_names: string[];
+  }) {
     try {
       setCreatingProject(true);
       setError("");
-      const created = await api.createProject(payload);
+      const created = await api.createProjectFromGithub(payload);
       const nextProjects = await api.getProjects();
-      setProjects(nextProjects);
+      commitProjects(nextProjects);
       applyChatSelection(created.default_chatroom_id, created.id);
       setActiveTab("chat");
-      setNotice(`Created project "${created.name}" and opened its chat room.`);
-      pushEvent(`Project "${created.name}" created`, "success");
+      setNotice(`Imported "${created.name}" from GitHub and opened its chat room.`);
+      pushEvent(`Imported project "${created.name}" from GitHub`, "success");
       window.setTimeout(() => setNotice(""), 3000);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to create project");
+      setError(nextError instanceof Error ? nextError.message : "Failed to import project from GitHub");
     } finally {
       setCreatingProject(false);
     }
@@ -2822,7 +3129,7 @@ function App() {
       setError("");
       const created = await api.createProjectSubchat(projectId);
       clearChatLocalCaches(created.id);
-      setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
+      commitChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
       applyChatSelection(created.id, projectId);
       setActiveTab("chat");
       setNotice(`Created sub chat "${created.title}" in "${targetProject.name}".`);
@@ -2844,6 +3151,27 @@ function App() {
     }
   }
 
+  async function handleSyncProject() {
+    if (!selectedProject || selectedProject.source_type !== "github") return;
+
+    try {
+      setSyncingProjectId(selectedProject.id);
+      setError("");
+      const result = await api.syncProject(selectedProject.id);
+      commitProjects((current) =>
+        current.map((project) => (project.id === result.project.id ? result.project : project)),
+      );
+      setNotice(result.summary);
+      pushEvent(result.summary, result.updated ? "success" : "info");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to sync project");
+      pushEvent(`Sync failed for "${selectedProject.name}"`, "error");
+    } finally {
+      setSyncingProjectId(null);
+    }
+  }
+
   async function handleReorderProjects(draggedProjectId: number, targetProjectId: number) {
     if (draggedProjectId === targetProjectId) return;
 
@@ -2853,11 +3181,11 @@ function App() {
 
     try {
       setError("");
-      setProjects(nextProjects);
+      commitProjects(nextProjects);
       const persistedProjects = await api.reorderProjects(nextProjects.map((project) => project.id));
-      setProjects(persistedProjects);
+      commitProjects(persistedProjects);
     } catch (nextError) {
-      setProjects(previousProjects);
+      commitProjects(previousProjects);
       setError(nextError instanceof Error ? nextError.message : "Failed to reorder projects");
     }
   }
@@ -2879,7 +3207,7 @@ function App() {
         agent_names: payload.agent_names,
       });
       const nextProjects = await api.getProjects();
-      setProjects(nextProjects);
+      commitProjects(nextProjects);
       applyChatSelection(created.default_chatroom_id, created.id);
       setActiveTab("chat");
       setNotice(`Created project "${created.name}" from "${activeChat.title}".`);
@@ -2900,7 +3228,7 @@ function App() {
     try {
       setError("");
       const renamed = await api.renameChat(chatId, nextTitle);
-      setChats((current) => current.map((chat) => (chat.id === chatId ? renamed : chat)));
+      commitChats((current) => current.map((chat) => (chat.id === chatId ? renamed : chat)));
       setNotice(`Renamed chat to "${renamed.title}".`);
       pushEvent(`Chat renamed to "${renamed.title}"`, "success");
       window.setTimeout(() => setNotice(""), 3000);
@@ -2917,7 +3245,7 @@ function App() {
     try {
       setError("");
       const renamed = await api.renameProject(projectId, nextName);
-      setProjects((current) => current.map((project) => (project.id === projectId ? renamed : project)));
+      commitProjects((current) => current.map((project) => (project.id === projectId ? renamed : project)));
       setNotice(`Renamed project to "${renamed.name}".`);
       pushEvent(`Project renamed to "${renamed.name}"`, "success");
       window.setTimeout(() => setNotice(""), 3000);
@@ -2936,7 +3264,7 @@ function App() {
       clearChatLocalCaches(chatId);
 
       const remainingChats = chats.filter((chat) => chat.id !== chatId);
-      setChats(remainingChats);
+      commitChats(remainingChats);
 
       if (selectedChatId === chatId) {
         const fallbackProject = targetChat.project_id
@@ -2974,12 +3302,16 @@ function App() {
       clearManyChatLocalCaches(projectChatIds);
 
       const remainingProjects = projects.filter((project) => project.id !== projectId);
-      setProjects(remainingProjects);
+      const remainingChats = chats.filter((chat) => chat.project_id !== projectId);
+      commitProjects(remainingProjects);
+      commitChats(remainingChats);
 
       if (selectedProjectId === projectId || selectedChatId === targetProject.default_chatroom_id) {
-        const nextChatId = chats[0]?.id ?? null;
-        applyChatSelection(nextChatId, null);
-        if (chats.length === 0) {
+        const fallbackProject = remainingProjects[0] ?? null;
+        const nextProjectId = fallbackProject?.id ?? null;
+        const nextChatId = fallbackProject?.default_chatroom_id ?? remainingChats[0]?.id ?? null;
+        applyChatSelection(nextChatId, nextProjectId);
+        if (!fallbackProject && remainingChats.length === 0) {
           setMessages([]);
           setChatCards([]);
         }
@@ -2993,47 +3325,11 @@ function App() {
     }
   }
 
-  async function handleQuickCreateProject() {
-    const pickerWindow = window as Window & {
-      showDirectoryPicker?: () => Promise<{ name: string }>;
-    };
-
-    if (!pickerWindow.showDirectoryPicker) {
-      setError("Current browser does not support directory picking.");
-      return;
-    }
-
-    try {
-      setCreatingProject(true);
-      setError("");
-      const directoryHandle = await pickerWindow.showDirectoryPicker();
-      const projectName = directoryHandle.name.trim();
-      if (!projectName) return;
-
-      const created = await api.createProject({
-        name: projectName,
-        description: "",
-        agent_names: ["assistant"],
-      });
-
-      const nextProjects = await api.getProjects();
-      setProjects(nextProjects);
-      applyChatSelection(created.default_chatroom_id, created.id);
-      setActiveTab("chat");
-      setNotice(`Created project "${created.name}" from selected directory.`);
-      pushEvent(`Created project "${created.name}" from directory picker`, "success");
-      window.setTimeout(() => setNotice(""), 3000);
-    } catch (nextError) {
-      const message =
-        nextError instanceof Error && nextError.name === "AbortError"
-          ? ""
-          : nextError instanceof Error
-            ? nextError.message
-            : "Failed to create project from directory";
-      setError(message);
-    } finally {
-      setCreatingProject(false);
-    }
+  function handleOpenProjectCreator() {
+    setError("");
+    setActiveTab("projects");
+    setSidebarDrawerOpen(false);
+    pushEvent("Opened GitHub import flow", "info");
   }
 
   async function handleSaveGlobal(payload: {
@@ -3158,6 +3454,7 @@ function App() {
   return (
     <div className={`app-shell ${activeTab === "chat" ? "app-shell--chat" : ""}`}>
       <AppSidebar
+        mode={activeTab === "config" ? "settings" : "workspace"}
         chats={chats}
         selectedChatId={selectedChatId}
         onSelectChat={(chatId) => {
@@ -3179,11 +3476,18 @@ function App() {
           setSidebarDrawerOpen(false);
           pushEvent(`Opened project "${nextProject?.name || projectId}"`, "info");
         }}
-        onQuickCreateProject={handleQuickCreateProject}
+        onOpenProjectCreator={handleOpenProjectCreator}
         onCreateProjectChat={handleCreateProjectChat}
         onReorderProjects={handleReorderProjects}
         onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
+        settingsSections={settingsSections}
+        selectedSettingsSection={activeConfigSection}
+        onSelectSettingsSection={(section) => {
+          setActiveConfigSection(section);
+          setActiveTab("config");
+          setSidebarDrawerOpen(false);
+        }}
         drawerOpen={sidebarDrawerOpen}
         onCloseDrawer={() => setSidebarDrawerOpen(false)}
       />
@@ -3209,7 +3513,7 @@ function App() {
                       <span className="dashboard-header__breadcrumb-sep">/</span>
                       <span className="dashboard-header__breadcrumb-current">
                         {activeTab === "projects" && "Projects"}
-                        {activeTab === "config" && "Global Settings"}
+                        {activeTab === "config" && "Settings"}
                       </span>
                     </div>
                   </div>
@@ -3219,7 +3523,9 @@ function App() {
                     <span className="status-dot topbar-status-dot" />
                     <span>{agents.filter((agent) => agent.is_active).length} agents</span>
                   </span>
-                  <span className="soft-pill mono-pill">{projects.length} rooms</span>
+                  <span className="soft-pill mono-pill">
+                    {activeTab === "config" ? `${settingsSections.length} sections` : `${projects.length} rooms`}
+                  </span>
                   <button
                     type="button"
                     className="btn btn--sm btn--icon settings-icon-btn"
@@ -3237,12 +3543,11 @@ function App() {
               <div className="surface-header-copy">
                 <h2 className="page-title">
                   {activeTab === "projects" && "Project center"}
-                  {activeTab === "config" && "Global configuration"}
+                  {activeTab === "config" && activeConfigMeta.title}
                 </h2>
                 <p className="page-sub">
                   {activeTab === "projects" && "Create rooms, assign agents, and switch sessions from one place."}
-                  {activeTab === "config" &&
-                    "Manage global defaults and edit every agent's model, role, soul, tools, and skills in one place."}
+                  {activeTab === "config" && activeConfigMeta.subtitle}
                 </p>
               </div>
               <div className="page-meta">
@@ -3284,6 +3589,8 @@ function App() {
             onCloseActivity={() => setActivityDrawerOpen(false)}
             onOpenSettings={toggleConfigTab}
             onRefresh={() => refreshMessages(true)}
+            onSyncProject={handleSyncProject}
+            syncingProject={selectedProject ? syncingProjectId === selectedProject.id : false}
             onApproveGate={handleApproveGate}
             onRejectGate={handleRejectGate}
             onCreateProjectFromChat={handleCreateProjectFromCurrentChat}
@@ -3309,6 +3616,7 @@ function App() {
         {activeTab === "config" ? (
           <ConfigTab
             config={config}
+            activeSection={activeConfigSection}
             saving={savingConfig}
             onBackToChat={() => setActiveTab("chat")}
             onSaveGlobal={handleSaveGlobal}

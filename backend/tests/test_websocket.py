@@ -7,6 +7,7 @@ import pytest
 import sys
 import os
 from unittest.mock import AsyncMock, MagicMock
+from fastapi import WebSocketDisconnect
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -262,3 +263,18 @@ class TestReceive:
 
         assert ws in manager.topic_connections["monitor"]
         ws.send_json.assert_called_with({"type": "subscribed", "topic": "monitor"})
+
+    @pytest.mark.asyncio
+    async def test_receive_reraises_websocket_disconnect(self):
+        from routes.websocket import WebSocketManager
+        manager = WebSocketManager()
+
+        ws = MagicMock()
+        ws.accept = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect(code=1001))
+
+        await manager.connect(ws)
+
+        with pytest.raises(WebSocketDisconnect):
+            await manager.receive(ws)

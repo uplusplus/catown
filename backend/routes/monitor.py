@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -23,6 +23,7 @@ INPUT_PRICE_PER_1K = 0.03
 OUTPUT_PRICE_PER_1K = 0.06
 LOG_STREAM_POLL_INTERVAL = 0.75
 LOG_STREAM_LIMIT = 200
+USAGE_RANGES = {"1h", "6h", "24h", "7d", "30d"}
 
 monitor_log_buffer.install()
 
@@ -122,6 +123,8 @@ def _build_runtime_title(card: dict[str, Any]) -> str:
     if card_type == "tool_call":
         tool_name = str(card.get("tool") or "tool")
         return f"{agent} used {tool_name}"
+    if card_type == "agent_error":
+        return f"{agent} stream failed"
     if card_type == "stage_started":
         return f"{agent} started {card.get('display_name') or card.get('stage') or 'stage'}"
     if card_type == "stage_completed":
@@ -147,6 +150,7 @@ def _build_runtime_title(card: dict[str, Any]) -> str:
 
 def _build_runtime_preview(card: dict[str, Any]) -> str:
     candidates = [
+        card.get("error"),
         card.get("response"),
         card.get("result"),
         card.get("content_preview"),
@@ -166,6 +170,76 @@ def _normalize_log_level(level: str | None) -> str:
     if normalized == "warn":
         return "warning"
     return normalized
+
+
+def _runtime_card_token_usage(card: dict[str, Any]) -> tuple[int, int]:
+    return int(card.get("tokens_in") or 0), int(card.get("tokens_out") or 0)
+
+
+def _runtime_card_cost(tokens_in: int, tokens_out: int) -> float:
+    return (tokens_in / 1000 * INPUT_PRICE_PER_1K) + (tokens_out / 1000 * OUTPUT_PRICE_PER_1K)
+
+
+def _usage_bucket_boundaries(range_value: str) -> list[tuple[datetime, datetime, str]]:
+    now = datetime.now()
+    if range_value == "1h":
+        bucket_count = 12
+        minute = (now.minute // 5) * 5
+        current = now.replace(minute=minute, second=0, microsecond=0)
+        starts = [current - timedelta(minutes=5 * offset) for offset in reversed(range(bucket_count))]
+        return [(start, start + timedelta(minutes=5), f"{start.minute:02d}") for start in starts]
+
+    if range_value == "6h":
+        bucket_count = 6
+        current = now.replace(minute=0, second=0, microsecond=0)
+        starts = [current - timedelta(hours=offset) for offset in reversed(range(bucket_count))]
+        return [(start, start + timedelta(hours=1), f"{start.hour:02d}") for start in starts]
+
+    if range_value == "24h":
+        bucket_count = 24
+        current = now.replace(minute=0, second=0, microsecond=0)
+        starts = [current - timedelta(hours=offset) for offset in reversed(range(bucket_count))]
+        return [(start, start + timedelta(hours=1), f"{start.hour:02d}") for start in starts]
+
+    bucket_count = 7 if range_value == "7d" else 30
+    current = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    starts = [current - timedelta(days=offset) for offset in reversed(range(bucket_count))]
+    return [(start, start + timedelta(days=1), str(start.day)) for start in starts]
+
+
+def _period_start(period: str) -> datetime:
+    now = datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "day":
+        return today
+    if period == "week":
+        return today - timedelta(days=today.weekday())
+    return today.replace(day=1)
+
+
+def _empty_usage_totals() -> dict[str, Any]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "llm_calls": 0,
+    }
+
+
+def _add_usage(totals: dict[str, Any], tokens_in: int, tokens_out: int) -> None:
+    totals["input_tokens"] += tokens_in
+    totals["output_tokens"] += tokens_out
+    totals["total_tokens"] += tokens_in + tokens_out
+    totals["estimated_cost_usd"] += _runtime_card_cost(tokens_in, tokens_out)
+    totals["llm_calls"] += 1
+
+
+def _finalize_usage_totals(totals: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **totals,
+        "estimated_cost_usd": round(float(totals["estimated_cost_usd"]), 4),
+    }
 
 
 def _serialize_runtime_card_detail(message: Message, chatroom: Chatroom, project: Project | None, card: dict[str, Any]) -> dict[str, Any]:
@@ -270,6 +344,100 @@ async def get_monitor_runtime_card_detail(message_id: int, db: Session = Depends
         raise HTTPException(status_code=404, detail="Runtime card payload is unavailable")
 
     return _serialize_runtime_card_detail(message, chatroom, project, card)
+
+
+@router.get("/usage")
+async def get_monitor_usage(
+    range: str = Query("24h", pattern="^(1h|6h|24h|7d|30d)$"),
+    db: Session = Depends(get_db),
+):
+    range_value = range if range in USAGE_RANGES else "24h"
+    bucket_specs = _usage_bucket_boundaries(range_value)
+    bucket_start = bucket_specs[0][0]
+    month_start = _period_start("month")
+    scan_start = min(bucket_start, month_start)
+
+    buckets = [
+        {
+            "label": label,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "llm_calls": 0,
+        }
+        for start, end, label in bucket_specs
+    ]
+
+    totals = {
+        "day": _empty_usage_totals(),
+        "week": _empty_usage_totals(),
+        "month": _empty_usage_totals(),
+    }
+
+    rows = (
+        db.query(Message)
+        .filter(Message.message_type == "runtime_card", Message.created_at >= scan_start)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+    scanned_runtime_cards = 0
+    day_start = _period_start("day")
+    week_start = _period_start("week")
+
+    for message in rows:
+        metadata = _parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card or str(card.get("type") or "") != "llm_call":
+            continue
+
+        created_at = message.created_at
+        if created_at is None:
+            continue
+
+        tokens_in, tokens_out = _runtime_card_token_usage(card)
+        scanned_runtime_cards += 1
+
+        if created_at >= day_start:
+            _add_usage(totals["day"], tokens_in, tokens_out)
+        if created_at >= week_start:
+            _add_usage(totals["week"], tokens_in, tokens_out)
+        if created_at >= month_start:
+            _add_usage(totals["month"], tokens_in, tokens_out)
+
+        for index, (start, end, _label) in enumerate(bucket_specs):
+            if start <= created_at < end:
+                buckets[index]["input_tokens"] += tokens_in
+                buckets[index]["output_tokens"] += tokens_out
+                buckets[index]["total_tokens"] += tokens_in + tokens_out
+                buckets[index]["estimated_cost_usd"] += _runtime_card_cost(tokens_in, tokens_out)
+                buckets[index]["llm_calls"] += 1
+                break
+
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "range": range_value,
+        "pricing": {
+            "input_per_1k": INPUT_PRICE_PER_1K,
+            "output_per_1k": OUTPUT_PRICE_PER_1K,
+        },
+        "totals": {
+            "day": _finalize_usage_totals(totals["day"]),
+            "week": _finalize_usage_totals(totals["week"]),
+            "month": _finalize_usage_totals(totals["month"]),
+        },
+        "buckets": [
+            {
+                **bucket,
+                "estimated_cost_usd": round(float(bucket["estimated_cost_usd"]), 4),
+            }
+            for bucket in buckets
+        ],
+        "scanned_runtime_cards": scanned_runtime_cards,
+    }
 
 
 @router.get("/overview")

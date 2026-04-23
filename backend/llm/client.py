@@ -12,6 +12,7 @@ import os
 import logging
 import time
 
+from agents.identity import DEFAULT_AGENT_TYPE, normalize_agent_type
 from config import settings
 
 logger = logging.getLogger("catown.llm")
@@ -242,6 +243,7 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
     config_file = settings.AGENT_CONFIG_FILE
     if not os.path.exists(config_file):
         return None
+    agent_type = normalize_agent_type(agent_name)
 
     try:
         with open(config_file, 'r', encoding='utf-8') as f:
@@ -249,7 +251,9 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
 
         # 先尝试 Agent 自身配置
         agents = data.get("agents", {})
-        agent_data = agents.get(agent_name)
+        agent_data = agents.get(agent_type) or agents.get(agent_name)
+        if agent_data is None and agent_type == DEFAULT_AGENT_TYPE:
+            agent_data = agents.get("assistant")
         if agent_data:
             provider = agent_data.get("provider", {})
             if provider:
@@ -267,7 +271,7 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
         return _load_global_provider(data)
 
     except Exception as e:
-        logger.warning(f"Failed to load provider config for agent '{agent_name}': {e}")
+        logger.warning(f"Failed to load provider config for agent '{agent_type}': {e}")
         return None
 
 
@@ -303,6 +307,7 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
 
     配置来源：agents.json → 该 Agent 的 provider 配置
     """
+    agent_name = normalize_agent_type(agent_name)
     if _llm_client is not None:
         return _llm_client
 

@@ -69,9 +69,9 @@ class ToolRegistry:
             return [self._tools[name].get_schema() for name in tool_names if name in self._tools]
         return [tool.get_schema() for tool in self._tools.values()]
     
-    async def execute(self, name: str, **kwargs) -> Any:
-        """Execute a tool by name"""
-        tool = self.get(name)
+    async def execute(self, tool_name: str, **kwargs) -> Any:
+        """Execute a tool by name."""
+        tool = self.get(tool_name)
         if not tool:
-            raise ValueError(f"Tool not found: {name}")
+            raise ValueError(f"Tool not found: {tool_name}")
         return await tool.execute(**kwargs)

@@ -20,6 +20,7 @@ import json
 import uuid
 import re
 
+from agents.identity import DEFAULT_AGENT_TYPE, find_agent_by_type
 
 class CollaborationMessageType(str, Enum):
     """Types of collaboration messages"""
@@ -91,12 +92,12 @@ class SingleAgentStrategy(CollaborationStrategy):
         mentions = re.findall(r'@(\w+)', message)
         if mentions:
             for mention in mentions:
-                agent = next((a for a in agents if a.name == mention), None)
+                agent = find_agent_by_type(agents, mention)
                 if agent:
                     return [agent]
         
-        # Default to "assistant" or first agent
-        agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
+        # Default to valet or first agent
+        agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
         return [agent] if agent else []
 
 
@@ -114,7 +115,7 @@ class MultiAgentStrategy(CollaborationStrategy):
         mentions = re.findall(r'@(\w+)', message)
         mentioned_agents = []
         for mention in mentions:
-            agent = next((a for a in agents if a.name == mention), None)
+            agent = find_agent_by_type(agents, mention)
             if agent:
                 mentioned_agents.append(agent)
         
@@ -151,9 +152,9 @@ class MultiAgentStrategy(CollaborationStrategy):
         
         # If no specific agents selected, use default
         if not selected:
-            assistant = next((a for a in agents if a.name == 'assistant'), None)
-            if assistant:
-                selected.append(assistant)
+            valet = find_agent_by_type(agents, DEFAULT_AGENT_TYPE)
+            if valet:
+                selected.append(valet)
             elif agents:
                 selected.append(agents[0])
         

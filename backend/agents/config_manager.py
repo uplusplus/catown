@@ -5,9 +5,9 @@ import json
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional
+from agents.identity import default_agent_name, is_legacy_default_agent_name, normalize_agent_type
 from agents.config_models import (
     AgentConfigV2,
-    AgentProviderConfig,
     SoulConfig,
     RoleConfig,
     MemoryConfig,
@@ -60,9 +60,12 @@ class AgentConfigManager:
         """解析配置数据"""
         configs = {}
 
-        agents_data = data.get("agents", {})
+        agents_data = dict(data.get("agents", {}))
+        if "assistant" in agents_data and "valet" not in agents_data:
+            agents_data["valet"] = agents_data.pop("assistant")
 
-        for agent_name, agent_data in agents_data.items():
+        for raw_agent_type, agent_data in agents_data.items():
+            agent_type = normalize_agent_type(raw_agent_type)
             # 提取 soul/role
             soul_data = agent_data.get("soul", {})
             role_data = agent_data.get("role", {})
@@ -79,13 +82,16 @@ class AgentConfigManager:
 
             # 提取 provider 配置
             provider_data = agent_data.get("provider", {})
+            raw_display_name = (agent_data.get("name") or "").strip()
+            display_name = default_agent_name(agent_type) if is_legacy_default_agent_name(raw_display_name, agent_type) else raw_display_name
 
             if provider_data:
                 config = create_agent_config_from_provider(
-                    agent_name=agent_name,
                     soul=soul_data,
                     role=role_data,
                     provider_config=provider_data,
+                    agent_type=agent_type,
+                    name=display_name,
                     tools=tools,
                     skills=skills,
                     memory=memory,
@@ -94,7 +100,8 @@ class AgentConfigManager:
                 )
             else:
                 config = AgentConfigV2(
-                    name=agent_name,
+                    type=agent_type,
+                    name=display_name,
                     soul=SoulConfig(**soul_data),
                     role=RoleConfig(**role_data),
                     tools=tools,
@@ -104,14 +111,14 @@ class AgentConfigManager:
                     default_model=default_model,
                 )
 
-            configs[agent_name] = config
+            configs[agent_type] = config
 
         self.configs.update(configs)
         return configs
     
     def get_config(self, agent_name: str) -> Optional[AgentConfigV2]:
         """获取指定 Agent 的配置"""
-        return self.configs.get(agent_name)
+        return self.configs.get(normalize_agent_type(agent_name))
     
     def list_configs(self) -> List[str]:
         """列出所有配置"""
@@ -121,7 +128,7 @@ class AgentConfigManager:
         """保存配置到 JSON 文件"""
         data = {"agents": {}}
         
-        for name, config in self.configs.items():
+        for agent_type, config in self.configs.items():
             agent_data = {
                 "name": config.name,
                 "soul": config.soul.model_dump(),
@@ -138,21 +145,21 @@ class AgentConfigManager:
             if config.provider:
                 agent_data["provider"] = config.provider.model_dump(by_alias=True)
 
-            data["agents"][name] = agent_data
+            data["agents"][agent_type] = agent_data
         
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     
     def add_config(self, config: AgentConfigV2):
         """添加配置"""
-        self.configs[config.name] = config
+        self.configs[config.type] = config
     
     def create_default_config_file(self, file_path: str):
         """创建默认配置文件"""
         default_config = {
             "agents": {
-                "assistant": {
-                    "name": "Bot",
+                "valet": {
+                    "name": "Valet",
                     "soul": {
                         "identity": "一个万能打杂的助手",
                         "values": ["能帮就帮", "做事有条理"],

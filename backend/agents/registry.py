@@ -13,8 +13,10 @@ logger = logging.getLogger("catown.registry")
 本模块不再维护独立的工具注册逻辑。
 """
 from typing import Dict, List, Union
+from sqlalchemy import or_
 from agents.core import Agent, AgentConfig
 from agents.config_models import AgentConfigV2, create_agent_config_from_provider
+from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name, legacy_default_agent_names, normalize_agent_type
 from config import settings
 from models.database import SessionLocal, Agent as DBAgent
 import json
@@ -30,8 +32,9 @@ class AgentRegistry:
     
     def register(self, config: Union[AgentConfig, AgentConfigV2], agent: Agent):
         """注册 Agent"""
-        self.agents[config.name] = agent
-        self.configs[config.name] = config
+        agent_type = getattr(config, "type", None) or normalize_agent_type(config.name)
+        self.agents[agent_type] = agent
+        self.configs[agent_type] = config
     
     def get(self, name: str) -> Agent:
         """获取 Agent 实例"""
@@ -92,42 +95,43 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
     
     return [
         create_agent_config_from_provider(
-            agent_name="assistant",
+            agent_type=DEFAULT_AGENT_TYPE,
+            name=default_agent_name(DEFAULT_AGENT_TYPE),
             soul={"identity": "一个万能打杂的助手", "values": ["能帮就帮"], "style": "友好随和"},
             role={"title": "助理", "responsibilities": ["回答问题", "协助处理一般任务"], "rules": ["不确定时提问"]},
             provider_config=default_provider,
             tools=["web_search", "retrieve_memory"]
         ),
         create_agent_config_from_provider(
-            agent_name="analyst",
+            agent_type="analyst",
             soul={"identity": "善于提炼的需求专家", "values": ["需求不清是一切烂系统的根源"], "style": "条理清晰"},
             role={"title": "需求分析师", "responsibilities": ["将需求转化为PRD"], "rules": ["输出 Markdown"]},
             provider_config=default_provider,
             tools=["web_search", "retrieve_memory", "read_file", "write_file"]
         ),
         create_agent_config_from_provider(
-            agent_name="architect",
+            agent_type="architect",
             soul={"identity": "务实的技术架构师", "values": ["简单优先"], "style": "严谨"},
             role={"title": "架构师", "responsibilities": ["设计技术方案"], "rules": ["不过度设计"]},
             provider_config=default_provider,
             tools=["web_search", "retrieve_memory", "read_file", "write_file"]
         ),
         create_agent_config_from_provider(
-            agent_name="developer",
+            agent_type="developer",
             soul={"identity": "注重代码质量的工程师", "values": ["可读性优先"], "style": "简洁"},
             role={"title": "开发工程师", "responsibilities": ["基于 spec 写代码", "写测试"], "rules": ["代码写到 src/"]},
             provider_config=default_provider,
             tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "search_files"]
         ),
         create_agent_config_from_provider(
-            agent_name="tester",
+            agent_type="tester",
             soul={"identity": "天生多疑的QA", "values": ["边界条件是bug的温床"], "style": "冷静精确"},
             role={"title": "测试工程师", "responsibilities": ["测试软件找bug"], "rules": ["安全问题标记blocker"]},
             provider_config=default_provider,
             tools=["retrieve_memory", "read_file", "execute_code", "list_files", "search_files"]
         ),
         create_agent_config_from_provider(
-            agent_name="release",
+            agent_type="release",
             soul={"identity": "谨慎的发布守门人", "values": ["测试报告是唯一准绳"], "style": "保守果断"},
             role={"title": "发布经理", "responsibilities": ["审查测试报告", "发布版本"], "rules": ["有blocker不发布"]},
             provider_config=default_provider,
@@ -154,20 +158,40 @@ def register_builtin_agents():
         # 同步到数据库
         db = SessionLocal()
         try:
-            existing = db.query(DBAgent).filter(DBAgent.name == config.name).first()
-            if not existing:
-                db_agent = DBAgent(
-                    name=config.name,
-                    role=config.role.title,
-                    soul=json.dumps(config.soul.model_dump(), ensure_ascii=False),
-                    tools=json.dumps(config.tools),
-                    skills=json.dumps(config.skills),
-                    config=json.dumps(config.model_dump(), ensure_ascii=False, default=str),
+            candidate_names = {config.name, config.type, default_agent_name(config.type)}
+            candidate_names.update({value.title() for value in legacy_default_agent_names(config.type)})
+            candidate_names.update(legacy_default_agent_names(config.type))
+            existing = (
+                db.query(DBAgent)
+                .filter(
+                    or_(
+                        DBAgent.agent_type == config.type,
+                        DBAgent.name.in_(sorted(candidate_names)),
+                    )
                 )
-                db.add(db_agent)
-                db.commit()
+                .order_by(DBAgent.id.asc())
+                .first()
+            )
+            payload = {
+                "agent_type": config.type,
+                "name": config.name,
+                "role": config.role.title,
+                "soul": json.dumps(config.soul.model_dump(), ensure_ascii=False),
+                "tools": json.dumps(config.tools),
+                "skills": json.dumps(config.skills),
+                "config": json.dumps(config.model_dump(), ensure_ascii=False, default=str),
+                "is_active": True,
+            }
+            if existing:
+                for key, value in payload.items():
+                    setattr(existing, key, value)
+                db.add(existing)
+            else:
+                db.add(DBAgent(**payload))
+            db.commit()
         except Exception as e:
-            logger.warning(f"Could not save agent {config.name} to database: {e}")
+            db.rollback()
+            logger.warning(f"Could not save agent {config.type} to database: {e}")
         finally:
             db.close()
     

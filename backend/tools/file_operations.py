@@ -422,7 +422,7 @@ class SearchFilesTool(BaseTool):
     """Tool for searching file contents"""
     
     name = "search_files"
-    description = "Search for text within files. Returns files and lines containing the search term."
+    description = "Search for text within files. Returns workspace-relative file paths and lines containing the search term."
     
     def __init__(self, workspace: str = None):
         self.workspace = os.path.realpath(workspace or os.getcwd())
@@ -482,7 +482,7 @@ class SearchFilesTool(BaseTool):
                         with open(file_path, 'r', encoding='utf-8') as f:
                             for line_num, line in enumerate(f, 1):
                                 if search_term.lower() in line.lower():
-                                    rel_path = os.path.relpath(file_path, full_path)
+                                    rel_path = self._workspace_relative_path(file_path)
                                     results.append({
                                         'file': rel_path,
                                         'line': line_num,
@@ -517,6 +517,10 @@ class SearchFilesTool(BaseTool):
     
     def _is_safe_path(self, path: str) -> bool:
         return _is_path_within_workspace(_effective_workspace(self.workspace), path)
+
+    def _workspace_relative_path(self, path: str) -> str:
+        workspace_root = _effective_workspace(self.workspace)
+        return os.path.relpath(os.path.realpath(path), workspace_root).replace("\\", "/")
 
     def _search_with_ripgrep(
         self,
@@ -573,7 +577,8 @@ class SearchFilesTool(BaseTool):
         for line in lines[:max_results]:
             parts = line.split(":", 2)
             if len(parts) == 3:
-                output_lines.append(f"  {parts[0]}:{parts[1]}: {parts[2].strip()[:100]}")
+                workspace_relative = self._workspace_relative_path(os.path.join(full_path, parts[0]))
+                output_lines.append(f"  {workspace_relative}:{parts[1]}: {parts[2].strip()[:100]}")
             else:
                 output_lines.append(f"  {line[:140]}")
 

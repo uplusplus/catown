@@ -608,6 +608,22 @@ textarea {
   color: var(--text-accent);
 }
 
+.activity-filter-input {
+  min-width: min(280px, 100%);
+  flex: 1 1 240px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.activity-filter-input:focus {
+  outline: 2px solid rgba(15, 111, 255, 0.16);
+  border-color: var(--bg-accent);
+}
+
 .tag--success {
   color: var(--text-success);
   background: var(--bg-success);
@@ -1470,25 +1486,96 @@ textarea {
 
 .bar-chart {
   grid-template-columns: repeat(auto-fit, minmax(30px, 1fr));
-  align-items: end;
+  grid-auto-rows: minmax(0, 1fr);
+  align-items: stretch;
+  height: 180px;
   min-height: 180px;
 }
 
-.bar-column {
+.bar-chart--compact {
+  min-height: 0;
+  height: clamp(62px, 8vh, 86px);
+  gap: clamp(3px, 0.7vw, 8px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  align-items: stretch;
+}
+
+.bar-chart--compact .bar-column {
+  height: 100%;
+  align-items: center;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 12px;
+  gap: 3px;
+  justify-items: center;
+}
+
+.bar-chart--compact .bar-column__bar {
+  width: clamp(4px, 1.1vw, 10px);
+  border-radius: 7px 7px 3px 3px;
+}
+
+.bar-chart--compact .bar-column__value {
+  display: none;
+}
+
+.bar-chart--compact .bar-column__plot {
+  grid-row: 1;
+  height: 100%;
+}
+
+.bar-chart--compact .bar-column__label {
+  grid-row: 2;
+  min-height: 12px;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.activity-timeline-card {
+  margin-bottom: 12px;
+}
+
+.activity-timeline-card__header {
   display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+
+.bar-chart--timeline {
+  grid-template-columns: repeat(auto-fit, minmax(8px, 1fr));
+}
+
+.bar-column {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
+  height: 100%;
   min-width: 0;
+  justify-items: center;
+}
+
+.bar-column__plot {
+  grid-row: 2;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
 }
 
 .bar-column__bar {
+  width: min(28px, 70%);
   border-radius: 10px 10px 4px 4px;
   background: linear-gradient(180deg, #71b6ff, #0f6fff);
   min-height: 8px;
 }
 
 .bar-column__label {
+  grid-row: 3;
   font-size: 10px;
   color: var(--text-muted);
   text-align: center;
@@ -1496,6 +1583,7 @@ textarea {
 }
 
 .bar-column__value {
+  grid-row: 1;
   font-size: 10px;
   color: var(--text-secondary);
   text-align: center;

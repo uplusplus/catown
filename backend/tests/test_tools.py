@@ -15,6 +15,7 @@ from tools.base import BaseTool, ToolRegistry
 from tools.web_search import WebSearchTool
 from tools.execute_code import ExecuteCodeTool
 from tools.retrieve_memory import RetrieveMemoryTool
+from tools.github_manager import GitHubManagerTool
 
 
 # ==================== BaseTool & ToolRegistry ====================
@@ -51,6 +52,27 @@ class TestToolRegistry:
         schemas = registry.get_schemas(["web_search"])
         assert len(schemas) == 1
         assert schemas[0]["function"]["name"] == "web_search"
+
+    @pytest.mark.asyncio
+    async def test_execute_allows_payload_name_for_github_manager(self, monkeypatch):
+        registry = ToolRegistry()
+        tool = GitHubManagerTool()
+        registry.register(tool)
+
+        async def fake_repo_info(repo: str, **kwargs):
+            assert repo == "owner/repo"
+            return kwargs["name"]
+
+        monkeypatch.setattr(tool, "_action_repo_info", fake_repo_info)
+
+        result = await registry.execute(
+            "github_manager",
+            action="repo_info",
+            repo="owner/repo",
+            name="Release Title",
+        )
+
+        assert result == "Release Title"
 
 
 # ==================== WebSearchTool ====================

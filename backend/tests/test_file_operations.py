@@ -307,6 +307,21 @@ class TestSearchFilesTool:
         assert "a.py" in result
 
     @pytest.mark.asyncio
+    async def test_search_returns_workspace_relative_paths_for_subdirectories(self, tmp_path):
+        from tools.file_operations import SearchFilesTool
+
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "PRD.md").write_text("### 已完成\n")
+
+        tool = SearchFilesTool(workspace=str(tmp_path))
+        result = await tool.execute(search_term="已完成", directory="docs", file_pattern="*.md")
+
+        assert "docs/PRD.md:1:" in result
+        assert "./PRD.md" not in result
+        assert "\n  PRD.md:" not in result
+
+    @pytest.mark.asyncio
     async def test_search_outside_workspace(self, tmp_path):
         from tools.file_operations import SearchFilesTool
         tool = SearchFilesTool(workspace=str(tmp_path / "safe"))

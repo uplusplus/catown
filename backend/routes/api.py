@@ -9,15 +9,26 @@ import os
 import asyncio
 import shutil
 import subprocess
+import traceback
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, field_validator
 
+from agents.identity import (
+    DEFAULT_AGENT_TYPE,
+    agent_name_of,
+    default_agent_name,
+    find_agent_by_type,
+    is_legacy_default_agent_name,
+    legacy_default_agent_names,
+    normalize_agent_type,
+)
 from models.database import get_db, Agent, Project, Chatroom, AgentAssignment, Message, Base
 from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
@@ -35,6 +46,7 @@ logger = logging.getLogger("catown.api")
 
 _HEARTBEAT_EVENT_TYPE = "__heartbeat__"
 _RESULT_EVENT_TYPE = "__result__"
+MAX_TOOL_ITERATIONS = 50
 
 
 async def _iter_with_heartbeat(stream, timeout: float = 1.0):
@@ -116,32 +128,54 @@ class LLMConfigModel(BaseModel):
 router = APIRouter()
 
 
+def _agent_type(agent: Optional[Agent]) -> str:
+    return normalize_agent_type(agent.agent_type if agent else None)
+
+
+def _find_db_agent_by_type(db: Session, agent_type: Optional[str]) -> Optional[Agent]:
+    normalized = normalize_agent_type(agent_type)
+    candidate_names = {normalized, default_agent_name(normalized)}
+    candidate_names.update({value.title() for value in legacy_default_agent_names(normalized)})
+    candidate_names.update(legacy_default_agent_names(normalized))
+    return (
+        db.query(Agent)
+        .filter(
+            or_(
+                Agent.agent_type == normalized,
+                Agent.name.in_(sorted(candidate_names)),
+            )
+        )
+        .order_by(Agent.id.asc())
+        .first()
+    )
+
+
 # ==================== Agent 响应处理 ====================
 
 def _find_mentioned_agent_name(message: str) -> Optional[str]:
     """Return the first @mentioned agent name in a message, if any."""
     mentioned_names = re.findall(r'@(\w+)', message or "")
-    return mentioned_names[0] if mentioned_names else None
+    return normalize_agent_type(mentioned_names[0]) if mentioned_names else None
 
 
 def _resolve_standalone_target_agent(db: Session, user_message: str) -> Optional[Agent]:
     """
     Resolve which agent should answer in a standalone chat.
 
-    Prefer the first @mentioned agent; otherwise fall back to assistant.
+    Prefer the first @mentioned agent; otherwise fall back to valet.
     """
     target_agent_name = _find_mentioned_agent_name(user_message)
     if target_agent_name:
-        mentioned_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+        mentioned_agent = _find_db_agent_by_type(db, target_agent_name)
         if mentioned_agent:
             return mentioned_agent
 
-    return db.query(Agent).filter(Agent.name == "assistant").first()
+    return _find_db_agent_by_type(db, DEFAULT_AGENT_TYPE)
 
 
 def _list_global_agents(db: Session) -> List[Agent]:
     """List all available agents for standalone chat routing."""
-    return db.query(Agent).order_by(Agent.name.asc()).all()
+    return db.query(Agent).order_by(Agent.agent_type.asc(), Agent.id.asc()).all()
 
 
 def _snapshot_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -210,6 +244,18 @@ def _append_current_user_message(messages: List[Dict[str, Any]], user_message: s
 
 def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+_TOOL_ERROR_RESULT_RE = re.compile(r"^\[[^\]]+\]\s+error:", re.IGNORECASE)
+
+
+def _tool_result_succeeded(result_text: str) -> bool:
+    normalized = (result_text or "").strip()
+    if not normalized:
+        return True
+    if normalized.lower().startswith("error:") or normalized.lower().startswith("error executing "):
+        return False
+    return _TOOL_ERROR_RESULT_RE.match(normalized) is None
 
 
 def _message_client_turn_id(message_like: Any) -> Optional[str]:
@@ -443,15 +489,15 @@ async def _trigger_standalone_assistant_response(
     assistant = _resolve_standalone_target_agent(db, user_message)
 
     if assistant:
-        llm_client = get_llm_client_for_agent(assistant.name)
-        assistant_name = assistant.name
+        llm_client = get_llm_client_for_agent(_agent_type(assistant))
+        assistant_name = agent_name_of(assistant)
         assistant_id = assistant.id
-        system_prompt = assistant.system_prompt or "You are assistant, a helpful AI collaborator."
+        system_prompt = assistant.system_prompt or f"You are {assistant_name}, a helpful AI collaborator."
     else:
         llm_client = get_default_llm_client()
-        assistant_name = "assistant"
+        assistant_name = default_agent_name(DEFAULT_AGENT_TYPE)
         assistant_id = None
-        system_prompt = "You are assistant, a helpful AI collaborator."
+        system_prompt = f"You are {assistant_name}, a helpful AI collaborator."
 
     system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
     system_prompt += _build_runtime_context_block(db, chatroom, None)
@@ -513,15 +559,15 @@ async def _stream_standalone_assistant_response(
     assistant = _resolve_standalone_target_agent(db, user_message)
 
     if assistant:
-        llm_client = get_llm_client_for_agent(assistant.name)
-        assistant_name = assistant.name
+        llm_client = get_llm_client_for_agent(_agent_type(assistant))
+        assistant_name = agent_name_of(assistant)
         assistant_id = assistant.id
-        system_prompt = assistant.system_prompt or "You are assistant, a helpful AI collaborator."
+        system_prompt = assistant.system_prompt or f"You are {assistant_name}, a helpful AI collaborator."
     else:
         llm_client = get_default_llm_client()
-        assistant_name = "assistant"
+        assistant_name = default_agent_name(DEFAULT_AGENT_TYPE)
         assistant_id = None
-        system_prompt = "You are assistant, a helpful AI collaborator."
+        system_prompt = f"You are {assistant_name}, a helpful AI collaborator."
 
     system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
     system_prompt += _build_runtime_context_block(db, chatroom, None)
@@ -540,49 +586,61 @@ async def _stream_standalone_assistant_response(
     import time as _time
     final_content = ""
     _llm_start = _time.time()
-    async for event in _iter_with_heartbeat(llm_client.chat_stream(context_messages)):
-        if event["type"] == _HEARTBEAT_EVENT_TYPE:
-            elapsed_ms = int((_time.time() - _llm_start) * 1000)
-            yield f"data: {sse_json.dumps({'type': 'llm_wait', 'agent': assistant_name, 'elapsed_ms': elapsed_ms, 'turn': 1})}\n\n"
-            continue
+    try:
+        async for event in _iter_with_heartbeat(llm_client.chat_stream(context_messages)):
+            if event["type"] == _HEARTBEAT_EVENT_TYPE:
+                elapsed_ms = int((_time.time() - _llm_start) * 1000)
+                yield f"data: {sse_json.dumps({'type': 'llm_wait', 'agent': assistant_name, 'elapsed_ms': elapsed_ms, 'turn': 1})}\n\n"
+                continue
 
-        if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-            yield f"data: {sse_json.dumps({'type': event['type'], 'agent': assistant_name, 'turn': 1, 'elapsed_ms': event.get('elapsed_ms')})}\n\n"
-            continue
+            if event["type"] in {"request_sent", "first_chunk", "first_content"}:
+                yield f"data: {sse_json.dumps({'type': event['type'], 'agent': assistant_name, 'turn': 1, 'elapsed_ms': event.get('elapsed_ms')})}\n\n"
+                continue
 
-        if event["type"] == "content":
-            final_content += event["delta"]
-            yield f"data: {sse_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
-            continue
+            if event["type"] == "content":
+                final_content += event["delta"]
+                yield f"data: {sse_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
+                continue
 
-        if event["type"] == "done":
-            response_content = event.get("full_content") or final_content
-            llm_payload = _build_llm_card_payload(
-                agent_name=assistant_name,
-                llm_client=llm_client,
-                turn=1,
-                duration_ms=int(event.get("timings", {}).get("completed_ms") or 0),
-                system_prompt=system_prompt,
-                prompt_messages=prompt_snapshot,
-                response_content=response_content,
-                tool_call_previews=[],
-                raw_tool_calls=event.get("tool_calls"),
-                usage=event.get("usage"),
-                finish_reason=event.get("finish_reason"),
-                timings=event.get("timings"),
-            )
-            llm_payload["type"] = "llm_call"
-            llm_payload["source"] = "chatroom"
-            if client_turn_id:
-                llm_payload["client_turn_id"] = client_turn_id
-            await _store_runtime_card(chatroom_id, llm_payload)
-            yield f"data: {sse_json.dumps(llm_payload, ensure_ascii=False)}\n\n"
-            final_content = response_content
-            break
+            if event["type"] == "done":
+                response_content = event.get("full_content") or final_content
+                llm_payload = _build_llm_card_payload(
+                    agent_name=assistant_name,
+                    llm_client=llm_client,
+                    turn=1,
+                    duration_ms=int(event.get("timings", {}).get("completed_ms") or 0),
+                    system_prompt=system_prompt,
+                    prompt_messages=prompt_snapshot,
+                    response_content=response_content,
+                    tool_call_previews=[],
+                    raw_tool_calls=event.get("tool_calls"),
+                    usage=event.get("usage"),
+                    finish_reason=event.get("finish_reason"),
+                    timings=event.get("timings"),
+                )
+                llm_payload["type"] = "llm_call"
+                llm_payload["source"] = "chatroom"
+                if client_turn_id:
+                    llm_payload["client_turn_id"] = client_turn_id
+                await _store_runtime_card(chatroom_id, llm_payload)
+                yield f"data: {sse_json.dumps(llm_payload, ensure_ascii=False)}\n\n"
+                final_content = response_content
+                break
 
-        if event["type"] == "error":
-            yield f"data: {sse_json.dumps({'type': 'error', 'error': event['error']})}\n\n"
-            return
+            if event["type"] == "error":
+                raise RuntimeError(event["error"])
+    except Exception as exc:
+        saved = await _persist_stream_failure(
+            db,
+            chatroom_id=chatroom_id,
+            client_turn_id=client_turn_id,
+            error_message=str(exc),
+            agent_name=assistant_name,
+            agent_id=assistant_id,
+            detail=traceback.format_exc(),
+        )
+        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': saved.id, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+        return
 
     if not final_content:
         final_content = "(Agent returned empty response)"
@@ -638,7 +696,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         project = _resolve_chatroom_project(db, chatroom)
         workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
         if not project:
-            mentioned_names = re.findall(r'@(\w+)', user_message) if '@' in user_message else []
+            mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', user_message)] if '@' in user_message else []
             if len(mentioned_names) > 1:
                 logger.info(f"[Collab] Standalone multi-agent pipeline triggered: {mentioned_names}")
                 await _run_multi_agent_pipeline(
@@ -659,7 +717,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         # 2. 解析 @ 提及，检测多 Agent 协作
         mentioned_names = []
         if '@' in user_message:
-            mentioned_names = re.findall(r'@(\w+)', user_message)
+            mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', user_message)]
 
         # 3. 获取项目关联的 Agents（必须在多 Agent 检查之前）
         assignments = db.query(AgentAssignment).filter(
@@ -690,11 +748,11 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         # 4. 确定响应的 Agent
         target_agent = None
         if target_agent_name:
-            target_agent = next((a for a in agents if a.name == target_agent_name), None)
+            target_agent = find_agent_by_type(agents, target_agent_name)
 
             # @mentioned agent 不在项目中 → 从全局注册表查找并自动分配
             if not target_agent:
-                global_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+                global_agent = _find_db_agent_by_type(db, target_agent_name)
                 if global_agent:
                     logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
                     assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
@@ -704,7 +762,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
                     agents.append(global_agent)
 
         if not target_agent:
-            target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
+            target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
 
         if not target_agent:
             logger.debug(f"[ No target agent found")
@@ -719,20 +777,20 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
             if agent.id not in collaboration_coordinator.collaborators:
                 collaborator = AgentCollaborator(
                     agent_id=agent.id,
-                    agent_name=agent.name,
+                    agent_name=_agent_type(agent),
                     chatroom_id=chatroom_id
                 )
                 collaboration_coordinator.register_collaborator(collaborator)
-                logger.info(f"[Collab] Auto-registered collaborator: {agent.name}")
+                logger.info(f"[Collab] Auto-registered collaborator: {_agent_type(agent)}")
         
         # 5. 获取该 Agent 的 LLM 客户端
-        llm_client = get_llm_client_for_agent(target_agent.name)
-        logger.debug(f"[ LLM client obtained for {target_agent.name}: {llm_client.base_url}")
+        llm_client = get_llm_client_for_agent(_agent_type(target_agent))
+        logger.debug(f"[ LLM client obtained for {_agent_type(target_agent)}: {llm_client.base_url}")
         
         # 6. 构建消息上下文
         messages = []
         
-        system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
+        system_prompt = target_agent.system_prompt or f"You are {agent_name_of(target_agent)}, a {target_agent.role}."
         system_prompt += _build_runtime_context_block(db, chatroom, project)
         
         available_tools = tool_registry.list_tools()
@@ -744,7 +802,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
         system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
         if target_agent.id:
-            system_prompt += f"\n\nYou are **{target_agent.name}** (role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
+            system_prompt += f"\n\nYou are **{agent_name_of(target_agent)}** (type: `{_agent_type(target_agent)}`, role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
 
         # 注入记忆到上下文（含跨 Agent 共享）
         from models.database import Memory
@@ -800,7 +858,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
                 recent_messages,
                 limit=10,
                 visibility="target",
-                target_agent_name=target_agent.name,
+                target_agent_name=agent_name_of(target_agent),
             )
         
         # 追加当前用户消息；如果最近历史里已经包含这条刚保存的消息，则避免重复。
@@ -812,9 +870,9 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         tool_schemas = tool_registry.get_schemas()
         
         # 8. 主循环：LLM → 执行工具 → 结果回传 LLM → 直到没有 tool_calls
-        logger.info(f"[LLM] Calling LLM for agent: {target_agent.name} with {len(tool_schemas)} tools available")
+        logger.info(f"[LLM] Calling LLM for agent: {_agent_type(target_agent)} with {len(tool_schemas)} tools available")
         
-        max_tool_iterations = 5
+        max_tool_iterations = MAX_TOOL_ITERATIONS
         iteration = 0
         
         while iteration < max_tool_iterations:
@@ -881,7 +939,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
             content=response_content,
             message_type="text",
             metadata=_message_metadata_with_turn(client_turn_id),
-            agent_name=target_agent.name
+            agent_name=agent_name_of(target_agent)
         )
         
         logger.debug(f"[ Agent response saved: id={agent_response.id}")
@@ -891,19 +949,19 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
             chatroom_id,
             message_id=agent_response.id,
             content=response_content,
-            agent_name=target_agent.name,
+            agent_name=agent_name_of(target_agent),
             message_type="text",
             created_at=agent_response.created_at,
             metadata=_message_metadata_with_turn(client_turn_id),
         )
         
-        logger.info(f"[Agent] {target_agent.name} responded to message successfully")
+        logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
 
         # 11. 异步提取记忆（不阻塞响应）
         if len(response_content) > 30:
             asyncio.create_task(_extract_memories(
                 agent_id=target_agent.id,
-                agent_name=target_agent.name,
+                agent_type=_agent_type(target_agent),
                 user_message=user_message,
                 agent_response=response_content
             ))
@@ -918,7 +976,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         db.close()
 
 
-async def _extract_memories(agent_id: int, agent_name: str, user_message: str, agent_response: str):
+async def _extract_memories(agent_id: int, agent_type: str, user_message: str, agent_response: str):
     """
     用 LLM 从对话中提取关键信息，存为 Agent 记忆
 
@@ -929,7 +987,7 @@ async def _extract_memories(agent_id: int, agent_name: str, user_message: str, a
         from models.database import get_db as _get_db, Memory
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 
-        llm = get_llm_client_for_agent(agent_name)
+        llm = get_llm_client_for_agent(normalize_agent_type(agent_type))
 
         extraction_messages = [
             {
@@ -989,7 +1047,7 @@ async def _extract_memories(agent_id: int, agent_name: str, user_message: str, a
                 db.add(db_memory)
 
             db.commit()
-            logger.info(f"[Memory] Extracted {len(memories)} memories for {agent_name}")
+            logger.info(f"[Memory] Extracted {len(memories)} memories for {agent_type}")
         except Exception as e:
             db.rollback()
             logger.debug(f"[Memory] Save failed: {e}")
@@ -1012,18 +1070,18 @@ async def _run_single_agent_turn(
     from agents.collaboration import collaboration_coordinator, AgentCollaborator
     from models.database import Memory
 
-    llm_client = get_llm_client_for_agent(agent.name)
+    llm_client = get_llm_client_for_agent(_agent_type(agent))
     current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
 
     # 注册协作者
     for a in agents:
         if a.id not in collaboration_coordinator.collaborators:
             collaboration_coordinator.register_collaborator(
-                AgentCollaborator(agent_id=a.id, agent_name=a.name, chatroom_id=chatroom_id)
+                AgentCollaborator(agent_id=a.id, agent_name=_agent_type(a), chatroom_id=chatroom_id)
             )
 
     # 构建 system prompt
-    system_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+    system_prompt = agent.system_prompt or f"You are {agent_name_of(agent)}, a {agent.role}."
     if project:
         system_prompt += _build_runtime_context_block(db, current_chatroom, project)
     else:
@@ -1038,11 +1096,11 @@ async def _run_single_agent_turn(
         system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
 
     # 注入当前可用 Agent 列表
-    team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+    team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
     team_label = "Team members in this project" if project else "Available agents in this standalone chat"
     system_prompt += f"\n\n{team_label}:\n" + "\n".join(team_members)
     system_prompt += (
-        f"\n\nYou are **{agent.name}** (role: {agent.role}). "
+        f"\n\nYou are **{agent_name_of(agent)}** (type: `{_agent_type(agent)}`, role: {agent.role}). "
         "You can use tools to communicate with or delegate tasks to your teammates."
     )
 
@@ -1067,7 +1125,8 @@ async def _run_single_agent_turn(
         system_prompt += "\n\nShared context from other agents:"
         for mem in shared:
             ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
-            src = next((a.name for a in agents if a.id == mem.agent_id), "unknown")
+            source_agent = next((a for a in agents if a.id == mem.agent_id), None)
+            src = agent_name_of(source_agent) if source_agent else "unknown"
             system_prompt += f"\n- [{ts}] [{src}] {mem.content[:200]}"
 
     # 如果有协作上下文（前一个 Agent 的回复），注入
@@ -1085,7 +1144,7 @@ async def _run_single_agent_turn(
     response_content = ""
 
     # 工具调用循环
-    for iteration in range(5):
+    for iteration in range(MAX_TOOL_ITERATIONS):
         llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
         response_content = llm_response.get("content", "") or ""
         tool_calls = llm_response.get("tool_calls")
@@ -1123,12 +1182,12 @@ async def _run_single_agent_turn(
         content=response_content,
         message_type="text",
         metadata=_message_metadata_with_turn(client_turn_id),
-        agent_name=agent.name,
+        agent_name=agent_name_of(agent),
     )
 
     # 异步提取记忆
     if len(response_content) > 30:
-        asyncio.create_task(_extract_memories(agent.id, agent.name, user_message, response_content))
+        asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), user_message, response_content))
 
     return response_content, agent_msg
 
@@ -1144,9 +1203,9 @@ async def _run_multi_agent_pipeline(
     """
     resolved_agents = []
     for name in agent_names:
-        agent = next((a for a in agents if a.name == name), None)
+        agent = find_agent_by_type(agents, name)
         if not agent:
-            global_agent = db.query(Agent).filter(Agent.name == name).first()
+            global_agent = _find_db_agent_by_type(db, name)
             if global_agent and project:
                 assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
                 db.add(assignment)
@@ -1161,20 +1220,20 @@ async def _run_multi_agent_pipeline(
         logger.warning("[Collab] No valid agents found for multi-agent pipeline")
         return
 
-    logger.info(f"[Collab] Pipeline: {' → '.join(a.name for a in resolved_agents)}")
+    logger.info(f"[Collab] Pipeline: {' → '.join(_agent_type(a) for a in resolved_agents)}")
 
     previous_context = None
     results = []
 
     for i, agent in enumerate(resolved_agents):
-        logger.info(f"[Collab] Step {i+1}/{len(resolved_agents)}: {agent.name}")
+        logger.info(f"[Collab] Step {i+1}/{len(resolved_agents)}: {_agent_type(agent)}")
 
         # 为后续 Agent 注入前序上下文
         extra_msg = user_message
         if previous_context:
             extra_msg = (
                 f"{user_message}\n\n"
-                f"[Context from previous agent ({resolved_agents[i-1].name})]:\n{previous_context}"
+                f"[Context from previous agent ({agent_name_of(resolved_agents[i-1])})]:\n{previous_context}"
             )
 
         content, msg = await _run_single_agent_turn(
@@ -1194,13 +1253,13 @@ async def _run_multi_agent_pipeline(
                 chatroom_id,
                 message_id=msg.id,
                 content=content,
-                agent_name=agent.name,
+                agent_name=agent_name_of(agent),
                 message_type="text",
                 created_at=msg.created_at,
                 metadata=_message_metadata_with_turn(client_turn_id),
             )
 
-            results.append({"agent": agent.name, "content": content})
+            results.append({"agent": agent_name_of(agent), "content": content})
             previous_context = content
         else:
             logger.warning(f"[Collab] {agent.name} returned empty response")
@@ -1212,6 +1271,7 @@ async def _run_multi_agent_pipeline(
 
 class AgentInfo(BaseModel):
     id: int
+    type: str
     name: str
     role: str
     is_active: bool
@@ -1224,8 +1284,24 @@ class AgentInfo(BaseModel):
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    agent_names: List[str] = ["assistant"]
+    agent_names: List[str] = [DEFAULT_AGENT_TYPE]
     workspace_path: Optional[str] = None
+
+
+class GitHubProjectCreate(BaseModel):
+    repo_url: str
+    name: Optional[str] = None
+    description: Optional[str] = ""
+    ref: Optional[str] = None
+    agent_names: List[str] = [DEFAULT_AGENT_TYPE]
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        repo_url = (value or "").strip()
+        if not repo_url:
+            raise ValueError("repo_url is required")
+        return repo_url
 
 
 class ProjectFromChatCreate(ProjectCreate):
@@ -1263,8 +1339,23 @@ class ProjectInfo(BaseModel):
     chatroom_id: Optional[int]
     default_chatroom_id: Optional[int]
     workspace_path: Optional[str] = None
+    source_type: Optional[str] = None
+    repo_url: Optional[str] = None
+    repo_full_name: Optional[str] = None
+    clone_ref: Optional[str] = None
     created_from_chatroom_id: Optional[int] = None
     agents: List[AgentInfo]
+
+
+class ProjectSyncInfo(BaseModel):
+    project: ProjectInfo
+    updated: bool
+    branch: Optional[str] = None
+    head_commit: Optional[str] = None
+    head_short: Optional[str] = None
+    previous_head_commit: Optional[str] = None
+    detached: bool = False
+    summary: str
 
 
 class ProjectUpdate(BaseModel):
@@ -1415,6 +1506,94 @@ async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> Any:
     return runtime_message
 
 
+def _summarize_stream_error(error_message: str, limit: int = 240) -> str:
+    text = str(error_message or "").strip()
+    if not text:
+        return "Unknown streaming error"
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
+
+
+async def _persist_stream_failure(
+    db: Session,
+    *,
+    chatroom_id: int,
+    client_turn_id: Optional[str],
+    error_message: str,
+    agent_name: Optional[str] = None,
+    agent_id: Optional[int] = None,
+    detail: Optional[str] = None,
+) -> Any:
+    """
+    Persist a visible fallback message plus a runtime error card for failed SSE turns.
+
+    This ensures refresh/reconnect still shows why a turn terminated before a final reply
+    could be saved.
+    """
+    safe_agent_name = (agent_name or default_agent_name(DEFAULT_AGENT_TYPE)).strip() or default_agent_name(DEFAULT_AGENT_TYPE)
+    error_summary = _summarize_stream_error(error_message)
+    detail_text = str(detail or error_message or "").strip() or error_summary
+    failure_text = (
+        "本轮执行中断，未生成最终答复。\n\n"
+        f"错误摘要: {error_summary}"
+    )
+
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
+    error_card = {
+        "type": "agent_error",
+        "source": "chatroom",
+        "agent": safe_agent_name,
+        "summary": "Stream failed before a final reply was saved.",
+        "error": error_summary,
+        "content": f"### Stream Failure\n\n- Agent: `{safe_agent_name}`\n- Error: `{error_summary}`\n\n```text\n{detail_text}\n```",
+    }
+    if client_turn_id:
+        error_card["client_turn_id"] = client_turn_id
+
+    await _store_runtime_card(chatroom_id, error_card)
+
+    saved = await chatroom_manager.send_message(
+        chatroom_id=chatroom_id,
+        agent_id=agent_id,
+        content=failure_text,
+        message_type="text",
+        metadata=_message_metadata_with_turn(
+            client_turn_id,
+            {
+                "stream_failure": {
+                    "agent": safe_agent_name,
+                    "error": error_summary,
+                }
+            },
+        ),
+        agent_name=safe_agent_name,
+    )
+    await _publish_saved_chat_message(
+        db,
+        chatroom_id,
+        message_id=saved.id,
+        content=failure_text,
+        agent_name=safe_agent_name,
+        message_type="text",
+        created_at=saved.created_at,
+        metadata=_message_metadata_with_turn(
+            client_turn_id,
+            {
+                "stream_failure": {
+                    "agent": safe_agent_name,
+                    "error": error_summary,
+                }
+            },
+        ),
+    )
+    return saved
+
+
 def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     metadata = dict(extra or {})
     if client_turn_id:
@@ -1468,6 +1647,48 @@ def _resolve_chatroom_project(db: Session, chatroom: Chatroom | None) -> Optiona
     return None
 
 
+def _collect_descendant_chatrooms(db: Session, root_chatroom_ids: List[int]) -> List[Chatroom]:
+    descendants: List[Chatroom] = []
+    visited_ids: set[int] = set()
+    pending_ids = [chatroom_id for chatroom_id in root_chatroom_ids if chatroom_id]
+
+    while pending_ids:
+        parent_id = pending_ids.pop(0)
+        children = (
+            db.query(Chatroom)
+            .filter(Chatroom.source_chatroom_id == parent_id)
+            .order_by(Chatroom.id.asc())
+            .all()
+        )
+        for child in children:
+            if child.id in visited_ids:
+                continue
+            visited_ids.add(child.id)
+            descendants.append(child)
+            pending_ids.append(child.id)
+
+    return descendants
+
+
+def _delete_chatrooms_with_messages(db: Session, chatrooms: List[Chatroom]) -> None:
+    unique_chatrooms: List[Chatroom] = []
+    seen_ids: set[int] = set()
+    for chatroom in chatrooms:
+        if not chatroom or chatroom.id in seen_ids:
+            continue
+        seen_ids.add(chatroom.id)
+        unique_chatrooms.append(chatroom)
+
+    if not unique_chatrooms:
+        return
+
+    chatroom_ids = [chatroom.id for chatroom in unique_chatrooms]
+    db.query(Message).filter(Message.chatroom_id.in_(chatroom_ids)).delete(synchronize_session=False)
+    for chatroom in unique_chatrooms:
+        chatroom_manager.chatrooms.pop(chatroom.id, None)
+        db.delete(chatroom)
+
+
 def _serialize_chat(db: Session, chatroom: Chatroom) -> ChatInfo:
     project = _resolve_chatroom_project(db, chatroom)
     agent_count = 0
@@ -1504,9 +1725,19 @@ def _serialize_project(db: Session, project: Project) -> ProjectInfo:
         chatroom_id=chatroom_id,
         default_chatroom_id=chatroom_id,
         workspace_path=project.workspace_path,
+        source_type=project.source_type,
+        repo_url=project.repo_url,
+        repo_full_name=project.repo_full_name,
+        clone_ref=project.clone_ref,
         created_from_chatroom_id=default_chatroom.source_chatroom_id if default_chatroom else None,
         agents=[
-            AgentInfo(id=agent.id, name=agent.name, role=agent.role, is_active=agent.is_active)
+            AgentInfo(
+                id=agent.id,
+                type=agent.type,
+                name=agent_name_of(agent),
+                role=agent.role,
+                is_active=agent.is_active,
+            )
             for agent in agents
         ],
     )
@@ -1538,7 +1769,7 @@ async def list_agents(db: Session = Depends(get_db)):
             pass
         preview = (agent.system_prompt or "")[:300]
         result.append(AgentInfo(
-            id=agent.id, name=agent.name, role=agent.role,
+            id=agent.id, type=agent.type, name=agent_name_of(agent), role=agent.role,
             is_active=agent.is_active, soul=soul, tools=tools,
             skills=skills, system_prompt_preview=preview,
         ))
@@ -1571,7 +1802,7 @@ async def get_agent(agent_id: int, db: Session = Depends(get_db)):
     preview = (agent.system_prompt or "")[:300]
 
     return AgentInfo(
-        id=agent.id, name=agent.name, role=agent.role,
+        id=agent.id, type=agent.type, name=agent_name_of(agent), role=agent.role,
         is_active=agent.is_active, soul=soul, tools=tools,
         skills=skills, system_prompt_preview=preview,
     )
@@ -1637,6 +1868,11 @@ async def delete_chat(chat_id: int, db: Session = Depends(get_db)):
     if chatroom.session_type != "standalone":
         raise HTTPException(status_code=400, detail="Only standalone chats can be deleted here")
 
+    (
+        db.query(Chatroom)
+        .filter(Chatroom.source_chatroom_id == chatroom.id)
+        .update({Chatroom.source_chatroom_id: None}, synchronize_session=False)
+    )
     db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
     db.delete(chatroom)
     chatroom_manager.chatrooms.pop(chatroom.id, None)
@@ -1670,16 +1906,18 @@ def _validate_agent_names(agent_names: List[str]) -> None:
     valid_agent_names = registry.list_agents()
 
     for agent_name in agent_names:
-        if agent_name not in valid_agent_names:
+        normalized = normalize_agent_type(agent_name)
+        if normalized not in valid_agent_names:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid agent name: {agent_name}. Valid agents: {valid_agent_names}",
+                detail=f"Invalid agent type: {agent_name}. Valid agents: {valid_agent_names}",
             )
 
 
 def _normalize_agent_names(agent_names: List[str] | None) -> List[str]:
-    normalized = [agent_name for agent_name in (agent_names or ["assistant"]) if agent_name]
-    return normalized or ["assistant"]
+    normalized = [normalize_agent_type(agent_name) for agent_name in (agent_names or [DEFAULT_AGENT_TYPE]) if agent_name]
+    deduped = list(dict.fromkeys(normalized))
+    return deduped or [DEFAULT_AGENT_TYPE]
 
 
 @router.post("/projects", response_model=ProjectInfo)
@@ -1697,6 +1935,22 @@ async def create_project(project_create: ProjectCreate, db: Session = Depends(ge
     return _serialize_project(db, project)
 
 
+@router.post("/projects/from-github", response_model=ProjectInfo)
+async def create_project_from_github(project_create: GitHubProjectCreate, db: Session = Depends(get_db)):
+    """Import a GitHub repository into a managed Catown workspace and create a project."""
+    agent_names = _normalize_agent_names(project_create.agent_names)
+    _validate_agent_names(agent_names)
+    service = SessionService(db)
+    project, _, _ = service.create_project_from_github(
+        repo_url=project_create.repo_url,
+        name=project_create.name,
+        description=project_create.description or "",
+        ref=project_create.ref,
+        agent_names=agent_names,
+    )
+    return _serialize_project(db, project)
+
+
 @router.get("/projects/self-bootstrap", response_model=ProjectInfo)
 @router.post("/projects/self-bootstrap", response_model=ProjectInfo)
 async def get_or_create_self_bootstrap_project(db: Session = Depends(get_db)):
@@ -1704,6 +1958,14 @@ async def get_or_create_self_bootstrap_project(db: Session = Depends(get_db)):
     service = SessionService(db)
     project, _, _ = service.get_or_create_self_bootstrap_project()
     return _serialize_project(db, project)
+
+
+@router.post("/projects/{project_id}/sync", response_model=ProjectSyncInfo)
+async def sync_project(project_id: int, db: Session = Depends(get_db)):
+    """Sync a GitHub-backed project workspace with its upstream repository."""
+    service = SessionService(db)
+    project, sync_info = service.sync_github_project(project_id)
+    return ProjectSyncInfo(project=_serialize_project(db, project), **sync_info)
 
 
 @router.put("/projects/reorder", response_model=List[ProjectInfo])
@@ -1800,11 +2062,15 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     
     # 清理子记录（模型未配置级联删除）
     db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).delete()
-    chatroom = db.query(Chatroom).filter(Chatroom.project_id == project_id).first()
-    if chatroom:
-        db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
-        db.delete(chatroom)
-        chatroom_manager.chatrooms.pop(chatroom.id, None)
+    root_chatrooms = db.query(Chatroom).filter(Chatroom.project_id == project_id).order_by(Chatroom.id.asc()).all()
+    if not root_chatrooms and project.default_chatroom_id:
+        fallback_chatroom = db.query(Chatroom).filter(Chatroom.id == project.default_chatroom_id).first()
+        if fallback_chatroom:
+            root_chatrooms = [fallback_chatroom]
+
+    descendant_chatrooms = _collect_descendant_chatrooms(db, [chatroom.id for chatroom in root_chatrooms])
+    # Delete descendants first so visible sub-chats do not survive a project deletion.
+    _delete_chatrooms_with_messages(db, list(reversed(descendant_chatrooms)) + root_chatrooms)
     
     # 删除项目
     db.delete(project)
@@ -1998,6 +2264,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
         db = next(_get_db())
         workspace_token = None
+        active_agent_name: Optional[str] = None
+        active_agent_id: Optional[int] = None
+        final_message_saved = False
         try:
             # 1. 保存用户消息
             user_msg = await chatroom_manager.send_message(
@@ -2029,7 +2298,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             project = _resolve_chatroom_project(db, chatroom)
             workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
             if not project:
-                mentioned_names = re.findall(r'@(\w+)', message.content) if '@' in message.content else []
+                mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)] if '@' in message.content else []
                 if len(mentioned_names) > 1:
                     yield f"data: {_json.dumps({'type': 'collab_start', 'agents': mentioned_names})}\n\n"
 
@@ -2037,24 +2306,29 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     previous_context = None
 
                     for step_idx, agent_name in enumerate(mentioned_names):
-                        agent = next((a for a in agents if a.name == agent_name), None)
+                        agent = find_agent_by_type(agents, agent_name)
                         if not agent:
                             yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
                             continue
 
-                        yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_name})}\n\n"
+                        agent_label = agent_name_of(agent)
+                        yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_label})}\n\n"
 
-                        llm_client = get_llm_client_for_agent(agent.name)
-                        sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+                        active_agent_name = agent_label
+                        active_agent_id = agent.id
+                        llm_client = get_llm_client_for_agent(_agent_type(agent))
+                        sys_prompt = agent.system_prompt or f"You are {agent_label}, a {agent.role}."
                         sys_prompt += (
                             "\n\nThis is a standalone chat. Reply directly, stay concise, "
                             "and coordinate with the other mentioned agents."
                         )
                         sys_prompt += _build_runtime_context_block(db, chatroom, None)
-                        team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+                        team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
                         sys_prompt += f"\n\nAvailable agents in this standalone chat:\n" + "\n".join(team_members)
                         if previous_context:
-                            sys_prompt += f"\n\nPrevious agent ({mentioned_names[step_idx-1]}) output:\n{previous_context[:1500]}"
+                            previous_agent = find_agent_by_type(agents, mentioned_names[step_idx - 1])
+                            previous_label = agent_name_of(previous_agent) if previous_agent else mentioned_names[step_idx - 1]
+                            sys_prompt += f"\n\nPrevious agent ({previous_label}) output:\n{previous_context[:1500]}"
 
                         msgs = [{"role": "system", "content": sys_prompt}]
                         recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
@@ -2064,35 +2338,35 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         import time as _time
                         step_content = ""
                         tool_schemas = tool_registry.get_schemas()
-                        for iteration in range(5):
+                        for iteration in range(MAX_TOOL_ITERATIONS):
                             tool_calls_found = False
                             _llm_start = _time.time()
                             _llm_content = ""
                             _llm_tool_calls = []
                             llm_prompt_messages = _snapshot_llm_messages(msgs)
-                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_label, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
                             async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
                                 if event["type"] == _HEARTBEAT_EVENT_TYPE:
                                     elapsed_ms = int((_time.time() - _llm_start) * 1000)
-                                    yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
+                                    yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
                                     continue
 
                                 if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                                    yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
+                                    yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
                                     continue
 
                                 if event["type"] == "tool_call_delta":
-                                    yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                                    yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
                                     continue
 
                                 if event["type"] == "tool_call_ready":
-                                    yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                                    yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
                                     continue
 
                                 if event["type"] == "content":
                                     step_content += event["delta"]
                                     _llm_content += event["delta"]
-                                    yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_name})}\n\n"
+                                    yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_label})}\n\n"
                                 elif event["type"] == "done":
                                     tc = event.get("tool_calls")
                                     _llm_full = event.get("full_content", _llm_content)
@@ -2103,27 +2377,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         for tool_index, t in enumerate(tc):
                                             tname = t["function"]["name"]
                                             _args_str = t["function"].get("arguments", "{}")
-                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_label, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                             _tool_start = _time.time()
                                             try:
                                                 targs = json.loads(t["function"]["arguments"])
                                                 async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
                                                     if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
                                                         elapsed_ms = int((_time.time() - _tool_start) * 1000)
-                                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                                         continue
                                                     tres = tool_event["result"]
                                                     tres_str = str(tres)[:2000] if tres else "(no output)"
                                                     break
                                             except Exception as te:
                                                 tres_str = f"Error: {te}"
+                                            tool_success = _tool_result_succeeded(tres_str)
                                             _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'success': tool_success, 'agent': agent_label, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                             msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
                                             yield await _sse_card("tool_call", {
-                                                "agent": agent_name, "tool": tname,
+                                                "agent": agent_label, "tool": tname,
                                                 "arguments": _args_str,
-                                                "success": True, "result": tres_str[:1500],
+                                                "success": tool_success, "result": tres_str[:1500],
                                                 "duration_ms": _tool_ms,
                                                 "tool_call_index": tool_index,
                                                 "tool_call_id": t.get("id"),
@@ -2132,7 +2407,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                     yield await _sse_card(
                                         "llm_call",
                                         _build_llm_card_payload(
-                                            agent_name=agent_name,
+                                            agent_name=agent_label,
                                             llm_client=llm_client,
                                             turn=iteration + 1,
                                             duration_ms=_llm_ms,
@@ -2147,8 +2422,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                         ),
                                     )
                                 elif event["type"] == "error":
-                                    yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
-                                    break
+                                    raise RuntimeError(event["error"])
 
                             if not tool_calls_found:
                                 if _llm_content:
@@ -2156,7 +2430,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                     yield await _sse_card(
                                         "llm_call",
                                         _build_llm_card_payload(
-                                            agent_name=agent_name,
+                                            agent_name=agent_label,
                                             llm_client=llm_client,
                                             turn=iteration + 1,
                                             duration_ms=_llm_ms,
@@ -2180,25 +2454,26 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 content=step_content,
                                 message_type="text",
                                 metadata=_message_metadata_with_turn(message.client_turn_id),
-                                agent_name=agent.name,
+                                agent_name=agent_label,
                             )
                             await _publish_saved_chat_message(
                                 db,
                                 chatroom_id,
                                 message_id=saved.id,
                                 content=step_content,
-                                agent_name=agent.name,
+                                agent_name=agent_label,
                                 message_type="text",
                                 created_at=saved.created_at,
                                 metadata=_message_metadata_with_turn(message.client_turn_id),
                             )
                             if len(step_content) > 30:
-                                asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
+                                asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), message.content, step_content))
                             previous_context = step_content
 
-                        yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
+                        yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_label, 'message_id': saved.id if step_content else None})}\n\n"
 
-                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
+                    resolved_names = [agent_name_of(find_agent_by_type(agents, name)) for name in mentioned_names]
+                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
                     return
 
                 async for chunk in _stream_standalone_assistant_response(
@@ -2214,7 +2489,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             # 3. 解析 @mention（支持多 Agent 流水线）
             mentioned_names = []
             if '@' in message.content:
-                mentioned_names = re.findall(r'@(\w+)', message.content)
+                mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)]
 
             # 多 Agent 模式：逐个流式输出
             if len(mentioned_names) > 1:
@@ -2229,8 +2504,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                 # 自动分配未在项目中的 agent
                 for name in mentioned_names:
-                    if not any(a.name == name for a in agents):
-                        ga = db.query(Agent).filter(Agent.name == name).first()
+                    if not find_agent_by_type(agents, name):
+                        ga = _find_db_agent_by_type(db, name)
                         if ga:
                             db.add(AgentAssignment(project_id=project.id, agent_id=ga.id))
                             db.commit()
@@ -2241,32 +2516,37 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 for a in agents:
                     if a.id not in collaboration_coordinator.collaborators:
                         collaboration_coordinator.register_collaborator(
-                            AgentCollaborator(agent_id=a.id, agent_name=a.name, chatroom_id=chatroom_id)
+                            AgentCollaborator(agent_id=a.id, agent_name=_agent_type(a), chatroom_id=chatroom_id)
                         )
 
                 previous_context = None
                 for step_idx, agent_name in enumerate(mentioned_names):
-                    agent = next((a for a in agents if a.name == agent_name), None)
+                    agent = find_agent_by_type(agents, agent_name)
                     if not agent:
                         yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
                         continue
 
-                    yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_name})}\n\n"
+                    agent_label = agent_name_of(agent)
+                    yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_label})}\n\n"
 
                     # 构建消息（注入前序上下文）
                     from tools import tool_registry
                     from models.database import Memory
-                    llm_client = get_llm_client_for_agent(agent.name)
+                    active_agent_name = agent_label
+                    active_agent_id = agent.id
+                    llm_client = get_llm_client_for_agent(_agent_type(agent))
 
-                    sys_prompt = agent.system_prompt or f"You are {agent.name}, a {agent.role}."
+                    sys_prompt = agent.system_prompt or f"You are {agent_label}, a {agent.role}."
                     sys_prompt += _build_runtime_context_block(db, chatroom, project)
                     if tool_registry.list_tools():
                         sys_prompt += f"\n\nTools: {', '.join(tool_registry.list_tools())}"
                     # 注入团队列表
-                    team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+                    team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
                     sys_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
                     if previous_context:
-                        sys_prompt += f"\n\nPrevious agent ({mentioned_names[step_idx-1]}) output:\n{previous_context[:1500]}"
+                        previous_agent = find_agent_by_type(agents, mentioned_names[step_idx - 1])
+                        previous_label = agent_name_of(previous_agent) if previous_agent else mentioned_names[step_idx - 1]
+                        sys_prompt += f"\n\nPrevious agent ({previous_label}) output:\n{previous_context[:1500]}"
 
                     msgs = [{"role": "system", "content": sys_prompt}]
                     recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
@@ -2277,35 +2557,35 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                     import time as _time
                     step_content = ""
                     tool_schemas = tool_registry.get_schemas()
-                    for iteration in range(5):
+                    for iteration in range(MAX_TOOL_ITERATIONS):
                         tool_calls_found = False
                         _llm_start = _time.time()
                         _llm_content = ""
                         _llm_tool_calls = []
                         llm_prompt_messages = _snapshot_llm_messages(msgs)
-                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_label, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
                         async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
                             if event["type"] == _HEARTBEAT_EVENT_TYPE:
                                 elapsed_ms = int((_time.time() - _llm_start) * 1000)
-                                yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
+                                yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
                                 continue
 
                             if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                                yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
+                                yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
                                 continue
 
                             if event["type"] == "tool_call_delta":
-                                yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                                yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
                                 continue
 
                             if event["type"] == "tool_call_ready":
-                                yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                                yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
                                 continue
 
                             if event["type"] == "content":
                                 step_content += event["delta"]
                                 _llm_content += event["delta"]
-                                yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_name})}\n\n"
+                                yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_label})}\n\n"
                             elif event["type"] == "done":
                                 tc = event.get("tool_calls")
                                 _llm_full = event.get("full_content", _llm_content)
@@ -2316,28 +2596,29 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                     for tool_index, t in enumerate(tc):
                                         tname = t["function"]["name"]
                                         _args_str = t["function"].get("arguments", "{}")
-                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_name, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_label, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                         _tool_start = _time.time()
                                         try:
                                             targs = json.loads(t["function"]["arguments"])
                                             async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
                                                 if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
                                                     elapsed_ms = int((_time.time() - _tool_start) * 1000)
-                                                    yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                                    yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                                     continue
                                                 tres = tool_event["result"]
                                                 tres_str = str(tres)[:2000] if tres else "(no output)"
                                                 break
                                         except Exception as te:
                                             tres_str = f"Error: {te}"
+                                        tool_success = _tool_result_succeeded(tres_str)
                                         _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'agent': agent_name, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
+                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'success': tool_success, 'agent': agent_label, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
                                         msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
                                         # 工具卡片事件
                                         yield await _sse_card("tool_call", {
-                                            "agent": agent_name, "tool": tname,
+                                            "agent": agent_label, "tool": tname,
                                             "arguments": _args_str,
-                                            "success": True, "result": tres_str[:1500],
+                                            "success": tool_success, "result": tres_str[:1500],
                                             "duration_ms": _tool_ms,
                                             "tool_call_index": tool_index,
                                             "tool_call_id": t.get("id"),
@@ -2347,7 +2628,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 yield await _sse_card(
                                     "llm_call",
                                     _build_llm_card_payload(
-                                        agent_name=agent_name,
+                                        agent_name=agent_label,
                                         llm_client=llm_client,
                                         turn=iteration + 1,
                                         duration_ms=_llm_ms,
@@ -2362,8 +2643,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                     ),
                                 )
                             elif event["type"] == "error":
-                                yield f"data: {_json.dumps({'type': 'error', 'error': event['error'], 'agent': agent_name})}\n\n"
-                                break
+                                raise RuntimeError(event["error"])
                         if not tool_calls_found:
                             # 无工具调用的最终 LLM 回复卡片
                             if _llm_content:
@@ -2371,7 +2651,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 yield await _sse_card(
                                     "llm_call",
                                     _build_llm_card_payload(
-                                        agent_name=agent_name,
+                                        agent_name=agent_label,
                                         llm_client=llm_client,
                                         turn=iteration + 1,
                                         duration_ms=_llm_ms,
@@ -2395,25 +2675,26 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             content=step_content,
                             message_type="text",
                             metadata=_message_metadata_with_turn(message.client_turn_id),
-                            agent_name=agent.name,
+                            agent_name=agent_label,
                         )
                         await _publish_saved_chat_message(
                             db,
                             chatroom_id,
                             message_id=saved.id,
                             content=step_content,
-                            agent_name=agent.name,
+                            agent_name=agent_label,
                             message_type="text",
                             created_at=saved.created_at,
                             metadata=_message_metadata_with_turn(message.client_turn_id),
                         )
                         if len(step_content) > 30:
-                            asyncio.create_task(_extract_memories(agent.id, agent.name, message.content, step_content))
+                            asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), message.content, step_content))
                         previous_context = step_content
 
-                    yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_name, 'message_id': saved.id if step_content else None})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_label, 'message_id': saved.id if step_content else None})}\n\n"
 
-                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(mentioned_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
+                resolved_names = [agent_name_of(find_agent_by_type(agents, name)) for name in mentioned_names]
+                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
                 return
 
             # 单 Agent 模式（原有逻辑）
@@ -2428,10 +2709,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
             target_agent = None
             if target_agent_name:
-                target_agent = next((a for a in agents if a.name == target_agent_name), None)
+                target_agent = find_agent_by_type(agents, target_agent_name)
                 # @mentioned agent 不在项目中 → 从全局查找并自动分配
                 if not target_agent:
-                    global_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+                    global_agent = _find_db_agent_by_type(db, target_agent_name)
                     if global_agent:
                         logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
                         assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
@@ -2440,10 +2721,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         target_agent = global_agent
                         agents.append(global_agent)
             if not target_agent:
-                target_agent = next((a for a in agents if a.name == "assistant"), agents[0] if agents else None)
+                target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
             if not target_agent:
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'No agent available'})}\n\n"
                 return
+
+            active_agent_name = agent_name_of(target_agent)
+            active_agent_id = target_agent.id
 
             # 注册项目中所有 agent 为协作者
             from agents.collaboration import collaboration_coordinator, AgentCollaborator
@@ -2451,16 +2735,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 if agent.id not in collaboration_coordinator.collaborators:
                     collaborator = AgentCollaborator(
                         agent_id=agent.id,
-                        agent_name=agent.name,
+                        agent_name=_agent_type(agent),
                         chatroom_id=chatroom_id
                     )
                     collaboration_coordinator.register_collaborator(collaborator)
 
             # 5. 构建该 Agent 的消息上下文
-            llm_client = get_llm_client_for_agent(target_agent.name)
+            llm_client = get_llm_client_for_agent(_agent_type(target_agent))
             messages = []
 
-            system_prompt = target_agent.system_prompt or f"You are {target_agent.name}, a {target_agent.role}."
+            system_prompt = target_agent.system_prompt or f"You are {agent_name_of(target_agent)}, a {target_agent.role}."
             system_prompt += _build_runtime_context_block(db, chatroom, project)
 
             available_tools = tool_registry.list_tools()
@@ -2468,9 +2752,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
 
             # 注入项目中所有 Agent 列表
-            team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
+            team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
             system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
-            system_prompt += f"\n\nYou are **{target_agent.name}** (role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
+            system_prompt += f"\n\nYou are **{agent_name_of(target_agent)}** (type: `{_agent_type(target_agent)}`, role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
 
             # 注入记忆（含跨 Agent 共享）
             from models.database import Memory
@@ -2501,7 +2785,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 for mem in shared_memories:
                     ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
                     source_agent = next((a for a in agents if a.id == mem.agent_id), None)
-                    source_name = source_agent.name if source_agent else "unknown"
+                    source_name = agent_name_of(source_agent) if source_agent else "unknown"
                     system_prompt += f"\n- [{ts}] [{source_name}] {mem.content[:200]}"
 
             messages.append({"role": "system", "content": system_prompt})
@@ -2514,7 +2798,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
             # 6. 流式 LLM 循环
             import time as _time2
-            max_tool_iterations = 5
+            max_tool_iterations = MAX_TOOL_ITERATIONS
             iteration = 0
             final_content = ""
 
@@ -2525,26 +2809,26 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 _llm_content = ""
                 _llm_tool_calls = []
                 llm_prompt_messages = _snapshot_llm_messages(messages)
-                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': target_agent.name, 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name_of(target_agent), 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
 
                 async for event in _iter_with_heartbeat(
                     llm_client.chat_stream(messages, tool_schemas if tool_schemas else None)
                 ):
                     if event["type"] == _HEARTBEAT_EVENT_TYPE:
                         elapsed_ms = int((_time2.time() - _llm_start) * 1000)
-                        yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': target_agent.name, 'elapsed_ms': elapsed_ms, 'turn': iteration})}\n\n"
+                        yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name_of(target_agent), 'elapsed_ms': elapsed_ms, 'turn': iteration})}\n\n"
                         continue
 
                     if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                        yield f"data: {_json.dumps({'type': event['type'], 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration})}\n\n"
+                        yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration})}\n\n"
                         continue
 
                     if event["type"] == "tool_call_delta":
-                        yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
+                        yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
                         continue
 
                     if event["type"] == "tool_call_ready":
-                        yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': target_agent.name, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_calls': event.get('tool_calls') or []})}\n\n"
+                        yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_calls': event.get('tool_calls') or []})}\n\n"
                         continue
 
                     if event["type"] == "content":
@@ -2563,7 +2847,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 yield await _sse_card(
                                     "llm_call",
                                     _build_llm_card_payload(
-                                        agent_name=target_agent.name,
+                                        agent_name=agent_name_of(target_agent),
                                         llm_client=llm_client,
                                         turn=iteration,
                                         duration_ms=_llm_ms,
@@ -2596,7 +2880,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             tool_args_str = tc["function"]["arguments"]
                             tool_call_id = tc["id"]
 
-                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str, 'agent': target_agent.name, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
+                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str, 'agent': agent_name_of(target_agent), 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
                             _tool_start = _time2.time()
 
                             try:
@@ -2604,20 +2888,21 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                                 async for tool_event in _await_with_heartbeat(tool_registry.execute(tool_name, **tool_args)):
                                     if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
                                         elapsed_ms = int((_time2.time() - _tool_start) * 1000)
-                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tool_name, 'agent': target_agent.name, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
+                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tool_name, 'agent': agent_name_of(target_agent), 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
                                         continue
                                     tool_result = tool_event["result"]
                                     result_str = str(tool_result) if tool_result is not None else "(no output)"
                                     break
                             except Exception as te:
                                 result_str = f"Error: {str(te)}"
+                            tool_success = _tool_result_succeeded(result_str)
 
                             # 截断过长的工具结果
                             if len(result_str) > 2000:
                                 result_str = result_str[:2000] + "\n...(truncated)"
                             _tool_ms = int((_time2.time() - _tool_start) * 1000)
 
-                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500], 'agent': target_agent.name, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
+                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500], 'success': tool_success, 'agent': agent_name_of(target_agent), 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
 
                             messages.append({
                                 "role": "tool",
@@ -2628,10 +2913,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
 
                             # 工具卡片事件
                             yield await _sse_card("tool_call", {
-                                "agent": target_agent.name,
+                                "agent": agent_name_of(target_agent),
                                 "tool": tool_name,
                                 "arguments": tool_args_str,
-                                "success": True,
+                                "success": tool_success,
                                 "result": result_str[:1500],
                                 "duration_ms": _tool_ms,
                                 "tool_call_index": tool_index,
@@ -2643,7 +2928,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         yield await _sse_card(
                             "llm_call",
                             _build_llm_card_payload(
-                                agent_name=target_agent.name,
+                                agent_name=agent_name_of(target_agent),
                                 llm_client=llm_client,
                                 turn=iteration,
                                 duration_ms=_llm_ms,
@@ -2659,8 +2944,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                         )
 
                     elif event["type"] == "error":
-                        yield f"data: {_json.dumps({'type': 'error', 'error': event['error']})}\n\n"
-                        return
+                        raise RuntimeError(event["error"])
 
                 if not tool_calls_found:
                     break
@@ -2675,7 +2959,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 content=final_content,
                 message_type="text",
                 metadata=_message_metadata_with_turn(message.client_turn_id),
-                agent_name=target_agent.name
+                agent_name=agent_name_of(target_agent)
             )
 
             await _publish_saved_chat_message(
@@ -2683,28 +2967,45 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 chatroom_id,
                 message_id=agent_response.id,
                 content=final_content,
-                agent_name=target_agent.name,
+                agent_name=agent_name_of(target_agent),
                 message_type="text",
                 created_at=agent_response.created_at,
                 metadata=_message_metadata_with_turn(message.client_turn_id),
             )
+            final_message_saved = True
 
-            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent.name, 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'agent_name': agent_name_of(target_agent), 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
 
             # 异步提取记忆
             if len(final_content) > 30:
                 asyncio.create_task(_extract_memories(
                     agent_id=target_agent.id,
-                    agent_name=target_agent.name,
+                    agent_type=_agent_type(target_agent),
                     user_message=message.content,
                     agent_response=final_content
                 ))
 
         except Exception as e:
             logger.error(f"[SSE] Stream error: {e}")
-            import traceback
             traceback.print_exc()
-            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            if final_message_saved:
+                yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            else:
+                try:
+                    saved = await _persist_stream_failure(
+                        db,
+                        chatroom_id=chatroom_id,
+                        client_turn_id=message.client_turn_id,
+                        error_message=str(e),
+                        agent_name=active_agent_name,
+                        agent_id=active_agent_id,
+                        detail=traceback.format_exc(),
+                    )
+                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE), 'message_id': saved.id, 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+                except Exception as persist_exc:
+                    logger.error(f"[SSE] Failed to persist stream failure: {persist_exc}")
+                    traceback.print_exc()
+                    yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
         finally:
             if workspace_token is not None:
                 reset_active_workspace(workspace_token)
@@ -2846,7 +3147,16 @@ async def get_config():
             # 全局 LLM 配置
             config["global_llm"] = agents_config.get("global_llm", {})
 
-            agents_data = agents_config.get("agents", {})
+            agents_data = dict(agents_config.get("agents", {}))
+            if "assistant" in agents_data and DEFAULT_AGENT_TYPE not in agents_data:
+                agents_data[DEFAULT_AGENT_TYPE] = agents_data.pop("assistant")
+            for agent_type, agent_data in agents_data.items():
+                raw_name = agent_data.get("name")
+                agent_data["name"] = (
+                    default_agent_name(agent_type)
+                    if is_legacy_default_agent_name(raw_name, agent_type)
+                    else str(raw_name).strip()
+                )
             config["agents"] = agents_data
 
             # 全局 provider 摘要（用于显示 fallback 来源）
@@ -2964,6 +3274,7 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
     from pathlib import Path
 
     config_file = Path(settings.AGENT_CONFIG_FILE)
+    agent_name = normalize_agent_type(agent_name)
     try:
         if config_file.exists():
             with open(config_file, 'r', encoding='utf-8') as f:
@@ -2972,6 +3283,8 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
             data = {"agents": {}}
 
         agents = data.get("agents", {})
+        if "assistant" in agents and DEFAULT_AGENT_TYPE not in agents:
+            agents[DEFAULT_AGENT_TYPE] = agents.pop("assistant")
         if agent_name not in agents:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
@@ -3014,7 +3327,7 @@ async def reload_config():
 
 
 @router.post("/config/test")
-async def test_agent_config(agent_name: str = "assistant"):
+async def test_agent_config(agent_name: str = DEFAULT_AGENT_TYPE):
     """
     测试指定 Agent 的 LLM 连接
 
@@ -3023,6 +3336,7 @@ async def test_agent_config(agent_name: str = "assistant"):
     from llm.client import _load_agent_provider
     from openai import AsyncOpenAI
 
+    agent_name = normalize_agent_type(agent_name)
     provider = _load_agent_provider(agent_name)
     if not provider:
         raise HTTPException(
@@ -3139,9 +3453,10 @@ async def delegate_task_to_agent(
     from tools import tool_registry
     
     # 查找目标 Agent
-    target_agent = db.query(Agent).filter(Agent.name == target_agent_name).first()
+    target_agent_type = normalize_agent_type(target_agent_name)
+    target_agent = _find_db_agent_by_type(db, target_agent_type)
     if not target_agent:
-        raise HTTPException(status_code=404, detail=f"Agent '{target_agent_name}' not found")
+        raise HTTPException(status_code=404, detail=f"Agent '{target_agent_type}' not found")
     
     # 创建任务
     task = CollaborationTask(
@@ -3159,7 +3474,7 @@ async def delegate_task_to_agent(
     return {
         "task_id": task.id,
         "status": "delegated",
-        "assigned_to": target_agent_name
+        "assigned_to": target_agent_type
     }
 
 

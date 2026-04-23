@@ -12,6 +12,8 @@ from .base import BaseTool
 from typing import Optional, Dict, Any, List
 import json
 
+from agents.identity import agent_name_of, normalize_agent_type
+
 
 class DelegateTaskTool(BaseTool):
     """Tool for delegating tasks to other agents"""
@@ -46,12 +48,13 @@ class DelegateTaskTool(BaseTool):
         current_agent_id = kwargs.get('agent_id', 0)
         current_agent_name = kwargs.get('agent_name', 'unknown')
         chatroom_id = kwargs.get('chatroom_id', 0)
+        target_agent_type = normalize_agent_type(target_agent_name)
         
         # Find target agent
         target_agent_id = None
         if self.coordinator:
             for aid, collab in self.coordinator.collaborators.items():
-                if collab.agent_name == target_agent_name:
+                if collab.agent_name == target_agent_type:
                     target_agent_id = aid
                     break
 
@@ -63,13 +66,13 @@ class DelegateTaskTool(BaseTool):
                 db = next(get_db())
                 try:
                     db_agent = db.query(DBAgent).filter(
-                        DBAgent.name == target_agent_name,
+                        DBAgent.agent_type == target_agent_type,
                         DBAgent.is_active == True
                     ).first()
                     if db_agent and self.coordinator:
                         collaborator = AgentCollaborator(
                             agent_id=db_agent.id,
-                            agent_name=db_agent.name,
+                            agent_name=db_agent.agent_type or db_agent.name,
                             chatroom_id=chatroom_id
                         )
                         self.coordinator.register_collaborator(collaborator)
@@ -83,7 +86,7 @@ class DelegateTaskTool(BaseTool):
             available = []
             if self.coordinator:
                 available = [c.agent_name for c in self.coordinator.collaborators.values()]
-            return f"[Delegate Task] Error: Agent '{target_agent_name}' not found. Available agents: {available}"
+            return f"[Delegate Task] Error: Agent '{target_agent_type}' not found. Available agents: {available}"
         
         # Create task
         from agents.collaboration import CollaborationTask, TaskStatus, uuid, datetime
@@ -110,7 +113,7 @@ class DelegateTaskTool(BaseTool):
                 from_agent_id=current_agent_id,
                 from_agent_name=current_agent_name,
                 to_agent_id=target_agent_id,
-                to_agent_name=target_agent_name,
+                to_agent_name=target_agent_type,
                 chatroom_id=chatroom_id,
                 content=f"**Task: {task_title}**\n\n{task_description}\n\nContext: {context}",
                 task_id=task.id,
@@ -120,7 +123,7 @@ class DelegateTaskTool(BaseTool):
             # Route message
             await self.coordinator.route_message(message)
         
-        return f"[Delegate Task] Task '{task_title}' delegated to {target_agent_name}. Task ID: {task.id}"
+        return f"[Delegate Task] Task '{task_title}' delegated to {target_agent_type}. Task ID: {task.id}"
     
     def _get_parameters_schema(self) -> dict:
         return {
@@ -128,7 +131,7 @@ class DelegateTaskTool(BaseTool):
             "properties": {
                 "target_agent_name": {
                     "type": "string",
-                    "description": "Name of the agent to delegate to (analyst, architect, developer, tester, release, assistant)"
+                    "description": "Type of the agent to delegate to (analyst, architect, developer, tester, release, valet)"
                 },
                 "task_title": {
                     "type": "string",
@@ -371,12 +374,12 @@ class SendDirectMessageTool(BaseTool):
         # Find target agent
         target_agent_id = None
         for aid, collab in self.coordinator.collaborators.items():
-            if collab.agent_name == target_agent_name:
+            if collab.agent_name == normalize_agent_type(target_agent_name):
                 target_agent_id = aid
                 break
         
         if not target_agent_id:
-            return f"[Direct Message] Error: Agent '{target_agent_name}' not found"
+            return f"[Direct Message] Error: Agent '{normalize_agent_type(target_agent_name)}' not found"
         
         from agents.collaboration import CollaborationMessage, CollaborationMessageType, uuid
         
@@ -387,7 +390,7 @@ class SendDirectMessageTool(BaseTool):
             from_agent_id=current_agent_id,
             from_agent_name=current_agent_name,
             to_agent_id=target_agent_id,
-            to_agent_name=target_agent_name,
+            to_agent_name=normalize_agent_type(target_agent_name),
             chatroom_id=chatroom_id,
             content=message
         )
@@ -395,7 +398,7 @@ class SendDirectMessageTool(BaseTool):
         # Route message
         await self.coordinator.route_message(direct_msg)
         
-        return f"[Direct Message] Sent to {target_agent_name}"
+        return f"[Direct Message] Sent to {normalize_agent_type(target_agent_name)}"
     
     def _get_parameters_schema(self) -> dict:
         return {
@@ -448,7 +451,7 @@ class ListDirectoryTool(BaseTool):
 
             result = f"[Directory] {len(external)} agent(s) available to invite:\n"
             for a in external:
-                result += f"  - **{a.name}** (role: {a.role})\n"
+                result += f"  - **{a.agent_type or a.name}** ({agent_name_of(a)}, role: {a.role})\n"
             result += "\nUse invite_agent(agent_name) to add one to this room."
             return result
         finally:
@@ -469,6 +472,7 @@ class InviteAgentTool(BaseTool):
 
     async def execute(self, agent_name: str, **kwargs) -> str:
         chatroom_id = kwargs.get('chatroom_id', 0)
+        target_agent_type = normalize_agent_type(agent_name)
 
         from models.database import get_db, Agent as DBAgent, Chatroom, AgentAssignment
         db = next(get_db())
@@ -479,10 +483,10 @@ class InviteAgentTool(BaseTool):
 
             # 查找目标 agent
             target = db.query(DBAgent).filter(
-                DBAgent.name == agent_name, DBAgent.is_active == True
+                DBAgent.agent_type == target_agent_type, DBAgent.is_active == True
             ).first()
             if not target:
-                return f"[Invite] Error: Agent '{agent_name}' not found in the system."
+                return f"[Invite] Error: Agent '{target_agent_type}' not found in the system."
 
             # 检查是否已在房间内
             existing = db.query(AgentAssignment).filter(
@@ -490,7 +494,7 @@ class InviteAgentTool(BaseTool):
                 AgentAssignment.agent_id == target.id
             ).first()
             if existing:
-                return f"[Invite] Agent '{agent_name}' is already in this room."
+                return f"[Invite] Agent '{target_agent_type}' is already in this room."
 
             # 创建分配
             assignment = AgentAssignment(project_id=chatroom.project_id, agent_id=target.id)
@@ -502,14 +506,14 @@ class InviteAgentTool(BaseTool):
                 from agents.collaboration import collaboration_coordinator, AgentCollaborator
                 collaborator = AgentCollaborator(
                     agent_id=target.id,
-                    agent_name=target.name,
+                    agent_name=target.agent_type or target.name,
                     chatroom_id=chatroom_id
                 )
                 collaboration_coordinator.register_collaborator(collaborator)
             except Exception:
                 pass
 
-            return f"[Invite] ✅ Agent '{agent_name}' (role: {target.role}) has joined this room."
+            return f"[Invite] ✅ Agent '{target_agent_type}' ({agent_name_of(target)}, role: {target.role}) has joined this room."
         finally:
             db.close()
 

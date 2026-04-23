@@ -5,6 +5,8 @@ from typing import List, Dict, Optional, Any, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 
+from agents.identity import default_agent_name, normalize_agent_type
+
 
 class ModelCost(BaseModel):
     """模型成本配置"""
@@ -89,7 +91,8 @@ class SleepConfig(BaseModel):
 
 class AgentConfigV2(BaseModel):
     """Agent 配置 V2 - SOUL/ROLE/RULES 三层结构"""
-    name: str
+    type: str = ""
+    name: str = ""
     soul: SoulConfig
     role: RoleConfig
     tools: List[str] = []
@@ -99,6 +102,11 @@ class AgentConfigV2(BaseModel):
     provider: Optional[AgentProviderConfig] = None
     default_model: Optional[str] = None
     metadata: Dict[str, Any] = {}
+
+    def model_post_init(self, __context: Any) -> None:
+        agent_type = normalize_agent_type(self.type or self.name)
+        self.type = agent_type
+        self.name = (self.name or "").strip() or default_agent_name(agent_type)
     
     def get_effective_base_url(self) -> str:
         """获取有效的 base URL"""
@@ -215,10 +223,12 @@ def parse_agent_config(config_dict: Dict[str, Any]) -> AgentProviderConfig:
 
 
 def create_agent_config_from_provider(
-    agent_name: str,
     soul: Dict[str, Any],
     role: Dict[str, Any],
     provider_config: Dict[str, Any],
+    agent_type: Optional[str] = None,
+    name: Optional[str] = None,
+    agent_name: Optional[str] = None,
     tools: List[str] = None,
     skills: List[str] = None,
     memory: Dict[str, Any] = None,
@@ -227,9 +237,11 @@ def create_agent_config_from_provider(
 ) -> AgentConfigV2:
     """从 provider 配置创建 Agent 配置"""
     provider = parse_agent_config(provider_config)
+    resolved_type = normalize_agent_type(agent_type or agent_name)
 
     return AgentConfigV2(
-        name=agent_name,
+        type=resolved_type,
+        name=(name or "").strip() or default_agent_name(resolved_type),
         soul=SoulConfig(**soul),
         role=RoleConfig(**role),
         tools=tools or [],

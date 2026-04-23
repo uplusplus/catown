@@ -388,6 +388,134 @@ class TestProjectEndpoints:
         assert any("created from standalone chat" in message["content"] for message in messages)
         assert any(message["content"] == "Carry this into the project" for message in messages)
 
+    def test_create_project_from_github(self, client):
+        from services.session_service import SessionService
+
+        def fake_clone(self, clone_url, destination, ref=None):
+            assert clone_url == "https://github.com/octocat/Hello-World.git"
+            assert ref == "main"
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / ".git").mkdir()
+            (destination / "README.md").write_text("# Hello World\n", encoding="utf-8")
+
+        with patch.object(SessionService, "_clone_github_repository", fake_clone):
+            r = client.post(
+                "/api/projects/from-github",
+                json={
+                    "repo_url": "octocat/Hello-World",
+                    "description": "Imported test project",
+                    "ref": "main",
+                },
+            )
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["name"] == "Hello-World"
+        assert data["source_type"] == "github"
+        assert data["repo_url"] == "https://github.com/octocat/Hello-World"
+        assert data["repo_full_name"] == "octocat/Hello-World"
+        assert data["clone_ref"] == "main"
+        assert os.path.isdir(data["workspace_path"])
+        assert os.path.isfile(os.path.join(data["workspace_path"], "README.md"))
+
+    def test_create_project_from_github_with_ref_runs_explicit_branch_checkout(self, client):
+        from services.session_service import SessionService
+
+        commands = []
+
+        class CompletedProcess:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_git_prefix(self):
+            return ["git"]
+
+        def fake_run(command, capture_output, text, timeout, env):
+            commands.append(command)
+            if command[:2] == ["git", "clone"]:
+                destination = command[-1]
+                os.makedirs(destination, exist_ok=True)
+                os.makedirs(os.path.join(destination, ".git"), exist_ok=True)
+            if len(command) >= 7 and command[0] == "git" and command[1] == "-C" and command[3:6] == ["rev-parse", "--verify", "--quiet"]:
+                ref = command[6]
+                if ref == "refs/remotes/origin/mobile":
+                    return CompletedProcess(stdout="deadbeef\n")
+                return CompletedProcess(returncode=1)
+            return CompletedProcess()
+
+        with patch.object(SessionService, "_git_command_prefix", fake_git_prefix), patch(
+            "services.session_service.subprocess.run",
+            side_effect=fake_run,
+        ):
+            response = client.post(
+                "/api/projects/from-github",
+                json={
+                    "repo_url": "octocat/Hello-World",
+                    "description": "Imported test project",
+                    "ref": "mobile",
+                },
+            )
+
+        assert response.status_code == 200
+        assert any(command[:2] == ["git", "clone"] for command in commands)
+        assert any(
+            len(command) >= 7
+            and command[0] == "git"
+            and command[1] == "-C"
+            and command[3:] == ["checkout", "-B", "mobile", "refs/remotes/origin/mobile"]
+            for command in commands
+        )
+
+    def test_sync_github_project(self, client):
+        from services.session_service import SessionService
+
+        def fake_clone(self, clone_url, destination, ref=None):
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / ".git").mkdir()
+            (destination / "README.md").write_text("# Hello World\n", encoding="utf-8")
+
+        with patch.object(SessionService, "_clone_github_repository", fake_clone):
+            project = client.post(
+                "/api/projects/from-github",
+                json={"repo_url": "octocat/Hello-World", "description": "Imported test project"},
+            ).json()
+
+        statuses = iter([
+            {
+                "branch": "main",
+                "head_commit": "1111111122222222333333334444444455555555",
+                "head_short": "11111111",
+                "detached": False,
+            },
+            {
+                "branch": "main",
+                "head_commit": "aaaaaaaa22222222333333334444444455555555",
+                "head_short": "aaaaaaaa",
+                "detached": False,
+            },
+        ])
+
+        def fake_status(self, workspace):
+            return next(statuses)
+
+        def fake_sync(self, workspace, ref=None):
+            assert workspace.name.startswith("octocat-Hello-World")
+            assert ref is None
+
+        with patch.object(SessionService, "_read_git_workspace_status", fake_status), patch.object(SessionService, "_sync_git_workspace", fake_sync):
+            synced = client.post(f"/api/projects/{project['id']}/sync")
+
+        assert synced.status_code == 200
+        data = synced.json()
+        assert data["updated"] is True
+        assert data["branch"] == "main"
+        assert data["head_short"] == "aaaaaaaa"
+        assert data["previous_head_commit"] == "1111111122222222333333334444444455555555"
+        assert data["project"]["id"] == project["id"]
+        assert "Pulled latest changes" in data["summary"]
+
     def test_create_project_subchat(self, client):
         project = client.post("/api/projects", json={"name": "Parent Project"}).json()
 
@@ -471,6 +599,24 @@ class TestProjectEndpoints:
         r3 = client.get(f"/api/projects/{pid}")
         assert r3.status_code == 404
 
+    def test_delete_project_removes_project_subchats(self, client):
+        project = client.post("/api/projects", json={"name": "Delete Project Check"}).json()
+        subchat = client.post(f"/api/projects/{project['id']}/subchats", json={}).json()
+        client.post(
+            f"/api/chatrooms/{subchat['id']}/messages",
+            json={"content": "project-only context"},
+        )
+
+        deleted = client.delete(f"/api/projects/{project['id']}")
+        assert deleted.status_code == 200
+
+        listed_chats = client.get("/api/chats").json()
+        assert all(chat["id"] != subchat["id"] for chat in listed_chats)
+
+        subchat_messages = client.get(f"/api/chatrooms/{subchat['id']}/messages")
+        assert subchat_messages.status_code == 200
+        assert subchat_messages.json() == []
+
     def test_rename_project(self, client):
         project = client.post("/api/projects", json={
             "name": "Before", "agent_names": ["analyst"]
@@ -512,6 +658,24 @@ class TestChatEndpoints:
         listed = client.get("/api/chats")
         assert listed.status_code == 200
         assert all(row["id"] != chat["id"] for row in listed.json())
+
+    def test_delete_standalone_chat_detaches_project_lineage(self, client):
+        seed_chat = client.post("/api/chats", json={"title": "Seed Chat"}).json()
+        created_project = client.post(
+            "/api/projects/from-chat",
+            json={
+                "source_chatroom_id": seed_chat["id"],
+                "name": "Detached Project",
+                "description": "created from standalone chat",
+            },
+        ).json()
+
+        deleted = client.delete(f"/api/chats/{seed_chat['id']}")
+        assert deleted.status_code == 200
+
+        project = client.get(f"/api/projects/{created_project['id']}")
+        assert project.status_code == 200
+        assert project.json()["created_from_chatroom_id"] is None
 
     def test_rename_standalone_chat(self, client):
         chat = client.post("/api/chats", json={"title": "Before"}).json()
@@ -695,6 +859,113 @@ class TestSSEStreaming:
             message.get("agent_name") and message.get("client_turn_id") == "turn-stream-1"
             for message in messages
         )
+
+    def test_tool_error_marks_runtime_card_failed(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        async def mock_tool_error_stream(messages, tools=None):
+            yield {
+                "type": "done",
+                "full_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_missing_file",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"file_path\": \"missing.md\", \"encoding\": \"utf-8\"}",
+                        },
+                    }
+                ],
+            }
+            yield {"type": "content", "delta": "Could not read file."}
+            yield {"type": "done", "full_content": "Could not read file.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = mock_tool_error_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        r = client.post("/api/projects", json={"name": "Tool Error Replay", "agent_names": ["analyst"]})
+        cid = r.json()["chatroom_id"]
+        stream = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={"content": "inspect missing file", "client_turn_id": "turn-tool-error-1"},
+        )
+        body = stream.text
+
+        assert stream.status_code == 200
+        assert '"success": false' in body or '"success":false' in body
+
+        cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        tool_card = next(card for card in cards if card.get("type") == "tool_call")
+        assert tool_card["tool"] == "read_file"
+        assert tool_card["success"] is False
+        assert "File not found" in (tool_card.get("result") or "")
+
+    def test_stream_failure_persists_error_card_and_fallback_message(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        call_count = 0
+
+        async def broken_stream(messages, tools=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield {
+                    "type": "done",
+                    "full_content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {
+                                "name": "list_files",
+                                "arguments": "{\"directory\": \".\", \"pattern\": \"*PRD*.md\", \"recursive\": true}",
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 0, "total_tokens": 10},
+                    "finish_reason": "tool_calls",
+                    "timings": {"completed_ms": 12},
+                }
+                return
+            raise RuntimeError("synthetic stream crash")
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = broken_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        r = client.post("/api/projects", json={"name": "Broken Stream", "agent_names": ["analyst"]})
+        cid = r.json()["chatroom_id"]
+        turn_id = "turn-stream-failure"
+
+        stream = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={"content": "@analyst review this", "client_turn_id": turn_id},
+        )
+
+        assert stream.status_code == 200
+        body = stream.text
+        assert '"type": "done"' in body or '"type":"done"' in body
+
+        cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+
+        assert any(card.get("type") == "tool_call" for card in cards)
+        assert any(card.get("type") == "agent_error" for card in cards), cards
+        assert any(card.get("client_turn_id") == turn_id for card in cards)
+        assert any(
+            message.get("agent_name") == "analyst"
+            and message.get("client_turn_id") == turn_id
+            and "本轮执行中断" in (message.get("content") or "")
+            for message in messages
+        ), messages
 
 
 # ==================== 协作 API ====================

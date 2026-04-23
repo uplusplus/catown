@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 
+from agents.identity import DEFAULT_AGENT_TYPE, find_agent_by_type
+
 logger = logging.getLogger("catown.chatroom")
 
 
@@ -235,7 +237,7 @@ class ChatroomManager:
                 if agent.id not in collaboration_coordinator.collaborators:
                     collaborator = AgentCollaborator(
                         agent_id=agent.id,
-                        agent_name=agent.name,
+                        agent_name=agent.type,
                         chatroom_id=chatroom_id
                     )
                     collaboration_coordinator.register_collaborator(collaborator)
@@ -246,7 +248,7 @@ class ChatroomManager:
             # 多 Agent 协作
             if len(mentioned_names) > 1:
                 for agent_name in mentioned_names:
-                    agent = next((a for a in agents if a.name == agent_name), None)
+                    agent = find_agent_by_type(agents, agent_name)
                     if agent:
                         resp_content = await self._call_agent_llm(agent, user_message, chatroom_id, db)
                         if resp_content:
@@ -260,9 +262,9 @@ class ChatroomManager:
             # 单 Agent 响应
             target_agent = None
             if mentioned_names:
-                target_agent = next((a for a in agents if a.name == mentioned_names[0]), None)
+                target_agent = find_agent_by_type(agents, mentioned_names[0])
             if not target_agent:
-                target_agent = next((a for a in agents if a.name == "assistant"), agents[0])
+                target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or agents[0]
 
             if target_agent:
                 resp_content = await self._call_agent_llm(target_agent, user_message, chatroom_id, db)
@@ -283,7 +285,7 @@ class ChatroomManager:
         from models.database import Message
 
         try:
-            llm_client = get_llm_client_for_agent(agent.name)
+            llm_client = get_llm_client_for_agent(agent.type)
 
             # 构建消息历史
             history = (
