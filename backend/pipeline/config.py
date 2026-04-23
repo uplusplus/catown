@@ -5,6 +5,7 @@ Pipeline 配置加载
 默认从 Catown data root 下的 pipelines.json 加载 Pipeline 模板定义。
 """
 import json
+import os
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 

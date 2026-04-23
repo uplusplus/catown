@@ -18,8 +18,13 @@ import pytest
 
 # 设置测试环境
 TEST_DIR = Path(tempfile.mkdtemp(prefix="catown_test_"))
+CONFIG_DIR = Path(__file__).parent.parent / "backend" / "configs"
+os.environ["CATOWN_HOME"] = str(TEST_DIR / "home")
 os.environ["DATABASE_URL"] = str(TEST_DIR / "test.db")
-os.environ["AGENT_CONFIG_FILE"] = str(Path(__file__).parent.parent / "backend" / "configs" / "agents.json")
+os.environ["CATOWN_WORKSPACES_DIR"] = str(TEST_DIR / "workspaces")
+os.environ["AGENT_CONFIG_FILE"] = str(CONFIG_DIR / "agents.json")
+os.environ["PIPELINE_CONFIG_FILE"] = str(CONFIG_DIR / "pipelines.json")
+os.environ["SKILLS_CONFIG_FILE"] = str(CONFIG_DIR / "skills.json")
 
 # 添加 backend 到 path
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
@@ -175,6 +180,7 @@ class TestPipelineStart:
         assert run.id is not None
         assert run.input_requirement == "Build a todo app"
         assert run.workspace_path is not None
+        assert Path(run.workspace_path).is_relative_to(TEST_DIR)
 
         # 验证 stages 创建
         db.refresh(run)
