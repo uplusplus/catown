@@ -278,6 +278,15 @@ function mergeMonitorLogs(current: MonitorLogEntry[], incoming: MonitorLogEntry[
     .slice(0, 500);
 }
 
+function monitorCreatedAtMs(value: string | null | undefined) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function compareMonitorItemsNewest<T extends { id: number; created_at: string | null | undefined }>(left: T, right: T) {
+  return monitorCreatedAtMs(right.created_at) - monitorCreatedAtMs(left.created_at) || right.id - left.id;
+}
 function mergeMonitorMessages(
   current: MonitorOverview["recent_messages"],
   incoming: MonitorOverview["recent_messages"],
@@ -290,7 +299,7 @@ function mergeMonitorMessages(
     merged.set(item.id, { ...merged.get(item.id), ...item });
   });
   return [...merged.values()]
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .sort(compareMonitorItemsNewest)
     .slice(0, MONITOR_MESSAGE_LIMIT);
 }
 
@@ -306,7 +315,7 @@ function mergeMonitorRuntime(
     merged.set(item.id, { ...merged.get(item.id), ...item });
   });
   return [...merged.values()]
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .sort(compareMonitorItemsNewest)
     .slice(0, MONITOR_RUNTIME_LIMIT);
 }
 
@@ -1208,6 +1217,30 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
   ];
 }
 
+const BRAIN_PHASE_SORT_RANK: Record<NonNullable<BrainEvent["phase"]>, number> = {
+  inbound: 0,
+  state: 1,
+  outbound: 2,
+};
+
+function brainEventSortId(event: BrainEvent) {
+  if (typeof event.runtimeId === "number") return event.runtimeId;
+  const match = /-(\d+)(?:-|$)/.exec(event.id);
+  return match ? Number(match[1]) : 0;
+}
+
+function compareBrainEventsNewest(left: BrainEvent, right: BrainEvent) {
+  const timeDiff = monitorCreatedAtMs(right.createdAt) - monitorCreatedAtMs(left.createdAt);
+  if (timeDiff !== 0) return timeDiff;
+
+  const idDiff = brainEventSortId(right) - brainEventSortId(left);
+  if (idDiff !== 0) return idDiff;
+
+  const phaseDiff = BRAIN_PHASE_SORT_RANK[left.phase ?? "state"] - BRAIN_PHASE_SORT_RANK[right.phase ?? "state"];
+  if (phaseDiff !== 0) return phaseDiff;
+
+  return right.id.localeCompare(left.id);
+}
 function buildBrainEvents(overview: MonitorOverview | null): BrainEvent[] {
   if (!overview) return [];
   const runtimeEvents: BrainEvent[] = overview.recent_runtime.flatMap((item) => buildRuntimeBrainEvents(item));
@@ -1232,11 +1265,8 @@ function buildBrainEvents(overview: MonitorOverview | null): BrainEvent[] {
     chatTitle: item.chat_title,
   }));
 
-  return [...runtimeEvents, ...messageEvents].sort((left, right) => {
-    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
-    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
-    return rightTime - leftTime;
-  });
+  return [...runtimeEvents, ...messageEvents].sort(compareBrainEventsNewest);
+
 }
 
 function buildHourlyBuckets(events: BrainEvent[], range: HistoryRange) {
