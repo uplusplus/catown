@@ -23,6 +23,7 @@ import type {
 
 const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
 const OPTIMISTIC_MESSAGES_STORAGE_KEY = "catown:optimistic-messages";
+const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
 const STREAM_STEP_LIMIT = 8;
 
 function debugConsole(level: "info" | "warn", event: string, details: Record<string, unknown>) {
@@ -100,6 +101,47 @@ function writeOptimisticMessages(chatId: number | null, messages: MessageItem[])
     store[key] = messages;
   }
   writeOptimisticMessageStore(store);
+}
+
+function clearLocalMessageStoreScope(storageKey: string, chatId: number | null) {
+  if (typeof window === "undefined") return;
+
+  try {
+    const rawValue = window.localStorage.getItem(storageKey);
+    if (!rawValue) return;
+
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return;
+
+    delete parsed[optimisticScopeKey(chatId)];
+
+    if (Object.keys(parsed).length === 0) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+
+    window.localStorage.setItem(storageKey, JSON.stringify(parsed));
+  } catch {
+    // Corrupt local cache should not block chat/project deletion flows.
+  }
+}
+
+function clearChatLocalCaches(chatId: number | null | undefined) {
+  if (!chatId) return;
+
+  writeOptimisticMessages(chatId, []);
+  clearLocalMessageStoreScope(LOCAL_OVERLAY_STORAGE_KEY, chatId);
+
+  if (readLastChatId() === chatId) {
+    writeLastChatId(null);
+  }
+}
+
+function clearManyChatLocalCaches(chatIds: Array<number | null | undefined>) {
+  const uniqueChatIds = Array.from(
+    new Set(chatIds.filter((chatId): chatId is number => Number.isFinite(chatId) && chatId > 0)),
+  );
+  uniqueChatIds.forEach(clearChatLocalCaches);
 }
 
 function migrateOptimisticMessages(fromChatId: number | null, toChatId: number | null) {
@@ -2779,6 +2821,7 @@ function App() {
     try {
       setError("");
       const created = await api.createProjectSubchat(projectId);
+      clearChatLocalCaches(created.id);
       setChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
       applyChatSelection(created.id, projectId);
       setActiveTab("chat");
@@ -2890,6 +2933,7 @@ function App() {
     try {
       setError("");
       await api.deleteChat(chatId);
+      clearChatLocalCaches(chatId);
 
       const remainingChats = chats.filter((chat) => chat.id !== chatId);
       setChats(remainingChats);
@@ -2918,10 +2962,16 @@ function App() {
   async function handleDeleteProject(projectId: number) {
     const targetProject = projects.find((project) => project.id === projectId) ?? null;
     if (!targetProject) return;
+    const projectChatIds = [
+      targetProject.default_chatroom_id,
+      targetProject.chatroom_id,
+      ...chats.filter((chat) => chat.project_id === projectId).map((chat) => chat.id),
+    ];
 
     try {
       setError("");
       await api.deleteProject(projectId);
+      clearManyChatLocalCaches(projectChatIds);
 
       const remainingProjects = projects.filter((project) => project.id !== projectId);
       setProjects(remainingProjects);
