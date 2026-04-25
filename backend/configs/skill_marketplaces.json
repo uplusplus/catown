@@ -1,0 +1,43 @@
+{
+  "default": "builtin",
+  "marketplaces": {
+    "builtin": {
+      "name": "Catown Built-in Importer",
+      "adapter": "builtin",
+      "enabled": true,
+      "description": "Imports GitHub repo/tree URLs, zip archives, raw SKILL.md files, and local package paths."
+    },
+    "skills-cli": {
+      "name": "Vercel Skills CLI",
+      "adapter": "skills-cli",
+      "enabled": true,
+      "command": "npx",
+      "args": ["skills"],
+      "description": "Uses the public skills CLI ecosystem when available."
+    },
+    "github-skill": {
+      "name": "GitHub Skill CLI",
+      "adapter": "gh-skill",
+      "enabled": false,
+      "command": "gh",
+      "args": ["skill"],
+      "description": "Uses GitHub CLI skill commands when installed and authenticated."
+    },
+    "skillhub-cn": {
+      "name": "SkillHub.cn",
+      "adapter": "skillhub",
+      "enabled": false,
+      "command": "skillhub",
+      "args": [],
+      "install_url": "https://skillhub.cn/install/skillhub.md",
+      "bootstrap": {
+        "command": "bash",
+        "args": [
+          "-lc",
+          "curl -fsSL https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/install/install.sh | bash -s -- --cli-only"
+        ]
+      },
+      "description": "Uses the SkillHub.cn CLI. Install with: curl -fsSL https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/install/install.sh | bash -s -- --cli-only"
+    }
+  }
+}

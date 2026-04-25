@@ -21,6 +21,7 @@ import type {
   MessageItem,
   MessageStreamStep,
   ProjectSummary,
+  TaskRunSummary,
 } from "./types";
 
 const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
@@ -34,6 +35,7 @@ const OPTIMISTIC_MAX_STEP_COUNT = 8;
 const OPTIMISTIC_MAX_STEP_LABEL_CHARS = 160;
 const OPTIMISTIC_MAX_STEP_DETAIL_CHARS = 800;
 const OPTIMISTIC_MAX_STEP_DETAIL_CONTENT_CHARS = 2400;
+const ERROR_AUTO_DISMISS_MS = 8000;
 
 const CONFIG_SECTION_META: Record<
   ConfigSection,
@@ -1594,6 +1596,7 @@ function App() {
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [chatCards, setChatCards] = useState<ChatCardItem[]>([]);
+  const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
   const [chatEvents, setChatEvents] = useState<ChatEventItem[]>([]);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">("connecting");
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -1654,6 +1657,33 @@ function App() {
   function pushCard(card: ChatCardItem) {
     setChatCards((current) => mergeCards(current, [card]).slice(-40));
   }
+
+  async function loadOptionalTaskRuns(chatId: number) {
+    try {
+      return await api.getTaskRuns(chatId);
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : "Failed to load task runs";
+      pushEvent(`Task run history unavailable: ${message}`, "warning");
+      return [];
+    }
+  }
+
+  async function loadOptionalRuntimeCards(chatId: number) {
+    try {
+      return await api.getRuntimeCards(chatId);
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : "Failed to load runtime cards";
+      pushEvent(`Runtime card history unavailable: ${message}`, "warning");
+      return [];
+    }
+  }
+
+  useEffect(() => {
+    if (!error) return undefined;
+
+    const timeoutId = window.setTimeout(() => setError(""), ERROR_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [error]);
 
   function nextTempMessageId() {
     const nextId = tempMessageIdRef.current;
@@ -1889,6 +1919,7 @@ function App() {
       optimisticScopeRef.current = optimisticScopeKey(null);
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
+      setTaskRuns([]);
       return;
     }
     if (!activeChat) return;
@@ -1903,9 +1934,10 @@ function App() {
         setMessages([]);
         setChatCards([]);
         setChatEvents([]);
-        const [rows, runtimeRows] = await Promise.all([
+        const [rows, runtimeRows, taskRunRows] = await Promise.all([
           api.getMessages(activeChatId),
-          api.getRuntimeCards(activeChatId),
+          loadOptionalRuntimeCards(activeChatId),
+          loadOptionalTaskRuns(activeChatId),
         ]);
         if (!cancelled) {
           const nextCards = runtimeRows
@@ -1913,6 +1945,7 @@ function App() {
             .filter((card): card is ChatCardItem => card !== null);
           setMessages(rows);
           setChatCards(nextCards);
+          setTaskRuns(taskRunRows);
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
         }
       } catch (nextError) {
@@ -2255,9 +2288,10 @@ function App() {
         setRefreshingMessages(true);
       }
       setError("");
-      const [rows, runtimeRows] = await Promise.all([
+      const [rows, runtimeRows, taskRunRows] = await Promise.all([
         api.getMessages(chatId),
-        api.getRuntimeCards(chatId),
+        loadOptionalRuntimeCards(chatId),
+        loadOptionalTaskRuns(chatId),
       ]);
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
@@ -2265,6 +2299,7 @@ function App() {
       setMessages(rows);
       commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
       setChatCards(nextCards);
+      setTaskRuns(taskRunRows);
       if (showSpinner) {
         pushEvent("Conversation refreshed", "info");
       }
@@ -3121,9 +3156,8 @@ function App() {
     try {
       setError("");
       const project = await ensureSelfBootstrapProject();
-      setNotice(`Opened self-bootstrap project "${project.name}".`);
+      setNotice("");
       pushEvent(`Opened self-bootstrap project "${project.name}"`, "success");
-      window.setTimeout(() => setNotice(""), 3000);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to open self-bootstrap project");
     }
@@ -3140,9 +3174,8 @@ function App() {
       commitChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
       applyChatSelection(created.id, projectId);
       setActiveTab("chat");
-      setNotice(`Created sub chat "${created.title}" in "${targetProject.name}".`);
-      pushEvent(`Created sub chat in "${targetProject.name}"`, "success");
-      window.setTimeout(() => setNotice(""), 3000);
+      setNotice("");
+      pushEvent(`Created sub chat "${created.title}" in "${targetProject.name}"`, "success");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to create sub chat");
     }
@@ -3360,6 +3393,23 @@ function App() {
     }
   }
 
+  async function handleSaveOrchestration(payload: { sidecar_agent_types: string[] }) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.saveOrchestrationConfig(payload);
+      const refreshed = await api.getConfig();
+      setConfig(refreshed);
+      setNotice("Orchestration config saved.");
+      pushEvent("Orchestration config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save orchestration config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveAgent(
     agentName: string,
     payload: {
@@ -3567,7 +3617,19 @@ function App() {
         ) : null}
 
         {notice ? <div className="notice-banner">{notice}</div> : null}
-        {error ? <div className="error-banner">{error}</div> : null}
+        {error ? (
+          <div className="error-banner" role="alert">
+            <span className="error-banner__message">{error}</span>
+            <button
+              type="button"
+              className="error-banner__close"
+              onClick={() => setError("")}
+              aria-label="Dismiss error"
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : null}
 
         {activeTab === "chat" ? (
           <ChatTab
@@ -3582,6 +3644,7 @@ function App() {
             creatingProjectFromChat={creatingProjectFromChat}
             connectionState={connectionState}
             cards={chatCards}
+            taskRuns={taskRuns}
             events={chatEvents}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}
@@ -3628,6 +3691,7 @@ function App() {
             saving={savingConfig}
             onBackToChat={() => setActiveTab("chat")}
             onSaveGlobal={handleSaveGlobal}
+            onSaveOrchestration={handleSaveOrchestration}
             onSaveAgent={handleSaveAgent}
             onReload={handleReloadConfig}
             onTestAgentConfig={handleTestAgentConfig}

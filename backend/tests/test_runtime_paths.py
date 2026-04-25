@@ -22,9 +22,11 @@ def test_defaults_use_unified_catown_home(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_CONFIG_FILE", raising=False)
     monkeypatch.delenv("PIPELINE_CONFIG_FILE", raising=False)
     monkeypatch.delenv("SKILLS_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("SKILL_MARKETPLACES_CONFIG_FILE", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("CATOWN_PROJECTS_ROOT", raising=False)
     monkeypatch.delenv("CATOWN_WORKSPACES_DIR", raising=False)
+    monkeypatch.delenv("CATOWN_SKILLS_DIR", raising=False)
 
     config = _reload_config_module()
     settings = config.settings
@@ -32,18 +34,24 @@ def test_defaults_use_unified_catown_home(tmp_path, monkeypatch):
     assert Path(settings.AGENT_CONFIG_FILE).is_relative_to(catown_home)
     assert Path(settings.PIPELINE_CONFIG_FILE).is_relative_to(catown_home)
     assert Path(settings.SKILLS_CONFIG_FILE).is_relative_to(catown_home)
+    assert Path(settings.SKILL_MARKETPLACES_CONFIG_FILE).is_relative_to(catown_home)
     assert Path(settings.DATABASE_URL).is_relative_to(catown_home)
     assert settings.PROJECTS_ROOT.is_relative_to(catown_home)
     assert settings.WORKSPACES_DIR.is_relative_to(catown_home)
+    assert settings.SKILLS_DIR.is_relative_to(catown_home)
 
     assert Path(settings.AGENT_CONFIG_FILE).exists()
     assert Path(settings.PIPELINE_CONFIG_FILE).exists()
     assert Path(settings.SKILLS_CONFIG_FILE).exists()
+    assert Path(settings.SKILL_MARKETPLACES_CONFIG_FILE).exists()
     assert not Path(settings.DATABASE_URL).exists()
     assert settings.CONFIG_DIR.exists()
     assert settings.STATE_DIR.exists()
     assert settings.PROJECTS_ROOT.exists()
     assert settings.WORKSPACES_DIR.exists()
+    assert settings.SKILLS_DIR.exists()
+    assert (settings.SKILLS_DIR / "code-generation" / "SKILL.md").exists()
+    assert (settings.SKILLS_DIR / "code-generation" / "skill.json").exists()
     assert list(settings.PROJECTS_ROOT.iterdir()) == []
     assert list(settings.WORKSPACES_DIR.iterdir()) == []
 

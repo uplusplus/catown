@@ -50,8 +50,10 @@ import json
 import base64
 import logging
 import subprocess
+import time
 
 logger = logging.getLogger("catown.github")
+from monitoring import monitor_network_buffer
 
 API_BASE = "https://api.github.com"
 
@@ -93,6 +95,7 @@ async def _api_request(method: str, path: str, data: dict = None, params: dict =
     import httpx
     url = f"{API_BASE}{path}"
     headers = _get_headers()
+    started_at = time.perf_counter()
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.request(
@@ -100,6 +103,30 @@ async def _api_request(method: str, path: str, data: dict = None, params: dict =
             headers=headers,
             json=data if data else None,
             params=params
+        )
+
+        monitor_network_buffer.append(
+            {
+                "category": "backend_other",
+                "source": "backend",
+                "protocol": "HTTPS",
+                "from_entity": "Backend",
+                "to_entity": "api.github.com",
+                "request_direction": "Backend -> api.github.com",
+                "response_direction": "api.github.com -> Backend",
+                "method": method.upper(),
+                "url": url,
+                "host": "api.github.com",
+                "path": path,
+                "status_code": resp.status_code,
+                "success": resp.status_code < 400,
+                "request_bytes": len(json.dumps({"data": data, "params": params}, ensure_ascii=False).encode("utf-8")),
+                "response_bytes": len(resp.content or b""),
+                "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                "content_type": resp.headers.get("Content-Type", ""),
+                "preview": path[:280],
+                "error": "" if resp.status_code < 400 else resp.text[:280],
+            }
         )
 
         if resp.status_code == 204:

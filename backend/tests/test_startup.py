@@ -27,7 +27,7 @@ def _make_app(tmp_path):
     modules_to_clear = [
         'main', 'config', 'models.database', 'agents.registry',
         'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
-        'routes.api', 'routes.websocket'
+        'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline'
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:

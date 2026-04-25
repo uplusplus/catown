@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
+import { api } from "../api/client";
 import { FormSuggestionStrip } from "./FormSuggestionStrip";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
 import {
@@ -27,6 +28,9 @@ import type {
   MessageItem,
   MessageStreamStep,
   ProjectSummary,
+  TaskRunDetail,
+  TaskRunEvent,
+  TaskRunSummary,
 } from "../types";
 
 const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
@@ -240,6 +244,7 @@ type ChatTabProps = {
   messages: MessageItem[];
   optimisticMessages: MessageItem[];
   cards: ChatCardItem[];
+  taskRuns: TaskRunSummary[];
   loading: boolean;
   sending: boolean;
   refreshing: boolean;
@@ -353,6 +358,54 @@ function toneLabel(tone: ChatEventItem["tone"]) {
       return "Info";
     default:
       return "Event";
+  }
+}
+
+function formatTaskRunKind(value: string | undefined) {
+  if (!value) return "Task run";
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatTaskRunStatus(value: string | undefined) {
+  if (!value) return "Unknown";
+  return value[0]?.toUpperCase() + value.slice(1);
+}
+
+function taskRunStatusTone(status: string | undefined) {
+  const normalized = (status || "").toLowerCase();
+  if (normalized === "completed") return "success";
+  if (normalized === "failed") return "error";
+  if (normalized === "running") return "info";
+  return "neutral";
+}
+
+function taskRunEventTone(eventType: string | undefined) {
+  const normalized = (eventType || "").toLowerCase();
+  if (normalized.includes("failed") || normalized.includes("error")) return "error";
+  if (normalized.includes("completed")) return "success";
+  if (normalized.includes("handoff") || normalized.includes("tool_round")) return "warning";
+  return "neutral";
+}
+
+function formatTaskRunEventType(value: string | undefined) {
+  if (!value) return "Event";
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
+  if (!payload || Object.keys(payload).length === 0) return "";
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return "";
   }
 }
 
@@ -2413,6 +2466,7 @@ export function ChatTab({
   messages,
   optimisticMessages,
   cards,
+  taskRuns,
   loading,
   sending,
   refreshing,
@@ -2442,6 +2496,10 @@ export function ChatTab({
   const [expandedProgressCards, setExpandedProgressCards] = useState<Record<string, string | null>>({});
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
+  const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
+  const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
+  const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
+  const [taskRunDetailError, setTaskRunDetailError] = useState("");
   const composerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const isComposingRef = useRef(false);
@@ -2485,6 +2543,62 @@ export function ChatTab({
     );
   }, [localOverlayMessages, messages]);
   const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
+  const selectedTaskRunSummary = useMemo(() => {
+    if (taskRuns.length === 0) return null;
+    return taskRuns.find((run) => run.id === selectedTaskRunId) ?? taskRuns[0] ?? null;
+  }, [selectedTaskRunId, taskRuns]);
+  const selectedTaskRunDetail = selectedTaskRunSummary
+    ? taskRunDetailsById[selectedTaskRunSummary.id] ?? null
+    : null;
+
+  useEffect(() => {
+    setTaskRunDetailError("");
+    setLoadingTaskRunId(null);
+    setTaskRunDetailsById({});
+    setSelectedTaskRunId(null);
+  }, [chat?.id]);
+
+  useEffect(() => {
+    if (taskRuns.length === 0) {
+      if (selectedTaskRunId !== null) {
+        setSelectedTaskRunId(null);
+      }
+      return;
+    }
+    if (selectedTaskRunId === null || !taskRuns.some((run) => run.id === selectedTaskRunId)) {
+      setSelectedTaskRunId(taskRuns[0]?.id ?? null);
+    }
+  }, [selectedTaskRunId, taskRuns]);
+
+  useEffect(() => {
+    const runId = selectedTaskRunSummary?.id;
+    if (!runId || taskRunDetailsById[runId] || loadingTaskRunId === runId) {
+      return;
+    }
+
+    let cancelled = false;
+    setTaskRunDetailError("");
+    setLoadingTaskRunId(runId);
+
+    api.getTaskRunDetail(runId)
+      .then((detail) => {
+        if (cancelled) return;
+        setTaskRunDetailsById((current) => ({ ...current, [runId]: detail }));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setTaskRunDetailError(error instanceof Error ? error.message : "Failed to load task run detail");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoadingTaskRunId((current) => (current === runId ? null : current));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadingTaskRunId, selectedTaskRunSummary, taskRunDetailsById]);
+
   const fallbackStepCardsByMessageId = useMemo(() => {
     const mapped = new Map<number, ThreadCard[]>();
     const orderedCards = [...cardsWithPromptPresentation].sort(compareThreadCards);
@@ -3710,8 +3824,130 @@ export function ChatTab({
                   <li>{project ? `Project: ${project.name}` : "Standalone mode"}</li>
                   <li>{messages.length} messages loaded</li>
                   <li>{cardsWithPromptPresentation.length} runtime cards</li>
+                  <li>{taskRuns.length} task runs</li>
                   <li>{activeAgents.length} active agents</li>
                 </ul>
+              </div>
+
+              <div className="activity-section">
+                <div className="activity-section__header">
+                  <h3>Run ledger</h3>
+                  <span className="soft-pill">{taskRuns.length}</span>
+                </div>
+                {taskRuns.length === 0 ? (
+                  <div className="empty-card">No task runs yet.</div>
+                ) : (
+                  <div className="task-run-stack">
+                    <div className="task-run-list">
+                      {taskRuns.slice(0, 6).map((run) => {
+                        const isSelected = run.id === selectedTaskRunSummary?.id;
+                        const tone = taskRunStatusTone(run.status);
+                        return (
+                          <button
+                            key={run.id}
+                            type="button"
+                            className={`task-run-card ${isSelected ? "is-selected" : ""}`}
+                            onClick={() => {
+                              setTaskRunDetailError("");
+                              setSelectedTaskRunId(run.id);
+                            }}
+                          >
+                            <div className="task-run-card__meta">
+                              <span className={`task-run-card__status task-run-card__status--${tone}`}>
+                                {formatTaskRunStatus(run.status)}
+                              </span>
+                              <span>{run.created_at ? formatTime(run.created_at) : "--"}</span>
+                            </div>
+                            <strong>{run.title}</strong>
+                            <div className="task-run-card__subtitle">
+                              {formatTaskRunKind(run.run_kind)}
+                              {run.target_agent_name ? ` · ${run.target_agent_name}` : ""}
+                            </div>
+                            <p>{run.summary || run.user_request || "No summary yet."}</p>
+                            <div className="task-run-card__footer">
+                              <span>{run.event_count} events</span>
+                              {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedTaskRunSummary ? (
+                      <div className="task-run-detail">
+                        <div className="task-run-detail__header">
+                          <div>
+                            <span className="task-run-detail__eyebrow">Selected run</span>
+                            <h4>{selectedTaskRunSummary.title}</h4>
+                          </div>
+                          <span className={`task-run-card__status task-run-card__status--${taskRunStatusTone(selectedTaskRunSummary.status)}`}>
+                            {formatTaskRunStatus(selectedTaskRunSummary.status)}
+                          </span>
+                        </div>
+
+                        <div className="task-run-detail__meta">
+                          <span>{formatTaskRunKind(selectedTaskRunSummary.run_kind)}</span>
+                          {selectedTaskRunSummary.target_agent_name ? (
+                            <span>{selectedTaskRunSummary.target_agent_name}</span>
+                          ) : null}
+                          <span>{selectedTaskRunSummary.event_count} events</span>
+                          <span>
+                            {selectedTaskRunSummary.completed_at
+                              ? `done ${formatTime(selectedTaskRunSummary.completed_at)}`
+                              : selectedTaskRunSummary.created_at
+                                ? `started ${formatTime(selectedTaskRunSummary.created_at)}`
+                                : "time unavailable"}
+                          </span>
+                        </div>
+
+                        {selectedTaskRunSummary.summary ? (
+                          <p className="task-run-detail__summary">{selectedTaskRunSummary.summary}</p>
+                        ) : null}
+
+                        {taskRunDetailError ? (
+                          <div className="empty-card empty-card--danger">{taskRunDetailError}</div>
+                        ) : null}
+
+                        {loadingTaskRunId === selectedTaskRunSummary.id && !selectedTaskRunDetail ? (
+                          <div className="empty-card">Loading event detail…</div>
+                        ) : selectedTaskRunDetail ? (
+                          <div className="task-run-event-list">
+                            {selectedTaskRunDetail.events.map((event) => {
+                              const payloadPreview = taskRunPayloadPreview(event.payload);
+                              return (
+                                <div
+                                  key={event.id}
+                                  className={`task-run-event task-run-event--${taskRunEventTone(event.event_type)}`}
+                                >
+                                  <div className="task-run-event__meta">
+                                    <span>
+                                      #{event.event_index} · {formatTaskRunEventType(event.event_type)}
+                                    </span>
+                                    <span>{event.created_at ? formatTime(event.created_at) : "--"}</span>
+                                  </div>
+                                  <div className="task-run-event__summary">
+                                    {event.summary || "No summary."}
+                                  </div>
+                                  {event.agent_name ? (
+                                    <div className="task-run-event__agent">{event.agent_name}</div>
+                                  ) : null}
+                                  {payloadPreview ? (
+                                    <details className="task-run-event__payload">
+                                      <summary>Payload</summary>
+                                      <pre>{payloadPreview}</pre>
+                                    </details>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="empty-card">No event detail loaded.</div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
               <div className="activity-section">

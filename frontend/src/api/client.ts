@@ -7,14 +7,24 @@ import type {
   GlobalConfigPayload,
   GitHubProjectImportPayload,
   MonitorLogsResponse,
+  MonitorNetworkResponse,
+  MonitorApprovalQueueResponse,
+  ApprovalQueueItem,
   MonitorRuntimeDetail,
+  MonitorTaskRunsResponse,
   MessageItem,
   MonitorOverview,
   MonitorUsageResponse,
+  OrchestrationConfigPayload,
   ProjectCreatePayload,
   ProjectFromChatPayload,
   ProjectSyncResponse,
+  SkillMarketplacesResponse,
+  SkillMarketplaceUpdateResponse,
   ProjectSummary,
+  TaskRunDetail,
+  TaskRunResumeResponse,
+  TaskRunSummary,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
 import { DEFAULT_AGENT_TYPE } from "../utils/agents";
@@ -156,6 +166,41 @@ export const api = {
   getRuntimeCards(chatroomId: number) {
     return request<Record<string, unknown>[]>(`/api/chatrooms/${chatroomId}/runtime-cards`);
   },
+  getTaskRuns(chatroomId: number, clientTurnId?: string) {
+    const params = new URLSearchParams();
+    if (clientTurnId?.trim()) {
+      params.set("client_turn_id", clientTurnId.trim());
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<TaskRunSummary[]>(`/api/chatrooms/${chatroomId}/task-runs${suffix}`);
+  },
+  getTaskRunDetail(taskRunId: number) {
+    return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
+  },
+  resumeTaskRun(taskRunId: number) {
+    return request<TaskRunResumeResponse>(`/api/task-runs/${taskRunId}/resume`, {
+      method: "POST",
+    });
+  },
+  getMonitorApprovalQueue(status = "all", limit = 120) {
+    const params = new URLSearchParams({
+      status,
+      limit: String(limit),
+    });
+    return request<MonitorApprovalQueueResponse>(`/api/monitor/approval-queue?${params.toString()}`);
+  },
+  approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string }) {
+    return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/approve`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
+  rejectApprovalQueueItem(itemId: number, payload?: { note?: string; rollback_to?: string | null; resolved_by?: string }) {
+    return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/reject`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
   sendMessage(chatroomId: number, content: string, clientTurnId?: string) {
     return request<MessageItem>(`/api/chatrooms/${chatroomId}/messages`, {
       method: "POST",
@@ -186,20 +231,49 @@ export const api = {
   getConfig() {
     return request<ConfigResponse>("/api/config");
   },
+  getSkillMarketplaces() {
+    return request<SkillMarketplacesResponse>("/api/skills/marketplaces");
+  },
+  updateSkillMarketplace(marketplaceId: string, enabled: boolean, bootstrap = true) {
+    return request<SkillMarketplaceUpdateResponse>(`/api/skills/marketplaces/${encodeURIComponent(marketplaceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled, bootstrap }),
+    });
+  },
   getMonitorOverview() {
     return request<MonitorOverview>("/api/monitor/overview?runtime_limit=80&summary_window=400&message_limit=40");
   },
   getMonitorLogs(limit = 250) {
     return request<MonitorLogsResponse>(`/api/monitor/logs?limit=${limit}`);
   },
+  getMonitorNetwork(limit = 300, category = "all", query = "") {
+    const params = new URLSearchParams({ limit: String(limit), category });
+    if (query.trim()) {
+      params.set("query", query.trim());
+    }
+    return request<MonitorNetworkResponse>(`/api/monitor/network?${params.toString()}`);
+  },
   getMonitorRuntimeCardDetail(messageId: number) {
     return request<MonitorRuntimeDetail>(`/api/monitor/runtime-cards/${messageId}`);
+  },
+  getMonitorTaskRuns(range = "24h", limit = 120) {
+    const params = new URLSearchParams({
+      range,
+      limit: String(limit),
+    });
+    return request<MonitorTaskRunsResponse>(`/api/monitor/task-runs?${params.toString()}`);
   },
   getMonitorUsage(range = "24h") {
     return request<MonitorUsageResponse>(`/api/monitor/usage?range=${encodeURIComponent(range)}`);
   },
   saveGlobalConfig(payload: GlobalConfigPayload) {
     return request<{ message: string }>("/api/config/global", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  saveOrchestrationConfig(payload: OrchestrationConfigPayload) {
+    return request<{ message: string }>("/api/config/orchestration", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

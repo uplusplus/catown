@@ -35,20 +35,21 @@ class MonitorLogBuffer:
         self._installed = False
 
     def install(self) -> None:
+        root_logger = logging.getLogger()
+        uvicorn_loggers = tuple(logging.getLogger(name) for name in ("uvicorn.error", "uvicorn.access"))
+
         with self._lock:
-            if self._installed:
-                return
             self._installed = True
 
-        root_logger = logging.getLogger()
-        if self._handler not in root_logger.handlers:
-            root_logger.addHandler(self._handler)
+            # main._configure_logging() recreates root handlers on repeated app imports.
+            # Re-attach our monitor handler whenever logging gets reconfigured.
+            if self._handler not in root_logger.handlers:
+                root_logger.addHandler(self._handler)
 
-        # Uvicorn often disables propagation for these loggers, so attach directly.
-        for logger_name in ("uvicorn.error", "uvicorn.access"):
-            logger = logging.getLogger(logger_name)
-            if not logger.propagate and self._handler not in logger.handlers:
-                logger.addHandler(self._handler)
+            # Uvicorn often disables propagation for these loggers, so attach directly.
+            for logger in uvicorn_loggers:
+                if not logger.propagate and self._handler not in logger.handlers:
+                    logger.addHandler(self._handler)
 
     def clear(self) -> None:
         with self._lock:

@@ -7,6 +7,9 @@ import urllib.parse
 import httpx
 import re
 import html as html_module
+import time
+
+from monitoring import monitor_network_buffer
 
 
 class WebFetchTool(BaseTool):
@@ -31,6 +34,7 @@ class WebFetchTool(BaseTool):
             if parsed.scheme not in ("http", "https"):
                 return f"[WebFetch] Invalid URL scheme: {parsed.scheme}"
 
+            started_at = time.perf_counter()
             async with httpx.AsyncClient(
                 timeout=15,
                 headers={
@@ -43,6 +47,28 @@ class WebFetchTool(BaseTool):
                 response.raise_for_status()
                 content_type = response.headers.get("Content-Type", "")
                 raw = response.content
+                monitor_network_buffer.append(
+                    {
+                        "category": "backend_other",
+                        "source": "backend",
+                        "protocol": parsed.scheme.upper(),
+                        "from_entity": "Backend",
+                        "to_entity": parsed.netloc or url,
+                        "request_direction": f"Backend -> {parsed.netloc or url}",
+                        "response_direction": f"{parsed.netloc or url} -> Backend",
+                        "method": "GET",
+                        "url": url,
+                        "host": parsed.netloc,
+                        "path": parsed.path or "/",
+                        "status_code": response.status_code,
+                        "success": True,
+                        "request_bytes": 0,
+                        "response_bytes": len(raw),
+                        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                        "content_type": content_type,
+                        "preview": self._extract_text(raw.decode("utf-8", errors="replace"))[:280] if raw else "",
+                    }
+                )
 
             # 尝试解码
             for enc in ("utf-8", "latin-1"):
@@ -65,8 +91,46 @@ class WebFetchTool(BaseTool):
             return f"[WebFetch] {url}\n\n{text}"
 
         except httpx.HTTPStatusError as e:
+            monitor_network_buffer.append(
+                {
+                    "category": "backend_other",
+                    "source": "backend",
+                    "protocol": parsed.scheme.upper() if 'parsed' in locals() else "HTTP",
+                    "from_entity": "Backend",
+                    "to_entity": parsed.netloc if 'parsed' in locals() else url,
+                    "request_direction": f"Backend -> {parsed.netloc if 'parsed' in locals() else url}",
+                    "response_direction": f"{parsed.netloc if 'parsed' in locals() else url} -> Backend",
+                    "method": "GET",
+                    "url": url,
+                    "host": parsed.netloc if 'parsed' in locals() else "",
+                    "path": parsed.path if 'parsed' in locals() else "",
+                    "status_code": e.response.status_code,
+                    "success": False,
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
+                    "content_type": e.response.headers.get("Content-Type", ""),
+                    "error": str(e),
+                }
+            )
             return f"[WebFetch] HTTP {e.response.status_code}: {e.response.reason_phrase} for {url}"
         except Exception as e:
+            monitor_network_buffer.append(
+                {
+                    "category": "backend_other",
+                    "source": "backend",
+                    "protocol": parsed.scheme.upper() if 'parsed' in locals() else "HTTP",
+                    "from_entity": "Backend",
+                    "to_entity": parsed.netloc if 'parsed' in locals() else url,
+                    "request_direction": f"Backend -> {parsed.netloc if 'parsed' in locals() else url}",
+                    "response_direction": f"{parsed.netloc if 'parsed' in locals() else url} -> Backend",
+                    "method": "GET",
+                    "url": url,
+                    "host": parsed.netloc if 'parsed' in locals() else "",
+                    "path": parsed.path if 'parsed' in locals() else "",
+                    "success": False,
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
+                    "error": str(e),
+                }
+            )
             return f"[WebFetch] Error fetching {url}: {str(e)}"
 
     def _extract_text(self, html: str) -> str:

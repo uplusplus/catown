@@ -22,15 +22,53 @@ from typing import Any, Callable, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from config import settings
+from skills import load_skill_registry, write_workspace_skill_packages
+from tools.base import build_tool_policy_pack, build_tool_policy_payload
 from models.database import (
-    SessionLocal, Pipeline, PipelineRun, PipelineStage,
-    StageArtifact, PipelineMessage, Project,
+    SessionLocal, Chatroom, Pipeline, PipelineRun, PipelineStage,
+    StageArtifact, PipelineMessage, PipelineMessageDelivery, Project,
 )
 from models.audit import LLMCall, ToolCall, Event
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
+from services.context_builder import (
+    ContextSelector,
+    assemble_messages,
+    build_base_system_prompt,
+    build_operating_developer_context,
+    build_runtime_user_fragments,
+    build_stage_developer_context,
+    build_turn_state_developer_fragments,
+    build_turn_state_user_fragments,
+)
+from services.approval_queue import (
+    create_approval_queue_item,
+    find_pending_queue_item,
+    resolve_approval_queue_item,
+)
+from services.turn_state import TurnContextState, build_tool_result_record, normalize_tool_call
+from services.run_ledger import (
+    append_task_event,
+    complete_task_run,
+    create_task_run,
+    get_task_run,
+    update_task_run,
+)
+from services.nonstream_turn_executor import execute_non_stream_turn_loop
+from services.runner_policy import (
+    compile_pipeline_run_policy,
+    compile_pipeline_stage_policy,
+    find_stage_policy,
+)
+from services.runner_lifecycle import (
+    complete_agent_turn as record_agent_turn_completed,
+    record_tool_round as record_runner_tool_round,
+    start_agent_turn as record_agent_turn_started,
+)
+from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
 
 logger = logging.getLogger("catown.pipeline.engine")
+PIPELINE_TASK_RUN_KIND = "pipeline_run"
 
 # ==================== 工具定义 ====================
 # 每个 Agent 可用的工具，由 agents.json 的 tools 字段 + 此处的实现映射决定
@@ -65,6 +103,205 @@ def _get_workspace(run: PipelineRun) -> Path:
     ws = Path(run.workspace_path) if run.workspace_path else settings.WORKSPACES_DIR / f"run_{run.id}"
     ws.mkdir(parents=True, exist_ok=True)
     return ws
+
+
+def _resolve_pipeline_chatroom_id(db: Session, project_id: int | None) -> int | None:
+    if not project_id:
+        return None
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if project is None:
+        return None
+    if project.default_chatroom_id:
+        return project.default_chatroom_id
+    chatroom = (
+        db.query(Chatroom)
+        .filter(Chatroom.project_id == project.id)
+        .order_by(Chatroom.id.asc())
+        .first()
+    )
+    return chatroom.id if chatroom is not None else None
+
+
+def _ensure_pipeline_task_run(
+    db: Session,
+    *,
+    pipeline: Pipeline,
+    run: PipelineRun,
+    requirement: str,
+    initial_agent_name: str | None = None,
+) -> Any | None:
+    if getattr(run, "task_run_id", None):
+        return get_task_run(db, run.task_run_id)
+
+    chatroom_id = _resolve_pipeline_chatroom_id(db, pipeline.project_id)
+    if chatroom_id is None:
+        logger.warning(
+            "Pipeline run %s has no project chatroom; skipping task-run ledger bridge",
+            run.id,
+        )
+        return None
+
+    title = f"Pipeline #{run.run_number}: {(requirement or '').strip() or pipeline.pipeline_name}"
+    task_run = create_task_run(
+        db,
+        chatroom_id=chatroom_id,
+        project_id=pipeline.project_id,
+        origin_message_id=None,
+        client_turn_id=None,
+        run_kind=PIPELINE_TASK_RUN_KIND,
+        user_request=requirement or pipeline.pipeline_name,
+        initiator="user",
+        target_agent_name=initial_agent_name,
+        title=title[:160],
+    )
+    run.task_run_id = task_run.id
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return task_run
+
+
+def _pipeline_task_run(db: Session, run: PipelineRun | None) -> Any | None:
+    if run is None or not getattr(run, "task_run_id", None):
+        return None
+    return get_task_run(db, run.task_run_id)
+
+
+def _append_pipeline_task_event(
+    db: Session,
+    run: PipelineRun | None,
+    event_type: str,
+    *,
+    agent_name: str | None = None,
+    summary: str = "",
+    payload: Any = None,
+    target_agent_name: str | None = None,
+    run_summary: str | None = None,
+) -> Any | None:
+    task_run = _pipeline_task_run(db, run)
+    if task_run is None:
+        return None
+    if target_agent_name is not None or run_summary is not None:
+        update_task_run(
+            db,
+            task_run,
+            target_agent_name=target_agent_name if target_agent_name is not None else task_run.target_agent_name,
+            summary=run_summary if run_summary is not None else task_run.summary,
+        )
+    return append_task_event(
+        db,
+        task_run,
+        event_type,
+        agent_name=agent_name,
+        summary=summary,
+        payload=payload,
+    )
+
+
+def _pipeline_runner_policy(
+    pipeline: Pipeline,
+    template: Any | None,
+):
+    stages = list(getattr(template, "stages", []) or [])
+    stage_tool_packs = {
+        _clean_stage_name(stage_cfg): _pipeline_stage_tool_policy_pack(getattr(stage_cfg, "agent", None))
+        for stage_cfg in stages
+    }
+    return compile_pipeline_run_policy(
+        pipeline_name=getattr(pipeline, "pipeline_name", None),
+        project_id=getattr(pipeline, "project_id", None),
+        stages=stages,
+        stage_tool_packs=stage_tool_packs,
+    )
+
+
+def _pipeline_gate_request_key(run_id: int | None, stage_name: str | None) -> str:
+    return f"pipeline_gate:{int(run_id or 0)}:{str(stage_name or '').strip()}"
+
+
+def _queue_pipeline_gate_approval(
+    db: Session,
+    *,
+    pipeline: Pipeline,
+    run: PipelineRun,
+    stage: PipelineStage,
+    stage_policy: Any | None,
+) -> Any | None:
+    task_run = _pipeline_task_run(db, run)
+    if task_run is None:
+        return None
+    return create_approval_queue_item(
+        db,
+        task_run=task_run,
+        chatroom_id=task_run.chatroom_id,
+        project_id=task_run.project_id,
+        queue_kind="approval",
+        source="pipeline_gate",
+        title=f"Approve pipeline gate: {stage.display_name}",
+        summary=f"Pipeline is waiting for approval at {stage.display_name}.",
+        agent_name=stage.agent_name,
+        target_kind="pipeline_gate",
+        target_name=stage.stage_name,
+        request_key=_pipeline_gate_request_key(run.id, stage.stage_name),
+        request_payload={
+            "pipeline_id": pipeline.id,
+            "pipeline_run_id": run.id,
+            "pipeline_stage_id": stage.id,
+            "stage_name": stage.stage_name,
+            "display_name": stage.display_name,
+            "resume_supported": True,
+            "stage_policy": stage_policy.to_payload() if stage_policy is not None else None,
+        },
+        pipeline_run_id=run.id,
+        pipeline_stage_id=stage.id,
+    )
+
+
+def _resolve_pipeline_gate_queue_item(
+    db: Session,
+    *,
+    run: PipelineRun,
+    stage: PipelineStage,
+    status: str,
+    resolution_note: str,
+) -> Any | None:
+    queue_item = find_pending_queue_item(
+        db,
+        request_key=_pipeline_gate_request_key(run.id, stage.stage_name),
+        pipeline_run_id=run.id,
+        pipeline_stage_id=stage.id,
+        target_kind="pipeline_gate",
+        target_name=stage.stage_name,
+    )
+    return resolve_approval_queue_item(
+        db,
+        queue_item,
+        status=status,
+        resolved_by="user",
+        resolution_note=resolution_note,
+        resolution_payload={
+            "pipeline_run_id": run.id,
+            "pipeline_stage_id": stage.id,
+            "stage_name": stage.stage_name,
+            "display_name": stage.display_name,
+        },
+    )
+
+
+def _clean_stage_name(stage_cfg: Any) -> str:
+    return str(getattr(stage_cfg, "name", "") or "").strip()
+
+
+def _pipeline_stage_tool_policy_pack(agent_name: str | None) -> dict[str, Any]:
+    normalized_agent_name = str(agent_name or "").strip()
+    tool_names = AGENT_TOOLS.get(normalized_agent_name, list(TOOL_REGISTRY.keys()))
+    return build_tool_policy_pack(
+        tool_names,
+        description_map={
+            tool_name: str((TOOL_REGISTRY.get(tool_name) or {}).get("desc", "") or "")
+            for tool_name in tool_names
+        },
+    )
 
 
 def _validate_path(workspace: Path, target: Path, allow_catown: bool = False) -> Optional[str]:
@@ -287,7 +524,11 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
         allowed_tools = AGENT_TOOLS[agent_name]
         if tool_name not in allowed_tools:
             logger.warning(f"Agent '{agent_name}' attempted unauthorized tool: '{tool_name}' (allowed: {allowed_tools})")
-            return f"Error: Agent '{agent_name}' is not authorized to use tool '{tool_name}'. Allowed tools: {allowed_tools}"
+            return build_blocked_tool_result(
+                "approval_blocked",
+                tool_name,
+                f"Agent '{agent_name}' is not authorized to use tool '{tool_name}'. Allowed tools: {allowed_tools}",
+            )
 
     # send_message 需要特殊处理（需要 db 访问）
     if tool_name == "send_message":
@@ -296,11 +537,90 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
     info = TOOL_REGISTRY.get(tool_name)
     if not info:
         return f"Error: unknown tool: {tool_name}"
+    tool_policy = build_tool_policy_payload(tool_name, description=str(info.get("desc") or ""))
+    if tool_requires_manual_approval(tool_policy):
+        approval_notes = list((tool_policy.get("approval") or {}).get("notes") or [])
+        reason = approval_notes[0] if approval_notes else "This tool requires manual approval before execution."
+        return build_blocked_tool_result("approval_blocked", tool_name, reason)
     workspace = _get_workspace(run)
     try:
         return info["fn"](workspace, **arguments)
     except Exception as e:
         return f"Tool error ({tool_name}): {e}"
+
+
+async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
+    """Replay a previously blocked pipeline tool call after approval."""
+    request_payload = {}
+    raw_payload = getattr(queue_item, "request_payload_json", None)
+    if raw_payload:
+        try:
+            loaded = json.loads(raw_payload)
+            if isinstance(loaded, dict):
+                request_payload = loaded
+        except json.JSONDecodeError:
+            request_payload = {}
+
+    tool_name = str(request_payload.get("tool_name") or getattr(queue_item, "target_name", "") or "").strip()
+    arguments_text = str(request_payload.get("arguments") or "{}")
+    if not tool_name:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', 'tool')}",
+            tool_name=getattr(queue_item, "target_name", "tool"),
+            arguments=arguments_text,
+            result="Error: blocked pipeline tool replay is missing tool_name.",
+            success=False,
+        )
+
+    run_id = getattr(queue_item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
+    if not run_id:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error: blocked pipeline tool replay is missing pipeline_run_id.",
+            success=False,
+        )
+
+    run = db.query(PipelineRun).filter(PipelineRun.id == int(run_id)).first()
+    if run is None:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result=f"Error: pipeline run not found for blocked tool replay ({run_id}).",
+            success=False,
+        )
+
+    try:
+        loaded_arguments = json.loads(arguments_text or "{}")
+        if not isinstance(loaded_arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object.")
+    except Exception as exc:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result=f"Error: invalid blocked pipeline tool replay arguments: {exc}",
+            success=False,
+        )
+
+    tool_result = await _execute_tool(
+        str(getattr(queue_item, "agent_name", "") or ""),
+        run,
+        tool_name,
+        loaded_arguments,
+        db=db,
+        stage_id=getattr(queue_item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id"),
+    )
+    tool_result_text = str(tool_result or "(no output)")
+    return build_tool_result_record(
+        tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+        tool_name=tool_name,
+        arguments=arguments_text,
+        result=tool_result_text,
+        success=not tool_result_text.startswith("Error:"),
+    )
 
 
 async def _handle_send_message(
@@ -328,16 +648,9 @@ async def _handle_send_message(
             content=content,
         )
         db.add(msg)
+        db.flush()
+        _enqueue_message_delivery(db, msg)
         db.commit()
-
-    # 加入待投递队列
-    _interagent_message_queue.append({
-        "run_id": run.id,
-        "from_agent": from_agent,
-        "to_agent": to_agent,
-        "content": content,
-        "message_type": message_type,
-    })
 
     # 广播事件
     await event_bus.emit("agent_message", {
@@ -352,22 +665,97 @@ async def _handle_send_message(
     return f"Message sent to {to_agent}"
 
 
-# Agent 间消息队列：run_id, from_agent, to_agent, content, message_type
-_interagent_message_queue: List[Dict[str, Any]] = []
+def _enqueue_message_delivery(db: Session, message: PipelineMessage) -> Optional[PipelineMessageDelivery]:
+    """Create a durable inbox entry for a direct pipeline message."""
+    recipient = str(message.to_agent or "").strip()
+    if not recipient:
+        return None
+
+    delivery = PipelineMessageDelivery(
+        message_id=message.id,
+        run_id=message.run_id,
+        to_agent=recipient,
+        status="pending",
+    )
+    db.add(delivery)
+    return delivery
 
 
-def _pop_messages_for_agent(run_id: int, agent_name: str) -> List[Dict[str, Any]]:
-    """取出并移除发给指定 Agent 的待投递消息"""
-    global _interagent_message_queue
-    messages = []
-    remaining = []
-    for msg in _interagent_message_queue:
-        if msg["run_id"] == run_id and msg["to_agent"] == agent_name:
-            messages.append(msg)
-        else:
-            remaining.append(msg)
-    _interagent_message_queue = remaining
+def _pop_messages_for_agent(db: Session, run_id: int, agent_name: str) -> List[Dict[str, Any]]:
+    """Claim and consume pending inbox messages for an agent from durable storage."""
+    deliveries = (
+        db.query(PipelineMessageDelivery)
+        .join(PipelineMessage, PipelineMessage.id == PipelineMessageDelivery.message_id)
+        .filter(
+            PipelineMessageDelivery.run_id == run_id,
+            PipelineMessageDelivery.to_agent == agent_name,
+            PipelineMessageDelivery.status == "pending",
+            PipelineMessage.message_type != "HUMAN_INSTRUCT",
+        )
+        .order_by(PipelineMessage.created_at.asc(), PipelineMessageDelivery.id.asc())
+        .all()
+    )
+
+    if not deliveries:
+        return []
+
+    now = datetime.now()
+    messages: List[Dict[str, Any]] = []
+    for delivery in deliveries:
+        message = delivery.message
+        if message is None:
+            continue
+        delivery.status = "consumed"
+        delivery.consumed_at = now
+        messages.append(
+            {
+                "message_id": message.id,
+                "run_id": message.run_id,
+                "stage_id": message.stage_id,
+                "from_agent": message.from_agent,
+                "to_agent": message.to_agent,
+                "content": message.content,
+                "message_type": message.message_type,
+                "created_at": message.created_at.isoformat() if message.created_at else None,
+            }
+        )
+
+    db.commit()
     return messages
+
+
+def _pop_instructions_for_agent(db: Session, run_id: int, agent_name: str) -> List[str]:
+    """Claim and consume pending BOSS instructions for an agent from durable storage."""
+    deliveries = (
+        db.query(PipelineMessageDelivery)
+        .join(PipelineMessage, PipelineMessage.id == PipelineMessageDelivery.message_id)
+        .filter(
+            PipelineMessageDelivery.run_id == run_id,
+            PipelineMessageDelivery.to_agent == agent_name,
+            PipelineMessageDelivery.status == "pending",
+            PipelineMessage.message_type == "HUMAN_INSTRUCT",
+        )
+        .order_by(PipelineMessage.created_at.asc(), PipelineMessageDelivery.id.asc())
+        .all()
+    )
+
+    if not deliveries:
+        return []
+
+    now = datetime.now()
+    instructions: List[str] = []
+    for delivery in deliveries:
+        message = delivery.message
+        if message is None:
+            continue
+        delivery.status = "consumed"
+        delivery.consumed_at = now
+        text = str(message.content or "").strip()
+        if text:
+            instructions.append(text)
+
+    db.commit()
+    return instructions
 
 
 # ==================== 事件回调 ====================
@@ -393,6 +781,13 @@ class PipelineEventBus:
 
 
 event_bus = PipelineEventBus()
+
+
+def _serialize_tool_call_preview(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": tool_call.get("id"),
+        "function": tool_call.get("function"),
+    }
 
 
 # ==================== 引擎 ====================
@@ -446,6 +841,7 @@ class PipelineEngine:
         template = pipeline_config_manager.get(pipeline.pipeline_name)
         if not template:
             raise ValueError(f"Pipeline template '{pipeline.pipeline_name}' not found")
+        runner_policy = _pipeline_runner_policy(pipeline, template)
 
         # 创建 run
         run_number = len(pipeline.runs) + 1
@@ -464,15 +860,15 @@ class PipelineEngine:
         db.flush()
 
         # 创建所有阶段记录
-        for i, stage_cfg in enumerate(template.stages):
+        for stage_policy in runner_policy.stages:
             stage = PipelineStage(
                 run_id=run.id,
-                stage_name=stage_cfg.name,
-                display_name=stage_cfg.display_name,
-                stage_order=i,
-                agent_name=stage_cfg.agent,
-                status="pending" if i > 0 else "pending",  # 引擎启动后设为 running
-                gate_type=stage_cfg.gate,
+                stage_name=stage_policy.stage_name,
+                display_name=stage_policy.display_name,
+                stage_order=stage_policy.stage_order,
+                agent_name=stage_policy.agent_name,
+                status="pending",
+                gate_type=stage_policy.approval.kind,
             )
             db.add(stage)
 
@@ -483,6 +879,35 @@ class PipelineEngine:
 
         db.commit()
         db.refresh(run)
+
+        initial_agent_name = runner_policy.stages[0].agent_name if runner_policy.stages else None
+        task_run = _ensure_pipeline_task_run(
+            db,
+            pipeline=pipeline,
+            run=run,
+            requirement=requirement,
+            initial_agent_name=initial_agent_name,
+        )
+        if task_run is not None:
+            _append_pipeline_task_event(
+                db,
+                run,
+                "pipeline_run_started",
+                summary="Pipeline run started.",
+                payload={
+                    "pipeline_id": pipeline.id,
+                    "pipeline_name": pipeline.pipeline_name,
+                    "pipeline_run_id": run.id,
+                    "run_number": run.run_number,
+                    "status": run.status,
+                    "project_id": pipeline.project_id,
+                    "workspace_path": run.workspace_path,
+                    "stage_names": [stage.display_name for stage in template.stages],
+                    "stage_count": len(template.stages),
+                    "runner_policy": runner_policy.to_payload(),
+                },
+                target_agent_name=initial_agent_name,
+            )
 
         # 初始化 Git
         self._git_init(run)
@@ -511,6 +936,15 @@ class PipelineEngine:
         pipeline.status = "paused"
         pipeline.updated_at = datetime.now()
         db.commit()
+        run = self._get_active_run(db, pipeline_id)
+        if run is not None:
+            _append_pipeline_task_event(
+                db,
+                run,
+                "pipeline_pause_requested",
+                summary="Pipeline pause requested.",
+                payload={"pipeline_id": pipeline_id, "status": pipeline.status},
+            )
         logger.info(f"Pipeline {pipeline_id} paused")
 
     async def resume(self, db: Session, pipeline_id: int):
@@ -535,6 +969,13 @@ class PipelineEngine:
         if run:
             run.status = "running"
             db.commit()
+            _append_pipeline_task_event(
+                db,
+                run,
+                "pipeline_resumed",
+                summary="Pipeline resumed.",
+                payload={"pipeline_id": pipeline_id, "pipeline_run_id": run.id},
+            )
             task = asyncio.create_task(self._execute_pipeline(run.id))
             self._running_tasks[pipeline_id] = task
 
@@ -561,6 +1002,44 @@ class PipelineEngine:
         # 批准 → 继续
         stage.status = "completed"
         db.commit()
+        template = pipeline_config_manager.get(pipeline.pipeline_name)
+        runner_policy = _pipeline_runner_policy(pipeline, template) if template else None
+        stage_policy = find_stage_policy(runner_policy, stage.stage_name)
+        _append_pipeline_task_event(
+            db,
+            run,
+            "pipeline_gate_approved",
+            summary=f"Pipeline gate approved for {stage.display_name}.",
+            payload={
+                "pipeline_id": pipeline_id,
+                "pipeline_run_id": run.id,
+                "stage_name": stage.stage_name,
+                "display_name": stage.display_name,
+                "stage_policy": stage_policy.to_payload() if stage_policy is not None else None,
+            },
+        )
+        queue_item = _resolve_pipeline_gate_queue_item(
+            db,
+            run=run,
+            stage=stage,
+            status="approved",
+            resolution_note=f"Approved pipeline gate {stage.display_name}.",
+        )
+        if queue_item is not None:
+            _append_pipeline_task_event(
+                db,
+                run,
+                "approval_queue_item_resolved",
+                summary=f"Resolved approval item for {stage.display_name}.",
+                payload={
+                    "queue_item_id": queue_item.id,
+                    "queue_kind": queue_item.queue_kind,
+                    "target_kind": queue_item.target_kind,
+                    "target_name": queue_item.target_name,
+                    "status": queue_item.status,
+                    "resolved_by": queue_item.resolved_by,
+                },
+            )
         logger.info(f"Gate approved: pipeline={pipeline_id}, stage={stage.stage_name}")
 
         # 写入 gate 审批事件
@@ -581,7 +1060,6 @@ class PipelineEngine:
         })
 
         # Release 阶段审批通过 → 打 Git tag
-        template = pipeline_config_manager.get(pipeline.pipeline_name)
         if template:
             stage_cfg = None
             for sc in template.stages:
@@ -614,6 +1092,8 @@ class PipelineEngine:
             raise ValueError("No blocked stage to reject")
 
         template = pipeline_config_manager.get(pipeline.pipeline_name)
+        runner_policy = _pipeline_runner_policy(pipeline, template) if template else None
+        stage_policy = find_stage_policy(runner_policy, stage.stage_name)
         target_name = rollback_to or self._find_previous_stage_name(template, stage.stage_name)
 
         if not target_name:
@@ -650,6 +1130,42 @@ class PipelineEngine:
         pipeline.status = "running"
         run.status = "running"
         db.commit()
+        _append_pipeline_task_event(
+            db,
+            run,
+            "pipeline_gate_rejected",
+            summary=f"Pipeline gate rejected; rolling back to {target_name}.",
+            payload={
+                "pipeline_id": pipeline_id,
+                "pipeline_run_id": run.id,
+                "rejected_stage": stage.stage_name,
+                "rollback_target": target_name,
+                "stage_policy": stage_policy.to_payload() if stage_policy is not None else None,
+            },
+            target_agent_name=template.stages[target_index].agent if template and target_index < len(template.stages) else None,
+        )
+        queue_item = _resolve_pipeline_gate_queue_item(
+            db,
+            run=run,
+            stage=stage,
+            status="rejected",
+            resolution_note=f"Rejected pipeline gate {stage.display_name}; rollback to {target_name}.",
+        )
+        if queue_item is not None:
+            _append_pipeline_task_event(
+                db,
+                run,
+                "approval_queue_item_resolved",
+                summary=f"Resolved approval item for {stage.display_name}.",
+                payload={
+                    "queue_item_id": queue_item.id,
+                    "queue_kind": queue_item.queue_kind,
+                    "target_kind": queue_item.target_kind,
+                    "target_name": queue_item.target_name,
+                    "status": queue_item.status,
+                    "resolved_by": queue_item.resolved_by,
+                },
+            )
 
         # 恢复执行
         task = asyncio.create_task(self._execute_pipeline(run.id))
@@ -694,6 +1210,8 @@ class PipelineEngine:
             content=message,
         )
         db.add(msg)
+        db.flush()
+        _enqueue_message_delivery(db, msg)
 
         # 写入 BOSS 指令事件
         db.add(Event(
@@ -706,6 +1224,20 @@ class PipelineEngine:
         ))
 
         db.commit()
+        _append_pipeline_task_event(
+            db,
+            run,
+            "pipeline_boss_instruction",
+            agent_name=agent_name,
+            summary=f"BOSS instructed {agent_name}.",
+            payload={
+                "pipeline_id": pipeline_id,
+                "pipeline_run_id": run.id,
+                "to_agent": agent_name,
+                "content_preview": message[:500],
+            },
+            target_agent_name=agent_name,
+        )
         logger.info(f"BOSS instruction sent to {agent_name} in pipeline {pipeline_id}")
 
         await event_bus.emit("boss_instruction", {
@@ -752,6 +1284,13 @@ class PipelineEngine:
                     pipeline.status = "paused"
                     run.status = "paused"
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_paused",
+                        summary="Pipeline paused.",
+                        payload={"pipeline_id": pipeline.id, "pipeline_run_id": run.id},
+                    )
                     await event_bus.emit("pipeline_paused", {"pipeline_id": pipeline.id})
                     return
 
@@ -774,6 +1313,25 @@ class PipelineEngine:
                     run.status = "failed"
                     run.completed_at = datetime.now()
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_run_failed",
+                        summary=f"Pipeline failed at stage {stage_cfg.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "failed_stage": stage_cfg.name,
+                            "failed_stage_display_name": stage_cfg.display_name,
+                        },
+                        run_summary=f"Pipeline failed at {stage_cfg.display_name}.",
+                    )
+                    complete_task_run(
+                        db,
+                        _pipeline_task_run(db, run),
+                        status="failed",
+                        summary=f"Pipeline failed at {stage_cfg.display_name}.",
+                    )
                     await event_bus.emit("pipeline_failed", {
                         "pipeline_id": pipeline.id,
                         "run_id": run.id,
@@ -788,6 +1346,19 @@ class PipelineEngine:
                     pipeline.status = "paused"
                     run.status = "paused"
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_waiting_for_approval",
+                        summary=f"Pipeline waiting for approval at {stage.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "stage_name": stage.stage_name,
+                            "display_name": stage.display_name,
+                        },
+                        run_summary=f"Waiting for approval at {stage.display_name}.",
+                    )
                     await event_bus.emit("pipeline_blocked", {
                         "pipeline_id": pipeline.id,
                         "run_id": run.id,
@@ -806,6 +1377,19 @@ class PipelineEngine:
             run.completed_at = datetime.now()
             pipeline.updated_at = datetime.now()
             db.commit()
+            _append_pipeline_task_event(
+                db,
+                run,
+                "pipeline_run_completed",
+                summary="Pipeline run completed.",
+                payload={
+                    "pipeline_id": pipeline.id,
+                    "pipeline_run_id": run.id,
+                    "run_number": run.run_number,
+                },
+                run_summary="Pipeline completed.",
+            )
+            complete_task_run(db, _pipeline_task_run(db, run), summary="Pipeline completed.")
 
             await event_bus.emit("pipeline_completed", {
                 "pipeline_id": pipeline.id,
@@ -824,6 +1408,24 @@ class PipelineEngine:
                     run.status = "failed"
                     run.completed_at = datetime.now()
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_run_failed",
+                        summary="Pipeline execution crashed.",
+                        payload={
+                            "pipeline_id": pipeline.id if pipeline else None,
+                            "pipeline_run_id": run.id,
+                            "error": str(e)[:1000],
+                        },
+                        run_summary=str(e)[:280],
+                    )
+                    complete_task_run(
+                        db,
+                        _pipeline_task_run(db, run),
+                        status="failed",
+                        summary=str(e)[:280],
+                    )
                     await event_bus.emit("pipeline_failed", {
                         "pipeline_id": pipeline.id,
                         "run_id": run.id,
@@ -856,14 +1458,27 @@ class PipelineEngine:
         Returns: True=成功(或进入gate阻塞), False=失败
         """
         max_retries = 3
-        timeout_seconds = stage_cfg.timeout_minutes * 60
+        runner_policy = _pipeline_runner_policy(pipeline, template)
+        stage_policy = find_stage_policy(runner_policy, stage_cfg.name) or compile_pipeline_stage_policy(
+            stage_cfg=stage_cfg,
+            stage_order=stage.stage_order,
+            stage_count=max(len(getattr(template, "stages", []) or []), stage.stage_order + 1),
+            tool_policy_pack=_pipeline_stage_tool_policy_pack(stage_cfg.agent),
+        )
+        timeout_seconds = stage_policy.timeout_minutes * 60
 
         # 构建阶段上下文
         context = self._build_stage_context(db, run, stage_cfg, template)
 
         stage.status = "running"
         stage.started_at = datetime.now()
-        stage.input_context = json.dumps({"context_length": len(context)}, ensure_ascii=False)
+        stage.input_context = json.dumps(
+            {
+                "context_length": len(context),
+                "stage_policy": stage_policy.to_payload(),
+            },
+            ensure_ascii=False,
+        )
         db.commit()
 
         # 将 skill full 内容写入 .catown/skills/ 供 Agent 按需 read_file
@@ -871,31 +1486,52 @@ class PipelineEngine:
         self._write_skill_full_files(stage_cfg.agent, stage_cfg, workspace)
 
         # 写入阶段开始事件
-        active_skills = stage_cfg.active_skills or []
+        active_skills = list(stage_policy.active_skills)
         db.add(Event(
             run_id=run.id,
             event_type="stage_start",
-            agent_name=stage_cfg.agent,
-            stage_name=stage_cfg.name,
-            summary=f"Stage: {stage_cfg.display_name} ({stage_cfg.agent})",
+            agent_name=stage_policy.agent_name,
+            stage_name=stage_policy.stage_name,
+            summary=f"Stage: {stage_policy.display_name} ({stage_policy.agent_name})",
             payload=json.dumps({
-                "gate": stage_cfg.gate,
-                "timeout_minutes": stage_cfg.timeout_minutes,
+                "gate": stage_policy.approval.kind,
+                "timeout_minutes": stage_policy.timeout_minutes,
                 "active_skills": active_skills,
-                "expected_artifacts": stage_cfg.expected_artifacts,
+                "expected_artifacts": stage_policy.delivery.expected_artifacts,
+                "stage_policy": stage_policy.to_payload(),
             }, ensure_ascii=False),
         ))
         db.commit()
+        _append_pipeline_task_event(
+            db,
+            run,
+            "pipeline_stage_started",
+            agent_name=stage_policy.agent_name,
+            summary=f"Pipeline stage started: {stage_policy.display_name}.",
+            payload={
+                "pipeline_id": pipeline.id,
+                "pipeline_run_id": run.id,
+                "stage_name": stage_policy.stage_name,
+                "display_name": stage_policy.display_name,
+                "gate": stage_policy.approval.kind,
+                "timeout_minutes": stage_policy.timeout_minutes,
+                "active_skills": active_skills,
+                "expected_artifacts": stage_policy.delivery.expected_artifacts,
+                "stage_policy": stage_policy.to_payload(),
+            },
+            target_agent_name=stage_policy.agent_name,
+        )
 
         await event_bus.emit("stage_started", {
             "pipeline_id": pipeline.id,
             "run_id": run.id,
-            "stage": stage_cfg.name,
-            "display_name": stage_cfg.display_name,
-            "agent": stage_cfg.agent,
-            "gate": stage_cfg.gate,
+            "stage": stage_policy.stage_name,
+            "display_name": stage_policy.display_name,
+            "agent": stage_policy.agent_name,
+            "gate": stage_policy.approval.kind,
             "active_skills": active_skills,
-            "expected_artifacts": stage_cfg.expected_artifacts,
+            "expected_artifacts": stage_policy.delivery.expected_artifacts,
+            "stage_policy": stage_policy.to_payload(),
         })
 
         # 广播 skill 注入事件
@@ -925,8 +1561,8 @@ class PipelineEngine:
             await event_bus.emit("skill_inject", {
                 "pipeline_id": pipeline.id,
                 "run_id": run.id,
-                "agent": stage_cfg.agent,
-                "stage": stage_cfg.name,
+                "agent": stage_policy.agent_name,
+                "stage": stage_policy.stage_name,
                 "skills": skill_details,
                 "agent_all_skills": agent_data_skills,
             })
@@ -947,7 +1583,7 @@ class PipelineEngine:
 
                 # 记录产出物
                 workspace = _get_workspace(run)
-                self._record_artifacts(db, stage, workspace, stage_cfg.expected_artifacts)
+                self._record_artifacts(db, stage, workspace, stage_policy.delivery.expected_artifacts)
 
                 stage.status = "completed"
                 stage.output_summary = summary[:2000] if summary else "(no output)"
@@ -962,50 +1598,113 @@ class PipelineEngine:
                 db.add(Event(
                     run_id=run.id,
                     event_type="stage_end",
-                    agent_name=stage_cfg.agent,
-                    stage_name=stage_cfg.name,
-                    summary=f"Stage: {stage_cfg.display_name} completed ({duration_min:.0f}min)",
+                    agent_name=stage_policy.agent_name,
+                    stage_name=stage_policy.stage_name,
+                    summary=f"Stage: {stage_policy.display_name} completed ({duration_min:.0f}min)",
                     payload=json.dumps({
                         "status": "completed",
                         "duration_min": round(duration_min, 1),
                         "output_summary": stage.output_summary[:500] if stage.output_summary else None,
+                        "stage_policy": stage_policy.to_payload(),
                     }, ensure_ascii=False),
                 ))
                 db.commit()
+                _append_pipeline_task_event(
+                    db,
+                    run,
+                    "pipeline_stage_completed",
+                    agent_name=stage_policy.agent_name,
+                    summary=f"Pipeline stage completed: {stage_policy.display_name}.",
+                    payload={
+                        "pipeline_id": pipeline.id,
+                        "pipeline_run_id": run.id,
+                        "stage_name": stage_policy.stage_name,
+                        "display_name": stage_policy.display_name,
+                        "duration_min": round(duration_min, 1),
+                        "output_summary": stage.output_summary[:500] if stage.output_summary else None,
+                        "stage_policy": stage_policy.to_payload(),
+                    },
+                    target_agent_name=stage_policy.agent_name,
+                    run_summary=stage.output_summary[:280] if stage.output_summary else None,
+                )
 
                 await event_bus.emit("stage_completed", {
                     "pipeline_id": pipeline.id,
                     "run_id": run.id,
-                    "stage": stage_cfg.name,
+                    "stage": stage_policy.stage_name,
                     "summary": stage.output_summary,
+                    "stage_policy": stage_policy.to_payload(),
                 })
 
                 # 检查 gate
-                if stage_cfg.gate == "manual":
+                if stage_policy.approval.required:
                     stage.status = "blocked"
                     db.commit()
-                    logger.info(f"Stage '{stage_cfg.name}' completed, blocked at manual gate")
+                    logger.info(f"Stage '{stage_policy.stage_name}' completed, blocked at manual gate")
+                    queue_item = _queue_pipeline_gate_approval(
+                        db,
+                        pipeline=pipeline,
+                        run=run,
+                        stage=stage,
+                        stage_policy=stage_policy,
+                    )
 
                     # 写入 gate 阻塞事件
                     db.add(Event(
                         run_id=run.id,
                         event_type="gate_blocked",
-                        agent_name=stage_cfg.agent,
-                        stage_name=stage_cfg.name,
-                        summary=f"Gate: {stage_cfg.display_name} — 等待人工审批",
+                        agent_name=stage_policy.agent_name,
+                        stage_name=stage_policy.stage_name,
+                        summary=f"Gate: {stage_policy.display_name} — 等待人工审批",
                         payload=json.dumps({
-                            "gate_type": "manual",
-                            "stage": stage_cfg.name,
-                            "display_name": stage_cfg.display_name,
+                            "gate_type": stage_policy.approval.kind,
+                            "stage": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "stage_policy": stage_policy.to_payload(),
+                            "queue_item_id": getattr(queue_item, "id", None),
                         }, ensure_ascii=False),
                     ))
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "approval_queue_item_created",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Queued approval item for {stage_policy.display_name}.",
+                        payload={
+                            "queue_item_id": getattr(queue_item, "id", None),
+                            "queue_kind": "approval",
+                            "target_kind": "pipeline_gate",
+                            "target_name": stage_policy.stage_name,
+                            "status": "pending",
+                            "source": "pipeline_gate",
+                        },
+                    )
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_gate_blocked",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Pipeline gate blocked at {stage_policy.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "gate_type": stage_policy.approval.kind,
+                            "stage_policy": stage_policy.to_payload(),
+                            "queue_item_id": getattr(queue_item, "id", None),
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=f"Waiting for approval at {stage_policy.display_name}.",
+                    )
 
                     await event_bus.emit("gate_blocked", {
                         "pipeline_id": pipeline.id,
                         "run_id": run.id,
-                        "stage": stage_cfg.name,
-                        "display_name": stage_cfg.display_name,
+                        "stage": stage_policy.stage_name,
+                        "display_name": stage_policy.display_name,
+                        "stage_policy": stage_policy.to_payload(),
                     })
 
                 return True
@@ -1040,6 +1739,24 @@ class PipelineEngine:
                         payload=json.dumps({"max_retries": max_retries, "reason": "timeout"}, ensure_ascii=False),
                     ))
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_stage_failed",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Pipeline stage timed out: {stage_policy.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "failure_reason": "timeout",
+                            "max_retries": max_retries,
+                            "stage_policy": stage_policy.to_payload(),
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=f"{stage_policy.display_name} timed out after {max_retries} retries.",
+                    )
                     return False
                 db.commit()
                 await asyncio.sleep(2 ** attempt)  # 指数退避
@@ -1074,10 +1791,28 @@ class PipelineEngine:
                         payload=json.dumps({"error": str(e)[:1000], "max_retries": max_retries}, ensure_ascii=False),
                     ))
                     db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_stage_failed",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Pipeline stage failed: {stage_policy.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "error": str(e)[:1000],
+                            "max_retries": max_retries,
+                            "stage_policy": stage_policy.to_payload(),
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=str(e)[:280],
+                    )
 
                     # 检查打回逻辑（testing → development）
-                    if stage_cfg.rollback_on_blocker and stage_cfg.rollback_target:
-                        logger.info(f"Rolling back to '{stage_cfg.rollback_target}'")
+                    if stage_policy.rollback.enabled and stage_policy.rollback.target_stage:
+                        logger.info(f"Rolling back to '{stage_policy.rollback.target_stage}'")
                         return await self._handle_rollback(
                             db, pipeline, run, stage, stage_cfg, template
                         )
@@ -1131,6 +1866,48 @@ class PipelineEngine:
 
         return "\n".join(parts)
 
+    def _assemble_stage_messages(
+        self,
+        *,
+        run: PipelineRun,
+        stage_cfg: StageConfig,
+        context: str,
+        llm_client: LLMClient,
+        system_prompt: str,
+        skills_config: Dict[str, Any],
+        agent_skills: List[str],
+        tool_names: List[str],
+        turn_state: Optional[TurnContextState] = None,
+    ) -> List[Dict[str, Any]]:
+        developer_fragments = [
+            build_operating_developer_context(agent_name=stage_cfg.agent),
+            build_stage_developer_context(
+                stage_cfg=stage_cfg,
+                active_skills=stage_cfg.active_skills,
+                tools=tool_names,
+                skills_config=skills_config,
+                agent_skills=agent_skills,
+            ),
+        ]
+        developer_fragments.extend(build_turn_state_developer_fragments(turn_state))
+
+        user_fragments = build_runtime_user_fragments(runtime_context=context, run=run)
+        user_fragments.extend(build_turn_state_user_fragments(turn_state))
+
+        protocol_messages = turn_state.protocol_messages() if turn_state is not None else []
+        selector = ContextSelector.for_context_window(
+            context_window=self._get_agent_context_window(stage_cfg.agent, getattr(llm_client, "model", "")),
+            base_system_prompt=system_prompt,
+            current_input_messages=protocol_messages,
+        )
+        return assemble_messages(
+            base_system_prompt=system_prompt,
+            developer_fragments=developer_fragments,
+            user_fragments=user_fragments,
+            current_input_messages=protocol_messages,
+            selector=selector,
+        ).to_messages()
+
     async def _run_agent_stage(
         self,
         db: Session,
@@ -1149,83 +1926,100 @@ class PipelineEngine:
         tools = _build_tools_for_agent(stage_cfg.agent)
 
         # 加载 Agent 的 system_prompt（传入 stage_cfg 实现三级 Skill 注入）
-        system_prompt = self._get_agent_system_prompt(stage_cfg.agent, stage_cfg)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": context},
-        ]
-
-        # 检查是否有 BOSS 指令
-        pending_instructions = self._get_pending_instructions(db, run, stage_cfg.agent)
-        for instr in pending_instructions:
-            messages.append({"role": "user", "content": f"[BOSS Instruction]: {instr}"})
-
-        max_turns = 20  # 最大对话轮次
+        system_prompt = self._get_agent_system_prompt(stage_cfg.agent)
+        agent_data = self._get_agent_config_data(stage_cfg.agent)
+        agent_skills = agent_data.get("skills", []) if agent_data else []
+        tool_names = AGENT_TOOLS.get(stage_cfg.agent, list(TOOL_REGISTRY.keys()))
+        skills_config = self._load_skills_config()
+        turn_state = TurnContextState()
         final_content = ""
+        linked_task_run = _pipeline_task_run(db, run)
+        record_agent_turn_started(
+            db,
+            linked_task_run,
+            agent_name=stage_cfg.agent,
+            summary=f"{stage_cfg.agent} started a pipeline stage turn.",
+            payload={
+                "pipeline_id": pipeline.id,
+                "pipeline_run_id": run.id,
+                "stage_name": stage_cfg.name,
+                "display_name": stage_cfg.display_name,
+            },
+        )
 
-        for turn in range(max_turns):
-            # 检查是否有新的 BOSS 指令
-            new_instr = self._get_pending_instructions(db, run, stage_cfg.agent)
-            for instr in new_instr:
-                messages.append({"role": "user", "content": f"[BOSS Instruction]: {instr}"})
-
-            # 检查是否有来自其他 Agent 的消息
-            inter_msgs = _pop_messages_for_agent(run.id, stage_cfg.agent)
-            for im in inter_msgs:
-                messages.append({
-                    "role": "user",
-                    "content": f"[Message from {im['from_agent']}]: {im['content']}",
-                })
-
-            # === 审计：记录 LLM 调用 ===
-            llm_start = time.time()
-            llm_call_record = LLMCall(
-                run_id=run.id,
-                stage_id=stage.id,
-                agent_name=stage_cfg.agent,
-                turn_index=turn,
-                model=getattr(llm_client, 'model', 'unknown'),
-                system_prompt=system_prompt[:50000] if system_prompt else None,
-                messages=json.dumps(messages[-10:], ensure_ascii=False)[:100000],  # 最近 10 条
+        def _assemble_pipeline_stage_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+            return self._assemble_stage_messages(
+                run=run,
+                stage_cfg=stage_cfg,
+                context=context,
+                llm_client=llm_client,
+                system_prompt=system_prompt,
+                skills_config=skills_config,
+                agent_skills=agent_skills,
+                tool_names=tool_names,
+                turn_state=current_turn_state,
             )
 
-            # 调用 LLM
-            try:
-                response = await llm_client.chat_with_tools(messages, tools=tools if tools else None)
-            except Exception as e:
-                llm_call_record.error = str(e)[:5000]
-                llm_call_record.duration_ms = int((time.time() - llm_start) * 1000)
-                db.add(llm_call_record)
-                db.commit()
-                raise
+        async def _before_pipeline_turn(turn_index: int, current_turn_state: TurnContextState) -> None:
+            current_turn_state.add_boss_instructions(self._get_pending_instructions(db, run, stage_cfg.agent))
+            current_turn_state.add_inter_agent_messages(_pop_messages_for_agent(db, run.id, stage_cfg.agent))
 
-            content = response.get("content") or ""
-            tool_calls = response.get("tool_calls")
-            usage = response.get("usage")
+        def _before_pipeline_llm_call(frame, current_turn_state):
+            # 审计：预先创建 LLM call 记录，异常时也能落错误信息。
+            return {
+                "record": LLMCall(
+                    run_id=run.id,
+                    stage_id=stage.id,
+                    agent_name=stage_cfg.agent,
+                    turn_index=frame.turn_index,
+                    model=getattr(llm_client, "model", "unknown"),
+                    system_prompt=system_prompt[:50000] if system_prompt else None,
+                    messages=json.dumps(frame.messages[-10:], ensure_ascii=False)[:100000],
+                ),
+                "started_at": time.time(),
+            }
 
-            # 写入 LLM 调用审计
+        async def _on_pipeline_llm_error(frame, exc, current_turn_state):
+            call_state = frame.state if isinstance(frame.state, dict) else {}
+            llm_call_record = call_state.get("record")
+            if llm_call_record is None:
+                return
+            llm_call_record.error = str(exc)[:5000]
+            llm_call_record.duration_ms = int((time.time() - call_state.get("started_at", time.time())) * 1000)
+            db.add(llm_call_record)
+            db.commit()
+
+        async def _on_pipeline_llm_response(frame, current_turn_state):
+            call_state = frame.state if isinstance(frame.state, dict) else {}
+            llm_call_record = call_state.get("record")
+            if llm_call_record is None:
+                return
+
+            content = frame.content
+            normalized_tool_calls = frame.normalized_tool_calls
             llm_call_record.response_content = content[:100000] if content else None
             llm_call_record.response_tool_calls = json.dumps(
-                [{"id": tc.get("id"), "function": tc.get("function")} for tc in tool_calls],
-                ensure_ascii=False
-            ) if tool_calls else None
-            llm_call_record.duration_ms = int((time.time() - llm_start) * 1000)
-            if usage:
-                llm_call_record.token_input = usage.get("prompt_tokens", 0)
-                llm_call_record.token_output = usage.get("completion_tokens", 0)
+                [_serialize_tool_call_preview(tc) for tc in normalized_tool_calls],
+                ensure_ascii=False,
+            ) if normalized_tool_calls else None
+            llm_call_record.duration_ms = int((time.time() - call_state.get("started_at", time.time())) * 1000)
+            if frame.usage:
+                llm_call_record.token_input = frame.usage.get("prompt_tokens", 0)
+                llm_call_record.token_output = frame.usage.get("completion_tokens", 0)
             db.add(llm_call_record)
-            db.flush()  # 获取 llm_call_record.id
-
-            # 写入事件
+            db.flush()
             db.add(Event(
                 run_id=run.id,
                 event_type="llm_call",
                 agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
-                summary=f"LLM #{turn}: {llm_call_record.token_input}in/{llm_call_record.token_output}out, {llm_call_record.duration_ms}ms",
+                summary=(
+                    f"LLM #{frame.turn_index}: "
+                    f"{llm_call_record.token_input}in/{llm_call_record.token_output}out, "
+                    f"{llm_call_record.duration_ms}ms"
+                ),
                 payload=json.dumps({
-                    "turn": turn,
+                    "turn": frame.turn_index,
                     "model": llm_call_record.model,
                     "tokens_in": llm_call_record.token_input,
                     "tokens_out": llm_call_record.token_output,
@@ -1240,7 +2034,7 @@ class PipelineEngine:
                 "run_id": run.id,
                 "stage": stage_cfg.name,
                 "agent": stage_cfg.agent,
-                "turn": turn,
+                "turn": frame.turn_index,
                 "model": llm_call_record.model,
                 "tokens_in": llm_call_record.token_input,
                 "tokens_out": llm_call_record.token_output,
@@ -1248,18 +2042,16 @@ class PipelineEngine:
                 "system_prompt": system_prompt[:5000] if system_prompt else None,
                 "response": content[:3000] if content else None,
                 "tool_calls": [
-                    {"name": tc.get("function", {}).get("name"), "args_preview": str(tc.get("function", {}).get("arguments", ""))[:200]}
-                    for tc in (tool_calls or [])
+                    {
+                        "name": tc.get("function", {}).get("name"),
+                        "args_preview": str(tc.get("function", {}).get("arguments", ""))[:200],
+                    }
+                    for tc in normalized_tool_calls
                 ],
             })
-
             db.commit()
 
             if content:
-                final_content = content
-                messages.append({"role": "assistant", "content": content})
-
-                # 广播 Agent 输出
                 await event_bus.emit("agent_output", {
                     "pipeline_id": pipeline.id,
                     "run_id": run.id,
@@ -1280,82 +2072,126 @@ class PipelineEngine:
                 db.add(msg)
                 db.commit()
 
-            # 处理工具调用
-            if tool_calls:
-                for tc in tool_calls:
-                    fn_name = tc["function"]["name"]
-                    try:
-                        fn_args = json.loads(tc["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        fn_args = {}
+        async def _execute_pipeline_tool(frame, tool_call):
+            fn_name = tool_call["function"]["name"]
+            try:
+                fn_args = json.loads(tool_call["function"]["arguments"])
+            except json.JSONDecodeError:
+                fn_args = {}
 
-                    # === 审计：记录工具调用 ===
-                    tool_start = time.time()
-                    tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
-                    tool_duration = int((time.time() - tool_start) * 1000)
+            tool_start = time.time()
+            tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
+            tool_duration = int((time.time() - tool_start) * 1000)
 
-                    success = not tool_result.startswith("Error:")
-                    result_len = len(tool_result)
+            tool_result_text = str(tool_result or "(no output)")
+            success = not tool_result_text.startswith("Error:")
+            result_len = len(tool_result_text)
+            tool_result_record = build_tool_result_record(
+                tool_call_id=tool_call.get("id", ""),
+                tool_name=fn_name,
+                arguments=tool_call["function"].get("arguments", "{}"),
+                result=tool_result_text,
+                success=success,
+            )
+            success = tool_result_record.success
 
-                    db.add(ToolCall(
-                        llm_call_id=llm_call_record.id,
-                        run_id=run.id,
-                        stage_id=stage.id,
-                        agent_name=stage_cfg.agent,
-                        tool_name=fn_name,
-                        arguments=json.dumps(fn_args, ensure_ascii=False)[:50000],
-                        result_summary=tool_result[:500],
-                        result_length=result_len,
-                        success=success,
-                        duration_ms=tool_duration,
-                    ))
+            call_state = frame.state if isinstance(frame.state, dict) else {}
+            llm_call_record = call_state.get("record")
+            db.add(ToolCall(
+                llm_call_id=llm_call_record.id if llm_call_record is not None else None,
+                run_id=run.id,
+                stage_id=stage.id,
+                agent_name=stage_cfg.agent,
+                tool_name=fn_name,
+                arguments=json.dumps(fn_args, ensure_ascii=False)[:50000],
+                result_summary=tool_result_record.result[:500],
+                result_length=result_len,
+                success=success,
+                duration_ms=tool_duration,
+            ))
+            db.add(Event(
+                run_id=run.id,
+                event_type="tool_call",
+                agent_name=stage_cfg.agent,
+                stage_name=stage_cfg.name,
+                summary=f"{fn_name}({tool_result_record.status}, {result_len} chars, {tool_duration}ms)",
+                payload=json.dumps({
+                    "tool": fn_name,
+                    "args_keys": list(fn_args.keys()),
+                    "success": success,
+                    "status": tool_result_record.status,
+                    "blocked": tool_result_record.blocked,
+                    "blocked_kind": tool_result_record.blocked_kind,
+                    "blocked_reason": tool_result_record.blocked_reason,
+                    "result_length": result_len,
+                    "result_preview": tool_result_record.result[:200],
+                    "duration_ms": tool_duration,
+                }, ensure_ascii=False),
+            ))
+            db.commit()
 
-                    # 写入事件
-                    db.add(Event(
-                        run_id=run.id,
-                        event_type="tool_call",
-                        agent_name=stage_cfg.agent,
-                        stage_name=stage_cfg.name,
-                        summary=f"{fn_name}({'✅' if success else '❌'}, {result_len} chars, {tool_duration}ms)",
-                        payload=json.dumps({
-                            "tool": fn_name,
-                            "args_keys": list(fn_args.keys()),
-                            "success": success,
-                            "result_length": result_len,
-                            "result_preview": tool_result[:200],
-                            "duration_ms": tool_duration,
-                        }, ensure_ascii=False),
-                    ))
-                    db.commit()
+            await event_bus.emit("tool_call", {
+                "pipeline_id": pipeline.id,
+                "run_id": run.id,
+                "stage": stage_cfg.name,
+                "agent": stage_cfg.agent,
+                "tool": fn_name,
+                "arguments": json.dumps(fn_args, ensure_ascii=False)[:3000],
+                "success": success,
+                "status": tool_result_record.status,
+                "blocked": tool_result_record.blocked,
+                "blocked_kind": tool_result_record.blocked_kind,
+                "blocked_reason": tool_result_record.blocked_reason,
+                "result": tool_result_record.result[:3000],
+                "duration_ms": tool_duration,
+            })
+            return tool_result_record
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "content": tool_result[:8000],
-                    })
+        async def _on_pipeline_tool_round(frame, tool_results, current_turn_state):
+            record_runner_tool_round(
+                db,
+                linked_task_run,
+                agent_name=stage_cfg.agent,
+                turn=frame.turn_index + 1,
+                tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+                tool_results=tool_results,
+                summary=f"{stage_cfg.agent} completed a pipeline tool round.",
+                payload={
+                    "pipeline_id": pipeline.id,
+                    "pipeline_run_id": run.id,
+                    "pipeline_stage_id": stage.id,
+                    "stage_name": stage_cfg.name,
+                    "display_name": stage_cfg.display_name,
+                },
+            )
 
-                    # 广播工具调用（含完整入参和结果供卡片展示）
-                    await event_bus.emit("tool_call", {
-                        "pipeline_id": pipeline.id,
-                        "run_id": run.id,
-                        "stage": stage_cfg.name,
-                        "agent": stage_cfg.agent,
-                        "tool": fn_name,
-                        "arguments": json.dumps(fn_args, ensure_ascii=False)[:3000],
-                        "success": success,
-                        "result": tool_result[:3000],
-                        "duration_ms": tool_duration,
-                    })
+        final_content = await execute_non_stream_turn_loop(
+            llm_client=llm_client,
+            tools=tools,
+            turn_state=turn_state,
+            assemble_messages=_assemble_pipeline_stage_messages,
+            execute_tool_call=_execute_pipeline_tool,
+            max_turns=20,
+            before_turn=_before_pipeline_turn,
+            before_llm_call=_before_pipeline_llm_call,
+            on_llm_response=_on_pipeline_llm_response,
+            on_llm_error=_on_pipeline_llm_error,
+            on_tool_round=_on_pipeline_tool_round,
+        )
 
-                continue  # 继续循环让 LLM 处理工具结果
-
-            # 没有工具调用也没有内容 → Agent 已完成
-            if not content and not tool_calls:
-                break
-
-            # 如果有内容但没有工具调用，认为 Agent 输出完成
-            if content and not tool_calls:
-                break
+        record_agent_turn_completed(
+            db,
+            linked_task_run,
+            agent_name=stage_cfg.agent,
+            response_content=final_content,
+            summary=f"{stage_cfg.agent} completed the pipeline stage turn.",
+            payload={
+                "pipeline_id": pipeline.id,
+                "pipeline_run_id": run.id,
+                "stage_name": stage_cfg.name,
+                "display_name": stage_cfg.display_name,
+            },
+        )
 
         return final_content
 
@@ -1413,6 +2249,8 @@ class PipelineEngine:
             content=f"Stage '{stage_cfg.name}' failed, rolling back to '{target_name}'",
         )
         db.add(msg)
+        db.flush()
+        _enqueue_message_delivery(db, msg)
         db.commit()
 
         await event_bus.emit("stage_rollback", {
@@ -1449,87 +2287,69 @@ class PipelineEngine:
         )
 
     def _load_skills_config(self) -> Dict:
-        """加载 skills.json"""
-        skills_file = settings.SKILLS_CONFIG_FILE
+        """加载 canonical SKILL.md package 格式的 skills。"""
         try:
-            with open(skills_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return load_skill_registry(settings.SKILLS_DIR)
         except Exception:
             return {}
 
-    def _get_agent_system_prompt(
-        self, agent_name: str, stage_cfg: Optional["StageConfig"] = None
-    ) -> str:
-        """
-        从 agents.json 读取 Agent 配置，动态组装 system_prompt。
-
-        ADR-008 三级 Skill 注入：
-        - hint: 始终注入（Agent 有哪些可用技能）
-        - guide: 仅 active_skills 注入（当前阶段需要的详细指引）
-        - full: 不注入，写入 .catown/skills/ 按需 read_file
-        """
-        config_file = settings.AGENT_CONFIG_FILE
+    def _get_agent_config_data(self, agent_name: str) -> Dict[str, Any]:
         try:
-            with open(config_file, "r", encoding="utf-8") as f:
+            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            agent_data = data.get("agents", {}).get(agent_name, {})
-
-            # 从 soul + role 组装
-            parts = []
-            name = agent_data.get("name", agent_name)
-            soul = agent_data.get("soul", {})
-            role = agent_data.get("role", {})
-
-            if soul:
-                parts.append(f"你是 {name}。{soul.get('identity', '')}")
-                values = soul.get("values", [])
-                if values:
-                    parts.append("你的原则：\n" + "\n".join(f"- {v}" for v in values))
-                style = soul.get("style", "")
-                if style:
-                    parts.append(f"沟通风格：{style}")
-
-            if isinstance(role, dict):
-                resp = role.get("responsibilities", [])
-                if resp:
-                    parts.append("## 职责\n" + "\n".join(f"- {r}" for r in resp))
-                rules = role.get("rules", [])
-                if rules:
-                    parts.append("## 规则\n" + "\n".join(f"- {r}" for r in rules))
-
-            # === Skills 三级注入（ADR-008）===
-            skills_config = self._load_skills_config()
-            agent_skills = agent_data.get("skills", [])
-
-            if agent_skills and skills_config:
-                # hint — 始终注入所有 agent skill 的一句话提示
-                hints = []
-                for skill_name in agent_skills:
-                    skill = skills_config.get(skill_name, {})
-                    hint = skill.get("levels", {}).get("hint", "")
-                    if hint:
-                        hints.append(hint)
-                if hints:
-                    parts.append("## 可用技能\n" + "\n".join(f"- {h}" for h in hints))
-
-                # guide — 仅注入当前 stage 的 active_skills
-                if stage_cfg and stage_cfg.active_skills:
-                    guides = []
-                    for skill_name in stage_cfg.active_skills:
-                        if skill_name in agent_skills:
-                            skill = skills_config.get(skill_name, {})
-                            guide = skill.get("levels", {}).get("guide", "")
-                            if guide:
-                                guides.append(guide)
-                    if guides:
-                        parts.append("\n\n".join(guides))
-
-            if parts:
-                return "\n\n".join(parts)
-
-            return f"You are {agent_name}, a helpful AI assistant."
+            return data.get("agents", {}).get(agent_name, {})
         except Exception:
-            return f"You are {agent_name}, a helpful AI assistant."
+            return {}
+
+    def _context_window_from_provider(self, provider_data: Any, model_id: str) -> Optional[int]:
+        if not isinstance(provider_data, dict):
+            return None
+        models = provider_data.get("models", [])
+        if not isinstance(models, list):
+            return None
+        for model in models:
+            if not isinstance(model, dict) or model.get("id") != model_id:
+                continue
+            context_window = model.get("contextWindow")
+            if isinstance(context_window, (int, float)) and context_window > 0:
+                return int(context_window)
+        return None
+
+    def _get_agent_context_window(self, agent_name: str, model_id: str) -> Optional[int]:
+        try:
+            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+        agents = data.get("agents", {})
+        if isinstance(agents, dict):
+            context_window = self._context_window_from_provider((agents.get(agent_name) or {}).get("provider"), model_id)
+            if context_window:
+                return context_window
+
+        context_window = self._context_window_from_provider((data.get("global_llm") or {}).get("provider"), model_id)
+        if context_window:
+            return context_window
+
+        if isinstance(agents, dict):
+            for agent_cfg in agents.values():
+                context_window = self._context_window_from_provider(
+                    agent_cfg.get("provider") if isinstance(agent_cfg, dict) else None,
+                    model_id,
+                )
+                if context_window:
+                    return context_window
+
+        return None
+
+    def _get_agent_system_prompt(self, agent_name: str) -> str:
+        """Build the stable system layer from structured agent configuration only."""
+        prompt = build_base_system_prompt(
+            self._get_agent_config_data(agent_name),
+            fallback_name=agent_name,
+        )
+        return prompt or f"You are {agent_name}, a helpful AI assistant."
 
     def _write_skill_full_files(
         self, agent_name: str, stage_cfg: "StageConfig", workspace: Path
@@ -1550,31 +2370,48 @@ class PipelineEngine:
         if not skills_config or not agent_skills:
             return
 
-        skills_dir = workspace / ".catown" / "skills"
-        skills_dir.mkdir(parents=True, exist_ok=True)
-
-        for skill_name in agent_skills:
-            skill = skills_config.get(skill_name, {})
-            full_content = skill.get("levels", {}).get("full", "")
-            if full_content:
-                skill_file = skills_dir / f"{skill_name}.md"
-                skill_file.write_text(full_content, encoding="utf-8")
+        write_workspace_skill_packages(skills_config, agent_skills, workspace)
 
     def _get_pending_instructions(
         self, db: Session, run: PipelineRun, agent_name: str
     ) -> List[str]:
-        """获取待处理的 BOSS 指令"""
-        msgs = (
+        """获取并消费待处理的 BOSS 指令。"""
+        instructions = _pop_instructions_for_agent(db, run.id, agent_name)
+        if instructions:
+            return instructions
+
+        # 兼容旧数据：如果历史 HUMAN_INSTRUCT 还没有 durable delivery，
+        # 首次读取时回填为 consumed，避免升级后旧指令被无限重复注入。
+        legacy_messages = (
             db.query(PipelineMessage)
             .filter(
                 PipelineMessage.run_id == run.id,
                 PipelineMessage.message_type == "HUMAN_INSTRUCT",
                 PipelineMessage.to_agent == agent_name,
+                ~PipelineMessage.deliveries.any(),
             )
             .order_by(PipelineMessage.created_at)
             .all()
         )
-        return [m.content for m in msgs]
+        if not legacy_messages:
+            return []
+
+        now = datetime.now()
+        results: List[str] = []
+        for message in legacy_messages:
+            delivery = PipelineMessageDelivery(
+                message_id=message.id,
+                run_id=message.run_id,
+                to_agent=agent_name,
+                status="consumed",
+                consumed_at=now,
+            )
+            db.add(delivery)
+            text = str(message.content or "").strip()
+            if text:
+                results.append(text)
+        db.commit()
+        return results
 
     def _record_artifacts(
         self,

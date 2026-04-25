@@ -7,6 +7,7 @@ LLM 两级配置测试
 3. global_llm 也无 → fallback 到环境变量
 4. API 端点：PUT /config/global, PUT /config/agent/{name}
 5. GET /config 返回 source 字段
+6. orchestration sidecar 策略配置
 """
 import pytest
 import sys
@@ -316,7 +317,7 @@ class TestConfigAPIEndpoints:
         modules_to_clear = [
             'main', 'config', 'models.database', 'agents.registry',
             'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
-            'routes.api', 'routes.websocket'
+            'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline'
         ]
         for mod_name in modules_to_clear:
             if mod_name in sys.modules:
@@ -356,6 +357,7 @@ class TestConfigAPIEndpoints:
         assert "global_llm" in data
         assert data["global_llm"]["provider"]["baseUrl"] == "http://global.com/v1"
         assert data["global_llm"]["default_model"] == "gpt-4"
+        assert data["orchestration"]["sidecar_agent_types"] == ["tester"]
 
     def test_get_config_agent_source_field(self, client_with_config):
         """GET /config 返回 agent_llm_configs 含 source 字段"""
@@ -422,6 +424,20 @@ class TestConfigAPIEndpoints:
             "provider": {"baseUrl": "http://x.com/v1"}
         })
         assert r.status_code == 404
+
+    def test_put_orchestration_config(self, client_with_config):
+        """PUT /config/orchestration updates the sidecar policy."""
+        client, config_file = client_with_config
+
+        r = client.put("/api/config/orchestration", json={
+            "sidecar_agent_types": ["developer", " tester ", ""]
+        })
+        assert r.status_code == 200
+        assert r.json()["orchestration"]["sidecar_agent_types"] == ["developer", "tester"]
+
+        with open(config_file, 'r') as f:
+            saved = json.load(f)
+        assert saved["orchestration"]["sidecar_agent_types"] == ["developer", "tester"]
 
     def test_clear_agent_config_use_global(self, client_with_config):
         """清除 Agent provider 后 fallback 到 global"""

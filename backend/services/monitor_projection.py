@@ -5,7 +5,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from models.database import Chatroom, Project
+from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun
+from services.approval_queue import serialize_approval_queue_item
 
 
 INPUT_PRICE_PER_1K = 0.03
@@ -231,3 +232,47 @@ def serialize_monitor_runtime_item(
         "arguments_preview": compact_preview(card.get("arguments")),
         "stage": card.get("stage") or card.get("display_name"),
     }
+
+
+def serialize_monitor_approval_queue_item(
+    item: ApprovalQueueItem,
+    *,
+    chat_title: str | None = None,
+    project_name: str | None = None,
+    task_run: TaskRun | None = None,
+) -> dict[str, Any]:
+    payload = serialize_approval_queue_item(item)
+    request_payload = payload.get("request_payload") if isinstance(payload.get("request_payload"), dict) else {}
+    resolution_payload = payload.get("resolution_payload") if isinstance(payload.get("resolution_payload"), dict) else {}
+    latest_event_type = task_run.events[-1].event_type if task_run and task_run.events else None
+
+    request_preview = compact_preview(
+        item.summary
+        or request_payload.get("blocked_reason")
+        or request_payload.get("request_payload")
+        or request_payload
+    )
+    resolution_preview = compact_preview(
+        item.resolution_note
+        or resolution_payload.get("replay_result_preview")
+        or resolution_payload.get("request_payload")
+        or resolution_payload
+    )
+
+    payload.update(
+        {
+            "chat_title": chat_title,
+            "project_name": project_name,
+            "task_run_title": task_run.title if task_run else None,
+            "task_run_status": task_run.status if task_run else None,
+            "run_kind": task_run.run_kind if task_run else None,
+            "latest_event_type": latest_event_type,
+            "request_preview": request_preview,
+            "resolution_preview": resolution_preview,
+            "resume_supported": bool(request_payload.get("resume_supported")),
+            "action_taken": resolution_payload.get("action_taken"),
+            "replay_status": resolution_payload.get("replay_status"),
+            "replay_success": resolution_payload.get("replay_success"),
+        }
+    )
+    return payload

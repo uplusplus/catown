@@ -75,6 +75,106 @@ export type MessageItem = {
   localOnly?: boolean;
 };
 
+export type TaskRunSummary = {
+  id: number;
+  chatroom_id: number;
+  project_id?: number | null;
+  origin_message_id?: number | null;
+  client_turn_id?: string | null;
+  run_kind: string;
+  status: string;
+  title: string;
+  user_request?: string | null;
+  initiator?: string | null;
+  target_agent_name?: string | null;
+  recovery_owner?: string | null;
+  recovery_claimed_at?: string | null;
+  recovery_lease_expires_at?: string | null;
+  summary?: string | null;
+  approval_queue_count?: number;
+  pending_approval_count?: number;
+  event_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type TaskRunEvent = {
+  id: number;
+  event_index: number;
+  event_type: string;
+  agent_name?: string | null;
+  message_id?: number | null;
+  summary?: string | null;
+  payload?: Record<string, unknown>;
+  created_at?: string | null;
+};
+
+export type TaskRunDetail = TaskRunSummary & {
+  events: TaskRunEvent[];
+  approval_queue_items?: ApprovalQueueItem[];
+};
+
+export type ApprovalQueueItem = {
+  id: number;
+  task_run_id?: number | null;
+  chatroom_id: number;
+  project_id?: number | null;
+  pipeline_run_id?: number | null;
+  pipeline_stage_id?: number | null;
+  queue_kind: string;
+  status: string;
+  source: string;
+  title: string;
+  summary?: string | null;
+  agent_name?: string | null;
+  target_kind: string;
+  target_name?: string | null;
+  request_key?: string | null;
+  request_payload?: Record<string, unknown>;
+  resolution_note?: string | null;
+  resolution_payload?: Record<string, unknown>;
+  resolved_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  resolved_at?: string | null;
+};
+
+export type MonitorApprovalQueueEntry = ApprovalQueueItem & {
+  chat_title?: string | null;
+  project_name?: string | null;
+  task_run_title?: string | null;
+  task_run_status?: string | null;
+  run_kind?: string | null;
+  latest_event_type?: string | null;
+  request_preview?: string | null;
+  resolution_preview?: string | null;
+  resume_supported?: boolean;
+  action_taken?: string | null;
+  replay_status?: string | null;
+  replay_success?: boolean | null;
+};
+
+export type MonitorApprovalQueueResponse = {
+  captured_at: string;
+  status: string;
+  counts: {
+    all: number;
+    pending: number;
+    approved: number;
+    rejected: number;
+  };
+  entries: MonitorApprovalQueueEntry[];
+};
+
+export type TaskRunResumeResponse = {
+  message: string;
+  resumed: boolean;
+  status: string;
+  task_run_id: number;
+  detail: TaskRunDetail;
+};
+
 export type MessageStreamStep = {
   id: string;
   label: string;
@@ -197,6 +297,10 @@ export type ConfigAgentDefinition = {
   skills?: string[];
 };
 
+export type ConfigOrchestrationDefinition = {
+  sidecar_agent_types?: string[];
+};
+
 export type ConfigResponse = {
   global_llm?: {
     provider?: {
@@ -206,6 +310,7 @@ export type ConfigResponse = {
     };
     default_model?: string;
   };
+  orchestration?: ConfigOrchestrationDefinition;
   agents?: Record<string, ConfigAgentDefinition>;
   agent_llm_configs?: Record<
     string,
@@ -222,6 +327,34 @@ export type ConfigResponse = {
     port?: number;
   };
   features?: Record<string, unknown>;
+};
+
+export type SkillMarketplace = {
+  id: string;
+  name: string;
+  adapter: string;
+  enabled: boolean;
+  command?: string | null;
+  command_available?: boolean | null;
+  install_url?: string | null;
+  bootstrap_available?: boolean;
+  description?: string;
+};
+
+export type SkillMarketplacesResponse = {
+  marketplaces: SkillMarketplace[];
+  config_file: string;
+};
+
+export type SkillMarketplaceUpdateResponse = {
+  marketplace: SkillMarketplace;
+  bootstrap?: {
+    ok?: boolean;
+    skipped?: boolean;
+    command?: string;
+    stdout?: string;
+    stderr?: string;
+  } | null;
 };
 
 export type ProjectCreatePayload = {
@@ -278,6 +411,10 @@ export type AgentConfigPayload = {
   soul?: AgentSoul;
   tools?: string[];
   skills?: string[];
+};
+
+export type OrchestrationConfigPayload = {
+  sidecar_agent_types: string[];
 };
 
 export type MonitorToolSummary = {
@@ -349,6 +486,18 @@ export type MonitorRuntimeDetail = {
   card: Record<string, unknown>;
 };
 
+export type MonitorTaskRunSummary = TaskRunSummary & {
+  chat_title: string;
+  project_name?: string | null;
+  latest_event_type?: string | null;
+};
+
+export type MonitorTaskRunsResponse = {
+  captured_at: string;
+  range: "1h" | "6h" | "24h" | "7d" | "30d";
+  entries: MonitorTaskRunSummary[];
+};
+
 export type MonitorUsageBucket = {
   label: string;
   start: string;
@@ -403,6 +552,47 @@ export type MonitorLogsResponse = {
   entries: MonitorLogEntry[];
 };
 
+export type MonitorNetworkEvent = {
+  id: number;
+  created_at: string;
+  category: "frontend_backend" | "backend_llm" | "backend_other" | "frontend_other" | string;
+  source: string;
+  protocol: string;
+  from_entity: string;
+  to_entity: string;
+  request_direction?: string;
+  response_direction?: string;
+  flow_id?: string;
+  flow_kind?: string;
+  flow_seq?: number | null;
+  aggregated?: boolean;
+  method: string;
+  url: string;
+  host: string;
+  path: string;
+  status_code?: number | null;
+  success?: boolean | null;
+  request_bytes: number;
+  response_bytes: number;
+  total_bytes: number;
+  duration_ms: number;
+  content_type?: string;
+  preview?: string;
+  error?: string;
+  client_source?: string;
+  raw_request?: string;
+  raw_response?: string;
+  request_headers?: Record<string, string>;
+  response_headers?: Record<string, string>;
+  metadata?: Record<string, unknown>;
+};
+
+export type MonitorNetworkResponse = {
+  captured_at: string;
+  latest_id: number;
+  entries: MonitorNetworkEvent[];
+};
+
 export type MonitorOverview = {
   captured_at: string;
   system: {
@@ -416,6 +606,8 @@ export type MonitorOverview = {
       visible_chats: number;
       messages: number;
       runtime_cards: number;
+      approval_queue_total?: number;
+      approval_queue_pending?: number;
     };
     features: Record<string, boolean>;
     collaboration: {

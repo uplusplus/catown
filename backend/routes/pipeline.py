@@ -64,6 +64,7 @@ class PipelineStageOut(BaseModel):
 
 class PipelineRunOut(BaseModel):
     id: int
+    task_run_id: Optional[int]
     run_number: int
     status: str
     input_requirement: Optional[str]

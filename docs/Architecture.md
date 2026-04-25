@@ -4,6 +4,8 @@ Updated: 2026-04-22
 
 This document describes the current project logic architecture as implemented in the codebase. It focuses on runtime boundaries, data flow, persistence, and the Monitor projection layer.
 
+Network monitor semantics and the default aggregated-vs-stream debugging rule are defined in [ADR-014](ADR-014-network-monitor-semantics.md).
+
 ## 1. System Overview
 
 Catown is currently a single FastAPI backend serving two React/Vite frontend entry points:
@@ -37,6 +39,7 @@ flowchart LR
     Agents["Agent Registry + Agent Core"]
     LLM["llm/client.py<br/>model calls and usage capture"]
     Tools["tools registry<br/>tool execution"]
+    Orchestrator["Codex-style orchestration<br/>turn agenda + handoff runtime"]
     PipelineEngine["pipeline/engine.py"]
     Projection["monitor_projection.py<br/>monitor DTO serialization"]
     LogBuffer["monitoring/log_buffer.py<br/>in-memory log tail"]
@@ -63,6 +66,7 @@ flowchart LR
   ApiRoutes --> Agents
   ApiRoutes --> LLM
   ApiRoutes --> Tools
+  ApiRoutes --> Orchestrator
   ApiRoutes --> Projection
   ApiRoutes --> WS
 
@@ -123,6 +127,13 @@ Main route groups:
 
 The primary chat flow is centered in `routes/api.py`.
 
+Multi-agent chat execution is evolving toward a Codex-style orchestration runtime:
+
+- `@mention` creates a short-lived turn agenda instead of entering a fixed project pipeline.
+- Each agent turn rebuilds prompt context from `TurnContextState`.
+- Prior work is passed forward as handoff/inbox context, not by endlessly appending transcript.
+- The legacy `pipeline/engine.py` remains available for explicit governance workflows, but it is no longer the preferred default for chat collaboration.
+
 ```mermaid
 sequenceDiagram
   participant Home as Home UI
@@ -152,6 +163,7 @@ Important details:
 - Runtime cards use `message_type = "runtime_card"` and store the card payload in `metadata_json.card`.
 - LLM runtime cards include token usage fields when provided by the model response.
 - Tool runtime cards include tool name, arguments preview/result, success, and duration data.
+- Chat turns now also persist a run-level ledger in `task_runs` / `task_run_events` so each sync/SSE execution has ordered mode-selection, turn, tool, handoff, and failure events.
 - `services/monitor_projection.py` converts persisted messages/runtime cards into Monitor-friendly DTOs.
 
 ## 4. Monitor Read Model
@@ -228,11 +240,13 @@ Primary user/session tables:
 - `projects`: project containers and workspace metadata.
 - `chatrooms`: standalone chats, hidden project chats, and project subchats.
 - `messages`: chat messages and runtime cards.
+- `task_runs`: per-turn orchestration ledger headers for sync and SSE chat execution.
+- `task_run_events`: ordered run events such as runtime mode selection, tool rounds, handoffs, and failures.
 - `memories`: agent memories.
 
 Pipeline/product tables:
 
-- `pipelines`, `pipeline_runs`, `pipeline_stages`, `pipeline_messages`.
+- `pipelines`, `pipeline_runs`, `pipeline_stages`, `pipeline_messages`, `pipeline_message_deliveries`.
 - `assets`, `asset_links`.
 - `decisions`, `decision_assets`.
 - `stage_runs`, `stage_run_assets`.
@@ -241,6 +255,13 @@ The most important architectural point is that `messages` is both:
 
 - The chat transcript store.
 - The lightweight runtime event store for chat-visible and Monitor-visible execution cards.
+
+In addition, run-level orchestration state is now split out from transcript storage:
+
+- `task_runs` stores one durable execution record per chat turn.
+- `task_run_events` stores ordered execution events for that run.
+- `GET /api/chatrooms/{id}/task-runs` lists chatroom runs.
+- `GET /api/task-runs/{id}` returns ordered ledger detail for debugging and future resume work.
 
 ## 7. Request Source Tracking
 
@@ -289,3 +310,4 @@ Monitor behavior:
 - Logs are not persisted long term in the database; Monitor logs are an in-memory tail exposed by REST/SSE.
 - Usage is now durable enough for long-range charts because it is derived from persisted runtime cards.
 - A future dedicated usage/audit table may improve query performance and historical reporting, but the current design avoids duplicating data while runtime-card persistence is still the source of truth.
+- Pipeline execution is evolving toward a Codex-style runtime kernel: turn-state prompt rebuild, durable inter-agent inbox entries, and later run-level scheduling/ledger layers.

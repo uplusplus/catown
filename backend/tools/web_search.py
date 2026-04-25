@@ -5,6 +5,9 @@ Web Search Tool - DuckDuckGo Instant Answer API
 from .base import BaseTool
 import json
 import httpx
+import time
+
+from monitoring import monitor_network_buffer
 
 
 class WebSearchTool(BaseTool):
@@ -32,10 +35,33 @@ class WebSearchTool(BaseTool):
                 "skip_disambig": 1,
             }
 
+            started_at = time.perf_counter()
             async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as client:
                 response = await client.get("https://api.duckduckgo.com/", params=params)
                 response.raise_for_status()
                 data = response.json()
+                monitor_network_buffer.append(
+                    {
+                        "category": "backend_other",
+                        "source": "backend",
+                        "protocol": "HTTPS",
+                        "from_entity": "Backend",
+                        "to_entity": "api.duckduckgo.com",
+                        "request_direction": "Backend -> api.duckduckgo.com",
+                        "response_direction": "api.duckduckgo.com -> Backend",
+                        "method": "GET",
+                        "url": str(response.request.url),
+                        "host": "api.duckduckgo.com",
+                        "path": "/",
+                        "status_code": response.status_code,
+                        "success": True,
+                        "request_bytes": len(json.dumps(params).encode("utf-8")),
+                        "response_bytes": len(response.content),
+                        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                        "content_type": response.headers.get("Content-Type", ""),
+                        "preview": query[:280],
+                    }
+                )
             
             results = []
             
@@ -62,6 +88,26 @@ class WebSearchTool(BaseTool):
                 return f"[Web Search] No instant answer found for '{query}'. Try a more specific query."
                 
         except Exception as e:
+            monitor_network_buffer.append(
+                {
+                    "category": "backend_other",
+                    "source": "backend",
+                    "protocol": "HTTPS",
+                    "from_entity": "Backend",
+                    "to_entity": "api.duckduckgo.com",
+                    "request_direction": "Backend -> api.duckduckgo.com",
+                    "response_direction": "api.duckduckgo.com -> Backend",
+                    "method": "GET",
+                    "url": "https://api.duckduckgo.com/",
+                    "host": "api.duckduckgo.com",
+                    "path": "/",
+                    "success": False,
+                    "request_bytes": len(json.dumps({"q": query}).encode("utf-8")),
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
+                    "error": str(e),
+                    "preview": query[:280],
+                }
+            )
             return f"[Web Search] Error: {str(e)}"
     
     def _get_parameters_schema(self) -> dict:

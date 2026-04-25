@@ -7,11 +7,13 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 import logging
+from logging.handlers import RotatingFileHandler
 import time
 import os
 from pathlib import Path
 from functools import lru_cache
 import re
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
@@ -36,6 +38,7 @@ def _default_catown_home() -> Path:
 load_dotenv(_default_catown_home() / ".env")
 
 from config import settings
+from monitoring import monitor_network_buffer
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
@@ -45,11 +48,57 @@ FRONTEND_DIST_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
 DOCS_STATIC_DIR = BACKEND_DIR / "static" / "docs"
 
 # 结构化日志配置
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _configure_logging() -> None:
+    level = getattr(logging, settings.LOG_LEVEL, logging.INFO)
+    logs_dir = settings.STATE_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    app_file_handler = RotatingFileHandler(
+        logs_dir / "catown.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=10,
+        encoding="utf-8",
+    )
+    app_file_handler.setLevel(level)
+    app_file_handler.setFormatter(formatter)
+    root_logger.addHandler(app_file_handler)
+
+    error_file_handler = RotatingFileHandler(
+        logs_dir / "catown-error.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=10,
+        encoding="utf-8",
+    )
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(formatter)
+    root_logger.addHandler(error_file_handler)
+
+    for logger_name in ("uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(level)
+        if app_file_handler not in logger.handlers:
+            logger.addHandler(app_file_handler)
+        if logger_name == "uvicorn.error" and error_file_handler not in logger.handlers:
+            logger.addHandler(error_file_handler)
+
+
+_configure_logging()
 logger = logging.getLogger("catown")
 logger.info(
     "[Paths] CATOWN_HOME=%s CONFIG_DIR=%s STATE_DIR=%s PROJECTS_ROOT=%s WORKSPACES_DIR=%s",
@@ -228,12 +277,103 @@ def _should_disable_cache(request: Request) -> bool:
         return True
     return path in _NO_STORE_PATHS
 
+
+def _response_content_length(response) -> int:
+    header_value = response.headers.get("content-length", "").strip()
+    try:
+        return max(int(header_value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_text(value: bytes | str | None, limit: int | None = None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = value
+    return text if limit is None else text[:limit]
+
+
+def _sanitize_headers(headers: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in dict(headers).items():
+        normalized = str(key).lower()
+        if normalized in {"authorization", "cookie", "set-cookie", "x-openai-api-key"}:
+            continue
+        result[str(key)] = str(value)
+    return result
+
+
+def _record_frontend_backend_event(
+    request: Request,
+    *,
+    status_code: int,
+    duration_ms: float,
+    response_bytes: int,
+    request_body: bytes | str | None = None,
+    response_body: bytes | str | None = None,
+    response_headers: dict[str, str] | None = None,
+    error: str = "",
+) -> None:
+    if request.url.path == "/api/monitor/network/ingest":
+        return
+
+    request_bytes = 0
+    content_length = request.headers.get("content-length", "").strip()
+    try:
+        request_bytes = max(int(content_length), 0)
+    except (TypeError, ValueError):
+        request_bytes = 0
+
+    protocol = request.scope.get("scheme", "http").upper()
+    http_version = str(request.scope.get("http_version") or "").strip()
+    if http_version:
+        protocol = f"{protocol}/{http_version}"
+
+    client_source = _request_client_source(request)
+    monitor_network_buffer.append(
+        {
+            "category": "frontend_backend",
+            "source": "backend",
+            "protocol": protocol,
+            "from_entity": f"Frontend ({client_source})",
+            "to_entity": "Backend API",
+            "request_direction": f"Frontend ({client_source}) -> Backend API",
+            "response_direction": f"Backend API -> Frontend ({client_source})",
+            "method": request.method,
+            "url": str(request.url),
+            "host": request.url.hostname or "",
+            "path": request.url.path,
+            "status_code": status_code,
+            "success": status_code < 400 and not error,
+            "request_bytes": request_bytes,
+            "response_bytes": response_bytes,
+            "duration_ms": int(duration_ms),
+            "content_type": request.headers.get("content-type", ""),
+            "preview": f"{request.method} {request.url.path}",
+            "error": error,
+            "client_source": client_source,
+            "raw_request": _safe_text(request_body),
+            "raw_response": _safe_text(response_body),
+            "request_headers": _sanitize_headers(request.headers),
+            "response_headers": response_headers or {},
+            "metadata": {
+                "query": request.url.query,
+                "ui_version": _request_ui_version(request),
+                "http_version": request.scope.get("http_version"),
+            },
+        }
+    )
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """记录请求耗时和错误"""
 
     async def dispatch(self, request: Request, call_next):
         import time as _time
         start = _time.time()
+        request_body = await request.body()
         path = (
             f"source={_request_client_source(request)} "
             f"ui={_request_ui_version(request)} "
@@ -260,6 +400,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             else:
                 logger.debug(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
 
+            _record_frontend_backend_event(
+                request,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                response_bytes=_response_content_length(response),
+                request_body=request_body,
+                response_body=getattr(response, "body", b""),
+                response_headers=_sanitize_headers(response.headers),
+            )
             return response
 
         except Exception as e:
@@ -268,6 +417,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 f"[HTTP] {method} {path} FAILED ({duration_ms:.0f}ms)\n"
                 f"  Error: {e}\n"
                 f"{_traceback.format_exc()}"
+            )
+            _record_frontend_backend_event(
+                request,
+                status_code=500,
+                duration_ms=duration_ms,
+                response_bytes=0,
+                request_body=request_body,
+                response_body="",
+                response_headers={},
+                error=str(e),
             )
             from fastapi.responses import JSONResponse
             return JSONResponse(
@@ -315,6 +474,20 @@ logger.info("[Events] Pipeline event bus connected to general WebSocket")
 async def _start_file_watcher():
     loop = _asyncio.get_event_loop()
     file_watcher.start(loop)
+    try:
+        from routes.api import recover_interrupted_task_runs
+
+        recovery_summary = await recover_interrupted_task_runs(limit=20)
+        if recovery_summary["detected"]:
+            logger.info(
+                "[Recovery] Task-run recovery scanned %s interrupted run(s): %s recovered / %s skipped / %s failed",
+                recovery_summary["detected"],
+                recovery_summary["recovered"],
+                recovery_summary.get("skipped", 0),
+                recovery_summary["failed"],
+            )
+    except Exception as exc:
+        logger.warning(f"[Recovery] Startup task-run recovery failed: {exc}")
 
 @app.on_event("shutdown")
 async def _stop_file_watcher():

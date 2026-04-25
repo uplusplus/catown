@@ -10,6 +10,7 @@ import json
 import logging
 
 from agents.identity import DEFAULT_AGENT_TYPE, find_agent_by_type
+from services.chat_prompt_builder import assemble_chat_messages
 
 logger = logging.getLogger("catown.chatroom")
 
@@ -116,7 +117,7 @@ class ChatroomManager:
             if agent_name is None and agent_id:
                 agent = db.query(Agent).filter(Agent.id == agent_id).first()
                 if agent:
-                    agent_name = agent.name
+                    agent_name = agent.type
             
             chat_message = ChatroomMessage(
                 id=message.id,
@@ -158,7 +159,7 @@ class ChatroomManager:
                     id=msg.id,
                     chatroom_id=msg.chatroom_id,
                     agent_id=msg.agent_id,
-                    agent_name=msg.agent.name if msg.agent else None,
+                    agent_name=msg.agent.type if msg.agent else None,
                     content=msg.content,
                     message_type=msg.message_type,
                     created_at=msg.created_at,
@@ -282,24 +283,59 @@ class ChatroomManager:
     async def _call_agent_llm(self, agent, user_message: str, chatroom_id: int, db) -> Optional[str]:
         """调用 Agent 的 LLM 生成响应"""
         from llm.client import get_llm_client_for_agent
-        from models.database import Message
+        from models.database import Agent, AgentAssignment, Chatroom as ChatroomDB, Message, Project
 
         try:
             llm_client = get_llm_client_for_agent(agent.type)
 
             # 构建消息历史
-            history = (
-                db.query(Message)
-                .filter(Message.chatroom_id == chatroom_id)
-                .order_by(Message.created_at.desc())
-                .limit(20)
-                .all()
-            )
+            db_chatroom = db.query(ChatroomDB).filter(ChatroomDB.id == chatroom_id).first()
+            project = None
+            source_chatroom = None
+            agents = []
+            if db_chatroom:
+                if db_chatroom.project_id:
+                    project = db.query(Project).filter(Project.id == db_chatroom.project_id).first()
+                    assignments = db.query(AgentAssignment).filter(
+                        AgentAssignment.project_id == db_chatroom.project_id
+                    ).all()
+                    assigned_ids = [assignment.agent_id for assignment in assignments]
+                    if assigned_ids:
+                        agents = db.query(Agent).filter(Agent.id.in_(assigned_ids)).all()
+                if db_chatroom.source_chatroom_id:
+                    source_chatroom = (
+                        db.query(ChatroomDB)
+                        .filter(ChatroomDB.id == db_chatroom.source_chatroom_id)
+                        .first()
+                    )
 
-            messages = [{"role": "system", "content": agent.system_prompt or "You are a helpful assistant."}]
-            for msg in reversed(history):
-                role = "assistant" if msg.agent_id else "user"
-                messages.append({"role": role, "content": msg.content})
+            recent_messages = await self.get_messages(chatroom_id, limit=20)
+
+            raw_tools = getattr(agent, "tools", None)
+            if isinstance(raw_tools, str):
+                try:
+                    parsed_tools = json.loads(raw_tools or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    parsed_tools = []
+                tool_names = [str(tool) for tool in parsed_tools if tool]
+            elif isinstance(raw_tools, list):
+                tool_names = [str(tool) for tool in raw_tools if tool]
+            else:
+                tool_names = []
+
+            messages = assemble_chat_messages(
+                db=db,
+                agent=agent,
+                agent_name=getattr(agent, "name", "Agent"),
+                model_id=getattr(llm_client, "model", ""),
+                chatroom=db_chatroom,
+                project=project,
+                agents=agents,
+                recent_messages=recent_messages,
+                user_message=user_message,
+                available_tools=tool_names,
+                selector_profile="fallback_chat",
+            )
 
             response = await llm_client.chat(messages)
             return response

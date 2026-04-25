@@ -345,6 +345,8 @@ project created
   已将 Agent 间消息视为聊天室中的核心事件类型之一。
 - [ADR-012-llm-session-context-management.md](./ADR-012-llm-session-context-management.md)
   已讨论多 agent 协作时的上下文注入策略。
+- [ADR-015-codex-style-runtime-evolution.md](./ADR-015-codex-style-runtime-evolution.md)
+  已明确 Catown 将以 Codex 风格 runtime kernel 强化任务执行层，并继续保留 pipeline/gate 治理层。
 
 因此，本文件中“每个 session 都支持多个 agent”属于对既有设计的归纳和收口，而不是新增方向。
 

@@ -1,18 +1,26 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Boxes, BrainCircuit, Crown, UserRound, Wrench } from "lucide-react";
+import { Bot, Boxes, BrainCircuit, Crown, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
 import type {
+  ApprovalQueueItem,
   AgentInfo,
   ConfigResponse,
+  MonitorTaskRunSummary,
+  MonitorTaskRunsResponse,
+  MonitorApprovalQueueEntry,
+  MonitorApprovalQueueResponse,
   MonitorLogEntry,
+  MonitorNetworkEvent,
   MonitorOverview,
   MonitorRuntimeDetail,
   MonitorUsageResponse,
   ProjectSummary,
+  TaskRunDetail,
+  TaskRunResumeResponse,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
 
@@ -20,6 +28,8 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const MONITOR_RUNTIME_LIMIT = 80;
 const MONITOR_MESSAGE_LIMIT = 40;
 const MONITOR_USAGE_WINDOW_LIMIT = 400;
+const MONITOR_STREAM_RECONNECT_DELAY_MS = 3000;
+const ERROR_AUTO_DISMISS_MS = 8000;
 
 type MonitorPage = {
   id: string;
@@ -29,6 +39,7 @@ type MonitorPage = {
 const PRIMARY_PAGES = [
   { id: "overview", label: "Overview" },
   { id: "flow", label: "Flow" },
+  { id: "network", label: "Network" },
   { id: "usage", label: "Usage" },
   { id: "transcripts", label: "Transcripts" },
   { id: "logs", label: "Logs" },
@@ -61,6 +72,12 @@ type BrainFilter = "all" | "runtime" | "tool" | "llm" | "message";
 type BrainTimelineUnit = "minute" | "hour" | "day" | "month";
 type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
 type LogLevel = "all" | "info" | "warn" | "error";
+type TaskRunStatusFilter = "all" | "running" | "completed" | "failed";
+
+const RESUMABLE_TASK_RUN_KINDS = new Set([
+  "multi_agent_orchestration",
+  "multi_agent_orchestration_stream",
+]);
 
 type BrainEvent = {
   id: string;
@@ -213,6 +230,13 @@ function formatDuration(value: number | undefined) {
   return `${Math.round(value)}ms`;
 }
 
+function formatBytes(value: number | undefined) {
+  const bytes = Math.max(value ?? 0, 0);
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 function normalizeLogLevel(level: string) {
   const normalized = level.toLowerCase();
   if (normalized === "warning") return "warn";
@@ -251,6 +275,24 @@ function shortDate(value: string | null | undefined) {
   });
 }
 
+function preciseSystemTime(value: string | null | undefined) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const datePart = date.toLocaleDateString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const timePart = date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  return `${datePart} ${timePart}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+}
+
 function runtimeTone(type: string, success?: boolean | null) {
   if (type === "tool_call") return success === false ? "error" : "neutral";
   if (type.includes("rejected") || type.includes("error")) return "error";
@@ -261,6 +303,229 @@ function runtimeTone(type: string, success?: boolean | null) {
 
 function runtimeLabel(type: string) {
   return type.replace(/_/g, " ");
+}
+
+function approvalStatusTone(status: string | null | undefined) {
+  const normalized = (status || "").toLowerCase();
+  if (normalized === "pending") return "warning";
+  if (normalized === "approved") return "success";
+  if (normalized === "rejected") return "error";
+  return runtimeTone(normalized);
+}
+
+function taskRunStatusTone(status: string | null | undefined) {
+  const normalized = (status || "").toLowerCase();
+  if (normalized === "completed") return "success";
+  if (normalized === "failed") return "error";
+  if (normalized === "running") return "warning";
+  return "neutral";
+}
+
+function taskRunEventTone(eventType: string | null | undefined) {
+  const normalized = (eventType || "").toLowerCase();
+  if (normalized.includes("failed") || normalized.includes("error")) return "error";
+  if (normalized.includes("completed")) return "success";
+  if (normalized.includes("tool") || normalized.includes("handoff")) return "warning";
+  return "neutral";
+}
+
+function titleCaseLabel(value: string | null | undefined) {
+  if (!value) return "unknown";
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function isFutureDate(value: string | null | undefined) {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return false;
+  return timestamp > Date.now();
+}
+
+function hasActiveRecoveryLease(taskRun: {
+  status?: string | null;
+  recovery_owner?: string | null;
+  recovery_lease_expires_at?: string | null;
+}) {
+  return (taskRun.status || "").toLowerCase() === "running"
+    && Boolean((taskRun.recovery_owner || "").trim())
+    && isFutureDate(taskRun.recovery_lease_expires_at);
+}
+
+function compactOwnerLabel(value: string | null | undefined) {
+  const text = (value || "").trim();
+  if (!text) return "unknown";
+  if (text.length <= 40) return text;
+  return `${text.slice(0, 18)}...${text.slice(-10)}`;
+}
+
+type RunScheduleStep = {
+  stepId: string;
+  position: number;
+  requestedName: string;
+  agentId: number | null;
+  agentName: string;
+  agentType: string;
+  dispatchKind: string;
+  waitForStepId: string | null;
+  attachedToStepId: string | null;
+  source: string;
+  status: string;
+  releasedByStepId: string | null;
+  dispatchCount: number;
+  completionCount: number;
+};
+
+type RunSchedulePlan = {
+  mode: string;
+  stepCount: number;
+  blockingStepCount: number;
+  sidecarStepCount: number;
+  sidecarAgentTypes: string[];
+  readyStepCount: number;
+  waitingStepCount: number;
+  runningStepCount: number;
+  completedStepCount: number;
+  steps: RunScheduleStep[];
+};
+
+type RunHandoffRelation = {
+  id: string;
+  fromAgent: string;
+  toAgent: string;
+  fromStepId: string | null;
+  toStepId: string | null;
+  attachedToStepId: string | null;
+  dispatchKind: string;
+  contentPreview: string;
+  createdAt: string | null;
+};
+
+function asMonitorRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function monitorStringField(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function monitorNumberField(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseRunScheduleStep(value: unknown): RunScheduleStep | null {
+  const payload = asMonitorRecord(value);
+  if (!payload) return null;
+
+  const stepId = monitorStringField(payload.step_id);
+  const agentName = monitorStringField(payload.agent_name);
+  if (!stepId || !agentName) return null;
+
+  return {
+    stepId,
+    position: monitorNumberField(payload.position) ?? 0,
+    requestedName: monitorStringField(payload.requested_name) ?? agentName,
+    agentId: monitorNumberField(payload.agent_id),
+    agentName,
+    agentType: monitorStringField(payload.agent_type) ?? agentName.toLowerCase(),
+    dispatchKind: monitorStringField(payload.dispatch_kind) ?? "blocking",
+    waitForStepId: monitorStringField(payload.wait_for_step_id),
+    attachedToStepId: monitorStringField(payload.attached_to_step_id),
+    source: monitorStringField(payload.source) ?? "runtime",
+    status: monitorStringField(payload.status) ?? "planned",
+    releasedByStepId: monitorStringField(payload.released_by_step_id),
+    dispatchCount: monitorNumberField(payload.dispatch_count) ?? 0,
+    completionCount: monitorNumberField(payload.completion_count) ?? 0,
+  };
+}
+
+function extractLatestRunScheduleRuntime(detail: TaskRunDetail | null) {
+  if (!detail) return null;
+  const runtimeEvent = [...detail.events]
+    .reverse()
+    .find((event) => {
+      const payload = asMonitorRecord(event.payload);
+      return Boolean(asMonitorRecord(payload?.runtime));
+    });
+  return asMonitorRecord(asMonitorRecord(runtimeEvent?.payload)?.runtime);
+}
+
+function extractRunSchedulePlan(detail: TaskRunDetail | null): RunSchedulePlan | null {
+  if (!detail) return null;
+  const scheduleEvent = detail.events.find((event) => event.event_type === "scheduler_plan_created");
+  const payload = asMonitorRecord(scheduleEvent?.payload);
+  if (!payload) return null;
+
+  const rawSteps = Array.isArray(payload.steps) ? payload.steps : [];
+  const steps = rawSteps
+    .map((step) => parseRunScheduleStep(step))
+    .filter((step): step is RunScheduleStep => Boolean(step))
+    .sort((left, right) => left.position - right.position);
+  const runtimePayload = extractLatestRunScheduleRuntime(detail);
+  const runtimeSteps = Array.isArray(runtimePayload?.steps) ? runtimePayload.steps : [];
+  const runtimeStepMap = new Map(
+    runtimeSteps
+      .map((step) => parseRunScheduleStep(step))
+      .filter((step): step is RunScheduleStep => Boolean(step))
+      .map((step) => [step.stepId, step]),
+  );
+  const mergedSteps = steps.map((step) => {
+    const runtimeStep = runtimeStepMap.get(step.stepId);
+    return runtimeStep ? { ...step, ...runtimeStep } : step;
+  });
+
+  return {
+    mode: monitorStringField(payload.mode) ?? "linear_blocking_chain",
+    stepCount: monitorNumberField(payload.step_count) ?? mergedSteps.length,
+    blockingStepCount:
+      monitorNumberField(payload.blocking_step_count) ??
+      mergedSteps.filter((step) => step.dispatchKind === "blocking").length,
+    sidecarStepCount:
+      monitorNumberField(payload.sidecar_step_count) ??
+      mergedSteps.filter((step) => step.dispatchKind === "sidecar").length,
+    sidecarAgentTypes: Array.isArray(payload.sidecar_agent_types)
+      ? payload.sidecar_agent_types
+          .map((value) => monitorStringField(value))
+          .filter((value): value is string => Boolean(value))
+      : [],
+    readyStepCount:
+      monitorNumberField(runtimePayload?.ready_step_count) ??
+      mergedSteps.filter((step) => step.status === "ready").length,
+    waitingStepCount:
+      monitorNumberField(runtimePayload?.waiting_step_count) ??
+      mergedSteps.filter((step) => step.status === "waiting").length,
+    runningStepCount:
+      monitorNumberField(runtimePayload?.running_step_count) ??
+      mergedSteps.filter((step) => step.status === "running").length,
+    completedStepCount:
+      monitorNumberField(runtimePayload?.completed_step_count) ??
+      mergedSteps.filter((step) => step.status === "completed").length,
+    steps: mergedSteps,
+  };
+}
+
+function extractRunHandoffs(detail: TaskRunDetail | null): RunHandoffRelation[] {
+  if (!detail) return [];
+  return detail.events
+    .filter((event) => event.event_type === "handoff_created")
+    .map((event) => {
+      const payload = asMonitorRecord(event.payload);
+      return {
+        id: `${event.id}`,
+        fromAgent: monitorStringField(payload?.from_agent) ?? event.agent_name ?? "agent",
+        toAgent: monitorStringField(payload?.to_agent) ?? "agent",
+        fromStepId: monitorStringField(payload?.from_step_id),
+        toStepId: monitorStringField(payload?.to_step_id),
+        attachedToStepId: monitorStringField(payload?.attached_to_step_id),
+        dispatchKind: monitorStringField(payload?.dispatch_kind) ?? "blocking",
+        contentPreview: monitorStringField(payload?.content_preview) ?? "",
+        createdAt: monitorStringField(event.created_at),
+      };
+    });
 }
 
 function monitorPageLabel(pageId: MonitorPageId) {
@@ -278,6 +543,379 @@ function mergeMonitorLogs(current: MonitorLogEntry[], incoming: MonitorLogEntry[
   return [...merged.values()]
     .sort((left, right) => right.id - left.id)
     .slice(0, 500);
+}
+
+function mergeMonitorNetwork(current: MonitorNetworkEvent[], incoming: MonitorNetworkEvent[]) {
+  const merged = new Map<number, MonitorNetworkEvent>();
+  current.forEach((entry) => {
+    merged.set(entry.id, entry);
+  });
+  incoming.forEach((entry) => {
+    merged.set(entry.id, entry);
+  });
+  return [...merged.values()]
+    .sort((left, right) => right.id - left.id)
+    .slice(0, 800);
+}
+
+function historyRangeStart(range: HistoryRange) {
+  const now = Date.now();
+  if (range === "1h") return now - 60 * 60 * 1000;
+  if (range === "6h") return now - 6 * 60 * 60 * 1000;
+  if (range === "24h") return now - 24 * 60 * 60 * 1000;
+  if (range === "7d") return now - 7 * 24 * 60 * 60 * 1000;
+  return now - 30 * 24 * 60 * 60 * 1000;
+}
+
+function mergeMonitorTaskRunResponse(
+  current: MonitorTaskRunsResponse | null,
+  incoming: MonitorTaskRunSummary,
+  range: HistoryRange,
+  capturedAt?: string | null,
+): MonitorTaskRunsResponse {
+  const merged = new Map<number, MonitorTaskRunSummary>();
+  (current?.entries ?? []).forEach((entry) => {
+    merged.set(entry.id, entry);
+  });
+
+  const createdAtMs = incoming.created_at ? new Date(incoming.created_at).getTime() : 0;
+  if (createdAtMs && createdAtMs >= historyRangeStart(range)) {
+    merged.set(incoming.id, incoming);
+  } else {
+    merged.delete(incoming.id);
+  }
+
+  return {
+    captured_at: capturedAt ?? new Date().toISOString(),
+    range,
+    entries: [...merged.values()].sort((left, right) => {
+      const rightMs = right.created_at ? new Date(right.created_at).getTime() : 0;
+      const leftMs = left.created_at ? new Date(left.created_at).getTime() : 0;
+      return rightMs - leftMs || right.id - left.id;
+    }),
+  };
+}
+
+function mergeTaskRunDetailIntoMonitorSummary(
+  current: MonitorTaskRunSummary,
+  detail: TaskRunDetail,
+): MonitorTaskRunSummary {
+  return {
+    ...current,
+    ...detail,
+    chat_title: current.chat_title,
+    project_name: current.project_name,
+    latest_event_type: detail.events[detail.events.length - 1]?.event_type ?? current.latest_event_type,
+    event_count: detail.events.length,
+  };
+}
+
+function formatRawMonitorValue(value: unknown) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function httpVersion(entry: MonitorNetworkEvent) {
+  const version = String(entry.metadata?.http_version || "1.1").trim();
+  if (!version) return "HTTP/1.1";
+  return version.toUpperCase().startsWith("HTTP/") ? version : `HTTP/${version}`;
+}
+
+function renderHttpHeaders(headers: Record<string, string> | undefined, host?: string) {
+  const lines: string[] = [];
+  const seenHost = new Set<string>();
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (key.toLowerCase() === "host") {
+      seenHost.add("host");
+    }
+    lines.push(`${key}: ${value}`);
+  }
+  if (!seenHost.has("host") && host) {
+    lines.unshift(`Host: ${host}`);
+  }
+  return lines;
+}
+
+function buildHttpWireDump(entry: MonitorNetworkEvent) {
+  const method = entry.method || "GET";
+  const path = entry.path || "/";
+  const version = httpVersion(entry);
+  const statusCode = entry.status_code ?? 200;
+  const frameType = String(entry.metadata?.frame_type || "").toLowerCase();
+  const lines: string[] = [];
+
+  if (entry.raw_request || frameType === "request") {
+    lines.push(`${method} ${path} ${version}`);
+    lines.push(...renderHttpHeaders(entry.request_headers, entry.host));
+    lines.push("");
+    if (entry.raw_request) {
+      lines.push(entry.raw_request);
+    }
+    return lines.join("\n").trimEnd();
+  }
+
+  lines.push(`${version} ${statusCode}`);
+  lines.push(...renderHttpHeaders(entry.response_headers));
+  lines.push("");
+  if (entry.raw_response) {
+    lines.push(entry.raw_response);
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function buildNetworkRawDump(entry: MonitorNetworkEvent) {
+  if ((entry.protocol || "").toLowerCase().includes("http")) {
+    return buildHttpWireDump(entry);
+  }
+  const requestDirection = entry.request_direction || `${entry.from_entity} -> ${entry.to_entity}`;
+  const responseDirection = entry.response_direction || `${entry.to_entity} -> ${entry.from_entity}`;
+  const lines = [
+    `category: ${entry.category}`,
+    `protocol: ${entry.protocol || "unknown"}`,
+    `method: ${entry.method || "NET"}`,
+    `url: ${entry.url || ""}`,
+    `request-direction: ${requestDirection}`,
+    `response-direction: ${responseDirection}`,
+  ];
+  if (entry.flow_id) {
+    lines.push(`flow-id: ${entry.flow_id}`);
+  }
+  if (entry.flow_kind) {
+    lines.push(`flow-kind: ${entry.flow_kind}`);
+  }
+  if (entry.flow_seq !== undefined && entry.flow_seq !== null) {
+    lines.push(`flow-seq: ${entry.flow_seq}`);
+  }
+
+  if (entry.status_code !== undefined && entry.status_code !== null) {
+    lines.push(`status: ${entry.status_code}`);
+  }
+  if (entry.content_type) {
+    lines.push(`content-type: ${entry.content_type}`);
+  }
+  if (entry.request_headers && Object.keys(entry.request_headers).length > 0) {
+    lines.push("", "[request headers]", formatRawMonitorValue(entry.request_headers));
+  }
+  if (entry.response_headers && Object.keys(entry.response_headers).length > 0) {
+    lines.push("", "[response headers]", formatRawMonitorValue(entry.response_headers));
+  }
+  if (entry.raw_request) {
+    lines.push("", "[raw request]", entry.raw_request);
+  }
+  if (entry.raw_response) {
+    lines.push("", "[raw response]", entry.raw_response);
+  }
+  if (!entry.raw_request && !entry.raw_response) {
+    if (entry.preview) {
+      lines.push("", "[preview]", entry.preview);
+    }
+    if (entry.error) {
+      lines.push("", "[error]", entry.error);
+    }
+  } else if (entry.error) {
+    lines.push("", "[error]", entry.error);
+  }
+
+  return lines.join("\n").trim();
+}
+
+function hashFlowColor(flowId: string) {
+  let hash = 0;
+  for (let index = 0; index < flowId.length; index += 1) {
+    hash = (hash * 31 + flowId.charCodeAt(index)) >>> 0;
+  }
+  return `hsl(${hash % 360} 70% 58%)`;
+}
+
+function isMonitorPageNetwork(entry: MonitorNetworkEvent) {
+  const path = (entry.path || "").toLowerCase();
+  const url = (entry.url || "").toLowerCase();
+  const clientSource = (entry.client_source || "").toLowerCase();
+  const fromEntity = (entry.from_entity || "").toLowerCase();
+  return (
+    clientSource === "monitor" ||
+    fromEntity.includes("frontend (monitor)") ||
+    path.startsWith("/api/monitor") ||
+    path === "/monitor" ||
+    path === "/monitor/" ||
+    path.endsWith("/monitor.html") ||
+    url.includes("/monitor") ||
+    url.includes("/api/monitor")
+  );
+}
+
+function isFrontendBackendHeartbeat(entry: MonitorNetworkEvent) {
+  const protocol = (entry.protocol || "").toLowerCase();
+  const rawResponse = (entry.raw_response || "").trim();
+  const preview = (entry.preview || "").toLowerCase();
+  const path = (entry.path || "").toLowerCase();
+
+  if (!protocol.includes("http")) return false;
+
+  if (rawResponse && /^(: ping\s*)+$/m.test(rawResponse.replace(/\r/g, ""))) {
+    return true;
+  }
+
+  if (
+    (path.endsWith("/stream") || preview.includes(" ping")) &&
+    rawResponse &&
+    !rawResponse.includes("\"type\": \"content\"") &&
+    !rawResponse.includes("\"type\":\"content\"") &&
+    !rawResponse.includes("\"type\": \"done\"") &&
+    !rawResponse.includes("\"type\":\"done\"") &&
+    (
+      rawResponse.includes(": ping") ||
+      rawResponse.includes("\"type\": \"llm_wait\"") ||
+      rawResponse.includes("\"type\":\"llm_wait\"") ||
+      rawResponse.includes("\"type\": \"tool_wait\"") ||
+      rawResponse.includes("\"type\":\"tool_wait\"")
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isFrontendMetaRequest(entry: MonitorNetworkEvent) {
+  const path = (entry.path || "").toLowerCase();
+  const url = (entry.url || "").toLowerCase();
+  return path === "/api/frontend-meta" || url.includes("/api/frontend-meta");
+}
+
+function isFrontendBackendTraffic(entry: MonitorNetworkEvent) {
+  return (entry.category || "").toLowerCase() === "frontend_backend";
+}
+
+function isLegacyBackendLlmAppEvent(entry: MonitorNetworkEvent) {
+  if ((entry.category || "").toLowerCase() !== "backend_llm") return false;
+  const flowKind = (entry.flow_kind || "").toLowerCase();
+  const frameType = String(entry.metadata?.frame_type || "").toLowerCase();
+  if (flowKind === "llm_http") return false;
+  return (
+    flowKind === "llm_stream" ||
+    frameType === "request_sent" ||
+    frameType === "first_chunk" ||
+    frameType === "first_content" ||
+    frameType === "content" ||
+    frameType === "tool_call_delta" ||
+    frameType === "tool_call_ready" ||
+    frameType === "done"
+  );
+}
+
+function isRequestFrame(entry: MonitorNetworkEvent) {
+  const frameType = String(entry.metadata?.frame_type || "").toLowerCase();
+  return frameType === "request" || Boolean(entry.raw_request);
+}
+
+function activeDirection(entry: MonitorNetworkEvent) {
+  return isRequestFrame(entry)
+    ? entry.request_direction || `${entry.from_entity} -> ${entry.to_entity}`
+    : entry.response_direction || `${entry.to_entity} -> ${entry.from_entity}`;
+}
+
+function parseDirection(direction: string) {
+  const [fromRaw, ...rest] = direction.split("->");
+  const from = (fromRaw || "").trim();
+  const to = rest.join("->").trim();
+  return { from, to };
+}
+
+type NetworkEntity = "frontend" | "backend" | "llm" | "web";
+
+function normalizeNetworkEntity(value: string): NetworkEntity | null {
+  const text = value.toLowerCase();
+  if (!text) return null;
+  if (text.includes("frontend")) return "frontend";
+  if (text.includes("backend")) return "backend";
+  if (text.includes("llm")) return "llm";
+  if (
+    text.includes("openai") ||
+    text.includes("deepseek") ||
+    text.includes("qwen") ||
+    text.includes("gpt") ||
+    text.includes("moonshot") ||
+    text.includes("claude")
+  ) {
+    return "llm";
+  }
+  if (
+    text.includes("http://") ||
+    text.includes("https://") ||
+    text.includes("www") ||
+    text.includes(".com") ||
+    text.includes(".cn") ||
+    text.includes(".net") ||
+    text.includes(".org")
+  ) {
+    return "web";
+  }
+  return null;
+}
+
+function getNetworkEntities(entry: MonitorNetworkEvent): { from: NetworkEntity; to: NetworkEntity } {
+  const category = (entry.category || "").toLowerCase();
+  const fromEntity = (entry.from_entity || "").toLowerCase();
+  const toEntity = (entry.to_entity || "").toLowerCase();
+  const text = `${category} ${fromEntity} ${toEntity} ${(entry.host || "").toLowerCase()} ${(entry.url || "").toLowerCase()}`;
+
+  if (
+    category === "backend_llm" ||
+    text.includes("openai") ||
+    text.includes("deepseek") ||
+    text.includes("qwen") ||
+    text.includes("gpt") ||
+    text.includes("moonshot") ||
+    text.includes("claude")
+  ) {
+    return { from: "backend", to: "llm" };
+  }
+
+  if (category === "frontend_backend") {
+    return { from: "frontend", to: "backend" };
+  }
+
+  if (category === "frontend_other") {
+    return { from: "frontend", to: "web" };
+  }
+
+  if (category === "backend_other") {
+    return { from: "backend", to: "web" };
+  }
+
+  return {
+    from: normalizeNetworkEntity(fromEntity) || (text.includes("frontend") ? "frontend" : "backend"),
+    to: normalizeNetworkEntity(toEntity) || (text.includes("llm") ? "llm" : "web"),
+  };
+}
+
+function getNetworkEntityVisual(entity: NetworkEntity) {
+  switch (entity) {
+    case "frontend":
+      return { Icon: Monitor, color: "#0ea5e9", label: "Frontend" };
+    case "backend":
+      return { Icon: Server, color: "#22c55e", label: "Backend" };
+    case "llm":
+      return { Icon: BrainCircuit, color: "#8b5cf6", label: "LLM" };
+    case "web":
+      return { Icon: Globe, color: "#f59e0b", label: "Web" };
+    default:
+      return { Icon: Boxes, color: "#94a3b8", label: "Network" };
+  }
+}
+
+function getDirectionVisual(label: string) {
+  const entity = normalizeNetworkEntity(label) || "web";
+  return getNetworkEntityVisual(entity);
 }
 
 function monitorCreatedAtMs(value: string | null | undefined) {
@@ -320,6 +958,110 @@ function mergeMonitorRuntime(
   return [...merged.values()]
     .sort(compareMonitorItemsNewest)
     .slice(0, MONITOR_RUNTIME_LIMIT);
+}
+
+function compareMonitorApprovalQueueItemsNewest(
+  left: MonitorApprovalQueueEntry,
+  right: MonitorApprovalQueueEntry,
+) {
+  return monitorCreatedAtMs(right.created_at) - monitorCreatedAtMs(left.created_at) || right.id - left.id;
+}
+
+function normalizeMonitorApprovalQueueEntries(entries: MonitorApprovalQueueEntry[]) {
+  const pending = entries.filter((item) => (item.status || "").toLowerCase() === "pending").length;
+  const approved = entries.filter((item) => (item.status || "").toLowerCase() === "approved").length;
+  const rejected = entries.filter((item) => (item.status || "").toLowerCase() === "rejected").length;
+  return {
+    pending,
+    approved,
+    rejected,
+    total: entries.length,
+  };
+}
+
+function mergeMonitorApprovalQueue(
+  current: MonitorApprovalQueueResponse | null,
+  incoming: MonitorApprovalQueueResponse,
+): MonitorApprovalQueueResponse {
+  const merged = new Map<number, MonitorApprovalQueueEntry>();
+  (current?.entries ?? []).forEach((item) => {
+    merged.set(item.id, item);
+  });
+  incoming.entries.forEach((item) => {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  });
+  const entries = [...merged.values()].sort(compareMonitorApprovalQueueItemsNewest).slice(0, 300);
+  return {
+    captured_at: incoming.captured_at,
+    status: incoming.status,
+    counts: normalizeMonitorApprovalQueueEntries(entries),
+    entries,
+  };
+}
+
+function mergeMonitorApprovalQueueItem(
+  current: MonitorApprovalQueueResponse | null,
+  incoming: MonitorApprovalQueueEntry,
+): MonitorApprovalQueueResponse | null {
+  if (!current) return current;
+  return mergeMonitorApprovalQueue(current, {
+    captured_at: new Date().toISOString(),
+    status: "all",
+    counts: normalizeMonitorApprovalQueueEntries([incoming, ...current.entries.filter((item) => item.id !== incoming.id)]),
+    entries: [incoming],
+  });
+}
+
+function enrichApprovalQueueItemFromTaskRun(
+  item: ApprovalQueueItem,
+  detail: TaskRunDetail | null,
+  taskRunSummary?: MonitorTaskRunSummary | null,
+): MonitorApprovalQueueEntry {
+  const payload = (item.request_payload && typeof item.request_payload === "object" ? item.request_payload : {}) as Record<string, unknown>;
+  const resolution = (item.resolution_payload && typeof item.resolution_payload === "object" ? item.resolution_payload : {}) as Record<string, unknown>;
+  const latestEventType = detail?.events?.length ? detail.events[detail.events.length - 1]?.event_type ?? null : taskRunSummary?.latest_event_type ?? null;
+  return {
+    ...item,
+    chat_title: taskRunSummary?.chat_title ?? null,
+    project_name: taskRunSummary?.project_name ?? null,
+    task_run_title: detail?.title ?? taskRunSummary?.title ?? null,
+    task_run_status: detail?.status ?? taskRunSummary?.status ?? null,
+    run_kind: detail?.run_kind ?? taskRunSummary?.run_kind ?? null,
+    latest_event_type: latestEventType,
+    request_preview:
+      item.summary ||
+      (monitorStringField(payload.blocked_reason) ?? null) ||
+      (typeof item.title === "string" ? item.title : null),
+    resolution_preview:
+      item.resolution_note ||
+      (monitorStringField(resolution.replay_result_preview) ?? null) ||
+      null,
+    resume_supported: Boolean(payload.resume_supported),
+    action_taken: monitorStringField(resolution.action_taken),
+    replay_status: monitorStringField(resolution.replay_status),
+    replay_success: typeof resolution.replay_success === "boolean" ? resolution.replay_success : null,
+  };
+}
+
+function mergeMonitorApprovalQueueFromTaskRun(
+  current: MonitorApprovalQueueResponse | null,
+  detail: TaskRunDetail,
+  taskRunSummary?: MonitorTaskRunSummary | null,
+): MonitorApprovalQueueResponse | null {
+  if (!current) return current;
+  const taskRunItems = Array.isArray(detail.approval_queue_items) ? detail.approval_queue_items : [];
+  if (taskRunItems.length === 0) return current;
+
+  const incomingEntries = taskRunItems.map((item) => enrichApprovalQueueItemFromTaskRun(item, detail, taskRunSummary));
+  return mergeMonitorApprovalQueue(current, {
+    captured_at: new Date().toISOString(),
+    status: "all",
+    counts: normalizeMonitorApprovalQueueEntries([
+      ...incomingEntries,
+      ...current.entries.filter((entry) => !incomingEntries.some((incoming) => incoming.id === entry.id)),
+    ]),
+    entries: incomingEntries,
+  });
 }
 
 function maxIsoTimestamp(current: string | null | undefined, candidate: string | null | undefined) {
@@ -1648,6 +2390,8 @@ export function MonitorTab() {
   const [activePage, setActivePage] = useState<MonitorPageId>(readInitialPage);
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
   const [usage, setUsage] = useState<MonitorUsageResponse | null>(null);
+  const [taskRunsResponse, setTaskRunsResponse] = useState<MonitorTaskRunsResponse | null>(null);
+  const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -1655,7 +2399,6 @@ export function MonitorTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [connectionState, setConnectionState] = useState<"connected" | "disconnected">("connected");
-  const [moreOpen, setMoreOpen] = useState(false);
   const [memoryView, setMemoryView] = useState<MemoryView>("summary");
   const [skillsView, setSkillsView] = useState<SkillsView>("grid");
   const [securityFilter, setSecurityFilter] = useState<SecuritySeverity>("all");
@@ -1663,6 +2406,7 @@ export function MonitorTab() {
   const [brainTimelineUnit, setBrainTimelineUnit] = useState<BrainTimelineUnit>("minute");
   const [brainActivityFilter, setBrainActivityFilter] = useState("");
   const [historyRange, setHistoryRange] = useState<HistoryRange>("24h");
+  const [taskRunStatusFilter, setTaskRunStatusFilter] = useState<TaskRunStatusFilter>("all");
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
   const [logFilter, setLogFilter] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -1671,13 +2415,28 @@ export function MonitorTab() {
   const [showSecurityCatalog, setShowSecurityCatalog] = useState(false);
   const [showCreateRuleForm, setShowCreateRuleForm] = useState(false);
   const [logEntries, setLogEntries] = useState<MonitorLogEntry[]>([]);
+  const [networkEntries, setNetworkEntries] = useState<MonitorNetworkEvent[]>([]);
+  const [networkCategory, setNetworkCategory] = useState("all");
+  const [networkFilter, setNetworkFilter] = useState("");
+  const [showInternalNetwork, setShowInternalNetwork] = useState(false);
   const [logStreamState, setLogStreamState] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const [networkStreamState, setNetworkStreamState] = useState<"connecting" | "connected" | "disconnected">("connecting");
   const [expandedBrainEventId, setExpandedBrainEventId] = useState<string | null>(null);
   const [brainRuntimeDetails, setBrainRuntimeDetails] = useState<Record<number, MonitorRuntimeDetail>>({});
   const [brainRuntimeDetailErrors, setBrainRuntimeDetailErrors] = useState<Record<number, string>>({});
   const [brainRuntimeDetailLoading, setBrainRuntimeDetailLoading] = useState<Record<number, boolean>>({});
-  const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
+  const [taskRunDetails, setTaskRunDetails] = useState<Record<number, TaskRunDetail>>({});
+  const [taskRunDetailErrors, setTaskRunDetailErrors] = useState<Record<number, string>>({});
+  const [taskRunDetailLoading, setTaskRunDetailLoading] = useState<Record<number, boolean>>({});
+  const [taskRunResumeLoading, setTaskRunResumeLoading] = useState<Record<number, boolean>>({});
+  const [taskRunResumeErrors, setTaskRunResumeErrors] = useState<Record<number, string>>({});
+  const [taskRunResumeMessages, setTaskRunResumeMessages] = useState<Record<number, string>>({});
+  const [approvalQueueActionLoading, setApprovalQueueActionLoading] = useState<Record<number, boolean>>({});
+  const [approvalQueueActionErrors, setApprovalQueueActionErrors] = useState<Record<number, string>>({});
+  const [approvalQueueActionMessages, setApprovalQueueActionMessages] = useState<Record<number, string>>({});
   const logCursorRef = useRef(0);
+  const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
 
   const loadMonitor = useCallback(async (silent = false) => {
@@ -1688,18 +2447,24 @@ export function MonitorTab() {
     }
 
     try {
-      const [nextOverview, nextUsage, nextProjects, nextAgents, nextConfig] = await Promise.all([
+      const [nextOverview, nextUsage, nextProjects, nextAgents, nextConfig, nextNetwork, nextTaskRuns, nextApprovalQueue] = await Promise.all([
         api.getMonitorOverview(),
         api.getMonitorUsage(historyRange),
         api.getProjects(),
         api.getAgents(),
         api.getConfig(),
+        api.getMonitorNetwork(300, networkCategory, networkFilter),
+        api.getMonitorTaskRuns(historyRange),
+        api.getMonitorApprovalQueue("all", 120),
       ]);
       setOverview(nextOverview);
       setUsage(nextUsage);
+      setTaskRunsResponse(nextTaskRuns);
+      setApprovalQueueResponse(nextApprovalQueue);
       setProjects(nextProjects);
       setAgents(nextAgents);
       setConfig(nextConfig);
+      setNetworkEntries(nextNetwork.entries);
       setConnectionState("connected");
       setError("");
     } catch (nextError) {
@@ -1709,7 +2474,14 @@ export function MonitorTab() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [historyRange]);
+  }, [historyRange, networkCategory, networkFilter]);
+
+  useEffect(() => {
+    if (!error) return undefined;
+
+    const timeoutId = window.setTimeout(() => setError(""), ERROR_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [error]);
 
   useEffect(() => {
     function handleHashChange() {
@@ -1726,20 +2498,7 @@ export function MonitorTab() {
   useEffect(() => {
     window.location.hash = activePage;
     window.localStorage.setItem("catown.monitor.page", activePage);
-    setMoreOpen(false);
   }, [activePage]);
-
-  useEffect(() => {
-    function handlePointerDown(event: MouseEvent) {
-      if (!moreMenuRef.current) return;
-      if (!moreMenuRef.current.contains(event.target as Node)) {
-        setMoreOpen(false);
-      }
-    }
-
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, []);
 
   useEffect(() => {
     void loadMonitor(false);
@@ -1769,6 +2528,42 @@ export function MonitorTab() {
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as Record<string, unknown>;
+          if (data.type === "monitor_task_run" && data.payload && typeof data.payload === "object") {
+            const payload = data.payload as Record<string, unknown>;
+            const entry = asMonitorRecord(payload.entry);
+            const detail = asMonitorRecord(payload.detail);
+            const capturedAt = monitorStringField(payload.captured_at);
+
+            if (entry) {
+              setTaskRunsResponse((current) =>
+                mergeMonitorTaskRunResponse(
+                  current,
+                  entry as MonitorTaskRunSummary,
+                  historyRange,
+                  capturedAt,
+                ),
+              );
+            }
+
+            if (detail && typeof detail.id === "number") {
+              const taskRunId = detail.id;
+              setTaskRunDetails((current) => ({ ...current, [taskRunId]: detail as TaskRunDetail }));
+              setTaskRunDetailErrors((current) => {
+                const next = { ...current };
+                delete next[taskRunId];
+                return next;
+              });
+              setApprovalQueueResponse((current) =>
+                mergeMonitorApprovalQueueFromTaskRun(
+                  current,
+                  detail as TaskRunDetail,
+                  entry as MonitorTaskRunSummary | null,
+                ),
+              );
+            }
+            return;
+          }
+
           if (data.type === "monitor_message" && data.payload && typeof data.payload === "object") {
             setOverview((current) =>
               applyMonitorMessageUpdate(
@@ -1814,20 +2609,31 @@ export function MonitorTab() {
       monitorSocketRef.current?.close();
       monitorSocketRef.current = null;
     };
-  }, [loadMonitor]);
+  }, [historyRange, loadMonitor]);
 
   useEffect(() => {
     let cancelled = false;
     let streamAbortController: AbortController | null = null;
+    let reconnectTimer: number | null = null;
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer !== null) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (!cancelled) {
+          void loadAndStreamLogs();
+        }
+      }, MONITOR_STREAM_RECONNECT_DELAY_MS);
+    };
 
     async function loadAndStreamLogs() {
       try {
+        setLogStreamState("connecting");
         const response = await api.getMonitorLogs();
         if (cancelled) return;
 
         setLogEntries(mergeMonitorLogs([], response.entries));
         logCursorRef.current = response.latest_id;
-        setLogStreamState("connecting");
 
         streamAbortController = new AbortController();
         const streamResponse = await fetch(`/api/monitor/logs/stream?cursor=${response.latest_id}`, {
@@ -1874,10 +2680,12 @@ export function MonitorTab() {
 
         if (!cancelled) {
           setLogStreamState("disconnected");
+          scheduleReconnect();
         }
       } catch {
         if (!cancelled) {
           setLogStreamState("disconnected");
+          scheduleReconnect();
         }
       }
     }
@@ -1886,9 +2694,110 @@ export function MonitorTab() {
 
     return () => {
       cancelled = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
       streamAbortController?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let streamAbortController: AbortController | null = null;
+    let reconnectTimer: number | null = null;
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer !== null) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (!cancelled) {
+          void loadAndStreamNetwork();
+        }
+      }, MONITOR_STREAM_RECONNECT_DELAY_MS);
+    };
+
+    async function loadAndStreamNetwork() {
+      try {
+        setNetworkStreamState("connecting");
+        const response = await api.getMonitorNetwork(300, networkCategory, networkFilter);
+        if (cancelled) return;
+
+        setNetworkEntries(mergeMonitorNetwork([], response.entries));
+        networkCursorRef.current = response.latest_id;
+
+        streamAbortController = new AbortController();
+        const params = new URLSearchParams({
+          cursor: String(response.latest_id),
+          category: networkCategory,
+        });
+        if (networkFilter.trim()) {
+          params.set("query", networkFilter.trim());
+        }
+
+        const streamResponse = await fetch(`/api/monitor/network/stream?${params.toString()}`, {
+          headers: { "X-Catown-Client": "monitor" },
+          signal: streamAbortController.signal,
+        });
+        if (!streamResponse.ok || !streamResponse.body) {
+          throw new Error("Failed to open monitor network stream");
+        }
+
+        if (!cancelled) {
+          setNetworkStreamState("connected");
+        }
+
+        const reader = streamResponse.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = "";
+
+        while (!cancelled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffered += decoder.decode(value, { stream: true });
+          const frames = buffered.split("\n\n");
+          buffered = frames.pop() ?? "";
+
+          for (const frame of frames) {
+            const dataLine = frame
+              .split("\n")
+              .find((line) => line.startsWith("data: "));
+            if (!dataLine) continue;
+
+            try {
+              const nextEntry = JSON.parse(dataLine.slice(6)) as MonitorNetworkEvent;
+              networkCursorRef.current = Math.max(networkCursorRef.current, nextEntry.id);
+              if (!cancelled) {
+                setNetworkEntries((current) => mergeMonitorNetwork(current, [nextEntry]));
+              }
+            } catch {
+              // Ignore malformed frames without breaking the stream.
+            }
+          }
+        }
+
+        if (!cancelled) {
+          setNetworkStreamState("disconnected");
+          scheduleReconnect();
+        }
+      } catch {
+        if (!cancelled) {
+          setNetworkStreamState("disconnected");
+          scheduleReconnect();
+        }
+      }
+    }
+
+    void loadAndStreamNetwork();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      streamAbortController?.abort();
+    };
+  }, [networkCategory, networkFilter]);
 
   const sortedProjects = useMemo(
     () => [...projects].sort((left, right) => left.display_order - right.display_order),
@@ -2070,6 +2979,122 @@ export function MonitorTab() {
     void loadBrainRuntimeDetail(expandedEvent.runtimeId);
   }, [brainRuntimeDetailLoading, brainRuntimeDetails, expandedBrainEventId, filteredBrainEvents, loadBrainRuntimeDetail]);
 
+  const visibleTaskRuns = useMemo(() => {
+    const entries = taskRunsResponse?.entries ?? [];
+    if (taskRunStatusFilter === "all") return entries;
+    return entries.filter((entry) => (entry.status || "").toLowerCase() === taskRunStatusFilter);
+  }, [taskRunStatusFilter, taskRunsResponse]);
+
+  const selectedTaskRunSummary = useMemo(
+    () => visibleTaskRuns.find((entry) => entry.id === selectedTaskRunId) ?? visibleTaskRuns[0] ?? null,
+    [selectedTaskRunId, visibleTaskRuns],
+  );
+  const selectedTaskRunDetail = selectedTaskRunSummary ? taskRunDetails[selectedTaskRunSummary.id] ?? null : null;
+  const selectedTaskRunRecoveryState = selectedTaskRunDetail ?? selectedTaskRunSummary;
+  const selectedTaskRunSchedulePlan = useMemo(
+    () => extractRunSchedulePlan(selectedTaskRunDetail),
+    [selectedTaskRunDetail],
+  );
+  const selectedTaskRunStepMap = useMemo(
+    () => new Map((selectedTaskRunSchedulePlan?.steps ?? []).map((step) => [step.stepId, step])),
+    [selectedTaskRunSchedulePlan],
+  );
+  const selectedTaskRunHandoffs = useMemo(
+    () => extractRunHandoffs(selectedTaskRunDetail),
+    [selectedTaskRunDetail],
+  );
+
+  useEffect(() => {
+    if (!visibleTaskRuns.length) {
+      if (selectedTaskRunId !== null) {
+        setSelectedTaskRunId(null);
+      }
+      return;
+    }
+    if (selectedTaskRunId === null || !visibleTaskRuns.some((entry) => entry.id === selectedTaskRunId)) {
+      setSelectedTaskRunId(visibleTaskRuns[0].id);
+    }
+  }, [selectedTaskRunId, visibleTaskRuns]);
+
+  const loadTaskRunDetail = useCallback(
+    async (taskRunId: number) => {
+      if (taskRunDetails[taskRunId] || taskRunDetailLoading[taskRunId]) return;
+      setTaskRunDetailLoading((current) => ({ ...current, [taskRunId]: true }));
+      setTaskRunDetailErrors((current) => {
+        const next = { ...current };
+        delete next[taskRunId];
+        return next;
+      });
+      try {
+        const detail = await api.getTaskRunDetail(taskRunId);
+        setTaskRunDetails((current) => ({ ...current, [taskRunId]: detail }));
+      } catch (nextError) {
+        setTaskRunDetailErrors((current) => ({
+          ...current,
+          [taskRunId]: nextError instanceof Error ? nextError.message : "Failed to load task run detail",
+        }));
+      } finally {
+        setTaskRunDetailLoading((current) => ({ ...current, [taskRunId]: false }));
+      }
+    },
+    [taskRunDetailLoading, taskRunDetails],
+  );
+
+  const selectedTaskRunCanResume = useMemo(() => {
+    if (!selectedTaskRunSummary) return false;
+    if ((selectedTaskRunSummary.status || "").toLowerCase() !== "running") return false;
+    if (hasActiveRecoveryLease(selectedTaskRunRecoveryState)) return false;
+    return RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "");
+  }, [selectedTaskRunRecoveryState, selectedTaskRunSummary]);
+
+  const resumeTaskRun = useCallback(
+    async (summary: MonitorTaskRunSummary) => {
+      if (taskRunResumeLoading[summary.id]) return;
+      setTaskRunResumeLoading((current) => ({ ...current, [summary.id]: true }));
+      setTaskRunResumeErrors((current) => {
+        const next = { ...current };
+        delete next[summary.id];
+        return next;
+      });
+      setTaskRunResumeMessages((current) => {
+        const next = { ...current };
+        delete next[summary.id];
+        return next;
+      });
+
+      try {
+        const response: TaskRunResumeResponse = await api.resumeTaskRun(summary.id);
+        const detail = response.detail;
+        setTaskRunDetails((current) => ({ ...current, [summary.id]: detail }));
+        setTaskRunsResponse((current) =>
+          mergeMonitorTaskRunResponse(
+            current,
+            mergeTaskRunDetailIntoMonitorSummary(summary, detail),
+            historyRange,
+          ),
+        );
+        setTaskRunResumeMessages((current) => ({
+          ...current,
+          [summary.id]: response.message,
+        }));
+      } catch (nextError) {
+        setTaskRunResumeErrors((current) => ({
+          ...current,
+          [summary.id]: nextError instanceof Error ? nextError.message : "Failed to resume task run",
+        }));
+      } finally {
+        setTaskRunResumeLoading((current) => ({ ...current, [summary.id]: false }));
+      }
+    },
+    [historyRange, taskRunResumeLoading],
+  );
+
+  useEffect(() => {
+    if (!selectedTaskRunSummary) return;
+    if (taskRunDetails[selectedTaskRunSummary.id] || taskRunDetailLoading[selectedTaskRunSummary.id]) return;
+    void loadTaskRunDetail(selectedTaskRunSummary.id);
+  }, [loadTaskRunDetail, selectedTaskRunSummary, taskRunDetailLoading, taskRunDetails]);
+
   const historyBuckets = useMemo(() => buildHourlyBuckets(brainEvents, historyRange), [brainEvents, historyRange]);
   const brainTimelineBuckets = useMemo(
     () => buildBrainTimelineBuckets(brainEvents, brainTimelineUnit),
@@ -2107,6 +3132,17 @@ export function MonitorTab() {
   const todayCost = usage?.totals.day.estimated_cost_usd ?? usageCostTotal(overview, "day");
   const weekCost = usage?.totals.week.estimated_cost_usd ?? usageCostTotal(overview, "week");
   const monthCost = usage?.totals.month.estimated_cost_usd ?? usageCostTotal(overview, "month");
+  const taskRunCounts = useMemo(() => {
+    const counts = { total: 0, running: 0, completed: 0, failed: 0 };
+    for (const entry of taskRunsResponse?.entries ?? []) {
+      counts.total += 1;
+      const status = (entry.status || "").toLowerCase();
+      if (status === "running") counts.running += 1;
+      if (status === "completed") counts.completed += 1;
+      if (status === "failed") counts.failed += 1;
+    }
+    return counts;
+  }, [taskRunsResponse]);
 
   const modelPrimary = modelRows[0]?.name ?? config?.global_llm?.default_model ?? "unknown";
   const autonomyScore = overview
@@ -2159,12 +3195,12 @@ export function MonitorTab() {
   const securityScore = securityChecks.length ? Math.round((passedChecks / securityChecks.length) * 100) : 0;
 
   const approvalsPending = useMemo(
-    () => overview?.recent_runtime.filter((item) => item.type === "gate_blocked") ?? [],
-    [overview],
+    () => approvalQueueResponse?.entries.filter((item) => item.status === "pending") ?? [],
+    [approvalQueueResponse],
   );
   const approvalsHistory = useMemo(
-    () => overview?.recent_runtime.filter((item) => item.type === "gate_approved" || item.type === "gate_rejected") ?? [],
-    [overview],
+    () => approvalQueueResponse?.entries.filter((item) => item.status !== "pending") ?? [],
+    [approvalQueueResponse],
   );
 
   const limitsRows = useMemo(() => {
@@ -2191,7 +3227,20 @@ export function MonitorTab() {
     ];
   }, [contextWindow, overview]);
 
-  const currentMoreLabel = MORE_PAGES.find((page) => page.id === activePage)?.label ?? "More";
+  const visibleNetworkEntries = useMemo(() => {
+    let entries = networkEntries;
+    if (!showInternalNetwork) {
+      entries = entries.filter(
+        (entry) =>
+          !isFrontendBackendTraffic(entry) &&
+          !isMonitorPageNetwork(entry) &&
+          !isFrontendBackendHeartbeat(entry) &&
+          !isFrontendMetaRequest(entry),
+      );
+    }
+    entries = entries.filter((entry) => !isLegacyBackendLlmAppEvent(entry));
+    return entries.filter((entry) => entry.aggregated === false || !entry.flow_id);
+  }, [networkEntries, showInternalNetwork]);
 
   async function refreshMonitor() {
     await loadMonitor(true);
@@ -2205,6 +3254,61 @@ export function MonitorTab() {
       setLogStreamState((current) => (current === "connected" ? current : "connecting"));
     } catch {
       setLogStreamState("disconnected");
+    }
+  }
+
+  async function refreshNetwork() {
+    try {
+      const response = await api.getMonitorNetwork(300, networkCategory, networkFilter);
+      setNetworkEntries(mergeMonitorNetwork([], response.entries));
+      networkCursorRef.current = Math.max(networkCursorRef.current, response.latest_id);
+      setNetworkStreamState((current) => (current === "connected" ? current : "connecting"));
+    } catch {
+      setNetworkStreamState("disconnected");
+      // Keep the current snapshot on fetch failures.
+    }
+  }
+
+  async function decideApprovalQueueItem(item: MonitorApprovalQueueEntry, decision: "approve" | "reject") {
+    setApprovalQueueActionLoading((current) => ({ ...current, [item.id]: true }));
+    setApprovalQueueActionErrors((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+
+    try {
+      if (decision === "approve") {
+        const updated = await api.approveApprovalQueueItem(item.id, {
+          note: item.summary ? `Approved from monitor: ${item.summary}` : "Approved from monitor.",
+          resolved_by: "monitor",
+        });
+        setApprovalQueueActionMessages((current) => ({
+          ...current,
+          [item.id]: updated.status === "approved" ? "Approved" : "Updated",
+        }));
+      } else {
+        const updated = await api.rejectApprovalQueueItem(item.id, {
+          note: item.summary ? `Rejected from monitor: ${item.summary}` : "Rejected from monitor.",
+          resolved_by: "monitor",
+        });
+        setApprovalQueueActionMessages((current) => ({
+          ...current,
+          [item.id]: updated.status === "rejected" ? "Rejected" : "Updated",
+        }));
+      }
+      await loadMonitor(true);
+    } catch (nextError) {
+      setApprovalQueueActionErrors((current) => ({
+        ...current,
+        [item.id]: nextError instanceof Error ? nextError.message : "Failed to update approval queue item",
+      }));
+    } finally {
+      setApprovalQueueActionLoading((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
     }
   }
 
@@ -2244,7 +3348,7 @@ export function MonitorTab() {
 
       <div className="nav nav--tabs">
         <div className="nav-tabs">
-          {PRIMARY_PAGES.map((page) => (
+          {ALL_PAGES.map((page) => (
             <button
               key={page.id}
               type="button"
@@ -2254,33 +3358,22 @@ export function MonitorTab() {
               {page.label}
             </button>
           ))}
-          <div ref={moreMenuRef} className="nav-tab-more">
-            <button
-              type="button"
-              className={`nav-tab ${MORE_PAGES.some((page) => page.id === activePage) ? "active" : ""}`}
-              onClick={() => setMoreOpen((value) => !value)}
-            >
-              {currentMoreLabel} ▾
-            </button>
-            {moreOpen ? (
-              <div className="advanced-tabs-dropdown">
-                {MORE_PAGES.map((page) => (
-                  <button
-                    key={page.id}
-                    type="button"
-                    className={`nav-tab ${activePage === page.id ? "active" : ""}`}
-                    onClick={() => setActivePage(page.id)}
-                  >
-                    {page.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
         </div>
       </div>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? (
+        <div className="error-banner" role="alert">
+          <span className="error-banner__message">{error}</span>
+          <button
+            type="button"
+            className="error-banner__close"
+            onClick={() => setError("")}
+            aria-label="Dismiss error"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       {loading && !overview ? <div className="page active"><div className="empty-state">Loading Catown monitor...</div></div> : null}
 
       <section className={`page ${activePage === "overview" ? "active" : ""}`} id="page-overview">
@@ -2356,6 +3449,14 @@ export function MonitorTab() {
               <div className="stats-footer-sub">{passedChecks}/{securityChecks.length || 0} checks passed</div>
             </div>
           </div>
+          <div className="stats-footer-item">
+            <span className="stats-footer-icon">Q</span>
+            <div>
+              <div className="stats-footer-label">Approvals</div>
+              <div className="stats-footer-value">{formatNumber(approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending)}</div>
+              <div className="stats-footer-sub">{formatNumber(approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total)} queued decisions</div>
+            </div>
+          </div>
         </div>
 
         <div className="overview-split">
@@ -2387,6 +3488,7 @@ export function MonitorTab() {
                   <span className="tag">{formatNumber(overview?.system.stats.projects)} projects</span>
                   <span className="tag">{formatNumber(overview?.system.stats.visible_chats)} visible chats</span>
                   <span className="tag">{formatNumber(overview?.system.stats.runtime_cards)} runtime cards</span>
+                  <span className="tag">{formatNumber(overview?.system.stats.approval_queue_pending)} pending approvals</span>
                 </div>
               </div>
               <div className="health-group">
@@ -2516,6 +3618,122 @@ export function MonitorTab() {
             </div>
           ))}
         </div>
+      </section>
+      <section className={`page ${activePage === "network" ? "active" : ""}`} id="page-network">
+        <div className="refresh-bar" style={{ width: "100%" }}>
+          <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Network Transport</h2>
+          <span className={`status-pill ${networkStreamState === "connected" ? "status-pill--live" : "status-pill--offline"}`}>
+            {networkStreamState === "connected"
+              ? "Network stream live"
+              : networkStreamState === "connecting"
+                ? "Network stream connecting"
+                : "Network stream offline"}
+          </span>
+          <button type="button" className="refresh-btn" onClick={() => void refreshNetwork()}>
+            Refresh
+          </button>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+            marginTop: 0,
+            marginBottom: 10,
+            width: "100%",
+          }}
+        >
+          <p className="small-note" style={{ margin: 0, minWidth: 0 }}>
+            Debug view only. No aggregation; each record is shown as one title line plus one raw HTTP wire block.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto", flexWrap: "wrap", width: "min(100%, 560px)" }}>
+            <label className="small-note" style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 }}>
+              <input
+                type="checkbox"
+                checked={showInternalNetwork}
+                onChange={(event) => setShowInternalNetwork(event.target.checked)}
+              />
+              Show heartbeat / internal requests
+            </label>
+            <input
+              type="text"
+              className="search-input"
+              placeholder="Filter by host, path, peer, raw text..."
+              value={networkFilter}
+              onChange={(event) => setNetworkFilter(event.target.value)}
+              style={{ flex: "1 1 280px", width: "100%", minWidth: 180, maxWidth: "100%" }}
+            />
+          </div>
+        </div>
+        {visibleNetworkEntries.length > 0 ? (
+          <div className="feed-list" style={{ gap: 8 }}>
+            {visibleNetworkEntries.map((entry) => {
+              const direction = activeDirection(entry);
+              const { from: directionFrom, to: directionTo } = parseDirection(direction);
+              const fromVisual = getDirectionVisual(directionFrom);
+              const toVisual = getDirectionVisual(directionTo);
+              const flowColor = entry.flow_id ? hashFlowColor(entry.flow_id) : fromVisual.color;
+              return (
+                <details
+                  key={entry.id}
+                  className="card network-log-card"
+                  style={{
+                    marginBottom: 8,
+                    padding: "10px 12px",
+                    width: "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
+                    borderLeft: entry.flow_id ? `4px solid ${flowColor}` : undefined,
+                  }}
+                >
+                  <summary className="network-log-card__summary" style={{ cursor: "pointer", listStyle: "none", width: "100%", minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", width: "100%", minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 420px", flexWrap: "wrap", width: "100%" }}>
+                        <span
+                          title={direction}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 28,
+                            height: 28,
+                            borderRadius: 999,
+                            background: `${flowColor}1a`,
+                            color: flowColor,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <fromVisual.Icon size={16} strokeWidth={2.2} />
+                        </span>
+                        <strong style={{ minWidth: 0, maxWidth: "100%", overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                          {direction}
+                          {" · "}
+                          {entry.method || "NET"} {entry.path || entry.url}
+                          {" · "}
+                          {entry.protocol || "unknown"}
+                          {" · "}
+                          {formatBytes(entry.request_bytes)} out / {formatBytes(entry.response_bytes)} in
+                          {" · "}
+                          {formatDuration(entry.duration_ms)}
+                          {entry.status_code ? ` · ${entry.status_code}` : ""}
+                          {entry.flow_id ? ` · ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
+                        </strong>
+                      </div>
+                      <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
+                    </div>
+                  </summary>
+                  <pre className="monitor-pre" style={{ marginTop: 8, padding: "8px 10px", fontSize: 12, lineHeight: 1.45 }}>
+                    {buildNetworkRawDump(entry)}
+                  </pre>
+                </details>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="muted-block">No network events captured for the current filter yet.</div>
+        )}
       </section>
 
       <section className={`page ${activePage === "usage" ? "active" : ""}`} id="page-usage">
@@ -3490,6 +4708,304 @@ export function MonitorTab() {
             <div className="muted-block">TODO: hook Catown cron scheduler runs into monitor history.</div>
           </div>
         </div>
+        <div className="split-panels" style={{ marginTop: 16 }}>
+          <div className="card">
+            <div className="refresh-bar" style={{ marginBottom: 12, alignItems: "flex-start" }}>
+              <div>
+                <div className="section-title">Run Ledger</div>
+                <div className="small-note">
+                  Global task runs captured in the last {historyRange}. {taskRunCounts.total} total / {taskRunCounts.running} running / {taskRunCounts.failed} failed.
+                </div>
+              </div>
+              <div className="inline-actions">
+                {(["all", "running", "completed", "failed"] as const).map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    className={`time-btn ${taskRunStatusFilter === status ? "active" : ""}`}
+                    onClick={() => setTaskRunStatusFilter(status)}
+                  >
+                    {status === "all" ? "all" : titleCaseLabel(status)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {visibleTaskRuns.length > 0 ? (
+              <div className="run-history-list">
+                {visibleTaskRuns.map((run) => (
+                  <button
+                    key={run.id}
+                    type="button"
+                    className={`run-history-item ${selectedTaskRunSummary?.id === run.id ? "is-active" : ""}`}
+                    onClick={() => setSelectedTaskRunId(run.id)}
+                  >
+                    <div className="run-history-item__head">
+                      <strong>{run.title}</strong>
+                      <div className="run-history-item__badges">
+                        <span className={`feed-badge feed-badge--${taskRunStatusTone(run.status)}`}>
+                          {titleCaseLabel(run.status)}
+                        </span>
+                        {hasActiveRecoveryLease(run) ? (
+                          <span className="feed-badge feed-badge--warning">Lease Active</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="feed-meta">
+                      <span>{titleCaseLabel(run.run_kind)}</span>
+                      <span>{run.chat_title}</span>
+                      {run.project_name ? <span>{run.project_name}</span> : null}
+                      <span>{formatTimeAgo(run.created_at)}</span>
+                    </div>
+                    <div className="feed-preview">
+                      {run.summary || run.user_request || "No summary recorded for this run."}
+                    </div>
+                    <div className="run-history-item__foot">
+                      <span>{run.event_count} events</span>
+                      {run.latest_event_type ? <span>{titleCaseLabel(run.latest_event_type)}</span> : null}
+                      {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
+                      {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">No task runs captured for the current range and filter.</div>
+            )}
+          </div>
+          <div className="card">
+            <div className="section-title">Selected Run Detail</div>
+            {!selectedTaskRunSummary ? (
+              <div className="muted-block">Pick a task run to inspect its ordered event ledger.</div>
+            ) : (
+              <>
+                <div className="run-detail-hero">
+                  <div>
+                    <strong>{selectedTaskRunSummary.title}</strong>
+                    <div className="feed-meta" style={{ marginTop: 6 }}>
+                      <span>{selectedTaskRunSummary.chat_title}</span>
+                      {selectedTaskRunSummary.project_name ? <span>{selectedTaskRunSummary.project_name}</span> : null}
+                      <span>{shortDate(selectedTaskRunSummary.created_at)}</span>
+                      {selectedTaskRunSummary.completed_at ? <span>done {shortDate(selectedTaskRunSummary.completed_at)}</span> : null}
+                    </div>
+                  </div>
+                  <div className="run-detail-hero__actions">
+                    <div className="run-detail-hero__badges">
+                      <span className={`feed-badge feed-badge--${taskRunStatusTone(selectedTaskRunSummary.status)}`}>
+                        {titleCaseLabel(selectedTaskRunSummary.status)}
+                      </span>
+                      <span className="feed-badge">{titleCaseLabel(selectedTaskRunSummary.run_kind)}</span>
+                    </div>
+                    {selectedTaskRunCanResume ? (
+                      <button
+                        type="button"
+                        className="refresh-btn"
+                        disabled={Boolean(taskRunResumeLoading[selectedTaskRunSummary.id])}
+                        onClick={() => void resumeTaskRun(selectedTaskRunSummary)}
+                      >
+                        {taskRunResumeLoading[selectedTaskRunSummary.id] ? "Resuming..." : "Resume Run"}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {taskRunResumeMessages[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunResumeMessages[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
+                {taskRunResumeErrors[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunResumeErrors[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
+                {hasActiveRecoveryLease(selectedTaskRunRecoveryState) ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    Recovery lease is active on <span className="mono">{compactOwnerLabel(selectedTaskRunRecoveryState.recovery_owner)}</span>
+                    {" "}until {shortDate(selectedTaskRunRecoveryState.recovery_lease_expires_at)}.
+                  </div>
+                ) : null}
+                <div className="simple-list" style={{ marginTop: 12 }}>
+                  <div className="simple-row">
+                    <strong>Target Agent</strong>
+                    <div className="small-note">{selectedTaskRunSummary.target_agent_name || "not pinned"}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Summary</strong>
+                    <div className="small-note">{selectedTaskRunSummary.summary || selectedTaskRunSummary.user_request || "No summary recorded."}</div>
+                  </div>
+                  {RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "") || selectedTaskRunRecoveryState?.recovery_owner ? (
+                    <>
+                      <div className="simple-row">
+                        <strong>Recovery Owner</strong>
+                        <div className="small-note">
+                          {selectedTaskRunRecoveryState?.recovery_owner
+                            ? <span className="mono">{selectedTaskRunRecoveryState.recovery_owner}</span>
+                            : "unclaimed"}
+                        </div>
+                      </div>
+                      <div className="simple-row">
+                        <strong>Recovery Lease</strong>
+                        <div className="small-note">
+                          {selectedTaskRunRecoveryState?.recovery_lease_expires_at
+                            ? `expires ${shortDate(selectedTaskRunRecoveryState.recovery_lease_expires_at)}`
+                            : "not leased"}
+                        </div>
+                      </div>
+                      <div className="simple-row">
+                        <strong>Recovery Claimed</strong>
+                        <div className="small-note">
+                          {selectedTaskRunRecoveryState?.recovery_claimed_at
+                            ? shortDate(selectedTaskRunRecoveryState.recovery_claimed_at)
+                            : "not claimed"}
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+                {selectedTaskRunSchedulePlan ? (
+                  <div className="run-detail-section">
+                    <div className="run-detail-section__head">
+                      <div>
+                        <strong>Scheduler Plan</strong>
+                        <div className="small-note">
+                          {titleCaseLabel(selectedTaskRunSchedulePlan.mode)} · {selectedTaskRunSchedulePlan.blockingStepCount} blocking / {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
+                        </div>
+                        <div className="small-note">
+                          Sidecar policy: {selectedTaskRunSchedulePlan.sidecarAgentTypes.length > 0
+                            ? selectedTaskRunSchedulePlan.sidecarAgentTypes.join(" · ")
+                            : "disabled"}
+                        </div>
+                        <div className="small-note">
+                          Runtime: {selectedTaskRunSchedulePlan.completedStepCount} completed · {selectedTaskRunSchedulePlan.runningStepCount} running · {selectedTaskRunSchedulePlan.waitingStepCount} waiting
+                        </div>
+                      </div>
+                      <div className="run-detail-hero__badges">
+                        <span className="feed-badge">{selectedTaskRunSchedulePlan.stepCount} steps</span>
+                        {selectedTaskRunSchedulePlan.sidecarStepCount ? (
+                          <span className="feed-badge feed-badge--warning">
+                            {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="run-schedule-grid">
+                      {selectedTaskRunSchedulePlan.steps.map((step) => {
+                        const waitStep = step.waitForStepId ? selectedTaskRunStepMap.get(step.waitForStepId) ?? null : null;
+                        const attachedStep = step.attachedToStepId ? selectedTaskRunStepMap.get(step.attachedToStepId) ?? null : null;
+                        return (
+                          <div
+                            key={step.stepId}
+                            className={`run-schedule-step run-schedule-step--${step.dispatchKind === "sidecar" ? "sidecar" : "blocking"}`}
+                          >
+                            <div className="run-schedule-step__head">
+                              <span className="run-schedule-step__index">#{step.position}</span>
+                              <span className={`feed-badge ${step.dispatchKind === "sidecar" ? "feed-badge--warning" : ""}`}>
+                                {titleCaseLabel(step.dispatchKind)}
+                              </span>
+                              <span className={`feed-badge ${step.status === "completed" ? "feed-badge--success" : step.status === "running" ? "feed-badge--info" : step.status === "waiting" ? "feed-badge--warning" : ""}`}>
+                                {titleCaseLabel(step.status)}
+                              </span>
+                            </div>
+                            <strong>{step.agentName}</strong>
+                            <div className="feed-meta" style={{ marginTop: 6, marginBottom: 0 }}>
+                              <span>{titleCaseLabel(step.agentType)}</span>
+                              <span>@{step.requestedName}</span>
+                              <span>{titleCaseLabel(step.source)}</span>
+                              {step.dispatchCount > 0 ? <span>dispatch {step.dispatchCount}</span> : null}
+                              {step.completionCount > 0 ? <span>complete {step.completionCount}</span> : null}
+                            </div>
+                            <div className="small-note" style={{ marginTop: 8 }}>
+                              {step.status === "waiting"
+                                ? `Waiting on ${waitStep?.agentName || waitStep?.stepId || "a previous blocking step"}.`
+                                : step.status === "running"
+                                  ? `Currently executing after ${waitStep?.agentName || "scheduler release"}.`
+                                  : step.status === "completed"
+                                    ? step.releasedByStepId
+                                      ? `Completed after resume from ${selectedTaskRunStepMap.get(step.releasedByStepId)?.agentName || step.releasedByStepId}.`
+                                      : "Completed from the initial ready queue."
+                                    : step.dispatchKind === "sidecar"
+                                      ? `Attached to ${attachedStep?.agentName || attachedStep?.stepId || "blocking work"}.`
+                                      : waitStep
+                                        ? `Runs after ${waitStep.agentName}.`
+                                        : "Entry step in this run."}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {selectedTaskRunHandoffs.length > 0 ? (
+                      <div className="run-schedule-links">
+                        {selectedTaskRunHandoffs.map((handoff) => {
+                          const fromStep = handoff.fromStepId ? selectedTaskRunStepMap.get(handoff.fromStepId) ?? null : null;
+                          const toStep = handoff.toStepId ? selectedTaskRunStepMap.get(handoff.toStepId) ?? null : null;
+                          const attachedStep = handoff.attachedToStepId
+                            ? selectedTaskRunStepMap.get(handoff.attachedToStepId) ?? null
+                            : null;
+                          return (
+                            <div
+                              key={handoff.id}
+                              className={`run-schedule-link run-schedule-link--${handoff.dispatchKind === "sidecar" ? "sidecar" : "blocking"}`}
+                            >
+                              <div className="run-schedule-link__head">
+                                <strong>{handoff.fromAgent}{" -> "}{handoff.toAgent}</strong>
+                                <span className={`feed-badge ${handoff.dispatchKind === "sidecar" ? "feed-badge--warning" : ""}`}>
+                                  {titleCaseLabel(handoff.dispatchKind)}
+                                </span>
+                              </div>
+                              <div className="small-note" style={{ marginTop: 6 }}>
+                                {handoff.contentPreview || "No handoff preview recorded."}
+                              </div>
+                              <div className="feed-meta" style={{ marginTop: 8, marginBottom: 0 }}>
+                                {fromStep ? <span>from {fromStep.stepId}</span> : null}
+                                {toStep ? <span>to {toStep.stepId}</span> : null}
+                                {attachedStep ? <span>attached to {attachedStep.agentName}</span> : null}
+                                {handoff.createdAt ? <span>{shortDate(handoff.createdAt)}</span> : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {taskRunDetailLoading[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>Loading ordered task-run events…</div>
+                ) : null}
+                {taskRunDetailErrors[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunDetailErrors[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
+                {selectedTaskRunDetail ? (
+                  <div className="simple-list" style={{ marginTop: 12 }}>
+                    {selectedTaskRunDetail.events.map((event) => (
+                      <div key={event.id} className={`run-event-row run-event-row--${taskRunEventTone(event.event_type)}`}>
+                        <div className="run-event-row__head">
+                          <strong>
+                            #{event.event_index} · {titleCaseLabel(event.event_type)}
+                          </strong>
+                          <span className="small-note">{shortDate(event.created_at)}</span>
+                        </div>
+                        <div className="small-note" style={{ marginTop: 6 }}>
+                          {event.summary || "No summary recorded for this event."}
+                        </div>
+                        <div className="feed-meta" style={{ marginTop: 8, marginBottom: 0 }}>
+                          {event.agent_name ? <span>{event.agent_name}</span> : null}
+                          {event.message_id ? <span>message #{event.message_id}</span> : null}
+                        </div>
+                        {event.payload && Object.keys(event.payload).length > 0 ? (
+                          <details className="run-event-row__payload">
+                            <summary>Payload</summary>
+                            <pre>{formatRawMonitorValue(event.payload)}</pre>
+                          </details>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
       </section>
 
       <section className={`page ${activePage === "limits" ? "active" : ""}`} id="page-limits">
@@ -3523,7 +5039,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Visual policy builder + approval queue baseline copied from ClawMetry.</div>
           </div>
           <div className="inline-actions">
-            <span className="small-note">{approvalsPending.length} pending</span>
+            <span className="small-note">{approvalQueueResponse?.counts.pending ?? approvalsPending.length} pending</span>
             <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
               ↻ Refresh
             </button>
@@ -3537,8 +5053,47 @@ export function MonitorTab() {
                 <div key={item.id} className="approval-card">
                   <div className="simple-row">
                     <strong>{item.title}</strong>
+                    <div className={`feed-badge feed-badge--${approvalStatusTone(item.status)}`}>{item.status}</div>
                     <div className="small-note">{formatTimeAgo(item.created_at)}</div>
-                    <div className="muted-block" style={{ marginTop: 8 }}>{item.preview || "Awaiting operator decision."}</div>
+                  </div>
+                  <div className="small-note" style={{ marginTop: 6 }}>
+                    {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
+                    {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                  </div>
+                  <div className="muted-block" style={{ marginTop: 8 }}>
+                    {item.request_preview || item.summary || "Awaiting operator decision."}
+                  </div>
+                  <div className="approval-card__meta" style={{ marginTop: 10 }}>
+                    <span className="tag">{item.queue_kind}</span>
+                    <span className="tag">{item.target_kind}</span>
+                    {item.target_name ? <span className="tag mono">{item.target_name}</span> : null}
+                    {item.resume_supported ? <span className="tag">replayable</span> : <span className="tag">manual only</span>}
+                  </div>
+                  <div className="inline-actions" style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="refresh-btn"
+                      onClick={() => void decideApprovalQueueItem(item, "approve")}
+                      disabled={Boolean(approvalQueueActionLoading[item.id])}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      className="refresh-btn"
+                      onClick={() => void decideApprovalQueueItem(item, "reject")}
+                      disabled={Boolean(approvalQueueActionLoading[item.id])}
+                    >
+                      Reject
+                    </button>
+                    {approvalQueueActionMessages[item.id] ? (
+                      <span className="small-note">{approvalQueueActionMessages[item.id]}</span>
+                    ) : null}
+                    {approvalQueueActionErrors[item.id] ? (
+                      <span className="small-note" style={{ color: "var(--danger, #ef4444)" }}>
+                        {approvalQueueActionErrors[item.id]}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -3598,13 +5153,19 @@ export function MonitorTab() {
               <div className="feed-list">
                 {approvalsHistory.map((item) => (
                   <div key={item.id} className="feed-item">
-                    <div className={`feed-badge feed-badge--${runtimeTone(item.type, item.success)}`}>{runtimeLabel(item.type)}</div>
+                    <div className={`feed-badge feed-badge--${approvalStatusTone(item.status)}`}>{item.status}</div>
                     <div className="feed-body">
                       <div className="feed-head">
                         <strong>{item.title}</strong>
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
-                      {item.preview ? <div className="feed-preview">{item.preview}</div> : null}
+                      <div className="small-note" style={{ marginBottom: 6 }}>
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
+                        {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                      </div>
+                      {item.resolution_preview || item.summary ? (
+                        <div className="feed-preview">{item.resolution_preview || item.summary}</div>
+                      ) : null}
                     </div>
                   </div>
                 ))}
@@ -3811,7 +5372,7 @@ export function MonitorTab() {
             <div className="usage-table">
               <div className="simple-row"><strong>Provider</strong><div className="small-note">{config?.global_llm?.provider?.baseUrl || "TODO"}</div></div>
               <div className="simple-row"><strong>Model</strong><div className="small-note">{config?.global_llm?.default_model || "TODO"}</div></div>
-              <div className="simple-row"><strong>Approvals</strong><div className="small-note">{approvalsPending.length} pending</div></div>
+              <div className="simple-row"><strong>Approvals</strong><div className="small-note">{approvalQueueResponse?.counts.pending ?? approvalsPending.length} pending</div></div>
             </div>
           </div>
         </div>

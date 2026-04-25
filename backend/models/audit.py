@@ -88,3 +88,41 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_run_type", "run_id", "event_type"),
     )
+
+
+class MonitorNetworkRecord(Base):
+    """Persisted monitor network events for crash-safe troubleshooting."""
+
+    __tablename__ = "monitor_network_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True, nullable=False)
+    category = Column(String, nullable=False, index=True)
+    source = Column(String, nullable=False, index=True)
+    protocol = Column(String, nullable=False)
+    from_entity = Column(String, nullable=False, index=True)
+    to_entity = Column(String, nullable=False, index=True)
+    method = Column(String, nullable=False, default="")
+    url = Column(Text, nullable=False, default="")
+    host = Column(String, nullable=False, default="", index=True)
+    path = Column(String, nullable=False, default="", index=True)
+    status_code = Column(Integer, nullable=True)
+    success = Column(Boolean, nullable=True)
+    request_bytes = Column(Integer, default=0)
+    response_bytes = Column(Integer, default=0)
+    total_bytes = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    content_type = Column(String, nullable=False, default="")
+    preview = Column(Text, nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    client_source = Column(String, nullable=False, default="", index=True)
+    raw_request = Column(Text, nullable=False, default="")
+    raw_response = Column(Text, nullable=False, default="")
+    request_headers_json = Column(Text, nullable=False, default="{}")
+    response_headers_json = Column(Text, nullable=False, default="{}")
+    metadata_json = Column(Text, nullable=False, default="{}")
+
+    __table_args__ = (
+        Index("ix_monitor_network_records_category_id", "category", "id"),
+        Index("ix_monitor_network_records_created_at_id", "created_at", "id"),
+    )

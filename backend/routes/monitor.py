@@ -14,8 +14,11 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from agents.collaboration import collaboration_coordinator
-from models.database import Agent, Chatroom, Message, Project, get_db
-from monitoring import monitor_log_buffer
+from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, get_db
+from monitoring import monitor_log_buffer, monitor_network_buffer
+from services.approval_queue import list_approval_queue_items
+from services.monitor_projection import serialize_monitor_approval_queue_item
+from services.run_ledger import serialize_monitor_task_run_summary
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
@@ -26,6 +29,19 @@ LOG_STREAM_LIMIT = 200
 USAGE_RANGES = {"1h", "6h", "24h", "7d", "30d"}
 
 monitor_log_buffer.install()
+
+
+def _normalize_network_category(category: str | None) -> str:
+    normalized = (category or "all").strip().lower()
+    if normalized in {"frontend-backend", "frontend_backend", "fe-be"}:
+        return "frontend_backend"
+    if normalized in {"backend-llm", "backend_llm", "be-llm"}:
+        return "backend_llm"
+    if normalized in {"backend-other", "backend_other", "be-other"}:
+        return "backend_other"
+    if normalized in {"frontend-other", "frontend_other", "fe-other"}:
+        return "frontend_other"
+    return normalized
 
 
 def _parse_metadata(metadata_json: str | None) -> dict[str, Any]:
@@ -217,6 +233,10 @@ def _period_start(period: str) -> datetime:
     return today.replace(day=1)
 
 
+def _range_scan_start(range_value: str) -> datetime:
+    return _usage_bucket_boundaries(range_value)[0][0]
+
+
 def _empty_usage_totals() -> dict[str, Any]:
     return {
         "input_tokens": 0,
@@ -270,6 +290,83 @@ async def get_monitor_logs(
         "latest_id": monitor_log_buffer.latest_id(),
         "entries": entries,
     }
+
+
+@router.get("/network")
+async def get_monitor_network_events(
+    limit: int = Query(300, ge=20, le=2000),
+    category: str = Query("all"),
+    query: str | None = Query(None, max_length=200),
+):
+    entries = monitor_network_buffer.list_entries(
+        limit=limit,
+        category=_normalize_network_category(category),
+        query=query,
+    )
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "latest_id": monitor_network_buffer.latest_id(),
+        "entries": entries,
+    }
+
+
+@router.post("/network/ingest")
+async def ingest_monitor_network_event(payload: dict[str, Any]):
+    event = monitor_network_buffer.append(payload)
+    return {"ok": True, "event_id": event["id"]}
+
+
+@router.get("/network/stream")
+async def stream_monitor_network_events(
+    request: Request,
+    cursor: int = Query(0, ge=0),
+    category: str = Query("all"),
+    query: str | None = Query(None, max_length=200),
+    once: bool = Query(False),
+):
+    normalized_category = _normalize_network_category(category)
+
+    async def event_generator():
+        last_seen_id = cursor
+        idle_ticks = 0
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            entries = monitor_network_buffer.list_entries(
+                limit=LOG_STREAM_LIMIT,
+                after_id=last_seen_id,
+                category=normalized_category,
+                query=query,
+            )
+            if entries:
+                for entry in reversed(entries):
+                    last_seen_id = max(last_seen_id, int(entry["id"]))
+                    yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
+                idle_ticks = 0
+                if once:
+                    break
+                continue
+
+            idle_ticks += 1
+            if once:
+                break
+            if idle_ticks >= int(15 / LOG_STREAM_POLL_INTERVAL):
+                yield ": ping\n\n"
+                idle_ticks = 0
+
+            await asyncio.sleep(LOG_STREAM_POLL_INTERVAL)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/logs/stream")
@@ -440,6 +537,73 @@ async def get_monitor_usage(
     }
 
 
+@router.get("/task-runs")
+async def get_monitor_task_runs(
+    range: str = Query("24h", pattern="^(1h|6h|24h|7d|30d)$"),
+    limit: int = Query(120, ge=10, le=300),
+    db: Session = Depends(get_db),
+):
+    range_value = range if range in USAGE_RANGES else "24h"
+    scan_start = _range_scan_start(range_value)
+
+    rows = (
+        db.query(TaskRun, Chatroom, Project)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRun.created_at >= scan_start)
+        .order_by(desc(TaskRun.created_at), desc(TaskRun.id))
+        .limit(limit)
+        .all()
+    )
+
+    entries: list[dict[str, Any]] = []
+    for task_run, chatroom, project in rows:
+        entries.append(
+            serialize_monitor_task_run_summary(
+                task_run,
+                chat_title=chatroom.title,
+                project_name=project.name if project else None,
+            )
+        )
+
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "range": range_value,
+        "entries": entries,
+    }
+
+
+@router.get("/approval-queue")
+async def get_monitor_approval_queue(
+    status: str = Query("all", pattern="^(all|pending|approved|rejected)$"),
+    limit: int = Query(120, ge=10, le=300),
+    db: Session = Depends(get_db),
+):
+    status_value = None if status == "all" else status
+    items = list_approval_queue_items(db, status=status_value, limit=limit)
+    counts = {
+        "all": db.query(ApprovalQueueItem).count(),
+        "pending": db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count(),
+        "approved": db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "approved").count(),
+        "rejected": db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "rejected").count(),
+    }
+    entries = [
+        serialize_monitor_approval_queue_item(
+            item,
+            chat_title=item.chatroom.title if item.chatroom else None,
+            project_name=item.project.name if item.project else None,
+            task_run=item.task_run,
+        )
+        for item in items
+    ]
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "status": status,
+        "counts": counts,
+        "entries": entries,
+    }
+
+
 @router.get("/overview")
 async def get_monitor_overview(
     runtime_limit: int = Query(24, ge=6, le=80),
@@ -455,6 +619,8 @@ async def get_monitor_overview(
     message_count = db.query(Message).filter(Message.message_type != "runtime_card").count()
     runtime_card_count = db.query(Message).filter(Message.message_type == "runtime_card").count()
     latest_message = db.query(Message).order_by(desc(Message.created_at), desc(Message.id)).first()
+    approval_queue_total = db.query(ApprovalQueueItem).count()
+    approval_queue_pending = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count()
 
     summary_rows = (
         db.query(Message, Chatroom, Project)
@@ -627,6 +793,8 @@ async def get_monitor_overview(
                 "visible_chats": visible_chat_count,
                 "messages": message_count,
                 "runtime_cards": runtime_card_count,
+                "approval_queue_total": approval_queue_total,
+                "approval_queue_pending": approval_queue_pending,
             },
             "features": {
                 "llm_enabled": True,

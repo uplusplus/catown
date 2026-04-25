@@ -4,7 +4,7 @@ Agent 配置管理器 - 支持从文件加载配置
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from agents.identity import default_agent_name, is_legacy_default_agent_name, normalize_agent_type
 from agents.config_models import (
     AgentConfigV2,
@@ -24,6 +24,7 @@ class AgentConfigManager:
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(exist_ok=True)
         self.configs: Dict[str, AgentConfigV2] = {}
+        self.orchestration: Dict[str, Any] = {}
     
     def load_from_json(self, file_path: str) -> Dict[str, AgentConfigV2]:
         """
@@ -59,6 +60,7 @@ class AgentConfigManager:
     def _parse_config_data(self, data: Dict) -> Dict[str, AgentConfigV2]:
         """解析配置数据"""
         configs = {}
+        self.orchestration = dict(data.get("orchestration", {}))
 
         agents_data = dict(data.get("agents", {}))
         if "assistant" in agents_data and "valet" not in agents_data:
@@ -127,6 +129,8 @@ class AgentConfigManager:
     def save_to_json(self, file_path: str):
         """保存配置到 JSON 文件"""
         data = {"agents": {}}
+        if self.orchestration:
+            data["orchestration"] = self.orchestration
         
         for agent_type, config in self.configs.items():
             agent_data = {
@@ -157,6 +161,9 @@ class AgentConfigManager:
     def create_default_config_file(self, file_path: str):
         """创建默认配置文件"""
         default_config = {
+            "orchestration": {
+                "sidecar_agent_types": ["tester"]
+            },
             "agents": {
                 "valet": {
                     "name": "Valet",

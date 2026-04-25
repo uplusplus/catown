@@ -145,6 +145,7 @@ class Project(Base):
     default_chatroom = relationship("Chatroom", foreign_keys=[default_chatroom_id], post_update=True)
     agent_assignments = relationship("AgentAssignment", back_populates="project")
     pipeline = relationship("Pipeline", uselist=False, back_populates="project")
+    task_runs = relationship("TaskRun", back_populates="project", order_by="TaskRun.created_at.desc()")
     assets = relationship("Asset", back_populates="project")
     decisions = relationship("Decision", back_populates="project", foreign_keys="Decision.project_id")
     stage_runs = relationship("StageRun", back_populates="project")
@@ -167,6 +168,7 @@ class Chatroom(Base):
     project = relationship("Project", back_populates="chatroom", foreign_keys=[project_id])
     source_chatroom = relationship("Chatroom", remote_side=[id], foreign_keys=[source_chatroom_id])
     messages = relationship("Message", back_populates="chatroom")
+    task_runs = relationship("TaskRun", back_populates="chatroom", order_by="TaskRun.created_at.desc()")
 
 
 class AgentAssignment(Base):
@@ -198,6 +200,101 @@ class Message(Base):
 
     chatroom = relationship("Chatroom", back_populates="messages")
     agent = relationship("Agent", back_populates="messages")
+
+
+class TaskRun(Base):
+    """Run-level ledger for chat/runtime orchestration."""
+
+    __tablename__ = "task_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    origin_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, unique=True, index=True)
+    client_turn_id = Column(String, nullable=True, index=True)
+    run_kind = Column(String, nullable=False, default="chat_turn", index=True)
+    status = Column(String, nullable=False, default="running", index=True)
+    title = Column(String, nullable=False, default="Task run")
+    user_request = Column(Text)
+    initiator = Column(String, nullable=True)
+    target_agent_name = Column(String, nullable=True, index=True)
+    recovery_owner = Column(String, nullable=True, index=True)
+    recovery_claimed_at = Column(DateTime, nullable=True, index=True)
+    recovery_lease_expires_at = Column(DateTime, nullable=True, index=True)
+    summary = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    completed_at = Column(DateTime, nullable=True, index=True)
+
+    chatroom = relationship("Chatroom", back_populates="task_runs")
+    project = relationship("Project", back_populates="task_runs")
+    origin_message = relationship("Message", foreign_keys=[origin_message_id])
+    events = relationship(
+        "TaskRunEvent",
+        back_populates="task_run",
+        cascade="all, delete-orphan",
+        order_by="TaskRunEvent.event_index.asc()",
+    )
+    approval_queue_items = relationship(
+        "ApprovalQueueItem",
+        back_populates="task_run",
+        cascade="all, delete-orphan",
+        order_by="ApprovalQueueItem.created_at.desc()",
+    )
+
+
+class TaskRunEvent(Base):
+    """Ordered entries for a chat/runtime orchestration run."""
+
+    __tablename__ = "task_run_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=False, index=True)
+    event_index = Column(Integer, nullable=False, default=1)
+    event_type = Column(String, nullable=False, index=True)
+    agent_name = Column(String, nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    summary = Column(Text)
+    payload_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    task_run = relationship("TaskRun", back_populates="events")
+    message = relationship("Message", foreign_keys=[message_id])
+
+
+class ApprovalQueueItem(Base):
+    """Pending approval/escalation request attached to runtime execution."""
+
+    __tablename__ = "approval_queue_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    pipeline_run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
+    pipeline_stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=True, index=True)
+    queue_kind = Column(String, nullable=False, default="approval", index=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    source = Column(String, nullable=False, default="runtime", index=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text)
+    agent_name = Column(String, nullable=True, index=True)
+    target_kind = Column(String, nullable=False, default="tool", index=True)
+    target_name = Column(String, nullable=True, index=True)
+    request_key = Column(String, nullable=True, index=True)
+    request_payload_json = Column(Text, default="{}")
+    resolution_note = Column(Text)
+    resolution_payload_json = Column(Text, default="{}")
+    resolved_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    resolved_at = Column(DateTime, nullable=True, index=True)
+
+    task_run = relationship("TaskRun", back_populates="approval_queue_items")
+    chatroom = relationship("Chatroom")
+    project = relationship("Project")
+    pipeline_run = relationship("PipelineRun")
+    pipeline_stage = relationship("PipelineStage")
 
 
 class Memory(Base):
@@ -241,6 +338,7 @@ class PipelineRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     pipeline_id = Column(Integer, ForeignKey("pipelines.id"), nullable=False)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
     run_number = Column(Integer, nullable=False, default=1)
     status = Column(String, default="pending")
     input_requirement = Column(Text)
@@ -250,6 +348,7 @@ class PipelineRun(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     pipeline = relationship("Pipeline", back_populates="runs")
+    task_run = relationship("TaskRun")
     stages = relationship("PipelineStage", back_populates="run", order_by="PipelineStage.stage_order")
     messages = relationship("PipelineMessage", back_populates="run")
 
@@ -309,6 +408,24 @@ class PipelineMessage(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     run = relationship("PipelineRun", back_populates="messages")
+    deliveries = relationship("PipelineMessageDelivery", back_populates="message", cascade="all, delete-orphan")
+
+
+class PipelineMessageDelivery(Base):
+    """Durable inbox entry for a pipeline message recipient."""
+
+    __tablename__ = "pipeline_message_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("pipeline_messages.id"), nullable=False, index=True)
+    run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=False, index=True)
+    to_agent = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    consumed_at = Column(DateTime, nullable=True, index=True)
+
+    message = relationship("PipelineMessage", back_populates="deliveries")
+    run = relationship("PipelineRun")
 
 
 class Asset(Base):
@@ -562,6 +679,39 @@ def init_database():
             )
         if "source_chatroom_id" not in existing_chatroom_columns:
             connection.execute(text("ALTER TABLE chatrooms ADD COLUMN source_chatroom_id INTEGER"))
+
+        existing_task_run_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(task_runs)")).fetchall()
+        }
+        if "recovery_owner" not in existing_task_run_columns:
+            connection.execute(text("ALTER TABLE task_runs ADD COLUMN recovery_owner VARCHAR"))
+        if "recovery_claimed_at" not in existing_task_run_columns:
+            connection.execute(text("ALTER TABLE task_runs ADD COLUMN recovery_claimed_at DATETIME"))
+        if "recovery_lease_expires_at" not in existing_task_run_columns:
+            connection.execute(text("ALTER TABLE task_runs ADD COLUMN recovery_lease_expires_at DATETIME"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_task_runs_recovery_owner ON task_runs (recovery_owner)"))
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_task_runs_recovery_lease_expires_at "
+                "ON task_runs (recovery_lease_expires_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE task_runs SET "
+                "recovery_owner = NULL, "
+                "recovery_claimed_at = NULL, "
+                "recovery_lease_expires_at = NULL "
+                "WHERE status IS NULL OR status != 'running'"
+            )
+        )
+
+        existing_pipeline_run_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(pipeline_runs)")).fetchall()
+        }
+        if "task_run_id" not in existing_pipeline_run_columns:
+            connection.execute(text("ALTER TABLE pipeline_runs ADD COLUMN task_run_id INTEGER"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pipeline_runs_task_run_id ON pipeline_runs (task_run_id)"))
 
         orphan_message_count = connection.execute(
             text(

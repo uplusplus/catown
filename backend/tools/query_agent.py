@@ -5,21 +5,55 @@ Query Agent Tool
 Allows one agent to synchronously ask another agent a question and get back
 an immediate response. This is the core "agent-to-agent query" capability.
 """
-from .base import BaseTool
-from typing import Optional, Dict, Any
+from typing import Any
 import json
 import logging
 
 from sqlalchemy import or_
 
+from .base import BaseTool
 from agents.identity import (
     agent_name_of,
     default_agent_name,
     legacy_default_agent_names,
     normalize_agent_type,
 )
+from config import settings
+from services.chat_prompt_builder import build_chat_context_selector
+from services.context_builder import (
+    assemble_messages,
+    build_base_system_prompt,
+    build_history_summary_fragment,
+    build_operating_developer_context,
+    build_recent_history,
+    build_runtime_user_fragments,
+    build_stage_developer_context,
+)
+from services.task_state import build_task_state, build_task_state_fragments
+from skills import load_skill_registry
 
 logger = logging.getLogger("catown.query_agent")
+
+
+def _agent_skill_ids(agent: Any) -> list[str]:
+    raw_skills = getattr(agent, "skills", None)
+    if isinstance(raw_skills, str):
+        try:
+            parsed = json.loads(raw_skills or "[]")
+        except (TypeError, json.JSONDecodeError):
+            parsed = []
+        return [str(skill) for skill in parsed if skill]
+    if isinstance(raw_skills, list):
+        return [str(skill) for skill in raw_skills if skill]
+    return []
+
+
+def _memory_context_lines(memories: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for mem in memories:
+        ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if getattr(mem, "created_at", None) else "?"
+        lines.append(f"- [{ts}] {str(getattr(mem, 'content', '') or '')[:200]}")
+    return lines
 
 
 class QueryAgentTool(BaseTool):
@@ -37,7 +71,7 @@ class QueryAgentTool(BaseTool):
     description = (
         "Ask another agent a question and get an immediate answer. "
         "Use this when you need another agent's expertise to continue your work. "
-        "The target agent will answer based on their role, system prompt, and shared context. "
+        "The target agent will answer based on their role, structured context, and shared room state. "
         "Available agents and their roles are shown when you use list_collaborators."
     )
 
@@ -46,34 +80,51 @@ class QueryAgentTool(BaseTool):
 
     async def execute(
         self,
-        agent_name: str,
+        target_agent: str,
         question: str,
         include_context: bool = True,
-        **kwargs
+        **kwargs,
     ) -> str:
         """
         Query another agent synchronously.
 
         Args:
-            agent_name: Name of the agent to query (e.g. 'architect', 'developer')
+            target_agent: Name of the agent to query (e.g. 'architect', 'developer')
             question: The question to ask
             include_context: Whether to include current project context (default true)
 
         Returns:
             The target agent's response text, or an error message.
         """
-        current_agent_name = kwargs.get("agent_name", "unknown")
+        runtime_agent_name = str(kwargs.get("agent_name", "") or "").strip()
+        legacy_target_agent = runtime_agent_name if not target_agent else ""
+        target_agent_name = str(target_agent or legacy_target_agent).strip()
+        current_agent_name = str(
+            kwargs.get("caller_agent_name")
+            or (runtime_agent_name if target_agent else "")
+            or "unknown"
+        ).strip() or "unknown"
         chatroom_id = kwargs.get("chatroom_id", 0)
-        target_agent_type = normalize_agent_type(agent_name)
+        target_agent_type = normalize_agent_type(target_agent_name)
         current_agent_type = normalize_agent_type(current_agent_name)
 
-        # Prevent self-query
+        if not target_agent_type:
+            return "[query_agent] Error: target_agent is required."
         if target_agent_type == current_agent_type:
             return f"[query_agent] Error: Cannot query yourself ({target_agent_type})."
 
-        # 1. Find target agent in DB
-        from models.database import get_db, Agent as DBAgent, Chatroom as DBChatroom, Project
-        from models.database import Memory
+        from models.database import (
+            Agent as DBAgent,
+            AgentAssignment,
+            Chatroom as DBChatroom,
+            Memory,
+            Pipeline as PipelineModel,
+            PipelineMessage,
+            PipelineRun,
+            Project,
+            get_db,
+        )
+        from llm.client import get_llm_client_for_agent
 
         db = next(get_db())
         try:
@@ -88,33 +139,31 @@ class QueryAgentTool(BaseTool):
                 DBAgent.is_active == True,
             ).first()
 
+            chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first() if chatroom_id else None
             if not target_db_agent:
-                # 仅列出当前房间（项目）内的 agent
-                from models.database import AgentAssignment
-                chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
+                room_agents = []
                 if chatroom and chatroom.project_id:
                     assignments = db.query(AgentAssignment).filter(
                         AgentAssignment.project_id == chatroom.project_id
                     ).all()
-                    assigned_ids = [a.agent_id for a in assignments]
-                    room_agents = db.query(DBAgent).filter(
-                        DBAgent.id.in_(assigned_ids), DBAgent.is_active == True
-                    ).all() if assigned_ids else []
-                else:
-                    room_agents = []
-                available = [a.agent_type or a.name for a in room_agents]
+                    assigned_ids = [assignment.agent_id for assignment in assignments]
+                    room_agents = (
+                        db.query(DBAgent)
+                        .filter(DBAgent.id.in_(assigned_ids), DBAgent.is_active == True)
+                        .all()
+                        if assigned_ids
+                        else []
+                    )
+                available = [agent.agent_type or agent.name for agent in room_agents]
                 return (
                     f"[query_agent] Error: Agent '{target_agent_type}' not found in this room. "
                     f"Agents in this room: {available}"
                 )
 
-            # 验证目标 agent 是否在当前房间内
-            from models.database import AgentAssignment
-            chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
             if chatroom and chatroom.project_id:
                 assignment = db.query(AgentAssignment).filter(
                     AgentAssignment.project_id == chatroom.project_id,
-                    AgentAssignment.agent_id == target_db_agent.id
+                    AgentAssignment.agent_id == target_db_agent.id,
                 ).first()
                 if not assignment:
                     return (
@@ -122,29 +171,15 @@ class QueryAgentTool(BaseTool):
                         f"Use @mention to invite them first."
                     )
 
-            # 2. Get the target agent's LLM client
-            from llm.client import get_llm_client_for_agent
             try:
                 llm_client = get_llm_client_for_agent(target_agent_type)
-            except RuntimeError as e:
-                return f"[query_agent] Error: Cannot get LLM for '{target_agent_type}': {e}"
+            except RuntimeError as exc:
+                return f"[query_agent] Error: Cannot get LLM for '{target_agent_type}': {exc}"
 
-            # 3. Build the system prompt for the queried agent
-            system_prompt = target_db_agent.system_prompt or (
-                f"You are {agent_name_of(target_db_agent)}, a {target_db_agent.role}."
-            )
+            project = None
+            if include_context and chatroom and chatroom.project_id:
+                project = db.query(Project).filter(Project.id == chatroom.project_id).first()
 
-            # Inject project context if available
-            if include_context and chatroom_id:
-                chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
-                if chatroom and chatroom.project_id:
-                    project = db.query(Project).filter(Project.id == chatroom.project_id).first()
-                    if project:
-                        system_prompt += f"\n\nCurrent project: {project.name}"
-                        if project.description:
-                            system_prompt += f"\nProject description: {project.description}"
-
-            # Inject the target agent's own memories (top 5)
             own_memories = (
                 db.query(Memory)
                 .filter(Memory.agent_id == target_db_agent.id)
@@ -152,86 +187,112 @@ class QueryAgentTool(BaseTool):
                 .limit(5)
                 .all()
             )
-            if own_memories:
-                system_prompt += "\n\nYour memories:"
-                for mem in own_memories:
-                    ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
-                    system_prompt += f"\n- [{ts}] {mem.content[:200]}"
 
-            # Tell the agent who's asking
-            system_prompt += (
-                f"\n\nYou are being queried by agent '{current_agent_name}'. "
-                f"Answer concisely based on your role and expertise. "
-                f"Do NOT use any tools — just answer directly from your knowledge."
-            )
-
-            # 4. Build messages — include recent chatroom history as context
-            messages = [{"role": "system", "content": system_prompt}]
-
+            recent = []
             if chatroom_id:
                 from chatrooms.manager import chatroom_manager
+
                 recent = await chatroom_manager.get_messages(chatroom_id, limit=6)
-                for msg in recent[-4:]:
-                    a_name = msg.agent_name if hasattr(msg, "agent_name") else None
-                    if msg.message_type == "user" or not a_name:
-                        messages.append({"role": "user", "content": msg.content})
-                    else:
-                        messages.append({"role": "assistant", "content": msg.content})
 
-            # Add the actual question
-            messages.append({
-                "role": "user",
-                "content": f"[Query from {current_agent_name}]: {question}"
-            })
+            history_messages = build_recent_history(recent, limit=4)
+            history_summary = build_history_summary_fragment(recent, keep_last=4)
+            query_input = f"[Query from {current_agent_name}]: {question}"
+            current_input_messages = []
+            if not (
+                history_messages
+                and history_messages[-1].get("role") == "user"
+                and str(history_messages[-1].get("content") or "").strip() == query_input
+            ):
+                current_input_messages.append({"role": "user", "content": query_input})
 
-            # 5. Call LLM — NO tools to prevent recursion
-            logger.info(
-                f"[query_agent] {current_agent_type} → {target_agent_type}: {question[:80]}"
+            runtime_note = (
+                "## Query Context\n"
+                f"- Queried by agent: {current_agent_name}\n"
+                "- Tools are disabled for this synchronous query.\n"
+                "- Answer directly from your role, memory, and the shared room context."
             )
-
-            response = await llm_client.chat(
-                messages,
-                temperature=0.7,
-                max_tokens=1500
+            base_system_prompt = build_base_system_prompt(
+                target_db_agent,
+                fallback_name=agent_name_of(target_db_agent),
+                fallback_role=target_db_agent.role,
             )
+            messages = assemble_messages(
+                base_system_prompt=base_system_prompt,
+                developer_fragments=[
+                    build_operating_developer_context(
+                        agent_name=agent_name_of(target_db_agent),
+                        agent_role=target_db_agent.role,
+                    ),
+                    build_stage_developer_context(
+                        tools=[],
+                        skills_config=load_skill_registry(settings.SKILLS_DIR),
+                        agent_skills=_agent_skill_ids(target_db_agent),
+                        tool_guidance=(
+                            "Tools are disabled for this query. "
+                            "Respond directly from your expertise and the visible context."
+                        ),
+                    ),
+                ],
+                user_fragments=[
+                    *build_task_state_fragments(
+                        build_task_state(
+                            project=project if include_context else None,
+                            current_request=query_input,
+                        )
+                    ),
+                    *([history_summary] if history_summary is not None else []),
+                    *build_runtime_user_fragments(
+                        project=project if include_context else None,
+                        chatroom=chatroom if include_context else None,
+                        runtime_context=runtime_note,
+                        memories=_memory_context_lines(own_memories),
+                    ),
+                ],
+                history_messages=history_messages,
+                current_input_messages=current_input_messages,
+                selector=build_chat_context_selector(
+                    profile="query_agent",
+                    agent_name=agent_name_of(target_db_agent),
+                    model_id=getattr(llm_client, "model", ""),
+                    base_system_prompt=base_system_prompt,
+                    history_messages=history_messages,
+                    current_input_messages=current_input_messages,
+                ),
+            ).to_messages()
+
+            logger.info(f"[query_agent] {current_agent_type} -> {target_agent_type}: {question[:80]}")
+            response = await llm_client.chat(messages, temperature=0.7, max_tokens=1500)
 
             if not response:
                 return f"[query_agent] Agent '{target_agent_type}' returned an empty response."
 
-            # 6. Log the interaction as a pipeline message if in a pipeline context
             try:
-                from models.database import PipelineMessage, PipelineRun, Pipeline as PipelineModel
-                if chatroom_id:
-                    chatroom = db.query(DBChatroom).filter(DBChatroom.id == chatroom_id).first()
-                    if chatroom and chatroom.project_id:
-                        active_run = (
-                            db.query(PipelineRun)
-                            .join(PipelineModel, PipelineRun.pipeline_id == PipelineModel.id)
-                            .filter(PipelineRun.status == "running")
-                            .first()
-                        )
-                        if active_run:
-                            pm = PipelineMessage(
+                if chatroom and chatroom.project_id:
+                    active_run = (
+                        db.query(PipelineRun)
+                        .join(PipelineModel, PipelineRun.pipeline_id == PipelineModel.id)
+                        .filter(PipelineRun.status == "running")
+                        .first()
+                    )
+                    if active_run:
+                        db.add(
+                            PipelineMessage(
                                 run_id=active_run.id,
                                 message_type="AGENT_QUESTION",
                                 from_agent=current_agent_type,
                                 to_agent=target_agent_type,
-                                content=f"Q: {question[:500]}\nA: {response[:500]}"
+                                content=f"Q: {question[:500]}\nA: {response[:500]}",
                             )
-                            db.add(pm)
-                            db.commit()
+                        )
+                        db.commit()
             except Exception:
-                pass  # Non-critical, don't fail the query
+                pass
 
-            logger.info(
-                f"[query_agent] {target_agent_type} responded ({len(response)} chars)"
-            )
-
+            logger.info(f"[query_agent] {target_agent_type} responded ({len(response)} chars)")
             return f"[Response from {target_agent_type} ({target_db_agent.role})]:\n{response}"
-
-        except Exception as e:
-            logger.error(f"[query_agent] Error: {e}")
-            return f"[query_agent] Error querying agent '{target_agent_type}': {str(e)}"
+        except Exception as exc:
+            logger.error(f"[query_agent] Error: {exc}")
+            return f"[query_agent] Error querying agent '{target_agent_type}': {exc}"
         finally:
             db.close()
 
@@ -239,19 +300,19 @@ class QueryAgentTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "agent_name": {
+                "target_agent": {
                     "type": "string",
-                    "description": "Name of the agent to query (e.g. 'architect', 'developer', 'analyst', 'tester', 'release')"
+                    "description": "Name of the agent to query (e.g. 'architect', 'developer', 'analyst', 'tester', 'release')",
                 },
                 "question": {
                     "type": "string",
-                    "description": "The question to ask the agent. Be specific for better answers."
+                    "description": "The question to ask the agent. Be specific for better answers.",
                 },
                 "include_context": {
                     "type": "boolean",
                     "description": "Whether to include current project context in the query (default: true)",
-                    "default": True
-                }
+                    "default": True,
+                },
             },
-            "required": ["agent_name", "question"]
+            "required": ["target_agent", "question"],
         }

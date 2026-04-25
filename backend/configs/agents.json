@@ -12,6 +12,11 @@
     },
     "default_model": "gpt-5.4-mini"
   },
+  "orchestration": {
+    "sidecar_agent_types": [
+      "tester"
+    ]
+  },
   "agents": {
     "analyst": {
       "name": "Analyst",
@@ -377,7 +382,8 @@
           "主动但不越界，留在项目 workspace 内",
           "任务明显属于专业 Agent 时转交",
           "输出整洁有条理",
-          "不确定时提问而非猜测"
+          "不确定时提问而非猜测",
+          "用户要求安装、下载、导入、启用或排查 skill/技能/marketplace 时，优先调用 skill_manager；不要用 web_search 或 execute_code 猜安装命令。未指定来源时先 action=marketplaces，再选择合适 marketplace。"
         ]
       },
       "tools": [
@@ -387,6 +393,7 @@
         "write_file",
         "list_files",
         "search_files",
+        "skill_manager",
         "send_direct_message",
         "query_agent",
         "execute_code",

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import type { ConfigAgentDefinition, ConfigResponse, ConfigSection } from "../types";
+import { api } from "../api/client";
+import type { ConfigAgentDefinition, ConfigResponse, ConfigSection, SkillMarketplace } from "../types";
 import { DEFAULT_AGENT_TYPE, defaultAgentName } from "../utils/agents";
 
 type ConfigTabProps = {
@@ -32,6 +33,7 @@ type ConfigTabProps = {
       skills?: string[];
     },
   ) => Promise<void>;
+  onSaveOrchestration: (payload: { sidecar_agent_types: string[] }) => Promise<void>;
   onReload: () => Promise<void>;
   onTestAgentConfig: (agentName: string) => Promise<void>;
 };
@@ -40,6 +42,10 @@ type GlobalDraft = {
   baseUrl: string;
   apiKey: string;
   model: string;
+};
+
+type OrchestrationDraft = {
+  sidecarAgentTypes: string;
 };
 
 type AgentDraft = {
@@ -63,6 +69,12 @@ function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
     baseUrl: provider?.baseUrl ?? "",
     apiKey: provider?.apiKey ?? "",
     model: config?.global_llm?.default_model ?? provider?.models?.[0]?.id ?? "",
+  };
+}
+
+function buildOrchestrationDraft(config: ConfigResponse | null): OrchestrationDraft {
+  return {
+    sidecarAgentTypes: (config?.orchestration?.sidecar_agent_types ?? []).join("\n"),
   };
 }
 
@@ -148,6 +160,7 @@ export function ConfigTab({
   saving,
   onBackToChat,
   onSaveGlobal,
+  onSaveOrchestration,
   onSaveAgent,
   onReload,
   onTestAgentConfig,
@@ -155,10 +168,15 @@ export function ConfigTab({
   const [globalBaseUrl, setGlobalBaseUrl] = useState("");
   const [globalApiKey, setGlobalApiKey] = useState("");
   const [globalModel, setGlobalModel] = useState("");
+  const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
   const [editingGlobal, setEditingGlobal] = useState(false);
+  const [editingOrchestration, setEditingOrchestration] = useState(false);
   const [editingAgents, setEditingAgents] = useState<Record<string, boolean>>({});
+  const [marketplaces, setMarketplaces] = useState<SkillMarketplace[]>([]);
+  const [marketplaceError, setMarketplaceError] = useState("");
+  const [updatingMarketplace, setUpdatingMarketplace] = useState<string | null>(null);
 
   const agentEntries = useMemo(() => Object.entries(config?.agents ?? {}), [config]);
   const agentConfigs = config?.agent_llm_configs ?? {};
@@ -195,12 +213,36 @@ export function ConfigTab({
   }, [config]);
 
   useEffect(() => {
+    setOrchestrationDraft(buildOrchestrationDraft(config));
+  }, [config]);
+
+  useEffect(() => {
     const nextDrafts: Record<string, AgentDraft> = {};
     for (const [agentName, agentConfig] of agentEntries) {
       nextDrafts[agentName] = buildAgentDraft(agentConfig, agentConfigs[agentName]);
     }
     setAgentDrafts(nextDrafts);
   }, [agentEntries, agentConfigs]);
+
+  useEffect(() => {
+    if (activeSection !== "skills") return;
+    let cancelled = false;
+    async function loadMarketplaces() {
+      try {
+        setMarketplaceError("");
+        const result = await api.getSkillMarketplaces();
+        if (!cancelled) setMarketplaces(result.marketplaces);
+      } catch (nextError) {
+        if (!cancelled) {
+          setMarketplaceError(nextError instanceof Error ? nextError.message : "Failed to load skill marketplaces");
+        }
+      }
+    }
+    void loadMarketplaces();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection]);
 
   function resetGlobalDraft() {
     const draft = buildGlobalDraft(config);
@@ -239,6 +281,28 @@ export function ConfigTab({
     }
 
     setEditingGlobal(false);
+  }
+
+  function resetOrchestrationDraft() {
+    setOrchestrationDraft(buildOrchestrationDraft(config));
+  }
+
+  function startEditingOrchestration() {
+    resetOrchestrationDraft();
+    setEditingOrchestration(true);
+  }
+
+  function cancelEditingOrchestration() {
+    resetOrchestrationDraft();
+    setEditingOrchestration(false);
+  }
+
+  async function handleOrchestrationSubmit(event: FormEvent) {
+    event.preventDefault();
+    await onSaveOrchestration({
+      sidecar_agent_types: readMultilineList(orchestrationDraft.sidecarAgentTypes),
+    });
+    setEditingOrchestration(false);
   }
 
   function updateAgentDraft(agentName: string, patch: Partial<AgentDraft>) {
@@ -307,6 +371,21 @@ export function ConfigTab({
     setEditingAgents((current) => ({ ...current, [agentName]: false }));
   }
 
+  async function handleMarketplaceToggle(marketplace: SkillMarketplace) {
+    try {
+      setUpdatingMarketplace(marketplace.id);
+      setMarketplaceError("");
+      const shouldBootstrap = marketplace.enabled && marketplace.command_available === false && Boolean(marketplace.bootstrap_available);
+      await api.updateSkillMarketplace(marketplace.id, shouldBootstrap ? true : !marketplace.enabled, true);
+      const result = await api.getSkillMarketplaces();
+      setMarketplaces(result.marketplaces);
+    } catch (nextError) {
+      setMarketplaceError(nextError instanceof Error ? nextError.message : "Failed to update marketplace");
+    } finally {
+      setUpdatingMarketplace(null);
+    }
+  }
+
   const globalPreviewItems = useMemo(
     () => [
       { label: "Base URL", value: previewText(config?.global_llm?.provider?.baseUrl, "Not set") },
@@ -315,6 +394,26 @@ export function ConfigTab({
       { label: "Sync Policy", value: syncToAllAgents ? "Save global + fan out to agents" : "Save global only" },
     ],
     [config, syncToAllAgents],
+  );
+  const orchestrationPreviewItems = useMemo(
+    () => [
+      {
+        label: "Sidecar agents",
+        value: previewList(config?.orchestration?.sidecar_agent_types, "Disabled", 6),
+      },
+      {
+        label: "Planner mode",
+        value:
+          (config?.orchestration?.sidecar_agent_types ?? []).length > 0
+            ? "Blocking chain + sidecars"
+            : "Linear blocking chain",
+      },
+      {
+        label: "Dispatch policy",
+        value: "Blocking steps run before sidecars on each release point",
+      },
+    ],
+    [config],
   );
 
   if (activeSection === "skills") {
@@ -327,6 +426,75 @@ export function ConfigTab({
               <h2>Skill Management</h2>
             </div>
             <span className="soft-pill">{skillRows.length} skills</span>
+          </div>
+
+          <div className="skill-marketplace-panel">
+            <div className="skill-marketplace-panel__header">
+              <div>
+                <p className="eyebrow">Marketplaces</p>
+                <h3>Skill Sources</h3>
+              </div>
+              <span className="soft-pill">{marketplaces.length} sources</span>
+            </div>
+            {marketplaceError ? <div className="config-inline-error">{marketplaceError}</div> : null}
+            <div className="skill-marketplace-grid">
+              {marketplaces.map((marketplace) => {
+                const isBusy = updatingMarketplace === marketplace.id;
+                const commandState =
+                  marketplace.command_available === null || marketplace.command_available === undefined
+                    ? "native"
+                    : marketplace.command_available
+                      ? "cli ready"
+                      : "cli missing";
+                return (
+                  <div key={marketplace.id} className="skill-marketplace-card">
+                    <div className="skill-marketplace-card__top">
+                      <div>
+                        <h4>{marketplace.name}</h4>
+                        <p>{marketplace.id}</p>
+                      </div>
+                      <span className={`soft-pill ${marketplace.enabled ? "soft-pill--success" : ""}`}>
+                        {marketplace.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                    <div className="skill-marketplace-card__meta">
+                      <span>{marketplace.adapter}</span>
+                      <span>{commandState}</span>
+                      {marketplace.bootstrap_available ? <span>bootstrap</span> : null}
+                    </div>
+                    <p className="skill-marketplace-card__description">{marketplace.description || "No description."}</p>
+                    {(() => {
+                      const needsBootstrap = marketplace.enabled && marketplace.command_available === false && Boolean(marketplace.bootstrap_available);
+                      const actionLabel = isBusy
+                        ? "Working..."
+                        : needsBootstrap
+                          ? "Install CLI"
+                          : marketplace.enabled
+                            ? "Disable"
+                            : "Enable";
+                      const actionClass = marketplace.enabled && !needsBootstrap ? "secondary-button compact-button" : "primary-button compact-button";
+                      return (
+                        <div className="config-actions-row">
+                          <button
+                            type="button"
+                            className={actionClass}
+                            onClick={() => void handleMarketplaceToggle(marketplace)}
+                            disabled={saving || isBusy}
+                          >
+                            {actionLabel}
+                          </button>
+                          {marketplace.install_url ? (
+                            <a className="secondary-button compact-button" href={marketplace.install_url} target="_blank" rel="noreferrer">
+                              Install Doc
+                            </a>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className="config-agent-stack">
@@ -474,25 +642,104 @@ export function ConfigTab({
         <div className="panel-card panel-card--config-side">
           <div className="panel-card-header">
             <div>
-              <p className="eyebrow">System Info</p>
-              <h2>Backend & Feature Flags</h2>
+              <p className="eyebrow">Runtime Controls</p>
+              <h2>Backend & Scheduler</h2>
             </div>
           </div>
-          <div className="config-system-grid">
-            <div className="config-system-row">
-              <span>Backend host</span>
-              <strong>{config?.server?.host || "0.0.0.0"}</strong>
-            </div>
-            <div className="config-system-row">
-              <span>Backend port</span>
-              <strong>{config?.server?.port || 8000}</strong>
-            </div>
-            {Object.entries(config?.features ?? {}).map(([featureName, enabled]) => (
-              <div key={featureName} className="config-system-row">
-                <span>{featureName}</span>
-                <strong>{String(enabled)}</strong>
+          <div className="config-side-stack">
+            <div className="config-side-section">
+              <div className="config-side-section__head">
+                <div>
+                  <p className="eyebrow">System Info</p>
+                  <h3>Backend & Feature Flags</h3>
+                </div>
               </div>
-            ))}
+              <div className="config-system-grid">
+                <div className="config-system-row">
+                  <span>Backend host</span>
+                  <strong>{config?.server?.host || "0.0.0.0"}</strong>
+                </div>
+                <div className="config-system-row">
+                  <span>Backend port</span>
+                  <strong>{config?.server?.port || 8000}</strong>
+                </div>
+                {Object.entries(config?.features ?? {}).map(([featureName, enabled]) => (
+                  <div key={featureName} className="config-system-row">
+                    <span>{featureName}</span>
+                    <strong>{String(enabled)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="config-side-section">
+              <div className="config-side-section__head">
+                <div>
+                  <p className="eyebrow">Runtime Policy</p>
+                  <h3>Orchestration Scheduler</h3>
+                </div>
+                <div className="config-actions-row">
+                  {editingOrchestration ? (
+                    <>
+                      <button
+                        type="submit"
+                        form="orchestration-config-form"
+                        className="primary-button compact-button"
+                        disabled={saving}
+                      >
+                        {saving ? "Saving..." : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        onClick={cancelEditingOrchestration}
+                        disabled={saving}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="primary-button compact-button"
+                      onClick={startEditingOrchestration}
+                      disabled={saving}
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {editingOrchestration ? (
+                <form id="orchestration-config-form" className="project-form project-form--compact config-form" onSubmit={handleOrchestrationSubmit}>
+                  <label className="settings-form__field">
+                    <span>Sidecar agent types</span>
+                    <textarea
+                      rows={4}
+                      value={orchestrationDraft.sidecarAgentTypes}
+                      onChange={(event) =>
+                        setOrchestrationDraft((current) => ({
+                          ...current,
+                          sidecarAgentTypes: event.target.value,
+                        }))
+                      }
+                      placeholder={"tester\nreviewer"}
+                    />
+                  </label>
+                  <p className="small-note">
+                    One agent type per line. Leave empty to disable sidecars and keep a fully blocking chain.
+                  </p>
+                </form>
+              ) : (
+                <PreviewCard
+                  title="Scheduler policy"
+                  subtitle="Controls which agent types attach as sidecars instead of blocking the main chain"
+                  items={orchestrationPreviewItems}
+                  onActivate={startEditingOrchestration}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
