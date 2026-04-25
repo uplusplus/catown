@@ -255,6 +255,7 @@ def serialize_monitor_approval_queue_item(
     resolution_preview = compact_preview(
         item.resolution_note
         or resolution_payload.get("replay_result_preview")
+        or resolution_payload.get("followup_error")
         or resolution_payload.get("request_payload")
         or resolution_payload
     )
@@ -273,6 +274,11 @@ def serialize_monitor_approval_queue_item(
             "action_taken": resolution_payload.get("action_taken"),
             "replay_status": resolution_payload.get("replay_status"),
             "replay_success": resolution_payload.get("replay_success"),
+            "followup_attempted": resolution_payload.get("followup_attempted"),
+            "followup_status": resolution_payload.get("followup_status"),
+            "followup_reason": resolution_payload.get("followup_reason"),
+            "followup_error": resolution_payload.get("followup_error"),
+            "followup_message_id": resolution_payload.get("followup_message_id"),
         }
     )
     return payload

@@ -153,6 +153,11 @@ export type MonitorApprovalQueueEntry = ApprovalQueueItem & {
   action_taken?: string | null;
   replay_status?: string | null;
   replay_success?: boolean | null;
+  followup_attempted?: boolean | null;
+  followup_status?: string | null;
+  followup_reason?: string | null;
+  followup_error?: string | null;
+  followup_message_id?: number | null;
 };
 
 export type MonitorApprovalQueueResponse = {

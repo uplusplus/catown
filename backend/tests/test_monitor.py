@@ -391,6 +391,9 @@ class TestMonitorOverview:
                         "replay_status": "succeeded",
                         "replay_success": True,
                         "replay_result_preview": "Deleted file",
+                        "followup_attempted": True,
+                        "followup_status": "continued",
+                        "followup_message_id": 88,
                     },
                     ensure_ascii=False,
                 ),
@@ -417,6 +420,9 @@ class TestMonitorOverview:
         assert resolved_entry["resolution_preview"] == "Approved and replayed."
         assert resolved_entry["action_taken"] == "tool_replayed"
         assert resolved_entry["replay_status"] == "succeeded"
+        assert resolved_entry["followup_attempted"] is True
+        assert resolved_entry["followup_status"] == "continued"
+        assert resolved_entry["followup_message_id"] == 88
 
     def test_logs_endpoint_returns_real_backend_logs(self, client):
         from monitoring import monitor_log_buffer

@@ -1338,3 +1338,31 @@ Unified visibility
 
 - “ADR 中最近几轮增量进展大多已落地”
 - “ADR 中定义的长期目标架构仍在收敛中”
+
+### 11.17 2026-04-25 新进展：monitor 已显式展示 approval replay follow-up 状态
+
+在 11.15 把 runtime approval replay 接回原 agent turn 之后，这一轮继续把这段状态补到 monitor 控制面：
+
+- `monitor approval queue entry` 不再只暴露 replay 结果
+  - 现在会额外投影：
+    - `followup_attempted`
+    - `followup_status`
+    - `followup_reason`
+    - `followup_error`
+    - `followup_message_id`
+
+- resolution preview 也更贴近实际恢复结果
+  - 如果 replay 后续跑失败
+  - monitor 不再只显示 replay preview
+  - 会优先带出 `followup_error`
+
+- 前端 Approvals 页面已能区分：
+  - queue item 是否只是 replay 成功
+  - 还是 replay 后已经继续完成 follow-up
+  - 或 replay 后 follow-up 被跳过 / 失败
+
+这一步的意义是：
+
+- approval queue 不再只表达“批了没批”
+- 也能表达“批完之后执行链有没有真正继续跑完”
+- 更接近 Codex 风格 control plane 对恢复结果的可见性

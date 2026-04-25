@@ -313,6 +313,14 @@ function approvalStatusTone(status: string | null | undefined) {
   return runtimeTone(normalized);
 }
 
+function approvalFollowupTone(status: string | null | undefined) {
+  const normalized = (status || "").toLowerCase();
+  if (normalized === "continued") return "success";
+  if (normalized === "failed") return "error";
+  if (normalized === "skipped") return "warning";
+  return "neutral";
+}
+
 function taskRunStatusTone(status: string | null | undefined) {
   const normalized = (status || "").toLowerCase();
   if (normalized === "completed") return "success";
@@ -1035,11 +1043,20 @@ function enrichApprovalQueueItemFromTaskRun(
     resolution_preview:
       item.resolution_note ||
       (monitorStringField(resolution.replay_result_preview) ?? null) ||
+      (monitorStringField(resolution.followup_error) ?? null) ||
       null,
     resume_supported: Boolean(payload.resume_supported),
     action_taken: monitorStringField(resolution.action_taken),
     replay_status: monitorStringField(resolution.replay_status),
     replay_success: typeof resolution.replay_success === "boolean" ? resolution.replay_success : null,
+    followup_attempted: typeof resolution.followup_attempted === "boolean" ? resolution.followup_attempted : null,
+    followup_status: monitorStringField(resolution.followup_status),
+    followup_reason: monitorStringField(resolution.followup_reason),
+    followup_error: monitorStringField(resolution.followup_error),
+    followup_message_id:
+      typeof resolution.followup_message_id === "number"
+        ? resolution.followup_message_id
+        : null,
   };
 }
 
@@ -5091,7 +5108,7 @@ export function MonitorTab() {
                     ) : null}
                     {approvalQueueActionErrors[item.id] ? (
                       <span className="small-note" style={{ color: "var(--danger, #ef4444)" }}>
-                        {approvalQueueActionErrors[item.id]}
+                      {approvalQueueActionErrors[item.id]}
                       </span>
                     ) : null}
                   </div>
@@ -5165,6 +5182,25 @@ export function MonitorTab() {
                       </div>
                       {item.resolution_preview || item.summary ? (
                         <div className="feed-preview">{item.resolution_preview || item.summary}</div>
+                      ) : null}
+                      <div className="approval-card__meta" style={{ marginTop: 8 }}>
+                        {item.action_taken ? <span className="tag">{item.action_taken}</span> : null}
+                        {item.replay_status ? (
+                          <span className={`feed-badge feed-badge--${runtimeTone(item.replay_status, item.replay_success ?? undefined)}`}>
+                            replay {item.replay_status}
+                          </span>
+                        ) : null}
+                        {item.followup_status ? (
+                          <span className={`feed-badge feed-badge--${approvalFollowupTone(item.followup_status)}`}>
+                            follow-up {item.followup_status}
+                          </span>
+                        ) : null}
+                        {item.followup_reason ? <span className="tag">{item.followup_reason}</span> : null}
+                      </div>
+                      {item.followup_error ? (
+                        <div className="small-note" style={{ marginTop: 6, color: "var(--danger, #ef4444)" }}>
+                          {item.followup_error}
+                        </div>
                       ) : null}
                     </div>
                   </div>

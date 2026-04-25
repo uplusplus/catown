@@ -22,3 +22,19 @@
 
 - 每完成一个完整特性，就单独提交一次
 - 每次特性提交后，同步追加一条 `changed.md` 记录
+
+### pending `Expose approval follow-up state in monitor`
+
+范围：
+
+- `backend/services/monitor_projection.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/components/MonitorTab.tsx`
+- `frontend/src/types.ts`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 把 approval replay 后的 `followup_attempted / followup_status / followup_reason / followup_error / followup_message_id` 补成 monitor 一等字段
+- 让 Approvals 页面能直接区分 replay 成功、follow-up 已继续、follow-up 被跳过、follow-up 失败
+- 补 monitor 后端测试并验证前端构建通过
