@@ -7,18 +7,23 @@ import re
 import json
 import os
 import asyncio
+import socket
 import shutil
 import subprocess
+import time
 import traceback
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from agents.identity import (
     DEFAULT_AGENT_TYPE,
@@ -29,63 +34,125 @@ from agents.identity import (
     legacy_default_agent_names,
     normalize_agent_type,
 )
-from models.database import get_db, Agent, Project, Chatroom, AgentAssignment, Message, Base
+from models.database import (
+    get_db,
+    Agent,
+    Project,
+    Chatroom,
+    AgentAssignment,
+    Message,
+    TaskRun,
+    TaskRunEvent,
+    ApprovalQueueItem,
+    SessionLocal,
+    Base,
+)
+from pipeline.engine import pipeline_engine
 from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 from config import settings
+from monitoring import monitor_network_buffer
+from skills import import_skill_from_marketplace, list_marketplaces, load_skill_registry, set_marketplace_enabled
 from services.monitor_projection import (
     resolve_chatroom_project as monitor_resolve_chatroom_project,
     serialize_monitor_message_item,
     serialize_monitor_runtime_item,
 )
+from services.context_builder import (
+    ContextSelector,
+    assemble_messages,
+    build_base_system_prompt,
+    build_operating_developer_context,
+    build_recent_history,
+    build_runtime_user_fragments,
+    build_stage_developer_context,
+    build_turn_state_developer_fragments,
+    build_turn_state_user_fragments,
+)
+from services.chat_prompt_builder import (
+    agent_base_system_prompt as shared_agent_base_system_prompt,
+    assemble_chat_messages as shared_assemble_chat_messages,
+    build_chat_context_selector as shared_build_chat_context_selector,
+    memory_context_lines as shared_memory_context_lines,
+    team_member_lines as shared_team_member_lines,
+)
+from services.orchestration_scheduler import (
+    DEFAULT_SIDECAR_AGENT_TYPES,
+    OrchestrationRuntimeQueue,
+    build_orchestration_schedule,
+)
+from services.turn_state import TurnContextState, build_tool_result_record, normalize_tool_call
 from services.session_service import SessionService
+from services.run_ledger import (
+    append_task_event,
+    complete_task_run,
+    create_task_run,
+    get_task_run,
+    serialize_task_run_detail,
+    serialize_task_run_summary,
+    update_task_run,
+)
+from services.runner_lifecycle import (
+    complete_agent_turn as record_agent_turn_completed,
+    record_tool_round as record_runner_tool_round,
+    start_agent_turn as record_agent_turn_started,
+)
+from services.approval_queue import (
+    get_approval_queue_item,
+    list_approval_queue_items,
+    resolve_approval_queue_item,
+    serialize_approval_queue_item,
+)
+from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
+from services.runner_policy import (
+    compile_orchestration_run_policy,
+    compile_single_agent_run_policy,
+    find_stage_policy,
+)
+from services.stream_turn_executor import iter_stream_turn_events
+from services.nonstream_turn_executor import execute_non_stream_turn_loop
 
 logger = logging.getLogger("catown.api")
 
-_HEARTBEAT_EVENT_TYPE = "__heartbeat__"
-_RESULT_EVENT_TYPE = "__result__"
 MAX_TOOL_ITERATIONS = 50
+RECOVERABLE_ORCHESTRATION_RUN_KINDS = {
+    "multi_agent_orchestration",
+    "multi_agent_orchestration_stream",
+}
+RECOVERY_LEASE_SECONDS = max(60, int(os.getenv("CATOWN_RECOVERY_LEASE_SECONDS", "900")))
+RECOVERY_INSTANCE_ID = (
+    os.getenv("CATOWN_INSTANCE_ID")
+    or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+)
 
 
-async def _iter_with_heartbeat(stream, timeout: float = 1.0):
-    """Yield stream events, inserting heartbeat markers while waiting."""
-    iterator = stream.__aiter__()
-    pending = asyncio.create_task(iterator.__anext__())
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
-            except asyncio.TimeoutError:
-                yield {"type": _HEARTBEAT_EVENT_TYPE}
-                continue
-            except StopAsyncIteration:
-                break
-
-            yield event
-            pending = asyncio.create_task(iterator.__anext__())
-    finally:
-        if pending and not pending.done():
-            pending.cancel()
+@dataclass
+class TaskRunRecoveryResult:
+    task_run_id: int
+    resumed: bool
+    reason: str
+    status: Optional[str] = None
+    detail: Optional[str] = None
+    owner: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
 
 
-async def _await_with_heartbeat(awaitable, timeout: float = 1.0):
-    """Await a coroutine, yielding heartbeat markers while it is still running."""
-    pending = asyncio.create_task(awaitable)
-    try:
-        while True:
-            try:
-                result = await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
-            except asyncio.TimeoutError:
-                yield {"type": _HEARTBEAT_EVENT_TYPE}
-                continue
-
-            yield {"type": _RESULT_EVENT_TYPE, "result": result}
-            break
-    finally:
-        if pending and not pending.done():
-            pending.cancel()
+def _build_tool_prompt(tool_names: List[str]) -> str:
+    if not tool_names:
+        return ""
+    prompt = f"\n\nYou have access to the following tools: {', '.join(tool_names)}"
+    if "skill_manager" in tool_names:
+        prompt += (
+            "\nTool guidance: when the user asks to install/add/download/import/enable/troubleshoot "
+            "a skill, 技能, or skill marketplace, call skill_manager. Use action='marketplaces' to "
+            "check configured marketplaces and CLI readiness. Use action='install' with marketplace "
+            "and source to install a skill, for example marketplace='skillhub-cn' and source='graphify'. "
+            "If the tool returns code='command_not_found', explain that the marketplace CLI is missing "
+            "and direct the user to install or enable that marketplace CLI from the Skills configuration page."
+        )
+    return prompt
 
 
 class LLMConfigModel(BaseModel):
@@ -123,6 +190,29 @@ class LLMConfigModel(BaseModel):
         if not 1 <= v <= 100000:
             raise ValueError('max_tokens must be between 1 and 100000')
         return v
+
+
+class OrchestrationConfigModel(BaseModel):
+    """Runtime orchestration config validation model."""
+
+    sidecar_agent_types: List[str] = Field(default_factory=list)
+
+    @field_validator("sidecar_agent_types", mode="before")
+    @classmethod
+    def coerce_sidecar_agent_types(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (set, tuple)):
+            return list(value)
+        return value
+
+    @field_validator("sidecar_agent_types")
+    @classmethod
+    def normalize_sidecar_agent_types(cls, values: List[str]) -> List[str]:
+        normalized = sorted({normalize_agent_type(str(value or "").strip()) for value in values if str(value or "").strip()})
+        return normalized
 
 
 router = APIRouter()
@@ -246,16 +336,8 @@ def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-_TOOL_ERROR_RESULT_RE = re.compile(r"^\[[^\]]+\]\s+error:", re.IGNORECASE)
-
-
 def _tool_result_succeeded(result_text: str) -> bool:
-    normalized = (result_text or "").strip()
-    if not normalized:
-        return True
-    if normalized.lower().startswith("error:") or normalized.lower().startswith("error executing "):
-        return False
-    return _TOOL_ERROR_RESULT_RE.match(normalized) is None
+    return shared_tool_result_succeeded(result_text)
 
 
 def _message_client_turn_id(message_like: Any) -> Optional[str]:
@@ -290,67 +372,80 @@ def _preview_tool_calls(raw_tool_calls: Optional[List[Dict[str, Any]]]) -> List[
     return previews
 
 
-def _trim_prompt_context(value: Any, limit: int = 600) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) <= limit:
-        return text
-    return f"{text[: limit - 3].rstrip()}..."
+def _agent_base_system_prompt(agent: Optional[Agent], fallback_name: str, fallback_role: str = "assistant") -> str:
+    return shared_agent_base_system_prompt(agent, fallback_name, fallback_role)
 
 
-def _build_runtime_context_block(db: Session, chatroom: Optional[Chatroom], project: Optional[Project]) -> str:
-    blocks: List[str] = []
+def _agent_skill_ids(agent: Optional[Agent]) -> List[str]:
+    if agent is None:
+        return []
+    raw_skills = getattr(agent, "skills", None)
+    if isinstance(raw_skills, str):
+        try:
+            parsed = json.loads(raw_skills or "[]")
+        except (TypeError, json.JSONDecodeError):
+            parsed = []
+        return [str(skill) for skill in parsed if skill]
+    if isinstance(raw_skills, list):
+        return [str(skill) for skill in raw_skills if skill]
+    return []
 
-    if project:
-        project_lines = [f"- Project ID: {project.id}", f"- Name: {project.name}"]
-        optional_project_fields = [
-            ("Description", _trim_prompt_context(project.description, 800)),
-            ("Workspace path", _trim_prompt_context(project.workspace_path, 260)),
-            ("Status", project.status),
-            ("Current stage", project.current_stage),
-            ("Execution mode", project.execution_mode),
-            ("Health status", project.health_status),
-            ("Vision", _trim_prompt_context(project.one_line_vision, 320)),
-            ("Primary outcome", _trim_prompt_context(project.primary_outcome, 320)),
-            ("Current focus", _trim_prompt_context(project.current_focus, 500)),
-            ("Blocking reason", _trim_prompt_context(project.blocking_reason, 320)),
-            ("Latest summary", _trim_prompt_context(project.latest_summary, 700)),
-        ]
-        for label, value in optional_project_fields:
-            if value:
-                project_lines.append(f"- {label}: {value}")
-        blocks.append("Current project context:\n" + "\n".join(project_lines))
 
-    if chatroom:
-        source_chat = None
-        if chatroom.source_chatroom_id:
-            source_chat = db.query(Chatroom).filter(Chatroom.id == chatroom.source_chatroom_id).first()
+def _team_member_lines(agents: List[Agent]) -> List[str]:
+    return shared_team_member_lines(agents)
 
-        chat_role = "standalone chat"
-        if project:
-            if project.default_chatroom_id and chatroom.id == project.default_chatroom_id:
-                chat_role = "project main chat"
-            elif chatroom.source_chatroom_id == project.default_chatroom_id:
-                chat_role = "project subchat"
-            else:
-                chat_role = "project-linked chat"
 
-        chat_lines = [
-            f"- Chat ID: {chatroom.id}",
-            f"- Title: {chatroom.title or 'New Chat'}",
-            f"- Chat role: {chat_role}",
-            f"- Session type: {chatroom.session_type or ('project-bound' if project else 'standalone')}",
-            f"- Message visibility: {chatroom.message_visibility or 'all'}",
-            f"- Visible in chat list: {'yes' if chatroom.is_visible_in_chat_list else 'no'}",
-        ]
-        if source_chat:
-            chat_lines.append(f"- Source chat: #{source_chat.id} {source_chat.title or 'New Chat'}")
-        blocks.append("Current chat context:\n" + "\n".join(chat_lines))
+def _memory_context_lines(db: Session, target_agent: Optional[Agent], agents: List[Agent]) -> List[str]:
+    return shared_memory_context_lines(db, target_agent, agents)
 
-    if not blocks:
-        return ""
-    return "\n\n" + "\n\n".join(blocks)
+
+def _assemble_chat_messages(
+    *,
+    db: Session,
+    agent: Optional[Agent],
+    agent_name: str,
+    model_id: str = "",
+    chatroom: Optional[Chatroom],
+    project: Optional[Project],
+    agents: Optional[List[Agent]] = None,
+    recent_messages: Optional[List[Any]] = None,
+    user_message: str = "",
+    available_tools: Optional[List[str]] = None,
+    history_limit: int = 10,
+    history_visibility: str = "all",
+    target_agent_name: Optional[str] = None,
+    prefix_assistant_name: bool = False,
+    standalone_note: str = "",
+    extra_context: str = "",
+    turn_state: Optional[TurnContextState] = None,
+    selector_profile: str = "chat_interactive",
+) -> List[Dict[str, Any]]:
+    tool_guidance = ""
+    if available_tools:
+        tool_guidance = _build_tool_prompt(available_tools)
+        if "When you need to use a tool" not in tool_guidance:
+            tool_guidance += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
+    return shared_assemble_chat_messages(
+        db=db,
+        agent=agent,
+        agent_name=agent_name,
+        model_id=model_id,
+        chatroom=chatroom,
+        project=project,
+        agents=agents,
+        recent_messages=recent_messages,
+        user_message=user_message,
+        available_tools=available_tools,
+        tool_guidance=tool_guidance,
+        history_limit=history_limit,
+        history_visibility=history_visibility,
+        target_agent_name=target_agent_name,
+        prefix_assistant_name=prefix_assistant_name,
+        standalone_note=standalone_note,
+        extra_context=extra_context,
+        turn_state=turn_state,
+        selector_profile=selector_profile,
+    )
 
 
 @lru_cache(maxsize=8)
@@ -369,6 +464,36 @@ def _load_agent_config_data() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"Failed to load agent config for runtime card metadata: {exc}")
         return {}
+
+
+def _normalize_sidecar_agent_types(sidecar_agent_types: Any) -> List[str]:
+    if sidecar_agent_types is None:
+        return []
+    if isinstance(sidecar_agent_types, str):
+        raw_values = [sidecar_agent_types]
+    elif isinstance(sidecar_agent_types, (list, tuple, set)):
+        raw_values = list(sidecar_agent_types)
+    else:
+        raw_values = []
+    return sorted({normalize_agent_type(str(value or "").strip()) for value in raw_values if str(value or "").strip()})
+
+
+def _effective_orchestration_config(config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = config_data if config_data is not None else _load_agent_config_data()
+    orchestration_data = payload.get("orchestration") if isinstance(payload, dict) else None
+    if isinstance(orchestration_data, dict) and "sidecar_agent_types" in orchestration_data:
+        sidecar_agent_types = _normalize_sidecar_agent_types(orchestration_data.get("sidecar_agent_types"))
+    else:
+        sidecar_agent_types = sorted(DEFAULT_SIDECAR_AGENT_TYPES)
+    return {"sidecar_agent_types": sidecar_agent_types}
+
+
+def _configured_sidecar_agent_types(config_data: Optional[Dict[str, Any]] = None) -> set[str] | None:
+    payload = config_data if config_data is not None else _load_agent_config_data()
+    orchestration_data = payload.get("orchestration") if isinstance(payload, dict) else None
+    if not isinstance(orchestration_data, dict) or "sidecar_agent_types" not in orchestration_data:
+        return None
+    return set(_normalize_sidecar_agent_types(orchestration_data.get("sidecar_agent_types")))
 
 
 def _context_window_from_provider(provider_data: Any, model_id: str) -> Optional[int]:
@@ -422,6 +547,25 @@ def _resolve_llm_context_window(agent_name: str, model_id: str) -> Optional[int]
             return context_window
 
     return None
+
+
+def _build_chat_context_selector(
+    *,
+    profile: str = "chat_interactive",
+    agent_name: str,
+    model_id: str,
+    base_system_prompt: str,
+    history_messages: Optional[List[Dict[str, Any]]] = None,
+    current_input_messages: Optional[List[Dict[str, Any]]] = None,
+) -> ContextSelector:
+    return shared_build_chat_context_selector(
+        profile=profile,
+        agent_name=agent_name,
+        model_id=model_id,
+        base_system_prompt=base_system_prompt,
+        history_messages=history_messages,
+        current_input_messages=current_input_messages,
+    )
 
 
 def _build_llm_card_payload(
@@ -479,6 +623,8 @@ async def _trigger_standalone_assistant_response(
     chatroom_id: int,
     user_message: str,
     client_turn_id: Optional[str] = None,
+    task_run: Optional[TaskRun] = None,
+    extra_context: str = "",
 ):
     """Generate a plain assistant reply for standalone chats."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -490,25 +636,47 @@ async def _trigger_standalone_assistant_response(
 
     if assistant:
         llm_client = get_llm_client_for_agent(_agent_type(assistant))
-        assistant_name = agent_name_of(assistant)
+        assistant_name = _agent_type(assistant)
         assistant_id = assistant.id
-        system_prompt = assistant.system_prompt or f"You are {assistant_name}, a helpful AI collaborator."
     else:
         llm_client = get_default_llm_client()
-        assistant_name = default_agent_name(DEFAULT_AGENT_TYPE)
+        assistant_name = DEFAULT_AGENT_TYPE
         assistant_id = None
-        system_prompt = f"You are {assistant_name}, a helpful AI collaborator."
+    standalone_policy = _build_single_agent_runner_policy(
+        run_kind="standalone_assistant",
+        agent_name=assistant_name,
+        project_id=None,
+        tool_names=[],
+        streaming=False,
+        standalone=True,
+    )
 
-    system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
-    system_prompt += _build_runtime_context_block(db, chatroom, None)
+    record_agent_turn_started(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        summary=f"{assistant_name} started a standalone assistant turn.",
+        payload={
+            "client_turn_id": client_turn_id,
+            "stage_policy": standalone_policy.stages[0].to_payload() if standalone_policy.stages else None,
+        },
+    )
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
-    context_messages = [{"role": "system", "content": system_prompt}]
-    for msg in recent_messages[-10:]:
-        if msg.agent_name:
-            context_messages.append({"role": "assistant", "content": msg.content})
-        else:
-            context_messages.append({"role": "user", "content": msg.content})
+    context_messages = _assemble_chat_messages(
+        db=db,
+        agent=assistant,
+        agent_name=assistant_name,
+        model_id=getattr(llm_client, "model", ""),
+        chatroom=chatroom,
+        project=None,
+        agents=[assistant] if assistant else [],
+        recent_messages=recent_messages,
+        user_message=user_message,
+        history_limit=10,
+        standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
+        extra_context=extra_context,
+    )
 
     response_content = await llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
     if not response_content:
@@ -533,6 +701,19 @@ async def _trigger_standalone_assistant_response(
         created_at=agent_response.created_at,
         metadata=_message_metadata_with_turn(client_turn_id),
     )
+    record_agent_turn_completed(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        message_id=agent_response.id,
+        response_content=response_content,
+        summary=f"{assistant_name} completed the standalone turn.",
+    )
+    complete_task_run(
+        db,
+        task_run,
+        summary=_compact_runtime_text(response_content, limit=280),
+    )
 
     if assistant_id and len(response_content) > 30:
         asyncio.create_task(_extract_memories(
@@ -549,6 +730,7 @@ async def _stream_standalone_assistant_response(
     user_message: str,
     sse_json,
     client_turn_id: Optional[str] = None,
+    task_run: Optional[TaskRun] = None,
 ):
     """Stream a plain assistant reply for standalone chats."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -560,76 +742,117 @@ async def _stream_standalone_assistant_response(
 
     if assistant:
         llm_client = get_llm_client_for_agent(_agent_type(assistant))
-        assistant_name = agent_name_of(assistant)
+        assistant_name = _agent_type(assistant)
+        assistant_label = agent_name_of(assistant)
         assistant_id = assistant.id
-        system_prompt = assistant.system_prompt or f"You are {assistant_name}, a helpful AI collaborator."
     else:
         llm_client = get_default_llm_client()
-        assistant_name = default_agent_name(DEFAULT_AGENT_TYPE)
+        assistant_name = DEFAULT_AGENT_TYPE
+        assistant_label = default_agent_name(DEFAULT_AGENT_TYPE)
         assistant_id = None
-        system_prompt = f"You are {assistant_name}, a helpful AI collaborator."
+    standalone_stream_policy = _build_single_agent_runner_policy(
+        run_kind="standalone_assistant_stream",
+        agent_name=assistant_name,
+        project_id=None,
+        tool_names=[],
+        streaming=True,
+        standalone=True,
+    )
 
-    system_prompt += "\n\nThis is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed."
-    system_prompt += _build_runtime_context_block(db, chatroom, None)
+    record_agent_turn_started(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        summary=f"{assistant_name} started a standalone streaming turn.",
+        payload={
+            "client_turn_id": client_turn_id,
+            "stage_policy": (
+                standalone_stream_policy.stages[0].to_payload()
+                if standalone_stream_policy.stages
+                else None
+            ),
+        },
+    )
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
-    context_messages = [{"role": "system", "content": system_prompt}]
-    for msg in recent_messages[-10:]:
-        if msg.agent_name:
-            context_messages.append({"role": "assistant", "content": msg.content})
-        else:
-            context_messages.append({"role": "user", "content": msg.content})
-    prompt_snapshot = _snapshot_llm_messages(context_messages)
-
-    yield f"data: {sse_json.dumps({'type': 'agent_start', 'agent_name': assistant_name, 'model': getattr(llm_client, 'model', ''), 'turn': 1, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(prompt_snapshot), 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
-
-    import time as _time
     final_content = ""
-    _llm_start = _time.time()
+
+    def _assemble_standalone_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+        return _assemble_chat_messages(
+            db=db,
+            agent=assistant,
+            agent_name=assistant_name,
+            model_id=getattr(llm_client, "model", ""),
+            chatroom=chatroom,
+            project=None,
+            agents=[assistant] if assistant else [],
+            recent_messages=recent_messages,
+            user_message=user_message,
+            history_limit=10,
+            standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
+            turn_state=current_turn_state,
+        )
+
+    async def _execute_standalone_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+        raise RuntimeError(f"Standalone assistant stream cannot execute tool '{tool_name}'")
+
+    def _build_standalone_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
+        return _build_llm_card_payload(
+            agent_name=assistant_label,
+            llm_client=llm_client,
+            turn=frame.turn_index,
+            duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
+            system_prompt=frame.system_prompt,
+            prompt_messages=frame.prompt_snapshot,
+            response_content=response_content,
+            tool_call_previews=tool_call_previews,
+            raw_tool_calls=raw_tool_calls,
+            usage=raw_event.get("usage"),
+            finish_reason=raw_event.get("finish_reason"),
+            timings=raw_event.get("timings"),
+        )
+
     try:
-        async for event in _iter_with_heartbeat(llm_client.chat_stream(context_messages)):
-            if event["type"] == _HEARTBEAT_EVENT_TYPE:
-                elapsed_ms = int((_time.time() - _llm_start) * 1000)
-                yield f"data: {sse_json.dumps({'type': 'llm_wait', 'agent': assistant_name, 'elapsed_ms': elapsed_ms, 'turn': 1})}\n\n"
-                continue
-
-            if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                yield f"data: {sse_json.dumps({'type': event['type'], 'agent': assistant_name, 'turn': 1, 'elapsed_ms': event.get('elapsed_ms')})}\n\n"
-                continue
-
-            if event["type"] == "content":
-                final_content += event["delta"]
-                yield f"data: {sse_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
-                continue
-
-            if event["type"] == "done":
-                response_content = event.get("full_content") or final_content
-                llm_payload = _build_llm_card_payload(
-                    agent_name=assistant_name,
-                    llm_client=llm_client,
-                    turn=1,
-                    duration_ms=int(event.get("timings", {}).get("completed_ms") or 0),
-                    system_prompt=system_prompt,
-                    prompt_messages=prompt_snapshot,
-                    response_content=response_content,
-                    tool_call_previews=[],
-                    raw_tool_calls=event.get("tool_calls"),
-                    usage=event.get("usage"),
-                    finish_reason=event.get("finish_reason"),
-                    timings=event.get("timings"),
-                )
-                llm_payload["type"] = "llm_call"
-                llm_payload["source"] = "chatroom"
+        async for event in iter_stream_turn_events(
+            llm_client=llm_client,
+            tools=None,
+            turn_state=TurnContextState(),
+            agent_name=assistant_name,
+            client_turn_id=client_turn_id,
+            assemble_messages=_assemble_standalone_stream_messages,
+            execute_tool=_execute_standalone_stream_tool,
+            build_llm_runtime_card=_build_standalone_stream_llm_card,
+            snapshot_messages=_snapshot_llm_messages,
+            preview_tool_calls=_preview_tool_calls,
+            format_prompt_messages=_format_json_block,
+            tool_result_success=_tool_result_succeeded,
+            max_turns=1,
+        ):
+            if event["type"] == "runtime_card":
+                payload = dict(event["payload"])
+                payload["type"] = event["card_type"]
+                payload["source"] = "chatroom"
                 if client_turn_id:
-                    llm_payload["client_turn_id"] = client_turn_id
-                await _store_runtime_card(chatroom_id, llm_payload)
-                yield f"data: {sse_json.dumps(llm_payload, ensure_ascii=False)}\n\n"
-                final_content = response_content
-                break
+                    payload["client_turn_id"] = client_turn_id
+                await _store_runtime_card(chatroom_id, payload)
+                yield f"data: {sse_json.dumps(_public_runtime_card_payload(payload), ensure_ascii=False)}\n\n"
+                continue
 
-            if event["type"] == "error":
-                raise RuntimeError(event["error"])
+            if event["type"] == "turn_complete":
+                final_content = event.get("content") or ""
+                continue
+
+            yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
     except Exception as exc:
+        append_task_event(
+            db,
+            task_run,
+            "task_run_failed",
+            agent_name=assistant_name,
+            summary=f"Standalone stream failed: {exc}",
+            payload={"error": str(exc)},
+        )
+        complete_task_run(db, task_run, status="failed", summary=str(exc))
         saved = await _persist_stream_failure(
             db,
             chatroom_id=chatroom_id,
@@ -663,6 +886,19 @@ async def _stream_standalone_assistant_response(
         created_at=agent_response.created_at,
         metadata=_message_metadata_with_turn(client_turn_id),
     )
+    record_agent_turn_completed(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        message_id=agent_response.id,
+        response_content=final_content,
+        summary=f"{assistant_name} completed the standalone streaming turn.",
+    )
+    complete_task_run(
+        db,
+        task_run,
+        summary=_compact_runtime_text(final_content, limit=280),
+    )
 
     yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id, 'client_turn_id': client_turn_id})}\n\n"
 
@@ -675,7 +911,13 @@ async def _stream_standalone_assistant_response(
         ))
 
 
-async def trigger_agent_response(chatroom_id: int, user_message: str, client_turn_id: Optional[str] = None):
+async def trigger_agent_response(
+    chatroom_id: int,
+    user_message: str,
+    client_turn_id: Optional[str] = None,
+    task_run_id: Optional[int] = None,
+    extra_context: str = "",
+):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
     from tools import tool_registry
@@ -684,6 +926,7 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
     
     db = next(get_db())
     workspace_token = None
+    task_run = None
     try:
         logger.debug(f"[ trigger_agent_response called: chatroom_id={chatroom_id}, message={user_message[:50]}...")
         
@@ -694,12 +937,32 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
             return
 
         project = _resolve_chatroom_project(db, chatroom)
+        task_run = get_task_run(db, task_run_id) if task_run_id else None
+        if task_run is None:
+            task_run = create_task_run(
+                db,
+                chatroom_id=chatroom_id,
+                project_id=project.id if project else None,
+                origin_message_id=None,
+                client_turn_id=client_turn_id,
+                run_kind="chat_turn",
+                user_request=user_message,
+                initiator="user",
+            )
         workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
         if not project:
             mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', user_message)] if '@' in user_message else []
             if len(mentioned_names) > 1:
-                logger.info(f"[Collab] Standalone multi-agent pipeline triggered: {mentioned_names}")
-                await _run_multi_agent_pipeline(
+                update_task_run(db, task_run, run_kind="multi_agent_orchestration")
+                append_task_event(
+                    db,
+                    task_run,
+                    "runtime_mode_selected",
+                    summary="Selected standalone multi-agent orchestration mode.",
+                    payload={"agents": mentioned_names, "project_id": None},
+                )
+                logger.info(f"[Collab] Standalone multi-agent orchestration triggered: {mentioned_names}")
+                await _run_multi_agent_orchestration(
                     chatroom_id=chatroom_id,
                     project=None,
                     agents=_list_global_agents(db),
@@ -707,9 +970,39 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
                     user_message=user_message,
                     db=db,
                     client_turn_id=client_turn_id,
+                    task_run=task_run,
+                    extra_context=extra_context,
                 )
                 return
-            await _trigger_standalone_assistant_response(db, chatroom_id, user_message, client_turn_id)
+            standalone_target = _resolve_standalone_target_agent(db, user_message)
+            standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
+            update_task_run(db, task_run, run_kind="standalone_assistant", target_agent_name=standalone_agent_name)
+            standalone_policy = _build_single_agent_runner_policy(
+                run_kind="standalone_assistant",
+                agent_name=standalone_agent_name,
+                project_id=None,
+                tool_names=[],
+                streaming=False,
+                standalone=True,
+            )
+            append_task_event(
+                db,
+                task_run,
+                "runtime_mode_selected",
+                summary="Selected standalone assistant mode.",
+                payload={
+                    "project_id": None,
+                    "runner_policy": standalone_policy.to_payload(),
+                },
+            )
+            await _trigger_standalone_assistant_response(
+                db,
+                chatroom_id,
+                user_message,
+                client_turn_id,
+                task_run=task_run,
+                extra_context=extra_context,
+            )
             return
         
         logger.debug(f"[ Found project: {project.name}")
@@ -730,8 +1023,16 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
 
         # 多 Agent 协作：多个 @mention 或包含协作关键词
         if len(mentioned_names) > 1:
-            logger.info(f"[Collab] Multi-agent pipeline triggered: {mentioned_names}")
-            await _run_multi_agent_pipeline(
+            update_task_run(db, task_run, run_kind="multi_agent_orchestration")
+            append_task_event(
+                db,
+                task_run,
+                "runtime_mode_selected",
+                summary="Selected project multi-agent orchestration mode.",
+                payload={"agents": mentioned_names, "project_id": project.id},
+            )
+            logger.info(f"[Collab] Multi-agent orchestration triggered: {mentioned_names}")
+            await _run_multi_agent_orchestration(
                 chatroom_id=chatroom_id,
                 project=project,
                 agents=agents,
@@ -739,6 +1040,8 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
                 user_message=user_message,
                 db=db,
                 client_turn_id=client_turn_id,
+                task_run=task_run,
+                extra_context=extra_context,
             )
             return
 
@@ -766,9 +1069,37 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
 
         if not target_agent:
             logger.debug(f"[ No target agent found")
+            complete_task_run(db, task_run, status="failed", summary="No target agent resolved.")
             return
 
         logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
+        available_tools = tool_registry.list_tools()
+        single_agent_policy = _build_single_agent_runner_policy(
+            run_kind="project_single_agent",
+            agent_name=agent_name_of(target_agent),
+            project_id=project.id,
+            tool_names=available_tools,
+            streaming=False,
+            standalone=False,
+        )
+        update_task_run(
+            db,
+            task_run,
+            run_kind="project_single_agent",
+            target_agent_name=agent_name_of(target_agent),
+        )
+        append_task_event(
+            db,
+            task_run,
+            "runtime_mode_selected",
+            agent_name=agent_name_of(target_agent),
+            summary="Selected project single-agent execution mode.",
+            payload={
+                "project_id": project.id,
+                "target_agent_name": agent_name_of(target_agent),
+                "runner_policy": single_agent_policy.to_payload(),
+            },
+        )
 
         # 注册 Agent 为协作者（如果尚未注册）
         from agents.collaboration import collaboration_coordinator, AgentCollaborator
@@ -786,148 +1117,103 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
         # 5. 获取该 Agent 的 LLM 客户端
         llm_client = get_llm_client_for_agent(_agent_type(target_agent))
         logger.debug(f"[ LLM client obtained for {_agent_type(target_agent)}: {llm_client.base_url}")
-        
-        # 6. 构建消息上下文
-        messages = []
-        
-        system_prompt = target_agent.system_prompt or f"You are {agent_name_of(target_agent)}, a {target_agent.role}."
-        system_prompt += _build_runtime_context_block(db, chatroom, project)
-        
-        available_tools = tool_registry.list_tools()
-        if available_tools:
-            system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
-            system_prompt += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
 
-        # 注入项目中所有 Agent 列表（让 Agent 知道队友是谁）
-        team_members = [f"- **{a.name}** (role: {a.role})" for a in agents]
-        system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
-        if target_agent.id:
-            system_prompt += f"\n\nYou are **{agent_name_of(target_agent)}** (type: `{_agent_type(target_agent)}`, role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
-
-        # 注入记忆到上下文（含跨 Agent 共享）
-        from models.database import Memory
-
-        # 自身记忆（最重要的 8 条）
-        own_memories = (
-            db.query(Memory)
-            .filter(Memory.agent_id == target_agent.id)
-            .order_by(Memory.importance.desc(), Memory.created_at.desc())
-            .limit(8)
-            .all()
-        )
-        # 其他 Agent 的高重要性记忆（共享上下文，最多 5 条）
-        other_agent_ids = [a.id for a in agents if a.id != target_agent.id]
-        shared_memories = []
-        if other_agent_ids:
-            shared_memories = (
-                db.query(Memory)
-                .filter(Memory.agent_id.in_(other_agent_ids), Memory.importance >= 7)
-                .order_by(Memory.importance.desc(), Memory.created_at.desc())
-                .limit(5)
-                .all()
-            )
-
-        if own_memories:
-            system_prompt += "\n\nYour memories (context for your responses):"
-            for mem in own_memories:
-                ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
-                system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
-
-        if shared_memories:
-            system_prompt += "\n\nShared context from other agents:"
-            for mem in shared_memories:
-                ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
-                source_agent = next((a for a in agents if a.id == mem.agent_id), None)
-                source_name = source_agent.name if source_agent else "unknown"
-                system_prompt += f"\n- [{ts}] [{source_name}] {mem.content[:200]}"
-
-        messages.append({
-            "role": "system",
-            "content": system_prompt
-        })
-        
-        # 获取对话历史（根据房间可见度配置）
         visibility = chatroom.message_visibility or "all"
         recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
-
-        if visibility == "all":
-            _append_recent_llm_history(messages, recent_messages, limit=10, prefix_assistant_name=True)
-        else:
-            _append_recent_llm_history(
-                messages,
-                recent_messages,
-                limit=10,
-                visibility="target",
-                target_agent_name=agent_name_of(target_agent),
-            )
-        
-        # 追加当前用户消息；如果最近历史里已经包含这条刚保存的消息，则避免重复。
-        _append_current_user_message(messages, user_message)
-        
-        logger.debug(f"[ Context messages: {len(messages)} messages")
-        
-        # 7. 获取工具 schemas
+        turn_state = TurnContextState()
         tool_schemas = tool_registry.get_schemas()
-        
-        # 8. 主循环：LLM → 执行工具 → 结果回传 LLM → 直到没有 tool_calls
-        logger.info(f"[LLM] Calling LLM for agent: {_agent_type(target_agent)} with {len(tool_schemas)} tools available")
-        
-        max_tool_iterations = MAX_TOOL_ITERATIONS
-        iteration = 0
-        
-        while iteration < max_tool_iterations:
-            iteration += 1
-            logger.info(f"[LLM] Loop iteration {iteration}")
-            
-            llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
-            
-            response_content = llm_response.get("content", "")
-            tool_calls = llm_response.get("tool_calls")
-            
-            logger.info(f"[LLM] Response received: {response_content[:100] if response_content else 'None'}...")
-            logger.info(f"[LLM] Tool calls: {tool_calls}")
-            
-            if not tool_calls:
-                # 没有更多工具调用，结束循环
-                logger.info(f"[LLM] No more tool calls, loop done after {iteration} iterations")
-                break
-            
-            # 将 LLM 的 assistant 消息加入上下文（包含 tool_calls）
-            assistant_msg = {
-                "role": "assistant",
-                "content": response_content,
-                "tool_calls": [tc.model_dump() if hasattr(tc, 'model_dump') else {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                } for tc in tool_calls]
-            }
-            messages.append(assistant_msg)
-            
-            # 执行工具并将结果追加到 messages
-            for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
-                tool_call_id = tool_call.id
-                
-                logger.debug(f"[Tool] Executing: {tool_name} with args: {tool_args}")
-                
-                try:
-                    tool_result = await tool_registry.execute(tool_name, **tool_args)
-                    result_str = str(tool_result) if tool_result is not None else "(no output)"
-                    logger.debug(f"[Tool] Result: {result_str[:150]}...")
-                except Exception as te:
-                    result_str = f"Error executing {tool_name}: {str(te)}"
-                    logger.debug(f"[Tool] Error: {te}")
-                
-                # 以 tool role 消息将结果回传 LLM
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": result_str,
-                    "name": tool_name
-                })
-        
+        runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+        record_agent_turn_started(
+            db,
+            task_run,
+            agent_name=agent_name_of(target_agent),
+            summary=f"{agent_name_of(target_agent)} started working on the request.",
+            payload={
+                "target_agent_name": agent_name_of(target_agent),
+                "client_turn_id": client_turn_id,
+                "stage_policy": single_agent_policy.stages[0].to_payload() if single_agent_policy.stages else None,
+            },
+        )
+
+        def _assemble_project_single_agent_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+            return _assemble_chat_messages(
+                db=db,
+                agent=target_agent,
+                agent_name=agent_name_of(target_agent),
+                model_id=getattr(llm_client, "model", ""),
+                chatroom=chatroom,
+                project=project,
+                agents=agents,
+                recent_messages=recent_messages,
+                user_message=user_message,
+                available_tools=available_tools,
+                history_limit=10,
+                history_visibility="all" if visibility == "all" else "target",
+                target_agent_name=agent_name_of(target_agent),
+                prefix_assistant_name=visibility == "all",
+                extra_context=extra_context,
+                turn_state=current_turn_state,
+            )
+
+        logger.debug(
+            f"[ Context messages: {len(_assemble_project_single_agent_messages(turn_state))} messages"
+        )
+        logger.info(
+            f"[LLM] Calling LLM for agent: {_agent_type(target_agent)} with {len(tool_schemas)} tools available"
+        )
+
+        async def _execute_project_single_agent_tool(frame, tool_call):
+            tool_name = tool_call["function"]["name"]
+            tool_args_str = tool_call["function"].get("arguments", "{}")
+            tool_args = json.loads(tool_args_str or "{}")
+            logger.debug(f"[Tool] Executing: {tool_name} with args: {tool_args}")
+            try:
+                tool_result = await tool_registry.execute(
+                    tool_name,
+                    **tool_args,
+                    **runtime_kwargs,
+                )
+                result_str = str(tool_result) if tool_result is not None else "(no output)"
+                tool_success = True
+                logger.debug(f"[Tool] Result: {result_str[:150]}...")
+            except Exception as te:
+                result_str = f"Error executing {tool_name}: {str(te)}"
+                tool_success = False
+                logger.debug(f"[Tool] Error: {te}")
+            return build_tool_result_record(
+                tool_call_id=tool_call.get("id"),
+                tool_name=tool_name,
+                arguments=tool_args_str,
+                result=result_str,
+                success=tool_success,
+            )
+
+        async def _on_project_single_agent_tool_round(frame, tool_results, current_turn_state):
+            logger.info(f"[LLM] Loop iteration {frame.turn_index + 1}")
+            logger.info(
+                f"[LLM] Response received: {frame.content[:100] if frame.content else 'None'}..."
+            )
+            logger.info(f"[LLM] Tool calls: {frame.normalized_tool_calls}")
+            record_runner_tool_round(
+                db,
+                task_run,
+                agent_name=agent_name_of(target_agent),
+                turn=frame.turn_index + 1,
+                tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+                tool_results=tool_results,
+                summary=f"{agent_name_of(target_agent)} completed a tool round.",
+            )
+
+        response_content = await execute_non_stream_turn_loop(
+            llm_client=llm_client,
+            tools=tool_schemas,
+            turn_state=turn_state,
+            assemble_messages=_assemble_project_single_agent_messages,
+            execute_tool_call=_execute_project_single_agent_tool,
+            max_turns=MAX_TOOL_ITERATIONS,
+            on_tool_round=_on_project_single_agent_tool_round,
+        )
+
         if not response_content:
             logger.error(f"[ LLM returned empty response after all tool iterations")
             return
@@ -954,6 +1240,19 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
             created_at=agent_response.created_at,
             metadata=_message_metadata_with_turn(client_turn_id),
         )
+        record_agent_turn_completed(
+            db,
+            task_run,
+            agent_name=agent_name_of(target_agent),
+            message_id=agent_response.id,
+            response_content=response_content,
+            summary=f"{agent_name_of(target_agent)} completed the turn.",
+        )
+        complete_task_run(
+            db,
+            task_run,
+            summary=_compact_runtime_text(response_content, limit=280),
+        )
         
         logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
 
@@ -968,6 +1267,14 @@ async def trigger_agent_response(chatroom_id: int, user_message: str, client_tur
 
     except Exception as e:
         logger.error(f"[ Agent response failed: {str(e)}")
+        append_task_event(
+            db,
+            task_run,
+            "task_run_failed",
+            summary=f"Agent response failed: {e}",
+            payload={"error": str(e)},
+        )
+        complete_task_run(db, task_run, status="failed", summary=str(e))
         import traceback
         traceback.print_exc()
     finally:
@@ -1058,120 +1365,612 @@ async def _extract_memories(agent_id: int, agent_type: str, user_message: str, a
         logger.debug(f"[Memory] Extraction failed: {e}")
 
 
+def _tool_runtime_kwargs(agent: Optional[Agent], chatroom_id: int, project: Optional[Project]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chatroom_id": chatroom_id}
+    if agent is not None and getattr(agent, "id", None) is not None:
+        payload["agent_id"] = agent.id
+        payload["agent_name"] = agent_name_of(agent)
+    if project is not None and getattr(project, "id", None) is not None:
+        payload["project_id"] = project.id
+    return payload
+
+
+def _compact_runtime_text(value: Any, *, limit: int = 600) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
+
+
+def _build_orchestration_previous_work(turns: List[Dict[str, str]]) -> str:
+    if not turns:
+        return ""
+    lines = []
+    for item in turns:
+        agent_label = str(item.get("agent") or "agent")
+        preview = _compact_runtime_text(item.get("content") or "", limit=280)
+        if preview:
+            lines.append(f"- {agent_label}: {preview}")
+    if not lines:
+        return ""
+    return "Completed orchestration turns:\n" + "\n".join(lines)
+
+
+def _build_orchestration_handoff(from_agent_name: str, content: str) -> Dict[str, str]:
+    return {
+        "from_agent": from_agent_name,
+        "content": _compact_runtime_text(content, limit=1200),
+        "message_type": "handoff",
+    }
+
+
+def _scheduler_event_payload(
+    queue: OrchestrationRuntimeQueue,
+    step,
+    *,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = step.to_payload()
+    payload["step_state"] = queue.runtime_state_payload_for_step(step.step_id)
+    payload["runtime"] = queue.runtime_snapshot_payload()
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _scheduler_plan_payload(
+    queue: OrchestrationRuntimeQueue,
+    *,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = queue.plan.to_payload()
+    payload["runtime"] = queue.runtime_snapshot_payload()
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _build_single_agent_runner_policy(
+    *,
+    run_kind: str,
+    agent_name: str,
+    project_id: Optional[int],
+    tool_names: Optional[List[str]] = None,
+    streaming: bool = False,
+    standalone: bool = False,
+):
+    from tools import tool_registry as runtime_tool_registry
+
+    return compile_single_agent_run_policy(
+        mode=run_kind,
+        source="chat_runtime",
+        agent_name=agent_name,
+        project_id=project_id,
+        tool_names=tool_names or [],
+        tool_policy_pack=runtime_tool_registry.get_policy_pack(tool_names or []),
+        streaming=streaming,
+        standalone=standalone,
+    )
+
+
+def _build_orchestration_runner_policy(
+    *,
+    plan,
+    project_id: Optional[int],
+    tool_names: Optional[List[str]] = None,
+    streaming: bool = False,
+):
+    from tools import tool_registry as runtime_tool_registry
+
+    return compile_orchestration_run_policy(
+        mode=plan.mode,
+        source="orchestration_scheduler",
+        project_id=project_id,
+        steps=plan.steps,
+        sidecar_agent_types=list(plan.sidecar_agent_types or []),
+        tool_names=tool_names or [],
+        tool_policy_pack=runtime_tool_registry.get_policy_pack(tool_names or []),
+        streaming=streaming,
+    )
+
+
+def _task_run_event_payload(event: Optional[TaskRunEvent]) -> Dict[str, Any]:
+    if event is None:
+        return {}
+    raw_payload = getattr(event, "payload_json", None)
+    if not raw_payload:
+        return {}
+    try:
+        loaded = json.loads(raw_payload)
+        return loaded if isinstance(loaded, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _json_column_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
+    if not raw_payload:
+        return {}
+    try:
+        loaded = json.loads(raw_payload)
+        return loaded if isinstance(loaded, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _next_recovery_lease_expiry(now: Optional[datetime] = None) -> datetime:
+    return (now or datetime.now()) + timedelta(seconds=RECOVERY_LEASE_SECONDS)
+
+
+def _format_recovery_lease_detail(owner: Optional[str], lease_expires_at: Optional[datetime]) -> str:
+    if owner and lease_expires_at:
+        return f"Task run is already being recovered by {owner} until {lease_expires_at.isoformat()}."
+    if owner:
+        return f"Task run is already being recovered by {owner}."
+    return "Task run is already being recovered by another Catown instance."
+
+
+def _claim_task_run_recovery_lease(
+    db: Session,
+    task_run_id: int,
+) -> tuple[Optional[TaskRun], TaskRunRecoveryResult]:
+    now = datetime.now()
+    lease_expires_at = _next_recovery_lease_expiry(now)
+    updated = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.id == task_run_id,
+            TaskRun.status == "running",
+            TaskRun.run_kind.in_(sorted(RECOVERABLE_ORCHESTRATION_RUN_KINDS)),
+            or_(
+                TaskRun.recovery_owner.is_(None),
+                TaskRun.recovery_lease_expires_at.is_(None),
+                TaskRun.recovery_lease_expires_at < now,
+            ),
+        )
+        .update(
+            {
+                TaskRun.recovery_owner: RECOVERY_INSTANCE_ID,
+                TaskRun.recovery_claimed_at: now,
+                TaskRun.recovery_lease_expires_at: lease_expires_at,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+
+    task_run = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+    if updated:
+        if task_run is not None:
+            db.refresh(task_run)
+        return task_run, TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="claimed",
+            status=task_run.status if task_run is not None else "running",
+            owner=RECOVERY_INSTANCE_ID,
+            lease_expires_at=lease_expires_at,
+        )
+
+    if task_run is None:
+        return None, TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="not_found",
+            status=None,
+            detail="Task run not found.",
+        )
+    status = (task_run.status or "").lower()
+    if status != "running":
+        return task_run, TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="not_running",
+            status=task_run.status,
+            detail="Only running task runs can be resumed.",
+        )
+    if (task_run.run_kind or "") not in RECOVERABLE_ORCHESTRATION_RUN_KINDS:
+        return task_run, TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="not_recoverable",
+            status=task_run.status,
+            detail="Only recoverable orchestration runs can be resumed.",
+        )
+    return task_run, TaskRunRecoveryResult(
+        task_run_id=task_run_id,
+        resumed=False,
+        reason="leased",
+        status=task_run.status,
+        detail=_format_recovery_lease_detail(task_run.recovery_owner, task_run.recovery_lease_expires_at),
+        owner=task_run.recovery_owner,
+        lease_expires_at=task_run.recovery_lease_expires_at,
+    )
+
+
+def _renew_task_run_recovery_lease(db: Session, task_run_id: int) -> Optional[datetime]:
+    lease_expires_at = _next_recovery_lease_expiry()
+    updated = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.id == task_run_id,
+            TaskRun.recovery_owner == RECOVERY_INSTANCE_ID,
+            TaskRun.status == "running",
+        )
+        .update(
+            {TaskRun.recovery_lease_expires_at: lease_expires_at},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return lease_expires_at if updated else None
+
+
+def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
+    schedule_event = next((event for event in task_run.events if event.event_type == "scheduler_plan_created"), None)
+    schedule_payload = _task_run_event_payload(schedule_event)
+    raw_steps = schedule_payload.get("steps", [])
+    if isinstance(raw_steps, list):
+        recovered_names = []
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                continue
+            raw_requested_name = str(step.get("requested_name") or "").strip()
+            if not raw_requested_name:
+                continue
+            requested_name = normalize_agent_type(raw_requested_name)
+            if requested_name:
+                recovered_names.append(requested_name)
+        if recovered_names:
+            return recovered_names
+
+    orchestration_event = next((event for event in task_run.events if event.event_type == "orchestration_started"), None)
+    orchestration_payload = _task_run_event_payload(orchestration_event)
+    resolved_agents = orchestration_payload.get("resolved_agents", [])
+    if isinstance(resolved_agents, list):
+        recovered_names = [normalize_agent_type(name) for name in resolved_agents if str(name or "").strip()]
+        if recovered_names:
+            return recovered_names
+
+    mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', task_run.user_request or "")]
+    return [name for name in mentioned_names if name]
+
+
+def _rebuild_orchestration_recovery_state(
+    db: Session,
+    *,
+    task_run: TaskRun,
+    queue: OrchestrationRuntimeQueue,
+) -> tuple[List[Dict[str, str]], Dict[str, List[Dict[str, str]]], str, List[str]]:
+    messages_by_id: Dict[int, Message] = {}
+    completed_turns: List[Dict[str, str]] = []
+    pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
+    completed_step_ids: List[str] = []
+    completed_step_id_set: set[str] = set()
+    last_blocking_result = ""
+    step_by_agent_name = {step.agent_name.lower(): step for step in queue.plan.steps}
+
+    message_ids = [
+        event.message_id
+        for event in task_run.events
+        if event.event_type == "agent_turn_completed" and event.message_id
+    ]
+    if message_ids:
+        for message in db.query(Message).filter(Message.id.in_(message_ids)).all():
+            messages_by_id[message.id] = message
+
+    for event in task_run.events:
+        if event.event_type != "agent_turn_completed":
+            continue
+        agent_name = (event.agent_name or "").strip()
+        if not agent_name:
+            continue
+        step = step_by_agent_name.get(agent_name.lower())
+        if step is None or step.step_id in completed_step_id_set:
+            continue
+
+        message = messages_by_id.get(event.message_id or 0)
+        content = (message.content if message is not None else "") or ""
+        if not content:
+            payload = _task_run_event_payload(event)
+            content = str(payload.get("response_preview") or "").strip()
+
+        completed_turns.append({"agent": agent_name, "content": content})
+        completed_step_ids.append(step.step_id)
+        completed_step_id_set.add(step.step_id)
+        ready_steps = queue.mark_completed(step.step_id)
+
+        if step.dispatch_kind == "blocking" and content:
+            last_blocking_result = content
+
+        if not content:
+            continue
+        handoff = _build_orchestration_handoff(agent_name, content)
+        for next_step in ready_steps:
+            if next_step.step_id in completed_step_id_set:
+                continue
+            pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
+
+    ready_step_ids = set(queue.runtime_snapshot().ready_step_ids)
+    pending_handoffs = {
+        step_id: handoffs
+        for step_id, handoffs in pending_handoffs.items()
+        if step_id in ready_step_ids and handoffs
+    }
+    return completed_turns, pending_handoffs, last_blocking_result, completed_step_ids
+
+
+def _resolve_orchestration_targets(
+    db: Session,
+    project: Optional[Project],
+    agents: List[Agent],
+    agent_names: List[str],
+) -> List[tuple[str, Optional[Agent]]]:
+    targets: List[tuple[str, Optional[Agent]]] = []
+    seen_ids: set[int] = set()
+
+    for name in agent_names:
+        requested_name = normalize_agent_type(name)
+        agent = find_agent_by_type(agents, requested_name)
+        if not agent:
+            global_agent = _find_db_agent_by_type(db, requested_name)
+            if global_agent and project:
+                assignment = (
+                    db.query(AgentAssignment)
+                    .filter(
+                        AgentAssignment.project_id == project.id,
+                        AgentAssignment.agent_id == global_agent.id,
+                    )
+                    .first()
+                )
+                if assignment is None:
+                    db.add(AgentAssignment(project_id=project.id, agent_id=global_agent.id))
+                    db.commit()
+                if global_agent not in agents:
+                    agents.append(global_agent)
+            if global_agent:
+                agent = global_agent
+
+        if agent is None:
+            targets.append((requested_name, None))
+            continue
+        if getattr(agent, "id", None) in seen_ids:
+            continue
+        seen_ids.add(agent.id)
+        targets.append((requested_name, agent))
+
+    return targets
+
+
+def _ensure_collaboration_context(agents: List[Agent], chatroom_id: int) -> None:
+    from agents.collaboration import collaboration_coordinator, AgentCollaborator
+
+    for agent in agents:
+        if getattr(agent, "id", None) in collaboration_coordinator.collaborators:
+            continue
+        collaboration_coordinator.register_collaborator(
+            AgentCollaborator(
+                agent_id=agent.id,
+                agent_name=_agent_type(agent),
+                chatroom_id=chatroom_id,
+            )
+        )
+
+
+async def _iter_agent_turn_events(
+    *,
+    agent: Agent,
+    chatroom_id: int,
+    chatroom: Chatroom,
+    project: Optional[Project],
+    agents: List[Agent],
+    user_message: str,
+    db: Session,
+    client_turn_id: Optional[str] = None,
+    previous_agent_work: str = "",
+    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
+    history_limit: int = 4,
+    standalone_note: str = "",
+    task_run: Optional[TaskRun] = None,
+):
+    from tools import tool_registry
+
+    _ensure_collaboration_context(agents, chatroom_id)
+
+    llm_client = get_llm_client_for_agent(_agent_type(agent))
+    agent_label = agent_name_of(agent)
+    available_tools = tool_registry.list_tools()
+    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(history_limit + 2, 6))
+    turn_state = TurnContextState(previous_agent_work=previous_agent_work or "")
+    turn_state.add_inter_agent_messages(inter_agent_messages or [])
+    tool_schemas = tool_registry.get_schemas()
+    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
+    record_agent_turn_started(
+        db,
+        task_run,
+        agent_name=agent_label,
+        summary=f"{agent_label} started an orchestrated streaming turn.",
+        payload={
+            "client_turn_id": client_turn_id,
+            "inter_agent_message_count": len(inter_agent_messages or []),
+        },
+    )
+
+    def _assemble_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+        return _assemble_chat_messages(
+            db=db,
+            agent=agent,
+            agent_name=agent_label,
+            model_id=getattr(llm_client, "model", ""),
+            chatroom=chatroom,
+            project=project,
+            agents=agents,
+            recent_messages=recent_messages,
+            user_message=user_message,
+            available_tools=available_tools,
+            history_limit=history_limit,
+            standalone_note=standalone_note,
+            turn_state=current_turn_state,
+        )
+
+    async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+        return await tool_registry.execute(tool_name, **tool_args, **runtime_kwargs)
+
+    async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=agent_label,
+            turn=frame.turn_index,
+            tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
+            tool_results=tool_results,
+            summary=f"{agent_label} completed a streaming tool round.",
+        )
+
+    def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
+        return _build_llm_card_payload(
+            agent_name=agent_label,
+            llm_client=llm_client,
+            turn=frame.turn_index,
+            duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
+            system_prompt=frame.system_prompt,
+            prompt_messages=frame.prompt_snapshot,
+            response_content=response_content,
+            tool_call_previews=tool_call_previews,
+            raw_tool_calls=raw_tool_calls,
+            usage=raw_event.get("usage"),
+            finish_reason=raw_event.get("finish_reason"),
+            timings=raw_event.get("timings"),
+        )
+
+    async for event in iter_stream_turn_events(
+        llm_client=llm_client,
+        tools=tool_schemas,
+        turn_state=turn_state,
+        agent_name=agent_label,
+        client_turn_id=client_turn_id,
+        assemble_messages=_assemble_stream_messages,
+        execute_tool=_execute_stream_tool,
+        build_llm_runtime_card=_build_stream_llm_card,
+        snapshot_messages=_snapshot_llm_messages,
+        preview_tool_calls=_preview_tool_calls,
+        format_prompt_messages=_format_json_block,
+        tool_result_success=_tool_result_succeeded,
+        max_turns=MAX_TOOL_ITERATIONS,
+        on_tool_round=_on_stream_tool_round,
+    ):
+        if event["type"] == "turn_complete":
+            event["agent"] = agent
+        yield event
+
+
 async def _run_single_agent_turn(
-    agent, chatroom_id, project, agents, user_message, extra_context, db, client_turn_id: Optional[str] = None
+    agent,
+    chatroom_id,
+    project,
+    agents,
+    user_message,
+    extra_context,
+    db,
+    client_turn_id: Optional[str] = None,
+    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
+    task_run: Optional[TaskRun] = None,
 ):
     """
-    执行单个 Agent 的一次响应（供多 Agent 流水线调用）
+    执行单个 Agent 的一次响应（供多 Agent 编排调用）
 
     Returns: (response_content, agent_response_msg) 或 (None, None)
     """
     from tools import tool_registry
-    from agents.collaboration import collaboration_coordinator, AgentCollaborator
-    from models.database import Memory
 
     llm_client = get_llm_client_for_agent(_agent_type(agent))
     current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
 
-    # 注册协作者
-    for a in agents:
-        if a.id not in collaboration_coordinator.collaborators:
-            collaboration_coordinator.register_collaborator(
-                AgentCollaborator(agent_id=a.id, agent_name=_agent_type(a), chatroom_id=chatroom_id)
-            )
-
-    # 构建 system prompt
-    system_prompt = agent.system_prompt or f"You are {agent_name_of(agent)}, a {agent.role}."
-    if project:
-        system_prompt += _build_runtime_context_block(db, current_chatroom, project)
-    else:
-        system_prompt += (
-            "\n\nThis is a standalone chat. Reply directly, stay concise, "
-            "and coordinate with mentioned teammates when it helps."
-        )
-        system_prompt += _build_runtime_context_block(db, current_chatroom, None)
+    _ensure_collaboration_context(agents, chatroom_id)
 
     available_tools = tool_registry.list_tools()
-    if available_tools:
-        system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
-
-    # 注入当前可用 Agent 列表
-    team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
-    team_label = "Team members in this project" if project else "Available agents in this standalone chat"
-    system_prompt += f"\n\n{team_label}:\n" + "\n".join(team_members)
-    system_prompt += (
-        f"\n\nYou are **{agent_name_of(agent)}** (type: `{_agent_type(agent)}`, role: {agent.role}). "
-        "You can use tools to communicate with or delegate tasks to your teammates."
-    )
-
-    # 记忆注入
-    own_memories = (
-        db.query(Memory).filter(Memory.agent_id == agent.id)
-        .order_by(Memory.importance.desc(), Memory.created_at.desc()).limit(8).all()
-    )
-    other_ids = [a.id for a in agents if a.id != agent.id]
-    shared = []
-    if other_ids:
-        shared = (
-            db.query(Memory).filter(Memory.agent_id.in_(other_ids), Memory.importance >= 7)
-            .order_by(Memory.importance.desc(), Memory.created_at.desc()).limit(5).all()
-        )
-    if own_memories:
-        system_prompt += "\n\nYour memories:"
-        for mem in own_memories:
-            ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
-            system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
-    if shared:
-        system_prompt += "\n\nShared context from other agents:"
-        for mem in shared:
-            ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "?"
-            source_agent = next((a for a in agents if a.id == mem.agent_id), None)
-            src = agent_name_of(source_agent) if source_agent else "unknown"
-            system_prompt += f"\n- [{ts}] [{src}] {mem.content[:200]}"
-
-    # 如果有协作上下文（前一个 Agent 的回复），注入
-    if extra_context:
-        system_prompt += f"\n\nPrevious agent's work for you to build upon:\n{extra_context[:1500]}"
-
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # 近期对话
     recent_msgs = await chatroom_manager.get_messages(chatroom_id, limit=6)
-    _append_recent_llm_history(messages, recent_msgs, limit=4)
-    _append_current_user_message(messages, user_message)
-
+    turn_state = TurnContextState(previous_agent_work=extra_context or "")
+    turn_state.add_inter_agent_messages(inter_agent_messages or [])
     tool_schemas = tool_registry.get_schemas()
-    response_content = ""
+    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
+    record_agent_turn_started(
+        db,
+        task_run,
+        agent_name=agent_name_of(agent),
+        summary=f"{agent_name_of(agent)} started an orchestrated turn.",
+        payload={
+            "client_turn_id": client_turn_id,
+            "inter_agent_message_count": len(inter_agent_messages or []),
+        },
+    )
 
-    # 工具调用循环
-    for iteration in range(MAX_TOOL_ITERATIONS):
-        llm_response = await llm_client.chat_with_tools(messages, tool_schemas if tool_schemas else None)
-        response_content = llm_response.get("content", "") or ""
-        tool_calls = llm_response.get("tool_calls")
+    def _assemble_orchestration_turn_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+        return _assemble_chat_messages(
+            db=db,
+            agent=agent,
+            agent_name=agent_name_of(agent),
+            model_id=getattr(llm_client, "model", ""),
+            chatroom=current_chatroom,
+            project=project,
+            agents=agents,
+            recent_messages=recent_msgs,
+            user_message=user_message,
+            available_tools=available_tools,
+            history_limit=4,
+            standalone_note=(
+            "This is a standalone chat. Reply directly, stay concise, "
+            "and coordinate with mentioned teammates when it helps."
+        )
+        if not project
+        else "",
+            turn_state=current_turn_state,
+        )
 
-        if not tool_calls:
-            break
+    async def _execute_orchestration_tool(frame, tool_call):
+        tool_name = tool_call["function"]["name"]
+        tool_args_str = tool_call["function"].get("arguments", "{}")
+        try:
+            tool_args = json.loads(tool_args_str or "{}")
+            tool_result = await tool_registry.execute(
+                tool_name,
+                **tool_args,
+                **runtime_kwargs,
+            )
+            result_str = str(tool_result) if tool_result else "(no output)"
+            tool_success = True
+        except Exception as te:
+            result_str = f"Error: {te}"
+            tool_success = False
+        return build_tool_result_record(
+            tool_call_id=tool_call.get("id"),
+            tool_name=tool_name,
+            arguments=tool_args_str,
+            result=result_str,
+            success=tool_success,
+        )
 
-        assistant_msg = {
-            "role": "assistant", "content": response_content,
-            "tool_calls": [tc.model_dump() if hasattr(tc, 'model_dump') else {
-                "id": tc.id, "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-            } for tc in tool_calls]
-        }
-        messages.append(assistant_msg)
+    async def _on_orchestration_tool_round(frame, tool_results, current_turn_state):
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=agent_name_of(agent),
+            turn=frame.turn_index + 1,
+            tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+            tool_results=tool_results,
+            summary=f"{agent_name_of(agent)} completed a tool round.",
+        )
 
-        for tc in tool_calls:
-            tool_name = tc.function.name
-            tool_args = json.loads(tc.function.arguments)
-            try:
-                tool_result = await tool_registry.execute(tool_name, **tool_args)
-                result_str = str(tool_result) if tool_result else "(no output)"
-            except Exception as te:
-                result_str = f"Error: {te}"
-            if len(result_str) > 2000:
-                result_str = result_str[:2000]
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str, "name": tool_name})
+    response_content = await execute_non_stream_turn_loop(
+        llm_client=llm_client,
+        tools=tool_schemas,
+        turn_state=turn_state,
+        assemble_messages=_assemble_orchestration_turn_messages,
+        execute_tool_call=_execute_orchestration_tool,
+        max_turns=MAX_TOOL_ITERATIONS,
+        on_tool_round=_on_orchestration_tool_round,
+    )
 
     if not response_content:
         return None, None
@@ -1184,6 +1983,14 @@ async def _run_single_agent_turn(
         metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=agent_name_of(agent),
     )
+    record_agent_turn_completed(
+        db,
+        task_run,
+        agent_name=agent_name_of(agent),
+        message_id=agent_msg.id,
+        response_content=response_content,
+        summary=f"{agent_name_of(agent)} completed the orchestrated turn.",
+    )
 
     # 异步提取记忆
     if len(response_content) > 30:
@@ -1192,59 +1999,124 @@ async def _run_single_agent_turn(
     return response_content, agent_msg
 
 
-async def _run_multi_agent_pipeline(
-    chatroom_id, project, agents, agent_names, user_message, db, client_turn_id: Optional[str] = None
+async def _run_multi_agent_orchestration(
+    chatroom_id,
+    project,
+    agents,
+    agent_names,
+    user_message,
+    db,
+    client_turn_id: Optional[str] = None,
+    task_run: Optional[TaskRun] = None,
+    extra_context: str = "",
 ):
     """
-    多 Agent 协作流水线
+    多 Agent 协作编排
 
-    流程：每个按序 @mention 的 Agent 依次响应，后一个看到前一个的输出。
-    最终通过 WebSocket 广播所有响应。
+    以 turn/inbox/handoff 驱动执行，而不是固定 stage pipeline。
     """
-    resolved_agents = []
-    for name in agent_names:
-        agent = find_agent_by_type(agents, name)
-        if not agent:
-            global_agent = _find_db_agent_by_type(db, name)
-            if global_agent and project:
-                assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
-                db.add(assignment)
-                db.commit()
-                agents.append(global_agent)
-            if global_agent:
-                agent = global_agent
-        if agent and agent not in resolved_agents:
-            resolved_agents.append(agent)
+    from tools import tool_registry
+
+    targets = _resolve_orchestration_targets(db, project, agents, agent_names)
+    resolved_agents = [agent for _, agent in targets if agent is not None]
+    available_tools = tool_registry.list_tools()
 
     if not resolved_agents:
-        logger.warning("[Collab] No valid agents found for multi-agent pipeline")
+        logger.warning("[Collab] No valid agents found for multi-agent orchestration")
+        append_task_event(
+            db,
+            task_run,
+            "task_run_failed",
+            summary="No valid agents resolved for orchestration.",
+            payload={"requested_agents": agent_names},
+        )
+        complete_task_run(db, task_run, status="failed", summary="No valid agents resolved.")
         return
 
-    logger.info(f"[Collab] Pipeline: {' → '.join(_agent_type(a) for a in resolved_agents)}")
-
-    previous_context = None
+    logger.info(f"[Collab] Orchestration: {' -> '.join(_agent_type(a) for a in resolved_agents)}")
+    completed_turns: List[Dict[str, str]] = []
+    pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
     results = []
+    last_blocking_result = ""
+    plan = build_orchestration_schedule(
+        [(requested_name, agent) for requested_name, agent in targets if agent is not None],
+        sidecar_agent_types=_configured_sidecar_agent_types(),
+    )
+    orchestration_policy = _build_orchestration_runner_policy(
+        plan=plan,
+        project_id=project.id if project else None,
+        tool_names=available_tools,
+        streaming=False,
+    )
+    queue = OrchestrationRuntimeQueue(plan)
+    agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
 
-    for i, agent in enumerate(resolved_agents):
-        logger.info(f"[Collab] Step {i+1}/{len(resolved_agents)}: {_agent_type(agent)}")
+    append_task_event(
+        db,
+        task_run,
+        "orchestration_started",
+        summary="Multi-agent orchestration started.",
+        payload={
+            "requested_agents": agent_names,
+            "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
+            "project_id": project.id if project else None,
+            "runner_policy": orchestration_policy.to_payload(),
+        },
+    )
 
-        # 为后续 Agent 注入前序上下文
-        extra_msg = user_message
-        if previous_context:
-            extra_msg = (
-                f"{user_message}\n\n"
-                f"[Context from previous agent ({agent_name_of(resolved_agents[i-1])})]:\n{previous_context}"
-            )
+    append_task_event(
+        db,
+        task_run,
+        "scheduler_plan_created",
+        summary=(
+            "Built a blocking-chain orchestration schedule with sidecars."
+            if plan.mode == "blocking_chain_with_sidecars"
+            else "Built a linear blocking orchestration schedule."
+        ),
+        payload=_scheduler_plan_payload(
+            queue,
+            extra={"runner_policy": orchestration_policy.to_payload()},
+        ),
+    )
+
+    while True:
+        step = queue.pop_ready()
+        if step is None:
+            break
+
+        agent = agents_by_id.get(step.agent_id)
+        if agent is None:
+            continue
+
+        agent_label = agent_name_of(agent)
+        step_policy = find_stage_policy(orchestration_policy, step.step_id)
+        logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_step_dispatched",
+            agent_name=agent_label,
+            summary=f"Scheduler dispatched {step.dispatch_kind} work to {agent_label}.",
+            payload=_scheduler_event_payload(
+                queue,
+                step,
+                extra={
+                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                },
+            ),
+        )
 
         content, msg = await _run_single_agent_turn(
             agent=agent,
             chatroom_id=chatroom_id,
             project=project,
             agents=agents,
-            user_message=extra_msg,
-            extra_context=previous_context,
+            user_message=user_message,
+            extra_context=f"{_build_orchestration_previous_work(completed_turns)}\n{extra_context}".strip(),
+            inter_agent_messages=pending_handoffs.pop(step.step_id, []),
             db=db,
             client_turn_id=client_turn_id,
+            task_run=task_run,
         )
 
         if content:
@@ -1259,12 +2131,755 @@ async def _run_multi_agent_pipeline(
                 metadata=_message_metadata_with_turn(client_turn_id),
             )
 
-            results.append({"agent": agent_name_of(agent), "content": content})
-            previous_context = content
-        else:
+            results.append({"agent": agent_label, "content": content})
+            completed_turns.append({"agent": agent_label, "content": content})
+            if step.dispatch_kind == "blocking":
+                last_blocking_result = content
+
+        ready_steps = queue.mark_completed(step.step_id)
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_step_completed",
+            agent_name=agent_label,
+            summary=(
+                f"Scheduler marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
+                if ready_steps
+                else f"Scheduler marked {agent_label} complete."
+            ),
+            payload=_scheduler_event_payload(
+                queue,
+                step,
+                extra={
+                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                    "released_step_ids": [next_step.step_id for next_step in ready_steps],
+                    "released_step_count": len(ready_steps),
+                    "completed_with_output": bool(content),
+                },
+            ),
+        )
+        for next_step in ready_steps:
+            next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_resumed",
+                agent_name=next_step.agent_name,
+                summary=f"Scheduler resumed {next_step.agent_name} after {agent_label}.",
+                payload=_scheduler_event_payload(
+                    queue,
+                    next_step,
+                    extra={
+                        "stage_policy": (
+                            next_step_policy.to_payload() if next_step_policy is not None else None
+                        ),
+                        "resumed_by_step_id": step.step_id,
+                        "resumed_by_agent": agent_label,
+                    },
+                ),
+            )
+        if content:
+            handoff = _build_orchestration_handoff(agent_label, content)
+            for next_step in ready_steps:
+                pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
+                append_task_event(
+                    db,
+                    task_run,
+                    "handoff_created",
+                    agent_name=agent_label,
+                    summary=f"Handoff created for {next_step.agent_name}.",
+                    payload={
+                        "from_agent": agent_label,
+                        "to_agent": next_step.agent_name,
+                        "from_step_id": step.step_id,
+                        "to_step_id": next_step.step_id,
+                        "dispatch_kind": next_step.dispatch_kind,
+                        "attached_to_step_id": next_step.attached_to_step_id,
+                        "content_preview": handoff.get("content"),
+                    },
+                )
+        elif step.dispatch_kind == "blocking":
             logger.warning(f"[Collab] {agent.name} returned empty response")
 
-    logger.info(f"[Collab] Pipeline complete: {len(results)}/{len(resolved_agents)} agents responded")
+    logger.info(f"[Collab] Orchestration complete: {len(results)}/{len(resolved_agents)} agents responded")
+    complete_task_run(
+        db,
+        task_run,
+        summary=_compact_runtime_text(
+            last_blocking_result or (results[-1]["content"] if results else "Orchestration completed without agent output."),
+            limit=280,
+        ),
+    )
+
+
+async def _run_multi_agent_pipeline(
+    chatroom_id, project, agents, agent_names, user_message, db, client_turn_id: Optional[str] = None
+):
+    """Backward-compatible wrapper for the old helper name."""
+    await _run_multi_agent_orchestration(
+        chatroom_id=chatroom_id,
+        project=project,
+        agents=agents,
+        agent_names=agent_names,
+        user_message=user_message,
+        db=db,
+        client_turn_id=client_turn_id,
+    )
+
+
+async def _resume_interrupted_orchestration_task_run(
+    task_run_id: int,
+    *,
+    trigger: str = "startup",
+) -> TaskRunRecoveryResult:
+    from tools import tool_registry
+
+    db = SessionLocal()
+    try:
+        task_run, claim_result = _claim_task_run_recovery_lease(db, task_run_id)
+        if claim_result.reason != "claimed":
+            return claim_result
+        lease_expires_at = claim_result.lease_expires_at
+        if task_run is None:
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="not_found",
+                status=None,
+                detail="Task run not found.",
+            )
+
+        chatroom = db.query(Chatroom).filter(Chatroom.id == task_run.chatroom_id).first()
+        if chatroom is None:
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary="Recovery aborted because the chatroom no longer exists.",
+                payload={"task_run_id": task_run.id},
+            )
+            complete_task_run(db, task_run, status="failed", summary="Recovery failed: chatroom missing.")
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="chatroom_missing",
+                status="failed",
+                detail="Recovery failed: chatroom missing.",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+            )
+
+        project = _resolve_chatroom_project(db, chatroom)
+        agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
+        agent_names = _recover_orchestration_agent_names(task_run)
+        available_tools = tool_registry.list_tools()
+        targets = _resolve_orchestration_targets(db, project, agents, agent_names)
+        resolved_agents = [agent for _, agent in targets if agent is not None]
+        if not resolved_agents:
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary="Recovery aborted because no valid orchestration agents could be resolved.",
+                payload={"requested_agents": agent_names},
+            )
+            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no valid agents resolved.")
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="no_valid_agents",
+                status="failed",
+                detail="Recovery failed: no valid agents resolved.",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+            )
+
+        plan = build_orchestration_schedule(
+            [(requested_name, agent) for requested_name, agent in targets if agent is not None],
+            sidecar_agent_types=_configured_sidecar_agent_types(),
+        )
+        orchestration_policy = _build_orchestration_runner_policy(
+            plan=plan,
+            project_id=project.id if project else None,
+            tool_names=available_tools,
+            streaming=(task_run.run_kind == "multi_agent_orchestration_stream"),
+        )
+        queue = OrchestrationRuntimeQueue(plan)
+        append_task_event(
+            db,
+            task_run,
+            "task_run_recovery_started",
+            summary=(
+                "Manual resume started recovery for an interrupted orchestration run."
+                if trigger == "manual"
+                else "Detected an interrupted orchestration run and started recovery."
+            ),
+            payload={
+                "task_run_id": task_run.id,
+                "run_kind": task_run.run_kind,
+                "requested_agents": agent_names,
+                "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
+                "project_id": project.id if project else None,
+                "chatroom_id": chatroom.id,
+                "trigger": trigger,
+                "recovery_owner": RECOVERY_INSTANCE_ID,
+                "recovery_lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+                "runner_policy": orchestration_policy.to_payload(),
+            },
+        )
+        completed_turns, pending_handoffs, last_blocking_result, completed_step_ids = _rebuild_orchestration_recovery_state(
+            db,
+            task_run=task_run,
+            queue=queue,
+        )
+        agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_recovery_state_rebuilt",
+            summary=(
+                f"Rebuilt scheduler state with {len(completed_step_ids)} completed step(s) and "
+                f"{queue.runtime_snapshot().ready_step_count} ready step(s)."
+            ),
+            payload=_scheduler_plan_payload(
+                queue,
+                extra={
+                    "runner_policy": orchestration_policy.to_payload(),
+                    "recovery": {
+                        "completed_step_ids": completed_step_ids,
+                        "replayed_turn_count": len(completed_turns),
+                    }
+                },
+            ),
+        )
+        initial_runtime = queue.runtime_snapshot()
+        if (
+            initial_runtime.ready_step_count == 0
+            and initial_runtime.completed_step_count < initial_runtime.step_count
+        ):
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary="Recovery rebuilt the scheduler state but found no runnable steps.",
+                payload=_scheduler_plan_payload(
+                    queue,
+                    extra={"runner_policy": orchestration_policy.to_payload()},
+                ),
+            )
+            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no runnable steps after rebuild.")
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="no_runnable_steps",
+                status="failed",
+                detail="Recovery failed: no runnable steps after rebuild.",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+            )
+
+        while True:
+            lease_expires_at = _renew_task_run_recovery_lease(db, task_run.id)
+            if lease_expires_at is None:
+                logger.warning(
+                    "[Recovery] Lost lease for task run %s while %s was attempting resume",
+                    task_run.id,
+                    RECOVERY_INSTANCE_ID,
+                )
+                refreshed = db.query(TaskRun).filter(TaskRun.id == task_run.id).first()
+                return TaskRunRecoveryResult(
+                    task_run_id=task_run_id,
+                    resumed=False,
+                    reason="lease_lost",
+                    status=refreshed.status if refreshed is not None else task_run.status,
+                    detail="Recovery lease was lost before the orchestration could finish.",
+                    owner=refreshed.recovery_owner if refreshed is not None else None,
+                    lease_expires_at=(
+                        refreshed.recovery_lease_expires_at if refreshed is not None else None
+                    ),
+                )
+            step = queue.pop_ready()
+            if step is None:
+                break
+
+            agent = agents_by_id.get(step.agent_id)
+            if agent is None:
+                continue
+
+            agent_label = agent_name_of(agent)
+            step_policy = find_stage_policy(orchestration_policy, step.step_id)
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_dispatched",
+                agent_name=agent_label,
+                summary=f"Recovery dispatched {step.dispatch_kind} work to {agent_label}.",
+                payload=_scheduler_event_payload(
+                    queue,
+                    step,
+                    extra={
+                        "recovered": True,
+                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                    },
+                ),
+            )
+
+            content, msg = await _run_single_agent_turn(
+                agent=agent,
+                chatroom_id=chatroom.id,
+                project=project,
+                agents=agents,
+                user_message=task_run.user_request or "",
+                extra_context=_build_orchestration_previous_work(completed_turns),
+                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
+                db=db,
+                client_turn_id=task_run.client_turn_id,
+                task_run=task_run,
+            )
+
+            if content:
+                await _publish_saved_chat_message(
+                    db,
+                    chatroom.id,
+                    message_id=msg.id,
+                    content=content,
+                    agent_name=agent_label,
+                    message_type="text",
+                    created_at=msg.created_at,
+                    metadata=_message_metadata_with_turn(task_run.client_turn_id),
+                )
+                completed_turns.append({"agent": agent_label, "content": content})
+                if step.dispatch_kind == "blocking":
+                    last_blocking_result = content
+
+            ready_steps = queue.mark_completed(step.step_id)
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_completed",
+                agent_name=agent_label,
+                summary=(
+                    f"Recovery marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
+                    if ready_steps
+                    else f"Recovery marked {agent_label} complete."
+                ),
+                payload=_scheduler_event_payload(
+                    queue,
+                    step,
+                    extra={
+                        "recovered": True,
+                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                        "released_step_ids": [next_step.step_id for next_step in ready_steps],
+                        "released_step_count": len(ready_steps),
+                        "completed_with_output": bool(content),
+                    },
+                ),
+            )
+            for next_step in ready_steps:
+                next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
+                append_task_event(
+                    db,
+                    task_run,
+                    "scheduler_step_resumed",
+                    agent_name=next_step.agent_name,
+                    summary=f"Recovery resumed {next_step.agent_name} after {agent_label}.",
+                    payload=_scheduler_event_payload(
+                        queue,
+                        next_step,
+                        extra={
+                            "recovered": True,
+                            "stage_policy": (
+                                next_step_policy.to_payload() if next_step_policy is not None else None
+                            ),
+                            "resumed_by_step_id": step.step_id,
+                            "resumed_by_agent": agent_label,
+                        },
+                    ),
+                )
+
+            if content:
+                handoff = _build_orchestration_handoff(agent_label, content)
+                for next_step in ready_steps:
+                    pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
+                    append_task_event(
+                        db,
+                        task_run,
+                        "handoff_created",
+                        agent_name=agent_label,
+                        summary=f"Recovery created a handoff for {next_step.agent_name}.",
+                        payload={
+                            "from_agent": agent_label,
+                            "to_agent": next_step.agent_name,
+                            "from_step_id": step.step_id,
+                            "to_step_id": next_step.step_id,
+                            "dispatch_kind": next_step.dispatch_kind,
+                            "attached_to_step_id": next_step.attached_to_step_id,
+                            "content_preview": handoff.get("content"),
+                            "recovered": True,
+                        },
+                    )
+
+        final_runtime = queue.runtime_snapshot()
+        if final_runtime.completed_step_count < final_runtime.step_count:
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary="Recovery stopped before all scheduled steps completed.",
+                payload=_scheduler_plan_payload(
+                    queue,
+                    extra={"runner_policy": orchestration_policy.to_payload()},
+                ),
+            )
+            complete_task_run(db, task_run, status="failed", summary="Recovery failed: orchestration remained incomplete.")
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="incomplete",
+                status="failed",
+                detail="Recovery failed: orchestration remained incomplete.",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+            )
+        recovery_summary = _compact_runtime_text(
+            last_blocking_result or (completed_turns[-1]["content"] if completed_turns else "Recovered orchestration completed."),
+            limit=280,
+        )
+        append_task_event(
+            db,
+            task_run,
+            "task_run_recovery_completed",
+            summary="Interrupted orchestration recovery completed.",
+            payload={
+                "task_run_id": task_run.id,
+                "completed_step_count": queue.runtime_snapshot().completed_step_count,
+                "step_count": len(queue.plan.steps),
+            },
+        )
+        complete_task_run(db, task_run, summary=recovery_summary)
+        return TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=True,
+            reason="completed",
+            status="completed",
+            detail=recovery_summary,
+            owner=RECOVERY_INSTANCE_ID,
+            lease_expires_at=lease_expires_at,
+        )
+    except Exception as exc:
+        logger.exception(f"[Recovery] Failed to recover task run {task_run_id}: {exc}")
+        task_run = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        if task_run is not None and (task_run.status or "").lower() == "running":
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary=f"Interrupted orchestration recovery failed: {exc}",
+                payload={"task_run_id": task_run_id},
+            )
+            complete_task_run(db, task_run, status="failed", summary=f"Recovery failed: {exc}")
+        return TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="exception",
+            status=(task_run.status if task_run is not None else None),
+            detail=f"Recovery failed: {exc}",
+            owner=RECOVERY_INSTANCE_ID,
+        )
+    finally:
+        db.close()
+
+
+async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
+    db = SessionLocal()
+    try:
+        pending_runs = (
+            db.query(TaskRun)
+            .filter(
+                TaskRun.status == "running",
+                TaskRun.run_kind.in_(sorted(RECOVERABLE_ORCHESTRATION_RUN_KINDS)),
+            )
+            .order_by(TaskRun.created_at.asc(), TaskRun.id.asc())
+            .limit(max(1, limit))
+            .all()
+        )
+        run_ids = [run.id for run in pending_runs]
+    finally:
+        db.close()
+
+    recovered = 0
+    failed = 0
+    skipped = 0
+    for run_id in run_ids:
+        try:
+            result = await _resume_interrupted_orchestration_task_run(run_id, trigger="startup")
+            if result.resumed:
+                recovered += 1
+            elif result.reason in {"leased", "not_running", "not_recoverable", "not_found"}:
+                skipped += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return {"detected": len(run_ids), "recovered": recovered, "failed": failed, "skipped": skipped}
+
+
+async def _stream_multi_agent_orchestration(
+    *,
+    db: Session,
+    chatroom: Chatroom,
+    project: Optional[Project],
+    agents: List[Agent],
+    agent_names: List[str],
+    user_message: str,
+    client_turn_id: Optional[str],
+    sse_json: Any,
+    sse_card,
+    set_active_agent=None,
+    task_run: Optional[TaskRun] = None,
+):
+    from tools import tool_registry
+
+    targets = _resolve_orchestration_targets(db, project, agents, agent_names)
+    resolved_agents = [agent for _, agent in targets if agent is not None]
+    available_tools = tool_registry.list_tools()
+
+    yield f"data: {sse_json.dumps({'type': 'collab_start', 'agents': agent_names}, ensure_ascii=False)}\n\n"
+    if not resolved_agents:
+        append_task_event(
+            db,
+            task_run,
+            "task_run_failed",
+            summary="No valid agents resolved for streaming orchestration.",
+            payload={"requested_agents": agent_names},
+        )
+        complete_task_run(db, task_run, status="failed", summary="No valid agents resolved.")
+        for requested_name, agent in targets:
+            if agent is None:
+                yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
+        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+        return
+
+    completed_turns: List[Dict[str, str]] = []
+    pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
+    last_blocking_result = ""
+    standalone_note = (
+        "This is a standalone chat. Reply directly, stay concise, "
+        "and coordinate with the other mentioned agents."
+        if project is None
+        else ""
+    )
+    for requested_name, agent in targets:
+        if agent is None:
+            yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
+
+    plan = build_orchestration_schedule(
+        [(requested_name, agent) for requested_name, agent in targets if agent is not None],
+        sidecar_agent_types=_configured_sidecar_agent_types(),
+    )
+    orchestration_policy = _build_orchestration_runner_policy(
+        plan=plan,
+        project_id=project.id if project else None,
+        tool_names=available_tools,
+        streaming=True,
+    )
+    queue = OrchestrationRuntimeQueue(plan)
+    agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+
+    append_task_event(
+        db,
+        task_run,
+        "orchestration_started",
+        summary="Multi-agent streaming orchestration started.",
+        payload={
+            "requested_agents": agent_names,
+            "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
+            "project_id": project.id if project else None,
+            "client_turn_id": client_turn_id,
+            "runner_policy": orchestration_policy.to_payload(),
+        },
+    )
+
+    append_task_event(
+        db,
+        task_run,
+        "scheduler_plan_created",
+        summary=(
+            "Built a blocking-chain streaming schedule with sidecars."
+            if plan.mode == "blocking_chain_with_sidecars"
+            else "Built a linear blocking streaming schedule."
+        ),
+        payload=_scheduler_plan_payload(
+            queue,
+            extra={"runner_policy": orchestration_policy.to_payload()},
+        ),
+    )
+
+    while True:
+        step = queue.pop_ready()
+        if step is None:
+            break
+
+        agent = agents_by_id.get(step.agent_id)
+        if agent is None:
+            continue
+
+        agent_label = agent_name_of(agent)
+        step_policy = find_stage_policy(orchestration_policy, step.step_id)
+        if callable(set_active_agent):
+            set_active_agent(agent_label, agent.id)
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_step_dispatched",
+            agent_name=agent_label,
+            summary=f"Scheduler dispatched {step.dispatch_kind} work to {agent_label}.",
+            payload=_scheduler_event_payload(
+                queue,
+                step,
+                extra={
+                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                },
+            ),
+        )
+        yield f"data: {sse_json.dumps({'type': 'collab_step', 'step': step.position, 'total': len(plan.steps), 'agent': step.requested_name, 'agent_name': agent_label, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id)}, ensure_ascii=False)}\n\n"
+
+        saved = None
+        step_content = ""
+        async for event in _iter_agent_turn_events(
+            agent=agent,
+            chatroom_id=chatroom.id,
+            chatroom=chatroom,
+            project=project,
+            agents=agents,
+            user_message=user_message,
+            db=db,
+            client_turn_id=client_turn_id,
+            previous_agent_work=_build_orchestration_previous_work(completed_turns),
+            inter_agent_messages=pending_handoffs.pop(step.step_id, []),
+            history_limit=3,
+            standalone_note=standalone_note,
+            task_run=task_run,
+        ):
+            if event["type"] == "runtime_card":
+                yield await sse_card(event["card_type"], event["payload"])
+                continue
+
+            if event["type"] == "turn_complete":
+                step_content = event.get("content") or ""
+                if step_content:
+                    saved = await chatroom_manager.send_message(
+                        chatroom_id=chatroom.id,
+                        agent_id=agent.id,
+                        content=step_content,
+                        message_type="text",
+                        metadata=_message_metadata_with_turn(client_turn_id),
+                        agent_name=agent_label,
+                    )
+                    await _publish_saved_chat_message(
+                        db,
+                        chatroom.id,
+                        message_id=saved.id,
+                        content=step_content,
+                        agent_name=agent_label,
+                        message_type="text",
+                        created_at=saved.created_at,
+                        metadata=_message_metadata_with_turn(client_turn_id),
+                    )
+                    record_agent_turn_completed(
+                        db,
+                        task_run,
+                        agent_name=agent_label,
+                        message_id=saved.id,
+                        response_content=step_content,
+                        summary=f"{agent_label} completed the orchestrated streaming turn.",
+                    )
+                    if len(step_content) > 30:
+                        asyncio.create_task(
+                            _extract_memories(agent.id, _agent_type(agent), user_message, step_content)
+                        )
+                    completed_turns.append({"agent": agent_label, "content": step_content})
+                    if step.dispatch_kind == "blocking":
+                        last_blocking_result = step_content
+                continue
+
+            yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
+
+        ready_steps = queue.mark_completed(step.step_id)
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_step_completed",
+            agent_name=agent_label,
+            summary=(
+                f"Scheduler marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
+                if ready_steps
+                else f"Scheduler marked {agent_label} complete."
+            ),
+            payload=_scheduler_event_payload(
+                queue,
+                step,
+                extra={
+                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                    "released_step_ids": [next_step.step_id for next_step in ready_steps],
+                    "released_step_count": len(ready_steps),
+                    "completed_with_output": bool(step_content),
+                },
+            ),
+        )
+        for next_step in ready_steps:
+            next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_resumed",
+                agent_name=next_step.agent_name,
+                summary=f"Scheduler resumed {next_step.agent_name} after {agent_label}.",
+                payload=_scheduler_event_payload(
+                    queue,
+                    next_step,
+                    extra={
+                        "stage_policy": (
+                            next_step_policy.to_payload() if next_step_policy is not None else None
+                        ),
+                        "resumed_by_step_id": step.step_id,
+                        "resumed_by_agent": agent_label,
+                    },
+                ),
+            )
+        if step_content:
+            handoff = _build_orchestration_handoff(agent_label, step_content)
+            for next_step in ready_steps:
+                pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
+                append_task_event(
+                    db,
+                    task_run,
+                    "handoff_created",
+                    agent_name=agent_label,
+                    summary=f"Handoff created for {next_step.agent_name}.",
+                    payload={
+                        "from_agent": agent_label,
+                        "to_agent": next_step.agent_name,
+                        "from_step_id": step.step_id,
+                        "to_step_id": next_step.step_id,
+                        "dispatch_kind": next_step.dispatch_kind,
+                        "attached_to_step_id": next_step.attached_to_step_id,
+                        "content_preview": handoff.get("content"),
+                    },
+                )
+
+        yield f"data: {sse_json.dumps({'type': 'collab_step_done', 'agent': step.requested_name, 'agent_name': agent_label, 'message_id': saved.id if saved else None, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id), 'released_step_ids': [next_step.step_id for next_step in ready_steps]}, ensure_ascii=False)}\n\n"
+
+    resolved_names = [agent_name_of(agent) for agent in resolved_agents]
+    complete_task_run(
+        db,
+        task_run,
+        summary=_compact_runtime_text(
+            last_blocking_result or (completed_turns[-1]["content"] if completed_turns else "Streaming orchestration completed."),
+            limit=280,
+        ),
+    )
+    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
 
 
 # ==================== 数据模型 ====================
@@ -1302,6 +2917,28 @@ class GitHubProjectCreate(BaseModel):
         if not repo_url:
             raise ValueError("repo_url is required")
         return repo_url
+
+
+class SkillImportRequest(BaseModel):
+    source: str
+    marketplace: Optional[str] = None
+    skill_id: Optional[str] = None
+    ref: Optional[str] = None
+    subdir: Optional[str] = None
+    force: bool = False
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        source = (value or "").strip()
+        if not source:
+            raise ValueError("source is required")
+        return source
+
+
+class SkillMarketplaceEnableRequest(BaseModel):
+    enabled: bool = True
+    bootstrap: bool = True
 
 
 class ProjectFromChatCreate(ProjectCreate):
@@ -1380,6 +3017,12 @@ class MessageResponse(BaseModel):
     client_turn_id: Optional[str] = None
 
 
+class ApprovalQueueDecisionRequest(BaseModel):
+    note: Optional[str] = None
+    rollback_to: Optional[str] = None
+    resolved_by: Optional[str] = "user"
+
+
 async def _publish_saved_chat_message(
     db: Session,
     chatroom_id: int,
@@ -1432,6 +3075,22 @@ async def _publish_saved_chat_message(
     )
 
 
+
+_RUNTIME_CARD_PUBLIC_OMITTED_FIELDS = ("system_prompt", "prompt_messages", "raw_response")
+
+
+def _public_runtime_card_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the runtime-card payload that is safe for realtime/chat replay."""
+    public_payload = dict(payload)
+    if public_payload.get("type") == "llm_call":
+        omitted = any(public_payload.get(field) for field in _RUNTIME_CARD_PUBLIC_OMITTED_FIELDS)
+        for field in _RUNTIME_CARD_PUBLIC_OMITTED_FIELDS:
+            public_payload.pop(field, None)
+        if omitted:
+            public_payload["debug_payload_omitted"] = True
+    return public_payload
+
+
 async def _publish_runtime_card_event(
     db: Session,
     chatroom_id: int,
@@ -1482,8 +3141,9 @@ async def _publish_runtime_card_event(
 
 
 async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> Any:
-    """Persist runtime cards so chat refresh can replay execution history."""
+    """Persist full runtime cards, but publish only the lightweight public payload."""
     card_payload = dict(payload)
+    public_card_payload = _public_runtime_card_payload(card_payload)
     runtime_message = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
         agent_id=None,
@@ -1498,8 +3158,8 @@ async def _store_runtime_card(chatroom_id: int, payload: Dict[str, Any]) -> Any:
             chatroom_id,
             runtime_message_id=runtime_message.id,
             created_at=runtime_message.created_at,
-            card_payload=card_payload,
-            metadata={"card": card_payload},
+            card_payload=public_card_payload,
+            metadata={"card": public_card_payload, "client_turn_id": public_card_payload.get("client_turn_id")},
         )
     finally:
         db.close()
@@ -1683,10 +3343,29 @@ def _delete_chatrooms_with_messages(db: Session, chatrooms: List[Chatroom]) -> N
         return
 
     chatroom_ids = [chatroom.id for chatroom in unique_chatrooms]
+    task_run_ids = [
+        row[0]
+        for row in db.query(TaskRun.id).filter(TaskRun.chatroom_id.in_(chatroom_ids)).all()
+    ]
+    _delete_task_runs_by_ids(db, task_run_ids)
     db.query(Message).filter(Message.chatroom_id.in_(chatroom_ids)).delete(synchronize_session=False)
     for chatroom in unique_chatrooms:
         chatroom_manager.chatrooms.pop(chatroom.id, None)
         db.delete(chatroom)
+
+
+def _delete_task_runs_by_ids(db: Session, task_run_ids: List[int]) -> None:
+    unique_task_run_ids = [task_run_id for task_run_id in dict.fromkeys(task_run_ids) if task_run_id]
+    if not unique_task_run_ids:
+        return
+
+    db.query(ApprovalQueueItem).filter(
+        ApprovalQueueItem.task_run_id.in_(unique_task_run_ids)
+    ).delete(synchronize_session=False)
+    db.query(TaskRunEvent).filter(
+        TaskRunEvent.task_run_id.in_(unique_task_run_ids)
+    ).delete(synchronize_session=False)
+    db.query(TaskRun).filter(TaskRun.id.in_(unique_task_run_ids)).delete(synchronize_session=False)
 
 
 def _serialize_chat(db: Session, chatroom: Chatroom) -> ChatInfo:
@@ -1767,7 +3446,7 @@ async def list_agents(db: Session = Depends(get_db)):
             skills = _json2.loads(agent.skills) if agent.skills else []
         except Exception:
             pass
-        preview = (agent.system_prompt or "")[:300]
+        preview = _agent_base_system_prompt(agent, agent_name_of(agent), agent.role)[:300]
         result.append(AgentInfo(
             id=agent.id, type=agent.type, name=agent_name_of(agent), role=agent.role,
             is_active=agent.is_active, soul=soul, tools=tools,
@@ -1799,7 +3478,7 @@ async def get_agent(agent_id: int, db: Session = Depends(get_db)):
         skills = _json3.loads(agent.skills) if agent.skills else []
     except Exception:
         pass
-    preview = (agent.system_prompt or "")[:300]
+    preview = _agent_base_system_prompt(agent, agent_name_of(agent), agent.role)[:300]
 
     return AgentInfo(
         id=agent.id, type=agent.type, name=agent_name_of(agent), role=agent.role,
@@ -1873,6 +3552,11 @@ async def delete_chat(chat_id: int, db: Session = Depends(get_db)):
         .filter(Chatroom.source_chatroom_id == chatroom.id)
         .update({Chatroom.source_chatroom_id: None}, synchronize_session=False)
     )
+    task_run_ids = [
+        row[0]
+        for row in db.query(TaskRun.id).filter(TaskRun.chatroom_id == chatroom.id).all()
+    ]
+    _delete_task_runs_by_ids(db, task_run_ids)
     db.query(Message).filter(Message.chatroom_id == chatroom.id).delete()
     db.delete(chatroom)
     chatroom_manager.chatrooms.pop(chatroom.id, None)
@@ -2071,7 +3755,12 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     descendant_chatrooms = _collect_descendant_chatrooms(db, [chatroom.id for chatroom in root_chatrooms])
     # Delete descendants first so visible sub-chats do not survive a project deletion.
     _delete_chatrooms_with_messages(db, list(reversed(descendant_chatrooms)) + root_chatrooms)
-    
+    project_task_run_ids = [
+        row[0]
+        for row in db.query(TaskRun.id).filter(TaskRun.project_id == project_id).all()
+    ]
+    _delete_task_runs_by_ids(db, project_task_run_ids)
+
     # 删除项目
     db.delete(project)
     db.commit()
@@ -2152,12 +3841,560 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
             metadata = {}
         card = metadata.get("card")
         if isinstance(card, dict):
-            card_payload = dict(card)
+            card_payload = _public_runtime_card_payload(dict(card))
             card_payload.setdefault("created_at", row.created_at.isoformat())
             card_payload.setdefault("runtime_message_id", row.id)
             cards.append(card_payload)
 
     return cards
+
+
+@router.get("/chatrooms/{chatroom_id}/task-runs")
+async def list_task_runs(
+    chatroom_id: int,
+    limit: int = 20,
+    client_turn_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List orchestration/task runs for a chatroom."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+
+    query = (
+        db.query(TaskRun)
+        .filter(TaskRun.chatroom_id == chatroom_id)
+        .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
+    )
+    if client_turn_id:
+        query = query.filter(TaskRun.client_turn_id == client_turn_id)
+
+    return [serialize_task_run_summary(task_run) for task_run in query.limit(limit).all()]
+
+
+@router.get("/task-runs/{task_run_id}")
+async def get_task_run_detail(task_run_id: int, db: Session = Depends(get_db)):
+    """Get a single orchestration/task run with ordered ledger events."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    return serialize_task_run_detail(task_run)
+
+
+@router.post("/task-runs/{task_run_id}/resume")
+async def resume_task_run(task_run_id: int, db: Session = Depends(get_db)):
+    """Manually resume an interrupted orchestration task run."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    if (task_run.run_kind or "") not in RECOVERABLE_ORCHESTRATION_RUN_KINDS:
+        raise HTTPException(status_code=400, detail="Only recoverable orchestration runs can be resumed.")
+
+    if (task_run.status or "").lower() != "running":
+        raise HTTPException(status_code=409, detail="Only running task runs can be resumed.")
+
+    append_task_event(
+        db,
+        task_run,
+        "task_run_manual_resume_requested",
+        summary="Manual resume requested from the API.",
+        payload={
+            "task_run_id": task_run.id,
+            "run_kind": task_run.run_kind,
+            "status": task_run.status,
+            "trigger": "manual",
+        },
+    )
+
+    result = await _resume_interrupted_orchestration_task_run(task_run_id, trigger="manual")
+    db.expire_all()
+    refreshed = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    if not result.resumed:
+        if result.reason in {"not_running", "leased"}:
+            raise HTTPException(status_code=409, detail=result.detail or "Task run could not be resumed.")
+        if result.reason == "not_recoverable":
+            raise HTTPException(status_code=400, detail=result.detail or "Task run is not recoverable.")
+        if result.reason == "not_found":
+            raise HTTPException(status_code=404, detail=result.detail or "Task run not found.")
+        raise HTTPException(
+            status_code=500,
+            detail=result.detail or refreshed.summary or "Task run recovery failed.",
+        )
+
+    detail = serialize_task_run_detail(refreshed)
+    return {
+        "message": "Task run resume completed.",
+        "resumed": True,
+        "status": refreshed.status,
+        "task_run_id": refreshed.id,
+        "detail": detail,
+    }
+
+
+def _queue_replay_resolution_payload(
+    *,
+    request_payload: Dict[str, Any],
+    replay_result: Any = None,
+    action_taken: str = "queue_resolved_only",
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "request_payload": request_payload,
+        "resume_supported": bool(request_payload.get("resume_supported")),
+        "action_taken": action_taken,
+    }
+    if replay_result is None:
+        return payload
+
+    payload.update(
+        {
+            "replay_attempted": True,
+            "replay_status": getattr(replay_result, "status", None),
+            "replay_success": bool(getattr(replay_result, "success", False)),
+            "replay_blocked": bool(getattr(replay_result, "blocked", False)),
+            "replay_blocked_kind": getattr(replay_result, "blocked_kind", None),
+            "replay_result_preview": _compact_runtime_text(
+                getattr(replay_result, "result", ""),
+                limit=280,
+            ),
+        }
+    )
+    return payload
+
+
+def _approval_queue_replay_round_payload(item: Any, request_payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "replay": True,
+        "replay_of_queue_item_id": getattr(item, "id", None),
+    }
+    for key in ("pipeline_id", "pipeline_run_id", "pipeline_stage_id", "stage_name", "display_name"):
+        if request_payload.get(key) is not None:
+            payload[key] = request_payload.get(key)
+    return payload
+
+
+async def _replay_runtime_blocked_tool_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+):
+    from tools import tool_registry
+
+    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip()
+    arguments_text = str(request_payload.get("arguments") or "{}")
+    if not tool_name:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(item, 'id', 'tool')}",
+            tool_name=getattr(item, "target_name", "tool"),
+            arguments=arguments_text,
+            result="Error executing blocked tool replay: missing tool_name.",
+            success=False,
+        )
+
+    try:
+        loaded_arguments = json.loads(arguments_text or "{}")
+        if not isinstance(loaded_arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object.")
+    except Exception as exc:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result=f"Error executing blocked tool replay: invalid arguments ({exc}).",
+            success=False,
+        )
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == getattr(item, "chatroom_id", None)).first()
+    if chatroom is None:
+        return build_tool_result_record(
+            tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error executing blocked tool replay: chatroom no longer exists.",
+            success=False,
+        )
+
+    project = _resolve_chatroom_project(db, chatroom)
+    agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
+    agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
+    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom.id, project)
+
+    try:
+        tool_result = await tool_registry.execute(
+            tool_name,
+            **loaded_arguments,
+            **runtime_kwargs,
+            __catown_approval_granted=True,
+        )
+        tool_result_text = str(tool_result) if tool_result is not None else "(no output)"
+        tool_success = True
+    except Exception as exc:
+        tool_result_text = f"Error executing {tool_name}: {exc}"
+        tool_success = False
+
+    return build_tool_result_record(
+        tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+        tool_name=tool_name,
+        arguments=arguments_text,
+        result=tool_result_text,
+        success=tool_success,
+    )
+
+
+async def _replay_blocked_tool_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+):
+    if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+        from pipeline.engine import replay_blocked_tool_queue_item as replay_pipeline_blocked_tool_queue_item
+
+        return await replay_pipeline_blocked_tool_queue_item(db, item)
+    return await _replay_runtime_blocked_tool_queue_item(db, item, request_payload)
+
+
+def _build_tool_replay_followup_context(item: Any, replay_result: Any) -> str:
+    tool_name = str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip() or "tool"
+    result_preview = _compact_runtime_text(getattr(replay_result, "result", ""), limit=400)
+    return (
+        "Approved tool replay completed.\n"
+        f"- Tool: {tool_name}\n"
+        f"- Status: {getattr(replay_result, 'status', 'unknown')}\n"
+        f"- Result: {result_preview}\n"
+        "Continue from this result. Do not rerun the same tool call unless the user explicitly asks or the result shows it did not complete."
+    )
+
+
+def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:
+    if task_run is None:
+        return None
+    task_run.status = "running"
+    task_run.completed_at = None
+    db.add(task_run)
+    db.commit()
+    db.refresh(task_run)
+    return task_run
+
+
+async def _publish_replayed_tool_result_message(
+    db: Session,
+    item: Any,
+    replay_result: Any,
+    *,
+    client_turn_id: Optional[str],
+):
+    chatroom_id = getattr(item, "chatroom_id", None)
+    if chatroom_id is None:
+        return None
+
+    metadata = _message_metadata_with_turn(
+        client_turn_id,
+        {
+            "tool_call_id": getattr(replay_result, "tool_call_id", None),
+            "queue_item_id": getattr(item, "id", None),
+            "tool_name": getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None),
+            "replayed": True,
+            "approval_queue_replay": True,
+        },
+    )
+    saved = await chatroom_manager.send_message(
+        chatroom_id=chatroom_id,
+        agent_id=None,
+        content=getattr(replay_result, "result", "") or "(no output)",
+        message_type="tool_result",
+        metadata=metadata,
+        agent_name=getattr(item, "agent_name", None),
+    )
+    await _publish_saved_chat_message(
+        db,
+        chatroom_id,
+        message_id=saved.id,
+        content=saved.content,
+        agent_name=saved.agent_name,
+        message_type=saved.message_type,
+        created_at=saved.created_at,
+        metadata=metadata,
+    )
+    return saved
+
+
+async def _continue_runtime_after_approved_tool_replay(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+    replay_result: Any,
+):
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    if task_run is None:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "task_run_missing"}
+    if getattr(item, "chatroom_id", None) is None:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "chatroom_missing"}
+    if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_queue_item"}
+    if not bool(getattr(replay_result, "success", False)) or bool(getattr(replay_result, "blocked", False)):
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "replay_not_actionable"}
+
+    followup_context = _build_tool_replay_followup_context(item, replay_result)
+    saved = await _publish_replayed_tool_result_message(
+        db,
+        item,
+        replay_result,
+        client_turn_id=getattr(task_run, "client_turn_id", None),
+    )
+    _reopen_task_run_for_followup(db, task_run)
+    append_task_event(
+        db,
+        task_run,
+        "approval_queue_item_followup_triggered",
+        agent_name=item.agent_name,
+        message_id=getattr(saved, "id", None),
+        summary=f"Continuing agent turn after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+        payload={
+            "queue_item_id": getattr(item, "id", None),
+            "tool_name": getattr(replay_result, "tool_name", None),
+            "tool_call_id": getattr(replay_result, "tool_call_id", None),
+            "message_id": getattr(saved, "id", None),
+        },
+    )
+    try:
+        await trigger_agent_response(
+            getattr(item, "chatroom_id", None),
+            task_run.user_request or "",
+            getattr(task_run, "client_turn_id", None),
+            task_run_id=task_run.id,
+            extra_context=followup_context,
+        )
+    except Exception as exc:
+        append_task_event(
+            db,
+            task_run,
+            "approval_queue_item_followup_failed",
+            agent_name=item.agent_name,
+            summary=f"Approved replay follow-up failed for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+            payload={
+                "queue_item_id": getattr(item, "id", None),
+                "tool_name": getattr(replay_result, "tool_name", None),
+                "error": str(exc),
+            },
+        )
+        return {
+            "followup_attempted": True,
+            "followup_status": "failed",
+            "followup_error": str(exc),
+            "followup_message_id": getattr(saved, "id", None),
+        }
+
+    return {
+        "followup_attempted": True,
+        "followup_status": "continued",
+        "followup_message_id": getattr(saved, "id", None),
+    }
+
+
+@router.get("/approval-queue")
+async def get_approval_queue(
+    status: Optional[str] = None,
+    queue_kind: Optional[str] = None,
+    chatroom_id: Optional[int] = None,
+    project_id: Optional[int] = None,
+    task_run_id: Optional[int] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    items = list_approval_queue_items(
+        db,
+        status=(status or "").strip() or None,
+        queue_kind=(queue_kind or "").strip() or None,
+        chatroom_id=chatroom_id,
+        project_id=project_id,
+        task_run_id=task_run_id,
+        limit=limit,
+    )
+    return [serialize_approval_queue_item(item) for item in items]
+
+
+@router.get("/approval-queue/{item_id}")
+async def get_approval_queue_detail(item_id: int, db: Session = Depends(get_db)):
+    item = get_approval_queue_item(db, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    return serialize_approval_queue_item(item)
+
+
+@router.post("/approval-queue/{item_id}/approve")
+async def approve_approval_queue_item(
+    item_id: int,
+    req: ApprovalQueueDecisionRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    item = get_approval_queue_item(db, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    if (item.status or "").lower() != "pending":
+        raise HTTPException(status_code=409, detail="Only pending approval queue items can be approved.")
+
+    request_payload = _json_column_payload(item.request_payload_json)
+    resolution_note = ((req.note if req else None) or "").strip()
+    resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
+
+    if (item.target_kind or "") == "pipeline_gate":
+        pipeline_id = request_payload.get("pipeline_id")
+        if not pipeline_id:
+            raise HTTPException(status_code=400, detail="Pipeline gate approval item is missing pipeline_id.")
+        try:
+            await pipeline_engine.approve(db, int(pipeline_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        db.expire_all()
+        refreshed = get_approval_queue_item(db, item_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Approval queue item not found")
+        return serialize_approval_queue_item(refreshed)
+
+    resolution_payload = _queue_replay_resolution_payload(
+        request_payload=request_payload,
+        action_taken="queue_resolved_only",
+    )
+    if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")):
+        replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
+        task_run = get_task_run(db, item.task_run_id)
+        try:
+            replay_turn = max(1, int(request_payload.get("turn") or 1))
+        except (TypeError, ValueError):
+            replay_turn = 1
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=(item.agent_name or "").strip() or "agent",
+            turn=replay_turn,
+            tool_names=[replay_result.tool_name],
+            tool_results=[replay_result],
+            summary=f"Replayed blocked tool {replay_result.tool_name} after approval.",
+            payload=_approval_queue_replay_round_payload(item, request_payload),
+        )
+        resolution_payload = _queue_replay_resolution_payload(
+            request_payload=request_payload,
+            replay_result=replay_result,
+            action_taken="tool_replayed",
+        )
+        resolution_payload.update(
+            await _continue_runtime_after_approved_tool_replay(
+                db,
+                item,
+                request_payload,
+                replay_result,
+            )
+        )
+
+    resolved = resolve_approval_queue_item(
+        db,
+        item,
+        status="approved",
+        resolved_by=resolved_by,
+        resolution_note=resolution_note or f"Approved {item.target_kind or 'action'} from the API.",
+        resolution_payload=resolution_payload,
+    )
+    task_run = get_task_run(db, item.task_run_id)
+    append_task_event(
+        db,
+        task_run,
+        "approval_queue_item_resolved",
+        agent_name=item.agent_name,
+        summary=f"Approved queue item for {item.target_name or item.target_kind}.",
+        payload={
+            "queue_item_id": resolved.id if resolved is not None else item.id,
+            "queue_kind": item.queue_kind,
+            "target_kind": item.target_kind,
+            "target_name": item.target_name,
+            "status": "approved",
+            "resolved_by": resolved_by,
+            "resume_supported": bool(request_payload.get("resume_supported")),
+            "action_taken": resolution_payload.get("action_taken"),
+            "replay_status": resolution_payload.get("replay_status"),
+            "replay_success": resolution_payload.get("replay_success"),
+            "replay_blocked": resolution_payload.get("replay_blocked"),
+            "replay_blocked_kind": resolution_payload.get("replay_blocked_kind"),
+        },
+    )
+    return serialize_approval_queue_item(resolved or item)
+
+
+@router.post("/approval-queue/{item_id}/reject")
+async def reject_approval_queue_item(
+    item_id: int,
+    req: ApprovalQueueDecisionRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    item = get_approval_queue_item(db, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    if (item.status or "").lower() != "pending":
+        raise HTTPException(status_code=409, detail="Only pending approval queue items can be rejected.")
+
+    request_payload = _json_column_payload(item.request_payload_json)
+    resolution_note = ((req.note if req else None) or "").strip()
+    resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
+
+    if (item.target_kind or "") == "pipeline_gate":
+        pipeline_id = request_payload.get("pipeline_id")
+        if not pipeline_id:
+            raise HTTPException(status_code=400, detail="Pipeline gate approval item is missing pipeline_id.")
+        try:
+            await pipeline_engine.reject(db, int(pipeline_id), req.rollback_to if req else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        db.expire_all()
+        refreshed = get_approval_queue_item(db, item_id)
+        if refreshed is None:
+            raise HTTPException(status_code=404, detail="Approval queue item not found")
+        return serialize_approval_queue_item(refreshed)
+
+    resolved = resolve_approval_queue_item(
+        db,
+        item,
+        status="rejected",
+        resolved_by=resolved_by,
+        resolution_note=resolution_note or f"Rejected {item.target_kind or 'action'} from the API.",
+        resolution_payload={
+            "request_payload": request_payload,
+            "resume_supported": bool(request_payload.get("resume_supported")),
+            "action_taken": "queue_resolved_only",
+            "rollback_to": req.rollback_to if req else None,
+        },
+    )
+    task_run = get_task_run(db, item.task_run_id)
+    append_task_event(
+        db,
+        task_run,
+        "approval_queue_item_resolved",
+        agent_name=item.agent_name,
+        summary=f"Rejected queue item for {item.target_name or item.target_kind}.",
+        payload={
+            "queue_item_id": resolved.id if resolved is not None else item.id,
+            "queue_kind": item.queue_kind,
+            "target_kind": item.target_kind,
+            "target_name": item.target_name,
+            "status": "rejected",
+            "resolved_by": resolved_by,
+            "resume_supported": bool(request_payload.get("resume_supported")),
+        },
+    )
+    return serialize_approval_queue_item(resolved or item)
 
 
 @router.get("/chatrooms/{chatroom_id}/visibility")
@@ -2212,10 +4449,39 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
     )
     
     logger.info(f"[API] User message saved: id={response_msg.id}")
-    
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    project = _resolve_chatroom_project(db, chatroom) if chatroom else None
+    task_run = create_task_run(
+        db,
+        chatroom_id=chatroom_id,
+        project_id=project.id if project else None,
+        origin_message_id=response_msg.id,
+        client_turn_id=message.client_turn_id,
+        run_kind="chat_turn",
+        user_request=message.content,
+        initiator="user",
+    )
+    append_task_event(
+        db,
+        task_run,
+        "user_message_saved",
+        message_id=response_msg.id,
+        summary="User message saved for execution.",
+        payload={
+            "content_preview": _compact_runtime_text(message.content, limit=220),
+            "client_turn_id": message.client_turn_id,
+        },
+    )
+
     # 触发 Agent 响应（同步等待，方便调试）
     try:
-        await trigger_agent_response(chatroom_id, message.content, message.client_turn_id)
+        await trigger_agent_response(
+            chatroom_id,
+            message.content,
+            message.client_turn_id,
+            task_run_id=task_run.id,
+        )
         logger.info(f"[API] Agent response completed")
     except Exception as e:
         logger.info(f"[API] Agent response error: {e}")
@@ -2233,7 +4499,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
 
 
 @router.post("/chatrooms/{chatroom_id}/messages/stream")
-async def send_message_stream(chatroom_id: int, message: MessageRequest):
+async def send_message_stream(chatroom_id: int, message: MessageRequest, request: Request):
     """
     发送消息到聊天室（SSE 流式响应）
 
@@ -2246,8 +4512,123 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
     """
     import asyncio
     import json as _json
+    import time as _time
+    import uuid as _uuid
+
+    request_started_at = _time.perf_counter()
+    sse_chunks: list[str] = []
+    stream_failed = False
+    stream_error = ""
+    flow_id = f"sse-{_uuid.uuid4().hex[:12]}"
+    flow_seq = 0
+
+    def _safe_headers(headers: dict[str, Any]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for key, value in headers.items():
+            normalized = str(key).lower()
+            if normalized in {"authorization", "cookie", "set-cookie"}:
+                continue
+            result[str(key)] = str(value)
+        return result
+
+    def _record_stream_network_event(success: bool, error: str = "") -> None:
+        protocol = request.scope.get("scheme", "http").upper()
+        http_version = str(request.scope.get("http_version") or "").strip()
+        if http_version:
+            protocol = f"{protocol}/{http_version}"
+        response_text = "".join(sse_chunks)
+        monitor_network_buffer.append(
+            {
+                "category": "frontend_backend",
+                "source": "backend",
+                "protocol": protocol,
+                "from_entity": f"Frontend ({request.headers.get('x-catown-client', 'home')})",
+                "to_entity": "Backend SSE",
+                "request_direction": f"Frontend ({request.headers.get('x-catown-client', 'home')}) -> Backend SSE",
+                "response_direction": f"Backend SSE -> Frontend ({request.headers.get('x-catown-client', 'home')})",
+                "flow_id": flow_id,
+                "flow_kind": "frontend_backend_sse",
+                "aggregated": True,
+                "method": request.method,
+                "url": str(request.url),
+                "host": request.url.hostname or "",
+                "path": request.url.path,
+                "success": success,
+                "status_code": 200 if success else 500,
+                "request_bytes": len(_json.dumps(message.model_dump(), ensure_ascii=False).encode("utf-8")),
+                "response_bytes": len(response_text.encode("utf-8")),
+                "duration_ms": int((_time.perf_counter() - request_started_at) * 1000),
+                "content_type": "text/event-stream",
+                "preview": f"{request.method} {request.url.path}",
+                "error": error,
+                "raw_request": _json.dumps(message.model_dump(), ensure_ascii=False)[:40000],
+                "raw_response": response_text[:40000],
+                "request_headers": _safe_headers(dict(request.headers)),
+                "response_headers": {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "Content-Type": "text/event-stream",
+                },
+                "metadata": {
+                    "client_turn_id": message.client_turn_id,
+                    "http_version": request.scope.get("http_version"),
+                    "streaming": True,
+                    "flow_id": flow_id,
+                    "flow_kind": "frontend_backend_sse",
+                    "aggregated": True,
+                },
+            }
+        )
+
+    def _record_stream_chunk(chunk: str) -> None:
+        nonlocal flow_seq
+        protocol = request.scope.get("scheme", "http").upper()
+        http_version = str(request.scope.get("http_version") or "").strip()
+        if http_version:
+            protocol = f"{protocol}/{http_version}"
+        flow_seq += 1
+        monitor_network_buffer.append(
+            {
+                "category": "frontend_backend",
+                "source": "backend",
+                "protocol": protocol,
+                "from_entity": f"Frontend ({request.headers.get('x-catown-client', 'home')})",
+                "to_entity": "Backend SSE",
+                "request_direction": f"Frontend ({request.headers.get('x-catown-client', 'home')}) -> Backend SSE",
+                "response_direction": f"Backend SSE -> Frontend ({request.headers.get('x-catown-client', 'home')})",
+                "flow_id": flow_id,
+                "flow_kind": "frontend_backend_sse",
+                "flow_seq": flow_seq,
+                "aggregated": False,
+                "method": request.method,
+                "url": str(request.url),
+                "host": request.url.hostname or "",
+                "path": request.url.path,
+                "success": True,
+                "request_bytes": 0,
+                "response_bytes": len(chunk.encode("utf-8")),
+                "duration_ms": int((_time.perf_counter() - request_started_at) * 1000),
+                "content_type": "text/event-stream",
+                "preview": chunk[:280],
+                "raw_request": "",
+                "raw_response": chunk[:40000],
+                "request_headers": {},
+                "response_headers": {},
+                "metadata": {
+                    "client_turn_id": message.client_turn_id,
+                    "http_version": request.scope.get("http_version"),
+                    "streaming": True,
+                    "flow_id": flow_id,
+                    "flow_kind": "frontend_backend_sse",
+                    "flow_seq": flow_seq,
+                    "aggregated": False,
+                },
+            }
+        )
 
     async def raw_event_generator():
+        nonlocal stream_failed, stream_error
         from models.database import get_db as _get_db
         from tools import tool_registry
         from tools.file_operations import reset_active_workspace, set_active_workspace
@@ -2260,13 +4641,21 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             if message.client_turn_id:
                 payload["client_turn_id"] = message.client_turn_id
             await _store_runtime_card(chatroom_id, payload)
-            return f"data: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+            public_payload = _public_runtime_card_payload(payload)
+            return f"data: {_json.dumps(public_payload, ensure_ascii=False)}\n\n"
 
         db = next(_get_db())
         workspace_token = None
         active_agent_name: Optional[str] = None
         active_agent_id: Optional[int] = None
         final_message_saved = False
+        task_run: Optional[TaskRun] = None
+
+        def _mark_active_agent(agent_name: str, agent_id: Optional[int]) -> None:
+            nonlocal active_agent_name, active_agent_id
+            active_agent_name = agent_name
+            active_agent_id = agent_id
+
         try:
             # 1. 保存用户消息
             user_msg = await chatroom_manager.send_message(
@@ -2296,405 +4685,127 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 return
 
             project = _resolve_chatroom_project(db, chatroom)
+            task_run = create_task_run(
+                db,
+                chatroom_id=chatroom_id,
+                project_id=project.id if project else None,
+                origin_message_id=user_msg.id,
+                client_turn_id=message.client_turn_id,
+                run_kind="chat_turn_stream",
+                user_request=message.content,
+                initiator="user",
+            )
+            append_task_event(
+                db,
+                task_run,
+                "user_message_saved",
+                message_id=user_msg.id,
+                summary="User message saved for streaming execution.",
+                payload={
+                    "content_preview": _compact_runtime_text(message.content, limit=220),
+                    "client_turn_id": message.client_turn_id,
+                },
+            )
             workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
             if not project:
                 mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)] if '@' in message.content else []
                 if len(mentioned_names) > 1:
-                    yield f"data: {_json.dumps({'type': 'collab_start', 'agents': mentioned_names})}\n\n"
-
                     agents = _list_global_agents(db)
-                    previous_context = None
-
-                    for step_idx, agent_name in enumerate(mentioned_names):
-                        agent = find_agent_by_type(agents, agent_name)
-                        if not agent:
-                            yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
-                            continue
-
-                        agent_label = agent_name_of(agent)
-                        yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_label})}\n\n"
-
-                        active_agent_name = agent_label
-                        active_agent_id = agent.id
-                        llm_client = get_llm_client_for_agent(_agent_type(agent))
-                        sys_prompt = agent.system_prompt or f"You are {agent_label}, a {agent.role}."
-                        sys_prompt += (
-                            "\n\nThis is a standalone chat. Reply directly, stay concise, "
-                            "and coordinate with the other mentioned agents."
-                        )
-                        sys_prompt += _build_runtime_context_block(db, chatroom, None)
-                        team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
-                        sys_prompt += f"\n\nAvailable agents in this standalone chat:\n" + "\n".join(team_members)
-                        if previous_context:
-                            previous_agent = find_agent_by_type(agents, mentioned_names[step_idx - 1])
-                            previous_label = agent_name_of(previous_agent) if previous_agent else mentioned_names[step_idx - 1]
-                            sys_prompt += f"\n\nPrevious agent ({previous_label}) output:\n{previous_context[:1500]}"
-
-                        msgs = [{"role": "system", "content": sys_prompt}]
-                        recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
-                        _append_recent_llm_history(msgs, recent, limit=3)
-                        _append_current_user_message(msgs, message.content)
-
-                        import time as _time
-                        step_content = ""
-                        tool_schemas = tool_registry.get_schemas()
-                        for iteration in range(MAX_TOOL_ITERATIONS):
-                            tool_calls_found = False
-                            _llm_start = _time.time()
-                            _llm_content = ""
-                            _llm_tool_calls = []
-                            llm_prompt_messages = _snapshot_llm_messages(msgs)
-                            yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_label, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
-                            async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
-                                if event["type"] == _HEARTBEAT_EVENT_TYPE:
-                                    elapsed_ms = int((_time.time() - _llm_start) * 1000)
-                                    yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
-                                    continue
-
-                                if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                                    yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
-                                    continue
-
-                                if event["type"] == "tool_call_delta":
-                                    yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
-                                    continue
-
-                                if event["type"] == "tool_call_ready":
-                                    yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
-                                    continue
-
-                                if event["type"] == "content":
-                                    step_content += event["delta"]
-                                    _llm_content += event["delta"]
-                                    yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_label})}\n\n"
-                                elif event["type"] == "done":
-                                    tc = event.get("tool_calls")
-                                    _llm_full = event.get("full_content", _llm_content)
-                                    if tc:
-                                        tool_calls_found = True
-                                        _llm_tool_calls = _preview_tool_calls(tc)
-                                        msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
-                                        for tool_index, t in enumerate(tc):
-                                            tname = t["function"]["name"]
-                                            _args_str = t["function"].get("arguments", "{}")
-                                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_label, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                            _tool_start = _time.time()
-                                            try:
-                                                targs = json.loads(t["function"]["arguments"])
-                                                async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
-                                                    if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
-                                                        elapsed_ms = int((_time.time() - _tool_start) * 1000)
-                                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                                        continue
-                                                    tres = tool_event["result"]
-                                                    tres_str = str(tres)[:2000] if tres else "(no output)"
-                                                    break
-                                            except Exception as te:
-                                                tres_str = f"Error: {te}"
-                                            tool_success = _tool_result_succeeded(tres_str)
-                                            _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'success': tool_success, 'agent': agent_label, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                            msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
-                                            yield await _sse_card("tool_call", {
-                                                "agent": agent_label, "tool": tname,
-                                                "arguments": _args_str,
-                                                "success": tool_success, "result": tres_str[:1500],
-                                                "duration_ms": _tool_ms,
-                                                "tool_call_index": tool_index,
-                                                "tool_call_id": t.get("id"),
-                                            })
-                                    _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                    yield await _sse_card(
-                                        "llm_call",
-                                        _build_llm_card_payload(
-                                            agent_name=agent_label,
-                                            llm_client=llm_client,
-                                            turn=iteration + 1,
-                                            duration_ms=_llm_ms,
-                                            system_prompt=sys_prompt,
-                                            prompt_messages=llm_prompt_messages,
-                                            response_content=_llm_full or _llm_content,
-                                            tool_call_previews=_llm_tool_calls,
-                                            raw_tool_calls=tc,
-                                            usage=event.get("usage"),
-                                            finish_reason=event.get("finish_reason"),
-                                            timings=event.get("timings"),
-                                        ),
-                                    )
-                                elif event["type"] == "error":
-                                    raise RuntimeError(event["error"])
-
-                            if not tool_calls_found:
-                                if _llm_content:
-                                    _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                    yield await _sse_card(
-                                        "llm_call",
-                                        _build_llm_card_payload(
-                                            agent_name=agent_label,
-                                            llm_client=llm_client,
-                                            turn=iteration + 1,
-                                            duration_ms=_llm_ms,
-                                            system_prompt=sys_prompt,
-                                            prompt_messages=llm_prompt_messages,
-                                            response_content=_llm_content,
-                                            tool_call_previews=[],
-                                            raw_tool_calls=[],
-                                            usage=event.get("usage") if isinstance(event, dict) else None,
-                                            finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
-                                            timings=event.get("timings") if isinstance(event, dict) else None,
-                                        ),
-                                    )
-                                break
-
-                        saved = None
-                        if step_content:
-                            saved = await chatroom_manager.send_message(
-                                chatroom_id=chatroom_id,
-                                agent_id=agent.id,
-                                content=step_content,
-                                message_type="text",
-                                metadata=_message_metadata_with_turn(message.client_turn_id),
-                                agent_name=agent_label,
-                            )
-                            await _publish_saved_chat_message(
-                                db,
-                                chatroom_id,
-                                message_id=saved.id,
-                                content=step_content,
-                                agent_name=agent_label,
-                                message_type="text",
-                                created_at=saved.created_at,
-                                metadata=_message_metadata_with_turn(message.client_turn_id),
-                            )
-                            if len(step_content) > 30:
-                                asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), message.content, step_content))
-                            previous_context = step_content
-
-                        yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_label, 'message_id': saved.id if step_content else None})}\n\n"
-
-                    resolved_names = [agent_name_of(find_agent_by_type(agents, name)) for name in mentioned_names]
-                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
+                    update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
+                    append_task_event(
+                        db,
+                        task_run,
+                        "runtime_mode_selected",
+                        summary="Selected standalone multi-agent streaming orchestration mode.",
+                        payload={"agents": mentioned_names, "project_id": None},
+                    )
+                    async for chunk in _stream_multi_agent_orchestration(
+                        db=db,
+                        chatroom=chatroom,
+                        project=None,
+                        agents=agents,
+                        agent_names=mentioned_names,
+                        user_message=message.content,
+                        client_turn_id=message.client_turn_id,
+                        sse_json=_json,
+                        sse_card=_sse_card,
+                        set_active_agent=_mark_active_agent,
+                        task_run=task_run,
+                    ):
+                        yield chunk
                     return
 
+                standalone_target = _resolve_standalone_target_agent(db, message.content)
+                standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
+                update_task_run(
+                    db,
+                    task_run,
+                    run_kind="standalone_assistant_stream",
+                    target_agent_name=standalone_agent_name,
+                )
+                standalone_stream_policy = _build_single_agent_runner_policy(
+                    run_kind="standalone_assistant_stream",
+                    agent_name=standalone_agent_name,
+                    project_id=None,
+                    tool_names=[],
+                    streaming=True,
+                    standalone=True,
+                )
+                append_task_event(
+                    db,
+                    task_run,
+                    "runtime_mode_selected",
+                    summary="Selected standalone assistant streaming mode.",
+                    payload={
+                        "project_id": None,
+                        "runner_policy": standalone_stream_policy.to_payload(),
+                    },
+                )
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
                     chatroom_id=chatroom_id,
                     user_message=message.content,
                     sse_json=_json,
                     client_turn_id=message.client_turn_id,
+                    task_run=task_run,
                 ):
                     yield chunk
                 return
 
-            # 3. 解析 @mention（支持多 Agent 流水线）
+            # 3. 解析 @mention（支持多 Agent 编排）
             mentioned_names = []
             if '@' in message.content:
                 mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)]
 
-            # 多 Agent 模式：逐个流式输出
+            # 多 Agent 模式：转入 Codex 风格编排
             if len(mentioned_names) > 1:
-                yield f"data: {_json.dumps({'type': 'collab_start', 'agents': mentioned_names})}\n\n"
-
-                # 获取项目 Agents
                 assignments = db.query(AgentAssignment).filter(
                     AgentAssignment.project_id == project.id
                 ).all()
                 agent_ids = [a.agent_id for a in assignments]
                 agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
-
-                # 自动分配未在项目中的 agent
-                for name in mentioned_names:
-                    if not find_agent_by_type(agents, name):
-                        ga = _find_db_agent_by_type(db, name)
-                        if ga:
-                            db.add(AgentAssignment(project_id=project.id, agent_id=ga.id))
-                            db.commit()
-                            agents.append(ga)
-
-                # 注册协作者
-                from agents.collaboration import collaboration_coordinator, AgentCollaborator
-                for a in agents:
-                    if a.id not in collaboration_coordinator.collaborators:
-                        collaboration_coordinator.register_collaborator(
-                            AgentCollaborator(agent_id=a.id, agent_name=_agent_type(a), chatroom_id=chatroom_id)
-                        )
-
-                previous_context = None
-                for step_idx, agent_name in enumerate(mentioned_names):
-                    agent = find_agent_by_type(agents, agent_name)
-                    if not agent:
-                        yield f"data: {_json.dumps({'type': 'collab_skip', 'agent': agent_name, 'reason': 'not found'})}\n\n"
-                        continue
-
-                    agent_label = agent_name_of(agent)
-                    yield f"data: {_json.dumps({'type': 'collab_step', 'step': step_idx + 1, 'total': len(mentioned_names), 'agent': agent_label})}\n\n"
-
-                    # 构建消息（注入前序上下文）
-                    from tools import tool_registry
-                    from models.database import Memory
-                    active_agent_name = agent_label
-                    active_agent_id = agent.id
-                    llm_client = get_llm_client_for_agent(_agent_type(agent))
-
-                    sys_prompt = agent.system_prompt or f"You are {agent_label}, a {agent.role}."
-                    sys_prompt += _build_runtime_context_block(db, chatroom, project)
-                    if tool_registry.list_tools():
-                        sys_prompt += f"\n\nTools: {', '.join(tool_registry.list_tools())}"
-                    # 注入团队列表
-                    team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
-                    sys_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
-                    if previous_context:
-                        previous_agent = find_agent_by_type(agents, mentioned_names[step_idx - 1])
-                        previous_label = agent_name_of(previous_agent) if previous_agent else mentioned_names[step_idx - 1]
-                        sys_prompt += f"\n\nPrevious agent ({previous_label}) output:\n{previous_context[:1500]}"
-
-                    msgs = [{"role": "system", "content": sys_prompt}]
-                    recent = await chatroom_manager.get_messages(chatroom_id, limit=4)
-                    _append_recent_llm_history(msgs, recent, limit=3)
-                    _append_current_user_message(msgs, message.content)
-
-                    # 流式输出
-                    import time as _time
-                    step_content = ""
-                    tool_schemas = tool_registry.get_schemas()
-                    for iteration in range(MAX_TOOL_ITERATIONS):
-                        tool_calls_found = False
-                        _llm_start = _time.time()
-                        _llm_content = ""
-                        _llm_tool_calls = []
-                        llm_prompt_messages = _snapshot_llm_messages(msgs)
-                        yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_label, 'model': getattr(llm_client, 'model', ''), 'turn': iteration + 1, 'system_prompt': sys_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
-                        async for event in _iter_with_heartbeat(llm_client.chat_stream(msgs, tool_schemas or None)):
-                            if event["type"] == _HEARTBEAT_EVENT_TYPE:
-                                elapsed_ms = int((_time.time() - _llm_start) * 1000)
-                                yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'turn': iteration + 1})}\n\n"
-                                continue
-
-                            if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                                yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1})}\n\n"
-                                continue
-
-                            if event["type"] == "tool_call_delta":
-                                yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
-                                continue
-
-                            if event["type"] == "tool_call_ready":
-                                yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_label, 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration + 1, 'tool_calls': event.get('tool_calls') or []})}\n\n"
-                                continue
-
-                            if event["type"] == "content":
-                                step_content += event["delta"]
-                                _llm_content += event["delta"]
-                                yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta'], 'agent': agent_label})}\n\n"
-                            elif event["type"] == "done":
-                                tc = event.get("tool_calls")
-                                _llm_full = event.get("full_content", _llm_content)
-                                if tc:
-                                    tool_calls_found = True
-                                    _llm_tool_calls = _preview_tool_calls(tc)
-                                    msgs.append({"role": "assistant", "content": _llm_full, "tool_calls": tc})
-                                    for tool_index, t in enumerate(tc):
-                                        tname = t["function"]["name"]
-                                        _args_str = t["function"].get("arguments", "{}")
-                                        yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tname, 'agent': agent_label, 'args': _args_str, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                        _tool_start = _time.time()
-                                        try:
-                                            targs = json.loads(t["function"]["arguments"])
-                                            async for tool_event in _await_with_heartbeat(tool_registry.execute(tname, **targs)):
-                                                if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
-                                                    elapsed_ms = int((_time.time() - _tool_start) * 1000)
-                                                    yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tname, 'agent': agent_label, 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                                    continue
-                                                tres = tool_event["result"]
-                                                tres_str = str(tres)[:2000] if tres else "(no output)"
-                                                break
-                                        except Exception as te:
-                                            tres_str = f"Error: {te}"
-                                        tool_success = _tool_result_succeeded(tres_str)
-                                        _tool_ms = int((_time.time() - _tool_start) * 1000)
-                                        yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tname, 'result': tres_str[:500], 'success': tool_success, 'agent': agent_label, 'tool_call_index': tool_index, 'tool_call_id': t.get('id')})}\n\n"
-                                        msgs.append({"role": "tool", "tool_call_id": t["id"], "content": tres_str, "name": tname})
-                                        # 工具卡片事件
-                                        yield await _sse_card("tool_call", {
-                                            "agent": agent_label, "tool": tname,
-                                            "arguments": _args_str,
-                                            "success": tool_success, "result": tres_str[:1500],
-                                            "duration_ms": _tool_ms,
-                                            "tool_call_index": tool_index,
-                                            "tool_call_id": t.get("id"),
-                                        })
-                                # LLM 调用卡片事件
-                                _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                yield await _sse_card(
-                                    "llm_call",
-                                    _build_llm_card_payload(
-                                        agent_name=agent_label,
-                                        llm_client=llm_client,
-                                        turn=iteration + 1,
-                                        duration_ms=_llm_ms,
-                                        system_prompt=sys_prompt,
-                                        prompt_messages=llm_prompt_messages,
-                                        response_content=_llm_full or _llm_content,
-                                        tool_call_previews=_llm_tool_calls,
-                                        raw_tool_calls=tc,
-                                        usage=event.get("usage"),
-                                        finish_reason=event.get("finish_reason"),
-                                        timings=event.get("timings"),
-                                    ),
-                                )
-                            elif event["type"] == "error":
-                                raise RuntimeError(event["error"])
-                        if not tool_calls_found:
-                            # 无工具调用的最终 LLM 回复卡片
-                            if _llm_content:
-                                _llm_ms = int((_time.time() - _llm_start) * 1000)
-                                yield await _sse_card(
-                                    "llm_call",
-                                    _build_llm_card_payload(
-                                        agent_name=agent_label,
-                                        llm_client=llm_client,
-                                        turn=iteration + 1,
-                                        duration_ms=_llm_ms,
-                                        system_prompt=sys_prompt,
-                                        prompt_messages=llm_prompt_messages,
-                                        response_content=_llm_content,
-                                        tool_call_previews=[],
-                                        raw_tool_calls=[],
-                                        usage=event.get("usage") if isinstance(event, dict) else None,
-                                        finish_reason=event.get("finish_reason") if isinstance(event, dict) else None,
-                                        timings=event.get("timings") if isinstance(event, dict) else None,
-                                    ),
-                                )
-                            break
-
-                    # 保存
-                    saved = None
-                    if step_content:
-                        saved = await chatroom_manager.send_message(
-                            chatroom_id=chatroom_id, agent_id=agent.id,
-                            content=step_content,
-                            message_type="text",
-                            metadata=_message_metadata_with_turn(message.client_turn_id),
-                            agent_name=agent_label,
-                        )
-                        await _publish_saved_chat_message(
-                            db,
-                            chatroom_id,
-                            message_id=saved.id,
-                            content=step_content,
-                            agent_name=agent_label,
-                            message_type="text",
-                            created_at=saved.created_at,
-                            metadata=_message_metadata_with_turn(message.client_turn_id),
-                        )
-                        if len(step_content) > 30:
-                            asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), message.content, step_content))
-                        previous_context = step_content
-
-                    yield f"data: {_json.dumps({'type': 'collab_step_done', 'agent': agent_label, 'message_id': saved.id if step_content else None})}\n\n"
-
-                resolved_names = [agent_name_of(find_agent_by_type(agents, name)) for name in mentioned_names]
-                yield f"data: {_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': message.client_turn_id})}\n\n"
+                update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
+                append_task_event(
+                    db,
+                    task_run,
+                    "runtime_mode_selected",
+                    summary="Selected project multi-agent streaming orchestration mode.",
+                    payload={"agents": mentioned_names, "project_id": project.id},
+                )
+                async for chunk in _stream_multi_agent_orchestration(
+                    db=db,
+                    chatroom=chatroom,
+                    project=project,
+                    agents=agents,
+                    agent_names=mentioned_names,
+                    user_message=message.content,
+                    client_turn_id=message.client_turn_id,
+                    sse_json=_json,
+                    sse_card=_sse_card,
+                    set_active_agent=_mark_active_agent,
+                    task_run=task_run,
+                ):
+                    yield chunk
                 return
 
             # 单 Agent 模式（原有逻辑）
@@ -2723,231 +4834,146 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
             if not target_agent:
                 target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
             if not target_agent:
+                append_task_event(
+                    db,
+                    task_run,
+                    "task_run_failed",
+                    summary="No target agent resolved for streaming execution.",
+                    payload={"project_id": project.id},
+                )
+                complete_task_run(db, task_run, status="failed", summary="No target agent resolved.")
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'No agent available'})}\n\n"
                 return
 
-            active_agent_name = agent_name_of(target_agent)
+            target_agent_label = agent_name_of(target_agent)
+            active_agent_name = target_agent_label
             active_agent_id = target_agent.id
+            available_tools = tool_registry.list_tools()
+            project_single_agent_stream_policy = _build_single_agent_runner_policy(
+                run_kind="project_single_agent_stream",
+                agent_name=target_agent_label,
+                project_id=project.id,
+                tool_names=available_tools,
+                streaming=True,
+                standalone=False,
+            )
+            update_task_run(
+                db,
+                task_run,
+                run_kind="project_single_agent_stream",
+                target_agent_name=target_agent_label,
+            )
+            append_task_event(
+                db,
+                task_run,
+                "runtime_mode_selected",
+                agent_name=target_agent_label,
+                summary="Selected project single-agent streaming execution mode.",
+                payload={
+                    "project_id": project.id,
+                    "target_agent_name": target_agent_label,
+                    "runner_policy": project_single_agent_stream_policy.to_payload(),
+                },
+            )
 
-            # 注册项目中所有 agent 为协作者
-            from agents.collaboration import collaboration_coordinator, AgentCollaborator
-            for agent in agents:
-                if agent.id not in collaboration_coordinator.collaborators:
-                    collaborator = AgentCollaborator(
-                        agent_id=agent.id,
-                        agent_name=_agent_type(agent),
-                        chatroom_id=chatroom_id
-                    )
-                    collaboration_coordinator.register_collaborator(collaborator)
+            _ensure_collaboration_context(agents, chatroom_id)
 
             # 5. 构建该 Agent 的消息上下文
             llm_client = get_llm_client_for_agent(_agent_type(target_agent))
-            messages = []
-
-            system_prompt = target_agent.system_prompt or f"You are {agent_name_of(target_agent)}, a {target_agent.role}."
-            system_prompt += _build_runtime_context_block(db, chatroom, project)
-
-            available_tools = tool_registry.list_tools()
-            if available_tools:
-                system_prompt += f"\n\nYou have access to the following tools: {', '.join(available_tools)}"
-
-            # 注入项目中所有 Agent 列表
-            team_members = [f"- **{agent_name_of(a)}** (type: `{_agent_type(a)}`, role: {a.role})" for a in agents]
-            system_prompt += f"\n\nTeam members in this project:\n" + "\n".join(team_members)
-            system_prompt += f"\n\nYou are **{agent_name_of(target_agent)}** (type: `{_agent_type(target_agent)}`, role: {target_agent.role}). You can use tools to communicate with or delegate tasks to your teammates."
-
-            # 注入记忆（含跨 Agent 共享）
-            from models.database import Memory
-            own_memories = (
-                db.query(Memory)
-                .filter(Memory.agent_id == target_agent.id)
-                .order_by(Memory.importance.desc(), Memory.created_at.desc())
-                .limit(8)
-                .all()
-            )
-            other_agent_ids = [a.id for a in agents if a.id != target_agent.id]
-            shared_memories = []
-            if other_agent_ids:
-                shared_memories = (
-                    db.query(Memory)
-                    .filter(Memory.agent_id.in_(other_agent_ids), Memory.importance >= 7)
-                    .order_by(Memory.importance.desc(), Memory.created_at.desc())
-                    .limit(5)
-                    .all()
-                )
-            if own_memories:
-                system_prompt += "\n\nYour memories (context for your responses):"
-                for mem in own_memories:
-                    ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
-                    system_prompt += f"\n- [{ts}] [importance={mem.importance}] {mem.content[:200]}"
-            if shared_memories:
-                system_prompt += "\n\nShared context from other agents:"
-                for mem in shared_memories:
-                    ts = mem.created_at.strftime("%Y-%m-%d %H:%M") if mem.created_at else "unknown"
-                    source_agent = next((a for a in agents if a.id == mem.agent_id), None)
-                    source_name = agent_name_of(source_agent) if source_agent else "unknown"
-                    system_prompt += f"\n- [{ts}] [{source_name}] {mem.content[:200]}"
-
-            messages.append({"role": "system", "content": system_prompt})
-
             recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
-            _append_recent_llm_history(messages, recent_messages, limit=6)
-            _append_current_user_message(messages, message.content)
-
+            turn_state = TurnContextState()
             tool_schemas = tool_registry.get_schemas()
+            runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+            record_agent_turn_started(
+                db,
+                task_run,
+                agent_name=target_agent_label,
+                summary=f"{target_agent_label} started a streaming turn.",
+                payload={
+                    "target_agent_name": target_agent_label,
+                    "client_turn_id": message.client_turn_id,
+                    "stage_policy": (
+                        project_single_agent_stream_policy.stages[0].to_payload()
+                        if project_single_agent_stream_policy.stages
+                        else None
+                    ),
+                },
+            )
 
-            # 6. 流式 LLM 循环
-            import time as _time2
-            max_tool_iterations = MAX_TOOL_ITERATIONS
-            iteration = 0
             final_content = ""
+            def _assemble_single_agent_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
+                return _assemble_chat_messages(
+                    db=db,
+                    agent=target_agent,
+                    agent_name=target_agent_label,
+                    model_id=getattr(llm_client, "model", ""),
+                    chatroom=chatroom,
+                    project=project,
+                    agents=agents,
+                    recent_messages=recent_messages,
+                    user_message=message.content,
+                    available_tools=available_tools,
+                    history_limit=6,
+                    turn_state=current_turn_state,
+                )
 
-            while iteration < max_tool_iterations:
-                iteration += 1
-                tool_calls_found = False
-                _llm_start = _time2.time()
-                _llm_content = ""
-                _llm_tool_calls = []
-                llm_prompt_messages = _snapshot_llm_messages(messages)
-                yield f"data: {_json.dumps({'type': 'agent_start', 'agent_name': agent_name_of(target_agent), 'model': getattr(llm_client, 'model', ''), 'turn': iteration, 'system_prompt': system_prompt, 'prompt_messages': _format_json_block(llm_prompt_messages), 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
+            async def _execute_single_agent_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+                return await tool_registry.execute(
+                    tool_name,
+                    **tool_args,
+                    **runtime_kwargs,
+                )
 
-                async for event in _iter_with_heartbeat(
-                    llm_client.chat_stream(messages, tool_schemas if tool_schemas else None)
-                ):
-                    if event["type"] == _HEARTBEAT_EVENT_TYPE:
-                        elapsed_ms = int((_time2.time() - _llm_start) * 1000)
-                        yield f"data: {_json.dumps({'type': 'llm_wait', 'agent': agent_name_of(target_agent), 'elapsed_ms': elapsed_ms, 'turn': iteration})}\n\n"
-                        continue
+            async def _on_single_agent_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
+                record_runner_tool_round(
+                    db,
+                    task_run,
+                    agent_name=target_agent_label,
+                    turn=frame.turn_index,
+                    tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
+                    tool_results=tool_results,
+                    summary=f"{target_agent_label} completed a streaming tool round.",
+                )
 
-                    if event["type"] in {"request_sent", "first_chunk", "first_content"}:
-                        yield f"data: {_json.dumps({'type': event['type'], 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration})}\n\n"
-                        continue
+            def _build_single_agent_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
+                return _build_llm_card_payload(
+                    agent_name=target_agent_label,
+                    llm_client=llm_client,
+                    turn=frame.turn_index,
+                    duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
+                    system_prompt=frame.system_prompt,
+                    prompt_messages=frame.prompt_snapshot,
+                    response_content=response_content,
+                    tool_call_previews=tool_call_previews,
+                    raw_tool_calls=raw_tool_calls,
+                    usage=raw_event.get("usage"),
+                    finish_reason=raw_event.get("finish_reason"),
+                    timings=raw_event.get("timings"),
+                )
 
-                    if event["type"] == "tool_call_delta":
-                        yield f"data: {_json.dumps({'type': 'tool_call_delta', 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_call_index': event.get('tool_call_index'), 'tool': event.get('tool_name') or 'tool', 'args': event.get('arguments') or '', 'tool_call_id': (event.get('tool_call') or {}).get('id')})}\n\n"
-                        continue
-
-                    if event["type"] == "tool_call_ready":
-                        yield f"data: {_json.dumps({'type': 'tool_call_ready', 'agent': agent_name_of(target_agent), 'elapsed_ms': event.get('elapsed_ms'), 'turn': iteration, 'tool_calls': event.get('tool_calls') or []})}\n\n"
-                        continue
-
-                    if event["type"] == "content":
-                        final_content += event["delta"]
-                        _llm_content += event["delta"]
-                        yield f"data: {_json.dumps({'type': 'content', 'delta': event['delta']})}\n\n"
-
-                    elif event["type"] == "done":
-                        tool_calls = event.get("tool_calls")
-                        full_content = event.get("full_content", "")
-
-                        if not tool_calls:
-                            # 无工具调用，结束 — 发 LLM 卡片
-                            if _llm_content:
-                                _llm_ms = int((_time2.time() - _llm_start) * 1000)
-                                yield await _sse_card(
-                                    "llm_call",
-                                    _build_llm_card_payload(
-                                        agent_name=agent_name_of(target_agent),
-                                        llm_client=llm_client,
-                                        turn=iteration,
-                                        duration_ms=_llm_ms,
-                                        system_prompt=system_prompt,
-                                        prompt_messages=llm_prompt_messages,
-                                        response_content=_llm_content,
-                                        tool_call_previews=[],
-                                        raw_tool_calls=[],
-                                        usage=event.get("usage"),
-                                        finish_reason=event.get("finish_reason"),
-                                        timings=event.get("timings"),
-                                    ),
-                                )
-                            break
-
-                        tool_calls_found = True
-                        _llm_tool_calls = _preview_tool_calls(tool_calls)
-
-                        # 将 assistant 消息加入上下文
-                        assistant_msg = {
-                            "role": "assistant",
-                            "content": full_content,
-                            "tool_calls": tool_calls
-                        }
-                        messages.append(assistant_msg)
-
-                        # 执行工具
-                        for tool_index, tc in enumerate(tool_calls):
-                            tool_name = tc["function"]["name"]
-                            tool_args_str = tc["function"]["arguments"]
-                            tool_call_id = tc["id"]
-
-                            yield f"data: {_json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args_str, 'agent': agent_name_of(target_agent), 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
-                            _tool_start = _time2.time()
-
-                            try:
-                                tool_args = json.loads(tool_args_str)
-                                async for tool_event in _await_with_heartbeat(tool_registry.execute(tool_name, **tool_args)):
-                                    if tool_event["type"] == _HEARTBEAT_EVENT_TYPE:
-                                        elapsed_ms = int((_time2.time() - _tool_start) * 1000)
-                                        yield f"data: {_json.dumps({'type': 'tool_wait', 'tool': tool_name, 'agent': agent_name_of(target_agent), 'elapsed_ms': elapsed_ms, 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
-                                        continue
-                                    tool_result = tool_event["result"]
-                                    result_str = str(tool_result) if tool_result is not None else "(no output)"
-                                    break
-                            except Exception as te:
-                                result_str = f"Error: {str(te)}"
-                            tool_success = _tool_result_succeeded(result_str)
-
-                            # 截断过长的工具结果
-                            if len(result_str) > 2000:
-                                result_str = result_str[:2000] + "\n...(truncated)"
-                            _tool_ms = int((_time2.time() - _tool_start) * 1000)
-
-                            yield f"data: {_json.dumps({'type': 'tool_result', 'tool': tool_name, 'result': result_str[:500], 'success': tool_success, 'agent': agent_name_of(target_agent), 'tool_call_index': tool_index, 'tool_call_id': tool_call_id})}\n\n"
-
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": result_str,
-                                "name": tool_name
-                            })
-
-                            # 工具卡片事件
-                            yield await _sse_card("tool_call", {
-                                "agent": agent_name_of(target_agent),
-                                "tool": tool_name,
-                                "arguments": tool_args_str,
-                                "success": tool_success,
-                                "result": result_str[:1500],
-                                "duration_ms": _tool_ms,
-                                "tool_call_index": tool_index,
-                                "tool_call_id": tool_call_id,
-                            })
-
-                        # LLM 调用卡片事件（含工具调用）
-                        _llm_ms = int((_time2.time() - _llm_start) * 1000)
-                        yield await _sse_card(
-                            "llm_call",
-                            _build_llm_card_payload(
-                                agent_name=agent_name_of(target_agent),
-                                llm_client=llm_client,
-                                turn=iteration,
-                                duration_ms=_llm_ms,
-                                system_prompt=system_prompt,
-                                prompt_messages=llm_prompt_messages,
-                                response_content=full_content or _llm_content,
-                                tool_call_previews=_llm_tool_calls,
-                                raw_tool_calls=tool_calls,
-                                usage=event.get("usage"),
-                                finish_reason=event.get("finish_reason"),
-                                timings=event.get("timings"),
-                            ),
-                        )
-
-                    elif event["type"] == "error":
-                        raise RuntimeError(event["error"])
-
-                if not tool_calls_found:
-                    break
+            async for event in iter_stream_turn_events(
+                llm_client=llm_client,
+                tools=tool_schemas,
+                turn_state=turn_state,
+                agent_name=target_agent_label,
+                client_turn_id=message.client_turn_id,
+                assemble_messages=_assemble_single_agent_stream_messages,
+                execute_tool=_execute_single_agent_stream_tool,
+                build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                snapshot_messages=_snapshot_llm_messages,
+                preview_tool_calls=_preview_tool_calls,
+                format_prompt_messages=_format_json_block,
+                tool_result_success=_tool_result_succeeded,
+                max_turns=MAX_TOOL_ITERATIONS,
+                on_tool_round=_on_single_agent_stream_tool_round,
+            ):
+                if event["type"] == "runtime_card":
+                    yield await _sse_card(event["card_type"], event["payload"])
+                    continue
+                if event["type"] == "turn_complete":
+                    final_content = event.get("content") or ""
+                    continue
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
 
             # 7. 保存最终响应
             if not final_content:
@@ -2959,7 +4985,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 content=final_content,
                 message_type="text",
                 metadata=_message_metadata_with_turn(message.client_turn_id),
-                agent_name=agent_name_of(target_agent)
+                agent_name=target_agent_label
             )
 
             await _publish_saved_chat_message(
@@ -2967,14 +4993,27 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                 chatroom_id,
                 message_id=agent_response.id,
                 content=final_content,
-                agent_name=agent_name_of(target_agent),
+                agent_name=target_agent_label,
                 message_type="text",
                 created_at=agent_response.created_at,
                 metadata=_message_metadata_with_turn(message.client_turn_id),
             )
             final_message_saved = True
+            record_agent_turn_completed(
+                db,
+                task_run,
+                agent_name=target_agent_label,
+                message_id=agent_response.id,
+                response_content=final_content,
+                summary=f"{target_agent_label} completed the streaming turn.",
+            )
+            complete_task_run(
+                db,
+                task_run,
+                summary=_compact_runtime_text(final_content, limit=280),
+            )
 
-            yield f"data: {_json.dumps({'type': 'done', 'agent_name': agent_name_of(target_agent), 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent_label, 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
 
             # 异步提取记忆
             if len(final_content) > 30:
@@ -2988,6 +5027,18 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
         except Exception as e:
             logger.error(f"[SSE] Stream error: {e}")
             traceback.print_exc()
+            stream_failed = True
+            stream_error = str(e)
+            if task_run is not None and (task_run.status or "running") == "running":
+                append_task_event(
+                    db,
+                    task_run,
+                    "task_run_failed",
+                    agent_name=active_agent_name,
+                    summary=f"Streaming execution failed: {e}",
+                    payload={"error": str(e)},
+                )
+                complete_task_run(db, task_run, status="failed", summary=str(e))
             if final_message_saved:
                 yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             else:
@@ -3016,9 +5067,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
         client_connected = True
 
         async def producer():
-            nonlocal client_connected
+            nonlocal client_connected, stream_failed, stream_error
             try:
                 async for chunk in raw_event_generator():
+                    sse_chunks.append(chunk)
+                    _record_stream_chunk(chunk)
+                    if '"type": "error"' in chunk:
+                        stream_failed = True
                     if not client_connected:
                         continue
                     try:
@@ -3034,6 +5089,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest):
                             # If the client is lagging badly, drop intermediate chunks
                             # and let the persisted runtime cards/final message catch up.
                             pass
+                if stream_failed:
+                    _record_stream_network_event(False, stream_error or "stream_error")
+                else:
+                    _record_stream_network_event(True)
             finally:
                 if client_connected:
                     try:
@@ -3109,6 +5168,7 @@ async def get_config():
 
     返回：
     - global_llm: 全局 LLM 配置（Agent 未配置时的 fallback）
+    - orchestration: 编排调度配置（如 sidecar agent types）
     - agents: 各 Agent 的完整配置
     - agent_llm_configs: 各 Agent 实际生效的 LLM 配置摘要
     - server: 服务器配置
@@ -3133,6 +5193,7 @@ async def get_config():
             "tools_enabled": True,
             "memory_enabled": True
         },
+        "orchestration": _effective_orchestration_config(),
         "agents": {},
         "agent_llm_configs": {}
     }
@@ -3146,6 +5207,7 @@ async def get_config():
 
             # 全局 LLM 配置
             config["global_llm"] = agents_config.get("global_llm", {})
+            config["orchestration"] = _effective_orchestration_config(agents_config)
 
             agents_data = dict(agents_config.get("agents", {}))
             if "assistant" in agents_data and DEFAULT_AGENT_TYPE not in agents_data:
@@ -3253,6 +5315,39 @@ async def update_global_llm_config(config: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
 
 
+@router.put("/config/orchestration")
+async def update_orchestration_config(config: OrchestrationConfigModel):
+    """
+    Update runtime orchestration config stored in agents.json.
+
+    Request body:
+    {
+        "sidecar_agent_types": ["tester"]
+    }
+
+    An empty list disables sidecar scheduling entirely.
+    """
+    from pathlib import Path
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["orchestration"] = config.model_dump()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return {"message": "Orchestration config updated", "orchestration": data["orchestration"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update orchestration config: {e}")
+
+
 @router.put("/config/agent/{agent_name}")
 async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
     """
@@ -3324,6 +5419,68 @@ async def reload_config():
     register_builtin_agents()
 
     return {"message": "Configuration reloaded from agents.json"}
+
+
+@router.get("/skills")
+async def list_skills():
+    """List canonical skill packages."""
+    return {
+        "skills": list(load_skill_registry(settings.SKILLS_DIR).values()),
+        "skills_dir": str(settings.SKILLS_DIR),
+    }
+
+
+@router.get("/skills/marketplaces")
+async def list_skill_marketplaces():
+    """List configured skill marketplaces."""
+    return {
+        "marketplaces": list_marketplaces(settings.SKILL_MARKETPLACES_CONFIG_FILE),
+        "config_file": str(settings.SKILL_MARKETPLACES_CONFIG_FILE),
+    }
+
+
+@router.put("/skills/marketplaces/{marketplace_id}")
+async def update_skill_marketplace(marketplace_id: str, request: SkillMarketplaceEnableRequest):
+    """Enable or disable a skill marketplace. Enabling may bootstrap its CLI."""
+    try:
+        return set_marketplace_enabled(
+            marketplace_id,
+            request.enabled,
+            bootstrap=request.bootstrap,
+            config_file=settings.SKILL_MARKETPLACES_CONFIG_FILE,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=424, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to update skill marketplace")
+        raise HTTPException(status_code=502, detail=f"Failed to update skill marketplace: {e}")
+
+
+@router.post("/skills/import")
+async def import_skill(request: SkillImportRequest):
+    """Import a public skill package from a hub URL, GitHub repo, zip, or raw SKILL.md."""
+    try:
+        skill = import_skill_from_marketplace(
+            source=request.source,
+            skills_dir=settings.SKILLS_DIR,
+            marketplace=request.marketplace,
+            skill_id=request.skill_id,
+            ref=request.ref,
+            subdir=request.subdir,
+            force=request.force,
+        )
+        return {"message": "Skill imported", "skill": skill}
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=424, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to import skill")
+        raise HTTPException(status_code=502, detail=f"Failed to import skill: {e}")
 
 
 @router.post("/config/test")
