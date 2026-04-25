@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun
+from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun, TaskRunEvent
 from services.approval_queue import serialize_approval_queue_item
 
 
@@ -282,3 +282,43 @@ def serialize_monitor_approval_queue_item(
         }
     )
     return payload
+
+
+def serialize_monitor_compaction_item(
+    event: TaskRunEvent,
+    *,
+    task_run: TaskRun | None = None,
+    chat_title: str | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    payload = parse_metadata(event.payload_json)
+    diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
+    summary = diagnostics.get("summary") if isinstance(diagnostics.get("summary"), dict) else {}
+    selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
+    return {
+        "id": event.id,
+        "task_run_id": event.task_run_id,
+        "chatroom_id": task_run.chatroom_id if task_run else None,
+        "project_id": task_run.project_id if task_run else None,
+        "chat_title": chat_title,
+        "project_name": project_name,
+        "run_kind": task_run.run_kind if task_run else None,
+        "task_run_title": task_run.title if task_run else None,
+        "task_run_status": task_run.status if task_run else None,
+        "agent_name": event.agent_name,
+        "event_type": event.event_type,
+        "summary": event.summary,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "compacted": bool(payload.get("compacted") or diagnostics.get("compacted")),
+        "dropped_count": int(summary.get("dropped_count") or 0),
+        "truncated_count": int(summary.get("truncated_count") or 0),
+        "candidate_count": int(summary.get("candidate_count") or 0),
+        "selected_count": int(summary.get("selected_count") or 0),
+        "candidate_tokens": int(summary.get("candidate_tokens") or 0),
+        "selected_tokens": int(summary.get("selected_tokens") or 0),
+        "max_fragments": selector.get("max_fragments"),
+        "max_tokens": selector.get("max_tokens"),
+        "developer": diagnostics.get("developer") if isinstance(diagnostics.get("developer"), dict) else {},
+        "user": diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {},
+        "payload": payload,
+    }

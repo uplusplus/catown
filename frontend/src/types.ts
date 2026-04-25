@@ -172,6 +172,34 @@ export type MonitorApprovalQueueResponse = {
   entries: MonitorApprovalQueueEntry[];
 };
 
+export type MonitorCompactionItem = {
+  id: number;
+  task_run_id?: number | null;
+  chatroom_id?: number | null;
+  project_id?: number | null;
+  chat_title?: string | null;
+  project_name?: string | null;
+  run_kind?: string | null;
+  task_run_title?: string | null;
+  task_run_status?: string | null;
+  agent_name?: string | null;
+  event_type: string;
+  summary?: string | null;
+  created_at?: string | null;
+  compacted?: boolean;
+  dropped_count?: number;
+  truncated_count?: number;
+  candidate_count?: number;
+  selected_count?: number;
+  candidate_tokens?: number;
+  selected_tokens?: number;
+  max_fragments?: number | null;
+  max_tokens?: number | null;
+  developer?: Record<string, unknown>;
+  user?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+};
+
 export type TaskRunResumeResponse = {
   message: string;
   resumed: boolean;
@@ -613,6 +641,7 @@ export type MonitorOverview = {
       runtime_cards: number;
       approval_queue_total?: number;
       approval_queue_pending?: number;
+      context_compactions?: number;
     };
     features: Record<string, boolean>;
     collaboration: {
@@ -641,4 +670,5 @@ export type MonitorOverview = {
   };
   recent_runtime: MonitorRuntimeItem[];
   recent_messages: MonitorMessageItem[];
+  recent_compactions?: MonitorCompactionItem[];
 };

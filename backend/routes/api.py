@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 
 from agents.identity import (
@@ -340,6 +340,44 @@ def _tool_result_succeeded(result_text: str) -> bool:
     return shared_tool_result_succeeded(result_text)
 
 
+def _build_context_compaction_callback(
+    db: Session,
+    task_run: Optional[TaskRun],
+    *,
+    agent_name: str,
+    extra_payload: Optional[Dict[str, Any]] = None,
+) -> Callable[[Dict[str, Any]], None]:
+    seen_signatures: set[str] = set()
+
+    def _callback(diagnostics: Dict[str, Any]) -> None:
+        if task_run is None or not isinstance(diagnostics, dict) or not diagnostics.get("compacted"):
+            return
+        signature = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        if signature in seen_signatures:
+            return
+        seen_signatures.add(signature)
+        payload = {
+            "selector_diagnostics": diagnostics,
+            "compacted": True,
+        }
+        if isinstance(extra_payload, dict):
+            payload.update(extra_payload)
+        summary = diagnostics.get("summary") if isinstance(diagnostics.get("summary"), dict) else {}
+        append_task_event(
+            db,
+            task_run,
+            "context_compaction",
+            agent_name=agent_name,
+            summary=(
+                f"{agent_name} compacted context "
+                f"(dropped={summary.get('dropped_count', 0)}, truncated={summary.get('truncated_count', 0)})."
+            ),
+            payload=payload,
+        )
+
+    return _callback
+
+
 def _message_client_turn_id(message_like: Any) -> Optional[str]:
     metadata: Dict[str, Any] = {}
     if hasattr(message_like, "metadata") and isinstance(getattr(message_like, "metadata"), dict):
@@ -419,6 +457,7 @@ def _assemble_chat_messages(
     extra_context: str = "",
     turn_state: Optional[TurnContextState] = None,
     selector_profile: str = "chat_interactive",
+    on_compaction: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     tool_guidance = ""
     if available_tools:
@@ -445,6 +484,7 @@ def _assemble_chat_messages(
         extra_context=extra_context,
         turn_state=turn_state,
         selector_profile=selector_profile,
+        on_compaction=on_compaction,
     )
 
 
@@ -663,6 +703,15 @@ async def _trigger_standalone_assistant_response(
     )
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
+    compaction_callback = _build_context_compaction_callback(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        extra_payload={
+            "run_kind": "standalone_assistant",
+            "client_turn_id": client_turn_id,
+        },
+    )
     context_messages = _assemble_chat_messages(
         db=db,
         agent=assistant,
@@ -676,6 +725,7 @@ async def _trigger_standalone_assistant_response(
         history_limit=10,
         standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
         extra_context=extra_context,
+        on_compaction=compaction_callback,
     )
 
     response_content = await llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
@@ -775,6 +825,15 @@ async def _stream_standalone_assistant_response(
     )
 
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
+    compaction_callback = _build_context_compaction_callback(
+        db,
+        task_run,
+        agent_name=assistant_name,
+        extra_payload={
+            "run_kind": "standalone_assistant_stream",
+            "client_turn_id": client_turn_id,
+        },
+    )
     final_content = ""
 
     def _assemble_standalone_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -791,6 +850,7 @@ async def _stream_standalone_assistant_response(
             history_limit=10,
             standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
             turn_state=current_turn_state,
+            on_compaction=compaction_callback,
         )
 
     async def _execute_standalone_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
@@ -1123,6 +1183,16 @@ async def trigger_agent_response(
         turn_state = TurnContextState()
         tool_schemas = tool_registry.get_schemas()
         runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+        compaction_callback = _build_context_compaction_callback(
+            db,
+            task_run,
+            agent_name=agent_name_of(target_agent),
+            extra_payload={
+                "run_kind": "project_single_agent",
+                "project_id": project.id,
+                "client_turn_id": client_turn_id,
+            },
+        )
         record_agent_turn_started(
             db,
             task_run,
@@ -1153,6 +1223,7 @@ async def trigger_agent_response(
                 prefix_assistant_name=visibility == "all",
                 extra_context=extra_context,
                 turn_state=current_turn_state,
+                on_compaction=compaction_callback,
             )
 
         logger.debug(
@@ -1895,6 +1966,16 @@ async def _run_single_agent_turn(
     turn_state.add_inter_agent_messages(inter_agent_messages or [])
     tool_schemas = tool_registry.get_schemas()
     runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
+    compaction_callback = _build_context_compaction_callback(
+        db,
+        task_run,
+        agent_name=agent_name_of(agent),
+        extra_payload={
+            "run_kind": "multi_agent_orchestration",
+            "chatroom_id": chatroom_id,
+            "client_turn_id": client_turn_id,
+        },
+    )
     record_agent_turn_started(
         db,
         task_run,
@@ -1926,6 +2007,7 @@ async def _run_single_agent_turn(
         if not project
         else "",
             turn_state=current_turn_state,
+            on_compaction=compaction_callback,
         )
 
     async def _execute_orchestration_tool(frame, tool_call):
@@ -4884,6 +4966,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             turn_state = TurnContextState()
             tool_schemas = tool_registry.get_schemas()
             runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+            compaction_callback = _build_context_compaction_callback(
+                db,
+                task_run,
+                agent_name=target_agent_label,
+                extra_payload={
+                    "run_kind": "project_single_agent_stream",
+                    "project_id": project.id,
+                    "client_turn_id": message.client_turn_id,
+                },
+            )
             record_agent_turn_started(
                 db,
                 task_run,
@@ -4915,6 +5007,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     available_tools=available_tools,
                     history_limit=6,
                     turn_state=current_turn_state,
+                    on_compaction=compaction_callback,
                 )
 
             async def _execute_single_agent_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):

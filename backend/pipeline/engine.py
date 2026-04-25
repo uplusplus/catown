@@ -198,6 +198,46 @@ def _append_pipeline_task_event(
     )
 
 
+def _build_pipeline_context_compaction_callback(
+    db: Session,
+    run: PipelineRun | None,
+    *,
+    agent_name: str,
+    extra_payload: Optional[Dict[str, Any]] = None,
+):
+    seen_signatures: set[str] = set()
+
+    def _callback(diagnostics: Dict[str, Any]) -> None:
+        if run is None or not isinstance(diagnostics, dict) or not diagnostics.get("compacted"):
+            return
+        signature = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        if signature in seen_signatures:
+            return
+        seen_signatures.add(signature)
+        payload = {
+            "selector_diagnostics": diagnostics,
+            "compacted": True,
+            "pipeline_run_id": run.id,
+        }
+        if isinstance(extra_payload, dict):
+            payload.update(extra_payload)
+        _append_pipeline_task_event(
+            db,
+            run,
+            "context_compaction",
+            agent_name=agent_name,
+            summary=(
+                f"{agent_name} compacted pipeline context "
+                f"(dropped={diagnostics.get('summary', {}).get('dropped_count', 0)}, "
+                f"truncated={diagnostics.get('summary', {}).get('truncated_count', 0)})."
+            ),
+            payload=payload,
+            target_agent_name=agent_name,
+        )
+
+    return _callback
+
+
 def _pipeline_runner_policy(
     pipeline: Pipeline,
     template: Any | None,
@@ -1878,6 +1918,7 @@ class PipelineEngine:
         agent_skills: List[str],
         tool_names: List[str],
         turn_state: Optional[TurnContextState] = None,
+        on_compaction: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> List[Dict[str, Any]]:
         developer_fragments = [
             build_operating_developer_context(agent_name=stage_cfg.agent),
@@ -1900,13 +1941,17 @@ class PipelineEngine:
             base_system_prompt=system_prompt,
             current_input_messages=protocol_messages,
         )
-        return assemble_messages(
+        assembly = assemble_messages(
             base_system_prompt=system_prompt,
             developer_fragments=developer_fragments,
             user_fragments=user_fragments,
             current_input_messages=protocol_messages,
             selector=selector,
-        ).to_messages()
+        )
+        diagnostics = assembly.selector_diagnostics if isinstance(assembly.selector_diagnostics, dict) else {}
+        if diagnostics.get("compacted") and on_compaction is not None:
+            on_compaction(diagnostics)
+        return assembly.to_messages()
 
     async def _run_agent_stage(
         self,
@@ -1934,6 +1979,17 @@ class PipelineEngine:
         turn_state = TurnContextState()
         final_content = ""
         linked_task_run = _pipeline_task_run(db, run)
+        compaction_callback = _build_pipeline_context_compaction_callback(
+            db,
+            run,
+            agent_name=stage_cfg.agent,
+            extra_payload={
+                "pipeline_id": pipeline.id,
+                "pipeline_stage_id": stage.id,
+                "stage_name": stage_cfg.name,
+                "display_name": stage_cfg.display_name,
+            },
+        )
         record_agent_turn_started(
             db,
             linked_task_run,
@@ -1958,6 +2014,7 @@ class PipelineEngine:
                 agent_skills=agent_skills,
                 tool_names=tool_names,
                 turn_state=current_turn_state,
+                on_compaction=compaction_callback,
             )
 
         async def _before_pipeline_turn(turn_index: int, current_turn_state: TurnContextState) -> None:

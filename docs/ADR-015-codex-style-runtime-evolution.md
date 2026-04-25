@@ -1366,3 +1366,51 @@ Unified visibility
 - approval queue 不再只表达“批了没批”
 - 也能表达“批完之后执行链有没有真正继续跑完”
 - 更接近 Codex 风格 control plane 对恢复结果的可见性
+
+### 11.18 2026-04-25 新进展：context compaction 已开始进入 runtime event 与 monitor
+
+此前 Catown 虽然已经有：
+
+- history summary
+- task-state fragments
+- `ContextSelector` token / fragment budget
+
+但 compaction 仍然是“静默发生”，没有进入控制面。
+
+这一轮把它往前推进了一步：
+
+- `ContextSelector` 现在会显式产出 selector diagnostics
+  - developer / user 各自的：
+    - candidate_count
+    - selected_count
+    - dropped_count
+    - truncated_count
+    - candidate_tokens
+    - selected_tokens
+  - 以及 selector 侧的：
+    - `max_fragments`
+    - `max_tokens`
+
+- chat runtime / pipeline runtime 现在会在发生 compaction 时写 `context_compaction` event
+  - 不再只是“消息被截短了，但外部不知道”
+  - 而是会把 compaction 作为 run 级事件留痕
+
+- monitor overview / Context 页面也开始消费这类事件
+  - overview 新增：
+    - `system.stats.context_compactions`
+    - `recent_compactions`
+  - Context 页不再显示“尚未发出 compaction 事件”的占位文案
+  - 已能看到最近 compaction 的：
+    - dropped / truncated 数量
+    - candidate / selected 数量
+    - max fragment / token budget
+
+这一步还不是完整的 checkpoint-friendly compaction 模型，但意义在于：
+
+- compaction 首次从“隐式 selector 行为”升级成“显式 runtime telemetry”
+- 后续再做：
+  - compaction-aware resume
+  - checkpoint snapshot
+  - context pressure trend
+
+就有了可复用的观测基础。

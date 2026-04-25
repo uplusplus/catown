@@ -464,6 +464,39 @@ def test_context_selector_enforces_total_token_budget_across_roles():
     assert "[truncated for token budget]" in messages[2]["content"]
 
 
+def test_assembly_exposes_selector_compaction_diagnostics():
+    developer_fragment = ContextFragment(
+        role="developer",
+        content="Developer rules\n" + ("A" * 400),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.AGENT,
+        source="developer_rules",
+        priority=10,
+    )
+    user_fragment = ContextFragment(
+        role="user",
+        content="Project state\n" + ("B" * 400),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.GLOBAL,
+        source="project_state",
+        priority=20,
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="base identity",
+        developer_fragments=[developer_fragment],
+        user_fragments=[user_fragment],
+        selector=ContextSelector(max_tokens=160),
+    )
+
+    diagnostics = assembly.selector_diagnostics
+    assert diagnostics["compacted"] is True
+    assert diagnostics["developer"]["selected_count"] == 1
+    assert diagnostics["user"]["truncated_count"] == 1
+    assert diagnostics["summary"]["truncated_count"] == 1
+    assert diagnostics["selector"]["max_tokens"] == 160
+
+
 def test_context_selector_can_derive_budget_from_context_window():
     selector = ContextSelector.for_context_window(
         context_window=1000,

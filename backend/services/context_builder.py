@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Iterable, Literal, Mapping, Optional
 
 
@@ -110,18 +110,30 @@ class ContextSelector:
         developer_fragments: Optional[Iterable[Optional[ContextFragment]]] = None,
         user_fragments: Optional[Iterable[Optional[ContextFragment]]] = None,
     ) -> tuple[list[ContextFragment], list[ContextFragment]]:
+        developer, user, _ = self.select_for_assembly_with_report(
+            developer_fragments=developer_fragments,
+            user_fragments=user_fragments,
+        )
+        return developer, user
+
+    def select_for_assembly_with_report(
+        self,
+        *,
+        developer_fragments: Optional[Iterable[Optional[ContextFragment]]] = None,
+        user_fragments: Optional[Iterable[Optional[ContextFragment]]] = None,
+    ) -> tuple[list[ContextFragment], list[ContextFragment], dict[str, Any]]:
         candidates: list[tuple[int, ContextFragment]] = []
         for fragment in self._filter_fragments(developer_fragments, role="developer"):
             candidates.append((0, fragment))
         for fragment in self._filter_fragments(user_fragments, role="user"):
             candidates.append((1, fragment))
 
-        selected_pairs = self._select_ranked_candidates(candidates)
+        selected_pairs, diagnostics = self._select_ranked_candidates_with_report(candidates)
         developer = [fragment for role_order, fragment in selected_pairs if role_order == 0]
         user = [fragment for role_order, fragment in selected_pairs if role_order == 1]
         developer.sort(key=lambda fragment: _fragment_sort_key(fragment, role_order=0))
         user.sort(key=lambda fragment: _fragment_sort_key(fragment, role_order=1))
-        return developer, user
+        return developer, user, diagnostics
 
     def select_messages(
         self,
@@ -160,30 +172,53 @@ class ContextSelector:
         self,
         candidates: Iterable[tuple[int, ContextFragment]],
     ) -> list[tuple[int, ContextFragment]]:
+        selected, _ = self._select_ranked_candidates_with_report(candidates)
+        return selected
+
+    def _select_ranked_candidates_with_report(
+        self,
+        candidates: Iterable[tuple[int, ContextFragment]],
+    ) -> tuple[list[tuple[int, ContextFragment]], dict[str, Any]]:
         ranked = sorted(
             candidates,
             key=lambda item: _fragment_sort_key(item[1], role_order=item[0]),
         )
+        role_reports = {
+            0: SelectorRoleReport(role="developer"),
+            1: SelectorRoleReport(role="user"),
+        }
+        for role_order, fragment in ranked:
+            role_reports.setdefault(role_order, SelectorRoleReport(role=f"role_{role_order}")).record_candidate(fragment)
         if self.max_tokens is None and self.max_fragments is None:
-            return ranked
+            for role_order, fragment in ranked:
+                role_reports[role_order].record_selected(fragment)
+            return ranked, _selector_diagnostics_payload(
+                selector=self,
+                role_reports=role_reports,
+                compaction_applied=False,
+            )
 
         selected: list[tuple[int, ContextFragment]] = []
         used_tokens = 0
         for role_order, fragment in ranked:
             if self.max_fragments is not None and len(selected) >= self.max_fragments:
-                break
+                role_reports[role_order].record_dropped(fragment)
+                continue
 
             fragment_tokens = estimate_text_tokens(fragment.content)
             if self.max_tokens is None or used_tokens + fragment_tokens <= self.max_tokens:
                 selected.append((role_order, fragment))
                 used_tokens += fragment_tokens
+                role_reports[role_order].record_selected(fragment)
                 continue
 
             if not self.truncate_to_budget or self.max_tokens is None:
+                role_reports[role_order].record_dropped(fragment)
                 continue
 
             remaining_tokens = self.max_tokens - used_tokens
             if remaining_tokens < self.min_tokens_for_truncation:
+                role_reports[role_order].record_dropped(fragment)
                 continue
 
             truncated_content = _truncate_text_to_token_budget(
@@ -191,13 +226,20 @@ class ContextSelector:
                 remaining_tokens,
             )
             if not truncated_content:
+                role_reports[role_order].record_dropped(fragment)
                 continue
 
             truncated_fragment = replace(fragment, content=truncated_content)
             selected.append((role_order, truncated_fragment))
             used_tokens += estimate_text_tokens(truncated_content)
+            role_reports[role_order].record_selected(truncated_fragment)
+            role_reports[role_order].record_truncated(fragment, truncated_fragment)
 
-        return selected
+        return selected, _selector_diagnostics_payload(
+            selector=self,
+            role_reports=role_reports,
+            compaction_applied=any(report.compaction_applied for report in role_reports.values()),
+        )
 
 
 @dataclass
@@ -207,6 +249,7 @@ class PromptAssembly:
     user_context_messages: list[dict[str, str]] = field(default_factory=list)
     history_messages: list[dict[str, Any]] = field(default_factory=list)
     current_input_messages: list[dict[str, Any]] = field(default_factory=list)
+    selector_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_messages(self) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
@@ -656,7 +699,7 @@ def assemble_messages(
     developer_role_supported: bool = True,
 ) -> PromptAssembly:
     selector = selector or ContextSelector()
-    selected_developer, selected_user = selector.select_for_assembly(
+    selected_developer, selected_user, selector_diagnostics = selector.select_for_assembly_with_report(
         developer_fragments=developer_fragments,
         user_fragments=user_fragments,
     )
@@ -676,7 +719,73 @@ def assemble_messages(
         user_context_messages=user_context,
         history_messages=list(history_messages or []),
         current_input_messages=list(current_input_messages or []),
+        selector_diagnostics=selector_diagnostics,
     )
+
+
+@dataclass
+class SelectorRoleReport:
+    role: str
+    candidate_count: int = 0
+    selected_count: int = 0
+    dropped_count: int = 0
+    truncated_count: int = 0
+    candidate_tokens: int = 0
+    selected_tokens: int = 0
+    dropped_sources: list[str] = field(default_factory=list)
+    truncated_sources: list[str] = field(default_factory=list)
+
+    @property
+    def compaction_applied(self) -> bool:
+        return self.dropped_count > 0 or self.truncated_count > 0
+
+    def record_candidate(self, fragment: ContextFragment) -> None:
+        self.candidate_count += 1
+        self.candidate_tokens += estimate_text_tokens(fragment.content)
+
+    def record_selected(self, fragment: ContextFragment) -> None:
+        self.selected_count += 1
+        self.selected_tokens += estimate_text_tokens(fragment.content)
+
+    def record_dropped(self, fragment: ContextFragment) -> None:
+        self.dropped_count += 1
+        if fragment.source not in self.dropped_sources:
+            self.dropped_sources.append(fragment.source)
+
+    def record_truncated(self, original: ContextFragment, truncated: ContextFragment) -> None:
+        if truncated.content == original.content:
+            return
+        self.truncated_count += 1
+        if original.source not in self.truncated_sources:
+            self.truncated_sources.append(original.source)
+
+
+def _selector_diagnostics_payload(
+    *,
+    selector: ContextSelector,
+    role_reports: Mapping[int, SelectorRoleReport],
+    compaction_applied: bool,
+) -> dict[str, Any]:
+    developer_report = role_reports.get(0, SelectorRoleReport(role="developer"))
+    user_report = role_reports.get(1, SelectorRoleReport(role="user"))
+    return {
+        "compacted": compaction_applied,
+        "selector": {
+            "max_fragments": selector.max_fragments,
+            "max_tokens": selector.max_tokens,
+            "truncate_to_budget": selector.truncate_to_budget,
+        },
+        "developer": asdict(developer_report),
+        "user": asdict(user_report),
+        "summary": {
+            "candidate_count": developer_report.candidate_count + user_report.candidate_count,
+            "selected_count": developer_report.selected_count + user_report.selected_count,
+            "dropped_count": developer_report.dropped_count + user_report.dropped_count,
+            "truncated_count": developer_report.truncated_count + user_report.truncated_count,
+            "candidate_tokens": developer_report.candidate_tokens + user_report.candidate_tokens,
+            "selected_tokens": developer_report.selected_tokens + user_report.selected_tokens,
+        },
+    }
 
 
 def _scope_rank(scope: str) -> int:

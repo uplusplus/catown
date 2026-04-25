@@ -14,10 +14,10 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from agents.collaboration import collaboration_coordinator
-from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, get_db
+from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_queue import list_approval_queue_items
-from services.monitor_projection import serialize_monitor_approval_queue_item
+from services.monitor_projection import serialize_monitor_approval_queue_item, serialize_monitor_compaction_item
 from services.run_ledger import serialize_monitor_task_run_summary
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
@@ -621,6 +621,7 @@ async def get_monitor_overview(
     latest_message = db.query(Message).order_by(desc(Message.created_at), desc(Message.id)).first()
     approval_queue_total = db.query(ApprovalQueueItem).count()
     approval_queue_pending = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count()
+    context_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
 
     summary_rows = (
         db.query(Message, Chatroom, Project)
@@ -779,6 +780,25 @@ async def get_monitor_overview(
         }
         for message, chatroom, project in recent_message_rows
     ]
+    recent_compaction_rows = (
+        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
+        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRunEvent.event_type == "context_compaction")
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(16)
+        .all()
+    )
+    recent_compactions = [
+        serialize_monitor_compaction_item(
+            event,
+            task_run=task_run,
+            chat_title=chatroom.title,
+            project_name=project.name if project else None,
+        )
+        for event, task_run, chatroom, project in recent_compaction_rows
+    ]
 
     return {
         "captured_at": datetime.now().isoformat(),
@@ -795,6 +815,7 @@ async def get_monitor_overview(
                 "runtime_cards": runtime_card_count,
                 "approval_queue_total": approval_queue_total,
                 "approval_queue_pending": approval_queue_pending,
+                "context_compactions": context_compaction_count,
             },
             "features": {
                 "llm_enabled": True,
@@ -828,4 +849,5 @@ async def get_monitor_overview(
         },
         "recent_runtime": recent_runtime,
         "recent_messages": recent_messages,
+        "recent_compactions": recent_compactions,
     }

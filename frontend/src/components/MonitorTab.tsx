@@ -4627,7 +4627,7 @@ export function MonitorTab() {
               </div>
               <div className="kpi-card">
                 <div className="kpi-card__label">Compactions</div>
-                <div className="kpi-card__value">0</div>
+                <div className="kpi-card__value">{formatNumber(overview?.system.stats.context_compactions ?? overview?.recent_compactions?.length ?? 0)}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-card__label">Active model</div>
@@ -4650,7 +4650,34 @@ export function MonitorTab() {
           </div>
           <div className="card">
             <SectionTitle title="Compaction History" />
-            <div className="muted-block">No compactions yet — Catown is not emitting context compaction events to the monitor API.</div>
+            {(overview?.recent_compactions ?? []).length > 0 ? (
+              <div className="feed-list">
+                {(overview?.recent_compactions ?? []).map((item) => (
+                  <div key={item.id} className="feed-item">
+                    <div className={`feed-badge feed-badge--${item.truncated_count ? "warning" : "neutral"}`}>
+                      drop {item.dropped_count ?? 0} / trunc {item.truncated_count ?? 0}
+                    </div>
+                    <div className="feed-body">
+                      <div className="feed-head">
+                        <strong>{item.summary || `${item.agent_name || "agent"} compacted context`}</strong>
+                        <span className="small-note">{formatTimeAgo(item.created_at)}</span>
+                      </div>
+                      <div className="small-note" style={{ marginBottom: 6 }}>
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
+                        {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                      </div>
+                      <div className="feed-preview">
+                        Candidates {formatNumber(item.candidate_count)} {"->"} selected {formatNumber(item.selected_count)}
+                        {item.max_fragments ? ` · max fragments ${item.max_fragments}` : ""}
+                        {item.max_tokens ? ` · max tokens ${formatNumber(item.max_tokens)}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">No compactions captured yet.</div>
+            )}
           </div>
         </div>
       </section>

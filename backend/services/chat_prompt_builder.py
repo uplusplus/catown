@@ -7,7 +7,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -144,6 +144,7 @@ def assemble_chat_messages(
     extra_context: str = "",
     turn_state: Any = None,
     selector_profile: str = "chat_interactive",
+    on_compaction: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     agents = agents or []
     base_system_prompt = agent_base_system_prompt(
@@ -226,14 +227,18 @@ def assemble_chat_messages(
         current_input_messages=current_input,
     )
 
-    return assemble_messages(
+    assembly = assemble_messages(
         base_system_prompt=base_system_prompt,
         developer_fragments=developer_fragments,
         user_fragments=user_fragments,
         history_messages=history,
         current_input_messages=current_input,
         selector=selector,
-    ).to_messages()
+    )
+    diagnostics = assembly.selector_diagnostics if isinstance(assembly.selector_diagnostics, dict) else {}
+    if diagnostics.get("compacted") and on_compaction is not None:
+        on_compaction(diagnostics)
+    return assembly.to_messages()
 
 
 @lru_cache(maxsize=8)

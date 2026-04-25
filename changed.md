@@ -23,7 +23,7 @@
 - 每完成一个完整特性，就单独提交一次
 - 每次特性提交后，同步追加一条 `changed.md` 记录
 
-### pending `Expose approval follow-up state in monitor`
+### e279453 `Expose approval follow-up state in monitor`
 
 范围：
 
@@ -38,3 +38,25 @@
 - 把 approval replay 后的 `followup_attempted / followup_status / followup_reason / followup_error / followup_message_id` 补成 monitor 一等字段
 - 让 Approvals 页面能直接区分 replay 成功、follow-up 已继续、follow-up 被跳过、follow-up 失败
 - 补 monitor 后端测试并验证前端构建通过
+
+### pending `Emit context compaction telemetry to monitor`
+
+范围：
+
+- `backend/services/context_builder.py`
+- `backend/services/chat_prompt_builder.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/services/monitor_projection.py`
+- `backend/routes/monitor.py`
+- `backend/tests/test_prompt_context_builder.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/components/MonitorTab.tsx`
+- `frontend/src/types.ts`
+
+内容：
+
+- 让 `ContextSelector` 显式产出 selector diagnostics，而不只是静默截断上下文
+- 在 chat runtime 和 pipeline stage runtime 发生 compaction 时写入 `context_compaction` task-run event
+- 在 monitor overview / Context 页展示 recent compactions 和 compaction 数量
+- 补 selector 诊断测试、monitor overview 测试，并验证前端构建通过

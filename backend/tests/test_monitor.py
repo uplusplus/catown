@@ -87,6 +87,7 @@ class TestMonitorOverview:
         assert "usage_window" in data
         assert "recent_runtime" in data
         assert "recent_messages" in data
+        assert "recent_compactions" in data
 
     def test_overview_aggregates_runtime_cards(self, client):
         from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name
@@ -219,6 +220,89 @@ class TestMonitorOverview:
         detail = detail_response.json()
         assert detail["card"]["type"] == "llm_call"
         assert detail["card"]["model"] == "gpt-4.1-mini"
+
+    def test_overview_returns_recent_context_compactions(self, client):
+        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Compaction Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Compaction Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="chat_turn",
+                status="running",
+                title="Compaction run",
+                user_request="Large context request",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="context_compaction",
+                    agent_name="analyst",
+                    summary="analyst compacted context (dropped=2, truncated=1).",
+                    payload_json=json.dumps(
+                        {
+                            "compacted": True,
+                            "selector_diagnostics": {
+                                "compacted": True,
+                                "selector": {"max_fragments": 12, "max_tokens": 3200},
+                                "summary": {
+                                    "candidate_count": 9,
+                                    "selected_count": 7,
+                                    "dropped_count": 2,
+                                    "truncated_count": 1,
+                                    "candidate_tokens": 4200,
+                                    "selected_tokens": 3100,
+                                },
+                                "developer": {"dropped_count": 0, "truncated_count": 0},
+                                "user": {"dropped_count": 2, "truncated_count": 1},
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/overview")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["system"]["stats"]["context_compactions"] >= 1
+
+        entry = next(
+            item
+            for item in data["recent_compactions"]
+            if item["summary"] == "analyst compacted context (dropped=2, truncated=1)."
+        )
+        assert entry["chat_title"] == "Compaction Chat"
+        assert entry["project_name"] == "Compaction Project"
+        assert entry["dropped_count"] == 2
+        assert entry["truncated_count"] == 1
+        assert entry["max_tokens"] == 3200
 
     def test_monitor_task_runs_returns_global_run_history(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent
