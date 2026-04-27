@@ -3454,3 +3454,41 @@ P0 完成后的剩余差距进入 P1，不再属于 P0 baseline：
 - subagent lifecycle 的完整 spawn / wait / close / cancellation 状态机
 - 更完整的 sandbox escalation resume token / lease 机制
 - durable inbox/outbox 级别的跨进程 message replay
+
+### 11.61 2026-04-27 新进展：P1 启动，durable pipeline inbox/outbox service 已抽出
+
+P0 baseline 完成后，P1 第一刀先从 durable inbox/outbox 做收口，而不是直接合并 executor loop。
+
+原因是：pipeline 的跨 agent 消息已经有数据库表承载，但核心投递/消费语义仍散在 `pipeline/engine.py`：
+
+- 创建 `PipelineMessageDelivery`
+- 按 agent claim pending delivery
+- 区分普通 agent message 与 `HUMAN_INSTRUCT`
+- 把 legacy `HUMAN_INSTRUCT` 回填成 consumed delivery
+- 把 `PipelineMessage` 序列化成 runtime inbox item
+
+这些是 Codex-style durable message replay 的基础能力，不应该继续由 pipeline engine 私有维护。
+
+本轮新增：
+
+- `backend/services/pipeline_inbox.py`
+  - `enqueue_message_delivery(...)`
+  - `pop_messages_for_agent(...)`
+  - `pop_instruction_texts_for_agent(...)`
+  - `consume_legacy_instruction_texts_for_agent(...)`
+  - `serialize_pipeline_message(...)`
+
+并接入：
+
+- tool `send_message` 的 durable delivery 创建
+- pipeline `instruct(...)` 的 BOSS instruction delivery 创建
+- rollback message 的 durable delivery 创建
+- stage runtime 读取 inter-agent inbox
+- stage runtime 读取 BOSS instruction inbox
+- legacy instruction delivery backfill
+
+这一步的意义是：
+
+- pipeline engine 不再直接拥有 durable inbox/outbox 的协议细节
+- durable inbox 从“pipeline 内部实现细节”开始变成共享 runtime service
+- P1 后续要做跨进程 message replay / scheduler recovery 时，可以以 `pipeline_inbox` 为入口继续扩展 lease、claim、retry 与 replay cursor

@@ -927,3 +927,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 chat runtime 与 pipeline approved replay follow-up 分支共用同一套 follow-up event payload 构造
 - 在 ADR 中明确 P0 baseline 完成边界：startup envelope、turn envelope、approval/replay envelope、checkpoint/recovery cursor 已完成基础收口
 - 把剩余“单一 executor loop、subagent lifecycle、sandbox escalation token、durable inbox/outbox replay”明确划入 P1
+
+### `Extract durable pipeline inbox service`
+
+范围：
+
+- `backend/services/pipeline_inbox.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_inbox.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽出 durable pipeline inbox/outbox service，统一 delivery 创建、pending claim/consume、message serialization
+- 让 pipeline tool `send_message`、BOSS instruction、rollback message 都复用统一 delivery helper
+- 让 stage runtime 读取普通 inter-agent message 与 `HUMAN_INSTRUCT` 时复用统一 consume helper
+- 保留 legacy `HUMAN_INSTRUCT` backfill 行为，并移入 inbox service
+- 补 service 单测，并跑原 pipeline durable delivery 回归

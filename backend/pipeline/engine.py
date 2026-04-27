@@ -26,7 +26,7 @@ from skills import load_skill_registry, write_workspace_skill_packages
 from tools.base import build_tool_policy_pack, build_tool_policy_payload
 from models.database import (
     SessionLocal, ApprovalQueueItem, Chatroom, Pipeline, PipelineRun, PipelineStage,
-    StageArtifact, PipelineMessage, PipelineMessageDelivery, Project,
+    StageArtifact, PipelineMessage, Project,
 )
 from models.audit import LLMCall, ToolCall, Event
 from pipeline.config import pipeline_config_manager, StageConfig
@@ -88,6 +88,12 @@ from services.runner_lifecycle import (
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
+from services.pipeline_inbox import (
+    consume_legacy_instruction_texts_for_agent,
+    enqueue_message_delivery,
+    pop_instruction_texts_for_agent,
+    pop_messages_for_agent,
+)
 
 logger = logging.getLogger("catown.pipeline.engine")
 PIPELINE_TASK_RUN_KIND = "pipeline_run"
@@ -704,7 +710,7 @@ async def _handle_send_message(
         )
         db.add(msg)
         db.flush()
-        _enqueue_message_delivery(db, msg)
+        enqueue_message_delivery(db, msg)
         db.commit()
 
     # 广播事件
@@ -720,97 +726,17 @@ async def _handle_send_message(
     return f"Message sent to {to_agent}"
 
 
-def _enqueue_message_delivery(db: Session, message: PipelineMessage) -> Optional[PipelineMessageDelivery]:
-    """Create a durable inbox entry for a direct pipeline message."""
-    recipient = str(message.to_agent or "").strip()
-    if not recipient:
-        return None
-
-    delivery = PipelineMessageDelivery(
-        message_id=message.id,
-        run_id=message.run_id,
-        to_agent=recipient,
-        status="pending",
-    )
-    db.add(delivery)
-    return delivery
-
-
 def _pop_messages_for_agent(db: Session, run_id: int, agent_name: str) -> List[Dict[str, Any]]:
-    """Claim and consume pending inbox messages for an agent from durable storage."""
-    deliveries = (
-        db.query(PipelineMessageDelivery)
-        .join(PipelineMessage, PipelineMessage.id == PipelineMessageDelivery.message_id)
-        .filter(
-            PipelineMessageDelivery.run_id == run_id,
-            PipelineMessageDelivery.to_agent == agent_name,
-            PipelineMessageDelivery.status == "pending",
-            PipelineMessage.message_type != "HUMAN_INSTRUCT",
-        )
-        .order_by(PipelineMessage.created_at.asc(), PipelineMessageDelivery.id.asc())
-        .all()
+    return pop_messages_for_agent(
+        db,
+        run_id=run_id,
+        agent_name=agent_name,
+        exclude_message_type="HUMAN_INSTRUCT",
     )
-
-    if not deliveries:
-        return []
-
-    now = datetime.now()
-    messages: List[Dict[str, Any]] = []
-    for delivery in deliveries:
-        message = delivery.message
-        if message is None:
-            continue
-        delivery.status = "consumed"
-        delivery.consumed_at = now
-        messages.append(
-            {
-                "message_id": message.id,
-                "run_id": message.run_id,
-                "stage_id": message.stage_id,
-                "from_agent": message.from_agent,
-                "to_agent": message.to_agent,
-                "content": message.content,
-                "message_type": message.message_type,
-                "created_at": message.created_at.isoformat() if message.created_at else None,
-            }
-        )
-
-    db.commit()
-    return messages
 
 
 def _pop_instructions_for_agent(db: Session, run_id: int, agent_name: str) -> List[str]:
-    """Claim and consume pending BOSS instructions for an agent from durable storage."""
-    deliveries = (
-        db.query(PipelineMessageDelivery)
-        .join(PipelineMessage, PipelineMessage.id == PipelineMessageDelivery.message_id)
-        .filter(
-            PipelineMessageDelivery.run_id == run_id,
-            PipelineMessageDelivery.to_agent == agent_name,
-            PipelineMessageDelivery.status == "pending",
-            PipelineMessage.message_type == "HUMAN_INSTRUCT",
-        )
-        .order_by(PipelineMessage.created_at.asc(), PipelineMessageDelivery.id.asc())
-        .all()
-    )
-
-    if not deliveries:
-        return []
-
-    now = datetime.now()
-    instructions: List[str] = []
-    for delivery in deliveries:
-        message = delivery.message
-        if message is None:
-            continue
-        delivery.status = "consumed"
-        delivery.consumed_at = now
-        text = str(message.content or "").strip()
-        if text:
-            instructions.append(text)
-
-    db.commit()
-    return instructions
+    return pop_instruction_texts_for_agent(db, run_id=run_id, agent_name=agent_name)
 
 
 # ==================== 事件回调 ====================
@@ -1266,7 +1192,7 @@ class PipelineEngine:
         )
         db.add(msg)
         db.flush()
-        _enqueue_message_delivery(db, msg)
+        enqueue_message_delivery(db, msg)
 
         # 写入 BOSS 指令事件
         db.add(Event(
@@ -2379,7 +2305,7 @@ class PipelineEngine:
         )
         db.add(msg)
         db.flush()
-        _enqueue_message_delivery(db, msg)
+        enqueue_message_delivery(db, msg)
         db.commit()
 
         await event_bus.emit("stage_rollback", {
@@ -2509,38 +2435,7 @@ class PipelineEngine:
         if instructions:
             return instructions
 
-        # 兼容旧数据：如果历史 HUMAN_INSTRUCT 还没有 durable delivery，
-        # 首次读取时回填为 consumed，避免升级后旧指令被无限重复注入。
-        legacy_messages = (
-            db.query(PipelineMessage)
-            .filter(
-                PipelineMessage.run_id == run.id,
-                PipelineMessage.message_type == "HUMAN_INSTRUCT",
-                PipelineMessage.to_agent == agent_name,
-                ~PipelineMessage.deliveries.any(),
-            )
-            .order_by(PipelineMessage.created_at)
-            .all()
-        )
-        if not legacy_messages:
-            return []
-
-        now = datetime.now()
-        results: List[str] = []
-        for message in legacy_messages:
-            delivery = PipelineMessageDelivery(
-                message_id=message.id,
-                run_id=message.run_id,
-                to_agent=agent_name,
-                status="consumed",
-                consumed_at=now,
-            )
-            db.add(delivery)
-            text = str(message.content or "").strip()
-            if text:
-                results.append(text)
-        db.commit()
-        return results
+        return consume_legacy_instruction_texts_for_agent(db, run_id=run.id, agent_name=agent_name)
 
     def _record_artifacts(
         self,
