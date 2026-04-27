@@ -107,6 +107,12 @@ from services.approval_queue import (
     resolve_approval_queue_item,
     serialize_approval_queue_item,
 )
+from services.approval_replay import (
+    build_followup_continued_payload,
+    build_followup_failed_payload,
+    build_followup_skipped_payload,
+    replay_result_is_actionable,
+)
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
 from services.runner_policy import (
     compile_orchestration_run_policy,
@@ -4448,13 +4454,13 @@ async def _continue_runtime_after_approved_tool_replay(
 ):
     task_run = get_task_run(db, getattr(item, "task_run_id", None))
     if task_run is None:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "task_run_missing"}
+        return build_followup_skipped_payload("task_run_missing")
     if getattr(item, "chatroom_id", None) is None:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "chatroom_missing"}
+        return build_followup_skipped_payload("chatroom_missing")
     if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_queue_item"}
-    if not bool(getattr(replay_result, "success", False)) or bool(getattr(replay_result, "blocked", False)):
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "replay_not_actionable"}
+        return build_followup_skipped_payload("pipeline_queue_item")
+    if not replay_result_is_actionable(replay_result):
+        return build_followup_skipped_payload("replay_not_actionable")
 
     followup_context = _build_tool_replay_followup_context(item, replay_result)
     saved = await _publish_replayed_tool_result_message(
@@ -4501,18 +4507,9 @@ async def _continue_runtime_after_approved_tool_replay(
                 "error": str(exc),
             },
         )
-        return {
-            "followup_attempted": True,
-            "followup_status": "failed",
-            "followup_error": str(exc),
-            "followup_message_id": getattr(saved, "id", None),
-        }
+        return build_followup_failed_payload(exc, followup_message_id=getattr(saved, "id", None))
 
-    return {
-        "followup_attempted": True,
-        "followup_status": "continued",
-        "followup_message_id": getattr(saved, "id", None),
-    }
+    return build_followup_continued_payload(followup_message_id=getattr(saved, "id", None))
 
 
 async def _continue_pipeline_after_approved_tool_replay(
@@ -4523,19 +4520,19 @@ async def _continue_pipeline_after_approved_tool_replay(
 ):
     pipeline_run_id = getattr(item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
     if not pipeline_run_id:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_run_missing"}
-    if not bool(getattr(replay_result, "success", False)) or bool(getattr(replay_result, "blocked", False)):
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "replay_not_actionable"}
+        return build_followup_skipped_payload("pipeline_run_missing")
+    if not replay_result_is_actionable(replay_result):
+        return build_followup_skipped_payload("replay_not_actionable")
 
     from models.database import Pipeline, PipelineRun
 
     run = db.query(PipelineRun).filter(PipelineRun.id == int(pipeline_run_id)).first()
     if run is None:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_run_missing"}
+        return build_followup_skipped_payload("pipeline_run_missing")
 
     pipeline = db.query(Pipeline).filter(Pipeline.id == run.pipeline_id).first()
     if pipeline is None:
-        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_missing"}
+        return build_followup_skipped_payload("pipeline_missing")
 
     task_run = get_task_run(db, getattr(item, "task_run_id", None))
     append_task_event(
@@ -4579,17 +4576,9 @@ async def _continue_pipeline_after_approved_tool_replay(
                 "error": str(exc),
             },
         )
-        return {
-            "followup_attempted": True,
-            "followup_status": "failed",
-            "followup_error": str(exc),
-        }
+        return build_followup_failed_payload(exc)
 
-    return {
-        "followup_attempted": True,
-        "followup_status": "continued",
-        "followup_reason": "pipeline_resumed",
-    }
+    return build_followup_continued_payload(followup_reason="pipeline_resumed")
 
 
 @router.get("/approval-queue")

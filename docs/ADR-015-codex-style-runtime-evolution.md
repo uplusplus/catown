@@ -3070,3 +3070,37 @@ Monitor 侧也顺手做了投影：
 - lifecycle event 不再只共享“写入函数”
 - 也开始共享“基础 payload shape”
 - P0.2 的 turn envelope 继续往下收：从 context preparation、compaction projection，推进到 lifecycle metadata projection
+
+### 11.49 2026-04-27 新进展：approval replay follow-up resolution shape 已共享
+
+P0.3 开始从 approved blocked-tool replay / follow-up 主链往统一 runner envelope 收口。
+
+这轮先处理最小但高频的分叉点：replay 完成后是否继续执行，以及继续执行结果如何写回 approval resolution payload。
+
+之前 runtime follow-up 与 pipeline follow-up 各自手工拼：
+
+- `followup_attempted=false / followup_status=skipped / followup_reason=...`
+- `followup_attempted=true / followup_status=failed / followup_error=...`
+- `followup_attempted=true / followup_status=continued / followup_reason=...`
+- replay 是否 actionable 的判断：成功且没有再次 blocked
+
+这类 payload 是 monitor、approval queue、operator 审计共同消费的接口。它不应继续由 runtime 与 pipeline 分支各自维护。
+
+本轮新增：
+
+- `backend/services/approval_replay.py`
+  - `replay_result_is_actionable(...)`
+  - `build_followup_skipped_payload(...)`
+  - `build_followup_failed_payload(...)`
+  - `build_followup_continued_payload(...)`
+
+并接入：
+
+- chat runtime approved replay follow-up
+- pipeline approved replay follow-up
+
+这一步的意义是：
+
+- approval replay 的 follow-up resolution shape 开始统一
+- runtime 与 pipeline 仍保留不同的实际恢复动作，但不再各自定义“恢复结果怎么表达”
+- 后续可以继续把 approval/sandbox/escalation 主链推进到更完整的 shared runner continuation policy

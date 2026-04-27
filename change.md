@@ -729,3 +729,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 提取统一的 runtime lifecycle payload helper，收口 `client_turn_id`、`stage_policy`、target/pipeline metadata 的组装规则
 - 让 chat standalone、project single-agent、orchestration turn 与 pipeline stage turn 共用同一套基础 payload 语义
 - 补 helper 单测，确认可序列化 policy payload 且会过滤缺失字段
+
+### `Share approval replay follow-up resolution payloads`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取 approval replay follow-up payload helper，统一 skipped / failed / continued 三类 resolution shape
+- 提取 replay actionable 判断，统一要求 approved replay 成功且没有再次 blocked 才继续 runtime 或 pipeline
+- 让 chat runtime 与 pipeline approved-tool replay 分支共用同一套 resolution payload 语义
+- 补 helper 单测，确认 payload 会过滤缺失字段且 replay actionability 判断一致
