@@ -2302,3 +2302,60 @@ Monitor 侧也顺手做了投影：
 - continuation-state 摘要第一次成为 checkpoint snapshot 的一等公民字段
 - monitor / frontend 不再需要重复实现派生逻辑
 - snapshot、event、UI 三层的 continuation 语义进一步统一
+
+### 11.35 2026-04-25 新进展：Monitor run 列表与事件流已开始直接展示 continuation-state 摘要
+
+11.34 之后，`checkpoint_snapshot` 本身已经直接带 `continuation_state`，但 Monitor 交互上还留着一个可见性问题：
+
+- 详情页的 Checkpoint Snapshot 卡片里已经能看到 continuation-state
+- 但 run 列表本身仍然只显示：
+  - event count
+  - latest event type
+  - client turn id
+- event 流也仍然主要依赖用户自己展开 raw payload
+
+这导致一个常见排障动作仍然不够直接：
+
+- 你想快速扫一批 run，找出哪些 run 带着 continuation state
+- 或想在事件流里快速看出：
+  - 这条 `pipeline_resumed` / `pipeline_stage_started` / `task_run_recovery_started`
+    到底消费了什么 continuation payload
+- 还是得点开详情或直接读 raw JSON
+
+这一轮把这层 UI 摘要补上：
+
+- Monitor task-run 列表
+  - 如果该 run 的 `checkpoint_snapshot.continuation_state.consumed == true`
+  - footer 现在会直接显示 continuation-state 摘要
+  - 例如：
+    - next action
+    - resume strategy
+    - tail message 数量
+    - prior summary 数量
+    - consumed layers
+
+- Task-run 事件流
+  - 新增通用 continuation-state 摘要提取逻辑
+  - 会优先读取：
+    - `recovery_continuation_state`
+    - `continuation_state`
+    - `checkpoint_snapshot.continuation_state`
+  - 对这些事件直接显示一行可读摘要
+
+因此现在像这些事件：
+
+- `task_run_recovery_started`
+- `scheduler_step_dispatched`（recovered step）
+- `pipeline_resumed`
+- `pipeline_stage_started`
+
+在 UI 上都不再只是“有个 payload 可以点开”：
+
+- 它们会直接把 continuation-state 摘要暴露在事件行里
+- 让 operator 扫读时就能知道这一步到底吃了什么 continuation state
+
+这一步的意义是：
+
+- continuation-state 终于不只在 snapshot/detail/raw payload 里可见
+- 它开始进入 run 列表与事件流的主阅读路径
+- Monitor 对这类恢复/续跑语义的可读性又提升了一层

@@ -370,6 +370,41 @@ function compactOwnerLabel(value: string | null | undefined) {
   return `${text.slice(0, 18)}...${text.slice(-10)}`;
 }
 
+function continuationStateSummary(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const state = value as {
+    consumed?: boolean;
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    consumed_layers?: string[] | null;
+    protocol_tail_message_count?: number | null;
+    prior_round_summary_count?: number | null;
+  };
+  if (!state.consumed) return null;
+  return [
+    state.next_action ? titleCaseLabel(state.next_action) : null,
+    state.resume_strategy ? `via ${state.resume_strategy}` : null,
+    state.protocol_tail_message_count ? `${state.protocol_tail_message_count} tail messages` : null,
+    state.prior_round_summary_count ? `${state.prior_round_summary_count} prior summaries` : null,
+    Array.isArray(state.consumed_layers) && state.consumed_layers.length
+      ? state.consumed_layers.join(", ")
+      : null,
+  ].filter(Boolean).join(" · ");
+}
+
+function taskRunEventContinuationSummary(payload: Record<string, unknown> | undefined): string | null {
+  if (!payload) return null;
+  const directRecovery = continuationStateSummary(payload["recovery_continuation_state"]);
+  if (directRecovery) return directRecovery;
+  const directContinuation = continuationStateSummary(payload["continuation_state"]);
+  if (directContinuation) return directContinuation;
+  const checkpointSnapshot = payload["checkpoint_snapshot"];
+  if (checkpointSnapshot && typeof checkpointSnapshot === "object") {
+    return continuationStateSummary((checkpointSnapshot as Record<string, unknown>)["continuation_state"]);
+  }
+  return null;
+}
+
 type RunScheduleStep = {
   stepId: string;
   position: number;
@@ -4806,6 +4841,9 @@ export function MonitorTab() {
                     <div className="run-history-item__foot">
                       <span>{run.event_count} events</span>
                       {run.latest_event_type ? <span>{titleCaseLabel(run.latest_event_type)}</span> : null}
+                      {continuationStateSummary(run.checkpoint_snapshot?.continuation_state) ? (
+                        <span>{continuationStateSummary(run.checkpoint_snapshot?.continuation_state)}</span>
+                      ) : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                       {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
                     </div>
@@ -5177,6 +5215,11 @@ export function MonitorTab() {
                           {event.agent_name ? <span>{event.agent_name}</span> : null}
                           {event.message_id ? <span>message #{event.message_id}</span> : null}
                         </div>
+                        {taskRunEventContinuationSummary(event.payload) ? (
+                          <div className="small-note" style={{ marginTop: 8 }}>
+                            {taskRunEventContinuationSummary(event.payload)}
+                          </div>
+                        ) : null}
                         {event.payload && Object.keys(event.payload).length > 0 ? (
                           <details className="run-event-row__payload">
                             <summary>Payload</summary>
