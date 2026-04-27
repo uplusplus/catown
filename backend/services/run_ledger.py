@@ -256,6 +256,12 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
 
     latest_event = events[-1] if events else None
     latest_agent_turn = next((event for event in reversed(events) if event.event_type == "agent_turn_completed"), None)
+    latest_tool_round = next((event for event in reversed(events) if event.event_type == "tool_round_recorded"), None)
+    latest_tool_blocked = next((event for event in reversed(events) if event.event_type == "tool_call_blocked"), None)
+    latest_followup = next(
+        (event for event in reversed(events) if event.event_type == "approval_queue_item_followup_triggered"),
+        None,
+    )
     latest_compaction = next((event for event in reversed(events) if event.event_type == "context_compaction"), None)
     latest_runtime_event = next(
         (
@@ -268,6 +274,9 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     )
 
     latest_agent_payload = payload_by_event_id.get(latest_agent_turn.id, {}) if latest_agent_turn is not None else {}
+    latest_tool_round_payload = payload_by_event_id.get(latest_tool_round.id, {}) if latest_tool_round is not None else {}
+    latest_tool_blocked_payload = payload_by_event_id.get(latest_tool_blocked.id, {}) if latest_tool_blocked is not None else {}
+    latest_followup_payload = payload_by_event_id.get(latest_followup.id, {}) if latest_followup is not None else {}
     latest_compaction_payload = payload_by_event_id.get(latest_compaction.id, {}) if latest_compaction is not None else {}
     latest_compaction_diagnostics = (
         latest_compaction_payload.get("selector_diagnostics")
@@ -275,6 +284,25 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         else {}
     )
     latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
+    pending_tool_queue_item = next(
+        (
+            item for item in reversed(approval_items)
+            if (item.status or "").strip().lower() == "pending" and (item.target_kind or "").strip().lower() == "tool"
+        ),
+        None,
+    )
+    continuation_cursor = _build_task_run_continuation_cursor(
+        task_run=task_run,
+        latest_tool_round=latest_tool_round,
+        latest_tool_round_payload=latest_tool_round_payload,
+        latest_tool_blocked=latest_tool_blocked,
+        latest_tool_blocked_payload=latest_tool_blocked_payload,
+        latest_followup=latest_followup,
+        latest_followup_payload=latest_followup_payload,
+        latest_runtime_event=latest_runtime_event,
+        latest_runtime_payload=latest_runtime_payload,
+        pending_tool_queue_item=pending_tool_queue_item,
+    )
 
     return {
         "event_count": len(events),
@@ -306,10 +334,99 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
             "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
+        "continuation_cursor": continuation_cursor,
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
         "approval_queue_count": len(approval_items),
         "status": task_run.status,
         "summary": task_run.summary,
+    }
+
+
+def _build_task_run_continuation_cursor(
+    *,
+    task_run: TaskRun,
+    latest_tool_round: TaskRunEvent | None,
+    latest_tool_round_payload: Any,
+    latest_tool_blocked: TaskRunEvent | None,
+    latest_tool_blocked_payload: Any,
+    latest_followup: TaskRunEvent | None,
+    latest_followup_payload: Any,
+    latest_runtime_event: TaskRunEvent | None,
+    latest_runtime_payload: Any,
+    pending_tool_queue_item: Any,
+) -> dict[str, Any]:
+    tool_round_payload = latest_tool_round_payload if isinstance(latest_tool_round_payload, dict) else {}
+    blocked_payload = latest_tool_blocked_payload if isinstance(latest_tool_blocked_payload, dict) else {}
+    followup_payload = latest_followup_payload if isinstance(latest_followup_payload, dict) else {}
+    runtime_payload = latest_runtime_payload if isinstance(latest_runtime_payload, dict) else {}
+
+    if pending_tool_queue_item is not None:
+        request_payload = _load_payload(getattr(pending_tool_queue_item, "request_payload_json", None))
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        return {
+            "next_action": "await_approval",
+            "resume_strategy": (
+                "resume_pipeline_stage_after_replay"
+                if getattr(pending_tool_queue_item, "pipeline_run_id", None) is not None
+                else "replay_tool_then_continue_turn"
+            ),
+            "source_event_type": latest_tool_blocked.event_type if latest_tool_blocked is not None else None,
+            "source_event_at": latest_tool_blocked.created_at.isoformat() if latest_tool_blocked and latest_tool_blocked.created_at else None,
+            "turn": request_payload.get("turn") or blocked_payload.get("turn") or tool_round_payload.get("turn"),
+            "tool_name": getattr(pending_tool_queue_item, "target_name", None) or blocked_payload.get("tool_name"),
+            "blocked_kind": request_payload.get("blocked_kind") or blocked_payload.get("blocked_kind"),
+            "queue_item_id": getattr(pending_tool_queue_item, "id", None),
+            "pipeline_run_id": getattr(pending_tool_queue_item, "pipeline_run_id", None),
+            "pipeline_stage_id": getattr(pending_tool_queue_item, "pipeline_stage_id", None),
+        }
+
+    if latest_followup is not None:
+        return {
+            "next_action": "followup_injected",
+            "resume_strategy": (
+                "pipeline_resumed"
+                if followup_payload.get("pipeline_run_id") is not None
+                else "agent_turn_resumed"
+            ),
+            "source_event_type": latest_followup.event_type,
+            "source_event_at": latest_followup.created_at.isoformat() if latest_followup.created_at else None,
+            "turn": tool_round_payload.get("turn"),
+            "tool_name": followup_payload.get("tool_name"),
+            "queue_item_id": followup_payload.get("queue_item_id"),
+            "pipeline_run_id": followup_payload.get("pipeline_run_id"),
+            "pipeline_stage_id": followup_payload.get("pipeline_stage_id"),
+        }
+
+    runtime_snapshot = runtime_payload.get("runtime")
+    if isinstance(runtime_snapshot, dict) and (task_run.status or "").strip().lower() in {"running", "paused"}:
+        return {
+            "next_action": "resume_scheduler",
+            "resume_strategy": "rebuild_from_runtime_snapshot",
+            "source_event_type": latest_runtime_event.event_type if latest_runtime_event is not None else None,
+            "source_event_at": latest_runtime_event.created_at.isoformat() if latest_runtime_event and latest_runtime_event.created_at else None,
+            "completed_step_count": runtime_snapshot.get("completed_step_count"),
+            "ready_step_count": runtime_snapshot.get("ready_step_count"),
+            "running_step_count": runtime_snapshot.get("running_step_count"),
+            "waiting_step_count": runtime_snapshot.get("waiting_step_count"),
+        }
+
+    if latest_tool_round is not None and (task_run.status or "").strip().lower() == "running":
+        return {
+            "next_action": "continue_agent_turn",
+            "resume_strategy": "rebuild_turn_state_from_tool_round",
+            "source_event_type": latest_tool_round.event_type,
+            "source_event_at": latest_tool_round.created_at.isoformat() if latest_tool_round.created_at else None,
+            "turn": tool_round_payload.get("turn"),
+            "tool_names": tool_round_payload.get("tool_names"),
+            "blocked_tool_count": tool_round_payload.get("blocked_tool_count"),
+        }
+
+    return {
+        "next_action": "none",
+        "resume_strategy": None,
+        "source_event_type": latest_tool_round.event_type if latest_tool_round is not None else None,
+        "source_event_at": latest_tool_round.created_at.isoformat() if latest_tool_round and latest_tool_round.created_at else None,
     }
 
 

@@ -118,6 +118,24 @@ export type TaskRunCheckpointSnapshot = {
     created_at?: string | null;
   };
   latest_scheduler_runtime?: Record<string, unknown> | null;
+  continuation_cursor?: {
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    source_event_type?: string | null;
+    source_event_at?: string | null;
+    turn?: number | null;
+    tool_name?: string | null;
+    tool_names?: string[] | null;
+    blocked_kind?: string | null;
+    blocked_tool_count?: number | null;
+    queue_item_id?: number | null;
+    pipeline_run_id?: number | null;
+    pipeline_stage_id?: number | null;
+    completed_step_count?: number | null;
+    ready_step_count?: number | null;
+    running_step_count?: number | null;
+    waiting_step_count?: number | null;
+  };
   pending_approval_count?: number;
   approval_queue_count?: number;
   status?: string | null;

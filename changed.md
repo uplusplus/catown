@@ -95,3 +95,20 @@
 - 让 pipeline stage 在 tool approval block 时显式停在 `blocked`，而不是把被阻塞的 tool turn 误记成正常完成
 - 让 approval replay 成功后，给 pipeline 注入 follow-up context，并恢复暂停的 pipeline 继续跑当前 stage
 - 补 pipeline blocked-tool runtime 测试，以及 approval queue API 对 pipeline replay/resume 的断言
+
+### `Expose checkpoint continuation cursor`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_recovery.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 从现有 ledger / approval queue 派生 `checkpoint_snapshot.continuation_cursor`，明确恢复时下一步该做什么
+- 让 recovery 事件显式记录恢复前 cursor，例如 `resume_scheduler`
+- 让 monitor task-run 列表和详情都能直接看到 continuation cursor，而不必手工阅读整条 event stream

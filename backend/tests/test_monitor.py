@@ -510,6 +510,129 @@ class TestMonitorOverview:
         assert resolved_entry["followup_status"] == "continued"
         assert resolved_entry["followup_message_id"] == 88
 
+    def test_monitor_task_runs_exposes_continuation_cursor(self, client):
+        from models.database import ApprovalQueueItem, Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Continuation Cursor Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Continuation Cursor Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="chat_turn",
+                status="running",
+                title="Blocked tool continuation",
+                user_request="Blocked tool continuation",
+                initiator="user",
+                target_agent_name="Analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="tool_round_recorded",
+                    agent_name="Analyst",
+                    summary="Analyst completed a tool round.",
+                    payload_json=json.dumps(
+                        {
+                            "turn": 2,
+                            "tool_names": ["delete_file"],
+                            "tool_count": 1,
+                            "tool_status_counts": {"approval_blocked": 1},
+                            "blocked_tool_count": 1,
+                            "blocked_tools": [
+                                {
+                                    "tool_name": "delete_file",
+                                    "arguments": "{\"file_path\": \"danger.txt\"}",
+                                    "status": "approval_blocked",
+                                    "blocked_kind": "approval",
+                                    "blocked_reason": "delete_file requires approval",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="tool_call_blocked",
+                    agent_name="Analyst",
+                    summary="delete_file was blocked.",
+                    payload_json=json.dumps(
+                        {
+                            "turn": 2,
+                            "tool_name": "delete_file",
+                            "status": "approval_blocked",
+                            "blocked_kind": "approval",
+                            "blocked_reason": "delete_file requires approval",
+                            "queue_item_id": 1,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+
+            queue_item = ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approval needed for delete_file",
+                summary="delete_file requires approval",
+                agent_name="Analyst",
+                target_kind="tool",
+                target_name="delete_file",
+                request_payload_json=json.dumps(
+                    {
+                        "turn": 2,
+                        "tool_name": "delete_file",
+                        "arguments": "{\"file_path\": \"danger.txt\"}",
+                        "blocked_kind": "approval",
+                        "resume_supported": True,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/task-runs?range=24h&limit=20")
+        assert response.status_code == 200
+        data = response.json()
+        entry = next(item for item in data["entries"] if item["id"] == task_run_id)
+        cursor = entry["checkpoint_snapshot"]["continuation_cursor"]
+        assert cursor["next_action"] == "await_approval"
+        assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
+        assert cursor["tool_name"] == "delete_file"
+        assert cursor["turn"] == 2
+
     def test_logs_endpoint_returns_real_backend_logs(self, client):
         from monitoring import monitor_log_buffer
 

@@ -1516,3 +1516,65 @@ Unified visibility
 - stage 会停住
 - queue 能 replay
 - replay 后 pipeline 会继续
+
+### 11.21 2026-04-25 新进展：checkpoint snapshot 已开始携带 continuation cursor
+
+在 11.19 把 checkpoint snapshot 引入 recovery 与 monitor 之后，仍然留着一个明显问题：
+
+- snapshot 能告诉你“最近发生了什么”
+- 但还不能明确告诉你“如果现在要恢复，下一步应该怎么续”
+
+这一轮先补了一个轻量级 `continuation_cursor`，仍然坚持不新增专门表结构：
+
+- `checkpoint_snapshot.continuation_cursor` 完全从现有：
+  - `TaskRun.events`
+  - `approval_queue_items`
+  - `runtime` payload
+  派生
+
+当前 cursor 会显式区分几类恢复语义：
+
+- `await_approval`
+  - 存在 pending tool approval / escalation queue item
+  - 同时给出：
+    - `resume_strategy`
+    - `turn`
+    - `tool_name`
+    - `blocked_kind`
+    - `queue_item_id`
+
+- `followup_injected`
+  - approval replay 已完成，follow-up continuation 已经被触发
+
+- `resume_scheduler`
+  - 当前 run 仍有 scheduler runtime snapshot，可按现有恢复逻辑继续 rebuild
+
+- `continue_agent_turn`
+  - 最近停在 tool round 之后，但还没有进入 blocked/pending queue 语义
+
+- `none`
+  - 当前没有需要恢复的 continuation cursor
+
+这一轮同时把 cursor 投到了两个地方：
+
+- recovery 入口事件
+  - `task_run_recovery_started`
+  - `scheduler_recovery_state_rebuilt`
+  - 都会记录恢复开始前的 continuation cursor
+
+- monitor task-run 控制面
+  - 列表接口已经能返回 `checkpoint_snapshot.continuation_cursor`
+  - 详情页也直接展示：
+    - next action
+    - resume strategy
+    - tool / turn / queue 等 cursor payload
+
+这一步仍然不是完整的 turn-local continuation cursor：
+
+- 现在的 cursor 只是“恢复决策视图”
+- 还不是 executor 可直接反序列化恢复的内部 program counter
+
+但它已经把 Catown 从“只有快照，没有恢复建议”推进到了：
+
+- snapshot 除了描述状态
+- 还开始描述恢复入口与下一动作

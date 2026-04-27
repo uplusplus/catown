@@ -5072,7 +5072,32 @@ export function MonitorTab() {
                             : "No scheduler runtime snapshot recorded."}
                         </div>
                       </div>
+                      <div className="simple-row">
+                        <strong>Continuation Cursor</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor?.next_action
+                            ? [
+                                titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.next_action),
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.resume_strategy
+                                  ? `via ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.resume_strategy}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.tool_name
+                                  ? `tool ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.tool_name}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.turn
+                                  ? `turn ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.turn}`
+                                  : null,
+                              ].filter(Boolean).join(" · ")
+                            : "No continuation cursor derived."}
+                        </div>
+                      </div>
                     </div>
+                    {selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor ? (
+                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
+                        <summary>Continuation Cursor Payload</summary>
+                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor)}</pre>
+                      </details>
+                    ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime ? (
                       <details className="run-event-row__payload" style={{ marginTop: 12 }}>
                         <summary>Runtime Payload</summary>
