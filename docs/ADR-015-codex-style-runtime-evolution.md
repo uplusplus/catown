@@ -2977,3 +2977,54 @@ Monitor 侧也顺手做了投影：
 - turn runtime preparation 的共享范围不再只覆盖“带 project / 带工具”的路径
 - 连最轻量的 standalone 分支也开始挂回统一 runtime 语义
 - P0.2 的 turn envelope 收口因此更完整了一层：单 Agent project / orchestration / standalone 三类 chat 路径都开始脱离各自手工准备
+
+### 11.47 2026-04-27 新进展：context compaction callback 语义已在 chat 与 pipeline 间共享
+
+继续顺着 turn envelope 往下看，除了 runtime preparation 本身，还有一块很像“边角料”，但实际上很容易让运行时语义再次分叉：
+
+- chat runtime 的 `context_compaction` 事件回调
+- pipeline stage runtime 的 `context_compaction` 事件回调
+
+之前两边各自维护了几乎同构的一段逻辑：
+
+- 只在 `compacted=True` 时触发
+- 根据 diagnostics 做去重
+- 组装 payload
+- 生成 summary 文案
+- 再落到各自的 event sink
+
+这类代码如果继续平行演化，问题不在“今天会不会坏”，而在：
+
+- future 增加新的 compaction metadata 时
+- chat / pipeline 很容易再次出现 payload 或 summary 口径漂移
+
+这一轮把 compaction callback 的共享语义抽出来：
+
+- `backend/services/runtime_event_helpers.py`
+  - 新增统一的 context compaction callback helper
+  - 收口：
+    - 去重签名
+    - `compacted` 判定
+    - payload 基础字段
+    - summary 文案生成
+
+目前已接入：
+
+- chat runtime callback
+- pipeline stage runtime callback
+
+两边现在只保留各自的“事件落点适配”：
+
+- chat 走 `append_task_event(...)`
+- pipeline 走 `_append_pipeline_task_event(...)`
+
+并补了一层 helper 单测，确保：
+
+- 相同 diagnostics 不会重复发 event
+- `compacted=False` 或空 diagnostics 不会误发 event
+
+这一步的意义是：
+
+- turn envelope 不只是开始共享“怎么准备上下文”
+- 也开始共享“上下文被压缩时怎么投影成运行时事件”
+- 这让 compaction 从 UI 观测项，进一步变成统一 runner 语义的一部分

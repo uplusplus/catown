@@ -697,3 +697,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 提取统一的 standalone turn runtime 准备逻辑，收口 standalone target resolution、default client fallback、recent messages、checkpoint turn state
 - 让 standalone sync 与 standalone stream 两条路径共用同一套 turn-runtime preparation
 - 继续把 turn execution envelope 的“无工具单 Agent”分支也拉回共享 runtime 语义
+
+### `Share context compaction callback semantics across chat and pipeline`
+
+范围：
+
+- `backend/services/runtime_event_helpers.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_runtime_event_helpers.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取统一的 context compaction callback helper，收口去重、payload 组装、summary 文案生成
+- 让 chat runtime 与 pipeline stage runtime 共用同一套 compaction event 语义，只保留各自的事件落点适配
+- 补 helper 单测，确保 compaction event 会去重且无 compacted 标记时不会误发事件

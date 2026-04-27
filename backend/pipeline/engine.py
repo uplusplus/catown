@@ -72,6 +72,7 @@ from services.runner_lifecycle import (
     record_tool_round as record_runner_tool_round,
     start_agent_turn as record_agent_turn_started,
 )
+from services.runtime_event_helpers import build_context_compaction_callback
 from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
 
 logger = logging.getLogger("catown.pipeline.engine")
@@ -212,37 +213,27 @@ def _build_pipeline_context_compaction_callback(
     agent_name: str,
     extra_payload: Optional[Dict[str, Any]] = None,
 ):
-    seen_signatures: set[str] = set()
+    if run is None:
+        return lambda diagnostics: None
 
-    def _callback(diagnostics: Dict[str, Any]) -> None:
-        if run is None or not isinstance(diagnostics, dict) or not diagnostics.get("compacted"):
-            return
-        signature = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
-        if signature in seen_signatures:
-            return
-        seen_signatures.add(signature)
-        payload = {
-            "selector_diagnostics": diagnostics,
-            "compacted": True,
-            "pipeline_run_id": run.id,
-        }
-        if isinstance(extra_payload, dict):
-            payload.update(extra_payload)
-        _append_pipeline_task_event(
+    payload = {"pipeline_run_id": run.id}
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
+
+    return build_context_compaction_callback(
+        emit_event=lambda event_type, summary, event_payload: _append_pipeline_task_event(
             db,
             run,
-            "context_compaction",
+            event_type,
             agent_name=agent_name,
-            summary=(
-                f"{agent_name} compacted pipeline context "
-                f"(dropped={diagnostics.get('summary', {}).get('dropped_count', 0)}, "
-                f"truncated={diagnostics.get('summary', {}).get('truncated_count', 0)})."
-            ),
-            payload=payload,
+            summary=summary,
+            payload=event_payload,
             target_agent_name=agent_name,
-        )
-
-    return _callback
+        ),
+        agent_name=agent_name,
+        extra_payload=payload,
+        summary_noun="pipeline context",
+    )
 
 
 def _pipeline_runner_policy(

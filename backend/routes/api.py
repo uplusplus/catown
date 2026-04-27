@@ -113,6 +113,7 @@ from services.runner_policy import (
     compile_single_agent_run_policy,
     find_stage_policy,
 )
+from services.runtime_event_helpers import build_context_compaction_callback
 from services.stream_turn_executor import iter_stream_turn_events
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 
@@ -379,35 +380,22 @@ def _build_context_compaction_callback(
     agent_name: str,
     extra_payload: Optional[Dict[str, Any]] = None,
 ) -> Callable[[Dict[str, Any]], None]:
-    seen_signatures: set[str] = set()
+    if task_run is None:
+        return lambda diagnostics: None
 
-    def _callback(diagnostics: Dict[str, Any]) -> None:
-        if task_run is None or not isinstance(diagnostics, dict) or not diagnostics.get("compacted"):
-            return
-        signature = json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
-        if signature in seen_signatures:
-            return
-        seen_signatures.add(signature)
-        payload = {
-            "selector_diagnostics": diagnostics,
-            "compacted": True,
-        }
-        if isinstance(extra_payload, dict):
-            payload.update(extra_payload)
-        summary = diagnostics.get("summary") if isinstance(diagnostics.get("summary"), dict) else {}
-        append_task_event(
+    return build_context_compaction_callback(
+        emit_event=lambda event_type, summary, payload: append_task_event(
             db,
             task_run,
-            "context_compaction",
+            event_type,
             agent_name=agent_name,
-            summary=(
-                f"{agent_name} compacted context "
-                f"(dropped={summary.get('dropped_count', 0)}, truncated={summary.get('truncated_count', 0)})."
-            ),
+            summary=summary,
             payload=payload,
-        )
-
-    return _callback
+        ),
+        agent_name=agent_name,
+        extra_payload=extra_payload,
+        summary_noun="context",
+    )
 
 
 def _message_client_turn_id(message_like: Any) -> Optional[str]:
