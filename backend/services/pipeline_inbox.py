@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models.database import PipelineMessage, PipelineMessageDelivery
+from models.database import PipelineMessage, PipelineMessageDelivery, PipelineRun
 
 
 def enqueue_message_delivery(db: Session, message: PipelineMessage) -> Optional[PipelineMessageDelivery]:
@@ -216,6 +216,52 @@ def serialize_delivery_message(delivery: PipelineMessageDelivery) -> Dict[str, A
         }
     )
     return payload
+
+
+def summarize_pipeline_run_inbox(pipeline_run: PipelineRun) -> Dict[str, Any]:
+    """Build a monitor/recovery friendly projection of a pipeline run inbox."""
+
+    messages = list(getattr(pipeline_run, "messages", []) or [])
+    deliveries = [
+        delivery
+        for message in messages
+        for delivery in list(getattr(message, "deliveries", []) or [])
+    ]
+    status_counts: dict[str, int] = {}
+    agent_counts: dict[str, dict[str, int]] = {}
+    oldest_pending_at: datetime | None = None
+    next_lease_expiry_at: datetime | None = None
+
+    for delivery in deliveries:
+        status = str(delivery.status or "unknown").strip() or "unknown"
+        agent = str(delivery.to_agent or "").strip() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        by_status = agent_counts.setdefault(agent, {})
+        by_status[status] = by_status.get(status, 0) + 1
+        if status == "pending" and delivery.created_at is not None:
+            if oldest_pending_at is None or delivery.created_at < oldest_pending_at:
+                oldest_pending_at = delivery.created_at
+        if status == "inflight" and delivery.lease_expires_at is not None:
+            if next_lease_expiry_at is None or delivery.lease_expires_at < next_lease_expiry_at:
+                next_lease_expiry_at = delivery.lease_expires_at
+
+    agents = [
+        {"agent_name": agent, "status_counts": counts}
+        for agent, counts in sorted(agent_counts.items())
+    ]
+    return {
+        "pipeline_run_id": pipeline_run.id,
+        "pipeline_status": pipeline_run.status,
+        "delivery_count": len(deliveries),
+        "status_counts": status_counts,
+        "pending_delivery_count": status_counts.get("pending", 0),
+        "inflight_delivery_count": status_counts.get("inflight", 0),
+        "dead_letter_delivery_count": status_counts.get("dead_letter", 0),
+        "consumed_delivery_count": status_counts.get("consumed", 0),
+        "agents": agents,
+        "oldest_pending_at": oldest_pending_at.isoformat() if oldest_pending_at else None,
+        "next_lease_expiry_at": next_lease_expiry_at.isoformat() if next_lease_expiry_at else None,
+    }
 
 
 def _claimable_deliveries_for_agent(

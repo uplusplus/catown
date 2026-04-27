@@ -961,3 +961,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让过期 inflight delivery 可被重新 claim，避免跨进程 worker 崩溃后消息永久卡住
 - 保持原有 pop-and-consume API 兼容 pipeline stage loop
 - 补 lease、reclaim、dead-letter 单测，并跑 pipeline durable delivery 回归
+
+### `Project pipeline inbox state into checkpoints`
+
+范围：
+
+- `backend/models/database.py`
+- `backend/services/pipeline_inbox.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_pipeline_inbox.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 为 `TaskRun` 与 `PipelineRun` 建立双向 relationship，让 runtime checkpoint 能直接看到关联 pipeline runs
+- 增加 `summarize_pipeline_run_inbox(...)`，把 delivery status、agent 分布、pending/inflight/dead-letter 计数投影成 monitor/recovery 友好结构
+- 让 `build_task_run_checkpoint_snapshot(...)` 输出 `pipeline_inbox` 与 `pipeline_inbox_summary`
+- 补 checkpoint projection 单测，并跑 monitor task-run 回归

@@ -6,7 +6,9 @@ from services.pipeline_inbox import (
     mark_delivery_failed,
     pop_instruction_texts_for_agent,
     pop_messages_for_agent,
+    summarize_pipeline_run_inbox,
 )
+from services.run_ledger import build_task_run_checkpoint_snapshot
 
 
 def test_pipeline_inbox_delivers_non_instruction_messages_once(fresh_db):
@@ -169,6 +171,84 @@ def test_pipeline_inbox_reclaims_expired_lease_and_dead_letters(fresh_db):
         assert delivery.status == "dead_letter"
         assert delivery.last_error == "tool crashed"
         assert delivery.failed_at is not None
+    finally:
+        db.close()
+
+
+def test_pipeline_inbox_projects_delivery_state_into_task_checkpoint(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Pipeline checkpoint")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="pipeline",
+            status="running",
+            title="Pipeline inbox projection",
+            user_request="Inspect inbox state.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        pipeline_run = fresh_db.PipelineRun(
+            pipeline_id=1,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+        )
+        db.add(pipeline_run)
+        db.commit()
+        db.refresh(pipeline_run)
+
+        for index, status in enumerate(["pending", "inflight", "consumed", "dead_letter"], start=1):
+            message = fresh_db.PipelineMessage(
+                run_id=pipeline_run.id,
+                message_type="AGENT_NOTE",
+                from_agent="analyst",
+                to_agent="developer",
+                content=f"Message {index}",
+            )
+            db.add(message)
+            db.flush()
+            delivery = enqueue_message_delivery(db, message)
+            delivery.status = status
+            if status == "inflight":
+                delivery.lease_owner = "worker-a"
+                delivery.lease_expires_at = fresh_db.datetime.now()
+            if status == "consumed":
+                delivery.consumed_at = fresh_db.datetime.now()
+            if status == "dead_letter":
+                delivery.failed_at = fresh_db.datetime.now()
+        db.commit()
+
+        db.refresh(pipeline_run)
+        projection = summarize_pipeline_run_inbox(pipeline_run)
+        assert projection["status_counts"] == {
+            "pending": 1,
+            "inflight": 1,
+            "consumed": 1,
+            "dead_letter": 1,
+        }
+        assert projection["agents"] == [
+            {
+                "agent_name": "developer",
+                "status_counts": {"pending": 1, "inflight": 1, "consumed": 1, "dead_letter": 1},
+            }
+        ]
+
+        db.refresh(task_run)
+        snapshot = build_task_run_checkpoint_snapshot(task_run)
+        assert snapshot["pipeline_inbox"][0]["pipeline_run_id"] == pipeline_run.id
+        assert snapshot["pipeline_inbox"][0]["dead_letter_delivery_count"] == 1
+        assert snapshot["pipeline_inbox_summary"] == (
+            "4 deliveries · 1 pending · 1 inflight · 1 dead-letter · 1 consumed"
+        )
     finally:
         db.close()
 

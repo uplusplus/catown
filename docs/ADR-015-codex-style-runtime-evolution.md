@@ -3538,3 +3538,32 @@ P1 durable inbox 的第二刀补上消息驱动 runtime 最小需要的跨进程
 - attempt count 可用于后续 backoff / max retry policy
 
 后续 P1 可以继续沿这个 service 增加 scheduler cursor、monitor projection，或者把 stage loop 改成显式 claim / execute / ack 的 executor loop。
+
+### 11.63 2026-04-27 新进展：pipeline inbox 状态进入 TaskRun checkpoint projection
+
+P1 durable inbox 已具备 lease / retry / dead-letter 语义后，下一步把这份状态放进 runtime checkpoint，而不是只停留在数据库表里。
+
+本轮新增：
+
+- `TaskRun.pipeline_runs` / `PipelineRun.task_run` 双向 relationship
+- `summarize_pipeline_run_inbox(...)`
+- `checkpoint_snapshot.pipeline_inbox`
+- `checkpoint_snapshot.pipeline_inbox_summary`
+- task-run summary 顶层 `pipeline_inbox_summary`
+
+projection 内容包括：
+
+- pipeline run id 与 status
+- delivery 总数
+- pending / inflight / consumed / dead-letter count
+- 按 agent 聚合的 delivery status counts
+- oldest pending timestamp
+- next inflight lease expiry timestamp
+
+这一步的意义是：
+
+- durable inbox 不再只是 pipeline 内部执行细节
+- monitor / recovery 可以直接看到消息是否卡在 pending、inflight lease、dead-letter
+- 后续恢复 executor 可以基于 checkpoint projection 决定是恢复 scheduler、重新 claim delivery，还是暴露人工处理 dead-letter
+
+这仍不是完整单一 executor loop，但它把 P1 的 inbox replay 状态接入了 Catown 当前最核心的 runtime ledger / checkpoint 面。

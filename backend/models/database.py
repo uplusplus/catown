@@ -241,6 +241,7 @@ class TaskRun(Base):
         cascade="all, delete-orphan",
         order_by="ApprovalQueueItem.created_at.desc()",
     )
+    pipeline_runs = relationship("PipelineRun", back_populates="task_run", order_by="PipelineRun.run_number.asc()")
 
 
 class TaskRunEvent(Base):
@@ -348,7 +349,7 @@ class PipelineRun(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     pipeline = relationship("Pipeline", back_populates="runs")
-    task_run = relationship("TaskRun")
+    task_run = relationship("TaskRun", back_populates="pipeline_runs")
     stages = relationship("PipelineStage", back_populates="run", order_by="PipelineStage.stage_order")
     messages = relationship("PipelineMessage", back_populates="run")
 

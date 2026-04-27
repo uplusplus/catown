@@ -17,6 +17,7 @@ from services.approval_replay import (
     build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
 )
+from services.pipeline_inbox import summarize_pipeline_run_inbox
 
 
 def get_task_run(db: Session, task_run_id: int | None) -> Optional[TaskRun]:
@@ -207,6 +208,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "latest_continuation_event_at": latest_continuation_event.get("created_at") if latest_continuation_event else None,
         "latest_scheduler_runtime": latest_scheduler_runtime,
         "scheduler_runtime_summary": summarize_scheduler_runtime(latest_scheduler_runtime),
+        "pipeline_inbox_summary": checkpoint_snapshot.get("pipeline_inbox_summary"),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
@@ -323,6 +325,10 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         else {}
     )
     latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
+    pipeline_inbox = [
+        summarize_pipeline_run_inbox(pipeline_run)
+        for pipeline_run in list(getattr(task_run, "pipeline_runs", []) or [])
+    ]
     pending_tool_queue_item = next(
         (
             item for item in reversed(approval_items)
@@ -379,6 +385,8 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
             "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
+        "pipeline_inbox": pipeline_inbox,
+        "pipeline_inbox_summary": summarize_pipeline_inbox_projection(pipeline_inbox),
         "continuation_cursor": continuation_cursor,
         "turn_local_state": turn_local_state,
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
@@ -490,6 +498,42 @@ def summarize_scheduler_runtime(runtime: Any) -> str | None:
 
     if not parts:
         return None
+    return " · ".join(parts)
+
+
+def summarize_pipeline_inbox_projection(projection: Any) -> str | None:
+    runs = projection if isinstance(projection, list) else []
+    if not runs:
+        return None
+
+    totals = {
+        "pending": 0,
+        "inflight": 0,
+        "dead_letter": 0,
+        "consumed": 0,
+        "delivery": 0,
+    }
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        totals["pending"] += _coerce_int(run.get("pending_delivery_count")) or 0
+        totals["inflight"] += _coerce_int(run.get("inflight_delivery_count")) or 0
+        totals["dead_letter"] += _coerce_int(run.get("dead_letter_delivery_count")) or 0
+        totals["consumed"] += _coerce_int(run.get("consumed_delivery_count")) or 0
+        totals["delivery"] += _coerce_int(run.get("delivery_count")) or 0
+
+    if totals["delivery"] <= 0:
+        return None
+
+    parts = [
+        f"{totals['delivery']} deliveries",
+        f"{totals['pending']} pending",
+        f"{totals['inflight']} inflight",
+    ]
+    if totals["dead_letter"] > 0:
+        parts.append(f"{totals['dead_letter']} dead-letter")
+    if totals["consumed"] > 0:
+        parts.append(f"{totals['consumed']} consumed")
     return " · ".join(parts)
 
 
