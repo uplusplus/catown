@@ -74,6 +74,45 @@ def build_blocked_tool_request_payload(
     }
 
 
+def build_pipeline_gate_request_key(*, pipeline_run_id: Any, stage_name: Any) -> str:
+    return f"pipeline_gate:{int(pipeline_run_id or 0)}:{str(stage_name or '').strip()}"
+
+
+def build_pipeline_gate_request_payload(
+    *,
+    pipeline_id: Any,
+    pipeline_run_id: Any,
+    pipeline_stage_id: Any,
+    stage_name: Any,
+    display_name: Any,
+    stage_policy: Any = None,
+) -> Dict[str, Any]:
+    return {
+        "pipeline_id": pipeline_id,
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_stage_id": pipeline_stage_id,
+        "stage_name": stage_name,
+        "display_name": display_name,
+        "resume_supported": True,
+        "stage_policy": stage_policy.to_payload() if stage_policy is not None else None,
+    }
+
+
+def build_pipeline_gate_resolution_payload(
+    *,
+    pipeline_run_id: Any,
+    pipeline_stage_id: Any,
+    stage_name: Any,
+    display_name: Any,
+) -> Dict[str, Any]:
+    return {
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_stage_id": pipeline_stage_id,
+        "stage_name": stage_name,
+        "display_name": display_name,
+    }
+
+
 def replay_result_is_actionable(replay_result: Any) -> bool:
     """A replay can continue execution only after a successful, unblocked tool result."""
 

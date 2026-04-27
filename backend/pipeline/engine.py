@@ -46,6 +46,11 @@ from services.approval_queue import (
     find_pending_queue_item,
     resolve_approval_queue_item,
 )
+from services.approval_replay import (
+    build_pipeline_gate_request_key,
+    build_pipeline_gate_request_payload,
+    build_pipeline_gate_resolution_payload,
+)
 from services.turn_state import (
     TurnContextState,
     build_tool_result_record,
@@ -253,10 +258,6 @@ def _pipeline_runner_policy(
     )
 
 
-def _pipeline_gate_request_key(run_id: int | None, stage_name: str | None) -> str:
-    return f"pipeline_gate:{int(run_id or 0)}:{str(stage_name or '').strip()}"
-
-
 def _queue_pipeline_gate_approval(
     db: Session,
     *,
@@ -280,16 +281,15 @@ def _queue_pipeline_gate_approval(
         agent_name=stage.agent_name,
         target_kind="pipeline_gate",
         target_name=stage.stage_name,
-        request_key=_pipeline_gate_request_key(run.id, stage.stage_name),
-        request_payload={
-            "pipeline_id": pipeline.id,
-            "pipeline_run_id": run.id,
-            "pipeline_stage_id": stage.id,
-            "stage_name": stage.stage_name,
-            "display_name": stage.display_name,
-            "resume_supported": True,
-            "stage_policy": stage_policy.to_payload() if stage_policy is not None else None,
-        },
+        request_key=build_pipeline_gate_request_key(pipeline_run_id=run.id, stage_name=stage.stage_name),
+        request_payload=build_pipeline_gate_request_payload(
+            pipeline_id=pipeline.id,
+            pipeline_run_id=run.id,
+            pipeline_stage_id=stage.id,
+            stage_name=stage.stage_name,
+            display_name=stage.display_name,
+            stage_policy=stage_policy,
+        ),
         pipeline_run_id=run.id,
         pipeline_stage_id=stage.id,
     )
@@ -305,7 +305,7 @@ def _resolve_pipeline_gate_queue_item(
 ) -> Any | None:
     queue_item = find_pending_queue_item(
         db,
-        request_key=_pipeline_gate_request_key(run.id, stage.stage_name),
+        request_key=build_pipeline_gate_request_key(pipeline_run_id=run.id, stage_name=stage.stage_name),
         pipeline_run_id=run.id,
         pipeline_stage_id=stage.id,
         target_kind="pipeline_gate",
@@ -317,12 +317,12 @@ def _resolve_pipeline_gate_queue_item(
         status=status,
         resolved_by="user",
         resolution_note=resolution_note,
-        resolution_payload={
-            "pipeline_run_id": run.id,
-            "pipeline_stage_id": stage.id,
-            "stage_name": stage.stage_name,
-            "display_name": stage.display_name,
-        },
+        resolution_payload=build_pipeline_gate_resolution_payload(
+            pipeline_run_id=run.id,
+            pipeline_stage_id=stage.id,
+            stage_name=stage.stage_name,
+            display_name=stage.display_name,
+        ),
     )
 
 

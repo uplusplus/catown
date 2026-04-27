@@ -3168,3 +3168,32 @@ P0.3 继续从 replay 后半段往前推进到 blocked-tool queue item 创建阶
 - approval / escalation queue request 的入口语义开始从 ledger 写入函数中拆出
 - runtime 与 pipeline 的 blocked-tool cursor 字段保持同一套 request payload shape
 - 后续引入 sandbox/escalation 更完整的 continuation policy 时，可以复用同一个 request envelope，而不是继续在 lifecycle 里加分支
+
+### 11.52 2026-04-27 新进展：pipeline gate approval request/resolution 语义已共享
+
+P0.3 继续把 approval 主链中另一类 pending item 收进共享语义：pipeline manual gate。
+
+pipeline gate 与 blocked-tool replay 不同：它不需要重放 tool call，但同样会进入 approval queue，并且同样需要稳定的 request key、request payload、resolution payload：
+
+- request key 用于避免重复 gate approval item
+- request payload 携带 pipeline/run/stage cursor 与 stage policy
+- resolution payload 记录 gate 被批准/拒绝时的 stage cursor
+
+之前这部分仍在 `pipeline/engine.py` 内部手工定义，导致 approval queue 协议散落在 pipeline engine 与 runtime lifecycle 两侧。
+
+本轮新增共享 helper：
+
+- `build_pipeline_gate_request_key(...)`
+- `build_pipeline_gate_request_payload(...)`
+- `build_pipeline_gate_resolution_payload(...)`
+
+并接入：
+
+- `_queue_pipeline_gate_approval(...)`
+- `_resolve_pipeline_gate_queue_item(...)`
+
+这一步的意义是：
+
+- approval queue 不再只有 blocked-tool replay 语义被共享，manual gate 也开始进入同一组 approval runtime helpers
+- pipeline engine 保留 gate 状态推进职责，request/resolution payload shape 由共享 service 决定
+- 后续把 approval queue 进一步抽成 runner continuation node 时，blocked tool 与 pipeline gate 已经有可复用的 request envelope 基础

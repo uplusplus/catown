@@ -10,6 +10,9 @@ from services.approval_replay import (
     build_followup_continued_payload,
     build_followup_failed_payload,
     build_followup_skipped_payload,
+    build_pipeline_gate_request_key,
+    build_pipeline_gate_request_payload,
+    build_pipeline_gate_resolution_payload,
     build_queue_replay_resolution_payload,
     replay_result_is_actionable,
 )
@@ -63,6 +66,39 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
         "pipeline_stage_id": 13,
         "stage_name": "analysis",
         "display_name": "Analysis",
+    }
+
+
+def test_pipeline_gate_payload_helpers_preserve_gate_cursor():
+    stage_policy = SimpleNamespace(to_payload=lambda: {"stage_name": "qa_gate", "gate": "manual"})
+
+    assert build_pipeline_gate_request_key(pipeline_run_id=42, stage_name=" qa_gate ") == "pipeline_gate:42:qa_gate"
+    assert build_pipeline_gate_request_payload(
+        pipeline_id=7,
+        pipeline_run_id=42,
+        pipeline_stage_id=99,
+        stage_name="qa_gate",
+        display_name="QA Gate",
+        stage_policy=stage_policy,
+    ) == {
+        "pipeline_id": 7,
+        "pipeline_run_id": 42,
+        "pipeline_stage_id": 99,
+        "stage_name": "qa_gate",
+        "display_name": "QA Gate",
+        "resume_supported": True,
+        "stage_policy": {"stage_name": "qa_gate", "gate": "manual"},
+    }
+    assert build_pipeline_gate_resolution_payload(
+        pipeline_run_id=42,
+        pipeline_stage_id=99,
+        stage_name="qa_gate",
+        display_name="QA Gate",
+    ) == {
+        "pipeline_run_id": 42,
+        "pipeline_stage_id": 99,
+        "stage_name": "qa_gate",
+        "display_name": "QA Gate",
     }
 
 
