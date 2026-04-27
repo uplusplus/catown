@@ -1824,3 +1824,62 @@ monitor 上也同步做了投影：
 - recovery continuation state 终于不只是一份可观察元数据
 - orchestration recovery 开始与 runtime approved replay follow-up 共享同一类 prompt rehydration 语义
 - “checkpoint 保留了什么” 与 “恢复时真正喂回了什么” 开始对齐
+
+### 11.27 2026-04-25 新进展：checkpoint turn state 已收口到 latest-turn window，并随 recovery 前滚
+
+11.26 把 orchestration recovery 接上了 checkpoint protocol tail，但随即暴露出一个更细的正确性问题：
+
+- `checkpoint_snapshot.turn_local_state`
+  - 仍然是从“全量历史里最近一次 `tool_round_recorded`”直接派生
+- 如果恢复后的下一步 turn 本身没有再跑 tool
+  - 旧 turn 的 protocol tail 仍会继续留在 snapshot 里
+- 这样在多 step recovery 里
+  - 第一轮恢复消费是正确的
+  - 第二轮开始就可能继续吃到上一轮 restart 前的 stale tool protocol
+
+这和 Codex 风格 continuation 语义不一致：
+
+- continuation state 应该描述“当前最近那个 turn 的可继续状态”
+- 不是“这个 run 历史上最后一次出现过的 tool round”
+
+这一轮做了两个收口动作：
+
+- `build_task_run_checkpoint_snapshot(...)`
+  - 新增 latest-turn window 识别逻辑
+  - 先定位最近一个 turn 的事件窗口：
+    - 若最后一个 `agent_turn_started` 还未完成，就取该 in-flight window
+    - 否则取最近一个 `agent_turn_completed` 对应的 start/completed window
+  - `latest_tool_round` / `latest_tool_blocked` / `latest_followup`
+    以及 `turn_local_state`
+    都改为只从这个窗口里派生
+
+- `_resume_interrupted_orchestration_task_run(...)`
+  - 不再把 recovery 起点那一份 snapshot 固定传给后续所有 step
+  - 而是在每个恢复 step 开始前：
+    - `refresh(task_run)`
+    - 重新构建当前 step-local `checkpoint_snapshot`
+  - 这样 continuation state 会随着恢复推进自然前滚
+
+结果是：
+
+- restart 前 analyst 留下的 tool protocol
+  - 仍会进入 recovery 后的第一个 turn
+- 但如果这个 turn 完成后没有新的 tool round
+  - 后续 step 的 checkpoint state 就会清空旧 tail
+- recovery 不会再把“已经被后续 turn 覆盖掉的旧 protocol”重复喂回模型
+
+测试也相应补上：
+
+- `test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn`
+  - 验证 analyst 有 tool round、developer 后续无 tool 的情况下
+  - monitor 看到的 latest checkpoint turn state 已经清空旧 protocol
+
+- `test_startup_recovers_interrupted_orchestration_run`
+  - 继续验证第一轮 recovery prompt 会吃到 checkpoint tool tail
+  - 同时新增断言：第二轮 recovery prompt 不再包含旧的 `read_file` tool result
+
+这一轮的意义在于：
+
+- checkpoint continuation state 终于从“latest tool activity”
+- 收口成“latest turn-local continuation window”
+- recovery prompt rehydration 开始具备真正的前滚语义，而不是一次性把旧 tail 粘到底

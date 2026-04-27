@@ -256,10 +256,17 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
 
     latest_event = events[-1] if events else None
     latest_agent_turn = next((event for event in reversed(events) if event.event_type == "agent_turn_completed"), None)
-    latest_tool_round = next((event for event in reversed(events) if event.event_type == "tool_round_recorded"), None)
-    latest_tool_blocked = next((event for event in reversed(events) if event.event_type == "tool_call_blocked"), None)
+    latest_turn_events = _latest_checkpoint_turn_events(events)
+    latest_tool_round = next(
+        (event for event in reversed(latest_turn_events) if event.event_type == "tool_round_recorded"),
+        None,
+    )
+    latest_tool_blocked = next(
+        (event for event in reversed(latest_turn_events) if event.event_type == "tool_call_blocked"),
+        None,
+    )
     latest_followup = next(
-        (event for event in reversed(events) if event.event_type == "approval_queue_item_followup_triggered"),
+        (event for event in reversed(latest_turn_events) if event.event_type == "approval_queue_item_followup_triggered"),
         None,
     )
     latest_compaction = next((event for event in reversed(events) if event.event_type == "context_compaction"), None)
@@ -304,7 +311,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         pending_tool_queue_item=pending_tool_queue_item,
     )
     turn_local_state = _build_task_run_turn_local_state(
-        events=events,
+        events=latest_turn_events,
         payload_by_event_id=payload_by_event_id,
         latest_tool_round_payload=latest_tool_round_payload,
         latest_tool_blocked_payload=latest_tool_blocked_payload,
@@ -347,6 +354,58 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "status": task_run.status,
         "summary": task_run.summary,
     }
+
+
+def _latest_checkpoint_turn_events(events: list[TaskRunEvent]) -> list[TaskRunEvent]:
+    if not events:
+        return []
+
+    latest_completed_index = next(
+        (index for index in range(len(events) - 1, -1, -1) if events[index].event_type == "agent_turn_completed"),
+        None,
+    )
+    latest_started_index = next(
+        (index for index in range(len(events) - 1, -1, -1) if events[index].event_type == "agent_turn_started"),
+        None,
+    )
+
+    if latest_started_index is None and latest_completed_index is None:
+        return events
+
+    if latest_started_index is not None and (
+        latest_completed_index is None or latest_started_index > latest_completed_index
+    ):
+        return events[latest_started_index:]
+
+    if latest_completed_index is None:
+        return events
+
+    completed_event = events[latest_completed_index]
+    matching_start_index = next(
+        (
+            index
+            for index in range(latest_completed_index, -1, -1)
+            if events[index].event_type == "agent_turn_started"
+            and (
+                not completed_event.agent_name
+                or not events[index].agent_name
+                or events[index].agent_name == completed_event.agent_name
+            )
+        ),
+        None,
+    )
+    if matching_start_index is None:
+        matching_start_index = next(
+            (
+                index
+                for index in range(latest_completed_index, -1, -1)
+                if events[index].event_type == "agent_turn_started"
+            ),
+            None,
+        )
+    if matching_start_index is None:
+        return events[: latest_completed_index + 1]
+    return events[matching_start_index : latest_completed_index + 1]
 
 
 def _build_task_run_continuation_cursor(

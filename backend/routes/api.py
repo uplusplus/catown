@@ -2528,6 +2528,8 @@ async def _resume_interrupted_orchestration_task_run(
                 ),
             )
 
+            db.refresh(task_run)
+            step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
             content, msg = await _run_single_agent_turn(
                 agent=agent,
                 chatroom_id=chatroom.id,
@@ -2539,7 +2541,7 @@ async def _resume_interrupted_orchestration_task_run(
                 db=db,
                 client_turn_id=task_run.client_turn_id,
                 task_run=task_run,
-                checkpoint_snapshot=recovery_checkpoint_snapshot,
+                checkpoint_snapshot=step_checkpoint_snapshot,
             )
 
             if content:

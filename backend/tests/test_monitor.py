@@ -784,6 +784,133 @@ class TestMonitorOverview:
         assert len(turn_local_state["prior_round_summaries"]) == 1
         assert turn_local_state["prior_round_summaries"][0]["tool_names"] == ["list_files"]
 
+    def test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn(self, client):
+        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Turn Scope Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Turn Scope Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="multi_agent_orchestration",
+                status="running",
+                title="Scoped checkpoint state",
+                user_request="Resume work with fresh turn state",
+                initiator="user",
+                target_agent_name="Developer",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            for event_index, event_type, agent_name, payload in [
+                (1, "agent_turn_started", "Analyst", {"client_turn_id": "turn-scope", "inter_agent_message_count": 0}),
+                (
+                    2,
+                    "tool_round_recorded",
+                    "Analyst",
+                    {
+                        "turn": 1,
+                        "tool_names": ["read_file"],
+                        "tool_count": 1,
+                        "tool_status_counts": {"succeeded": 1},
+                        "blocked_tool_count": 0,
+                        "turn_local_state": {
+                            "assistant_content": "Open the design doc before continuing.",
+                            "tool_results": [
+                                {
+                                    "tool_call_id": "scope_call_1",
+                                    "tool_name": "read_file",
+                                    "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                    "result": "Design checkpoint contents",
+                                    "success": True,
+                                    "status": "succeeded",
+                                    "blocked": False,
+                                    "blocked_kind": None,
+                                    "blocked_reason": None,
+                                }
+                            ],
+                            "protocol_messages": [
+                                {
+                                    "role": "assistant",
+                                    "content": "Open the design doc before continuing.",
+                                    "tool_calls": [
+                                        {
+                                            "id": "scope_call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read_file",
+                                                "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": "scope_call_1",
+                                    "name": "read_file",
+                                    "content": "Design checkpoint contents",
+                                },
+                            ],
+                        },
+                    },
+                ),
+                (
+                    3,
+                    "agent_turn_completed",
+                    "Analyst",
+                    {"response_preview": "Analyst checkpoint before handoff.", "message_id": 11},
+                ),
+                (4, "agent_turn_started", "Developer", {"client_turn_id": "turn-scope", "inter_agent_message_count": 1}),
+                (
+                    5,
+                    "agent_turn_completed",
+                    "Developer",
+                    {"response_preview": "Developer resumed from analyst handoff.", "message_id": 12},
+                ),
+            ]:
+                db.add(
+                    TaskRunEvent(
+                        task_run_id=task_run.id,
+                        event_index=event_index,
+                        event_type=event_type,
+                        agent_name=agent_name,
+                        summary=f"{agent_name} {event_type}",
+                        payload_json=json.dumps(payload, ensure_ascii=False),
+                    )
+                )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/task-runs?range=24h&limit=20")
+        assert response.status_code == 200
+        data = response.json()
+        entry = next(item for item in data["entries"] if item["id"] == task_run_id)
+        assert entry["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "none"
+        turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
+        assert turn_local_state["turn"] is None
+        assert turn_local_state["tool_names"] is None
+        assert turn_local_state["protocol_messages"] == []
+        assert turn_local_state["protocol_tail_messages"] == []
+        assert turn_local_state["prior_round_summaries"] == []
+
     def test_logs_endpoint_returns_real_backend_logs(self, client):
         from monitoring import monitor_log_buffer
 

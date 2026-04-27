@@ -287,6 +287,7 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert recovery_started_event["payload"]["recovery_continuation_state"]["protocol_tail_message_count"] == 2
         recovery_completed_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_completed")
         assert recovery_completed_event["payload"]["recovery_continuation_state"]["consumed"] is True
+        assert len(recovered_app.state.test_mock_llm.chat_with_tools.await_args_list) == 2
         recovery_llm_messages = recovered_app.state.test_mock_llm.chat_with_tools.await_args_list[0].args[0]
         assert any(
             message.get("role") == "assistant"
@@ -302,6 +303,13 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
             and message.get("name") == "read_file"
             and "Design checkpoint contents" in str(message.get("content") or "")
             for message in recovery_llm_messages
+        )
+        followup_llm_messages = recovered_app.state.test_mock_llm.chat_with_tools.await_args_list[1].args[0]
+        assert not any(
+            message.get("role") == "tool"
+            and message.get("name") == "read_file"
+            and "Design checkpoint contents" in str(message.get("content") or "")
+            for message in followup_llm_messages
         )
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
