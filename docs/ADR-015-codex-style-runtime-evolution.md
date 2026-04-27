@@ -3567,3 +3567,41 @@ projection 内容包括：
 - 后续恢复 executor 可以基于 checkpoint projection 决定是恢复 scheduler、重新 claim delivery，还是暴露人工处理 dead-letter
 
 这仍不是完整单一 executor loop，但它把 P1 的 inbox replay 状态接入了 Catown 当前最核心的 runtime ledger / checkpoint 面。
+
+### 11.64 2026-04-27 新进展：scheduler events 开始投影为 subagent lifecycle
+
+P1 的第二个核心差距是 subagent lifecycle。当前 Catown 的多 agent 编排已经有 scheduler plan、dispatch、resume、complete 事件，但它们仍是“调度事件”，不是 runtime-managed subagent state。
+
+本轮先不重写执行器，而是把现有 scheduler 事件投影成 Codex-style lifecycle view：
+
+- `scheduler_plan_created` -> subagent `spawned`
+- `scheduler_step_dispatched` -> subagent `running`
+- `scheduler_step_resumed` -> subagent `spawned`
+- `scheduler_step_completed` -> subagent `completed`
+
+新增：
+
+- `backend/services/subagent_lifecycle.py`
+  - `build_subagent_lifecycle_from_events(...)`
+  - `summarize_subagent_lifecycle(...)`
+- `checkpoint_snapshot.subagent_lifecycle`
+- `checkpoint_snapshot.subagent_lifecycle_summary`
+- task-run summary 顶层 `subagent_lifecycle_summary`
+
+projection 保留：
+
+- step id
+- agent name / type
+- dispatch kind
+- wait-for / attached-to relationship
+- status
+- started / completed timestamp
+- latest lifecycle event
+
+这一步的边界很明确：
+
+- 已经形成可读的 subagent state projection
+- 还没有把 spawn / wait / close / cancel 做成 executor primitive
+- failed / cancelled 状态目前只是 lifecycle model 支持，执行路径还没有统一写入这些终态
+
+它的价值是先建立统一状态面。后续要把 orchestration loop 改成真正的 parent executor + child subagent lifecycle 时，不需要再从散落事件里临时推断状态。

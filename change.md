@@ -978,3 +978,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 增加 `summarize_pipeline_run_inbox(...)`，把 delivery status、agent 分布、pending/inflight/dead-letter 计数投影成 monitor/recovery 友好结构
 - 让 `build_task_run_checkpoint_snapshot(...)` 输出 `pipeline_inbox` 与 `pipeline_inbox_summary`
 - 补 checkpoint projection 单测，并跑 monitor task-run 回归
+
+### `Project scheduler events into subagent lifecycle`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_subagent_lifecycle.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 subagent lifecycle projection service，把 scheduler plan/dispatch/resume/complete events 归一成 subagent state
+- 在 checkpoint snapshot 中输出 `subagent_lifecycle` 与 `subagent_lifecycle_summary`
+- 让 monitor/task-run summary 能看到 spawned/running/completed 的 subagent 状态聚合
+- 补 service 与 checkpoint 单测，并跑 orchestration recovery / monitor 聚焦回归
