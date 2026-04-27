@@ -3875,3 +3875,40 @@ P1 继续拆 orchestration loop 内部状态。本轮处理每个 step 完成后
 - finalizer / handoff / previous-work 的输入状态更稳定
 - route loop 中又少一块手工状态拼装
 - 后续可继续把 “run one step -> record output -> complete/resume/handoff” 合成单一 executor step helper
+
+### 11.73 2026-04-27 新进展：orchestration scheduler step completion helper 已抽出
+
+P1 继续把 orchestration loop 的 step primitive 往 service 层收口。本轮处理 step 完成后的组合动作。
+
+之前 sync orchestration、stream orchestration、recovery orchestration 都各自执行：
+
+1. `queue.mark_completed(step.step_id)`
+2. 写入 `scheduler_step_completed`
+3. 遍历 ready steps 写入 `scheduler_step_resumed`
+4. 如果当前 step 有输出，则写入 handoff 并更新 pending handoff map
+5. recovery path 额外携带 `recovered: true`
+
+这组动作本质上是一个 executor step completion primitive，不应该散在三条 loop 里。
+
+本轮新增：
+
+- `backend/services/orchestration_step_completion.py`
+  - `complete_orchestration_scheduler_step(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- 流式 multi-agent orchestration
+- interrupted orchestration recovery
+
+这一步的意义是：
+
+- step completion 的状态转换、resume、handoff 变成单一 helper
+- sync / stream / recovery 的 executor loop 进一步同构
+- recovered metadata 与普通路径差异被参数化，而不是复制整段逻辑
+- 后续可继续把 “dispatch -> execute agent turn -> record output -> complete step” 合成更完整的 executor step runner
+
+边界：
+
+- agent turn execution 本身仍分别走 `_run_single_agent_turn` 与 streaming `_iter_agent_turn_events`
+- 但 step 完成后的 scheduler state transition 已经完成共享收口

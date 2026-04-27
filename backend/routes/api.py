@@ -154,6 +154,7 @@ from services.orchestration_handoffs import (
 )
 from services.orchestration_finalizer import finalize_orchestration_task_run, summarize_orchestration_result
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
+from services.orchestration_step_completion import complete_orchestration_scheduler_step
 
 logger = logging.getLogger("catown.api")
 
@@ -2424,39 +2425,18 @@ async def _run_multi_agent_orchestration(
                 dispatch_kind=step.dispatch_kind,
             )
 
-        ready_steps = queue.mark_completed(step.step_id)
-        record_scheduler_step_completed(
+        complete_orchestration_scheduler_step(
             db,
             task_run,
-            queue,
-            step,
+            queue=queue,
+            step=step,
+            orchestration_policy=orchestration_policy,
             agent_name=agent_label,
-            ready_steps=ready_steps,
-            completed_with_output=bool(content),
+            content=content,
+            pending_handoffs=pending_handoffs,
             stage_policy=step_policy,
         )
-        for next_step in ready_steps:
-            next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-            record_scheduler_step_resumed(
-                db,
-                task_run,
-                queue,
-                next_step,
-                stage_policy=next_step_policy,
-                resumed_by_step_id=step.step_id,
-                resumed_by_agent=agent_label,
-            )
-        if content:
-            record_orchestration_handoffs(
-                db,
-                task_run,
-                pending_handoffs,
-                from_agent_name=agent_label,
-                from_step_id=step.step_id,
-                content=content,
-                ready_steps=ready_steps,
-            )
-        elif step.dispatch_kind == "blocking":
+        if not content and step.dispatch_kind == "blocking":
             logger.warning(f"[Collab] {agent.name} returned empty response")
 
     logger.info(f"[Collab] Orchestration complete: {len(results)}/{len(resolved_agents)} agents responded")
@@ -2743,44 +2723,19 @@ async def _resume_interrupted_orchestration_task_run(
                     include_result=False,
                 )
 
-            ready_steps = queue.mark_completed(step.step_id)
-            record_scheduler_step_completed(
+            complete_orchestration_scheduler_step(
                 db,
                 task_run,
-                queue,
-                step,
+                queue=queue,
+                step=step,
+                orchestration_policy=orchestration_policy,
                 agent_name=agent_label,
-                ready_steps=ready_steps,
-                completed_with_output=bool(content),
-                summary_prefix="Recovery",
+                content=content,
+                pending_handoffs=pending_handoffs,
                 stage_policy=step_policy,
-                extra={"recovered": True},
+                summary_prefix="Recovery",
+                recovered=True,
             )
-            for next_step in ready_steps:
-                next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-                record_scheduler_step_resumed(
-                    db,
-                    task_run,
-                    queue,
-                    next_step,
-                    summary_prefix="Recovery",
-                    stage_policy=next_step_policy,
-                    resumed_by_step_id=step.step_id,
-                    resumed_by_agent=agent_label,
-                    extra={"recovered": True},
-                )
-
-            if content:
-                record_orchestration_handoffs(
-                    db,
-                    task_run,
-                    pending_handoffs,
-                    from_agent_name=agent_label,
-                    from_step_id=step.step_id,
-                    content=content,
-                    ready_steps=ready_steps,
-                    recovered=True,
-                )
 
         final_runtime = queue.runtime_snapshot()
         if final_runtime.completed_step_count < final_runtime.step_count:
@@ -3093,38 +3048,17 @@ async def _stream_multi_agent_orchestration(
             yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': agent_label, 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
             return
 
-        ready_steps = queue.mark_completed(step.step_id)
-        record_scheduler_step_completed(
+        ready_steps = complete_orchestration_scheduler_step(
             db,
             task_run,
-            queue,
-            step,
+            queue=queue,
+            step=step,
+            orchestration_policy=orchestration_policy,
             agent_name=agent_label,
-            ready_steps=ready_steps,
-            completed_with_output=bool(step_content),
+            content=step_content,
+            pending_handoffs=pending_handoffs,
             stage_policy=step_policy,
         )
-        for next_step in ready_steps:
-            next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-            record_scheduler_step_resumed(
-                db,
-                task_run,
-                queue,
-                next_step,
-                stage_policy=next_step_policy,
-                resumed_by_step_id=step.step_id,
-                resumed_by_agent=agent_label,
-            )
-        if step_content:
-            record_orchestration_handoffs(
-                db,
-                task_run,
-                pending_handoffs,
-                from_agent_name=agent_label,
-                from_step_id=step.step_id,
-                content=step_content,
-                ready_steps=ready_steps,
-            )
 
         yield f"data: {sse_json.dumps({'type': 'collab_step_done', 'agent': step.requested_name, 'agent_name': agent_label, 'message_id': saved.id if saved else None, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id), 'released_step_ids': [next_step.step_id for next_step in ready_steps]}, ensure_ascii=False)}\n\n"
 

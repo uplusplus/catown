@@ -1132,3 +1132,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `record_orchestration_step_output(...)`
 - 区分普通 sync results 与 stream/recovery 的 completed-turn-only 更新，保持 finalizer 行为兼容
 - 补 step output state 单测，并跑 sync/stream/recovery orchestration 回归
+
+### `Extract orchestration scheduler step completion helper`
+
+范围：
+
+- `backend/services/orchestration_step_completion.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_step_completion.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 scheduler step completion service，统一 `queue.mark_completed`、completed event、resumed event 与 handoff enqueue/record
+- 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `complete_orchestration_scheduler_step(...)`
+- 保持 recovered path 的 `recovered: true` metadata 与 Recovery summary prefix 兼容
+- 补 completion helper 单测，并跑 sync/stream/recovery orchestration 回归
