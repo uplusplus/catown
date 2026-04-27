@@ -3761,3 +3761,43 @@ P1 继续向单一 executor loop 靠拢。本轮没有直接重写 executor，�
 
 - 这仍不是完整单一 executor loop
 - 但它把 sync / stream / recovery / cancel 四条路径中最关键的 step lifecycle ledger 写入统一到了一个 service
+
+### 11.70 2026-04-27 新进展：orchestration handoff helper 已抽出
+
+P1 继续把 orchestration executor 周边协议从 API route 中拆出。本轮处理的是 handoff / previous-work 这条重复逻辑。
+
+之前 sync orchestration、stream orchestration、recovery orchestration 都各自维护：
+
+- completed turns -> previous work 文本
+- agent output -> handoff payload
+- pending handoff queue append
+- `handoff_created` ledger event
+- recovered handoff metadata
+
+这些行为是 subagent 间消息传递的执行协议，不应该长期留在 route 内部。
+
+本轮新增：
+
+- `backend/services/orchestration_handoffs.py`
+  - `compact_runtime_text(...)`
+  - `build_orchestration_previous_work(...)`
+  - `build_orchestration_handoff(...)`
+  - `record_orchestration_handoffs(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- 流式 multi-agent orchestration
+- interrupted orchestration recovery
+
+这一步的意义是：
+
+- handoff payload 与 `handoff_created` event shape 开始由 service 管理
+- pending handoff queue append 与 ledger record 变成一个原子 helper
+- sync / stream / recovery 三条路径不再重复拼 handoff event
+- 后续如果把 handoff 迁到 durable inbox 或子 agent message primitive，可以从这个 service 继续演进
+
+边界：
+
+- handoff 仍是 orchestration loop 的内存 pending map，不是完全 durable queue
+- 但协议入口已收口，下一步可以把 handoff helper 接到 durable inbox/outbox 或统一 executor message bus

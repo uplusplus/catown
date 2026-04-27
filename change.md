@@ -1080,3 +1080,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 sync orchestration、stream orchestration、recovery orchestration 与 cancel API 复用统一 step lifecycle event helper
 - 保持原有 event type 与 payload 字段兼容，减少 API route 内重复拼装 runtime / step_state / stage_policy 的代码
 - 补 helper 单测，并跑 sync/stream/recovery/cancel 聚焦回归
+
+### `Extract orchestration handoff helpers`
+
+范围：
+
+- `backend/services/orchestration_handoffs.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_handoffs.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 orchestration handoff service，统一 previous-work 文本、handoff payload 与 `handoff_created` ledger event
+- 让 sync orchestration、stream orchestration 与 recovery orchestration 复用统一 handoff enqueue / record helper
+- 保持原有 handoff payload 字段兼容，包括 recovered handoff 的 `recovered: true`
+- 保留 route 内 wrapper，降低对既有调用点的改动范围
+- 补 handoff helper 单测，并跑 sync/stream/recovery orchestration 回归

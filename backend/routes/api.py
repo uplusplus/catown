@@ -146,6 +146,12 @@ from services.orchestration_events import (
     scheduler_event_payload,
     scheduler_plan_payload,
 )
+from services.orchestration_handoffs import (
+    build_orchestration_handoff,
+    build_orchestration_previous_work,
+    compact_runtime_text as compact_orchestration_text,
+    record_orchestration_handoffs,
+)
 
 logger = logging.getLogger("catown.api")
 
@@ -1486,34 +1492,15 @@ def _tool_runtime_kwargs(agent: Optional[Agent], chatroom_id: int, project: Opti
 
 
 def _compact_runtime_text(value: Any, *, limit: int = 600) -> str:
-    text = " ".join(str(value or "").strip().split())
-    if not text:
-        return ""
-    if len(text) <= limit:
-        return text
-    return f"{text[: limit - 3].rstrip()}..."
+    return compact_orchestration_text(value, limit=limit)
 
 
 def _build_orchestration_previous_work(turns: List[Dict[str, str]]) -> str:
-    if not turns:
-        return ""
-    lines = []
-    for item in turns:
-        agent_label = str(item.get("agent") or "agent")
-        preview = _compact_runtime_text(item.get("content") or "", limit=280)
-        if preview:
-            lines.append(f"- {agent_label}: {preview}")
-    if not lines:
-        return ""
-    return "Completed orchestration turns:\n" + "\n".join(lines)
+    return build_orchestration_previous_work(turns)
 
 
 def _build_orchestration_handoff(from_agent_name: str, content: str) -> Dict[str, str]:
-    return {
-        "from_agent": from_agent_name,
-        "content": _compact_runtime_text(content, limit=1200),
-        "message_type": "handoff",
-    }
+    return build_orchestration_handoff(from_agent_name, content)
 
 
 def _scheduler_event_payload(
@@ -2456,25 +2443,15 @@ async def _run_multi_agent_orchestration(
                 resumed_by_agent=agent_label,
             )
         if content:
-            handoff = _build_orchestration_handoff(agent_label, content)
-            for next_step in ready_steps:
-                pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
-                append_task_event(
-                    db,
-                    task_run,
-                    "handoff_created",
-                    agent_name=agent_label,
-                    summary=f"Handoff created for {next_step.agent_name}.",
-                    payload={
-                        "from_agent": agent_label,
-                        "to_agent": next_step.agent_name,
-                        "from_step_id": step.step_id,
-                        "to_step_id": next_step.step_id,
-                        "dispatch_kind": next_step.dispatch_kind,
-                        "attached_to_step_id": next_step.attached_to_step_id,
-                        "content_preview": handoff.get("content"),
-                    },
-                )
+            record_orchestration_handoffs(
+                db,
+                task_run,
+                pending_handoffs,
+                from_agent_name=agent_label,
+                from_step_id=step.step_id,
+                content=content,
+                ready_steps=ready_steps,
+            )
         elif step.dispatch_kind == "blocking":
             logger.warning(f"[Collab] {agent.name} returned empty response")
 
@@ -2783,26 +2760,16 @@ async def _resume_interrupted_orchestration_task_run(
                 )
 
             if content:
-                handoff = _build_orchestration_handoff(agent_label, content)
-                for next_step in ready_steps:
-                    pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
-                    append_task_event(
-                        db,
-                        task_run,
-                        "handoff_created",
-                        agent_name=agent_label,
-                        summary=f"Recovery created a handoff for {next_step.agent_name}.",
-                        payload={
-                            "from_agent": agent_label,
-                            "to_agent": next_step.agent_name,
-                            "from_step_id": step.step_id,
-                            "to_step_id": next_step.step_id,
-                            "dispatch_kind": next_step.dispatch_kind,
-                            "attached_to_step_id": next_step.attached_to_step_id,
-                            "content_preview": handoff.get("content"),
-                            "recovered": True,
-                        },
-                    )
+                record_orchestration_handoffs(
+                    db,
+                    task_run,
+                    pending_handoffs,
+                    from_agent_name=agent_label,
+                    from_step_id=step.step_id,
+                    content=content,
+                    ready_steps=ready_steps,
+                    recovered=True,
+                )
 
         final_runtime = queue.runtime_snapshot()
         if final_runtime.completed_step_count < final_runtime.step_count:
@@ -3127,25 +3094,15 @@ async def _stream_multi_agent_orchestration(
                 resumed_by_agent=agent_label,
             )
         if step_content:
-            handoff = _build_orchestration_handoff(agent_label, step_content)
-            for next_step in ready_steps:
-                pending_handoffs.setdefault(next_step.step_id, []).append(handoff)
-                append_task_event(
-                    db,
-                    task_run,
-                    "handoff_created",
-                    agent_name=agent_label,
-                    summary=f"Handoff created for {next_step.agent_name}.",
-                    payload={
-                        "from_agent": agent_label,
-                        "to_agent": next_step.agent_name,
-                        "from_step_id": step.step_id,
-                        "to_step_id": next_step.step_id,
-                        "dispatch_kind": next_step.dispatch_kind,
-                        "attached_to_step_id": next_step.attached_to_step_id,
-                        "content_preview": handoff.get("content"),
-                    },
-                )
+            record_orchestration_handoffs(
+                db,
+                task_run,
+                pending_handoffs,
+                from_agent_name=agent_label,
+                from_step_id=step.step_id,
+                content=step_content,
+                ready_steps=ready_steps,
+            )
 
         yield f"data: {sse_json.dumps({'type': 'collab_step_done', 'agent': step.requested_name, 'agent_name': agent_label, 'message_id': saved.id if saved else None, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id), 'released_step_ids': [next_step.step_id for next_step in ready_steps]}, ensure_ascii=False)}\n\n"
 
