@@ -234,3 +234,17 @@
 - 让 pipeline stage 在启动 turn loop 前先从关联 `task_run` 构建 `checkpoint_snapshot`
 - 用 `build_turn_state_from_checkpoint_snapshot(...)` 初始化 stage 的 `TurnContextState`，把最近一次 tool protocol tail 重新送回 resumed stage
 - 补 pipeline 测试，确认 approval 后恢复的 stage 首次 LLM 输入包含 checkpoint 中的 assistant/tool protocol
+
+### `Rehydrate streaming orchestration steps from checkpoint continuation state`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_api_routes.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 streaming orchestration 在每个 step dispatch 前也从 `task_run` 重建一次 `checkpoint_snapshot`
+- 让 `_iter_agent_turn_events(...)` 用 checkpoint-seeded `TurnContextState` 起步，而不是只靠 `previous_agent_work` 纯文本摘要
+- 补 stream 测试，确认后续 agent step 的首次 LLM 输入重新带回上一位 agent 最近的 tool protocol

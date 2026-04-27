@@ -1856,6 +1856,7 @@ async def _iter_agent_turn_events(
     history_limit: int = 4,
     standalone_note: str = "",
     task_run: Optional[TaskRun] = None,
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
     from tools import tool_registry
 
@@ -1865,7 +1866,10 @@ async def _iter_agent_turn_events(
     agent_label = agent_name_of(agent)
     available_tools = tool_registry.list_tools()
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(history_limit + 2, 6))
-    turn_state = TurnContextState(previous_agent_work=previous_agent_work or "")
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        checkpoint_snapshot,
+        previous_agent_work=previous_agent_work or "",
+    )
     turn_state.add_inter_agent_messages(inter_agent_messages or [])
     tool_schemas = tool_registry.get_schemas()
     runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
@@ -2837,6 +2841,8 @@ async def _stream_multi_agent_orchestration(
 
         agent_label = agent_name_of(agent)
         step_policy = find_stage_policy(orchestration_policy, step.step_id)
+        db.refresh(task_run)
+        step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
         if callable(set_active_agent):
             set_active_agent(agent_label, agent.id)
         append_task_event(
@@ -2871,6 +2877,7 @@ async def _stream_multi_agent_orchestration(
             history_limit=3,
             standalone_note=standalone_note,
             task_run=task_run,
+            checkpoint_snapshot=step_checkpoint_snapshot,
         ):
             if event["type"] == "runtime_card":
                 yield await sse_card(event["card_type"], event["payload"])

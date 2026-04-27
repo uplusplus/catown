@@ -1447,6 +1447,11 @@ class TestSSEStreaming:
             and "Analyst done." in str(message.get("content") or "")
             for message in fourth_call_messages
         )
+        assert any(
+            message.get("role") == "tool"
+            and message.get("name") == "read_file"
+            for message in fourth_call_messages
+        )
 
     def test_project_multi_mention_stream_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod

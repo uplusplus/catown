@@ -2001,3 +2001,56 @@ monitor 上也同步做了投影：
 - 而是开始在执行输入面共享同一套 checkpoint continuation 语义
 - `chat/runtime/orchestration/pipeline`
   - 四条主路径的 continuation rehydration 开始真正收敛
+
+### 11.30 2026-04-25 新进展：streaming orchestration step 已开始消费 checkpoint continuation state
+
+11.29 之后，pipeline resumed stage 已接上 checkpoint continuation，但 stream orchestration 仍留着一条偏旧分支：
+
+- 多 agent streaming orchestration 的每个 step
+  - 仍通过 `_iter_agent_turn_events(...)` 起一个新的 `TurnContextState`
+- 它会带：
+  - `previous_agent_work`
+  - inter-agent messages
+- 但不会带：
+  - 上一位 agent 最近留下的 tool protocol tail
+
+这意味着 streaming orchestration 虽然表面上已经能连续协作：
+
+- 后续 agent 能看到文字摘要和 handoff
+- 但看不到最近一轮真实 assistant/tool protocol
+- 与 non-stream orchestration recovery、runtime follow-up、pipeline resumed stage 的 continuation 语义仍不一致
+
+这一轮把 stream orchestration 也接回统一语义：
+
+- `_iter_agent_turn_events(...)`
+  - 新增 `checkpoint_snapshot` 参数
+  - turn state 初始化改为：
+    - `build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot, previous_agent_work=...)`
+  - 不再从纯空白 `TurnContextState(previous_agent_work=...)` 起步
+
+- stream orchestration scheduler loop
+  - 在每个 step dispatch 前
+    - `refresh(task_run)`
+    - 重新构建当前 step-local `checkpoint_snapshot`
+  - 然后把它传给 `_iter_agent_turn_events(...)`
+
+因此后续 streaming step 现在会同时看到：
+
+- 上一阶段的文字工作摘要
+- durable handoff / boss / inter-agent messages
+- checkpoint 中保留下来的最近 tool protocol tail
+
+测试也同步收紧：
+
+- `test_standalone_multi_mention_stream_rebuilds_tool_loop_from_turn_state`
+  - 原本只验证 developer step 能看到 analyst 的 inter-agent message
+  - 现在继续断言：
+    - developer 那一轮的 LLM 输入里
+    - 还能重新看到 `read_file` 的 tool protocol message
+
+这一步的意义是：
+
+- stream orchestration 不再只是一条“摘要驱动”的协作链
+- 而是开始共享同一套 checkpoint-backed prompt rehydration 语义
+- `non-stream / stream / recovery / pipeline`
+  - 几条主执行路径的 continuation model 又收敛了一步
