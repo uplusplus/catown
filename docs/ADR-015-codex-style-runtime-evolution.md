@@ -2845,3 +2845,46 @@ Monitor 侧也顺手做了投影：
 - run startup 的最外层信封开始从“分支代码”抽成“共享语义”
 - 统一 runner 外壳虽然还没完全成形，但 mode selection 这一层已经开始具有单一入口味道
 - 后续如果要把 approval / sandbox / ownership 等 runtime policy 再继续前移到 startup 阶段，挂载点会更稳定
+
+### 11.44 2026-04-27 新进展：project target-agent resolution 已在 sync / stream 入口间共享
+
+继续沿着 `P0.1` 收 startup envelope，除了 mode selection 之外，还有另一段很容易反复分叉的逻辑：
+
+- project single-agent sync
+- project single-agent stream
+
+两条路径都要自己处理：
+
+- `@mention` 指定的 agent 是否已经在项目里
+- 如果不在项目里，是否从全局自动分配进项目
+- 如果仍然找不到，是否退回默认 agent 或项目第一个 agent
+
+这段逻辑虽然不长，但它本质上决定了 runner startup 的“执行主体是谁”。
+
+如果 sync / stream 各自维护一份，很容易在后续继续出现细小漂移：
+
+- auto-assign 时机不一致
+- fallback 顺序不一致
+- 后续如果要叠加 ownership / approval / target capability 检查
+  - 也会被迫重复接两遍
+
+这一轮把这层也收成共享辅助逻辑：
+
+- `backend/routes/api.py`
+  - 新增统一的 project target-agent resolution helper
+  - 收口：
+    - project-local lookup
+    - global auto-assign into project
+    - default fallback
+
+这样 project single-agent 的 sync / stream 入口现在开始共享：
+
+- 谁是本轮真正 target agent
+- 什么时候把全局 agent 自动挂进项目
+- 如果没有显式 mention，如何回落到默认 agent
+
+这一步的意义是：
+
+- runner startup 不再只共享“选了什么模式”
+- 也开始共享“选中了谁来执行”
+- 统一 runner 外壳又往前收了一层：mode selection 之外，target resolution 也开始脱离分支代码

@@ -1146,23 +1146,12 @@ async def trigger_agent_response(
         logger.debug(f"[ Target agent name: {target_agent_name}")
 
         # 4. 确定响应的 Agent
-        target_agent = None
-        if target_agent_name:
-            target_agent = find_agent_by_type(agents, target_agent_name)
-
-            # @mentioned agent 不在项目中 → 从全局注册表查找并自动分配
-            if not target_agent:
-                global_agent = _find_db_agent_by_type(db, target_agent_name)
-                if global_agent:
-                    logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
-                    assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
-                    db.add(assignment)
-                    db.commit()
-                    target_agent = global_agent
-                    agents.append(global_agent)
-
-        if not target_agent:
-            target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
+        target_agent = _resolve_project_runtime_target_agent(
+            db,
+            project=project,
+            agents=agents,
+            target_agent_name=target_agent_name,
+        )
 
         if not target_agent:
             logger.debug(f"[ No target agent found")
@@ -1660,6 +1649,31 @@ def _select_task_run_runtime_mode(
         summary=summary,
         payload=payload,
     )
+
+
+def _resolve_project_runtime_target_agent(
+    db: Session,
+    *,
+    project: Project,
+    agents: List[Agent],
+    target_agent_name: Optional[str],
+) -> Optional[Agent]:
+    target_agent = None
+    if target_agent_name:
+        target_agent = find_agent_by_type(agents, target_agent_name)
+        if not target_agent:
+            global_agent = _find_db_agent_by_type(db, target_agent_name)
+            if global_agent:
+                logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
+                assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
+                db.add(assignment)
+                db.commit()
+                target_agent = global_agent
+                agents.append(global_agent)
+
+    if not target_agent:
+        target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
+    return target_agent
 
 
 def _task_run_event_payload(event: Optional[TaskRunEvent]) -> Dict[str, Any]:
@@ -5161,21 +5175,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             agent_ids = [a.agent_id for a in assignments]
             agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
 
-            target_agent = None
-            if target_agent_name:
-                target_agent = find_agent_by_type(agents, target_agent_name)
-                # @mentioned agent 不在项目中 → 从全局查找并自动分配
-                if not target_agent:
-                    global_agent = _find_db_agent_by_type(db, target_agent_name)
-                    if global_agent:
-                        logger.info(f"[Agent] Auto-assigning '{target_agent_name}' to project '{project.name}'")
-                        assignment = AgentAssignment(project_id=project.id, agent_id=global_agent.id)
-                        db.add(assignment)
-                        db.commit()
-                        target_agent = global_agent
-                        agents.append(global_agent)
-            if not target_agent:
-                target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
+            target_agent = _resolve_project_runtime_target_agent(
+                db,
+                project=project,
+                agents=agents,
+                target_agent_name=target_agent_name,
+            )
             if not target_agent:
                 append_task_event(
                     db,
