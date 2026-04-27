@@ -108,9 +108,11 @@ from services.approval_queue import (
     serialize_approval_queue_item,
 )
 from services.approval_replay import (
+    build_approval_queue_replay_round_payload,
     build_followup_continued_payload,
     build_followup_failed_payload,
     build_followup_skipped_payload,
+    build_queue_replay_resolution_payload,
     replay_result_is_actionable,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
@@ -4256,47 +4258,6 @@ async def resume_task_run(task_run_id: int, db: Session = Depends(get_db)):
     }
 
 
-def _queue_replay_resolution_payload(
-    *,
-    request_payload: Dict[str, Any],
-    replay_result: Any = None,
-    action_taken: str = "queue_resolved_only",
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "request_payload": request_payload,
-        "resume_supported": bool(request_payload.get("resume_supported")),
-        "action_taken": action_taken,
-    }
-    if replay_result is None:
-        return payload
-
-    payload.update(
-        {
-            "replay_attempted": True,
-            "replay_status": getattr(replay_result, "status", None),
-            "replay_success": bool(getattr(replay_result, "success", False)),
-            "replay_blocked": bool(getattr(replay_result, "blocked", False)),
-            "replay_blocked_kind": getattr(replay_result, "blocked_kind", None),
-            "replay_result_preview": _compact_runtime_text(
-                getattr(replay_result, "result", ""),
-                limit=280,
-            ),
-        }
-    )
-    return payload
-
-
-def _approval_queue_replay_round_payload(item: Any, request_payload: Dict[str, Any]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "replay": True,
-        "replay_of_queue_item_id": getattr(item, "id", None),
-    }
-    for key in ("pipeline_id", "pipeline_run_id", "pipeline_stage_id", "stage_name", "display_name"):
-        if request_payload.get(key) is not None:
-            payload[key] = request_payload.get(key)
-    return payload
-
-
 async def _replay_runtime_blocked_tool_queue_item(
     db: Session,
     item: Any,
@@ -4641,7 +4602,7 @@ async def approve_approval_queue_item(
             raise HTTPException(status_code=404, detail="Approval queue item not found")
         return serialize_approval_queue_item(refreshed)
 
-    resolution_payload = _queue_replay_resolution_payload(
+    resolution_payload = build_queue_replay_resolution_payload(
         request_payload=request_payload,
         action_taken="queue_resolved_only",
     )
@@ -4660,9 +4621,9 @@ async def approve_approval_queue_item(
             tool_names=[replay_result.tool_name],
             tool_results=[replay_result],
             summary=f"Replayed blocked tool {replay_result.tool_name} after approval.",
-            payload=_approval_queue_replay_round_payload(item, request_payload),
+            payload=build_approval_queue_replay_round_payload(item, request_payload),
         )
-        resolution_payload = _queue_replay_resolution_payload(
+        resolution_payload = build_queue_replay_resolution_payload(
             request_payload=request_payload,
             replay_result=replay_result,
             action_taken="tool_replayed",

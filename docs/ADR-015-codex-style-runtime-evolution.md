@@ -3104,3 +3104,37 @@ P0.3 开始从 approved blocked-tool replay / follow-up 主链往统一 runner e
 - approval replay 的 follow-up resolution shape 开始统一
 - runtime 与 pipeline 仍保留不同的实际恢复动作，但不再各自定义“恢复结果怎么表达”
 - 后续可以继续把 approval/sandbox/escalation 主链推进到更完整的 shared runner continuation policy
+
+### 11.50 2026-04-27 新进展：approval replay resolution 与 replay round payload 已共享
+
+继续推进 P0.3 时，approved blocked-tool replay 主链还有第二层重复：
+
+- approval item resolve 时写入的 replay resolution payload
+- replay 后写入 `tool_round_recorded` 的 replay round payload
+
+这两类 payload 是同一个恢复动作的两面：
+
+- resolution payload 给 approval queue / monitor / operator 看
+- replay round payload 给 task ledger / recovery / continuation cursor 看
+
+之前它们还留在 API route 内部手工拼装。这样会让后续 runtime / pipeline / sandbox approval 扩展时继续把 payload shape 分散到入口层。
+
+本轮把这层语义也并入 `backend/services/approval_replay.py`：
+
+- `build_queue_replay_resolution_payload(...)`
+- `build_approval_queue_replay_round_payload(...)`
+
+现在 API approve 路径只负责：
+
+- 找到 queue item
+- 执行 replay
+- 触发 runtime 或 pipeline follow-up
+- resolve approval item
+
+而 replay resolution / replay round 的基础 shape 由共享 service 决定。
+
+这一步的意义是：
+
+- P0.3 的 approval replay envelope 从“后续执行结果”继续扩大到“replay 审计与 ledger 记录”
+- API route 的 orchestration 职责更清晰，不再顺手定义 runtime payload 协议
+- 后续如果引入 sandbox/escalation replay，只需要复用同一组 replay payload helpers
