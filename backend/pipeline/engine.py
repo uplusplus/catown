@@ -25,7 +25,7 @@ from config import settings
 from skills import load_skill_registry, write_workspace_skill_packages
 from tools.base import build_tool_policy_pack, build_tool_policy_payload
 from models.database import (
-    SessionLocal, Chatroom, Pipeline, PipelineRun, PipelineStage,
+    SessionLocal, ApprovalQueueItem, Chatroom, Pipeline, PipelineRun, PipelineStage,
     StageArtifact, PipelineMessage, PipelineMessageDelivery, Project,
 )
 from models.audit import LLMCall, ToolCall, Event
@@ -325,6 +325,25 @@ def _resolve_pipeline_gate_queue_item(
             "stage_name": stage.stage_name,
             "display_name": stage.display_name,
         },
+    )
+
+
+def _find_latest_pending_pipeline_tool_queue_item(
+    db: Session,
+    *,
+    run: PipelineRun,
+    stage: PipelineStage,
+) -> Any | None:
+    return (
+        db.query(ApprovalQueueItem)
+        .filter(
+            ApprovalQueueItem.pipeline_run_id == run.id,
+            ApprovalQueueItem.pipeline_stage_id == stage.id,
+            ApprovalQueueItem.target_kind == "tool",
+            ApprovalQueueItem.status == "pending",
+        )
+        .order_by(ApprovalQueueItem.id.desc())
+        .first()
     )
 
 
@@ -1621,6 +1640,54 @@ class PipelineEngine:
                     timeout=timeout_seconds,
                 )
 
+                blocked_tool_state = getattr(stage, "_catown_blocked_tool", None)
+                if isinstance(blocked_tool_state, dict) and blocked_tool_state:
+                    queue_item = _find_latest_pending_pipeline_tool_queue_item(
+                        db,
+                        run=run,
+                        stage=stage,
+                    )
+                    stage.status = "blocked"
+                    stage.output_summary = summary[:2000] if summary else "(blocked tool approval pending)"
+                    stage.completed_at = None
+                    db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_stage_blocked",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Pipeline stage blocked on tool approval: {blocked_tool_state.get('tool_name') or 'tool'}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "pipeline_stage_id": stage.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "tool_name": blocked_tool_state.get("tool_name"),
+                            "status": blocked_tool_state.get("status"),
+                            "blocked_kind": blocked_tool_state.get("blocked_kind"),
+                            "blocked_reason": blocked_tool_state.get("blocked_reason"),
+                            "turn": blocked_tool_state.get("turn"),
+                            "queue_item_id": getattr(queue_item, "id", None),
+                            "stage_policy": stage_policy.to_payload(),
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=f"{stage_policy.display_name} blocked on {blocked_tool_state.get('tool_name') or 'tool'} approval.",
+                    )
+                    await event_bus.emit(
+                        "stage_blocked",
+                        {
+                            "pipeline_id": pipeline.id,
+                            "run_id": run.id,
+                            "stage": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "tool_name": blocked_tool_state.get("tool_name"),
+                            "blocked_kind": blocked_tool_state.get("blocked_kind"),
+                            "queue_item_id": getattr(queue_item, "id", None),
+                        },
+                    )
+                    return True
+
                 # 记录产出物
                 workspace = _get_workspace(run)
                 self._record_artifacts(db, stage, workspace, stage_policy.delivery.expected_artifacts)
@@ -1978,6 +2045,7 @@ class PipelineEngine:
         skills_config = self._load_skills_config()
         turn_state = TurnContextState()
         final_content = ""
+        stage._catown_blocked_tool = None
         linked_task_run = _pipeline_task_run(db, run)
         compaction_callback = _build_pipeline_context_compaction_callback(
             db,
@@ -2205,6 +2273,15 @@ class PipelineEngine:
             return tool_result_record
 
         async def _on_pipeline_tool_round(frame, tool_results, current_turn_state):
+            blocked_result = next((result for result in tool_results if getattr(result, "blocked", False)), None)
+            if blocked_result is not None:
+                stage._catown_blocked_tool = {
+                    "tool_name": blocked_result.tool_name,
+                    "status": blocked_result.status,
+                    "blocked_kind": blocked_result.blocked_kind,
+                    "blocked_reason": blocked_result.blocked_reason,
+                    "turn": frame.turn_index + 1,
+                }
             record_runner_tool_round(
                 db,
                 linked_task_run,

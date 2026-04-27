@@ -1465,3 +1465,54 @@ Unified visibility
 - 更标准的 scheduler continuation cursor
 - approval / replay / follow-up 与 checkpoint snapshot 的统一表达
 - 从“派生 snapshot”逐步演进到“显式 checkpoint object”
+
+### 11.20 2026-04-25 新进展：pipeline blocked tool 已能停住 stage 并在 approval 后恢复
+
+在 11.13 到 11.15 把 runtime blocked tool replay 链逐步闭环之后，pipeline 侧还留着一处明显差距：
+
+- tool 调用虽然已经会产出 `approval_queue_item`
+- 但 stage 本身并不会因为 blocked tool 停住
+- approve 后也不会把 pipeline 接回当前 stage 继续执行
+
+这一轮先把这条链补到了可用状态：
+
+- `_run_agent_stage()` 现在会把 blocked tool round 显式挂到当前 stage 的临时状态
+  - 记录：
+    - `tool_name`
+    - `status`
+    - `blocked_kind`
+    - `blocked_reason`
+    - `turn`
+
+- `_execute_stage()` 发现本轮 stage 因 blocked tool 停住后，不再把阶段记成 `completed`
+  - 而是：
+    - 置 `stage.status = "blocked"`
+    - 保留 `output_summary`
+    - 写入 `pipeline_stage_blocked`
+    - 让外层执行循环按既有逻辑把 pipeline 置成 `paused`
+
+- approval queue API 在 replay pipeline blocked tool 成功后，开始补 follow-up continuation
+  - 先通过 `pipeline_engine.instruct(...)` 注入 replay result
+  - 再对暂停中的 pipeline 调 `pipeline_engine.resume(...)`
+  - 同时写：
+    - `approval_queue_item_followup_triggered`
+    - 若失败则 `approval_queue_item_followup_failed`
+
+这一步的意义是：
+
+- pipeline 不再把“被审批挡住的 tool turn”伪装成正常 stage 完成
+- pipeline blocked tool 与 runtime blocked tool 终于开始共享同一套：
+  - blocked queue
+  - replay
+  - follow-up continuation
+
+它仍然不是完整的 executor checkpoint continuation：
+
+- resume 现在还是“给当前 stage 注入 follow-up context，然后重跑当前 stage”
+- 不是从精确的 turn-local cursor 继续
+
+但相较之前，已经从“只有 replay，没有恢复执行”推进到了：
+
+- stage 会停住
+- queue 能 replay
+- replay 后 pipeline 会继续

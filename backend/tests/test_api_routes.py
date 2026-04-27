@@ -1983,6 +1983,164 @@ class TestSSEStreaming:
             if delete_target.exists():
                 delete_target.unlink()
 
+    def test_approve_pipeline_tool_queue_item_replays_and_resumes_pipeline(self, client):
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Pipeline Queue Replay Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Pipeline Queue Replay Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            project.default_chatroom_id = chatroom.id
+            db.commit()
+            db.refresh(project)
+
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="pipeline_run",
+                status="running",
+                title="Resume pipeline after tool approval",
+                user_request="Resume pipeline after tool approval",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            pipeline = db_mod.Pipeline(
+                project_id=project.id,
+                pipeline_name="default",
+                status="paused",
+                current_stage_index=0,
+            )
+            db.add(pipeline)
+            db.commit()
+            db.refresh(pipeline)
+
+            run = db_mod.PipelineRun(
+                pipeline_id=pipeline.id,
+                task_run_id=task_run.id,
+                run_number=1,
+                status="paused",
+                input_requirement="Resume pipeline after tool approval",
+                workspace_path=str(Path.cwd()),
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+
+            stage = db_mod.PipelineStage(
+                run_id=run.id,
+                stage_name="analysis",
+                display_name="Analysis",
+                stage_order=0,
+                agent_name="analyst",
+                status="blocked",
+                gate_type="auto",
+            )
+            db.add(stage)
+            db.commit()
+            db.refresh(stage)
+
+            queue_item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                pipeline_run_id=run.id,
+                pipeline_stage_id=stage.id,
+                queue_kind="approval",
+                status="pending",
+                source="runtime",
+                title="Approve read_file",
+                summary="read_file blocked in pipeline stage",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="read_file",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "read_file",
+                        "arguments": "{\"file_path\": \"README.md\"}",
+                        "resume_supported": True,
+                        "pipeline_id": pipeline.id,
+                        "pipeline_run_id": run.id,
+                        "pipeline_stage_id": stage.id,
+                        "stage_name": "analysis",
+                        "display_name": "Analysis",
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+            queue_item_id = queue_item.id
+            task_run_id = task_run.id
+            pipeline_id = pipeline.id
+        finally:
+            db.close()
+
+        async def fake_replay(db, item, request_payload):
+            return api_routes.build_tool_result_record(
+                tool_call_id="queue-replay-pipeline-1",
+                tool_name="read_file",
+                arguments=request_payload.get("arguments", "{}"),
+                result="README contents",
+                success=True,
+            )
+
+        instruct_mock = AsyncMock(return_value=None)
+        resume_mock = AsyncMock(return_value=None)
+
+        with patch.object(api_routes, "_replay_blocked_tool_queue_item", side_effect=fake_replay), \
+             patch.object(api_routes.pipeline_engine, "instruct", instruct_mock), \
+             patch.object(api_routes.pipeline_engine, "resume", resume_mock):
+            approved = client.post(
+                f"/api/approval-queue/{queue_item_id}/approve",
+                json={"note": "Replay and resume pipeline."},
+            ).json()
+
+        assert approved["status"] == "approved"
+        assert approved["resolution_payload"]["action_taken"] == "tool_replayed"
+        assert approved["resolution_payload"]["replay_success"] is True
+        assert approved["resolution_payload"]["followup_attempted"] is True
+        assert approved["resolution_payload"]["followup_status"] == "continued"
+        assert approved["resolution_payload"]["followup_reason"] == "pipeline_resumed"
+        instruct_mock.assert_awaited_once()
+        resume_mock.assert_awaited_once()
+        assert instruct_mock.await_args.args[1] == pipeline_id
+        assert resume_mock.await_args.args[1] == pipeline_id
+
+        resolved_detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        followup_event = next(
+            event
+            for event in resolved_detail["events"]
+            if event["event_type"] == "approval_queue_item_followup_triggered"
+        )
+        assert followup_event["payload"]["queue_item_id"] == queue_item_id
+        assert followup_event["payload"]["pipeline_id"] == pipeline_id
+        resolved_event = next(
+            event
+            for event in resolved_detail["events"]
+            if event["event_type"] == "approval_queue_item_resolved"
+        )
+        assert resolved_event["payload"]["action_taken"] == "tool_replayed"
+
     def test_sandbox_blocked_marks_runtime_card_and_ledger(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes

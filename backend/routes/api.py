@@ -4291,6 +4291,83 @@ async def _continue_runtime_after_approved_tool_replay(
     }
 
 
+async def _continue_pipeline_after_approved_tool_replay(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+    replay_result: Any,
+):
+    pipeline_run_id = getattr(item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
+    if not pipeline_run_id:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_run_missing"}
+    if not bool(getattr(replay_result, "success", False)) or bool(getattr(replay_result, "blocked", False)):
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "replay_not_actionable"}
+
+    from models.database import Pipeline, PipelineRun
+
+    run = db.query(PipelineRun).filter(PipelineRun.id == int(pipeline_run_id)).first()
+    if run is None:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_run_missing"}
+
+    pipeline = db.query(Pipeline).filter(Pipeline.id == run.pipeline_id).first()
+    if pipeline is None:
+        return {"followup_attempted": False, "followup_status": "skipped", "followup_reason": "pipeline_missing"}
+
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    append_task_event(
+        db,
+        task_run,
+        "approval_queue_item_followup_triggered",
+        agent_name=item.agent_name,
+        summary=f"Resuming pipeline after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+        payload={
+            "queue_item_id": getattr(item, "id", None),
+            "pipeline_id": pipeline.id,
+            "pipeline_run_id": run.id,
+            "pipeline_stage_id": getattr(item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id"),
+            "stage_name": request_payload.get("stage_name"),
+            "tool_name": getattr(replay_result, "tool_name", None),
+            "tool_call_id": getattr(replay_result, "tool_call_id", None),
+        },
+    )
+
+    try:
+        await pipeline_engine.instruct(
+            db,
+            pipeline.id,
+            str(item.agent_name or request_payload.get("agent_name") or "").strip() or "agent",
+            _build_tool_replay_followup_context(item, replay_result),
+        )
+        if (pipeline.status or "").lower() == "paused":
+            await pipeline_engine.resume(db, pipeline.id)
+    except Exception as exc:
+        append_task_event(
+            db,
+            task_run,
+            "approval_queue_item_followup_failed",
+            agent_name=item.agent_name,
+            summary=f"Approved replay follow-up failed for pipeline tool {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+            payload={
+                "queue_item_id": getattr(item, "id", None),
+                "pipeline_id": pipeline.id,
+                "pipeline_run_id": run.id,
+                "tool_name": getattr(replay_result, "tool_name", None),
+                "error": str(exc),
+            },
+        )
+        return {
+            "followup_attempted": True,
+            "followup_status": "failed",
+            "followup_error": str(exc),
+        }
+
+    return {
+        "followup_attempted": True,
+        "followup_status": "continued",
+        "followup_reason": "pipeline_resumed",
+    }
+
+
 @router.get("/approval-queue")
 async def get_approval_queue(
     status: Optional[str] = None,
@@ -4377,14 +4454,24 @@ async def approve_approval_queue_item(
             replay_result=replay_result,
             action_taken="tool_replayed",
         )
-        resolution_payload.update(
-            await _continue_runtime_after_approved_tool_replay(
-                db,
-                item,
-                request_payload,
-                replay_result,
+        if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+            resolution_payload.update(
+                await _continue_pipeline_after_approved_tool_replay(
+                    db,
+                    item,
+                    request_payload,
+                    replay_result,
+                )
             )
-        )
+        else:
+            resolution_payload.update(
+                await _continue_runtime_after_approved_tool_replay(
+                    db,
+                    item,
+                    request_payload,
+                    replay_result,
+                )
+            )
 
     resolved = resolve_approval_queue_item(
         db,

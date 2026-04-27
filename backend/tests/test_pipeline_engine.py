@@ -505,10 +505,177 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
         assert queue_item is not None
         assert queue_item.pipeline_run_id == run.id
         assert queue_item.pipeline_stage_id == stage.id
+        assert getattr(stage, "_catown_blocked_tool", {}).get("tool_name") == "read_file"
+        assert getattr(stage, "_catown_blocked_tool", {}).get("blocked_kind") == "approval"
         request_payload = json.loads(queue_item.request_payload_json)
         assert request_payload["resume_supported"] is False
         assert request_payload["pipeline_run_id"] == run.id
         assert request_payload["pipeline_stage_id"] == stage.id
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+    from pipeline.config import PipelineConfig, StageConfig
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        project = fresh_db.Project(name="Pipeline Tool Block Project")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        chatroom = fresh_db.Chatroom(
+            project_id=project.id,
+            title="Blocked Tool Chat",
+            session_type="project-bound",
+        )
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        project.default_chatroom_id = chatroom.id
+        db.commit()
+        db.refresh(project)
+
+        pipeline = fresh_db.Pipeline(
+            project_id=project.id,
+            pipeline_name="default",
+            status="running",
+            current_stage_index=0,
+        )
+        db.add(pipeline)
+        db.commit()
+        db.refresh(pipeline)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Blocked tool stage",
+            user_request="Blocked tool stage",
+            initiator="user",
+            target_agent_name="analyst",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            input_requirement="Use a blocked tool",
+            workspace_path=str(workspace),
+            started_at=datetime.now(),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        stage = fresh_db.PipelineStage(
+            run_id=run.id,
+            stage_name="analysis",
+            display_name="Analysis",
+            stage_order=0,
+            agent_name="analyst",
+            status="pending",
+            gate_type="auto",
+        )
+        db.add(stage)
+        db.commit()
+        db.refresh(stage)
+
+        stage_cfg = StageConfig(
+            name="analysis",
+            display_name="Analysis",
+            agent="analyst",
+            gate="auto",
+            timeout_minutes=5,
+            context_prompt="Try a tool and report what happened.",
+        )
+        template = PipelineConfig(
+            name="default",
+            description="Pipeline blocked tool test.",
+            stages=[stage_cfg],
+        )
+        engine_mod.pipeline_config_manager.configs["default"] = template
+        engine_mod.AGENT_TOOLS["analyst"] = ["list_files"]
+
+        async def scripted_chat_with_tools(messages, tools=None):
+            if not hasattr(scripted_chat_with_tools, "seen"):
+                scripted_chat_with_tools.seen = 0
+            scripted_chat_with_tools.seen += 1
+            if scripted_chat_with_tools.seen == 1:
+                return {
+                    "content": "I should inspect a file directly.",
+                    "tool_calls": [
+                        {
+                            "id": "blocked_call_execute_stage",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"file_path\": \"README.md\"}",
+                            },
+                        }
+                    ],
+                }
+            return {
+                "content": "The tool call was blocked by policy.",
+                "tool_calls": None,
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_with_tools = scripted_chat_with_tools
+        engine_mod.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        engine = engine_mod.PipelineEngine()
+        engine._write_skill_full_files = lambda agent_name, stage_cfg_obj, workspace_path: None
+        engine._git_commit = lambda run_obj, stage_name: None
+
+        success = await engine._execute_stage(
+            db=db,
+            pipeline=pipeline,
+            run=run,
+            stage=stage,
+            stage_cfg=stage_cfg,
+            template=template,
+        )
+
+        assert success is True
+        db.refresh(stage)
+        assert stage.status == "blocked"
+        assert stage.completed_at is None
+        assert "blocked" in (stage.output_summary or "").lower()
+
+        events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        assert [event.event_type for event in events] == [
+            "pipeline_stage_started",
+            "agent_turn_started",
+            "tool_round_recorded",
+            "approval_queue_item_created",
+            "tool_call_blocked",
+            "agent_turn_completed",
+            "pipeline_stage_blocked",
+        ]
+        blocked_payload = json.loads(events[-1].payload_json)
+        assert blocked_payload["tool_name"] == "read_file"
+        assert blocked_payload["blocked_kind"] == "approval"
+        assert blocked_payload["queue_item_id"] is not None
     finally:
         db.close()
 

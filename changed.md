@@ -61,7 +61,7 @@
 - 在 monitor overview / Context 页展示 recent compactions 和 compaction 数量
 - 补 selector 诊断测试、monitor overview 测试，并验证前端构建通过
 
-### `Expose checkpoint-friendly task snapshots`
+### c91cd2a `Expose checkpoint-friendly task snapshots`
 
 范围：
 
@@ -79,3 +79,19 @@
 - 让 recovery 事件显式带上启动恢复前的 checkpoint snapshot，便于回看恢复起点
 - 让 monitor task-run 详情直接展示 latest agent turn、latest compaction、latest scheduler runtime
 - 补 recovery / monitor 断言，并验证前端构建通过
+
+### `Resume pipeline stages after blocked tool approval`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/routes/api.py`
+- `backend/tests/test_pipeline_engine.py`
+- `backend/tests/test_api_routes.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 pipeline stage 在 tool approval block 时显式停在 `blocked`，而不是把被阻塞的 tool turn 误记成正常完成
+- 让 approval replay 成功后，给 pipeline 注入 follow-up context，并恢复暂停的 pipeline 继续跑当前 stage
+- 补 pipeline blocked-tool runtime 测试，以及 approval queue API 对 pipeline replay/resume 的断言
