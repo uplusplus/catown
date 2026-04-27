@@ -3411,3 +3411,46 @@ run ledger 在构造 `checkpoint_snapshot.continuation_cursor` 时，需要把 p
 - pending approval 的 continuation cursor shape 从 run ledger 私有逻辑中拆出
 - approval queue runtime helper 现在同时覆盖 request、replay、event、follow-up context、pending cursor
 - 后续把 approval queue 抽成 runner continuation node 时，checkpoint cursor 已有共享协议入口
+
+### 11.60 2026-04-27 新进展：approved replay follow-up event payload 已共享，P0 baseline 收口完成
+
+P0 最后一轮收口把 approved replay follow-up 的事件 payload 也从 API route 中拆出。
+
+之前 runtime follow-up 与 pipeline follow-up 已经共享了：
+
+- request parsing
+- replay arguments parsing
+- replay result record
+- replay resolution payload
+- pending approval cursor
+- continuation context
+
+但 `approval_queue_item_followup_triggered` / `approval_queue_item_followup_failed` 的 event payload 仍分别在 runtime 与 pipeline 分支内手工拼：
+
+- runtime 分支记录 `queue_item_id / tool / tool_call / message_id`
+- pipeline 分支记录 `queue_item_id / pipeline/run/stage / tool / tool_call`
+- failed 分支记录 error 与可选 pipeline cursor
+
+本轮新增：
+
+- `build_followup_triggered_event_payload(...)`
+- `build_followup_failed_event_payload(...)`
+
+并接入：
+
+- chat runtime approved replay follow-up triggered/failed event
+- pipeline approved replay follow-up triggered/failed event
+
+到这里，P0 baseline 视为完成，完成范围不是“所有历史执行分支已经合并成一个大函数”，而是更实际的 Codex-style runtime envelope baseline：
+
+- startup envelope：orchestration policy / mode selection / target agent resolution 已共享
+- turn envelope：chat / standalone / orchestration 的 runtime preparation、compaction callback、lifecycle payload 已共享
+- approval/replay envelope：blocked-tool request、pipeline gate request、queue event、replay parsing、argument validation、result record、resolution payload、follow-up context、pending cursor、follow-up event payload 已共享
+- checkpoint/recovery envelope：pending approval continuation cursor 与 run recovery projection 共享同一套 approval cursor helper
+
+P0 完成后的剩余差距进入 P1，不再属于 P0 baseline：
+
+- 真正把 chat runtime 与 pipeline stage runtime 合并成单一 executor loop
+- subagent lifecycle 的完整 spawn / wait / close / cancellation 状态机
+- 更完整的 sandbox escalation resume token / lease 机制
+- durable inbox/outbox 级别的跨进程 message replay

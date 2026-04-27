@@ -298,6 +298,55 @@ def build_followup_continued_payload(**fields: Any) -> Dict[str, Any]:
     return payload
 
 
+def build_followup_triggered_event_payload(
+    item: Any,
+    replay_result: Any,
+    *,
+    message_id: Any = None,
+    pipeline: Any = None,
+    pipeline_run: Any = None,
+    request_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    payload = {
+        "queue_item_id": getattr(item, "id", None),
+        "tool_name": getattr(replay_result, "tool_name", None),
+        "tool_call_id": getattr(replay_result, "tool_call_id", None),
+    }
+    if message_id is not None:
+        payload["message_id"] = message_id
+    if pipeline is not None:
+        payload["pipeline_id"] = getattr(pipeline, "id", None)
+    if pipeline_run is not None:
+        payload["pipeline_run_id"] = getattr(pipeline_run, "id", None)
+    pipeline_stage_id = resolve_pipeline_replay_stage_id(item, request_payload)
+    if pipeline_stage_id is not None:
+        payload["pipeline_stage_id"] = pipeline_stage_id
+    if request_payload.get("stage_name") is not None:
+        payload["stage_name"] = request_payload.get("stage_name")
+    return payload
+
+
+def build_followup_failed_event_payload(
+    item: Any,
+    replay_result: Any,
+    error: Any,
+    *,
+    pipeline: Any = None,
+    pipeline_run: Any = None,
+) -> Dict[str, Any]:
+    payload = {
+        "queue_item_id": getattr(item, "id", None),
+        "tool_name": getattr(replay_result, "tool_name", None),
+        "error": str(error),
+    }
+    if pipeline is not None:
+        payload["pipeline_id"] = getattr(pipeline, "id", None)
+    if pipeline_run is not None:
+        payload["pipeline_run_id"] = getattr(pipeline_run, "id", None)
+    return payload
+
+
 def build_tool_replay_followup_context(item: Any, replay_result: Any, *, result_preview_limit: int = 400) -> str:
     tool_name = (
         str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip()

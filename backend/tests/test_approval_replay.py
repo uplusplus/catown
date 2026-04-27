@@ -12,8 +12,10 @@ from services.approval_replay import (
     build_blocked_tool_request_key,
     build_blocked_tool_request_payload,
     build_followup_continued_payload,
+    build_followup_failed_event_payload,
     build_followup_failed_payload,
     build_followup_skipped_payload,
+    build_followup_triggered_event_payload,
     build_pipeline_gate_request_key,
     build_pipeline_gate_request_payload,
     build_pipeline_gate_resolution_payload,
@@ -209,6 +211,41 @@ def test_pending_approval_continuation_cursor_uses_request_and_pipeline_cursor()
         "queue_item_id": 77,
         "pipeline_run_id": 9,
         "pipeline_stage_id": 10,
+    }
+
+
+def test_followup_event_payload_helpers_support_runtime_and_pipeline():
+    item = SimpleNamespace(id=77, pipeline_stage_id=None)
+    replay_result = SimpleNamespace(tool_name="read_file", tool_call_id="queue-replay-77")
+    pipeline = SimpleNamespace(id=4)
+    run = SimpleNamespace(id=5)
+
+    assert build_followup_triggered_event_payload(item, replay_result, message_id=88) == {
+        "queue_item_id": 77,
+        "tool_name": "read_file",
+        "tool_call_id": "queue-replay-77",
+        "message_id": 88,
+    }
+    assert build_followup_triggered_event_payload(
+        item,
+        replay_result,
+        pipeline=pipeline,
+        pipeline_run=run,
+        request_payload={"pipeline_stage_id": 6, "stage_name": "analysis"},
+    ) == {
+        "queue_item_id": 77,
+        "tool_name": "read_file",
+        "tool_call_id": "queue-replay-77",
+        "pipeline_id": 4,
+        "pipeline_run_id": 5,
+        "pipeline_stage_id": 6,
+        "stage_name": "analysis",
+    }
+    assert build_followup_failed_event_payload(item, replay_result, RuntimeError("boom"), pipeline=pipeline) == {
+        "queue_item_id": 77,
+        "tool_name": "read_file",
+        "error": "boom",
+        "pipeline_id": 4,
     }
 
 

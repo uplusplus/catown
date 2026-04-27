@@ -112,8 +112,10 @@ from services.approval_replay import (
     build_approval_queue_item_resolved_event_payload,
     build_approval_queue_replay_round_payload,
     build_followup_continued_payload,
+    build_followup_failed_event_payload,
     build_followup_failed_payload,
     build_followup_skipped_payload,
+    build_followup_triggered_event_payload,
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
     build_tool_replay_followup_context,
@@ -4432,12 +4434,11 @@ async def _continue_runtime_after_approved_tool_replay(
         agent_name=item.agent_name,
         message_id=getattr(saved, "id", None),
         summary=f"Continuing agent turn after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
-        payload={
-            "queue_item_id": getattr(item, "id", None),
-            "tool_name": getattr(replay_result, "tool_name", None),
-            "tool_call_id": getattr(replay_result, "tool_call_id", None),
-            "message_id": getattr(saved, "id", None),
-        },
+        payload=build_followup_triggered_event_payload(
+            item,
+            replay_result,
+            message_id=getattr(saved, "id", None),
+        ),
     )
     followup_snapshot = build_task_run_checkpoint_snapshot(task_run)
     try:
@@ -4456,11 +4457,7 @@ async def _continue_runtime_after_approved_tool_replay(
             "approval_queue_item_followup_failed",
             agent_name=item.agent_name,
             summary=f"Approved replay follow-up failed for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
-            payload={
-                "queue_item_id": getattr(item, "id", None),
-                "tool_name": getattr(replay_result, "tool_name", None),
-                "error": str(exc),
-            },
+            payload=build_followup_failed_event_payload(item, replay_result, exc),
         )
         return build_followup_failed_payload(exc, followup_message_id=getattr(saved, "id", None))
 
@@ -4496,15 +4493,13 @@ async def _continue_pipeline_after_approved_tool_replay(
         "approval_queue_item_followup_triggered",
         agent_name=item.agent_name,
         summary=f"Resuming pipeline after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
-        payload={
-            "queue_item_id": getattr(item, "id", None),
-            "pipeline_id": pipeline.id,
-            "pipeline_run_id": run.id,
-            "pipeline_stage_id": getattr(item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id"),
-            "stage_name": request_payload.get("stage_name"),
-            "tool_name": getattr(replay_result, "tool_name", None),
-            "tool_call_id": getattr(replay_result, "tool_call_id", None),
-        },
+        payload=build_followup_triggered_event_payload(
+            item,
+            replay_result,
+            pipeline=pipeline,
+            pipeline_run=run,
+            request_payload=request_payload,
+        ),
     )
 
     try:
@@ -4523,13 +4518,13 @@ async def _continue_pipeline_after_approved_tool_replay(
             "approval_queue_item_followup_failed",
             agent_name=item.agent_name,
             summary=f"Approved replay follow-up failed for pipeline tool {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
-            payload={
-                "queue_item_id": getattr(item, "id", None),
-                "pipeline_id": pipeline.id,
-                "pipeline_run_id": run.id,
-                "tool_name": getattr(replay_result, "tool_name", None),
-                "error": str(exc),
-            },
+            payload=build_followup_failed_event_payload(
+                item,
+                replay_result,
+                exc,
+                pipeline=pipeline,
+                pipeline_run=run,
+            ),
         )
         return build_followup_failed_payload(exc)
 

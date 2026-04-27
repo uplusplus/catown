@@ -911,3 +911,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 run ledger 构造 checkpoint continuation cursor 时复用 approval replay service
 - 保持 source event、turn/tool、blocked kind、queue item、pipeline run/stage cursor 字段一致
 - 补 helper 单测，并跑 approval replay helper 与 run recovery 聚焦回归
+
+### `Complete P0 runtime envelope baseline`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽取 approved replay follow-up triggered/failed event payload helper，统一 runtime 与 pipeline follow-up event shape
+- 让 chat runtime 与 pipeline approved replay follow-up 分支共用同一套 follow-up event payload 构造
+- 在 ADR 中明确 P0 baseline 完成边界：startup envelope、turn envelope、approval/replay envelope、checkpoint/recovery cursor 已完成基础收口
+- 把剩余“单一 executor loop、subagent lifecycle、sandbox escalation token、durable inbox/outbox replay”明确划入 P1
