@@ -363,6 +363,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "summary": task_run.summary,
     }
     snapshot["continuation_state"] = describe_checkpoint_continuation_state(snapshot)
+    snapshot["continuation_state_summary"] = summarize_continuation_state(snapshot["continuation_state"])
     return snapshot
 
 

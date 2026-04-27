@@ -144,6 +144,7 @@ export type TaskRunCheckpointSnapshot = {
     protocol_tail_message_count?: number | null;
     prior_round_summary_count?: number | null;
   };
+  continuation_state_summary?: string | null;
   turn_local_state?: {
     turn?: number | null;
     tool_names?: string[] | null;

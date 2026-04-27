@@ -2421,3 +2421,62 @@ Monitor 侧也顺手做了投影：
 - event 级 continuation 语义第一次成为 task-run detail API 的显式字段
 - 前端不再需要理解后端不同事件 payload 的分支结构
 - continuation-state 的派生逻辑继续从 UI 层回收到序列化层
+
+### 11.37 2026-04-25 新进展：checkpoint snapshot 也已直接序列化 continuation summary
+
+11.36 之后，event 级 continuation 摘要已经直接由后端输出，但 snapshot 级展示还留着最后一层重复：
+
+- `checkpoint_snapshot.continuation_state` 已经存在
+- 前端虽然可以直接展示它
+- 但 run 列表和 detail 卡片里那段简短摘要
+  - 仍然还要自己做一遍字符串拼装
+
+这意味着：
+
+- event 摘要已经是后端产物
+- snapshot 摘要却还停留在前端拼接
+- 同一类 summary 在 snapshot / event 两侧仍有两套来源
+
+这一轮把 snapshot 侧也收口：
+
+- `build_task_run_checkpoint_snapshot(...)`
+  - 在附加 `continuation_state` 之后
+  - 继续直接附带：
+    - `continuation_state_summary`
+
+- 这份 summary 同样复用统一的：
+  - `summarize_continuation_state(...)`
+
+因此现在：
+
+- event 级摘要
+  - 来自后端 `continuation_state_summary`
+- snapshot 级摘要
+  - 也来自后端 `continuation_state_summary`
+
+测试也同步补上：
+
+- `test_monitor_task_runs_exposes_continuation_cursor`
+  - 继续验证 blocked-tool snapshot
+  - 新增断言：
+    - `continuation_state_summary == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"`
+
+- `test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn`
+  - 新增断言：
+    - 无 continuation payload 时
+    - `continuation_state_summary is None`
+
+前端也相应收口：
+
+- Monitor run 列表
+  - 优先使用 `checkpoint_snapshot.continuation_state_summary`
+- Checkpoint Snapshot detail 卡片
+  - 也优先使用后端给出的 summary
+- 原有本地拼装逻辑继续保留为兼容兜底
+
+这一步的意义是：
+
+- run 列表 / detail 卡片 / event 行
+  - 三类 continuation 摘要现在都开始优先依赖后端统一产物
+- 前端本地字符串拼装再次减少
+- snapshot 与 event 的 continuation summary 来源进一步统一

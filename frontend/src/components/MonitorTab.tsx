@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
+import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import type {
   ApprovalQueueItem,
   AgentInfo,
@@ -1876,6 +1877,48 @@ function collectSkills(projects: ProjectSummary[], agents: AgentInfo[]) {
   });
 
   return [...skills.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function SkillCard({ skill, compact = false }: { skill: SkillRow; compact?: boolean }) {
+  const visibleAgents = compact ? skill.agents.slice(0, 3) : skill.agents;
+  const hiddenAgents = Math.max(skill.agents.length - visibleAgents.length, 0);
+  const visibleProjects = compact ? skill.projects.slice(0, 2) : skill.projects;
+  const hiddenProjects = Math.max(skill.projects.length - visibleProjects.length, 0);
+  const projectSummary = visibleProjects.join(", ");
+
+  return (
+    <div className={`skill-card ${compact ? "skill-card--compact" : ""}`}>
+      <div className="skill-card__header">
+        <div className="skill-card__title">
+          <strong>{skill.name}</strong>
+          <div className="small-note skill-card__hint" title={skill.alwaysLoadedHint || "No always-loaded hint."}>
+            Hint: {skill.alwaysLoadedHint || "No always-loaded hint."}
+          </div>
+        </div>
+        <div className="skill-card__counts">
+          <span>{skill.agents.length} agents</span>
+          <span>{skill.projects.length} projects</span>
+        </div>
+      </div>
+      {!compact ? (
+        <div className="small-note skill-card__detail" title={skill.detail}>
+          {skill.detail}
+        </div>
+      ) : null}
+      <div className="skill-card__meta">
+        {visibleAgents.map((agent) => (
+          <span key={agent} className="tag">
+            {agent}
+          </span>
+        ))}
+        {hiddenAgents > 0 ? <span className="tag">+{hiddenAgents} more</span> : null}
+      </div>
+      <div className="small-note skill-card__projects">
+        Projects: {projectSummary || "Standalone only"}
+        {hiddenProjects > 0 ? ` +${hiddenProjects}` : ""}
+      </div>
+    </div>
+  );
 }
 
 function groupRuntimeByChat(overview: MonitorOverview | null) {
@@ -3904,21 +3947,11 @@ export function MonitorTab() {
         <div className="usage-panels">
           <div className="card">
             <SectionTitle title="Cost by Plugin / Skill" subtitle="UX copied first. Attribution remains heuristic for now." />
-            <div className="skill-grid">
+            <AdaptiveCardDeck className="skill-grid" itemCount={Math.min(skills.length, 6)} minCardWidth={220} idealCardWidth={260} maxCardWidth={300} maxColumns={3}>
               {skills.slice(0, 6).map((skill) => (
-                <div key={skill.name} className="skill-card">
-                  <strong>{skill.name}</strong>
-                  <div className="small-note">{skill.projects.length} projects · {skill.agents.length} agents</div>
-                  <div className="skill-card__meta">
-                    {skill.agents.slice(0, 3).map((agent) => (
-                      <span key={agent} className="tag">
-                        {agent}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <SkillCard key={skill.name} skill={skill} compact />
               ))}
-            </div>
+            </AdaptiveCardDeck>
           </div>
 
           <div className="card">
@@ -3969,7 +4002,7 @@ export function MonitorTab() {
 
           <div className="card">
             <SectionTitle title="Trace Clusters" subtitle="Behavior grouping copied from ClawMetry IA; currently backed by chat-level runtime grouping." />
-            <div className="cluster-grid">
+            <AdaptiveCardDeck className="cluster-grid" itemCount={Math.min(clusters.length, 4)} minCardWidth={240} idealCardWidth={280} maxCardWidth={340} maxColumns={3}>
               {clusters.slice(0, 4).map((cluster) => (
                 <div key={cluster.chatroomId} className="cluster-card">
                   <strong>{cluster.chatTitle}</strong>
@@ -3981,7 +4014,7 @@ export function MonitorTab() {
                   </div>
                 </div>
               ))}
-            </div>
+            </AdaptiveCardDeck>
           </div>
         </div>
       </section>
@@ -4484,22 +4517,11 @@ export function MonitorTab() {
         </div>
 
         {skillsView === "grid" ? (
-          <div className="skill-grid">
+          <AdaptiveCardDeck className="skill-grid" itemCount={skills.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={4}>
             {skills.map((skill) => (
-              <div key={skill.name} className="skill-card">
-                <strong>{skill.name}</strong>
-                <div className="small-note">{skill.detail}</div>
-                <div className="skill-card__meta">
-                  {skill.agents.map((agent) => (
-                    <span key={agent} className="tag">
-                      {agent}
-                    </span>
-                  ))}
-                </div>
-                <div className="small-note" style={{ marginTop: 10 }}>Projects: {skill.projects.join(", ") || "Standalone only"}</div>
-              </div>
+              <SkillCard key={skill.name} skill={skill} />
             ))}
-          </div>
+          </AdaptiveCardDeck>
         ) : (
           <div className="browser-shell">
             <div className="browser-tree">
@@ -4841,8 +4863,8 @@ export function MonitorTab() {
                     <div className="run-history-item__foot">
                       <span>{run.event_count} events</span>
                       {run.latest_event_type ? <span>{titleCaseLabel(run.latest_event_type)}</span> : null}
-                      {continuationStateSummary(run.checkpoint_snapshot?.continuation_state) ? (
-                        <span>{continuationStateSummary(run.checkpoint_snapshot?.continuation_state)}</span>
+                      {run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.checkpoint_snapshot?.continuation_state) ? (
+                        <span>{run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.checkpoint_snapshot?.continuation_state)}</span>
                       ) : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                       {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
@@ -5132,21 +5154,12 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Continuation State</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_state?.consumed
-                            ? [
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.resume_strategy
-                                  ? `via ${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.resume_strategy}`
-                                  : null,
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.protocol_tail_message_count
-                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.protocol_tail_message_count} tail messages`
-                                  : null,
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.prior_round_summary_count
-                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.prior_round_summary_count} prior summaries`
-                                  : null,
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.consumed_layers?.length
-                                  ? selectedTaskRunDetail.checkpoint_snapshot.continuation_state.consumed_layers.join(", ")
-                                  : null,
-                              ].filter(Boolean).join(" · ")
+                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
+                            || continuationStateSummary(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
+                            ? (
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
+                                || continuationStateSummary(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
+                              )
                             : "No continuation-state consumption derived."}
                         </div>
                       </div>
@@ -5345,7 +5358,7 @@ export function MonitorTab() {
               </div>
             </div>
           ) : null}
-          <div className="approval-grid">
+          <AdaptiveCardDeck className="approval-grid" itemCount={APPROVAL_PRESETS.length} minCardWidth={260} idealCardWidth={300} maxCardWidth={360} maxColumns={3}>
             {APPROVAL_PRESETS.map((preset) => (
               <div key={preset.key} className="approval-card">
                 <div className="simple-row">
@@ -5358,12 +5371,12 @@ export function MonitorTab() {
                 </div>
               </div>
             ))}
-          </div>
+          </AdaptiveCardDeck>
         </div>
         <div className="split-panels">
           <div className="card">
             <SectionTitle title="Get Notified" />
-            <div className="integration-grid">
+            <AdaptiveCardDeck className="integration-grid" itemCount={APPROVAL_INTEGRATIONS.length} minCardWidth={240} idealCardWidth={280} maxCardWidth={320} maxColumns={2}>
               {APPROVAL_INTEGRATIONS.map((integration) => (
                 <div key={integration.name} className="integration-card">
                   <strong>{integration.name}</strong>
@@ -5373,7 +5386,7 @@ export function MonitorTab() {
                   </div>
                 </div>
               ))}
-            </div>
+            </AdaptiveCardDeck>
           </div>
           <div className="card">
             <SectionTitle title="Recent Decisions" />
@@ -5431,7 +5444,7 @@ export function MonitorTab() {
             ↻ Refresh
           </button>
         </div>
-        <div className="cluster-grid">
+        <AdaptiveCardDeck className="cluster-grid" itemCount={clusters.length} minCardWidth={280} idealCardWidth={320} maxCardWidth={380} maxColumns={4}>
           {clusters.map((cluster) => (
             <div key={cluster.chatroomId} className="cluster-card">
               <strong>{cluster.chatTitle}</strong>
@@ -5448,7 +5461,7 @@ export function MonitorTab() {
               </div>
             </div>
           ))}
-        </div>
+        </AdaptiveCardDeck>
       </section>
 
       <section className={`page ${activePage === "security" ? "active" : ""}`} id="page-security">
@@ -5559,7 +5572,7 @@ export function MonitorTab() {
             </button>
           </div>
           {showSecurityCatalog ? (
-            <div className="security-grid">
+            <AdaptiveCardDeck className="security-grid" itemCount={4} minCardWidth={260} idealCardWidth={300} maxCardWidth={340} maxColumns={3}>
               {[
                 "Dangerous shell command patterns",
                 "Approval / gate failures",
@@ -5571,7 +5584,7 @@ export function MonitorTab() {
                   <div className="small-note">TODO: back this with a signed catalog once Catown emits structured security events.</div>
                 </div>
               ))}
-            </div>
+            </AdaptiveCardDeck>
           ) : null}
         </div>
       </section>

@@ -337,3 +337,19 @@
 - 让 `serialize_task_run_detail(...)` 在每条 event 上直接附带 `continuation_state` 与 `continuation_state_summary`
 - 统一从 `recovery_continuation_state` / `continuation_state` / `checkpoint_snapshot.continuation_state` 中提取，避免前端继续逐类解析 event payload
 - 补 recovery 测试与 Monitor UI 适配，确认恢复事件现在能直接返回可读 continuation 摘要
+
+### `Serialize checkpoint continuation summaries onto task-run snapshots`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `checkpoint_snapshot` 直接附带 `continuation_state_summary`，与 event 级 summary 一样由后端统一生成
+- 补 monitor 测试，确认 blocked-tool snapshot 会返回稳定 summary，而无 continuation 的 snapshot 返回 `null`
+- Monitor run 列表与 detail 卡片优先使用后端给出的 snapshot summary，继续减少前端本地字符串拼装

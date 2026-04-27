@@ -781,6 +781,7 @@ class TestMonitorOverview:
         assert continuation_state["protocol_tail_message_count"] == 4
         assert continuation_state["prior_round_summary_count"] == 1
         assert "protocol_tail" in continuation_state["consumed_layers"]
+        assert entry["checkpoint_snapshot"]["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] == 3
         assert turn_local_state["tool_names"] == ["delete_file"]
@@ -911,6 +912,7 @@ class TestMonitorOverview:
         entry = next(item for item in data["entries"] if item["id"] == task_run_id)
         assert entry["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "none"
         assert entry["checkpoint_snapshot"]["continuation_state"]["consumed"] is False
+        assert entry["checkpoint_snapshot"]["continuation_state_summary"] is None
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] is None
         assert turn_local_state["tool_names"] is None
