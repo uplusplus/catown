@@ -1098,3 +1098,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 保持原有 handoff payload 字段兼容，包括 recovered handoff 的 `recovered: true`
 - 保留 route 内 wrapper，降低对既有调用点的改动范围
 - 补 handoff helper 单测，并跑 sync/stream/recovery orchestration 回归
+
+### `Extract orchestration finalizer helper`
+
+范围：
+
+- `backend/services/orchestration_finalizer.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_finalizer.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 orchestration finalizer service，统一 last blocking result / latest result / latest completed turn / fallback 的 summary 选择规则
+- 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `finalize_orchestration_task_run(...)`
+- recovery completion event 与 TaskRun final summary 复用同一套 `summarize_orchestration_result(...)`
+- 补 finalizer helper 单测，并跑 sync/stream/recovery orchestration 回归

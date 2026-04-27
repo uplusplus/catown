@@ -152,6 +152,7 @@ from services.orchestration_handoffs import (
     compact_runtime_text as compact_orchestration_text,
     record_orchestration_handoffs,
 )
+from services.orchestration_finalizer import finalize_orchestration_task_run, summarize_orchestration_result
 
 logger = logging.getLogger("catown.api")
 
@@ -2456,13 +2457,12 @@ async def _run_multi_agent_orchestration(
             logger.warning(f"[Collab] {agent.name} returned empty response")
 
     logger.info(f"[Collab] Orchestration complete: {len(results)}/{len(resolved_agents)} agents responded")
-    complete_task_run(
+    finalize_orchestration_task_run(
         db,
         task_run,
-        summary=_compact_runtime_text(
-            last_blocking_result or (results[-1]["content"] if results else "Orchestration completed without agent output."),
-            limit=280,
-        ),
+        last_blocking_result=last_blocking_result,
+        results=results,
+        fallback="Orchestration completed without agent output.",
     )
 
 
@@ -2793,9 +2793,10 @@ async def _resume_interrupted_orchestration_task_run(
                 owner=RECOVERY_INSTANCE_ID,
                 lease_expires_at=lease_expires_at,
             )
-        recovery_summary = _compact_runtime_text(
-            last_blocking_result or (completed_turns[-1]["content"] if completed_turns else "Recovered orchestration completed."),
-            limit=280,
+        recovery_summary = summarize_orchestration_result(
+            last_blocking_result=last_blocking_result,
+            completed_turns=completed_turns,
+            fallback="Recovered orchestration completed.",
         )
         append_task_event(
             db,
@@ -2809,7 +2810,13 @@ async def _resume_interrupted_orchestration_task_run(
                 "recovery_continuation_state": recovery_continuation_state,
             },
         )
-        complete_task_run(db, task_run, summary=recovery_summary)
+        finalize_orchestration_task_run(
+            db,
+            task_run,
+            last_blocking_result=last_blocking_result,
+            completed_turns=completed_turns,
+            fallback="Recovered orchestration completed.",
+        )
         return TaskRunRecoveryResult(
             task_run_id=task_run_id,
             resumed=True,
@@ -3107,13 +3114,12 @@ async def _stream_multi_agent_orchestration(
         yield f"data: {sse_json.dumps({'type': 'collab_step_done', 'agent': step.requested_name, 'agent_name': agent_label, 'message_id': saved.id if saved else None, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id), 'released_step_ids': [next_step.step_id for next_step in ready_steps]}, ensure_ascii=False)}\n\n"
 
     resolved_names = [agent_name_of(agent) for agent in resolved_agents]
-    complete_task_run(
+    finalize_orchestration_task_run(
         db,
         task_run,
-        summary=_compact_runtime_text(
-            last_blocking_result or (completed_turns[-1]["content"] if completed_turns else "Streaming orchestration completed."),
-            limit=280,
-        ),
+        last_blocking_result=last_blocking_result,
+        completed_turns=completed_turns,
+        fallback="Streaming orchestration completed.",
     )
     yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
 

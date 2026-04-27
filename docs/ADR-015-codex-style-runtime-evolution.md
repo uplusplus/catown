@@ -3801,3 +3801,40 @@ P1 继续把 orchestration executor 周边协议从 API route 中拆出。本轮
 
 - handoff 仍是 orchestration loop 的内存 pending map，不是完全 durable queue
 - 但协议入口已收口，下一步可以把 handoff helper 接到 durable inbox/outbox 或统一 executor message bus
+
+### 11.71 2026-04-27 新进展：orchestration finalizer helper 已抽出
+
+P1 继续把 orchestration executor 的末端行为从 API route 中拆出。本轮处理 TaskRun final summary / completion 逻辑。
+
+之前 sync orchestration、stream orchestration、recovery orchestration 各自决定：
+
+- 优先使用 last blocking result
+- 否则使用最后一个 result / completed turn
+- 否则使用 fallback 文本
+- 然后调用 `complete_task_run(...)`
+
+这套选择规则影响 task-run summary、monitor 展示、recovery result detail。它属于 executor finalization 协议，不应该散在三条路径里。
+
+本轮新增：
+
+- `backend/services/orchestration_finalizer.py`
+  - `summarize_orchestration_result(...)`
+  - `finalize_orchestration_task_run(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration finalization
+- 流式 multi-agent orchestration finalization
+- interrupted orchestration recovery finalization
+
+这一步的意义是：
+
+- final summary 选择规则统一
+- TaskRun complete 行为开始由 orchestration service 管理
+- recovery completion event 的 detail 与 TaskRun summary 复用同一套 summary builder
+- route 层继续变薄，为后续抽单一 parent executor loop 做准备
+
+边界：
+
+- failure finalization 仍有多处按具体错误路径处理
+- 但正常完成路径已完成 sync / stream / recovery 的共享 finalizer 收口
