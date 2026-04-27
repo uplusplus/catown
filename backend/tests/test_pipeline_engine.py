@@ -894,7 +894,11 @@ async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path)
             "agent_turn_completed",
             "pipeline_stage_blocked",
         ]
+        started_payload = json.loads(events[0].payload_json)
         blocked_payload = json.loads(events[-1].payload_json)
+        assert started_payload["checkpoint_snapshot"]["event_count"] == 0
+        assert started_payload["continuation_state"]["consumed"] is False
+        assert started_payload["continuation_state"]["protocol_tail_message_count"] == 0
         assert blocked_payload["tool_name"] == "read_file"
         assert blocked_payload["blocked_kind"] == "approval"
         assert blocked_payload["queue_item_id"] is not None
@@ -1150,6 +1154,8 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
         assert started_payload["stage_policy"]["rollback"]["enabled"] is True
         assert started_payload["stage_policy"]["rollback"]["target_stage"] == "analysis"
         assert started_payload["stage_policy"]["metadata"]["tool_policy_summary"]["tool_count"] >= 1
+        assert started_payload["checkpoint_snapshot"]["event_count"] == 0
+        assert started_payload["continuation_state"]["consumed"] is False
 
         assert blocked_payload["stage_policy"]["approval"]["kind"] == "manual"
         assert blocked_payload["stage_policy"]["delivery"]["required"] is True
@@ -1172,6 +1178,182 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
         artifacts = db.query(fresh_db.StageArtifact).filter(fresh_db.StageArtifact.stage_id == stage.id).all()
         assert len(artifacts) == 1
         assert artifacts[0].file_path == "reports/summary.md"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_started_exposes_checkpoint_continuation_state(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+    from pipeline.config import PipelineConfig, StageConfig
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        project, chatroom, pipeline = _seed_pipeline_project(
+            fresh_db,
+            db,
+            project_name="Pipeline Stage Snapshot Project",
+        )
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Pipeline stage snapshot",
+            user_request="Resume this pipeline stage with checkpoint context.",
+            target_agent_name="analyst",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            input_requirement="Continue after the approved tool replay.",
+            workspace_path=str(workspace),
+            started_at=datetime.now(),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        stage = fresh_db.PipelineStage(
+            run_id=run.id,
+            stage_name="analysis",
+            display_name="Analysis",
+            stage_order=0,
+            agent_name="analyst",
+            status="running",
+            gate_type="auto",
+        )
+        db.add(stage)
+        db.commit()
+        db.refresh(stage)
+
+        for event_index, event_type, payload in [
+            (1, "agent_turn_started", {"pipeline_id": pipeline.id, "pipeline_run_id": run.id, "stage_name": "analysis", "display_name": "Analysis"}),
+            (
+                2,
+                "tool_round_recorded",
+                {
+                    "turn": 1,
+                    "tool_names": ["read_file"],
+                    "tool_count": 1,
+                    "tool_status_counts": {"succeeded": 1},
+                    "blocked_tool_count": 0,
+                    "turn_local_state": {
+                        "assistant_content": "Open the design doc before continuing.",
+                        "tool_results": [
+                            {
+                                "tool_call_id": "pipeline_stage_start_1",
+                                "tool_name": "read_file",
+                                "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                "result": "Design checkpoint contents",
+                                "success": True,
+                                "status": "succeeded",
+                                "blocked": False,
+                                "blocked_kind": None,
+                                "blocked_reason": None,
+                            }
+                        ],
+                        "protocol_messages": [
+                            {
+                                "role": "assistant",
+                                "content": "Open the design doc before continuing.",
+                                "tool_calls": [
+                                    {
+                                        "id": "pipeline_stage_start_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "pipeline_stage_start_1",
+                                "name": "read_file",
+                                "content": "Design checkpoint contents",
+                            },
+                        ],
+                    },
+                },
+            ),
+            (
+                3,
+                "approval_queue_item_followup_triggered",
+                {"followup_status": "continued", "followup_reason": "pipeline_resumed"},
+            ),
+        ]:
+            db.add(
+                fresh_db.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=event_index,
+                    event_type=event_type,
+                    agent_name="analyst",
+                    summary=f"analyst {event_type}",
+                    payload_json=json.dumps(payload, ensure_ascii=False),
+                )
+            )
+        db.commit()
+
+        template = PipelineConfig(
+            name="default",
+            description="Pipeline stage snapshot template.",
+            stages=[
+                StageConfig(
+                    name="analysis",
+                    display_name="Analysis",
+                    agent="analyst",
+                    gate="auto",
+                    timeout_minutes=5,
+                    context_prompt="Continue after checkpoint replay.",
+                )
+            ],
+        )
+        stage_cfg = template.stages[0]
+
+        engine = engine_mod.PipelineEngine()
+        engine._write_skill_full_files = lambda agent_name, stage_cfg_obj, workspace_path: None
+        engine._git_commit = lambda run_obj, stage_name: None
+
+        async def _fake_run_agent_stage(db, pipeline, run, stage, stage_cfg, context):
+            return "Snapshot-aware stage run."
+
+        engine._run_agent_stage = _fake_run_agent_stage
+
+        success = await engine._execute_stage(
+            db=db,
+            pipeline=pipeline,
+            run=run,
+            stage=stage,
+            stage_cfg=stage_cfg,
+            template=template,
+        )
+
+        assert success is True
+        events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        started_payload = json.loads(next(event for event in events if event.event_type == "pipeline_stage_started").payload_json)
+        assert started_payload["checkpoint_snapshot"]["turn_local_state"]["assistant_content"] == "Open the design doc before continuing."
+        assert started_payload["continuation_state"]["consumed"] is True
+        assert started_payload["continuation_state"]["protocol_tail_message_count"] == 2
+        assert "protocol_tail" in started_payload["continuation_state"]["consumed_layers"]
     finally:
         db.close()
 

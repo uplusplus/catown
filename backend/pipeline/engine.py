@@ -55,6 +55,7 @@ from services.turn_state import (
 from services.run_ledger import (
     append_task_event,
     build_task_run_checkpoint_snapshot,
+    describe_checkpoint_continuation_state,
     complete_task_run,
     create_task_run,
     get_task_run,
@@ -1549,6 +1550,9 @@ class PipelineEngine:
         # 将 skill full 内容写入 .catown/skills/ 供 Agent 按需 read_file
         workspace = _get_workspace(run)
         self._write_skill_full_files(stage_cfg.agent, stage_cfg, workspace)
+        linked_task_run = _pipeline_task_run(db, run)
+        checkpoint_snapshot = build_task_run_checkpoint_snapshot(linked_task_run)
+        checkpoint_continuation_state = describe_checkpoint_continuation_state(checkpoint_snapshot)
 
         # 写入阶段开始事件
         active_skills = list(stage_policy.active_skills)
@@ -1583,6 +1587,8 @@ class PipelineEngine:
                 "active_skills": active_skills,
                 "expected_artifacts": stage_policy.delivery.expected_artifacts,
                 "stage_policy": stage_policy.to_payload(),
+                "checkpoint_snapshot": checkpoint_snapshot,
+                "continuation_state": checkpoint_continuation_state,
             },
             target_agent_name=stage_policy.agent_name,
         )

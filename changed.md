@@ -262,3 +262,19 @@
 - 让 standalone/project single-agent streaming 入口在启动 stream turn loop 前也先构建 `checkpoint_snapshot`
 - 用 `build_turn_state_from_checkpoint_snapshot(...)` 初始化 stream turn state，避免这些入口继续从空白 `TurnContextState()` 起步
 - 补 project stream 测试，确认首个 streaming LLM 调用会重新带回 checkpoint 中的 assistant/tool protocol
+
+### `Project pipeline stage-start checkpoint consumption into task events`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽出通用 `describe_checkpoint_continuation_state(...)` helper，避免 recovery/pipeline 各自复制 continuation-state 统计逻辑
+- 让 `pipeline_stage_started` 事件显式携带当次 stage 实际看到的 `checkpoint_snapshot` 与 `continuation_state`
+- 补 pipeline engine 测试，确认 resumed stage 的 stage-start 事件会投影 protocol tail 消费情况，而新开 stage 则明确显示为空

@@ -356,6 +356,45 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     }
 
 
+def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str, Any]:
+    snapshot = checkpoint_snapshot if isinstance(checkpoint_snapshot, dict) else {}
+    continuation_cursor = (
+        snapshot.get("continuation_cursor")
+        if isinstance(snapshot.get("continuation_cursor"), dict)
+        else {}
+    )
+    turn_local_state = (
+        snapshot.get("turn_local_state")
+        if isinstance(snapshot.get("turn_local_state"), dict)
+        else {}
+    )
+    protocol_tail_messages = (
+        turn_local_state.get("protocol_tail_messages")
+        if isinstance(turn_local_state.get("protocol_tail_messages"), list)
+        else []
+    )
+    prior_round_summaries = (
+        turn_local_state.get("prior_round_summaries")
+        if isinstance(turn_local_state.get("prior_round_summaries"), list)
+        else []
+    )
+    consumed_layers: list[str] = []
+    if continuation_cursor.get("resume_strategy") == "rebuild_from_runtime_snapshot":
+        consumed_layers.append("runtime_snapshot")
+    if protocol_tail_messages:
+        consumed_layers.append("protocol_tail")
+    if prior_round_summaries:
+        consumed_layers.append("prior_round_summaries")
+    return {
+        "consumed": bool(consumed_layers),
+        "next_action": continuation_cursor.get("next_action"),
+        "resume_strategy": continuation_cursor.get("resume_strategy"),
+        "consumed_layers": consumed_layers,
+        "protocol_tail_message_count": len(protocol_tail_messages),
+        "prior_round_summary_count": len(prior_round_summaries),
+    }
+
+
 def _latest_checkpoint_turn_events(events: list[TaskRunEvent]) -> list[TaskRunEvent]:
     if not events:
         return []

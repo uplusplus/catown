@@ -87,6 +87,7 @@ from services.turn_state import TurnContextState, build_tool_result_record, buil
 from services.session_service import SessionService
 from services.run_ledger import (
     append_task_event,
+    describe_checkpoint_continuation_state,
     build_task_run_checkpoint_snapshot,
     complete_task_run,
     create_task_run,
@@ -4201,34 +4202,7 @@ def _build_tool_replay_followup_context(item: Any, replay_result: Any) -> str:
 
 
 def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str, Any]:
-    snapshot = checkpoint_snapshot if isinstance(checkpoint_snapshot, dict) else {}
-    continuation_cursor = snapshot.get("continuation_cursor") if isinstance(snapshot.get("continuation_cursor"), dict) else {}
-    turn_local_state = snapshot.get("turn_local_state") if isinstance(snapshot.get("turn_local_state"), dict) else {}
-    protocol_tail_messages = (
-        turn_local_state.get("protocol_tail_messages")
-        if isinstance(turn_local_state.get("protocol_tail_messages"), list)
-        else []
-    )
-    prior_round_summaries = (
-        turn_local_state.get("prior_round_summaries")
-        if isinstance(turn_local_state.get("prior_round_summaries"), list)
-        else []
-    )
-    consumed_layers: list[str] = []
-    if continuation_cursor.get("resume_strategy") == "rebuild_from_runtime_snapshot":
-        consumed_layers.append("runtime_snapshot")
-    if protocol_tail_messages:
-        consumed_layers.append("protocol_tail")
-    if prior_round_summaries:
-        consumed_layers.append("prior_round_summaries")
-    return {
-        "consumed": bool(consumed_layers),
-        "next_action": continuation_cursor.get("next_action"),
-        "resume_strategy": continuation_cursor.get("resume_strategy"),
-        "consumed_layers": consumed_layers,
-        "protocol_tail_message_count": len(protocol_tail_messages),
-        "prior_round_summary_count": len(prior_round_summaries),
-    }
+    return describe_checkpoint_continuation_state(checkpoint_snapshot)
 
 
 def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:

@@ -2107,3 +2107,71 @@ monitor 上也同步做了投影：
 - 剩余直接 new 空白 `TurnContextState()` 的主 stream 入口进一步减少
 - single-agent / multi-agent / recovery / pipeline 开始共享更一致的 continuation rehydration 语义
 - “streaming 是不是会丢 checkpoint continuation” 这类分叉行为又少了一层
+
+### 11.32 2026-04-25 新进展：pipeline stage-start 事件已开始投影 checkpoint continuation consumption
+
+11.31 之后，pipeline stage 在执行输入面已经会真实消费 checkpoint continuation state，但事件层还留着一处不对齐：
+
+- `pipeline_stage_started`
+  - 仍只记录 stage policy / gate / timeout / expected artifacts
+- 看不到：
+  - 这个 stage 开始时实际拿到的 `checkpoint_snapshot`
+  - 以及它准备消费多少 protocol tail / prior summaries
+
+于是 pipeline 在这一点上还落后于 orchestration recovery：
+
+- recovery 的 step-dispatch event 已经能精确说明“这一步拿了什么 continuation state”
+- pipeline resumed stage 虽然执行面已正确
+- 但 monitor / 调试 / 审计层还不能直接看到这次 stage-start 的 continuation 输入
+
+这一轮把这层事件投影补齐：
+
+- `services.run_ledger.describe_checkpoint_continuation_state(...)`
+  - 抽出通用 helper
+  - 统一从 `checkpoint_snapshot` 派生：
+    - `consumed`
+    - `next_action`
+    - `resume_strategy`
+    - `consumed_layers`
+    - `protocol_tail_message_count`
+    - `prior_round_summary_count`
+
+- `routes/api.py`
+  - recovery 继续复用同一 helper
+  - 避免 recovery / pipeline 各自维护一份 continuation-state 统计逻辑
+
+- `pipeline_stage_started`
+  - 现在会额外带上：
+    - `checkpoint_snapshot`
+    - `continuation_state`
+
+这样 pipeline stage-start event 现在也能直接回答：
+
+- 这次 stage 开始时是否带着 continuation state
+- 最近 protocol tail 有多少条
+- prior round summaries 有多少条
+- 当前 snapshot 的 latest turn-local payload 是什么
+
+测试也同步补上：
+
+- 新增 `test_pipeline_stage_started_exposes_checkpoint_continuation_state`
+  - 预先种入：
+    - `agent_turn_started`
+    - `tool_round_recorded`
+    - `approval_queue_item_followup_triggered`
+  - 然后启动 stage
+  - 断言 `pipeline_stage_started` 事件中：
+    - `checkpoint_snapshot.turn_local_state.assistant_content == "Open the design doc before continuing."`
+    - `continuation_state.consumed is True`
+    - `continuation_state.protocol_tail_message_count == 2`
+
+- 既有 pipeline stage 测试也补充断言：
+  - 新开 stage 的 `pipeline_stage_started` 明确显示：
+    - `checkpoint_snapshot.event_count == 0`
+    - `continuation_state.consumed is False`
+
+这一步的意义是：
+
+- pipeline 不只是执行器内部吃到了 checkpoint continuation
+- 它的 stage-start event 现在也能把这份消费状态 durable 地投影出来
+- execution semantics 与 observability semantics 又进一步对齐
