@@ -4,10 +4,12 @@ import pytest
 
 from services.orchestration_scheduler import OrchestrationRuntimeQueue, build_orchestration_schedule
 from services.orchestration_stream_runner import (
+    StreamOrchestrationRuntimeDeps,
     complete_stream_orchestration_step,
     fail_stream_orchestration_step,
     handle_stream_orchestration_turn_complete,
     iter_stream_orchestration_agent_events,
+    iter_stream_orchestration_runtime_events,
     start_stream_orchestration_step,
 )
 from services.orchestration_step_state import OrchestrationStepOutputState
@@ -210,5 +212,93 @@ def test_complete_and_fail_stream_step_record_ledger(fresh_db):
             "handoff_created",
             "scheduler_step_failed",
         ]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_orchestration_runtime_events_yields_transport_neutral_events(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    calls = []
+    try:
+        chatroom = fresh_db.Chatroom(title="Stream runtime")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="running",
+            title="Stream runtime",
+            user_request="Coordinate.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        queue = _queue()
+        output_state = OrchestrationStepOutputState()
+        pending = {}
+
+        async def iter_agent_events(**kwargs):
+            yield {"type": "content", "delta": "hello", "agent": "Analyst"}
+            yield {"type": "runtime_card", "card_type": "llm_call", "payload": {"agent": "Analyst"}}
+            yield {"type": "turn_complete", "content": "Analyst completed stream output."}
+
+        async def save_message(**kwargs):
+            calls.append(("save", kwargs))
+            return SimpleNamespace(id=99, created_at=None)
+
+        async def publish_message(*args, **kwargs):
+            calls.append(("publish", kwargs))
+
+        def record_turn_completed(*args, **kwargs):
+            calls.append(("complete", kwargs))
+
+        def finalize_task_run(*args, **kwargs):
+            calls.append(("finalize", kwargs))
+
+        deps = StreamOrchestrationRuntimeDeps(
+            iter_agent_events=iter_agent_events,
+            save_message=save_message,
+            publish_message=publish_message,
+            record_turn_completed=record_turn_completed,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda agent, request, response: calls.append(("memory", response)),
+            build_checkpoint_snapshot=lambda task_run: {"checkpoint": True},
+            find_stage_policy=lambda policy, step_id: None,
+            agent_name_of=lambda agent: agent.name,
+            fail_task_run=lambda *args, **kwargs: calls.append(("fail", kwargs)),
+            finalize_task_run=finalize_task_run,
+            set_active_agent=lambda name, agent_id: calls.append(("active", name)),
+        )
+
+        events = [
+            event
+            async for event in iter_stream_orchestration_runtime_events(
+                db=db,
+                task_run=task_run,
+                chatroom=chatroom,
+                project=None,
+                agents=[],
+                resolved_agents=[DummyAgent(1, "Analyst", "analyst"), DummyAgent(2, "Developer", "developer")],
+                user_message="Coordinate.",
+                client_turn_id="turn-stream",
+                queue=queue,
+                orchestration_policy=None,
+                output_state=output_state,
+                pending_handoffs=pending,
+                standalone_note="note",
+                deps=deps,
+            )
+        ]
+
+        assert events[0].type == "sse"
+        assert events[0].payload["type"] == "collab_step"
+        assert any(event.type == "runtime_card" for event in events)
+        assert events[-1].payload["type"] == "done"
+        assert output_state.completed_turns[0]["content"] == "Analyst completed stream output."
+        assert any(name == "finalize" for name, _payload in calls)
+        assert queue.runtime_snapshot().completed_step_count == 2
     finally:
         db.close()

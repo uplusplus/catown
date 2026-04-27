@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,36 @@ SaveMessage = Callable[..., Awaitable[Any]]
 PublishMessage = Callable[..., Awaitable[Any]]
 RecordTurnCompleted = Callable[..., Any]
 ScheduleMemoryExtraction = Callable[..., Any]
+BuildCheckpointSnapshot = Callable[[TaskRun | None], Dict[str, Any]]
+FindStagePolicy = Callable[[Any, str], Any]
+AgentNameOf = Callable[[Any], str]
+SetActiveAgent = Callable[[str, Any], Any]
+FailTaskRun = Callable[..., Any]
+FinalizeTaskRun = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class StreamOrchestrationRuntimeDeps:
+    iter_agent_events: IterAgentEvents
+    save_message: SaveMessage
+    publish_message: PublishMessage
+    record_turn_completed: RecordTurnCompleted
+    message_metadata: Callable[[str | None], Dict[str, Any]]
+    schedule_memory_extraction: ScheduleMemoryExtraction
+    build_checkpoint_snapshot: BuildCheckpointSnapshot
+    find_stage_policy: FindStagePolicy
+    agent_name_of: AgentNameOf
+    fail_task_run: FailTaskRun
+    finalize_task_run: FinalizeTaskRun
+    set_active_agent: SetActiveAgent | None = None
+
+
+@dataclass(frozen=True)
+class StreamOrchestrationRuntimeEvent:
+    type: str
+    payload: Dict[str, Any] | None = None
+    card_type: str | None = None
+    card_payload: Dict[str, Any] | None = None
 
 
 def start_stream_orchestration_step(
@@ -211,3 +241,171 @@ def complete_stream_orchestration_step(
         "step_state": queue.runtime_state_payload_for_step(step.step_id),
         "released_step_ids": [next_step.step_id for next_step in ready_steps],
     }
+
+
+async def iter_stream_orchestration_runtime_events(
+    *,
+    db: Session,
+    task_run: TaskRun | None,
+    chatroom: Any,
+    project: Any,
+    agents: list[Any],
+    resolved_agents: list[Any],
+    user_message: str,
+    client_turn_id: str | None,
+    queue: Any,
+    orchestration_policy: Any,
+    output_state: OrchestrationStepOutputState,
+    pending_handoffs: Dict[str, List[Dict[str, str]]],
+    standalone_note: str,
+    deps: StreamOrchestrationRuntimeDeps,
+) -> AsyncIterator[StreamOrchestrationRuntimeEvent]:
+    """Run streaming orchestration and yield transport-neutral runtime events."""
+
+    agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+    while True:
+        step = queue.pop_ready()
+        if step is None:
+            break
+
+        agent = agents_by_id.get(step.agent_id)
+        if agent is None:
+            continue
+
+        agent_label = deps.agent_name_of(agent)
+        step_policy = deps.find_stage_policy(orchestration_policy, step.step_id)
+        db.refresh(task_run)
+        step_checkpoint_snapshot = deps.build_checkpoint_snapshot(task_run)
+        if callable(deps.set_active_agent):
+            deps.set_active_agent(agent_label, agent.id)
+
+        yield StreamOrchestrationRuntimeEvent(
+            type="sse",
+            payload=start_stream_orchestration_step(
+                db,
+                task_run,
+                queue=queue,
+                step=step,
+                agent_name=agent_label,
+                stage_policy=step_policy,
+            ),
+        )
+
+        saved = None
+        step_content = ""
+        try:
+            async for event in iter_stream_orchestration_agent_events(
+                iter_agent_events=deps.iter_agent_events,
+                agent=agent,
+                chatroom=chatroom,
+                project=project,
+                agents=agents,
+                user_message=user_message,
+                db=db,
+                client_turn_id=client_turn_id,
+                output_state=output_state,
+                pending_handoffs=pending_handoffs,
+                step=step,
+                standalone_note=standalone_note,
+                task_run=task_run,
+                checkpoint_snapshot=step_checkpoint_snapshot,
+            ):
+                if event["type"] == "runtime_card":
+                    yield StreamOrchestrationRuntimeEvent(
+                        type="runtime_card",
+                        card_type=event["card_type"],
+                        card_payload=event["payload"],
+                    )
+                    continue
+
+                if event["type"] == "turn_complete":
+                    step_content = event.get("content") or ""
+                    if step_content:
+                        saved = await handle_stream_orchestration_turn_complete(
+                            db=db,
+                            task_run=task_run,
+                            chatroom=chatroom,
+                            agent=agent,
+                            agent_name=agent_label,
+                            step=step,
+                            content=step_content,
+                            client_turn_id=client_turn_id,
+                            output_state=output_state,
+                            save_message=deps.save_message,
+                            publish_message=deps.publish_message,
+                            record_turn_completed=deps.record_turn_completed,
+                            message_metadata=deps.message_metadata(client_turn_id),
+                            schedule_memory_extraction=deps.schedule_memory_extraction,
+                            user_message=user_message,
+                        )
+                    continue
+
+                yield StreamOrchestrationRuntimeEvent(type="sse", payload=event)
+        except Exception as exc:
+            fail_stream_orchestration_step(
+                db,
+                task_run,
+                queue=queue,
+                step=step,
+                agent_name=agent_label,
+                stage_policy=step_policy,
+                error=exc,
+            )
+            deps.fail_task_run(
+                db,
+                task_run,
+                summary=f"Streaming orchestration failed at {agent_label}.",
+                agent_name=agent_label,
+                payload={"error": str(exc), "step_id": step.step_id},
+            )
+            yield StreamOrchestrationRuntimeEvent(
+                type="sse",
+                payload={
+                    "type": "error",
+                    "error": str(exc)[:2000],
+                    "agent_name": agent_label,
+                    "client_turn_id": client_turn_id,
+                },
+            )
+            yield StreamOrchestrationRuntimeEvent(
+                type="sse",
+                payload={
+                    "type": "done",
+                    "agent_name": agent_label,
+                    "collab": True,
+                    "client_turn_id": client_turn_id,
+                },
+            )
+            return
+
+        ready_steps, step_done_payload = complete_stream_orchestration_step(
+            db,
+            task_run,
+            queue=queue,
+            step=step,
+            orchestration_policy=orchestration_policy,
+            agent_name=agent_label,
+            content=step_content,
+            pending_handoffs=pending_handoffs,
+            stage_policy=step_policy,
+        )
+        step_done_payload["message_id"] = saved.id if saved else None
+        yield StreamOrchestrationRuntimeEvent(type="sse", payload=step_done_payload)
+
+    resolved_names = [deps.agent_name_of(agent) for agent in resolved_agents]
+    deps.finalize_task_run(
+        db,
+        task_run,
+        last_blocking_result=output_state.last_blocking_result,
+        completed_turns=output_state.completed_turns,
+        fallback="Streaming orchestration completed.",
+    )
+    yield StreamOrchestrationRuntimeEvent(
+        type="sse",
+        payload={
+            "type": "done",
+            "agent_name": ", ".join(resolved_names),
+            "collab": True,
+            "client_turn_id": client_turn_id,
+        },
+    )

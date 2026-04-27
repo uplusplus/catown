@@ -4084,3 +4084,34 @@ P1 继续处理 streaming orchestration 与 Codex 风格 executor 的差距。�
 
 - streaming orchestration route 仍负责 `async for` 事件分发与 SSE 序列化
 - 下一步应把 streaming orchestration route 改成消费 service-level typed runtime events，使 transport 只负责 render
+
+### 11.79 2026-04-27 新进展：stream orchestration runtime event runner 已抽出
+
+P1.2 将 streaming orchestration 的 step loop 从 route 层继续下沉。此前 route 虽然已经不直接持有 streaming agent turn loop，但仍在 `_stream_multi_agent_orchestration(...)` 中负责：pop ready step、dispatch、转发 agent event、处理 runtime card、保存 turn_complete、失败终结、step complete 与最终 done。
+
+本轮扩展：
+
+- `backend/services/orchestration_stream_runner.py`
+  - `StreamOrchestrationRuntimeDeps`
+  - `StreamOrchestrationRuntimeEvent`
+  - `iter_stream_orchestration_runtime_events(...)`
+
+并接入 streaming orchestration route。
+
+新的边界：
+
+- service 负责 runtime execution：scheduler step loop、step lifecycle、turn completion persistence、failure handling、finalizer
+- route 负责 transport rendering：`runtime_card` 调 `sse_card(...)`，普通 payload 序列化为 SSE `data:`
+- route 仍负责前置准备：解析 prepared runtime、记录 orchestration_started / scheduler_plan_created、处理 no-agent / no-plan 早退
+
+这一步的意义是：
+
+- streaming orchestration 开始具备 Codex 风格 typed runtime event 边界
+- route 不再手写每个 streaming step 的执行细节
+- 后续把 route 前置准备也下沉后，transport 层可以进一步收敛为纯 render
+
+边界：
+
+- `StreamOrchestrationRuntimeDeps` 仍注入 route-local prompt/runtime/message adapter
+- durable handoff 仍未接入，runtime event runner 仍使用 `pending_handoffs` map
+- 下一步优先处理 handoff durability，把 in-memory pending handoff 替换/桥接到 inbox/outbox

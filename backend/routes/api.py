@@ -167,11 +167,8 @@ from services.orchestration_step_state import OrchestrationStepOutputState, reco
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_runner import run_nonstream_orchestration_step
 from services.orchestration_stream_runner import (
-    complete_stream_orchestration_step,
-    fail_stream_orchestration_step,
-    handle_stream_orchestration_turn_complete,
-    iter_stream_orchestration_agent_events,
-    start_stream_orchestration_step,
+    StreamOrchestrationRuntimeDeps,
+    iter_stream_orchestration_runtime_events,
 )
 
 logger = logging.getLogger("catown.api")
@@ -2645,9 +2642,6 @@ async def _stream_multi_agent_orchestration(
         yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
     queue = OrchestrationRuntimeQueue(plan)
-    agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
-    iter_orchestration_agent_events = _build_stream_orchestration_agent_turn_iterator()
-
     append_task_event(
         db,
         task_run,
@@ -2677,124 +2671,44 @@ async def _stream_multi_agent_orchestration(
         ),
     )
 
-    while True:
-        step = queue.pop_ready()
-        if step is None:
-            break
-
-        agent = agents_by_id.get(step.agent_id)
-        if agent is None:
-            continue
-
-        agent_label = agent_name_of(agent)
-        step_policy = find_stage_policy(orchestration_policy, step.step_id)
-        db.refresh(task_run)
-        step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-        if callable(set_active_agent):
-            set_active_agent(agent_label, agent.id)
-        step_payload = start_stream_orchestration_step(
-            db,
-            task_run,
-            queue=queue,
-            step=step,
-            agent_name=agent_label,
-            stage_policy=step_policy,
-        )
-        yield f"data: {sse_json.dumps(step_payload, ensure_ascii=False)}\n\n"
-
-        saved = None
-        step_content = ""
-        try:
-            async for event in iter_stream_orchestration_agent_events(
-                iter_agent_events=iter_orchestration_agent_events,
-                agent=agent,
-                chatroom=chatroom,
-                project=project,
-                agents=agents,
-                user_message=user_message,
-                db=db,
-                client_turn_id=client_turn_id,
-                output_state=output_state,
-                pending_handoffs=pending_handoffs,
-                step=step,
-                standalone_note=standalone_note,
-                task_run=task_run,
-                checkpoint_snapshot=step_checkpoint_snapshot,
-            ):
-                if event["type"] == "runtime_card":
-                    yield await sse_card(event["card_type"], event["payload"])
-                    continue
-
-                if event["type"] == "turn_complete":
-                    step_content = event.get("content") or ""
-                    if step_content:
-                        saved = await handle_stream_orchestration_turn_complete(
-                            db=db,
-                            task_run=task_run,
-                            chatroom=chatroom,
-                            agent=agent,
-                            agent_name=agent_label,
-                            step=step,
-                            content=step_content,
-                            client_turn_id=client_turn_id,
-                            output_state=output_state,
-                            save_message=chatroom_manager.send_message,
-                            publish_message=_publish_saved_chat_message,
-                            record_turn_completed=record_agent_turn_completed,
-                            message_metadata=_message_metadata_with_turn(client_turn_id),
-                            schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
-                                _extract_memories(current_agent.id, _agent_type(current_agent), request, response)
-                            ),
-                            user_message=user_message,
-                        )
-                    continue
-
-                yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as exc:
-            fail_stream_orchestration_step(
-                db,
-                task_run,
-                queue=queue,
-                step=step,
-                agent_name=agent_label,
-                stage_policy=step_policy,
-                error=exc,
-            )
-            fail_orchestration_task_run(
-                db,
-                task_run,
-                summary=f"Streaming orchestration failed at {agent_label}.",
-                agent_name=agent_label,
-                payload={"error": str(exc), "step_id": step.step_id},
-            )
-            yield f"data: {sse_json.dumps({'type': 'error', 'error': str(exc)[:2000], 'agent_name': agent_label, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
-            yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': agent_label, 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
-            return
-
-        ready_steps, step_done_payload = complete_stream_orchestration_step(
-            db,
-            task_run,
-            queue=queue,
-            step=step,
-            orchestration_policy=orchestration_policy,
-            agent_name=agent_label,
-            content=step_content,
-            pending_handoffs=pending_handoffs,
-            stage_policy=step_policy,
-        )
-        step_done_payload["message_id"] = saved.id if saved else None
-
-        yield f"data: {sse_json.dumps(step_done_payload, ensure_ascii=False)}\n\n"
-
-    resolved_names = [agent_name_of(agent) for agent in resolved_agents]
-    finalize_orchestration_task_run(
-        db,
-        task_run,
-        last_blocking_result=output_state.last_blocking_result,
-        completed_turns=completed_turns,
-        fallback="Streaming orchestration completed.",
+    stream_runtime_deps = StreamOrchestrationRuntimeDeps(
+        iter_agent_events=_build_stream_orchestration_agent_turn_iterator(),
+        save_message=chatroom_manager.send_message,
+        publish_message=_publish_saved_chat_message,
+        record_turn_completed=record_agent_turn_completed,
+        message_metadata=_message_metadata_with_turn,
+        schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
+            _extract_memories(current_agent.id, _agent_type(current_agent), request, response)
+        ),
+        build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
+        find_stage_policy=find_stage_policy,
+        agent_name_of=agent_name_of,
+        fail_task_run=fail_orchestration_task_run,
+        finalize_task_run=finalize_orchestration_task_run,
+        set_active_agent=set_active_agent,
     )
-    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': ', '.join(resolved_names), 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+
+    async for runtime_event in iter_stream_orchestration_runtime_events(
+        db=db,
+        task_run=task_run,
+        chatroom=chatroom,
+        project=project,
+        agents=agents,
+        resolved_agents=resolved_agents,
+        user_message=user_message,
+        client_turn_id=client_turn_id,
+        queue=queue,
+        orchestration_policy=orchestration_policy,
+        output_state=output_state,
+        pending_handoffs=pending_handoffs,
+        standalone_note=standalone_note,
+        deps=stream_runtime_deps,
+    ):
+        if runtime_event.type == "runtime_card":
+            yield await sse_card(runtime_event.card_type, runtime_event.card_payload)
+            continue
+        yield f"data: {sse_json.dumps(runtime_event.payload, ensure_ascii=False)}\n\n"
+
 
 
 # ==================== 数据模型 ====================
