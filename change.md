@@ -944,3 +944,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 stage runtime 读取普通 inter-agent message 与 `HUMAN_INSTRUCT` 时复用统一 consume helper
 - 保留 legacy `HUMAN_INSTRUCT` backfill 行为，并移入 inbox service
 - 补 service 单测，并跑原 pipeline durable delivery 回归
+
+### `Add pipeline inbox lease retry semantics`
+
+范围：
+
+- `backend/models/database.py`
+- `backend/services/pipeline_inbox.py`
+- `backend/tests/test_pipeline_inbox.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 为 `pipeline_message_deliveries` 增加 lease owner、lease expiry、attempt count、last error、dead-letter 时间等 durable replay 字段
+- 在 `pipeline_inbox` 中新增 claim / ack / fail API，支持 `pending -> inflight -> consumed` 与失败重试 / dead-letter
+- 让过期 inflight delivery 可被重新 claim，避免跨进程 worker 崩溃后消息永久卡住
+- 保持原有 pop-and-consume API 兼容 pipeline stage loop
+- 补 lease、reclaim、dead-letter 单测，并跑 pipeline durable delivery 回归

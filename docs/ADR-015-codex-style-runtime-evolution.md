@@ -3492,3 +3492,49 @@ P0 baseline 完成后，P1 第一刀先从 durable inbox/outbox 做收口，而�
 - pipeline engine 不再直接拥有 durable inbox/outbox 的协议细节
 - durable inbox 从“pipeline 内部实现细节”开始变成共享 runtime service
 - P1 后续要做跨进程 message replay / scheduler recovery 时，可以以 `pipeline_inbox` 为入口继续扩展 lease、claim、retry 与 replay cursor
+
+### 11.62 2026-04-27 新进展：pipeline inbox 开始具备 lease / retry / dead-letter 语义
+
+P1 durable inbox 的第二刀补上消息驱动 runtime 最小需要的跨进程执行语义。
+
+上一轮只是把 delivery 创建和消费从 `pipeline/engine.py` 抽到了 `pipeline_inbox` service，但 delivery 状态仍基本等同于：
+
+- `pending`
+- `consumed`
+
+这不足以支撑 Codex-style runtime 的 message replay。真实执行中 worker 可能在 claim 消息后崩溃，或者处理失败后需要重试 / dead-letter。如果没有 lease，消息要么被重复处理，要么永久卡在不可见状态。
+
+本轮新增 durable delivery 字段：
+
+- `lease_owner`
+- `leased_at`
+- `lease_expires_at`
+- `attempt_count`
+- `last_error`
+- `failed_at`
+
+并在 `backend/services/pipeline_inbox.py` 中补上：
+
+- `claim_messages_for_agent(...)`
+- `mark_delivery_consumed(...)`
+- `mark_delivery_failed(...)`
+
+新的状态语义是：
+
+- `pending -> inflight`：worker claim delivery，并写入 lease owner / expiry / attempt count
+- `inflight -> consumed`：worker 成功处理后 ack
+- `inflight -> pending`：worker 处理失败但允许 retry
+- `inflight -> dead_letter`：worker 处理失败且不再 retry
+- expired `inflight -> inflight`：其他 worker 可重新 claim 过期 lease
+
+同时保留 `pop_messages_for_agent(...)` / `pop_instruction_texts_for_agent(...)` 的兼容行为，让现有 pipeline stage loop 仍可一次性 claim + consume。
+
+这一步仍不是完整的 runtime scheduler，但 durable inbox 已经从“有表可存”推进到“有最小 replay 协议”：
+
+- delivery claim 有 owner
+- inflight 有 lease expiry
+- crash 后可 reclaim
+- failure 可选择 retry 或 dead-letter
+- attempt count 可用于后续 backoff / max retry policy
+
+后续 P1 可以继续沿这个 service 增加 scheduler cursor、monitor projection，或者把 stage loop 改成显式 claim / execute / ack 的 executor loop。

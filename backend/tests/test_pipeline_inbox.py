@@ -1,6 +1,9 @@
 from services.pipeline_inbox import (
+    claim_messages_for_agent,
     consume_legacy_instruction_texts_for_agent,
     enqueue_message_delivery,
+    mark_delivery_consumed,
+    mark_delivery_failed,
     pop_instruction_texts_for_agent,
     pop_messages_for_agent,
 )
@@ -49,6 +52,123 @@ def test_pipeline_inbox_delivers_non_instruction_messages_once(fresh_db):
         delivery = db.query(fresh_db.PipelineMessageDelivery).first()
         assert delivery.status == "consumed"
         assert delivery.consumed_at is not None
+    finally:
+        db.close()
+
+
+def test_pipeline_inbox_claims_with_lease_and_acknowledges(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        run = fresh_db.PipelineRun(pipeline_id=1, run_number=1, status="running")
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        message = fresh_db.PipelineMessage(
+            run_id=run.id,
+            message_type="AGENT_NOTE",
+            from_agent="analyst",
+            to_agent="developer",
+            content="Lease this once.",
+        )
+        db.add(message)
+        db.flush()
+        enqueue_message_delivery(db, message)
+        db.commit()
+
+        claimed = claim_messages_for_agent(
+            db,
+            run_id=run.id,
+            agent_name="developer",
+            lease_owner="worker-a",
+            lease_seconds=30,
+        )
+        assert len(claimed) == 1
+        assert claimed[0]["delivery_id"] is not None
+        assert claimed[0]["delivery_status"] == "inflight"
+        assert claimed[0]["delivery_attempt_count"] == 1
+
+        assert claim_messages_for_agent(
+            db,
+            run_id=run.id,
+            agent_name="developer",
+            lease_owner="worker-b",
+            lease_seconds=30,
+        ) == []
+
+        assert mark_delivery_consumed(db, delivery_id=claimed[0]["delivery_id"], lease_owner="worker-a") is True
+        delivery = db.query(fresh_db.PipelineMessageDelivery).first()
+        assert delivery.status == "consumed"
+        assert delivery.consumed_at is not None
+        assert delivery.lease_owner is None
+    finally:
+        db.close()
+
+
+def test_pipeline_inbox_reclaims_expired_lease_and_dead_letters(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        run = fresh_db.PipelineRun(pipeline_id=1, run_number=1, status="running")
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        message = fresh_db.PipelineMessage(
+            run_id=run.id,
+            message_type="AGENT_NOTE",
+            from_agent="analyst",
+            to_agent="developer",
+            content="Retry this if the lease expires.",
+        )
+        db.add(message)
+        db.flush()
+        enqueue_message_delivery(db, message)
+        db.commit()
+
+        first = claim_messages_for_agent(
+            db,
+            run_id=run.id,
+            agent_name="developer",
+            lease_owner="worker-a",
+            lease_seconds=1,
+        )
+        delivery = db.query(fresh_db.PipelineMessageDelivery).first()
+        delivery.lease_expires_at = fresh_db.datetime.now()
+        db.commit()
+
+        second = claim_messages_for_agent(
+            db,
+            run_id=run.id,
+            agent_name="developer",
+            lease_owner="worker-b",
+            lease_seconds=30,
+        )
+        assert first[0]["delivery_id"] == second[0]["delivery_id"]
+        assert second[0]["delivery_attempt_count"] == 2
+
+        assert mark_delivery_failed(
+            db,
+            delivery_id=second[0]["delivery_id"],
+            lease_owner="worker-b",
+            error="tool crashed",
+            retry=False,
+        ) is True
+        assert claim_messages_for_agent(
+            db,
+            run_id=run.id,
+            agent_name="developer",
+            lease_owner="worker-c",
+            lease_seconds=30,
+        ) == []
+
+        db.refresh(delivery)
+        assert delivery.status == "dead_letter"
+        assert delivery.last_error == "tool crashed"
+        assert delivery.failed_at is not None
     finally:
         db.close()
 

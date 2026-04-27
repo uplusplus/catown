@@ -422,6 +422,12 @@ class PipelineMessageDelivery(Base):
     to_agent = Column(String, nullable=False, index=True)
     status = Column(String, nullable=False, default="pending", index=True)
     created_at = Column(DateTime, default=datetime.now, index=True)
+    leased_at = Column(DateTime, nullable=True, index=True)
+    lease_owner = Column(String, nullable=True, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    failed_at = Column(DateTime, nullable=True, index=True)
     consumed_at = Column(DateTime, nullable=True, index=True)
 
     message = relationship("PipelineMessage", back_populates="deliveries")
@@ -712,6 +718,49 @@ def init_database():
         if "task_run_id" not in existing_pipeline_run_columns:
             connection.execute(text("ALTER TABLE pipeline_runs ADD COLUMN task_run_id INTEGER"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pipeline_runs_task_run_id ON pipeline_runs (task_run_id)"))
+
+        existing_pipeline_delivery_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(pipeline_message_deliveries)")).fetchall()
+        }
+        if existing_pipeline_delivery_columns:
+            if "leased_at" not in existing_pipeline_delivery_columns:
+                connection.execute(text("ALTER TABLE pipeline_message_deliveries ADD COLUMN leased_at DATETIME"))
+            if "lease_owner" not in existing_pipeline_delivery_columns:
+                connection.execute(text("ALTER TABLE pipeline_message_deliveries ADD COLUMN lease_owner VARCHAR"))
+            if "lease_expires_at" not in existing_pipeline_delivery_columns:
+                connection.execute(text("ALTER TABLE pipeline_message_deliveries ADD COLUMN lease_expires_at DATETIME"))
+            if "attempt_count" not in existing_pipeline_delivery_columns:
+                connection.execute(
+                    text("ALTER TABLE pipeline_message_deliveries ADD COLUMN attempt_count INTEGER DEFAULT 0")
+                )
+            if "last_error" not in existing_pipeline_delivery_columns:
+                connection.execute(text("ALTER TABLE pipeline_message_deliveries ADD COLUMN last_error TEXT"))
+            if "failed_at" not in existing_pipeline_delivery_columns:
+                connection.execute(text("ALTER TABLE pipeline_message_deliveries ADD COLUMN failed_at DATETIME"))
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pipeline_message_deliveries_leased_at "
+                    "ON pipeline_message_deliveries (leased_at)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pipeline_message_deliveries_lease_owner "
+                    "ON pipeline_message_deliveries (lease_owner)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pipeline_message_deliveries_lease_expires_at "
+                    "ON pipeline_message_deliveries (lease_expires_at)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_pipeline_message_deliveries_failed_at "
+                    "ON pipeline_message_deliveries (failed_at)"
+                )
+            )
 
         orphan_message_count = connection.execute(
             text(
