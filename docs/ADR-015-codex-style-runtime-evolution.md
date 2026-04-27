@@ -3293,3 +3293,29 @@ P0.3 继续把 approved replay 的入口解析层收口。
 - approval replay 的 request 解析与 cursor 解析不再分散在 route 与 pipeline engine
 - runtime/pipeline replay 对 queue item id、tool name、arguments、pipeline cursor 的解释口径一致
 - 后续把 replay 执行器继续抽成 runner continuation action 时，可以直接复用这些 resolver，而不是迁移分支内解析代码
+
+### 11.56 2026-04-27 新进展：replay arguments JSON 解析已共享
+
+P0.3 继续收口 approved replay 执行前的参数解析。
+
+runtime replay 与 pipeline replay 都需要把 approval queue 中保存的 `arguments` 文本重新解析成 JSON object，且都必须拒绝：
+
+- 非法 JSON
+- JSON array / string / number 等非 object 参数
+
+之前两边各自维护 `json.loads(...) + isinstance(dict)` 的同构代码。这个判断虽然小，但它是 replay 执行前最后一道协议校验。如果后续 sandbox/escalation replay 接入时继续复制，很容易出现某条路径接受了非 object 参数。
+
+本轮新增：
+
+- `parse_replay_arguments(...)`
+
+并接入：
+
+- runtime blocked-tool replay
+- pipeline blocked-tool replay
+
+这一步的意义是：
+
+- approved replay 的 request payload 解析、cursor 解析、arguments JSON object 校验都已经在共享 helper 内收口
+- runtime 与 pipeline 在真正执行 tool 前的参数校验口径一致
+- 后续抽 runner continuation action 时，replay executor 可以直接复用这组解析/校验 helper

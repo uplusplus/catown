@@ -844,3 +844,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 抽取 replay tool name、arguments text、tool call id、pipeline run/stage cursor resolver
 - 让 API approve/reject、runtime blocked-tool replay、pipeline blocked-tool replay 共用同一套 request/cursor 解析语义
 - 补 helper 单测，并跑 runtime/pipeline approval replay 与 pipeline gate 聚焦回归
+
+### `Share replay argument parsing helper`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽取 replay arguments JSON object 解析 helper，统一非法 JSON 与非 object 参数处理
+- 让 runtime blocked-tool replay 与 pipeline blocked-tool replay 共用同一套参数校验语义
+- 补 helper 单测，确认合法 object、非 object JSON、非法 JSON 的结果
+- 跑 approval replay runtime/pipeline 聚焦回归

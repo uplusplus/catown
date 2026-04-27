@@ -154,6 +154,16 @@ def resolve_replay_arguments_text(request_payload: Dict[str, Any]) -> str:
     return str(request_payload.get("arguments") or "{}")
 
 
+def parse_replay_arguments(arguments_text: Any) -> tuple[Dict[str, Any] | None, str | None]:
+    try:
+        loaded_arguments = json.loads(str(arguments_text or "{}"))
+        if not isinstance(loaded_arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object.")
+    except Exception as exc:
+        return None, str(exc)
+    return loaded_arguments, None
+
+
 def resolve_pipeline_replay_run_id(item: Any, request_payload: Dict[str, Any]) -> Any:
     return getattr(item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
 

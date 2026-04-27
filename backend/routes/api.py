@@ -117,6 +117,7 @@ from services.approval_replay import (
     build_queue_rejection_resolution_payload,
     build_tool_replay_followup_context,
     load_approval_queue_request_payload,
+    parse_replay_arguments,
     replay_result_is_actionable,
     replay_tool_call_id,
     resolve_replay_arguments_text,
@@ -4283,16 +4284,13 @@ async def _replay_runtime_blocked_tool_queue_item(
             success=False,
         )
 
-    try:
-        loaded_arguments = json.loads(arguments_text or "{}")
-        if not isinstance(loaded_arguments, dict):
-            raise ValueError("Tool arguments must be a JSON object.")
-    except Exception as exc:
+    loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
+    if arguments_error is not None:
         return build_tool_result_record(
             tool_call_id=replay_tool_call_id(item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
-            result=f"Error executing blocked tool replay: invalid arguments ({exc}).",
+            result=f"Error executing blocked tool replay: invalid arguments ({arguments_error}).",
             success=False,
         )
 

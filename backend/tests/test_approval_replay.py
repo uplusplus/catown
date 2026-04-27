@@ -19,6 +19,7 @@ from services.approval_replay import (
     build_queue_rejection_resolution_payload,
     build_tool_replay_followup_context,
     load_approval_queue_request_payload,
+    parse_replay_arguments,
     replay_result_is_actionable,
     replay_tool_call_id,
     resolve_pipeline_replay_run_id,
@@ -168,6 +169,18 @@ def test_replay_request_helpers_normalize_payload_and_cursor_fields():
     assert replay_tool_call_id(item, "write_file") == "queue-replay-77"
     assert resolve_pipeline_replay_run_id(item, payload) == 9
     assert resolve_pipeline_replay_stage_id(item, payload) == 10
+
+
+def test_parse_replay_arguments_requires_json_object():
+    assert parse_replay_arguments('{"path": "README.md"}') == ({"path": "README.md"}, None)
+
+    loaded, error = parse_replay_arguments('["not", "an", "object"]')
+    assert loaded is None
+    assert error == "Tool arguments must be a JSON object."
+
+    loaded, error = parse_replay_arguments("{bad json")
+    assert loaded is None
+    assert "Expecting property name" in error
 
 
 def test_queue_rejection_resolution_payload_omits_absent_rollback():
