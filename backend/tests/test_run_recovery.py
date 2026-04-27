@@ -209,6 +209,7 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         detail = client.get(f"/api/task-runs/{task_run_id}").json()
         assert detail["status"] == "completed"
         assert detail["summary"] == "Mocked agent response."
+        assert detail["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Mocked agent response."
 
         event_types = [event["event_type"] for event in detail["events"]]
         assert "task_run_recovery_started" in event_types
@@ -221,8 +222,10 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         recovery_state_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_recovery_state_rebuilt")
         assert recovery_state_event["payload"]["runtime"]["completed_step_count"] == 1
         assert recovery_state_event["payload"]["runtime"]["ready_step_count"] == 1
+        assert recovery_state_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
         recovery_started_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_started")
         assert recovery_started_event["payload"]["trigger"] == "startup"
+        assert recovery_started_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
         assistant_messages = [message["content"] for message in messages if message.get("agent_name")]
@@ -254,12 +257,14 @@ def test_manual_resume_endpoint_recovers_interrupted_orchestration_run(tmp_path)
         assert payload["status"] == "completed"
         assert payload["task_run_id"] == task_run_id
         assert payload["detail"]["summary"] == "Mocked agent response."
+        assert payload["detail"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Mocked agent response."
 
         event_types = [event["event_type"] for event in payload["detail"]["events"]]
         assert "task_run_manual_resume_requested" in event_types
         assert "task_run_recovery_started" in event_types
         recovery_started_event = next(event for event in payload["detail"]["events"] if event["event_type"] == "task_run_recovery_started")
         assert recovery_started_event["payload"]["trigger"] == "manual"
+        assert recovery_started_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
         assistant_messages = [message["content"] for message in messages if message.get("agent_name")]

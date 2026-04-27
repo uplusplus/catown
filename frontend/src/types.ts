@@ -91,12 +91,37 @@ export type TaskRunSummary = {
   recovery_claimed_at?: string | null;
   recovery_lease_expires_at?: string | null;
   summary?: string | null;
+  checkpoint_snapshot?: TaskRunCheckpointSnapshot;
   approval_queue_count?: number;
   pending_approval_count?: number;
   event_count: number;
   created_at?: string | null;
   updated_at?: string | null;
   completed_at?: string | null;
+};
+
+export type TaskRunCheckpointSnapshot = {
+  event_count?: number;
+  latest_event_type?: string | null;
+  latest_event_at?: string | null;
+  latest_agent_turn?: {
+    agent_name?: string | null;
+    message_id?: number | null;
+    response_preview?: string | null;
+    created_at?: string | null;
+  };
+  latest_compaction?: {
+    event_id?: number | null;
+    dropped_count?: number | null;
+    truncated_count?: number | null;
+    max_tokens?: number | null;
+    created_at?: string | null;
+  };
+  latest_scheduler_runtime?: Record<string, unknown> | null;
+  pending_approval_count?: number;
+  approval_queue_count?: number;
+  status?: string | null;
+  summary?: string | null;
 };
 
 export type TaskRunEvent = {

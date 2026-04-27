@@ -172,6 +172,7 @@ def append_task_event(
 
 def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     approval_items = list(getattr(task_run, "approval_queue_items", []) or [])
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
     return {
         "id": task_run.id,
         "chatroom_id": task_run.chatroom_id,
@@ -190,6 +191,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
             task_run.recovery_lease_expires_at.isoformat() if task_run.recovery_lease_expires_at else None
         ),
         "summary": task_run.summary,
+        "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
@@ -239,6 +241,76 @@ def _default_title(user_request: str) -> str:
     if not text:
         return "Task run"
     return text[:77] + "..." if len(text) > 80 else text
+
+
+def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, Any]:
+    if task_run is None:
+        return {}
+
+    events = list(getattr(task_run, "events", []) or [])
+    approval_items = list(getattr(task_run, "approval_queue_items", []) or [])
+    payload_by_event_id = {
+        event.id: _load_payload(event.payload_json)
+        for event in events
+    }
+
+    latest_event = events[-1] if events else None
+    latest_agent_turn = next((event for event in reversed(events) if event.event_type == "agent_turn_completed"), None)
+    latest_compaction = next((event for event in reversed(events) if event.event_type == "context_compaction"), None)
+    latest_runtime_event = next(
+        (
+            event
+            for event in reversed(events)
+            if isinstance(payload_by_event_id.get(event.id), dict)
+            and payload_by_event_id.get(event.id, {}).get("runtime") is not None
+        ),
+        None,
+    )
+
+    latest_agent_payload = payload_by_event_id.get(latest_agent_turn.id, {}) if latest_agent_turn is not None else {}
+    latest_compaction_payload = payload_by_event_id.get(latest_compaction.id, {}) if latest_compaction is not None else {}
+    latest_compaction_diagnostics = (
+        latest_compaction_payload.get("selector_diagnostics")
+        if isinstance(latest_compaction_payload.get("selector_diagnostics"), dict)
+        else {}
+    )
+    latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
+
+    return {
+        "event_count": len(events),
+        "latest_event_type": latest_event.event_type if latest_event is not None else None,
+        "latest_event_at": latest_event.created_at.isoformat() if latest_event and latest_event.created_at else None,
+        "latest_agent_turn": {
+            "agent_name": latest_agent_turn.agent_name if latest_agent_turn is not None else None,
+            "message_id": latest_agent_turn.message_id if latest_agent_turn is not None else None,
+            "response_preview": latest_agent_payload.get("response_preview") if isinstance(latest_agent_payload, dict) else None,
+            "created_at": latest_agent_turn.created_at.isoformat() if latest_agent_turn and latest_agent_turn.created_at else None,
+        },
+        "latest_compaction": {
+            "event_id": latest_compaction.id if latest_compaction is not None else None,
+            "dropped_count": (
+                latest_compaction_diagnostics.get("summary", {}).get("dropped_count")
+                if isinstance(latest_compaction_diagnostics.get("summary"), dict)
+                else None
+            ),
+            "truncated_count": (
+                latest_compaction_diagnostics.get("summary", {}).get("truncated_count")
+                if isinstance(latest_compaction_diagnostics.get("summary"), dict)
+                else None
+            ),
+            "max_tokens": (
+                latest_compaction_diagnostics.get("selector", {}).get("max_tokens")
+                if isinstance(latest_compaction_diagnostics.get("selector"), dict)
+                else None
+            ),
+            "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
+        },
+        "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
+        "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
+        "approval_queue_count": len(approval_items),
+        "status": task_run.status,
+        "summary": task_run.summary,
+    }
 
 
 def _dump_payload(payload: Any) -> str:

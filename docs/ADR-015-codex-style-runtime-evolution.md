@@ -1414,3 +1414,54 @@ Unified visibility
   - context pressure trend
 
 就有了可复用的观测基础。
+
+### 11.19 2026-04-25 新进展：checkpoint-friendly task snapshot 已开始进入 recovery 与 monitor
+
+在 11.18 把 compaction 提升成显式 runtime telemetry 之后，这一轮继续往“checkpoint-friendly recovery”推进了一步，但仍然保持增量路线：
+
+- 没有新增专门的 checkpoint 表
+- 而是先从现有 `TaskRun.events` 与 `approval_queue_items` 派生统一 `checkpoint_snapshot`
+
+这一轮补上的内容是：
+
+- `serialize_task_run_summary()` 现在会输出 `checkpoint_snapshot`
+  - 当前快照包含：
+    - `event_count`
+    - `latest_event_type`
+    - `latest_event_at`
+    - `latest_agent_turn`
+    - `latest_compaction`
+    - `latest_scheduler_runtime`
+    - `pending_approval_count`
+    - `approval_queue_count`
+    - `status`
+    - `summary`
+
+- recovery 入口事件现在显式记录恢复起点快照
+  - `task_run_recovery_started`
+  - `scheduler_recovery_state_rebuilt`
+  - 都会带上恢复开始时的 `checkpoint_snapshot`
+
+- monitor 的 task-run detail 现在也直接显示 checkpoint snapshot
+  - 不再需要手工翻整条 event stream 才知道：
+    - 最近一次 agent turn 停在什么响应
+    - 最近一次 compaction 丢了多少上下文
+    - 最近一次 scheduler runtime 是否已经可重建
+
+这一步仍然不是完整的 Codex 风格 checkpoint continuation：
+
+- 现在的 snapshot 还是“从 ledger 派生”
+- 不是 executor 在关键点主动持久化的标准 checkpoint object
+- 也还不包含完整 subagent tree / inflight tool state / turn-local continuation cursor
+
+但它已经把恢复语义从“只有 rebuild 逻辑”推进到：
+
+- 恢复前有可读 checkpoint 视图
+- 恢复时有显式 checkpoint 起点记录
+- monitor 上能直接看到 checkpoint 级状态
+
+后续如果继续往前走，下一层自然会是：
+
+- 更标准的 scheduler continuation cursor
+- approval / replay / follow-up 与 checkpoint snapshot 的统一表达
+- 从“派生 snapshot”逐步演进到“显式 checkpoint object”

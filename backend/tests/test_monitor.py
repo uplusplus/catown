@@ -390,6 +390,8 @@ class TestMonitorOverview:
         assert entry["status"] == "completed"
         assert entry["event_count"] == 2
         assert entry["latest_event_type"] == "handoff_created"
+        assert entry["checkpoint_snapshot"]["event_count"] == 2
+        assert entry["checkpoint_snapshot"]["latest_event_type"] == "handoff_created"
 
     def test_monitor_approval_queue_returns_enriched_items(self, client):
         from models.database import ApprovalQueueItem, Chatroom, Project, SessionLocal, TaskRun

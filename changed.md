@@ -39,7 +39,7 @@
 - 让 Approvals 页面能直接区分 replay 成功、follow-up 已继续、follow-up 被跳过、follow-up 失败
 - 补 monitor 后端测试并验证前端构建通过
 
-### pending `Emit context compaction telemetry to monitor`
+### 3038bd9 `Expose context compaction telemetry`
 
 范围：
 
@@ -60,3 +60,22 @@
 - 在 chat runtime 和 pipeline stage runtime 发生 compaction 时写入 `context_compaction` task-run event
 - 在 monitor overview / Context 页展示 recent compactions 和 compaction 数量
 - 补 selector 诊断测试、monitor overview 测试，并验证前端构建通过
+
+### `Expose checkpoint-friendly task snapshots`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/routes/api.py`
+- `backend/tests/test_run_recovery.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/components/MonitorTab.tsx`
+- `frontend/src/types.ts`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 从 `task_run` ledger 与 approval queue 派生 `checkpoint_snapshot`，不引入新的持久化表结构
+- 让 recovery 事件显式带上启动恢复前的 checkpoint snapshot，便于回看恢复起点
+- 让 monitor task-run 详情直接展示 latest agent turn、latest compaction、latest scheduler runtime
+- 补 recovery / monitor 断言，并验证前端构建通过

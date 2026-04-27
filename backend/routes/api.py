@@ -87,6 +87,7 @@ from services.turn_state import TurnContextState, build_tool_result_record, norm
 from services.session_service import SessionService
 from services.run_ledger import (
     append_task_event,
+    build_task_run_checkpoint_snapshot,
     complete_task_run,
     create_task_run,
     get_task_run,
@@ -2406,6 +2407,7 @@ async def _resume_interrupted_orchestration_task_run(
                 "trigger": trigger,
                 "recovery_owner": RECOVERY_INSTANCE_ID,
                 "recovery_lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+                "checkpoint_snapshot": build_task_run_checkpoint_snapshot(task_run),
                 "runner_policy": orchestration_policy.to_payload(),
             },
         )
@@ -2426,6 +2428,7 @@ async def _resume_interrupted_orchestration_task_run(
             payload=_scheduler_plan_payload(
                 queue,
                 extra={
+                    "checkpoint_snapshot": build_task_run_checkpoint_snapshot(task_run),
                     "runner_policy": orchestration_policy.to_payload(),
                     "recovery": {
                         "completed_step_ids": completed_step_ids,

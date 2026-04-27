@@ -5019,6 +5019,68 @@ export function MonitorTab() {
                     {taskRunDetailErrors[selectedTaskRunSummary.id]}
                   </div>
                 ) : null}
+                {selectedTaskRunDetail?.checkpoint_snapshot ? (
+                  <div className="run-detail-section">
+                    <div className="run-detail-section__head">
+                      <div>
+                        <strong>Checkpoint Snapshot</strong>
+                        <div className="small-note">
+                          Latest resumable state derived from the task-run ledger.
+                        </div>
+                      </div>
+                      <div className="run-detail-hero__badges">
+                        <span className="feed-badge">
+                          {selectedTaskRunDetail.checkpoint_snapshot.event_count ?? 0} events
+                        </span>
+                        {selectedTaskRunDetail.checkpoint_snapshot.pending_approval_count ? (
+                          <span className="feed-badge feed-badge--warning">
+                            {selectedTaskRunDetail.checkpoint_snapshot.pending_approval_count} pending approvals
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="simple-list">
+                      <div className="simple-row">
+                        <strong>Latest Event</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.latest_event_type
+                            ? `${titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.latest_event_type)} · ${shortDate(selectedTaskRunDetail.checkpoint_snapshot.latest_event_at)}`
+                            : "No events recorded."}
+                        </div>
+                      </div>
+                      <div className="simple-row">
+                        <strong>Latest Agent Turn</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn?.response_preview
+                            ? `${selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn.agent_name || "agent"} · ${selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn.response_preview}`
+                            : "No completed agent turn captured yet."}
+                        </div>
+                      </div>
+                      <div className="simple-row">
+                        <strong>Latest Compaction</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.latest_compaction?.event_id
+                            ? `Dropped ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.dropped_count ?? 0} · Truncated ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.truncated_count ?? 0} · Budget ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.max_tokens ?? "?"} tokens`
+                            : "No compaction event recorded."}
+                        </div>
+                      </div>
+                      <div className="simple-row">
+                        <strong>Scheduler Runtime</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime
+                            ? "Latest scheduler runtime snapshot is available below."
+                            : "No scheduler runtime snapshot recorded."}
+                        </div>
+                      </div>
+                    </div>
+                    {selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime ? (
+                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
+                        <summary>Runtime Payload</summary>
+                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime)}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+                ) : null}
                 {selectedTaskRunDetail ? (
                   <div className="simple-list" style={{ marginTop: 12 }}>
                     {selectedTaskRunDetail.events.map((event) => (
