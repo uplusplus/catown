@@ -174,6 +174,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     approval_items = list(getattr(task_run, "approval_queue_items", []) or [])
     checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
     latest_continuation_event = _find_latest_continuation_event(list(task_run.events or []))
+    latest_scheduler_runtime = checkpoint_snapshot.get("latest_scheduler_runtime")
     return {
         "id": task_run.id,
         "chatroom_id": task_run.chatroom_id,
@@ -197,6 +198,8 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "latest_continuation_event_type": latest_continuation_event.get("event_type") if latest_continuation_event else None,
         "latest_continuation_event_summary": latest_continuation_event.get("continuation_state_summary") if latest_continuation_event else None,
         "latest_continuation_event_at": latest_continuation_event.get("created_at") if latest_continuation_event else None,
+        "latest_scheduler_runtime": latest_scheduler_runtime,
+        "scheduler_runtime_summary": summarize_scheduler_runtime(latest_scheduler_runtime),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
@@ -455,6 +458,30 @@ def summarize_continuation_state(continuation_state: Any) -> str | None:
 
     if not parts:
         return "continuation consumed"
+    return " · ".join(parts)
+
+
+def summarize_scheduler_runtime(runtime: Any) -> str | None:
+    state = runtime if isinstance(runtime, dict) else {}
+    if not state:
+        return None
+
+    parts: list[str] = []
+    for key, label in [
+        ("completed_step_count", "completed"),
+        ("ready_step_count", "ready"),
+        ("running_step_count", "running"),
+        ("waiting_step_count", "waiting"),
+        ("step_count", "total"),
+    ]:
+        try:
+            value = int(state.get(key))
+        except (TypeError, ValueError):
+            continue
+        parts.append(f"{value} {label}")
+
+    if not parts:
+        return None
     return " · ".join(parts)
 
 

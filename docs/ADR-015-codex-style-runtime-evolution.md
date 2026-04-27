@@ -2595,3 +2595,56 @@ Monitor 侧也顺手做了投影：
 - task-run summary 不再只回答“当前 continuation 状态是什么”
 - 也开始回答“最近一次 continuation 动作是什么”
 - current state 与 recent action 两条线索在 summary 层开始并列可见
+
+### 11.40 2026-04-27 新进展：task-run summary 已直接暴露 scheduler runtime 摘要
+
+继续沿着 “summary 层先回答 operator 最常问的问题” 这个方向，当前 monitor 还有一个明显断点：
+
+- `checkpoint_snapshot.latest_scheduler_runtime`
+  - 已经有原始 runtime snapshot
+- 但 run 列表和 run 详情如果只看 summary 顶层
+  - 仍然不知道最近 scheduler 运行态到底是什么
+  - 还得下钻到嵌套 checkpoint 或 raw payload
+
+这会让编排态势判断停在半路：
+
+- 你知道 run 现在能不能继续
+- 但不知道 scheduler 当前到底积压了多少 ready / running / waiting step
+
+这一轮把 scheduler runtime 也提到 task-run summary 顶层：
+
+- `serialize_task_run_summary(...)`
+  - 直接输出：
+    - `latest_scheduler_runtime`
+    - `scheduler_runtime_summary`
+- `scheduler_runtime_summary`
+  - 由后端统一格式化
+  - 当前输出：
+    - `completed`
+    - `ready`
+    - `running`
+    - `waiting`
+    - 如有 `step_count` 再补 `total`
+
+测试同步补上：
+
+- `test_monitor_task_runs_exposes_continuation_cursor`
+  - 追加一条带 `runtime` payload 的 ledger event
+  - 断言 task-run summary 会直接返回：
+    - `latest_scheduler_runtime.completed_step_count == 1`
+    - `latest_scheduler_runtime.ready_step_count == 2`
+    - `scheduler_runtime_summary == "1 completed · 2 ready · 1 running · 0 waiting · 4 total"`
+
+前端也顺手收口：
+
+- Monitor run 列表
+  - 直接显示 `run.scheduler_runtime_summary`
+- Selected Run Detail
+  - 新增 summary 级 `Scheduler Runtime`
+  - 优先读顶层 summary 字段，缺失时再退回 checkpoint snapshot
+
+这一步的意义是：
+
+- scheduler 当前运行态开始成为 task-run summary 的一等字段
+- operator 不必先点开 checkpoint raw payload 才能看出排队态势
+- summary / checkpoint / raw event 三层的职责继续分离：summary 用来扫态势，checkpoint 用来恢复，raw event 用来追溯

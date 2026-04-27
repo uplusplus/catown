@@ -103,6 +103,8 @@ export type TaskRunSummary = {
   latest_continuation_event_type?: string | null;
   latest_continuation_event_summary?: string | null;
   latest_continuation_event_at?: string | null;
+  latest_scheduler_runtime?: Record<string, unknown> | null;
+  scheduler_runtime_summary?: string | null;
   checkpoint_snapshot?: TaskRunCheckpointSnapshot;
   approval_queue_count?: number;
   pending_approval_count?: number;

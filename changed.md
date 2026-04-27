@@ -385,3 +385,19 @@
 - 让 `serialize_task_run_summary(...)` 直接输出 `latest_continuation_event_type` / `latest_continuation_event_summary` / `latest_continuation_event_at`
 - 补 recovery 测试，确认恢复完成后的 task-run detail 会直接指出最近一次 continuation 事件摘要
 - Monitor run 列表与 detail 区开始直接展示最近一次 continuation 事件，而不必从完整事件流中回看
+
+### `Promote scheduler runtime summaries to task run summaries`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `serialize_task_run_summary(...)` 直接输出顶层 `latest_scheduler_runtime` 与 `scheduler_runtime_summary`
+- 补 monitor 测试，确认带 runtime payload 的 task-run summary 会直接暴露最新 scheduler snapshot 与格式化摘要
+- Monitor run 列表与 detail 卡片直接消费顶层 scheduler runtime 摘要，继续减少对嵌套 checkpoint 字段的依赖

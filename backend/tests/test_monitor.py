@@ -390,6 +390,8 @@ class TestMonitorOverview:
         assert entry["status"] == "completed"
         assert entry["event_count"] == 2
         assert entry["latest_event_type"] == "handoff_created"
+        assert entry["latest_scheduler_runtime"] is None
+        assert entry["scheduler_runtime_summary"] is None
         assert entry["checkpoint_snapshot"]["event_count"] == 2
         assert entry["checkpoint_snapshot"]["latest_event_type"] == "handoff_created"
 
@@ -719,6 +721,27 @@ class TestMonitorOverview:
                 TaskRunEvent(
                     task_run_id=task_run.id,
                     event_index=4,
+                    event_type="task_run_recovery_started",
+                    agent_name="Analyst",
+                    summary="Recovery checkpoint captured scheduler runtime.",
+                    payload_json=json.dumps(
+                        {
+                            "runtime": {
+                                "step_count": 4,
+                                "completed_step_count": 1,
+                                "ready_step_count": 2,
+                                "running_step_count": 1,
+                                "waiting_step_count": 0,
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=5,
                     event_type="tool_call_blocked",
                     agent_name="Analyst",
                     summary="delete_file was blocked.",
@@ -777,6 +800,9 @@ class TestMonitorOverview:
         assert cursor["turn"] == 3
         assert entry["continuation_state"]["consumed"] is True
         assert entry["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
+        assert entry["latest_scheduler_runtime"]["completed_step_count"] == 1
+        assert entry["latest_scheduler_runtime"]["ready_step_count"] == 2
+        assert entry["scheduler_runtime_summary"] == "1 completed · 2 ready · 1 running · 0 waiting · 4 total"
         continuation_state = entry["checkpoint_snapshot"]["continuation_state"]
         assert continuation_state["consumed"] is True
         assert continuation_state["next_action"] == "await_approval"

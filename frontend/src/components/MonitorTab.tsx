@@ -393,6 +393,23 @@ function continuationStateSummary(value: unknown): string | null {
   ].filter(Boolean).join(" · ");
 }
 
+function schedulerRuntimeSummary(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const runtime = value as Record<string, unknown>;
+  const parts = [
+    ["completed_step_count", "completed"],
+    ["ready_step_count", "ready"],
+    ["running_step_count", "running"],
+    ["waiting_step_count", "waiting"],
+    ["step_count", "total"],
+  ].map(([key, label]) => {
+    const raw = runtime[key];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+    return `${raw} ${label}`;
+  }).filter(Boolean) as string[];
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function taskRunEventContinuationSummary(payload: Record<string, unknown> | undefined): string | null {
   if (!payload) return null;
   const directRecovery = continuationStateSummary(payload["recovery_continuation_state"]);
@@ -4866,6 +4883,9 @@ export function MonitorTab() {
                       {run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state) ? (
                         <span>{run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)}</span>
                       ) : null}
+                      {run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime) ? (
+                        <span>{run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime)}</span>
+                      ) : null}
                       {run.latest_continuation_event_summary ? <span>{run.latest_continuation_event_summary}</span> : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                       {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
@@ -4951,6 +4971,14 @@ export function MonitorTab() {
                               : null,
                           ].filter(Boolean).join(" · ")
                         : "No continuation event summary recorded."}
+                    </div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Scheduler Runtime</strong>
+                    <div className="small-note">
+                      {selectedTaskRunSummary.scheduler_runtime_summary
+                        || schedulerRuntimeSummary(selectedTaskRunSummary.latest_scheduler_runtime ?? selectedTaskRunSummary.checkpoint_snapshot?.latest_scheduler_runtime)
+                        || "No scheduler runtime snapshot recorded."}
                     </div>
                   </div>
                   {RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "") || selectedTaskRunRecoveryState?.recovery_owner ? (
