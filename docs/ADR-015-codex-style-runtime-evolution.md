@@ -2233,3 +2233,72 @@ monitor 上也同步做了投影：
   - 这整条恢复链的每个关键事件
   - 现在都能投影 checkpoint continuation consumption
 - pipeline 的执行语义与事件可观测语义又少了一层断点
+
+### 11.34 2026-04-25 新进展：task-run checkpoint snapshot 已直接暴露 derived continuation state
+
+11.33 之后，事件层对 continuation consumption 的投影已经补了不少，但 monitor / frontend 还有一个可用性缺口：
+
+- `checkpoint_snapshot` 本身虽然已经同时带有：
+  - `continuation_cursor`
+  - `turn_local_state`
+- 但如果前端想回答：
+  - “当前 snapshot 是否真的消费了 continuation state？”
+  - “具体消费了多少 tail message / prior summaries？”
+- 还要自己再从 cursor + turn-local state 二次拼装判断逻辑
+
+这会让同一份语义在多处重复实现：
+
+- recovery 事件层会算一次
+- pipeline 事件层会算一次
+- monitor / frontend 如果也想展示摘要，又要再推一次
+
+这一轮把这层派生结果直接放进 snapshot 主体里：
+
+- `build_task_run_checkpoint_snapshot(...)`
+  - 现在在构建完 snapshot 后
+  - 会直接附带：
+    - `continuation_state`
+
+- 这份 `continuation_state`
+  - 继续复用统一的 `describe_checkpoint_continuation_state(...)`
+  - 因此它和 recovery / pipeline 事件里的统计口径保持完全一致
+
+这样 monitor / frontend 现在不需要再自行推断：
+
+- snapshot 本身就直接告诉你：
+  - `consumed`
+  - `next_action`
+  - `resume_strategy`
+  - `consumed_layers`
+  - `protocol_tail_message_count`
+  - `prior_round_summary_count`
+
+测试也同步补上：
+
+- `test_monitor_task_runs_exposes_continuation_cursor`
+  - 继续验证 blocked-tool snapshot 时
+  - `checkpoint_snapshot.continuation_state` 会直接显示：
+    - `consumed is True`
+    - `next_action == "await_approval"`
+    - `protocol_tail_message_count == 4`
+    - `prior_round_summary_count == 1`
+
+- `test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn`
+  - 同时验证 latest-turn 已无 continuation payload 时
+  - `checkpoint_snapshot.continuation_state.consumed is False`
+
+Monitor 侧也顺手做了投影：
+
+- Checkpoint Snapshot 卡片新增 `Continuation State`
+  - 直接显示：
+    - resume strategy
+    - tail message 数量
+    - prior summary 数量
+    - consumed layers
+- 同时提供原始 payload 折叠查看
+
+这一步的意义是：
+
+- continuation-state 摘要第一次成为 checkpoint snapshot 的一等公民字段
+- monitor / frontend 不再需要重复实现派生逻辑
+- snapshot、event、UI 三层的 continuation 语义进一步统一

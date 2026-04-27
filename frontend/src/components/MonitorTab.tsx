@@ -5092,6 +5092,27 @@ export function MonitorTab() {
                         </div>
                       </div>
                       <div className="simple-row">
+                        <strong>Continuation State</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_state?.consumed
+                            ? [
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.resume_strategy
+                                  ? `via ${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.resume_strategy}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.protocol_tail_message_count
+                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.protocol_tail_message_count} tail messages`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.prior_round_summary_count
+                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.continuation_state.prior_round_summary_count} prior summaries`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state.consumed_layers?.length
+                                  ? selectedTaskRunDetail.checkpoint_snapshot.continuation_state.consumed_layers.join(", ")
+                                  : null,
+                              ].filter(Boolean).join(" · ")
+                            : "No continuation-state consumption derived."}
+                        </div>
+                      </div>
+                      <div className="simple-row">
                         <strong>Turn-Local State</strong>
                         <div className="small-note">
                           {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_tail_messages?.length
@@ -5123,6 +5144,12 @@ export function MonitorTab() {
                       <details className="run-event-row__payload" style={{ marginTop: 12 }}>
                         <summary>Continuation Cursor Payload</summary>
                         <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor)}</pre>
+                      </details>
+                    ) : null}
+                    {selectedTaskRunDetail.checkpoint_snapshot.continuation_state ? (
+                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
+                        <summary>Continuation State Payload</summary>
+                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)}</pre>
                       </details>
                     ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime ? (

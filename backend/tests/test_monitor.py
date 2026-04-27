@@ -775,6 +775,12 @@ class TestMonitorOverview:
         assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
         assert cursor["tool_name"] == "delete_file"
         assert cursor["turn"] == 3
+        continuation_state = entry["checkpoint_snapshot"]["continuation_state"]
+        assert continuation_state["consumed"] is True
+        assert continuation_state["next_action"] == "await_approval"
+        assert continuation_state["protocol_tail_message_count"] == 4
+        assert continuation_state["prior_round_summary_count"] == 1
+        assert "protocol_tail" in continuation_state["consumed_layers"]
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] == 3
         assert turn_local_state["tool_names"] == ["delete_file"]
@@ -904,6 +910,7 @@ class TestMonitorOverview:
         data = response.json()
         entry = next(item for item in data["entries"] if item["id"] == task_run_id)
         assert entry["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "none"
+        assert entry["checkpoint_snapshot"]["continuation_state"]["consumed"] is False
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] is None
         assert turn_local_state["tool_names"] is None

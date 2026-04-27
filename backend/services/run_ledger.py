@@ -317,7 +317,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         latest_tool_blocked_payload=latest_tool_blocked_payload,
     )
 
-    return {
+    snapshot = {
         "event_count": len(events),
         "latest_event_type": latest_event.event_type if latest_event is not None else None,
         "latest_event_at": latest_event.created_at.isoformat() if latest_event and latest_event.created_at else None,
@@ -354,6 +354,8 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "status": task_run.status,
         "summary": task_run.summary,
     }
+    snapshot["continuation_state"] = describe_checkpoint_continuation_state(snapshot)
+    return snapshot
 
 
 def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str, Any]:

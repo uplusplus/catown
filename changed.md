@@ -292,3 +292,19 @@
 - 让 `pipeline_resumed` 事件也显式携带 resume 当下的 `checkpoint_snapshot` 与 `continuation_state`
 - 这样 approval replay 后的 pipeline resume 不再只是“恢复了”，而是能说明恢复时实际看到了哪些 protocol tail / summaries
 - 补 pipeline resume 测试，确认 resume 事件会投影 checkpoint 中的 assistant/tool continuation state
+
+### `Expose derived continuation state on task-run snapshots`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `checkpoint_snapshot` 直接带上统一派生的 `continuation_state`，避免 monitor / frontend 再各自从 cursor + turn-local state 二次推断
+- 补 monitor 测试，确认 blocked-tool snapshot 会直接暴露 continuation-state 计数，而无 continuation 的 latest-turn snapshot 会明确显示 `consumed = false`
+- Monitor 的 Checkpoint Snapshot 卡片开始直接展示 continuation-state 摘要与原始 payload
