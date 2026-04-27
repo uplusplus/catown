@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 
 from models.database import Chatroom, Project, TaskRun, TaskRunEvent
 from services.approval_queue import serialize_approval_queue_item
+from services.approval_replay import (
+    approval_queue_resume_strategy,
+    load_approval_queue_request_payload,
+    resolve_pipeline_replay_run_id,
+    resolve_pipeline_replay_stage_id,
+)
 
 
 def get_task_run(db: Session, task_run_id: int | None) -> Optional[TaskRun]:
@@ -621,24 +627,20 @@ def _build_task_run_continuation_cursor(
     runtime_payload = latest_runtime_payload if isinstance(latest_runtime_payload, dict) else {}
 
     if pending_tool_queue_item is not None:
-        request_payload = _load_payload(getattr(pending_tool_queue_item, "request_payload_json", None))
-        if not isinstance(request_payload, dict):
-            request_payload = {}
+        request_payload = load_approval_queue_request_payload(
+            getattr(pending_tool_queue_item, "request_payload_json", None)
+        )
         return {
             "next_action": "await_approval",
-            "resume_strategy": (
-                "resume_pipeline_stage_after_replay"
-                if getattr(pending_tool_queue_item, "pipeline_run_id", None) is not None
-                else "replay_tool_then_continue_turn"
-            ),
+            "resume_strategy": approval_queue_resume_strategy(pending_tool_queue_item, request_payload),
             "source_event_type": latest_tool_blocked.event_type if latest_tool_blocked is not None else None,
             "source_event_at": latest_tool_blocked.created_at.isoformat() if latest_tool_blocked and latest_tool_blocked.created_at else None,
             "turn": request_payload.get("turn") or blocked_payload.get("turn") or tool_round_payload.get("turn"),
             "tool_name": getattr(pending_tool_queue_item, "target_name", None) or blocked_payload.get("tool_name"),
             "blocked_kind": request_payload.get("blocked_kind") or blocked_payload.get("blocked_kind"),
             "queue_item_id": getattr(pending_tool_queue_item, "id", None),
-            "pipeline_run_id": getattr(pending_tool_queue_item, "pipeline_run_id", None),
-            "pipeline_stage_id": getattr(pending_tool_queue_item, "pipeline_stage_id", None),
+            "pipeline_run_id": resolve_pipeline_replay_run_id(pending_tool_queue_item, request_payload),
+            "pipeline_stage_id": resolve_pipeline_replay_stage_id(pending_tool_queue_item, request_payload),
         }
 
     if latest_followup is not None:

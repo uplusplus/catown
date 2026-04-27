@@ -191,6 +191,17 @@ def resolve_pipeline_replay_stage_id(item: Any, request_payload: Dict[str, Any])
     return getattr(item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id")
 
 
+def approval_queue_item_has_pipeline_cursor(item: Any, request_payload: Dict[str, Any] | None = None) -> bool:
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    return bool(resolve_pipeline_replay_run_id(item, request_payload))
+
+
+def approval_queue_resume_strategy(item: Any, request_payload: Dict[str, Any] | None = None) -> str:
+    if approval_queue_item_has_pipeline_cursor(item, request_payload):
+        return "resume_pipeline_stage_after_replay"
+    return "replay_tool_then_continue_turn"
+
+
 def build_approval_queue_item_created_event_payload(item: Any) -> Dict[str, Any]:
     return {
         "queue_item_id": getattr(item, "id", None),

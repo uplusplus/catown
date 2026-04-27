@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from services.approval_replay import (
+    approval_queue_item_has_pipeline_cursor,
+    approval_queue_resume_strategy,
     blocked_tool_queue_kind,
     blocked_tool_queue_title,
     blocked_tool_resume_supported,
@@ -170,6 +172,12 @@ def test_replay_request_helpers_normalize_payload_and_cursor_fields():
     assert replay_tool_call_id(item, "write_file") == "queue-replay-77"
     assert resolve_pipeline_replay_run_id(item, payload) == 9
     assert resolve_pipeline_replay_stage_id(item, payload) == 10
+    assert approval_queue_item_has_pipeline_cursor(item, payload) is True
+    assert approval_queue_resume_strategy(item, payload) == "resume_pipeline_stage_after_replay"
+
+    chat_item = SimpleNamespace(id=78, target_name="read_file", pipeline_run_id=None, pipeline_stage_id=None)
+    assert approval_queue_item_has_pipeline_cursor(chat_item, {}) is False
+    assert approval_queue_resume_strategy(chat_item, {}) == "replay_tool_then_continue_turn"
 
 
 def test_replay_tool_result_record_uses_queue_item_call_id():

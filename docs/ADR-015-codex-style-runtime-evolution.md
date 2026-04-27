@@ -3347,3 +3347,40 @@ runtime replay 与 pipeline replay 都会把 replay 执行结果包装成 `ToolR
 - approved replay 的 request 解析、参数解析、tool result record 构造都已经进入共享 helper
 - runtime 与 pipeline replay 写回 ledger 的 tool call id 与 result classification 口径一致
 - 后续把 replay 执行器抽成 runner continuation action 时，结果落 ledger 的协议已经有可复用入口
+
+### 11.58 2026-04-27 新进展：approval queue pipeline cursor 与 resume strategy 已共享
+
+P0.3 继续把 approval replay 的分流与恢复策略判断收口。
+
+approved replay 现在有两类后续路径：
+
+- 普通 chat turn：replay tool 后继续原 agent turn
+- pipeline stage：replay tool 后恢复 pipeline stage
+
+之前这个判断散在不同位置：
+
+- API replay 分流用 `item.pipeline_run_id` 或 request payload 判断
+- runtime follow-up 需要跳过 pipeline queue item
+- approve 路径需要决定走 runtime follow-up 还是 pipeline follow-up
+- run ledger continuation cursor 需要把 pending approval 映射成 resume strategy
+
+这些判断必须一致，否则会出现 queue item 被 API 当成 pipeline replay，但 checkpoint cursor 却显示普通 turn resume 的漂移。
+
+本轮新增共享 helper：
+
+- `approval_queue_item_has_pipeline_cursor(...)`
+- `approval_queue_resume_strategy(...)`
+
+并接入：
+
+- API blocked-tool replay 分流
+- runtime approved replay follow-up guard
+- approve queue item 的 runtime/pipeline follow-up 分流
+- run ledger continuation cursor 的 `resume_strategy`
+- run ledger continuation cursor 的 pipeline run/stage id 解析
+
+这一步的意义是：
+
+- approval queue 的 pipeline cursor 判断不再由 route 与 ledger 各自实现
+- monitor/recovery 看到的 pending approval continuation strategy 与 API 实际 replay/follow-up 分流保持一致
+- 后续把 approval queue 抽成 runner continuation node 时，resume strategy 已经有共享入口

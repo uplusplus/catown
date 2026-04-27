@@ -108,6 +108,7 @@ from services.approval_queue import (
     serialize_approval_queue_item,
 )
 from services.approval_replay import (
+    approval_queue_item_has_pipeline_cursor,
     build_approval_queue_item_resolved_event_payload,
     build_approval_queue_replay_round_payload,
     build_followup_continued_payload,
@@ -4336,7 +4337,7 @@ async def _replay_blocked_tool_queue_item(
     item: Any,
     request_payload: Dict[str, Any],
 ):
-    if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+    if approval_queue_item_has_pipeline_cursor(item, request_payload):
         from pipeline.engine import replay_blocked_tool_queue_item as replay_pipeline_blocked_tool_queue_item
 
         return await replay_pipeline_blocked_tool_queue_item(db, item)
@@ -4411,7 +4412,7 @@ async def _continue_runtime_after_approved_tool_replay(
         return build_followup_skipped_payload("task_run_missing")
     if getattr(item, "chatroom_id", None) is None:
         return build_followup_skipped_payload("chatroom_missing")
-    if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+    if approval_queue_item_has_pipeline_cursor(item, request_payload):
         return build_followup_skipped_payload("pipeline_queue_item")
     if not replay_result_is_actionable(replay_result):
         return build_followup_skipped_payload("replay_not_actionable")
@@ -4621,7 +4622,7 @@ async def approve_approval_queue_item(
             replay_result=replay_result,
             action_taken="tool_replayed",
         )
-        if getattr(item, "pipeline_run_id", None) is not None or request_payload.get("pipeline_run_id") is not None:
+        if approval_queue_item_has_pipeline_cursor(item, request_payload):
             resolution_payload.update(
                 await _continue_pipeline_after_approved_tool_replay(
                     db,
