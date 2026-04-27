@@ -2888,3 +2888,52 @@ Monitor 侧也顺手做了投影：
 - runner startup 不再只共享“选了什么模式”
 - 也开始共享“选中了谁来执行”
 - 统一 runner 外壳又往前收了一层：mode selection 之外，target resolution 也开始脱离分支代码
+
+### 11.45 2026-04-27 新进展：chat turn runtime preparation 已在多条执行路径间共享
+
+`P0.2` 往 turn execution envelope 继续拆时，最容易看到的一块重复不是 LLM loop 本身，而是“进入 LLM loop 之前”的那层准备动作：
+
+- 拿 `llm_client`
+- 取 recent messages
+- 从 checkpoint 构建 `turn_state`
+- 注入 previous work / inter-agent messages
+- 取 tool schemas
+- 取 tool runtime kwargs
+
+之前这些动作散落在至少四条路径里：
+
+- project single-agent sync
+- project single-agent stream
+- orchestrated sync turn
+- orchestrated stream turn
+
+每条路径都大同小异，但分别自己准备一遍。  
+这会带来两个问题：
+
+- turn execution envelope 还停留在“每个入口自己攒材料”
+- 后续如果要补统一的 budget / approval / ownership / checkpoint policy
+  - 仍会被迫在多处重复接线
+
+这一轮先把这层公共准备抽出来：
+
+- `backend/routes/api.py`
+  - 新增共享的 chat turn runtime preparation helper
+  - 统一负责：
+    - `llm_client`
+    - `recent_messages`
+    - `turn_state`
+    - `tool_schemas`
+    - `runtime_kwargs`
+
+目前已接入：
+
+- project single-agent sync
+- project single-agent stream
+- orchestrated sync turn
+- orchestrated stream turn
+
+这一步还没有把所有 turn loop 合并成一个函数，也没有覆盖 pipeline stage engine；但它的价值很明确：
+
+- turn execution 不再只是共享底层 executor
+- 连“进入 executor 之前的 runtime 准备层”也开始共享
+- 这说明 P0 已经从 startup envelope 继续推进到 turn envelope，而不只是 mode / policy 的表层收口

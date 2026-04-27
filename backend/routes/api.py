@@ -150,6 +150,17 @@ class PreparedOrchestrationRuntime:
     runner_policy: Any | None
 
 
+@dataclass
+class PreparedChatTurnRuntime:
+    llm_client: Any
+    agent_label: str
+    recent_messages: List[Any]
+    available_tools: List[str]
+    tool_schemas: List[Dict[str, Any]]
+    runtime_kwargs: Dict[str, Any]
+    turn_state: TurnContextState
+
+
 def _build_tool_prompt(tool_names: List[str]) -> str:
     if not tool_names:
         return ""
@@ -1192,22 +1203,20 @@ async def trigger_agent_response(
                 collaboration_coordinator.register_collaborator(collaborator)
                 logger.info(f"[Collab] Auto-registered collaborator: {_agent_type(agent)}")
         
-        # 5. 获取该 Agent 的 LLM 客户端
-        llm_client = get_llm_client_for_agent(_agent_type(target_agent))
-        logger.debug(f"[ LLM client obtained for {_agent_type(target_agent)}: {llm_client.base_url}")
-
         visibility = chatroom.message_visibility or "all"
-        recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
-        turn_state = build_turn_state_from_checkpoint_snapshot(
-            checkpoint_snapshot,
-            previous_agent_work=extra_context or "",
+        runtime = await _prepare_chat_turn_runtime(
+            agent=target_agent,
+            chatroom_id=chatroom_id,
+            project=project,
+            checkpoint_snapshot=checkpoint_snapshot,
+            previous_agent_work=extra_context,
+            recent_message_limit=20,
         )
-        tool_schemas = tool_registry.get_schemas()
-        runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+        logger.debug(f"[ LLM client obtained for {_agent_type(target_agent)}: {runtime.llm_client.base_url}")
         compaction_callback = _build_context_compaction_callback(
             db,
             task_run,
-            agent_name=agent_name_of(target_agent),
+            agent_name=runtime.agent_label,
             extra_payload={
                 "run_kind": "project_single_agent",
                 "project_id": project.id,
@@ -1217,10 +1226,10 @@ async def trigger_agent_response(
         record_agent_turn_started(
             db,
             task_run,
-            agent_name=agent_name_of(target_agent),
-            summary=f"{agent_name_of(target_agent)} started working on the request.",
+            agent_name=runtime.agent_label,
+            summary=f"{runtime.agent_label} started working on the request.",
             payload={
-                "target_agent_name": agent_name_of(target_agent),
+                "target_agent_name": runtime.agent_label,
                 "client_turn_id": client_turn_id,
                 "stage_policy": single_agent_policy.stages[0].to_payload() if single_agent_policy.stages else None,
             },
@@ -1230,17 +1239,17 @@ async def trigger_agent_response(
             return _assemble_chat_messages(
                 db=db,
                 agent=target_agent,
-                agent_name=agent_name_of(target_agent),
-                model_id=getattr(llm_client, "model", ""),
+                agent_name=runtime.agent_label,
+                model_id=getattr(runtime.llm_client, "model", ""),
                 chatroom=chatroom,
                 project=project,
                 agents=agents,
-                recent_messages=recent_messages,
+                recent_messages=runtime.recent_messages,
                 user_message=user_message,
-                available_tools=available_tools,
+                available_tools=runtime.available_tools,
                 history_limit=10,
                 history_visibility="all" if visibility == "all" else "target",
-                target_agent_name=agent_name_of(target_agent),
+                target_agent_name=runtime.agent_label,
                 prefix_assistant_name=visibility == "all",
                 extra_context=extra_context,
                 turn_state=current_turn_state,
@@ -1248,10 +1257,10 @@ async def trigger_agent_response(
             )
 
         logger.debug(
-            f"[ Context messages: {len(_assemble_project_single_agent_messages(turn_state))} messages"
+            f"[ Context messages: {len(_assemble_project_single_agent_messages(runtime.turn_state))} messages"
         )
         logger.info(
-            f"[LLM] Calling LLM for agent: {_agent_type(target_agent)} with {len(tool_schemas)} tools available"
+            f"[LLM] Calling LLM for agent: {_agent_type(target_agent)} with {len(runtime.tool_schemas)} tools available"
         )
 
         async def _execute_project_single_agent_tool(frame, tool_call):
@@ -1263,7 +1272,7 @@ async def trigger_agent_response(
                 tool_result = await tool_registry.execute(
                     tool_name,
                     **tool_args,
-                    **runtime_kwargs,
+                    **runtime.runtime_kwargs,
                 )
                 result_str = str(tool_result) if tool_result is not None else "(no output)"
                 tool_success = True
@@ -1289,17 +1298,17 @@ async def trigger_agent_response(
             record_runner_tool_round(
                 db,
                 task_run,
-                agent_name=agent_name_of(target_agent),
+                agent_name=runtime.agent_label,
                 turn=frame.turn_index + 1,
                 tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
                 tool_results=tool_results,
-                summary=f"{agent_name_of(target_agent)} completed a tool round.",
+                summary=f"{runtime.agent_label} completed a tool round.",
             )
 
         response_content = await execute_non_stream_turn_loop(
-            llm_client=llm_client,
-            tools=tool_schemas,
-            turn_state=turn_state,
+            llm_client=runtime.llm_client,
+            tools=runtime.tool_schemas,
+            turn_state=runtime.turn_state,
             assemble_messages=_assemble_project_single_agent_messages,
             execute_tool_call=_execute_project_single_agent_tool,
             max_turns=MAX_TOOL_ITERATIONS,
@@ -1327,7 +1336,7 @@ async def trigger_agent_response(
             chatroom_id,
             message_id=agent_response.id,
             content=response_content,
-            agent_name=agent_name_of(target_agent),
+            agent_name=runtime.agent_label,
             message_type="text",
             created_at=agent_response.created_at,
             metadata=_message_metadata_with_turn(client_turn_id),
@@ -1335,7 +1344,7 @@ async def trigger_agent_response(
         record_agent_turn_completed(
             db,
             task_run,
-            agent_name=agent_name_of(target_agent),
+            agent_name=runtime.agent_label,
             message_id=agent_response.id,
             response_content=response_content,
             summary=f"{agent_name_of(target_agent)} completed the turn.",
@@ -1676,6 +1685,37 @@ def _resolve_project_runtime_target_agent(
     return target_agent
 
 
+async def _prepare_chat_turn_runtime(
+    *,
+    agent: Agent,
+    chatroom_id: int,
+    project: Optional[Project],
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
+    previous_agent_work: str = "",
+    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
+    recent_message_limit: int = 10,
+) -> PreparedChatTurnRuntime:
+    from tools import tool_registry
+
+    llm_client = get_llm_client_for_agent(_agent_type(agent))
+    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        checkpoint_snapshot,
+        previous_agent_work=previous_agent_work or "",
+    )
+    if inter_agent_messages:
+        turn_state.add_inter_agent_messages(inter_agent_messages)
+    return PreparedChatTurnRuntime(
+        llm_client=llm_client,
+        agent_label=agent_name_of(agent),
+        recent_messages=recent_messages,
+        available_tools=tool_registry.list_tools(),
+        tool_schemas=tool_registry.get_schemas(),
+        runtime_kwargs=_tool_runtime_kwargs(agent, chatroom_id, project),
+        turn_state=turn_state,
+    )
+
+
 def _task_run_event_payload(event: Optional[TaskRunEvent]) -> Dict[str, Any]:
     if event is None:
         return {}
@@ -1975,26 +2015,21 @@ async def _iter_agent_turn_events(
     task_run: Optional[TaskRun] = None,
     checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
-    from tools import tool_registry
-
     _ensure_collaboration_context(agents, chatroom_id)
-
-    llm_client = get_llm_client_for_agent(_agent_type(agent))
-    agent_label = agent_name_of(agent)
-    available_tools = tool_registry.list_tools()
-    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(history_limit + 2, 6))
-    turn_state = build_turn_state_from_checkpoint_snapshot(
-        checkpoint_snapshot,
-        previous_agent_work=previous_agent_work or "",
+    runtime = await _prepare_chat_turn_runtime(
+        agent=agent,
+        chatroom_id=chatroom_id,
+        project=project,
+        checkpoint_snapshot=checkpoint_snapshot,
+        previous_agent_work=previous_agent_work,
+        inter_agent_messages=inter_agent_messages or [],
+        recent_message_limit=max(history_limit + 2, 6),
     )
-    turn_state.add_inter_agent_messages(inter_agent_messages or [])
-    tool_schemas = tool_registry.get_schemas()
-    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
     record_agent_turn_started(
         db,
         task_run,
-        agent_name=agent_label,
-        summary=f"{agent_label} started an orchestrated streaming turn.",
+        agent_name=runtime.agent_label,
+        summary=f"{runtime.agent_label} started an orchestrated streaming turn.",
         payload={
             "client_turn_id": client_turn_id,
             "inter_agent_message_count": len(inter_agent_messages or []),
@@ -2005,37 +2040,39 @@ async def _iter_agent_turn_events(
         return _assemble_chat_messages(
             db=db,
             agent=agent,
-            agent_name=agent_label,
-            model_id=getattr(llm_client, "model", ""),
+            agent_name=runtime.agent_label,
+            model_id=getattr(runtime.llm_client, "model", ""),
             chatroom=chatroom,
             project=project,
             agents=agents,
-            recent_messages=recent_messages,
+            recent_messages=runtime.recent_messages,
             user_message=user_message,
-            available_tools=available_tools,
+            available_tools=runtime.available_tools,
             history_limit=history_limit,
             standalone_note=standalone_note,
             turn_state=current_turn_state,
         )
 
     async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
-        return await tool_registry.execute(tool_name, **tool_args, **runtime_kwargs)
+        from tools import tool_registry
+
+        return await tool_registry.execute(tool_name, **tool_args, **runtime.runtime_kwargs)
 
     async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
         record_runner_tool_round(
             db,
             task_run,
-            agent_name=agent_label,
+            agent_name=runtime.agent_label,
             turn=frame.turn_index,
             tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
             tool_results=tool_results,
-            summary=f"{agent_label} completed a streaming tool round.",
+            summary=f"{runtime.agent_label} completed a streaming tool round.",
         )
 
     def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
         return _build_llm_card_payload(
-            agent_name=agent_label,
-            llm_client=llm_client,
+            agent_name=runtime.agent_label,
+            llm_client=runtime.llm_client,
             turn=frame.turn_index,
             duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
             system_prompt=frame.system_prompt,
@@ -2049,10 +2086,10 @@ async def _iter_agent_turn_events(
         )
 
     async for event in iter_stream_turn_events(
-        llm_client=llm_client,
-        tools=tool_schemas,
-        turn_state=turn_state,
-        agent_name=agent_label,
+        llm_client=runtime.llm_client,
+        tools=runtime.tool_schemas,
+        turn_state=runtime.turn_state,
+        agent_name=runtime.agent_label,
         client_turn_id=client_turn_id,
         assemble_messages=_assemble_stream_messages,
         execute_tool=_execute_stream_tool,
@@ -2087,26 +2124,22 @@ async def _run_single_agent_turn(
 
     Returns: (response_content, agent_response_msg) 或 (None, None)
     """
-    from tools import tool_registry
-
-    llm_client = get_llm_client_for_agent(_agent_type(agent))
     current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
 
     _ensure_collaboration_context(agents, chatroom_id)
-
-    available_tools = tool_registry.list_tools()
-    recent_msgs = await chatroom_manager.get_messages(chatroom_id, limit=6)
-    turn_state = build_turn_state_from_checkpoint_snapshot(
-        checkpoint_snapshot,
-        previous_agent_work=extra_context or "",
+    runtime = await _prepare_chat_turn_runtime(
+        agent=agent,
+        chatroom_id=chatroom_id,
+        project=project,
+        checkpoint_snapshot=checkpoint_snapshot,
+        previous_agent_work=extra_context,
+        inter_agent_messages=inter_agent_messages or [],
+        recent_message_limit=6,
     )
-    turn_state.add_inter_agent_messages(inter_agent_messages or [])
-    tool_schemas = tool_registry.get_schemas()
-    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
     compaction_callback = _build_context_compaction_callback(
         db,
         task_run,
-        agent_name=agent_name_of(agent),
+        agent_name=runtime.agent_label,
         extra_payload={
             "run_kind": "multi_agent_orchestration",
             "chatroom_id": chatroom_id,
@@ -2116,8 +2149,8 @@ async def _run_single_agent_turn(
     record_agent_turn_started(
         db,
         task_run,
-        agent_name=agent_name_of(agent),
-        summary=f"{agent_name_of(agent)} started an orchestrated turn.",
+        agent_name=runtime.agent_label,
+        summary=f"{runtime.agent_label} started an orchestrated turn.",
         payload={
             "client_turn_id": client_turn_id,
             "inter_agent_message_count": len(inter_agent_messages or []),
@@ -2128,14 +2161,14 @@ async def _run_single_agent_turn(
         return _assemble_chat_messages(
             db=db,
             agent=agent,
-            agent_name=agent_name_of(agent),
-            model_id=getattr(llm_client, "model", ""),
+            agent_name=runtime.agent_label,
+            model_id=getattr(runtime.llm_client, "model", ""),
             chatroom=current_chatroom,
             project=project,
             agents=agents,
-            recent_messages=recent_msgs,
+            recent_messages=runtime.recent_messages,
             user_message=user_message,
-            available_tools=available_tools,
+            available_tools=runtime.available_tools,
             history_limit=4,
             standalone_note=(
             "This is a standalone chat. Reply directly, stay concise, "
@@ -2152,10 +2185,12 @@ async def _run_single_agent_turn(
         tool_args_str = tool_call["function"].get("arguments", "{}")
         try:
             tool_args = json.loads(tool_args_str or "{}")
+            from tools import tool_registry
+
             tool_result = await tool_registry.execute(
                 tool_name,
                 **tool_args,
-                **runtime_kwargs,
+                **runtime.runtime_kwargs,
             )
             result_str = str(tool_result) if tool_result else "(no output)"
             tool_success = True
@@ -2174,17 +2209,17 @@ async def _run_single_agent_turn(
         record_runner_tool_round(
             db,
             task_run,
-            agent_name=agent_name_of(agent),
+            agent_name=runtime.agent_label,
             turn=frame.turn_index + 1,
             tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
             tool_results=tool_results,
-            summary=f"{agent_name_of(agent)} completed a tool round.",
+            summary=f"{runtime.agent_label} completed a tool round.",
         )
 
     response_content = await execute_non_stream_turn_loop(
-        llm_client=llm_client,
-        tools=tool_schemas,
-        turn_state=turn_state,
+        llm_client=runtime.llm_client,
+        tools=runtime.tool_schemas,
+        turn_state=runtime.turn_state,
         assemble_messages=_assemble_orchestration_turn_messages,
         execute_tool_call=_execute_orchestration_tool,
         max_turns=MAX_TOOL_ITERATIONS,
@@ -5219,12 +5254,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             _ensure_collaboration_context(agents, chatroom_id)
 
             # 5. 构建该 Agent 的消息上下文
-            llm_client = get_llm_client_for_agent(_agent_type(target_agent))
-            recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
             checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-            turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
-            tool_schemas = tool_registry.get_schemas()
-            runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
+            runtime = await _prepare_chat_turn_runtime(
+                agent=target_agent,
+                chatroom_id=chatroom_id,
+                project=project,
+                checkpoint_snapshot=checkpoint_snapshot,
+                recent_message_limit=10,
+            )
             compaction_callback = _build_context_compaction_callback(
                 db,
                 task_run,
@@ -5257,23 +5294,25 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     db=db,
                     agent=target_agent,
                     agent_name=target_agent_label,
-                    model_id=getattr(llm_client, "model", ""),
+                    model_id=getattr(runtime.llm_client, "model", ""),
                     chatroom=chatroom,
                     project=project,
                     agents=agents,
-                    recent_messages=recent_messages,
+                    recent_messages=runtime.recent_messages,
                     user_message=message.content,
-                    available_tools=available_tools,
+                    available_tools=runtime.available_tools,
                     history_limit=6,
                     turn_state=current_turn_state,
                     on_compaction=compaction_callback,
                 )
 
             async def _execute_single_agent_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+                from tools import tool_registry
+
                 return await tool_registry.execute(
                     tool_name,
                     **tool_args,
-                    **runtime_kwargs,
+                    **runtime.runtime_kwargs,
                 )
 
             async def _on_single_agent_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
@@ -5290,7 +5329,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             def _build_single_agent_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
                 return _build_llm_card_payload(
                     agent_name=target_agent_label,
-                    llm_client=llm_client,
+                    llm_client=runtime.llm_client,
                     turn=frame.turn_index,
                     duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
                     system_prompt=frame.system_prompt,
@@ -5304,9 +5343,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 )
 
             async for event in iter_stream_turn_events(
-                llm_client=llm_client,
-                tools=tool_schemas,
-                turn_state=turn_state,
+                llm_client=runtime.llm_client,
+                tools=runtime.tool_schemas,
+                turn_state=runtime.turn_state,
                 agent_name=target_agent_label,
                 client_turn_id=message.client_turn_id,
                 assemble_messages=_assemble_single_agent_stream_messages,

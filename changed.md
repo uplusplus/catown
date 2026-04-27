@@ -457,3 +457,16 @@
 - 提取统一的 project target-agent 解析辅助逻辑，收口 `@mention -> project agent / global auto-assign / default fallback`
 - 让 project single-agent sync 与 stream 两条入口共用同一套 target resolution 语义
 - 继续削减 runner startup 阶段的分支内重复逻辑，避免后续 policy / approval / ownership 接线再次分叉
+
+### `Share chat turn runtime preparation across execution paths`
+
+范围：
+
+- `backend/routes/api.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取统一的 chat turn runtime 准备逻辑，收口 `llm_client` / recent messages / `turn_state` / tool schemas / tool runtime kwargs
+- 让 project single-agent sync、project single-agent stream、orchestrated sync turn、orchestrated stream turn 共用同一套 turn-runtime preparation
+- 继续把 turn execution envelope 从分支实现里抽离，为后续向统一 runner 外壳收敛打基础
