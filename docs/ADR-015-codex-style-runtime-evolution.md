@@ -2793,3 +2793,55 @@ Monitor 侧也顺手做了投影：
 - 它开始变成真正的 runner startup envelope 投影
 - orchestration 的 startup 准备逻辑第一次在 sync / stream / recovery 三条主链上开始共享
 - 这还不是完整统一 runner，但已经是一个真实的 `P0` 内核收口点，而不再只是外围 summary 整理
+
+### 11.43 2026-04-27 新进展：runtime mode selection envelope 已在 sync / stream 入口间共享
+
+11.42 把 orchestration 的 startup 准备逻辑先收了一层，但继续往 `P0` 看，很快就会发现另一块明显重复：
+
+- sync chat entry
+- stream chat entry
+
+两边在 mode selection 时都要重复做同样三件事：
+
+- 更新 `task_run.run_kind`
+- 视情况更新 `target_agent_name`
+- 追加 `runtime_mode_selected` 事件
+  - 写入 `project_id`
+  - 写入 `runner_policy`
+  - 某些模式再补 `agents` / `target_agent_name`
+
+这类重复表面上只是几段 append/update，但实质上它正是 runner startup envelope 的最外层。
+
+如果这一层继续散落在各分支里，后面会持续出现两个问题：
+
+- sync / stream mode-selected 事件口径容易再分叉
+- 新增 approval / policy / ownership 投影时，仍要在多处重复接线
+
+这一轮继续做一个小收口：
+
+- `backend/routes/api.py`
+  - 提取统一的 mode-selection 写入辅助逻辑
+  - 统一负责：
+    - `run_kind` 更新
+    - `target_agent_name` 更新
+    - `runtime_mode_selected` payload 组装
+
+覆盖的入口包括：
+
+- standalone single-agent sync
+- standalone single-agent stream
+- project single-agent sync
+- project single-agent stream
+- standalone multi-agent orchestration sync / stream
+- project multi-agent orchestration sync / stream
+
+因此 `runtime_mode_selected` 现在开始更接近真正的 startup envelope：
+
+- sync / stream 不再各自手拼一份 mode-selection event
+- runner policy projection 也不再散落在八个分支里重复写入
+
+这一步的意义是：
+
+- run startup 的最外层信封开始从“分支代码”抽成“共享语义”
+- 统一 runner 外壳虽然还没完全成形，但 mode selection 这一层已经开始具有单一入口味道
+- 后续如果要把 approval / sandbox / ownership 等 runtime policy 再继续前移到 startup 阶段，挂载点会更稳定

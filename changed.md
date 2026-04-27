@@ -431,3 +431,16 @@
 - 把 orchestration target resolution / schedule build / runner policy 编译提取成共享准备逻辑，供 sync、stream、recovery 共用
 - 让 multi-agent `runtime_mode_selected` 事件也直接携带 orchestration `runner_policy`，把 policy projection 提前到 run startup 时刻
 - 补 API 测试，确认 sync / stream orchestration 的 mode-selected 事件与后续 scheduler plan 在 mode / stage_count / sidecar metadata 上保持一致
+
+### `Share runtime mode selection envelope across sync and stream entry points`
+
+范围：
+
+- `backend/routes/api.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取统一的 `runtime_mode_selected` 写入辅助逻辑，收口 `run_kind` / `target_agent_name` 更新与 mode-selected event payload 组装
+- 让 standalone / project single-agent、standalone / project multi-agent 在 sync 与 stream 入口都走同一套 mode-selection envelope
+- 继续把 runner startup 语义从分支逻辑中抽出来，为后续统一 runner 外壳做准备

@@ -1040,21 +1040,14 @@ async def trigger_agent_response(
                     agent_names=mentioned_names,
                     streaming=False,
                 )
-                update_task_run(db, task_run, run_kind="multi_agent_orchestration")
-                append_task_event(
+                _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    "runtime_mode_selected",
+                    run_kind="multi_agent_orchestration",
                     summary="Selected standalone multi-agent orchestration mode.",
-                    payload={
-                        "agents": mentioned_names,
-                        "project_id": None,
-                        "runner_policy": (
-                            prepared_orchestration.runner_policy.to_payload()
-                            if prepared_orchestration.runner_policy is not None
-                            else None
-                        ),
-                    },
+                    project_id=None,
+                    runner_policy=prepared_orchestration.runner_policy,
+                    extra_payload={"agents": mentioned_names},
                 )
                 logger.info(f"[Collab] Standalone multi-agent orchestration triggered: {mentioned_names}")
                 await _run_multi_agent_orchestration(
@@ -1072,7 +1065,6 @@ async def trigger_agent_response(
                 return
             standalone_target = _resolve_standalone_target_agent(db, user_message)
             standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
-            update_task_run(db, task_run, run_kind="standalone_assistant", target_agent_name=standalone_agent_name)
             standalone_policy = _build_single_agent_runner_policy(
                 run_kind="standalone_assistant",
                 agent_name=standalone_agent_name,
@@ -1081,15 +1073,14 @@ async def trigger_agent_response(
                 streaming=False,
                 standalone=True,
             )
-            append_task_event(
+            _select_task_run_runtime_mode(
                 db,
                 task_run,
-                "runtime_mode_selected",
+                run_kind="standalone_assistant",
                 summary="Selected standalone assistant mode.",
-                payload={
-                    "project_id": None,
-                    "runner_policy": standalone_policy.to_payload(),
-                },
+                project_id=None,
+                target_agent_name=standalone_agent_name,
+                runner_policy=standalone_policy,
             )
             await _trigger_standalone_assistant_response(
                 db,
@@ -1127,21 +1118,14 @@ async def trigger_agent_response(
                 agent_names=mentioned_names,
                 streaming=False,
             )
-            update_task_run(db, task_run, run_kind="multi_agent_orchestration")
-            append_task_event(
+            _select_task_run_runtime_mode(
                 db,
                 task_run,
-                "runtime_mode_selected",
+                run_kind="multi_agent_orchestration",
                 summary="Selected project multi-agent orchestration mode.",
-                payload={
-                    "agents": mentioned_names,
-                    "project_id": project.id,
-                    "runner_policy": (
-                        prepared_orchestration.runner_policy.to_payload()
-                        if prepared_orchestration.runner_policy is not None
-                        else None
-                    ),
-                },
+                project_id=project.id,
+                runner_policy=prepared_orchestration.runner_policy,
+                extra_payload={"agents": mentioned_names},
             )
             logger.info(f"[Collab] Multi-agent orchestration triggered: {mentioned_names}")
             await _run_multi_agent_orchestration(
@@ -1195,23 +1179,15 @@ async def trigger_agent_response(
             streaming=False,
             standalone=False,
         )
-        update_task_run(
+        _select_task_run_runtime_mode(
             db,
             task_run,
             run_kind="project_single_agent",
             target_agent_name=agent_name_of(target_agent),
-        )
-        append_task_event(
-            db,
-            task_run,
-            "runtime_mode_selected",
             agent_name=agent_name_of(target_agent),
             summary="Selected project single-agent execution mode.",
-            payload={
-                "project_id": project.id,
-                "target_agent_name": agent_name_of(target_agent),
-                "runner_policy": single_agent_policy.to_payload(),
-            },
+            project_id=project.id,
+            runner_policy=single_agent_policy,
         )
 
         # 注册 Agent 为协作者（如果尚未注册）
@@ -1641,6 +1617,48 @@ def _prepare_orchestration_runtime(
         available_tools=available_tools,
         plan=plan,
         runner_policy=runner_policy,
+    )
+
+
+def _runner_policy_payload(policy: Any) -> Any:
+    return policy.to_payload() if policy is not None and hasattr(policy, "to_payload") else None
+
+
+def _select_task_run_runtime_mode(
+    db: Session,
+    task_run: Optional[TaskRun],
+    *,
+    run_kind: str,
+    summary: str,
+    project_id: Optional[int],
+    target_agent_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    runner_policy: Any = None,
+    extra_payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    if task_run is None:
+        return
+
+    update_task_run(
+        db,
+        task_run,
+        run_kind=run_kind,
+        target_agent_name=target_agent_name if target_agent_name is not None else task_run.target_agent_name,
+    )
+
+    payload: Dict[str, Any] = {"project_id": project_id, "runner_policy": _runner_policy_payload(runner_policy)}
+    if target_agent_name:
+        payload["target_agent_name"] = target_agent_name
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
+
+    append_task_event(
+        db,
+        task_run,
+        "runtime_mode_selected",
+        agent_name=agent_name,
+        summary=summary,
+        payload=payload,
     )
 
 
@@ -5032,21 +5050,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         agent_names=mentioned_names,
                         streaming=True,
                     )
-                    update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
-                    append_task_event(
+                    _select_task_run_runtime_mode(
                         db,
                         task_run,
-                        "runtime_mode_selected",
+                        run_kind="multi_agent_orchestration_stream",
                         summary="Selected standalone multi-agent streaming orchestration mode.",
-                        payload={
-                            "agents": mentioned_names,
-                            "project_id": None,
-                            "runner_policy": (
-                                prepared_orchestration.runner_policy.to_payload()
-                                if prepared_orchestration.runner_policy is not None
-                                else None
-                            ),
-                        },
+                        project_id=None,
+                        runner_policy=prepared_orchestration.runner_policy,
+                        extra_payload={"agents": mentioned_names},
                     )
                     async for chunk in _stream_multi_agent_orchestration(
                         db=db,
@@ -5067,12 +5078,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
                 standalone_target = _resolve_standalone_target_agent(db, message.content)
                 standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
-                update_task_run(
-                    db,
-                    task_run,
-                    run_kind="standalone_assistant_stream",
-                    target_agent_name=standalone_agent_name,
-                )
                 standalone_stream_policy = _build_single_agent_runner_policy(
                     run_kind="standalone_assistant_stream",
                     agent_name=standalone_agent_name,
@@ -5081,15 +5086,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     streaming=True,
                     standalone=True,
                 )
-                append_task_event(
+                _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    "runtime_mode_selected",
+                    run_kind="standalone_assistant_stream",
                     summary="Selected standalone assistant streaming mode.",
-                    payload={
-                        "project_id": None,
-                        "runner_policy": standalone_stream_policy.to_payload(),
-                    },
+                    project_id=None,
+                    target_agent_name=standalone_agent_name,
+                    runner_policy=standalone_stream_policy,
                 )
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
@@ -5121,21 +5125,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     agent_names=mentioned_names,
                     streaming=True,
                 )
-                update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
-                append_task_event(
+                _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    "runtime_mode_selected",
+                    run_kind="multi_agent_orchestration_stream",
                     summary="Selected project multi-agent streaming orchestration mode.",
-                    payload={
-                        "agents": mentioned_names,
-                        "project_id": project.id,
-                        "runner_policy": (
-                            prepared_orchestration.runner_policy.to_payload()
-                            if prepared_orchestration.runner_policy is not None
-                            else None
-                        ),
-                    },
+                    project_id=project.id,
+                    runner_policy=prepared_orchestration.runner_policy,
+                    extra_payload={"agents": mentioned_names},
                 )
                 async for chunk in _stream_multi_agent_orchestration(
                     db=db,
@@ -5203,23 +5200,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 streaming=True,
                 standalone=False,
             )
-            update_task_run(
+            _select_task_run_runtime_mode(
                 db,
                 task_run,
                 run_kind="project_single_agent_stream",
                 target_agent_name=target_agent_label,
-            )
-            append_task_event(
-                db,
-                task_run,
-                "runtime_mode_selected",
                 agent_name=target_agent_label,
                 summary="Selected project single-agent streaming execution mode.",
-                payload={
-                    "project_id": project.id,
-                    "target_agent_name": target_agent_label,
-                    "runner_policy": project_single_agent_stream_policy.to_payload(),
-                },
+                project_id=project.id,
+                runner_policy=project_single_agent_stream_policy,
             )
 
             _ensure_collaboration_context(agents, chatroom_id)
