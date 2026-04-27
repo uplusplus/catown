@@ -1771,3 +1771,56 @@ monitor 上也同步做了投影：
 
 - follow-up runtime turn 已经消费
 - recovery 事件现在也开始声明消费
+
+### 11.26 2026-04-25 新进展：orchestration recovery 已开始真实消费 checkpoint protocol tail
+
+11.25 只补齐了 recovery 的消费声明，但执行面仍有明显缺口：
+
+- interrupted orchestration recovery 在恢复 agent turn 时
+- 还是主要依赖 `extra_context` 文本与 runtime snapshot 元数据
+- 没有把 checkpoint 中保留下来的 protocol tail 真正送回 `TurnContextState`
+
+这意味着：
+
+- recovery event 已经会说自己消费了 `runtime_snapshot`
+- 但恢复后的 prompt 未必真的带回最近一轮 tool-call assistant/tool message
+- continuation state 在 recovery 路径里仍然停留在“声明过”，没有完全进入“执行输入”
+
+这一轮把执行链补上：
+
+- `_resume_interrupted_orchestration_task_run(...)`
+  - 在恢复开始时继续构建 `recovery_checkpoint_snapshot`
+  - 并把这份 snapshot 传进恢复用的 `_run_single_agent_turn(...)`
+
+- `_run_single_agent_turn(...)`
+  - 新增 `checkpoint_snapshot` 参数
+  - turn state 初始化不再只用空白 `TurnContextState`
+  - 而是先通过 `build_turn_state_from_checkpoint_snapshot(...)`
+    回填：
+    - continuation protocol tail
+    - prior round summaries
+    - previous agent work
+  - 然后再合并当前调度阶段补充的 inter-agent messages
+
+因此现在的 interrupted orchestration recovery：
+
+- 不只是事件层声明自己消费了 continuation state
+- 而是在真正恢复 agent turn 时
+- 把 checkpoint 里的 recent protocol tail 一并送回 LLM 上下文
+
+测试也同步收紧：
+
+- recovery fixture 里显式注入一段 `tool_round_recorded`
+  - assistant 发起 `read_file`
+  - tool 返回 `Design checkpoint contents`
+- startup recovery test 现在会断言：
+  - `recovery_continuation_state.protocol_tail_message_count == 2`
+  - 恢复后的首个 LLM 输入中确实包含：
+    - 该 assistant tool-call message
+    - 该 tool result message
+
+这一步的意义很直接：
+
+- recovery continuation state 终于不只是一份可观察元数据
+- orchestration recovery 开始与 runtime approved replay follow-up 共享同一类 prompt rehydration 语义
+- “checkpoint 保留了什么” 与 “恢复时真正喂回了什么” 开始对齐

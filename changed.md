@@ -176,3 +176,17 @@
 - 让 startup/manual orchestration recovery 事件显式记录本次恢复消费了哪类 continuation state
 - 在 `task_run_recovery_started`、`scheduler_recovery_state_rebuilt`、`task_run_recovery_completed` 中补 `recovery_continuation_state`
 - 补 recovery 测试，确保恢复路径明确声明使用了 `runtime_snapshot` 等层
+
+### `Consume protocol tail during orchestration recovery`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_run_recovery.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 interrupted orchestration recovery 在重跑 agent turn 时把 `checkpoint_snapshot` 直接传入 turn builder
+- 恢复后的 `TurnContextState` 现在会真实消费 checkpoint 里的 protocol tail 与 prior summaries，不再只停留在 recovery 元数据层
+- 补 recovery 测试，确认恢复后的 LLM 输入里重新带回了 checkpoint 中的 tool-call assistant/tool message

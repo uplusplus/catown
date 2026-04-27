@@ -56,6 +56,7 @@ def _make_app(tmp_path):
 
     main_mod.RateLimitMiddleware.dispatch = passthrough
     main_mod.RequestLoggingMiddleware.dispatch = passthrough
+    main_mod.app.state.test_mock_llm = mock_llm
     return main_mod.app
 
 
@@ -147,6 +148,56 @@ def _seed_interrupted_orchestration_run(db, *, client_turn_id: str):
     append_task_event(
         db,
         task_run,
+        "tool_round_recorded",
+        agent_name=analyst.name,
+        summary=f"{analyst.name} completed a tool round before restart.",
+        payload={
+            "turn": 1,
+            "tool_names": ["read_file"],
+            "tool_count": 1,
+            "tool_status_counts": {"succeeded": 1},
+            "blocked_tool_count": 0,
+            "turn_local_state": {
+                "assistant_content": "Open the design doc before continuing.",
+                "tool_results": [
+                    {
+                        "tool_call_id": "recovery_call_1",
+                        "tool_name": "read_file",
+                        "arguments": "{\"file_path\": \"docs/design.md\"}",
+                        "result": "Design checkpoint contents",
+                        "success": True,
+                        "status": "succeeded",
+                        "blocked": False,
+                        "blocked_kind": None,
+                        "blocked_reason": None,
+                    }
+                ],
+                "protocol_messages": [
+                    {
+                        "role": "assistant",
+                        "content": "Open the design doc before continuing.",
+                        "tool_calls": [
+                            {
+                                "id": "recovery_call_1",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": "{\"file_path\": \"docs/design.md\"}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "recovery_call_1",
+                        "name": "read_file",
+                        "content": "Design checkpoint contents",
+                    },
+                ],
+            },
+        },
+    )
+
+    append_task_event(
+        db,
+        task_run,
         "agent_turn_completed",
         agent_name=analyst.name,
         message_id=saved_message.id,
@@ -233,8 +284,25 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["continuation_cursor"]["resume_strategy"] == "rebuild_from_runtime_snapshot"
         assert recovery_started_event["payload"]["recovery_continuation_state"]["next_action"] == "resume_scheduler"
+        assert recovery_started_event["payload"]["recovery_continuation_state"]["protocol_tail_message_count"] == 2
         recovery_completed_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_completed")
         assert recovery_completed_event["payload"]["recovery_continuation_state"]["consumed"] is True
+        recovery_llm_messages = recovered_app.state.test_mock_llm.chat_with_tools.await_args_list[0].args[0]
+        assert any(
+            message.get("role") == "assistant"
+            and isinstance(message.get("tool_calls"), list)
+            and any(
+                tool_call.get("function", {}).get("name") == "read_file"
+                for tool_call in message.get("tool_calls", [])
+            )
+            for message in recovery_llm_messages
+        )
+        assert any(
+            message.get("role") == "tool"
+            and message.get("name") == "read_file"
+            and "Design checkpoint contents" in str(message.get("content") or "")
+            for message in recovery_llm_messages
+        )
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
         assistant_messages = [message["content"] for message in messages if message.get("agent_name")]

@@ -1959,6 +1959,7 @@ async def _run_single_agent_turn(
     client_turn_id: Optional[str] = None,
     inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
     task_run: Optional[TaskRun] = None,
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
     """
     执行单个 Agent 的一次响应（供多 Agent 编排调用）
@@ -1974,7 +1975,10 @@ async def _run_single_agent_turn(
 
     available_tools = tool_registry.list_tools()
     recent_msgs = await chatroom_manager.get_messages(chatroom_id, limit=6)
-    turn_state = TurnContextState(previous_agent_work=extra_context or "")
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        checkpoint_snapshot,
+        previous_agent_work=extra_context or "",
+    )
     turn_state.add_inter_agent_messages(inter_agent_messages or [])
     tool_schemas = tool_registry.get_schemas()
     runtime_kwargs = _tool_runtime_kwargs(agent, chatroom_id, project)
@@ -2535,6 +2539,7 @@ async def _resume_interrupted_orchestration_task_run(
                 db=db,
                 client_turn_id=task_run.client_turn_id,
                 task_run=task_run,
+                checkpoint_snapshot=recovery_checkpoint_snapshot,
             )
 
             if content:
