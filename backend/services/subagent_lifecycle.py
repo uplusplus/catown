@@ -98,6 +98,21 @@ def summarize_subagent_lifecycle(lifecycle: Any) -> str | None:
     return " · ".join(parts)
 
 
+def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]:
+    """Return subagents that can still be moved to a cancelled terminal state."""
+
+    state = lifecycle if isinstance(lifecycle, dict) else {}
+    subagents = state.get("subagents") if isinstance(state.get("subagents"), list) else []
+    cancellable: list[dict[str, Any]] = []
+    for subagent in subagents:
+        if not isinstance(subagent, dict):
+            continue
+        status = str(subagent.get("status") or "").strip().lower()
+        if status and status not in TERMINAL_STATUSES:
+            cancellable.append(subagent)
+    return cancellable
+
+
 def _load_event_payload(event: Any) -> dict[str, Any]:
     raw = getattr(event, "payload_json", None)
     if isinstance(raw, dict):

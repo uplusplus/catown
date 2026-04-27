@@ -1045,3 +1045,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 保持 resolve 后清理 lease，后续 serialization 可看到处理期间的 owner / expiry
 - 修正 approval queue 单测导入方式，避免测试数据库 reload 时持有旧 mapper
 - 跑 approval/escalation API 回归与 approval queue lease 单测
+
+### `Add task-run cancellation lifecycle primitive`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/services/subagent_lifecycle.py`
+- `backend/tests/test_task_run_cancel.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `POST /api/task-runs/{task_run_id}/cancel`，允许把 running task run 显式取消
+- 取消时从 checkpoint 的 `subagent_lifecycle` 找出未终止 subagents，并为每个 step 写入 `scheduler_step_cancelled`
+- 写入 `task_run_cancelled` ledger event 后，将 TaskRun 状态改为 `cancelled`
+- 新增 `cancellable_subagents_from_lifecycle(...)`，让 cancel primitive 复用统一 lifecycle projection
+- 补 API 单测，覆盖 active subagent terminalize 与 non-running run 409

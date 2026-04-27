@@ -136,6 +136,7 @@ from services.runner_policy import (
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
+from services.subagent_lifecycle import cancellable_subagents_from_lifecycle
 
 logger = logging.getLogger("catown.api")
 
@@ -3386,6 +3387,11 @@ class ApprovalQueueDecisionRequest(BaseModel):
     resolved_by: Optional[str] = "user"
 
 
+class TaskRunCancelRequest(BaseModel):
+    note: Optional[str] = None
+    cancelled_by: Optional[str] = "user"
+
+
 async def _publish_saved_chat_message(
     db: Session,
     chatroom_id: int,
@@ -4307,6 +4313,83 @@ async def resume_task_run(task_run_id: int, db: Session = Depends(get_db)):
         "status": refreshed.status,
         "task_run_id": refreshed.id,
         "detail": detail,
+    }
+
+
+@router.post("/task-runs/{task_run_id}/cancel")
+async def cancel_task_run(
+    task_run_id: int,
+    req: TaskRunCancelRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Cancel a running task run and terminalize any non-terminal subagent states."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    if (task_run.status or "").lower() != "running":
+        raise HTTPException(status_code=409, detail="Only running task runs can be cancelled.")
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    lifecycle = checkpoint_snapshot.get("subagent_lifecycle")
+    cancellable_subagents = cancellable_subagents_from_lifecycle(lifecycle)
+    cancelled_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
+    note = ((req.note if req else None) or "").strip()
+
+    for subagent in cancellable_subagents:
+        agent_name = str(subagent.get("agent_name") or "").strip() or None
+        append_task_event(
+            db,
+            task_run,
+            "scheduler_step_cancelled",
+            agent_name=agent_name,
+            summary=f"Cancelled subagent {agent_name or subagent.get('step_id')}.",
+            payload={
+                "step_id": subagent.get("step_id"),
+                "position": subagent.get("position"),
+                "agent_name": subagent.get("agent_name"),
+                "agent_type": subagent.get("agent_type"),
+                "dispatch_kind": subagent.get("dispatch_kind"),
+                "wait_for_step_id": subagent.get("wait_for_step_id"),
+                "attached_to_step_id": subagent.get("attached_to_step_id"),
+                "previous_status": subagent.get("status"),
+                "cancelled_by": cancelled_by,
+                "note": note or None,
+            },
+        )
+
+    append_task_event(
+        db,
+        task_run,
+        "task_run_cancelled",
+        summary=note or "Task run cancelled from the API.",
+        payload={
+            "task_run_id": task_run.id,
+            "run_kind": task_run.run_kind,
+            "cancelled_by": cancelled_by,
+            "cancelled_subagent_count": len(cancellable_subagents),
+            "cancelled_step_ids": [
+                subagent.get("step_id")
+                for subagent in cancellable_subagents
+                if subagent.get("step_id") is not None
+            ],
+            "note": note or None,
+            "checkpoint_snapshot": checkpoint_snapshot,
+        },
+    )
+    complete_task_run(db, task_run, status="cancelled", summary=note or "Task run cancelled.")
+    db.refresh(task_run)
+    return {
+        "message": "Task run cancelled.",
+        "cancelled": True,
+        "task_run_id": task_run.id,
+        "status": task_run.status,
+        "cancelled_subagent_count": len(cancellable_subagents),
+        "detail": serialize_task_run_detail(task_run),
     }
 
 

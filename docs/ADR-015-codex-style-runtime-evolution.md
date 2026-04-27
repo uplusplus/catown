@@ -3683,3 +3683,33 @@ P1 的第三个核心差距是 sandbox escalation resume token / lease。Catown 
 - continuation cursor / monitor serialization 可以看到 token 与 lease 状态
 
 这仍不是完整 sandbox action runtime，但 approval / escalation 的 durable resume token + resolution lease 已经落到实际 API 执行路径。
+
+### 11.68 2026-04-27 新进展：TaskRun cancellation primitive 接入 subagent lifecycle
+
+P1 subagent lifecycle 已有 cancelled projection，但之前只是状态模型支持，并没有实际 runtime 入口会写入 cancellation terminal state。
+
+本轮新增最小 cancellation primitive：
+
+- `POST /api/task-runs/{task_run_id}/cancel`
+- `cancellable_subagents_from_lifecycle(...)`
+
+取消流程：
+
+1. 只允许取消 `running` TaskRun
+2. 从当前 checkpoint 的 `subagent_lifecycle` 找出所有非 terminal subagents
+3. 对每个 active subagent 写入 `scheduler_step_cancelled`
+4. 写入 `task_run_cancelled` ledger event
+5. 将 TaskRun 状态更新为 `cancelled`
+
+这一步的意义是：
+
+- subagent lifecycle 的 `cancelled` 终态不再只是 projection model
+- parent TaskRun 可以主动 terminalize child step state
+- monitor / checkpoint 能看到取消前 snapshot 与取消后的 child terminal state
+- API 层开始具备 Codex 风格 `close/cancel` primitive 的最小雏形
+
+边界仍然清楚：
+
+- 这不是正在运行中 agent coroutine 的抢占式 cancellation
+- 还没有 worker/process 级 interrupt
+- 但 ledger、checkpoint、subagent terminal state 已经一致，后续可以把真实 executor interrupt 接到同一个 cancellation event model 上
