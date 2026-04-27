@@ -206,3 +206,17 @@
 - 让 `checkpoint_snapshot.turn_local_state` 只基于最新一个 agent turn 的事件窗口派生，避免旧 turn 的 protocol tail 泄漏到后续 turn
 - 让 orchestration recovery 在每个恢复 step 前重建一次 step-local `checkpoint_snapshot`，保证 continuation state 会随着恢复推进而前滚
 - 补 monitor / recovery 测试，确认旧的 tool protocol 只会出现在第一个恢复 turn，不会污染后续 turn
+
+### `Expose step-local continuation state for recovered dispatches`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_run_recovery.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 recovery 期间每个 `scheduler_step_dispatched` 事件都携带该 step 实际消费的 `checkpoint_snapshot`
+- 同时写入 step-local `recovery_continuation_state`，明确本步恢复到底带回了多少 protocol tail / summary
+- 补 recovery 测试，确认第一个恢复 step 仍带旧 checkpoint tail，而后续 step 已看到前滚后的空 tail

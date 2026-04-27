@@ -270,6 +270,17 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert event_types.count("scheduler_step_dispatched") == 3
         assert event_types.count("scheduler_step_completed") == 3
         assert event_types.count("scheduler_step_resumed") == 2
+        recovery_dispatch_events = [
+            event
+            for event in detail["events"]
+            if event["event_type"] == "scheduler_step_dispatched"
+            and event["payload"].get("recovered") is True
+        ]
+        assert len(recovery_dispatch_events) == 2
+        assert recovery_dispatch_events[0]["payload"]["checkpoint_snapshot"]["turn_local_state"]["assistant_content"] == "Open the design doc before continuing."
+        assert recovery_dispatch_events[0]["payload"]["recovery_continuation_state"]["protocol_tail_message_count"] == 2
+        assert recovery_dispatch_events[1]["payload"]["checkpoint_snapshot"]["turn_local_state"]["protocol_messages"] == []
+        assert recovery_dispatch_events[1]["payload"]["recovery_continuation_state"]["protocol_tail_message_count"] == 0
 
         recovery_state_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_recovery_state_rebuilt")
         assert recovery_state_event["payload"]["runtime"]["completed_step_count"] == 1

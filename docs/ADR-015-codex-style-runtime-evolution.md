@@ -1883,3 +1883,55 @@ monitor 上也同步做了投影：
 - checkpoint continuation state 终于从“latest tool activity”
 - 收口成“latest turn-local continuation window”
 - recovery prompt rehydration 开始具备真正的前滚语义，而不是一次性把旧 tail 粘到底
+
+### 11.28 2026-04-25 新进展：recovered dispatch 事件已暴露 step-local continuation snapshot
+
+11.27 之后，恢复执行面已经具备 step-by-step 前滚语义，但观测面还有一个空洞：
+
+- 我们知道 recovery executor 每一步都会重建 `checkpoint_snapshot`
+- 也知道第一步和后续步吃到的 continuation state 可能不同
+- 但事件流里还看不到“某一个 recovered dispatch 实际用了哪份 snapshot”
+
+这会让排障停留在推断层：
+
+- 你能从最终结果看出恢复成功了
+- 但不容易直接确认：
+  - 第一个恢复 step 是否真的吃到了旧 protocol tail
+  - 第二个恢复 step 是否已经看到前滚后的空 tail
+
+这一轮把这层 step-local observability 补上：
+
+- `_resume_interrupted_orchestration_task_run(...)`
+  - 在每个 recovery step dispatch 前
+    先重建一次当前 `step_checkpoint_snapshot`
+  - 并派生对应的 `step_recovery_continuation_state`
+
+- `scheduler_step_dispatched`
+  - 当 `recovered = true` 时
+  - payload 现在额外带上：
+    - `checkpoint_snapshot`
+    - `recovery_continuation_state`
+
+这样 recovery trace 现在可以逐步回答：
+
+- 这个 step 恢复时看到的 latest agent turn 是谁
+- 这个 step 恢复时 `turn_local_state` 里还有没有 protocol tail
+- 这个 step 真正消费了多少条 tail message / prior summaries
+
+测试也同步加强：
+
+- `test_startup_recovers_interrupted_orchestration_run`
+  - 现在会显式检查 recovered dispatch events
+  - 第一条 recovered dispatch：
+    - `assistant_content == "Open the design doc before continuing."`
+    - `protocol_tail_message_count == 2`
+  - 第二条 recovered dispatch：
+    - `turn_local_state.protocol_messages == []`
+    - `protocol_tail_message_count == 0`
+
+这一步的意义是：
+
+- recovery 的 continuation-state 前滚
+  - 不再只是执行器内部行为
+- 而是进入 durable event trace
+- 让 monitor / 调试 / 审计都能按 step 精确看到“恢复时到底喂回了什么”

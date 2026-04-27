@@ -2512,6 +2512,9 @@ async def _resume_interrupted_orchestration_task_run(
 
             agent_label = agent_name_of(agent)
             step_policy = find_stage_policy(orchestration_policy, step.step_id)
+            db.refresh(task_run)
+            step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+            step_recovery_continuation_state = _describe_recovery_continuation_state(step_checkpoint_snapshot)
             append_task_event(
                 db,
                 task_run,
@@ -2524,12 +2527,12 @@ async def _resume_interrupted_orchestration_task_run(
                     extra={
                         "recovered": True,
                         "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                        "checkpoint_snapshot": step_checkpoint_snapshot,
+                        "recovery_continuation_state": step_recovery_continuation_state,
                     },
                 ),
             )
 
-            db.refresh(task_run)
-            step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
             content, msg = await _run_single_agent_turn(
                 agent=agent,
                 chatroom_id=chatroom.id,
