@@ -321,3 +321,19 @@
 - 让 Monitor task-run 列表直接显示 snapshot 级 continuation-state 摘要，不再必须点进详情才能看恢复上下文
 - 让 task-run event 列表对带有 `continuation_state` / `recovery_continuation_state` / `checkpoint_snapshot.continuation_state` 的事件直接显示摘要行
 - 这样 approval replay、pipeline resume、stage start、recovery dispatch 等事件在 UI 上不再只剩原始 payload 折叠块
+
+### `Serialize derived continuation state onto task-run events`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_recovery.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `serialize_task_run_detail(...)` 在每条 event 上直接附带 `continuation_state` 与 `continuation_state_summary`
+- 统一从 `recovery_continuation_state` / `continuation_state` / `checkpoint_snapshot.continuation_state` 中提取，避免前端继续逐类解析 event payload
+- 补 recovery 测试与 Monitor UI 适配，确认恢复事件现在能直接返回可读 continuation 摘要

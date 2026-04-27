@@ -2359,3 +2359,65 @@ Monitor 侧也顺手做了投影：
 - continuation-state 终于不只在 snapshot/detail/raw payload 里可见
 - 它开始进入 run 列表与事件流的主阅读路径
 - Monitor 对这类恢复/续跑语义的可读性又提升了一层
+
+### 11.36 2026-04-25 新进展：task-run detail 事件已直接序列化 derived continuation state
+
+11.35 之后，Monitor UI 已经会从 event payload 中提取 continuation-state 摘要，但这层逻辑本质上仍有重复：
+
+- 后端事件 payload 里可能出现三种入口：
+  - `recovery_continuation_state`
+  - `continuation_state`
+  - `checkpoint_snapshot.continuation_state`
+- 前端为了展示摘要
+  - 还得自己逐类判断这些分支
+
+这意味着同一份语义仍然横跨两层：
+
+- 后端负责产出 continuation-state 相关 payload
+- 前端还要再负责“识别哪一种 payload 里藏着 continuation-state”
+
+这一轮把这层派生逻辑继续前移到序列化层：
+
+- `serialize_task_run_detail(...)`
+  - 现在每条 event 除了原始 `payload`
+  - 还会直接带上：
+    - `continuation_state`
+    - `continuation_state_summary`
+
+- 提取逻辑统一为：
+  - 优先读 `recovery_continuation_state`
+  - 其次读 `continuation_state`
+  - 再次读 `checkpoint_snapshot.continuation_state`
+  - 若只有 `checkpoint_snapshot`，则按统一 helper 现场派生
+
+同时补了一个通用 summary formatter：
+
+- `summarize_continuation_state(...)`
+  - 用统一口径输出：
+    - next action
+    - resume strategy
+    - tail message 数量
+    - prior summary 数量
+    - consumed layers
+
+测试也同步补上：
+
+- `test_startup_recovers_interrupted_orchestration_run`
+  - 继续验证 recovery started event 的原始 payload
+  - 同时新增断言：
+    - `continuation_state.consumed is True`
+    - `continuation_state_summary == "resume scheduler · via rebuild_from_runtime_snapshot · 2 tail messages · runtime_snapshot, protocol_tail"`
+
+前端也顺手收口：
+
+- `TaskRunEvent` 类型现在直接声明：
+  - `continuation_state`
+  - `continuation_state_summary`
+- Monitor event 列表优先使用后端直接给出的 summary
+  - 只把原有 payload 解析逻辑保留为兜底兼容
+
+这一步的意义是：
+
+- event 级 continuation 语义第一次成为 task-run detail API 的显式字段
+- 前端不再需要理解后端不同事件 payload 的分支结构
+- continuation-state 的派生逻辑继续从 UI 层回收到序列化层

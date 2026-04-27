@@ -204,16 +204,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
 def serialize_task_run_detail(task_run: TaskRun) -> dict[str, Any]:
     payload = serialize_task_run_summary(task_run)
     payload["events"] = [
-        {
-            "id": event.id,
-            "event_index": event.event_index,
-            "event_type": event.event_type,
-            "agent_name": event.agent_name,
-            "message_id": event.message_id,
-            "summary": event.summary,
-            "payload": _load_payload(event.payload_json),
-            "created_at": event.created_at.isoformat() if event.created_at else None,
-        }
+        _serialize_task_run_event(event)
         for event in task_run.events
     ]
     payload["approval_queue_items"] = [
@@ -234,6 +225,23 @@ def serialize_monitor_task_run_summary(
     payload["project_name"] = project_name
     payload["latest_event_type"] = task_run.events[-1].event_type if task_run.events else None
     return payload
+
+
+def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
+    raw_payload = _load_payload(event.payload_json)
+    continuation_state = _extract_event_continuation_state(raw_payload)
+    return {
+        "id": event.id,
+        "event_index": event.event_index,
+        "event_type": event.event_type,
+        "agent_name": event.agent_name,
+        "message_id": event.message_id,
+        "summary": event.summary,
+        "payload": raw_payload,
+        "continuation_state": continuation_state,
+        "continuation_state_summary": summarize_continuation_state(continuation_state),
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
 
 
 def _default_title(user_request: str) -> str:
@@ -397,6 +405,44 @@ def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str
     }
 
 
+def summarize_continuation_state(continuation_state: Any) -> str | None:
+    state = continuation_state if isinstance(continuation_state, dict) else {}
+    if not state.get("consumed"):
+        return None
+
+    parts: list[str] = []
+    next_action = str(state.get("next_action") or "").strip()
+    resume_strategy = str(state.get("resume_strategy") or "").strip()
+    if next_action:
+        parts.append(next_action.replace("_", " "))
+    if resume_strategy:
+        parts.append(f"via {resume_strategy}")
+
+    try:
+        protocol_tail_message_count = int(state.get("protocol_tail_message_count") or 0)
+    except (TypeError, ValueError):
+        protocol_tail_message_count = 0
+    if protocol_tail_message_count > 0:
+        parts.append(f"{protocol_tail_message_count} tail messages")
+
+    try:
+        prior_round_summary_count = int(state.get("prior_round_summary_count") or 0)
+    except (TypeError, ValueError):
+        prior_round_summary_count = 0
+    if prior_round_summary_count > 0:
+        parts.append(f"{prior_round_summary_count} prior summaries")
+
+    consumed_layers = state.get("consumed_layers")
+    if isinstance(consumed_layers, list):
+        labels = [str(layer).strip() for layer in consumed_layers if str(layer).strip()]
+        if labels:
+            parts.append(", ".join(labels))
+
+    if not parts:
+        return "continuation consumed"
+    return " · ".join(parts)
+
+
 def _latest_checkpoint_turn_events(events: list[TaskRunEvent]) -> list[TaskRunEvent]:
     if not events:
         return []
@@ -447,6 +493,28 @@ def _latest_checkpoint_turn_events(events: list[TaskRunEvent]) -> list[TaskRunEv
     if matching_start_index is None:
         return events[: latest_completed_index + 1]
     return events[matching_start_index : latest_completed_index + 1]
+
+
+def _extract_event_continuation_state(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    direct_state = payload.get("recovery_continuation_state")
+    if isinstance(direct_state, dict):
+        return direct_state
+
+    direct_state = payload.get("continuation_state")
+    if isinstance(direct_state, dict):
+        return direct_state
+
+    checkpoint_snapshot = payload.get("checkpoint_snapshot")
+    if isinstance(checkpoint_snapshot, dict):
+        checkpoint_state = checkpoint_snapshot.get("continuation_state")
+        if isinstance(checkpoint_state, dict):
+            return checkpoint_state
+        return describe_checkpoint_continuation_state(checkpoint_snapshot)
+
+    return None
 
 
 def _build_task_run_continuation_cursor(

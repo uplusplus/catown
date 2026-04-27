@@ -296,6 +296,8 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["continuation_cursor"]["resume_strategy"] == "rebuild_from_runtime_snapshot"
         assert recovery_started_event["payload"]["recovery_continuation_state"]["next_action"] == "resume_scheduler"
         assert recovery_started_event["payload"]["recovery_continuation_state"]["protocol_tail_message_count"] == 2
+        assert recovery_started_event["continuation_state"]["consumed"] is True
+        assert recovery_started_event["continuation_state_summary"] == "resume scheduler · via rebuild_from_runtime_snapshot · 2 tail messages · runtime_snapshot, protocol_tail"
         recovery_completed_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_completed")
         assert recovery_completed_event["payload"]["recovery_continuation_state"]["consumed"] is True
         assert len(recovered_app.state.test_mock_llm.chat_with_tools.await_args_list) == 2

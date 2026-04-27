@@ -169,6 +169,15 @@ export type TaskRunEvent = {
   message_id?: number | null;
   summary?: string | null;
   payload?: Record<string, unknown>;
+  continuation_state?: {
+    consumed?: boolean;
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    consumed_layers?: string[] | null;
+    protocol_tail_message_count?: number | null;
+    prior_round_summary_count?: number | null;
+  } | null;
+  continuation_state_summary?: string | null;
   created_at?: string | null;
 };
 

@@ -5215,9 +5215,9 @@ export function MonitorTab() {
                           {event.agent_name ? <span>{event.agent_name}</span> : null}
                           {event.message_id ? <span>message #{event.message_id}</span> : null}
                         </div>
-                        {taskRunEventContinuationSummary(event.payload) ? (
+                        {event.continuation_state_summary || taskRunEventContinuationSummary(event.payload) ? (
                           <div className="small-note" style={{ marginTop: 8 }}>
-                            {taskRunEventContinuationSummary(event.payload)}
+                            {event.continuation_state_summary || taskRunEventContinuationSummary(event.payload)}
                           </div>
                         ) : null}
                         {event.payload && Object.keys(event.payload).length > 0 ? (
