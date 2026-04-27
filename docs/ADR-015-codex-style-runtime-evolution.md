@@ -1578,3 +1578,51 @@ Unified visibility
 
 - snapshot 除了描述状态
 - 还开始描述恢复入口与下一动作
+
+### 11.22 2026-04-25 新进展：checkpoint snapshot 已开始携带 turn-local continuation state
+
+在 11.21 加入 `continuation_cursor` 之后，还有一个残留问题：
+
+- cursor 已经知道“下一步应该做什么”
+- 但还没有携带“恢复时实际要喂给模型/执行器的最近一轮 turn-local payload”
+
+这一轮继续保持无 schema 迁移路线，先把最近一轮 tool round 的 continuation state 显式写进 ledger：
+
+- `tool_round_recorded` payload 现在开始携带 `turn_local_state`
+  - 包括：
+    - `assistant_content`
+    - `tool_results`
+    - `protocol_messages`
+
+- `checkpoint_snapshot` 现在会继续派生 `turn_local_state`
+  - 当前包含：
+    - `turn`
+    - `tool_names`
+    - `blocked_tool_count`
+    - `assistant_content`
+    - `protocol_messages`
+    - `tool_results`
+    - `blocked_tool`
+
+这一步的意义在于：
+
+- `continuation_cursor` 负责回答：
+  - “接下来该做什么”
+- `turn_local_state` 负责回答：
+  - “如果要从最近一轮 tool turn 继续，手头可恢复的最小 protocol payload 是什么”
+
+monitor 上也同步做了投影：
+
+- task-run 详情现在能直接查看：
+  - continuation cursor
+  - turn-local state payload
+
+这仍然不是完整的 executor continuation object：
+
+- 当前只覆盖“最近一轮 tool turn”的 protocol payload
+- 还没有把多轮 turn state、older summary rounds、完整 in-flight cursor 结构化持久化
+
+但相较之前，已经从“只有恢复建议”推进到了：
+
+- 有恢复建议
+- 也有最近一轮可直接复用的 turn-local continuation payload

@@ -1842,6 +1842,8 @@ class TestSSEStreaming:
         blocked_event = next(event for event in detail["events"] if event["event_type"] == "tool_call_blocked")
         assert round_event["payload"]["tool_status_counts"]["approval_blocked"] == 1
         assert round_event["payload"]["blocked_tool_count"] == 1
+        assert round_event["payload"]["turn_local_state"]["protocol_messages"][0]["role"] == "assistant"
+        assert round_event["payload"]["turn_local_state"]["tool_results"][0]["tool_name"] == "delete_file"
         assert blocked_event["payload"]["tool_name"] == "delete_file"
         assert blocked_event["payload"]["blocked_kind"] == "approval"
         assert blocked_event["payload"]["status"] == "approval_blocked"

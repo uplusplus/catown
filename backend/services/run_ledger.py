@@ -303,6 +303,10 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         latest_runtime_payload=latest_runtime_payload,
         pending_tool_queue_item=pending_tool_queue_item,
     )
+    turn_local_state = _build_task_run_turn_local_state(
+        latest_tool_round_payload=latest_tool_round_payload,
+        latest_tool_blocked_payload=latest_tool_blocked_payload,
+    )
 
     return {
         "event_count": len(events),
@@ -335,6 +339,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
         "continuation_cursor": continuation_cursor,
+        "turn_local_state": turn_local_state,
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
         "approval_queue_count": len(approval_items),
         "status": task_run.status,
@@ -427,6 +432,42 @@ def _build_task_run_continuation_cursor(
         "resume_strategy": None,
         "source_event_type": latest_tool_round.event_type if latest_tool_round is not None else None,
         "source_event_at": latest_tool_round.created_at.isoformat() if latest_tool_round and latest_tool_round.created_at else None,
+    }
+
+
+def _build_task_run_turn_local_state(
+    *,
+    latest_tool_round_payload: Any,
+    latest_tool_blocked_payload: Any,
+) -> dict[str, Any]:
+    tool_round_payload = latest_tool_round_payload if isinstance(latest_tool_round_payload, dict) else {}
+    blocked_payload = latest_tool_blocked_payload if isinstance(latest_tool_blocked_payload, dict) else {}
+    turn_local_state = tool_round_payload.get("turn_local_state")
+    if not isinstance(turn_local_state, dict):
+        turn_local_state = {}
+
+    protocol_messages = turn_local_state.get("protocol_messages")
+    if not isinstance(protocol_messages, list):
+        protocol_messages = []
+
+    tool_results = turn_local_state.get("tool_results")
+    if not isinstance(tool_results, list):
+        tool_results = []
+
+    return {
+        "turn": tool_round_payload.get("turn"),
+        "tool_names": tool_round_payload.get("tool_names"),
+        "blocked_tool_count": tool_round_payload.get("blocked_tool_count"),
+        "assistant_content": turn_local_state.get("assistant_content"),
+        "protocol_messages": protocol_messages,
+        "tool_results": tool_results,
+        "blocked_tool": {
+            "tool_name": blocked_payload.get("tool_name"),
+            "status": blocked_payload.get("status"),
+            "blocked_kind": blocked_payload.get("blocked_kind"),
+            "blocked_reason": blocked_payload.get("blocked_reason"),
+            "queue_item_id": blocked_payload.get("queue_item_id"),
+        } if blocked_payload else None,
     }
 
 

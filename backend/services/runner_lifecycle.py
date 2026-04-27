@@ -59,9 +59,26 @@ def record_tool_round(
     )
     status_counts: dict[str, int] = {}
     blocked_tools: list[dict[str, Any]] = []
+    serialized_tool_results: list[dict[str, Any]] = []
     for result in normalized_tool_results:
         status = str(getattr(result, "status", "") or ("succeeded" if getattr(result, "success", True) else "failed"))
         status_counts[status] = status_counts.get(status, 0) + 1
+        serialized_tool_results.append(
+            {
+                "tool_call_id": str(getattr(result, "tool_call_id", "") or ""),
+                "tool_name": str(getattr(result, "tool_name", "") or "tool"),
+                "arguments": str(getattr(result, "arguments", "") or "{}"),
+                "result": compact_runtime_text(getattr(result, "result", "") or "", limit=1200),
+                "success": bool(getattr(result, "success", False)),
+                "status": status,
+                "blocked": bool(getattr(result, "blocked", False)),
+                "blocked_kind": getattr(result, "blocked_kind", None),
+                "blocked_reason": compact_runtime_text(
+                    getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
+                    limit=220,
+                ),
+            }
+        )
         if bool(getattr(result, "blocked", False)):
             blocked_tools.append(
                 {
@@ -81,6 +98,37 @@ def record_tool_round(
     }
     if blocked_tools:
         merged_payload["blocked_tools"] = blocked_tools
+    if serialized_tool_results:
+        merged_payload["turn_local_state"] = {
+            "assistant_content": compact_runtime_text(summary, limit=280),
+            "tool_results": serialized_tool_results,
+            "protocol_messages": [
+                {
+                    "role": "assistant",
+                    "content": compact_runtime_text(summary, limit=280),
+                    "tool_calls": [
+                        {
+                            "id": result_payload["tool_call_id"],
+                            "type": "function",
+                            "function": {
+                                "name": result_payload["tool_name"],
+                                "arguments": result_payload["arguments"],
+                            },
+                        }
+                        for result_payload in serialized_tool_results
+                    ],
+                },
+                *[
+                    {
+                        "role": "tool",
+                        "tool_call_id": result_payload["tool_call_id"],
+                        "name": result_payload["tool_name"],
+                        "content": result_payload["result"],
+                    }
+                    for result_payload in serialized_tool_results
+                ],
+            ],
+        }
     if isinstance(payload, dict):
         merged_payload.update(payload)
     elif payload is not None:

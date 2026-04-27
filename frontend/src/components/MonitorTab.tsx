@@ -5091,7 +5091,31 @@ export function MonitorTab() {
                             : "No continuation cursor derived."}
                         </div>
                       </div>
+                      <div className="simple-row">
+                        <strong>Turn-Local State</strong>
+                        <div className="small-note">
+                          {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_messages?.length
+                            ? [
+                                selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.turn
+                                  ? `turn ${selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.turn}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.tool_names?.length
+                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.tool_names.join(", ")}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool?.["tool_name"]
+                                  ? `blocked ${String(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool["tool_name"])}`
+                                  : null,
+                              ].filter(Boolean).join(" · ")
+                            : "No turn-local continuation payload derived."}
+                        </div>
+                      </div>
                     </div>
+                    {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_messages?.length ? (
+                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
+                        <summary>Turn-Local State Payload</summary>
+                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state)}</pre>
+                      </details>
+                    ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor ? (
                       <details className="run-event-row__payload" style={{ marginTop: 12 }}>
                         <summary>Continuation Cursor Payload</summary>

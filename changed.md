@@ -112,3 +112,21 @@
 - 从现有 ledger / approval queue 派生 `checkpoint_snapshot.continuation_cursor`，明确恢复时下一步该做什么
 - 让 recovery 事件显式记录恢复前 cursor，例如 `resume_scheduler`
 - 让 monitor task-run 列表和详情都能直接看到 continuation cursor，而不必手工阅读整条 event stream
+
+### `Expose turn-local continuation state`
+
+范围：
+
+- `backend/services/runner_lifecycle.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `tool_round_recorded` payload 开始携带最近一轮可恢复的 turn-local state，包括 protocol messages 与 tool results
+- 让 `checkpoint_snapshot` 派生 `turn_local_state`，把最近一轮 continuation payload 放进 monitor / recovery 视图
+- 补 blocked tool 与 monitor task-run 的断言，保证 turn-local continuation state 可读可用

@@ -632,6 +632,11 @@ class TestMonitorOverview:
         assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
         assert cursor["tool_name"] == "delete_file"
         assert cursor["turn"] == 2
+        turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
+        assert turn_local_state["turn"] == 2
+        assert turn_local_state["tool_names"] == ["delete_file"]
+        assert turn_local_state["blocked_tool"]["tool_name"] == "delete_file"
+        assert turn_local_state["protocol_messages"] == []
 
     def test_logs_endpoint_returns_real_backend_logs(self, client):
         from monitoring import monitor_log_buffer

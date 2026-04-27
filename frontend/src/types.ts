@@ -136,6 +136,15 @@ export type TaskRunCheckpointSnapshot = {
     running_step_count?: number | null;
     waiting_step_count?: number | null;
   };
+  turn_local_state?: {
+    turn?: number | null;
+    tool_names?: string[] | null;
+    blocked_tool_count?: number | null;
+    assistant_content?: string | null;
+    protocol_messages?: Record<string, unknown>[] | null;
+    tool_results?: Record<string, unknown>[] | null;
+    blocked_tool?: Record<string, unknown> | null;
+  };
   pending_approval_count?: number;
   approval_queue_count?: number;
   status?: string | null;
