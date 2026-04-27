@@ -994,3 +994,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 checkpoint snapshot 中输出 `subagent_lifecycle` 与 `subagent_lifecycle_summary`
 - 让 monitor/task-run summary 能看到 spawned/running/completed 的 subagent 状态聚合
 - 补 service 与 checkpoint 单测，并跑 orchestration recovery / monitor 聚焦回归
+
+### `Record failed subagent lifecycle terminal state`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/routes/api.py`
+- `backend/tests/test_subagent_lifecycle.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 扩展 subagent lifecycle projection，支持 `scheduler_step_failed` / `scheduler_step_cancelled` 终态
+- 非流式 orchestration step 执行异常时记录 failed lifecycle event，并把 task run 标记为 failed
+- 流式 orchestration step 执行异常时记录 failed lifecycle event，返回 SSE error/done，并把 task run 标记为 failed
+- 补 failed/cancelled projection 单测，并跑 sync/stream orchestration ledger 回归

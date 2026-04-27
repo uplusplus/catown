@@ -130,3 +130,35 @@ def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
         assert snapshot["subagent_lifecycle_summary"] == "1 subagents · 1 running"
     finally:
         db.close()
+
+
+def test_subagent_lifecycle_projects_failed_and_cancelled_steps():
+    now = datetime.now()
+    events = [
+        _event(
+            "scheduler_plan_created",
+            {
+                "steps": [
+                    {"step_id": "step-1", "position": 1, "agent_name": "developer"},
+                    {"step_id": "step-2", "position": 2, "agent_name": "tester"},
+                ]
+            },
+            created_at=now,
+        ),
+        _event(
+            "scheduler_step_failed",
+            {"step_id": "step-1", "position": 1, "agent_name": "developer", "error": "LLM timeout"},
+            created_at=now + timedelta(seconds=1),
+        ),
+        _event(
+            "scheduler_step_cancelled",
+            {"step_id": "step-2", "position": 2, "agent_name": "tester"},
+            created_at=now + timedelta(seconds=2),
+        ),
+    ]
+
+    lifecycle = build_subagent_lifecycle_from_events(events)
+
+    assert lifecycle["status_counts"] == {"failed": 1, "cancelled": 1}
+    assert lifecycle["subagents"][0]["error"] == "LLM timeout"
+    assert summarize_subagent_lifecycle(lifecycle) == "2 subagents · 1 failed · 1 cancelled"

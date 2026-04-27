@@ -29,7 +29,13 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
                     transition_count += 1
             continue
 
-        if event_type not in {"scheduler_step_dispatched", "scheduler_step_resumed", "scheduler_step_completed"}:
+        if event_type not in {
+            "scheduler_step_dispatched",
+            "scheduler_step_resumed",
+            "scheduler_step_completed",
+            "scheduler_step_failed",
+            "scheduler_step_cancelled",
+        }:
             continue
 
         step = payload if isinstance(payload, dict) else {}
@@ -47,6 +53,12 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
                 _transition(state, "spawned", event=event, reason="resumed")
         elif event_type == "scheduler_step_completed":
             _transition(state, "completed", event=event, reason="completed")
+        elif event_type == "scheduler_step_failed":
+            _transition(state, "failed", event=event, reason="failed")
+            if isinstance(payload.get("error"), str):
+                state["error"] = payload.get("error")
+        elif event_type == "scheduler_step_cancelled":
+            _transition(state, "cancelled", event=event, reason="cancelled")
 
         if state.get("status") != previous_status:
             transition_count += 1

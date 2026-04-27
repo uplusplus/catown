@@ -2394,18 +2394,37 @@ async def _run_multi_agent_orchestration(
             ),
         )
 
-        content, msg = await _run_single_agent_turn(
-            agent=agent,
-            chatroom_id=chatroom_id,
-            project=project,
-            agents=agents,
-            user_message=user_message,
-            extra_context=f"{_build_orchestration_previous_work(completed_turns)}\n{extra_context}".strip(),
-            inter_agent_messages=pending_handoffs.pop(step.step_id, []),
-            db=db,
-            client_turn_id=client_turn_id,
-            task_run=task_run,
-        )
+        try:
+            content, msg = await _run_single_agent_turn(
+                agent=agent,
+                chatroom_id=chatroom_id,
+                project=project,
+                agents=agents,
+                user_message=user_message,
+                extra_context=f"{_build_orchestration_previous_work(completed_turns)}\n{extra_context}".strip(),
+                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
+                db=db,
+                client_turn_id=client_turn_id,
+                task_run=task_run,
+            )
+        except Exception as exc:
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_failed",
+                agent_name=agent_label,
+                summary=f"Scheduler marked {agent_label} failed.",
+                payload=_scheduler_event_payload(
+                    queue,
+                    step,
+                    extra={
+                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                        "error": str(exc)[:2000],
+                    },
+                ),
+            )
+            complete_task_run(db, task_run, status="failed", summary=f"Orchestration failed at {agent_label}.")
+            raise
 
         if content:
             await _publish_saved_chat_message(
@@ -3067,65 +3086,86 @@ async def _stream_multi_agent_orchestration(
 
         saved = None
         step_content = ""
-        async for event in _iter_agent_turn_events(
-            agent=agent,
-            chatroom_id=chatroom.id,
-            chatroom=chatroom,
-            project=project,
-            agents=agents,
-            user_message=user_message,
-            db=db,
-            client_turn_id=client_turn_id,
-            previous_agent_work=_build_orchestration_previous_work(completed_turns),
-            inter_agent_messages=pending_handoffs.pop(step.step_id, []),
-            history_limit=3,
-            standalone_note=standalone_note,
-            task_run=task_run,
-            checkpoint_snapshot=step_checkpoint_snapshot,
-        ):
-            if event["type"] == "runtime_card":
-                yield await sse_card(event["card_type"], event["payload"])
-                continue
+        try:
+            async for event in _iter_agent_turn_events(
+                agent=agent,
+                chatroom_id=chatroom.id,
+                chatroom=chatroom,
+                project=project,
+                agents=agents,
+                user_message=user_message,
+                db=db,
+                client_turn_id=client_turn_id,
+                previous_agent_work=_build_orchestration_previous_work(completed_turns),
+                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
+                history_limit=3,
+                standalone_note=standalone_note,
+                task_run=task_run,
+                checkpoint_snapshot=step_checkpoint_snapshot,
+            ):
+                if event["type"] == "runtime_card":
+                    yield await sse_card(event["card_type"], event["payload"])
+                    continue
 
-            if event["type"] == "turn_complete":
-                step_content = event.get("content") or ""
-                if step_content:
-                    saved = await chatroom_manager.send_message(
-                        chatroom_id=chatroom.id,
-                        agent_id=agent.id,
-                        content=step_content,
-                        message_type="text",
-                        metadata=_message_metadata_with_turn(client_turn_id),
-                        agent_name=agent_label,
-                    )
-                    await _publish_saved_chat_message(
-                        db,
-                        chatroom.id,
-                        message_id=saved.id,
-                        content=step_content,
-                        agent_name=agent_label,
-                        message_type="text",
-                        created_at=saved.created_at,
-                        metadata=_message_metadata_with_turn(client_turn_id),
-                    )
-                    record_agent_turn_completed(
-                        db,
-                        task_run,
-                        agent_name=agent_label,
-                        message_id=saved.id,
-                        response_content=step_content,
-                        summary=f"{agent_label} completed the orchestrated streaming turn.",
-                    )
-                    if len(step_content) > 30:
-                        asyncio.create_task(
-                            _extract_memories(agent.id, _agent_type(agent), user_message, step_content)
+                if event["type"] == "turn_complete":
+                    step_content = event.get("content") or ""
+                    if step_content:
+                        saved = await chatroom_manager.send_message(
+                            chatroom_id=chatroom.id,
+                            agent_id=agent.id,
+                            content=step_content,
+                            message_type="text",
+                            metadata=_message_metadata_with_turn(client_turn_id),
+                            agent_name=agent_label,
                         )
-                    completed_turns.append({"agent": agent_label, "content": step_content})
-                    if step.dispatch_kind == "blocking":
-                        last_blocking_result = step_content
-                continue
+                        await _publish_saved_chat_message(
+                            db,
+                            chatroom.id,
+                            message_id=saved.id,
+                            content=step_content,
+                            agent_name=agent_label,
+                            message_type="text",
+                            created_at=saved.created_at,
+                            metadata=_message_metadata_with_turn(client_turn_id),
+                        )
+                        record_agent_turn_completed(
+                            db,
+                            task_run,
+                            agent_name=agent_label,
+                            message_id=saved.id,
+                            response_content=step_content,
+                            summary=f"{agent_label} completed the orchestrated streaming turn.",
+                        )
+                        if len(step_content) > 30:
+                            asyncio.create_task(
+                                _extract_memories(agent.id, _agent_type(agent), user_message, step_content)
+                            )
+                        completed_turns.append({"agent": agent_label, "content": step_content})
+                        if step.dispatch_kind == "blocking":
+                            last_blocking_result = step_content
+                    continue
 
-            yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            append_task_event(
+                db,
+                task_run,
+                "scheduler_step_failed",
+                agent_name=agent_label,
+                summary=f"Scheduler marked {agent_label} failed.",
+                payload=_scheduler_event_payload(
+                    queue,
+                    step,
+                    extra={
+                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
+                        "error": str(exc)[:2000],
+                    },
+                ),
+            )
+            complete_task_run(db, task_run, status="failed", summary=f"Streaming orchestration failed at {agent_label}.")
+            yield f"data: {sse_json.dumps({'type': 'error', 'error': str(exc)[:2000], 'agent_name': agent_label, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+            yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': agent_label, 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+            return
 
         ready_steps = queue.mark_completed(step.step_id)
         append_task_event(

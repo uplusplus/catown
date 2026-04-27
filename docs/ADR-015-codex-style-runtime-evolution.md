@@ -3605,3 +3605,25 @@ projection 保留：
 - failed / cancelled 状态目前只是 lifecycle model 支持，执行路径还没有统一写入这些终态
 
 它的价值是先建立统一状态面。后续要把 orchestration loop 改成真正的 parent executor + child subagent lifecycle 时，不需要再从散落事件里临时推断状态。
+
+### 11.65 2026-04-27 新进展：subagent lifecycle 开始记录 failed terminal state
+
+上一轮只是把已有 scheduler event 投影成 subagent lifecycle。问题是：异常路径仍可能直接冒泡，导致 TaskRun 停在 running，subagent 也没有明确终态。
+
+本轮补上最小失败终态：
+
+- `scheduler_step_failed` -> subagent `failed`
+- `scheduler_step_cancelled` -> subagent `cancelled`（projection 支持，执行路径后续接入）
+
+并接入：
+
+- 非流式 multi-agent orchestration：单个 step 执行异常时写入 `scheduler_step_failed`，然后将 task run 标记为 failed
+- 流式 multi-agent orchestration：单个 step 执行异常时写入 `scheduler_step_failed`，将 task run 标记为 failed，并通过 SSE 返回 error / done
+
+这一步让 subagent lifecycle 不再只有 happy path：
+
+- spawn / running / completed 已可由正常 scheduler events 推导
+- failed 已由执行异常路径写入
+- cancelled 已进入 lifecycle projection model，等待后续 cancel primitive 接入
+
+它仍不是完整 Codex subagent runtime，但已经补齐了最关键的 terminal-state 可观测性，避免异常时 parent run 与 child step 状态脱节。
