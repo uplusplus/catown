@@ -3258,3 +3258,38 @@ P0.3 继续收口 approved blocked-tool replay 后的 continuation prompt。
 - approved replay 后的 continuation context 不再藏在 API route 内
 - runtime 与 pipeline 恢复时收到同一套“已 replay tool result，继续但不要重复执行”的指令语义
 - approval replay 主链现在从 request、resolution、ledger event 到 continuation prompt 都更接近统一 runner envelope
+
+### 11.55 2026-04-27 新进展：approval replay request parsing 与 cursor 解析已共享
+
+P0.3 继续把 approved replay 的入口解析层收口。
+
+在 request/replay/follow-up/event payload helper 已共享后，runtime 与 pipeline replay 仍各自维护一些低层解析逻辑：
+
+- 从 `request_payload_json` 解析 approval queue request payload
+- 解析 replay tool name
+- 解析 replay arguments text
+- 生成 replay tool call id
+- 解析 pipeline run/stage cursor
+
+这些逻辑本身不复杂，但它们决定 approved replay 后能否找到正确工具、正确 pipeline run/stage，以及 ledger 中 replay tool result 是否能稳定关联 queue item。
+
+本轮新增共享 helper：
+
+- `load_approval_queue_request_payload(...)`
+- `resolve_replay_tool_name(...)`
+- `resolve_replay_arguments_text(...)`
+- `replay_tool_call_id(...)`
+- `resolve_pipeline_replay_run_id(...)`
+- `resolve_pipeline_replay_stage_id(...)`
+
+并接入：
+
+- API approve/reject queue item 的 request payload 读取
+- runtime blocked-tool replay
+- pipeline blocked-tool replay
+
+这一步的意义是：
+
+- approval replay 的 request 解析与 cursor 解析不再分散在 route 与 pipeline engine
+- runtime/pipeline replay 对 queue item id、tool name、arguments、pipeline cursor 的解释口径一致
+- 后续把 replay 执行器继续抽成 runner continuation action 时，可以直接复用这些 resolver，而不是迁移分支内解析代码

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Dict
 
 
@@ -126,6 +127,39 @@ def build_queue_rejection_resolution_payload(
     if rollback_to is not None:
         payload["rollback_to"] = rollback_to
     return payload
+
+
+def load_approval_queue_request_payload(raw_payload: Any) -> Dict[str, Any]:
+    if isinstance(raw_payload, dict):
+        return raw_payload
+    if not raw_payload:
+        return {}
+    try:
+        loaded = json.loads(str(raw_payload))
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def replay_tool_call_id(item: Any, tool_name: Any = None) -> str:
+    fallback = tool_name if tool_name is not None else getattr(item, "target_name", "tool")
+    return f"queue-replay-{getattr(item, 'id', fallback or 'tool')}"
+
+
+def resolve_replay_tool_name(item: Any, request_payload: Dict[str, Any]) -> str:
+    return str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip()
+
+
+def resolve_replay_arguments_text(request_payload: Dict[str, Any]) -> str:
+    return str(request_payload.get("arguments") or "{}")
+
+
+def resolve_pipeline_replay_run_id(item: Any, request_payload: Dict[str, Any]) -> Any:
+    return getattr(item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
+
+
+def resolve_pipeline_replay_stage_id(item: Any, request_payload: Dict[str, Any]) -> Any:
+    return getattr(item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id")
 
 
 def build_approval_queue_item_created_event_payload(item: Any) -> Dict[str, Any]:

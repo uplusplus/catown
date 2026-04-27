@@ -827,3 +827,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 chat runtime 与 pipeline approved replay continuation 共用同一套 tool/status/result preview 文案
 - 明确保留“继续执行但不要无条件重跑同一 tool call”的恢复语义
 - 补 helper 单测，并跑 approval replay runtime/pipeline 聚焦回归
+
+### `Share approval replay request parsing helpers`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽取 approval queue request payload 解析 helper，统一处理空值、非 dict JSON 与已解析 dict
+- 抽取 replay tool name、arguments text、tool call id、pipeline run/stage cursor resolver
+- 让 API approve/reject、runtime blocked-tool replay、pipeline blocked-tool replay 共用同一套 request/cursor 解析语义
+- 补 helper 单测，并跑 runtime/pipeline approval replay 与 pipeline gate 聚焦回归

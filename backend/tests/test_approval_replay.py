@@ -18,7 +18,13 @@ from services.approval_replay import (
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
     build_tool_replay_followup_context,
+    load_approval_queue_request_payload,
     replay_result_is_actionable,
+    replay_tool_call_id,
+    resolve_pipeline_replay_run_id,
+    resolve_pipeline_replay_stage_id,
+    resolve_replay_arguments_text,
+    resolve_replay_tool_name,
 )
 
 
@@ -148,6 +154,20 @@ def test_queue_resolution_event_payload_helpers_share_ledger_shape():
         "replay_success": True,
         "replay_blocked": False,
     }
+
+
+def test_replay_request_helpers_normalize_payload_and_cursor_fields():
+    item = SimpleNamespace(id=77, target_name="read_file", pipeline_run_id=9, pipeline_stage_id=None)
+    payload = load_approval_queue_request_payload('{"tool_name": "write_file", "arguments": {"bad": "shape"}, "pipeline_stage_id": 10}')
+
+    assert load_approval_queue_request_payload(None) == {}
+    assert load_approval_queue_request_payload("[1, 2]") == {}
+    assert load_approval_queue_request_payload({"tool_name": "read_file"}) == {"tool_name": "read_file"}
+    assert resolve_replay_tool_name(item, payload) == "write_file"
+    assert resolve_replay_arguments_text(payload) == "{'bad': 'shape'}"
+    assert replay_tool_call_id(item, "write_file") == "queue-replay-77"
+    assert resolve_pipeline_replay_run_id(item, payload) == 9
+    assert resolve_pipeline_replay_stage_id(item, payload) == 10
 
 
 def test_queue_rejection_resolution_payload_omits_absent_rollback():

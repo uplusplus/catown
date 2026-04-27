@@ -52,6 +52,12 @@ from services.approval_replay import (
     build_pipeline_gate_request_key,
     build_pipeline_gate_request_payload,
     build_pipeline_gate_resolution_payload,
+    load_approval_queue_request_payload,
+    replay_tool_call_id,
+    resolve_pipeline_replay_run_id,
+    resolve_pipeline_replay_stage_id,
+    resolve_replay_arguments_text,
+    resolve_replay_tool_name,
 )
 from services.turn_state import (
     TurnContextState,
@@ -610,31 +616,23 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
 
 async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
     """Replay a previously blocked pipeline tool call after approval."""
-    request_payload = {}
-    raw_payload = getattr(queue_item, "request_payload_json", None)
-    if raw_payload:
-        try:
-            loaded = json.loads(raw_payload)
-            if isinstance(loaded, dict):
-                request_payload = loaded
-        except json.JSONDecodeError:
-            request_payload = {}
+    request_payload = load_approval_queue_request_payload(getattr(queue_item, "request_payload_json", None))
 
-    tool_name = str(request_payload.get("tool_name") or getattr(queue_item, "target_name", "") or "").strip()
-    arguments_text = str(request_payload.get("arguments") or "{}")
+    tool_name = resolve_replay_tool_name(queue_item, request_payload)
+    arguments_text = resolve_replay_arguments_text(request_payload)
     if not tool_name:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', 'tool')}",
+            tool_call_id=replay_tool_call_id(queue_item, "tool"),
             tool_name=getattr(queue_item, "target_name", "tool"),
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing tool_name.",
             success=False,
         )
 
-    run_id = getattr(queue_item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
+    run_id = resolve_pipeline_replay_run_id(queue_item, request_payload)
     if not run_id:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_call_id=replay_tool_call_id(queue_item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing pipeline_run_id.",
@@ -644,7 +642,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
     run = db.query(PipelineRun).filter(PipelineRun.id == int(run_id)).first()
     if run is None:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_call_id=replay_tool_call_id(queue_item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error: pipeline run not found for blocked tool replay ({run_id}).",
@@ -657,7 +655,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
             raise ValueError("Tool arguments must be a JSON object.")
     except Exception as exc:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+            tool_call_id=replay_tool_call_id(queue_item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error: invalid blocked pipeline tool replay arguments: {exc}",
@@ -670,11 +668,11 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
         tool_name,
         loaded_arguments,
         db=db,
-        stage_id=getattr(queue_item, "pipeline_stage_id", None) or request_payload.get("pipeline_stage_id"),
+        stage_id=resolve_pipeline_replay_stage_id(queue_item, request_payload),
     )
     tool_result_text = str(tool_result or "(no output)")
     return build_tool_result_record(
-        tool_call_id=f"queue-replay-{getattr(queue_item, 'id', tool_name)}",
+        tool_call_id=replay_tool_call_id(queue_item, tool_name),
         tool_name=tool_name,
         arguments=arguments_text,
         result=tool_result_text,

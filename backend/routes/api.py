@@ -116,7 +116,11 @@ from services.approval_replay import (
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
     build_tool_replay_followup_context,
+    load_approval_queue_request_payload,
     replay_result_is_actionable,
+    replay_tool_call_id,
+    resolve_replay_arguments_text,
+    resolve_replay_tool_name,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
 from services.runner_policy import (
@@ -4268,11 +4272,11 @@ async def _replay_runtime_blocked_tool_queue_item(
 ):
     from tools import tool_registry
 
-    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip()
-    arguments_text = str(request_payload.get("arguments") or "{}")
+    tool_name = resolve_replay_tool_name(item, request_payload)
+    arguments_text = resolve_replay_arguments_text(request_payload)
     if not tool_name:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(item, 'id', 'tool')}",
+            tool_call_id=replay_tool_call_id(item, "tool"),
             tool_name=getattr(item, "target_name", "tool"),
             arguments=arguments_text,
             result="Error executing blocked tool replay: missing tool_name.",
@@ -4285,7 +4289,7 @@ async def _replay_runtime_blocked_tool_queue_item(
             raise ValueError("Tool arguments must be a JSON object.")
     except Exception as exc:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+            tool_call_id=replay_tool_call_id(item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error executing blocked tool replay: invalid arguments ({exc}).",
@@ -4295,7 +4299,7 @@ async def _replay_runtime_blocked_tool_queue_item(
     chatroom = db.query(Chatroom).filter(Chatroom.id == getattr(item, "chatroom_id", None)).first()
     if chatroom is None:
         return build_tool_result_record(
-            tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+            tool_call_id=replay_tool_call_id(item, tool_name),
             tool_name=tool_name,
             arguments=arguments_text,
             result="Error executing blocked tool replay: chatroom no longer exists.",
@@ -4321,7 +4325,7 @@ async def _replay_runtime_blocked_tool_queue_item(
         tool_success = False
 
     return build_tool_result_record(
-        tool_call_id=f"queue-replay-{getattr(item, 'id', tool_name)}",
+        tool_call_id=replay_tool_call_id(item, tool_name),
         tool_name=tool_name,
         arguments=arguments_text,
         result=tool_result_text,
@@ -4575,7 +4579,7 @@ async def approve_approval_queue_item(
     if (item.status or "").lower() != "pending":
         raise HTTPException(status_code=409, detail="Only pending approval queue items can be approved.")
 
-    request_payload = _json_column_payload(item.request_payload_json)
+    request_payload = load_approval_queue_request_payload(item.request_payload_json)
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
 
@@ -4676,7 +4680,7 @@ async def reject_approval_queue_item(
     if (item.status or "").lower() != "pending":
         raise HTTPException(status_code=409, detail="Only pending approval queue items can be rejected.")
 
-    request_payload = _json_column_payload(item.request_payload_json)
+    request_payload = load_approval_queue_request_payload(item.request_payload_json)
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
 
