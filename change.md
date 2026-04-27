@@ -1201,3 +1201,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 sync orchestration、stream orchestration 与 interrupted recovery 的主要失败终结路径复用 failure finalizer
 - 保留 recovery 的 `task_run_recovery_failed` 事件类型，同时统一 failed summary 写入规则
 - 补 failure finalizer 单测，继续削薄 `backend/routes/api.py` 的 orchestration 运行时职责
+
+### `Extract nonstream orchestration agent turn runner`
+
+范围：
+
+- `backend/services/orchestration_agent_turn.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_agent_turn.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 nonstream orchestration agent turn runner，承接原 route-local `_run_single_agent_turn(...)` 主逻辑
+- route 改为通过 `OrchestrationAgentTurnDeps` 注入 runtime preparation、prompt assembly、message save 与 memory extraction adapter
+- sync orchestration 与 interrupted recovery 改用 service-level agent turn executor
+- 补 agent turn runner 单测，验证 lifecycle event、message save 与 memory scheduling 行为

@@ -15,7 +15,7 @@ import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -157,6 +157,7 @@ from services.orchestration_finalizer import (
     finalize_orchestration_task_run,
     summarize_orchestration_result,
 )
+from services.orchestration_agent_turn import OrchestrationAgentTurnDeps, run_orchestration_agent_turn
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_runner import run_nonstream_orchestration_step
@@ -2144,151 +2145,21 @@ async def _iter_agent_turn_events(
         yield event
 
 
-async def _run_single_agent_turn(
-    agent,
-    chatroom_id,
-    project,
-    agents,
-    user_message,
-    extra_context,
-    db,
-    client_turn_id: Optional[str] = None,
-    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
-    task_run: Optional[TaskRun] = None,
-    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
-):
-    """
-    执行单个 Agent 的一次响应（供多 Agent 编排调用）
 
-    Returns: (response_content, agent_response_msg) 或 (None, None)
-    """
-    current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-
-    _ensure_collaboration_context(agents, chatroom_id)
-    runtime = await _prepare_chat_turn_runtime(
-        agent=agent,
-        chatroom_id=chatroom_id,
-        project=project,
-        checkpoint_snapshot=checkpoint_snapshot,
-        previous_agent_work=extra_context,
-        inter_agent_messages=inter_agent_messages or [],
-        recent_message_limit=6,
-    )
-    compaction_callback = _build_context_compaction_callback(
-        db,
-        task_run,
-        agent_name=runtime.agent_label,
-        extra_payload={
-            "run_kind": "multi_agent_orchestration",
-            "chatroom_id": chatroom_id,
-            "client_turn_id": client_turn_id,
-        },
-    )
-    record_agent_turn_started(
-        db,
-        task_run,
-        agent_name=runtime.agent_label,
-        summary=f"{runtime.agent_label} started an orchestrated turn.",
-        payload=build_runtime_event_payload(
-            client_turn_id=client_turn_id,
-            inter_agent_message_count=len(inter_agent_messages or []),
+def _build_orchestration_agent_turn_executor():
+    deps = OrchestrationAgentTurnDeps(
+        ensure_collaboration_context=_ensure_collaboration_context,
+        prepare_chat_turn_runtime=_prepare_chat_turn_runtime,
+        build_context_compaction_callback=_build_context_compaction_callback,
+        assemble_chat_messages=_assemble_chat_messages,
+        save_message=chatroom_manager.send_message,
+        message_metadata=_message_metadata_with_turn,
+        schedule_memory_extraction=lambda agent, request, response: asyncio.create_task(
+            _extract_memories(agent.id, _agent_type(agent), request, response)
         ),
+        max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
-
-    def _assemble_orchestration_turn_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
-        return _assemble_chat_messages(
-            db=db,
-            agent=agent,
-            agent_name=runtime.agent_label,
-            model_id=getattr(runtime.llm_client, "model", ""),
-            chatroom=current_chatroom,
-            project=project,
-            agents=agents,
-            recent_messages=runtime.recent_messages,
-            user_message=user_message,
-            available_tools=runtime.available_tools,
-            history_limit=4,
-            standalone_note=(
-            "This is a standalone chat. Reply directly, stay concise, "
-            "and coordinate with mentioned teammates when it helps."
-        )
-        if not project
-        else "",
-            turn_state=current_turn_state,
-            on_compaction=compaction_callback,
-        )
-
-    async def _execute_orchestration_tool(frame, tool_call):
-        tool_name = tool_call["function"]["name"]
-        tool_args_str = tool_call["function"].get("arguments", "{}")
-        try:
-            tool_args = json.loads(tool_args_str or "{}")
-            from tools import tool_registry
-
-            tool_result = await tool_registry.execute(
-                tool_name,
-                **tool_args,
-                **runtime.runtime_kwargs,
-            )
-            result_str = str(tool_result) if tool_result else "(no output)"
-            tool_success = True
-        except Exception as te:
-            result_str = f"Error: {te}"
-            tool_success = False
-        return build_tool_result_record(
-            tool_call_id=tool_call.get("id"),
-            tool_name=tool_name,
-            arguments=tool_args_str,
-            result=result_str,
-            success=tool_success,
-        )
-
-    async def _on_orchestration_tool_round(frame, tool_results, current_turn_state):
-        record_runner_tool_round(
-            db,
-            task_run,
-            agent_name=runtime.agent_label,
-            turn=frame.turn_index + 1,
-            tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
-            tool_results=tool_results,
-            summary=f"{runtime.agent_label} completed a tool round.",
-        )
-
-    response_content = await execute_non_stream_turn_loop(
-        llm_client=runtime.llm_client,
-        tools=runtime.tool_schemas,
-        turn_state=runtime.turn_state,
-        assemble_messages=_assemble_orchestration_turn_messages,
-        execute_tool_call=_execute_orchestration_tool,
-        max_turns=MAX_TOOL_ITERATIONS,
-        on_tool_round=_on_orchestration_tool_round,
-    )
-
-    if not response_content:
-        return None, None
-
-    # 保存到数据库
-    agent_msg = await chatroom_manager.send_message(
-        chatroom_id=chatroom_id, agent_id=agent.id,
-        content=response_content,
-        message_type="text",
-        metadata=_message_metadata_with_turn(client_turn_id),
-        agent_name=agent_name_of(agent),
-    )
-    record_agent_turn_completed(
-        db,
-        task_run,
-        agent_name=agent_name_of(agent),
-        message_id=agent_msg.id,
-        response_content=response_content,
-        summary=f"{agent_name_of(agent)} completed the orchestrated turn.",
-    )
-
-    # 异步提取记忆
-    if len(response_content) > 30:
-        asyncio.create_task(_extract_memories(agent.id, _agent_type(agent), user_message, response_content))
-
-    return response_content, agent_msg
+    return partial(run_orchestration_agent_turn, deps=deps)
 
 
 async def _run_multi_agent_orchestration(
@@ -2345,6 +2216,7 @@ async def _run_multi_agent_orchestration(
         return
     queue = OrchestrationRuntimeQueue(plan)
     agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+    execute_orchestration_turn = _build_orchestration_agent_turn_executor()
 
     append_task_event(
         db,
@@ -2403,7 +2275,7 @@ async def _run_multi_agent_orchestration(
                 pending_handoffs=pending_handoffs,
                 orchestration_policy=orchestration_policy,
                 stage_policy=step_policy,
-                execute_turn=_run_single_agent_turn,
+                execute_turn=execute_orchestration_turn,
                 publish_message=_publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(client_turn_id),
                 extra_context=extra_context,
@@ -2577,6 +2449,7 @@ async def _resume_interrupted_orchestration_task_run(
             last_blocking_result=last_blocking_result,
         )
         agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+        execute_orchestration_turn = _build_orchestration_agent_turn_executor()
         append_task_event(
             db,
             task_run,
@@ -2673,7 +2546,7 @@ async def _resume_interrupted_orchestration_task_run(
                 pending_handoffs=pending_handoffs,
                 orchestration_policy=orchestration_policy,
                 stage_policy=step_policy,
-                execute_turn=_run_single_agent_turn,
+                execute_turn=execute_orchestration_turn,
                 publish_message=_publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
                 checkpoint_snapshot=step_checkpoint_snapshot,

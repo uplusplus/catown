@@ -4020,3 +4020,35 @@ P1 在完成正常 completion finalizer 后，继续补齐失败终结路径。�
 - route 中仍有 standalone / single-agent streaming 的失败终结逻辑，它们不属于本轮 orchestration 收口范围
 - step-level failure event 仍由 step runner / stream runner 负责，task-run terminal failure 由 finalizer 负责
 - 下一步应继续下沉 `_run_single_agent_turn(...)`，减少 route 对 agent turn runtime 的直接持有
+
+### 11.77 2026-04-27 新进展：nonstream orchestration agent turn runner 已下沉
+
+P1 继续削薄 `backend/routes/api.py`。此前 `_run_single_agent_turn(...)` 是 orchestration step runner 的核心执行回调，但仍完整定义在 route 层，里面直接负责 collaboration context、turn runtime 准备、prompt assembly、tool loop、message 保存、agent lifecycle event 与 memory extraction。
+
+本轮新增：
+
+- `backend/services/orchestration_agent_turn.py`
+  - `OrchestrationAgentTurnDeps`
+  - `run_orchestration_agent_turn(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- interrupted orchestration recovery
+
+设计取舍：
+
+- turn runner 的主执行逻辑下沉到 service
+- route 只保留一个小型 dependency adapter：`_build_orchestration_agent_turn_executor()`
+- prompt builder、runtime preparation、chatroom message manager 等仍由 route 注入，避免一次性迁移过大造成行为漂移
+
+这一步的意义是：
+
+- `run_nonstream_orchestration_step(...)` 不再依赖 route-local `_run_single_agent_turn(...)`
+- orchestration step runner 调用的是 service-level executor primitive
+- route 层少持有一段完整 agent turn runtime，继续靠近 Codex 风格“route 负责适配，executor 负责运行”
+
+边界：
+
+- streaming `_iter_agent_turn_events(...)` 仍在 route 层，下一步应按同样模式下沉为 stream agent event runner
+- `_prepare_chat_turn_runtime(...)` 与 `_assemble_chat_messages(...)` 仍是 route-local dependency，后续可继续拆到 chat runtime service
