@@ -761,3 +761,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 把 approval replay tool-round payload 抽到共享 service，统一 queue item 与 pipeline cursor 的 ledger 记录 shape
 - 让 approve blocked-tool 路径只保留 replay / follow-up / resolve 编排职责，不再定义 replay payload 协议
 - 补 helper 单测，并跑 approval replay 与 pipeline gate 的聚焦回归
+
+### `Share blocked-tool approval queue request semantics`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/services/runner_lifecycle.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 把 blocked tool queue kind、title、resume_supported 判定、request key、request payload shape 抽到共享 approval replay service
+- 让 `record_tool_round(...)` 只负责发现 blocked tool 与创建 queue item，不再内联定义 approval request 协议
+- 保持 runtime 与 pipeline blocked-tool request payload 的 pipeline cursor 字段一致
+- 补 helper 单测，并跑 approval replay、sandbox blocked、pipeline blocked-tool ledger 的聚焦回归

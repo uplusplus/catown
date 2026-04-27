@@ -3,13 +3,19 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
 from models.database import TaskRun
 from services.approval_queue import create_approval_queue_item
+from services.approval_replay import (
+    blocked_tool_queue_kind,
+    blocked_tool_queue_title,
+    blocked_tool_resume_supported,
+    build_blocked_tool_request_key,
+    build_blocked_tool_request_payload,
+)
 from services.run_ledger import append_task_event, update_task_run
 
 
@@ -144,23 +150,16 @@ def record_tool_round(
     for blocked_tool in blocked_tools:
         queue_item = None
         if task_run is not None:
-            queue_kind = "escalation" if blocked_tool["blocked_kind"] == "sandbox" else "approval"
-            resume_supported = _blocked_tool_resume_supported(
+            queue_kind = blocked_tool_queue_kind(blocked_tool["blocked_kind"])
+            resume_supported = blocked_tool_resume_supported(
                 blocked_kind=blocked_tool["blocked_kind"],
                 blocked_reason=blocked_tool["blocked_reason"],
             )
-            request_key = hashlib.sha1(
-                "|".join(
-                    [
-                        str(getattr(task_run, "id", "") or ""),
-                        str(agent_name or ""),
-                        str(blocked_tool["status"] or ""),
-                        str(blocked_tool["tool_name"] or ""),
-                        str(blocked_tool["arguments"] or ""),
-                        str(blocked_tool["blocked_reason"] or ""),
-                    ]
-                ).encode("utf-8")
-            ).hexdigest()
+            request_key = build_blocked_tool_request_key(
+                task_run_id=getattr(task_run, "id", None),
+                agent_name=agent_name,
+                blocked_tool=blocked_tool,
+            )
             queue_item = create_approval_queue_item(
                 db,
                 task_run=task_run,
@@ -168,30 +167,18 @@ def record_tool_round(
                 project_id=getattr(task_run, "project_id", None),
                 queue_kind=queue_kind,
                 source="tool_call_blocked",
-                title=(
-                    f"Escalation needed for {blocked_tool['tool_name']}"
-                    if queue_kind == "escalation"
-                    else f"Approval needed for {blocked_tool['tool_name']}"
-                ),
+                title=blocked_tool_queue_title(blocked_tool["tool_name"], queue_kind=queue_kind),
                 summary=blocked_tool["blocked_reason"],
                 agent_name=agent_name,
                 target_kind="tool",
                 target_name=blocked_tool["tool_name"],
                 request_key=request_key,
-                request_payload={
-                    "turn": int(turn),
-                    "tool_name": blocked_tool["tool_name"],
-                    "arguments": blocked_tool["arguments"],
-                    "status": blocked_tool["status"],
-                    "blocked_kind": blocked_tool["blocked_kind"],
-                    "blocked_reason": blocked_tool["blocked_reason"],
-                    "resume_supported": resume_supported,
-                    "pipeline_run_id": pipeline_run_id,
-                    "pipeline_stage_id": pipeline_stage_id,
-                    "pipeline_id": payload_dict.get("pipeline_id") if payload_dict else None,
-                    "stage_name": payload_dict.get("stage_name") if payload_dict else None,
-                    "display_name": payload_dict.get("display_name") if payload_dict else None,
-                },
+                request_payload=build_blocked_tool_request_payload(
+                    turn=int(turn),
+                    blocked_tool=blocked_tool,
+                    resume_supported=resume_supported,
+                    runtime_payload=payload_dict,
+                ),
                 pipeline_run_id=pipeline_run_id,
                 pipeline_stage_id=pipeline_stage_id,
             )
@@ -265,12 +252,3 @@ def compact_runtime_text(value: Any, *, limit: int = 600) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: limit - 3].rstrip()}..."
-
-
-def _blocked_tool_resume_supported(*, blocked_kind: Any, blocked_reason: Any) -> bool:
-    if str(blocked_kind or "").strip().lower() != "approval":
-        return False
-    reason = str(blocked_reason or "").strip().lower()
-    if not reason:
-        return True
-    return "not authorized to use tool" not in reason and "unauthorized tool" not in reason

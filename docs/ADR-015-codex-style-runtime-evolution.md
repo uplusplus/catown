@@ -3138,3 +3138,33 @@ P0.3 开始从 approved blocked-tool replay / follow-up 主链往统一 runner e
 - P0.3 的 approval replay envelope 从“后续执行结果”继续扩大到“replay 审计与 ledger 记录”
 - API route 的 orchestration 职责更清晰，不再顺手定义 runtime payload 协议
 - 后续如果引入 sandbox/escalation replay，只需要复用同一组 replay payload helpers
+
+### 11.51 2026-04-27 新进展：blocked-tool approval queue request 语义已共享
+
+P0.3 继续从 replay 后半段往前推进到 blocked-tool queue item 创建阶段。
+
+之前 `runner_lifecycle.record_tool_round(...)` 在发现 blocked tool 后，直接在函数内部决定：
+
+- queue kind：approval 还是 escalation
+- title 文案：approval / escalation 的 operator 标题
+- resume_supported 判定
+- request_key 去重签名
+- request_payload 的基础 shape 与 pipeline cursor 字段
+
+这些字段共同决定一个 blocked tool 能否被 operator 批准、是否支持 replay、后续 replay 如何找到 pipeline/stage cursor。它们不是普通 route/ledger 细节，而是 approval runtime 的协议面。
+
+本轮把这层语义并入 `backend/services/approval_replay.py`：
+
+- `blocked_tool_queue_kind(...)`
+- `blocked_tool_queue_title(...)`
+- `blocked_tool_resume_supported(...)`
+- `build_blocked_tool_request_key(...)`
+- `build_blocked_tool_request_payload(...)`
+
+现在 `runner_lifecycle.record_tool_round(...)` 只负责在 tool round 中发现 blocked tool 并创建 queue item；queue item 的 request 协议由共享 helper 生成。
+
+这一步的意义是：
+
+- approval / escalation queue request 的入口语义开始从 ledger 写入函数中拆出
+- runtime 与 pipeline 的 blocked-tool cursor 字段保持同一套 request payload shape
+- 后续引入 sandbox/escalation 更完整的 continuation policy 时，可以复用同一个 request envelope，而不是继续在 lifecycle 里加分支

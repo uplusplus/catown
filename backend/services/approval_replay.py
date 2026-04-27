@@ -1,8 +1,77 @@
-"""Shared helpers for approved blocked-tool replay continuation semantics."""
+"""Shared helpers for blocked-tool approval queue replay semantics."""
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict
+
+
+def blocked_tool_queue_kind(blocked_kind: Any) -> str:
+    return "escalation" if str(blocked_kind or "").strip().lower() == "sandbox" else "approval"
+
+
+def blocked_tool_queue_title(tool_name: Any, *, queue_kind: str) -> str:
+    normalized_tool_name = str(tool_name or "tool").strip() or "tool"
+    if queue_kind == "escalation":
+        return f"Escalation needed for {normalized_tool_name}"
+    return f"Approval needed for {normalized_tool_name}"
+
+
+def blocked_tool_resume_supported(*, blocked_kind: Any, blocked_reason: Any) -> bool:
+    if str(blocked_kind or "").strip().lower() != "approval":
+        return False
+    reason = str(blocked_reason or "").strip().lower()
+    if not reason:
+        return True
+    return "not authorized to use tool" not in reason and "unauthorized tool" not in reason
+
+
+def build_blocked_tool_request_key(
+    *,
+    task_run_id: Any,
+    agent_name: Any,
+    blocked_tool: Dict[str, Any],
+) -> str:
+    return hashlib.sha1(
+        "|".join(
+            [
+                str(task_run_id or ""),
+                str(agent_name or ""),
+                str(blocked_tool.get("status") or ""),
+                str(blocked_tool.get("tool_name") or ""),
+                str(blocked_tool.get("arguments") or ""),
+                str(blocked_tool.get("blocked_reason") or ""),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def build_blocked_tool_request_payload(
+    *,
+    turn: int,
+    blocked_tool: Dict[str, Any],
+    resume_supported: bool,
+    runtime_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    runtime_payload = runtime_payload if isinstance(runtime_payload, dict) else {}
+    return {
+        "turn": int(turn),
+        "tool_name": blocked_tool.get("tool_name"),
+        "arguments": blocked_tool.get("arguments"),
+        "status": blocked_tool.get("status"),
+        "blocked_kind": blocked_tool.get("blocked_kind"),
+        "blocked_reason": blocked_tool.get("blocked_reason"),
+        "resume_supported": bool(resume_supported),
+        "pipeline_run_id": runtime_payload.get("pipeline_run_id"),
+        "pipeline_stage_id": (
+            runtime_payload.get("pipeline_stage_id")
+            if runtime_payload.get("pipeline_stage_id") is not None
+            else runtime_payload.get("stage_id")
+        ),
+        "pipeline_id": runtime_payload.get("pipeline_id"),
+        "stage_name": runtime_payload.get("stage_name"),
+        "display_name": runtime_payload.get("display_name"),
+    }
 
 
 def replay_result_is_actionable(replay_result: Any) -> bool:
