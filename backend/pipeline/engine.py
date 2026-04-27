@@ -46,9 +46,15 @@ from services.approval_queue import (
     find_pending_queue_item,
     resolve_approval_queue_item,
 )
-from services.turn_state import TurnContextState, build_tool_result_record, normalize_tool_call
+from services.turn_state import (
+    TurnContextState,
+    build_tool_result_record,
+    build_turn_state_from_checkpoint_snapshot,
+    normalize_tool_call,
+)
 from services.run_ledger import (
     append_task_event,
+    build_task_run_checkpoint_snapshot,
     complete_task_run,
     create_task_run,
     get_task_run,
@@ -2043,10 +2049,11 @@ class PipelineEngine:
         agent_skills = agent_data.get("skills", []) if agent_data else []
         tool_names = AGENT_TOOLS.get(stage_cfg.agent, list(TOOL_REGISTRY.keys()))
         skills_config = self._load_skills_config()
-        turn_state = TurnContextState()
         final_content = ""
         stage._catown_blocked_tool = None
         linked_task_run = _pipeline_task_run(db, run)
+        checkpoint_snapshot = build_task_run_checkpoint_snapshot(linked_task_run)
+        turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
         compaction_callback = _build_pipeline_context_compaction_callback(
             db,
             run,

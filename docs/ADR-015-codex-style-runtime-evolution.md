@@ -1935,3 +1935,69 @@ monitor 上也同步做了投影：
   - 不再只是执行器内部行为
 - 而是进入 durable event trace
 - 让 monitor / 调试 / 审计都能按 step 精确看到“恢复时到底喂回了什么”
+
+### 11.29 2026-04-25 新进展：pipeline resumed stage 已开始消费 checkpoint continuation state
+
+11.28 之后，orchestration recovery 已经具备：
+
+- step-local checkpoint snapshot
+- step-local continuation-state observability
+- prompt rehydration 前滚
+
+但 pipeline 仍有一条残留分叉：
+
+- pipeline blocked tool approve 后虽然会：
+  - replay tool
+  - 注入 boss instruction
+  - 调 `pipeline_engine.resume(...)`
+- 可真正恢复 stage 时
+  - `_run_agent_stage(...)` 仍从空白 `TurnContextState()` 起步
+  - 只能吃到 replay 后新增的 instruction / inter-agent message
+  - 吃不到 checkpoint 里保留下来的最近一轮 tool protocol tail
+
+这意味着 pipeline 虽然“能继续跑”：
+
+- 但 resumed stage 首次 prompt
+  - 不具备 runtime / orchestration recovery 已有的 continuation rehydration 语义
+- 也就是：
+  - approval replay 把执行结果接回来了
+  - 但模型侧上下文并没有真正从 checkpoint continuation state 继续
+
+这一轮把 pipeline 也接入同一条语义链：
+
+- `_run_agent_stage(...)`
+  - 在开始 stage turn loop 前
+  - 先取关联 `task_run`
+  - 构建 `checkpoint_snapshot`
+  - 再通过 `build_turn_state_from_checkpoint_snapshot(...)`
+    初始化 stage 的 `TurnContextState`
+
+因此 resumed pipeline stage 现在不再只是：
+
+- 从空白 turn state + 新注入 instruction 重新开跑
+
+而是会额外带回：
+
+- 最近一轮 assistant tool-call protocol
+- 最近一轮 tool result message
+- prior round summaries（若 snapshot 内存在）
+
+测试也同步补上：
+
+- `test_run_agent_stage_rehydrates_checkpoint_protocol_tail_on_resume`
+  - 预先在关联 `task_run` 中种入：
+    - `agent_turn_started`
+    - `tool_round_recorded`
+    - `tool_call_blocked`
+    - `approval_queue_item_followup_triggered`
+  - 然后直接恢复 pipeline stage
+  - 断言首次 LLM 输入中确实重新出现：
+    - `read_file` assistant tool-call
+    - `Design checkpoint contents` tool result
+
+这一步的意义是：
+
+- pipeline 不再只是在治理面接入统一 approval queue
+- 而是开始在执行输入面共享同一套 checkpoint continuation 语义
+- `chat/runtime/orchestration/pipeline`
+  - 四条主路径的 continuation rehydration 开始真正收敛

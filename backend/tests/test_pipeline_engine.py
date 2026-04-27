@@ -516,6 +516,228 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
 
 
 @pytest.mark.asyncio
+async def test_run_agent_stage_rehydrates_checkpoint_protocol_tail_on_resume(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+    from pipeline.config import StageConfig
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        project, chatroom, pipeline = _seed_pipeline_project(
+            fresh_db,
+            db,
+            project_name="Pipeline Resume Rehydrate Project",
+        )
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Resume pipeline after blocked tool",
+            user_request="Resume pipeline after blocked tool",
+            initiator="user",
+            target_agent_name="analyst",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            input_requirement="Resume the blocked pipeline stage.",
+            workspace_path=str(workspace),
+            started_at=datetime.now(),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        stage = fresh_db.PipelineStage(
+            run_id=run.id,
+            stage_name="analysis",
+            display_name="Analysis",
+            stage_order=0,
+            agent_name="analyst",
+            status="running",
+            gate_type="auto",
+        )
+        db.add(stage)
+        db.commit()
+        db.refresh(stage)
+
+        task_events = [
+            fresh_db.TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=1,
+                event_type="agent_turn_started",
+                agent_name="analyst",
+                summary="analyst started a pipeline stage turn.",
+                payload_json=json.dumps(
+                    {
+                        "pipeline_id": pipeline.id,
+                        "pipeline_run_id": run.id,
+                        "stage_name": "analysis",
+                        "display_name": "Analysis",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            fresh_db.TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=2,
+                event_type="tool_round_recorded",
+                agent_name="analyst",
+                summary="analyst completed a pipeline tool round.",
+                payload_json=json.dumps(
+                    {
+                        "turn": 1,
+                        "tool_names": ["read_file"],
+                        "tool_count": 1,
+                        "tool_status_counts": {"approval_blocked": 1},
+                        "blocked_tool_count": 1,
+                        "turn_local_state": {
+                            "assistant_content": "Open the design doc before continuing.",
+                            "tool_results": [
+                                {
+                                    "tool_call_id": "resume_call_1",
+                                    "tool_name": "read_file",
+                                    "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                    "result": "Design checkpoint contents",
+                                    "success": False,
+                                    "status": "approval_blocked",
+                                    "blocked": True,
+                                    "blocked_kind": "approval",
+                                    "blocked_reason": "read_file requires approval",
+                                }
+                            ],
+                            "protocol_messages": [
+                                {
+                                    "role": "assistant",
+                                    "content": "Open the design doc before continuing.",
+                                    "tool_calls": [
+                                        {
+                                            "id": "resume_call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read_file",
+                                                "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": "resume_call_1",
+                                    "name": "read_file",
+                                    "content": "Design checkpoint contents",
+                                },
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            fresh_db.TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=3,
+                event_type="tool_call_blocked",
+                agent_name="analyst",
+                summary="read_file was blocked.",
+                payload_json=json.dumps(
+                    {
+                        "turn": 1,
+                        "tool_name": "read_file",
+                        "status": "approval_blocked",
+                        "blocked_kind": "approval",
+                        "blocked_reason": "read_file requires approval",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+            fresh_db.TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=4,
+                event_type="approval_queue_item_followup_triggered",
+                agent_name="analyst",
+                summary="Approved blocked tool and resumed pipeline.",
+                payload_json=json.dumps(
+                    {
+                        "followup_status": "continued",
+                        "followup_reason": "pipeline_resumed",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        ]
+        for event in task_events:
+            db.add(event)
+        db.commit()
+
+        stage_cfg = StageConfig(
+            name="analysis",
+            display_name="Analysis",
+            agent="analyst",
+            gate="auto",
+            timeout_minutes=5,
+            context_prompt="Continue after the approved tool replay.",
+        )
+
+        engine_mod.AGENT_TOOLS["analyst"] = ["read_file"]
+        seen_messages = []
+
+        async def scripted_chat_with_tools(messages, tools=None):
+            seen_messages.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return {
+                "content": "Resume complete.",
+                "tool_calls": None,
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_with_tools = scripted_chat_with_tools
+        engine_mod.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        engine = engine_mod.PipelineEngine()
+        summary = await engine._run_agent_stage(
+            db=db,
+            pipeline=pipeline,
+            run=run,
+            stage=stage,
+            stage_cfg=stage_cfg,
+            context="Resume the stage after approval replay.",
+        )
+
+        assert summary == "Resume complete."
+        assert len(seen_messages) == 1
+        first_call_messages = seen_messages[0]
+        assert any(
+            message.get("role") == "assistant"
+            and isinstance(message.get("tool_calls"), list)
+            and any(
+                tool_call.get("function", {}).get("name") == "read_file"
+                for tool_call in message.get("tool_calls", [])
+            )
+            for message in first_call_messages
+        )
+        assert any(
+            message.get("role") == "tool"
+            and message.get("name") == "read_file"
+            and "Design checkpoint contents" in str(message.get("content") or "")
+            for message in first_call_messages
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path):
     engine_mod = _reload_pipeline_engine()
     from pipeline.config import PipelineConfig, StageConfig
