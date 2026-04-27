@@ -2937,3 +2937,43 @@ Monitor 侧也顺手做了投影：
 - turn execution 不再只是共享底层 executor
 - 连“进入 executor 之前的 runtime 准备层”也开始共享
 - 这说明 P0 已经从 startup envelope 继续推进到 turn envelope，而不只是 mode / policy 的表层收口
+
+### 11.46 2026-04-27 新进展：standalone turn runtime preparation 已在 sync / stream 间共享
+
+11.45 把 chat turn runtime preparation 收到了 project single-agent 与 orchestration 路径，但还留着一条最“轻”的分支没并回来：
+
+- standalone assistant sync
+- standalone assistant stream
+
+这两条路径虽然不走工具，也没有 project agent 选择，但依然重复了同一类 turn-runtime 准备动作：
+
+- standalone target resolution
+- default client fallback
+- recent messages
+- checkpoint turn state
+
+如果这条分支继续单独维护，后面会出现一个典型问题：
+
+- 统一 runner 收口时，最简单的 standalone 分支反而继续保留自己的准备语义
+- 导致 “有工具 / 无工具、project / standalone” 之间的 envelope 继续分层
+
+这一轮把 standalone 也拉回共享准备逻辑：
+
+- `backend/routes/api.py`
+  - 新增 standalone turn runtime preparation helper
+  - 统一负责：
+    - standalone target resolution
+    - default client fallback
+    - recent messages
+    - checkpoint turn state
+
+目前已接入：
+
+- standalone sync
+- standalone stream
+
+这一步的意义是：
+
+- turn runtime preparation 的共享范围不再只覆盖“带 project / 带工具”的路径
+- 连最轻量的 standalone 分支也开始挂回统一 runtime 语义
+- P0.2 的 turn envelope 收口因此更完整了一层：单 Agent project / orchestration / standalone 三类 chat 路径都开始脱离各自手工准备

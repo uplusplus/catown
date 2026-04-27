@@ -161,6 +161,16 @@ class PreparedChatTurnRuntime:
     turn_state: TurnContextState
 
 
+@dataclass
+class PreparedStandaloneTurnRuntime:
+    llm_client: Any
+    assistant_name: str
+    assistant_label: str
+    assistant_id: Optional[int]
+    recent_messages: List[Any]
+    turn_state: TurnContextState
+
+
 def _build_tool_prompt(tool_names: List[str]) -> str:
     if not tool_names:
         return ""
@@ -695,19 +705,17 @@ async def _trigger_standalone_assistant_response(
         logger.debug("[ No chatroom found for standalone response")
         return
 
-    assistant = _resolve_standalone_target_agent(db, user_message)
-
-    if assistant:
-        llm_client = get_llm_client_for_agent(_agent_type(assistant))
-        assistant_name = _agent_type(assistant)
-        assistant_id = assistant.id
-    else:
-        llm_client = get_default_llm_client()
-        assistant_name = DEFAULT_AGENT_TYPE
-        assistant_id = None
+    runtime = await _prepare_standalone_turn_runtime(
+        db=db,
+        chatroom_id=chatroom_id,
+        user_message=user_message,
+        checkpoint_snapshot=checkpoint_snapshot,
+        previous_agent_work=extra_context,
+        recent_message_limit=20,
+    )
     standalone_policy = _build_single_agent_runner_policy(
         run_kind="standalone_assistant",
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         project_id=None,
         tool_names=[],
         streaming=False,
@@ -717,64 +725,59 @@ async def _trigger_standalone_assistant_response(
     record_agent_turn_started(
         db,
         task_run,
-        agent_name=assistant_name,
-        summary=f"{assistant_name} started a standalone assistant turn.",
+        agent_name=runtime.assistant_name,
+        summary=f"{runtime.assistant_name} started a standalone assistant turn.",
         payload={
             "client_turn_id": client_turn_id,
             "stage_policy": standalone_policy.stages[0].to_payload() if standalone_policy.stages else None,
         },
     )
 
-    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
     compaction_callback = _build_context_compaction_callback(
         db,
         task_run,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         extra_payload={
             "run_kind": "standalone_assistant",
             "client_turn_id": client_turn_id,
         },
     )
-    turn_state = build_turn_state_from_checkpoint_snapshot(
-        checkpoint_snapshot,
-        previous_agent_work=extra_context or "",
-    )
     context_messages = _assemble_chat_messages(
         db=db,
-        agent=assistant,
-        agent_name=assistant_name,
-        model_id=getattr(llm_client, "model", ""),
+        agent=None,
+        agent_name=runtime.assistant_name,
+        model_id=getattr(runtime.llm_client, "model", ""),
         chatroom=chatroom,
         project=None,
-        agents=[assistant] if assistant else [],
-        recent_messages=recent_messages,
+        agents=[],
+        recent_messages=runtime.recent_messages,
         user_message=user_message,
         history_limit=10,
         standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
         extra_context=extra_context,
-        turn_state=turn_state,
+        turn_state=runtime.turn_state,
         on_compaction=compaction_callback,
     )
 
-    response_content = await llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
+    response_content = await runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
     if not response_content:
         logger.debug("[ Standalone assistant returned empty response")
         return
 
     agent_response = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
-        agent_id=assistant_id,
+        agent_id=runtime.assistant_id,
         content=response_content,
         message_type="text",
         metadata=_message_metadata_with_turn(client_turn_id),
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
     )
     await _publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=agent_response.id,
         content=response_content,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         message_type="text",
         created_at=agent_response.created_at,
         metadata=_message_metadata_with_turn(client_turn_id),
@@ -782,10 +785,10 @@ async def _trigger_standalone_assistant_response(
     record_agent_turn_completed(
         db,
         task_run,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         message_id=agent_response.id,
         response_content=response_content,
-        summary=f"{assistant_name} completed the standalone turn.",
+        summary=f"{runtime.assistant_name} completed the standalone turn.",
     )
     complete_task_run(
         db,
@@ -793,10 +796,10 @@ async def _trigger_standalone_assistant_response(
         summary=_compact_runtime_text(response_content, limit=280),
     )
 
-    if assistant_id and len(response_content) > 30:
+    if runtime.assistant_id and len(response_content) > 30:
         asyncio.create_task(_extract_memories(
-            agent_id=assistant_id,
-            agent_name=assistant_name,
+            agent_id=runtime.assistant_id,
+            agent_name=runtime.assistant_name,
             user_message=user_message,
             agent_response=response_content,
         ))
@@ -816,21 +819,16 @@ async def _stream_standalone_assistant_response(
         yield f"data: {sse_json.dumps({'type': 'error', 'error': 'Chatroom not found'})}\n\n"
         return
 
-    assistant = _resolve_standalone_target_agent(db, user_message)
-
-    if assistant:
-        llm_client = get_llm_client_for_agent(_agent_type(assistant))
-        assistant_name = _agent_type(assistant)
-        assistant_label = agent_name_of(assistant)
-        assistant_id = assistant.id
-    else:
-        llm_client = get_default_llm_client()
-        assistant_name = DEFAULT_AGENT_TYPE
-        assistant_label = default_agent_name(DEFAULT_AGENT_TYPE)
-        assistant_id = None
+    runtime = await _prepare_standalone_turn_runtime(
+        db=db,
+        chatroom_id=chatroom_id,
+        user_message=user_message,
+        checkpoint_snapshot=build_task_run_checkpoint_snapshot(task_run),
+        recent_message_limit=20,
+    )
     standalone_stream_policy = _build_single_agent_runner_policy(
         run_kind="standalone_assistant_stream",
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         project_id=None,
         tool_names=[],
         streaming=True,
@@ -840,8 +838,8 @@ async def _stream_standalone_assistant_response(
     record_agent_turn_started(
         db,
         task_run,
-        agent_name=assistant_name,
-        summary=f"{assistant_name} started a standalone streaming turn.",
+        agent_name=runtime.assistant_name,
+        summary=f"{runtime.assistant_name} started a standalone streaming turn.",
         payload={
             "client_turn_id": client_turn_id,
             "stage_policy": (
@@ -852,30 +850,27 @@ async def _stream_standalone_assistant_response(
         },
     )
 
-    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
     compaction_callback = _build_context_compaction_callback(
         db,
         task_run,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         extra_payload={
             "run_kind": "standalone_assistant_stream",
             "client_turn_id": client_turn_id,
         },
     )
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
     final_content = ""
 
     def _assemble_standalone_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
         return _assemble_chat_messages(
             db=db,
-            agent=assistant,
-            agent_name=assistant_name,
-            model_id=getattr(llm_client, "model", ""),
+            agent=None,
+            agent_name=runtime.assistant_name,
+            model_id=getattr(runtime.llm_client, "model", ""),
             chatroom=chatroom,
             project=None,
-            agents=[assistant] if assistant else [],
-            recent_messages=recent_messages,
+            agents=[],
+            recent_messages=runtime.recent_messages,
             user_message=user_message,
             history_limit=10,
             standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
@@ -888,8 +883,8 @@ async def _stream_standalone_assistant_response(
 
     def _build_standalone_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
         return _build_llm_card_payload(
-            agent_name=assistant_label,
-            llm_client=llm_client,
+            agent_name=runtime.assistant_label,
+            llm_client=runtime.llm_client,
             turn=frame.turn_index,
             duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
             system_prompt=frame.system_prompt,
@@ -904,10 +899,10 @@ async def _stream_standalone_assistant_response(
 
     try:
         async for event in iter_stream_turn_events(
-            llm_client=llm_client,
+            llm_client=runtime.llm_client,
             tools=None,
-            turn_state=turn_state,
-            agent_name=assistant_name,
+            turn_state=runtime.turn_state,
+            agent_name=runtime.assistant_name,
             client_turn_id=client_turn_id,
             assemble_messages=_assemble_standalone_stream_messages,
             execute_tool=_execute_standalone_stream_tool,
@@ -938,7 +933,7 @@ async def _stream_standalone_assistant_response(
             db,
             task_run,
             "task_run_failed",
-            agent_name=assistant_name,
+            agent_name=runtime.assistant_name,
             summary=f"Standalone stream failed: {exc}",
             payload={"error": str(exc)},
         )
@@ -948,11 +943,11 @@ async def _stream_standalone_assistant_response(
             chatroom_id=chatroom_id,
             client_turn_id=client_turn_id,
             error_message=str(exc),
-            agent_name=assistant_name,
-            agent_id=assistant_id,
+            agent_name=runtime.assistant_name,
+            agent_id=runtime.assistant_id,
             detail=traceback.format_exc(),
         )
-        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': saved.id, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': runtime.assistant_name, 'message_id': saved.id, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
 
     if not final_content:
@@ -960,18 +955,18 @@ async def _stream_standalone_assistant_response(
 
     agent_response = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
-        agent_id=assistant_id,
+        agent_id=runtime.assistant_id,
         content=final_content,
         message_type="text",
         metadata=_message_metadata_with_turn(client_turn_id),
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
     )
     await _publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=agent_response.id,
         content=final_content,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         message_type="text",
         created_at=agent_response.created_at,
         metadata=_message_metadata_with_turn(client_turn_id),
@@ -979,10 +974,10 @@ async def _stream_standalone_assistant_response(
     record_agent_turn_completed(
         db,
         task_run,
-        agent_name=assistant_name,
+        agent_name=runtime.assistant_name,
         message_id=agent_response.id,
         response_content=final_content,
-        summary=f"{assistant_name} completed the standalone streaming turn.",
+        summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
     )
     complete_task_run(
         db,
@@ -1712,6 +1707,42 @@ async def _prepare_chat_turn_runtime(
         available_tools=tool_registry.list_tools(),
         tool_schemas=tool_registry.get_schemas(),
         runtime_kwargs=_tool_runtime_kwargs(agent, chatroom_id, project),
+        turn_state=turn_state,
+    )
+
+
+async def _prepare_standalone_turn_runtime(
+    *,
+    db: Session,
+    chatroom_id: int,
+    user_message: str,
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
+    previous_agent_work: str = "",
+    recent_message_limit: int = 20,
+) -> PreparedStandaloneTurnRuntime:
+    assistant = _resolve_standalone_target_agent(db, user_message)
+    if assistant:
+        llm_client = get_llm_client_for_agent(_agent_type(assistant))
+        assistant_name = _agent_type(assistant)
+        assistant_label = agent_name_of(assistant)
+        assistant_id = assistant.id
+    else:
+        llm_client = get_default_llm_client()
+        assistant_name = DEFAULT_AGENT_TYPE
+        assistant_label = default_agent_name(DEFAULT_AGENT_TYPE)
+        assistant_id = None
+
+    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        checkpoint_snapshot,
+        previous_agent_work=previous_agent_work or "",
+    )
+    return PreparedStandaloneTurnRuntime(
+        llm_client=llm_client,
+        assistant_name=assistant_name,
+        assistant_label=assistant_label,
+        assistant_id=assistant_id,
+        recent_messages=recent_messages,
         turn_state=turn_state,
     )
 

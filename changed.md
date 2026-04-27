@@ -470,3 +470,16 @@
 - 提取统一的 chat turn runtime 准备逻辑，收口 `llm_client` / recent messages / `turn_state` / tool schemas / tool runtime kwargs
 - 让 project single-agent sync、project single-agent stream、orchestrated sync turn、orchestrated stream turn 共用同一套 turn-runtime preparation
 - 继续把 turn execution envelope 从分支实现里抽离，为后续向统一 runner 外壳收敛打基础
+
+### `Share standalone turn runtime preparation across sync and stream`
+
+范围：
+
+- `backend/routes/api.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取统一的 standalone turn runtime 准备逻辑，收口 standalone target resolution、default client fallback、recent messages、checkpoint turn state
+- 让 standalone sync 与 standalone stream 两条路径共用同一套 turn-runtime preparation
+- 继续把 turn execution envelope 的“无工具单 Agent”分支也拉回共享 runtime 语义
