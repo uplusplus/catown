@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import type { ConfigAgentDefinition, ConfigResponse, ConfigSection, SkillMarketplace } from "../types";
 import { DEFAULT_AGENT_TYPE, defaultAgentName } from "../utils/agents";
 
@@ -154,6 +155,134 @@ function PreviewCard({
   );
 }
 
+function SkillGalleryCard({ name, agents }: { name: string; agents: string[] }) {
+  return (
+    <div className="config-skill-card">
+      <div className="config-skill-card__header">
+        <div>
+          <h3>{name}</h3>
+          <p>{agents.length} agent bindings</p>
+        </div>
+        <span className="soft-pill">{agents.length}</span>
+      </div>
+      <div className="config-skill-card__agents">
+        {agents.map((agent) => (
+          <span key={`${name}-${agent}`} className="soft-pill">
+            {agent}
+          </span>
+        ))}
+      </div>
+      <div className="config-skill-card__footer">Edit an agent card in Settings to change this skill binding.</div>
+    </div>
+  );
+}
+
+function AgentGalleryCard({
+  displayName,
+  agentType,
+  sourceLabel,
+  modelLabel,
+  roleTitle,
+  identity,
+  style,
+  responsibilities,
+  rules,
+  tools,
+  skills,
+  onEdit,
+  onTest,
+  disabled,
+}: {
+  displayName: string;
+  agentType: string;
+  sourceLabel: string;
+  modelLabel: string;
+  roleTitle: string;
+  identity: string;
+  style: string;
+  responsibilities: string[];
+  rules: string[];
+  tools: string[];
+  skills: string[];
+  onEdit: () => void;
+  onTest: () => void;
+  disabled: boolean;
+}) {
+  const visibleTools = tools.slice(0, 4);
+  const visibleSkills = skills.slice(0, 4);
+  const hiddenTools = Math.max(tools.length - visibleTools.length, 0);
+  const hiddenSkills = Math.max(skills.length - visibleSkills.length, 0);
+
+  return (
+    <article className="config-agent-overview">
+      <div className="config-agent-overview__hero">
+        <div>
+          <div className="config-agent-overview__eyebrow">@{agentType}</div>
+          <strong>{displayName}</strong>
+        </div>
+        <span className="soft-pill">{modelLabel}</span>
+      </div>
+
+      <div className="config-agent-overview__meta">
+        <div className="config-agent-overview__meta-item">
+          <span>Source</span>
+          <strong>{sourceLabel}</strong>
+        </div>
+        <div className="config-agent-overview__meta-item">
+          <span>Role</span>
+          <strong>{roleTitle}</strong>
+        </div>
+        <div className="config-agent-overview__meta-item">
+          <span>Style</span>
+          <strong>{style}</strong>
+        </div>
+        <div className="config-agent-overview__meta-item">
+          <span>Rules</span>
+          <strong>{rules.length}</strong>
+        </div>
+      </div>
+
+      <div className="config-agent-overview__story">
+        <div className="config-agent-overview__section">
+          <span>Identity</span>
+          <p>{identity}</p>
+        </div>
+        <div className="config-agent-overview__section">
+          <span>Responsibilities</span>
+          <p>{responsibilities.slice(0, 2).join(" · ") || "Not configured"}</p>
+        </div>
+      </div>
+
+      <div className="config-agent-overview__tags">
+        {visibleSkills.map((skill) => (
+          <span key={`${agentType}-skill-${skill}`} className="soft-pill soft-pill--accent">
+            {skill}
+          </span>
+        ))}
+        {hiddenSkills > 0 ? <span className="soft-pill soft-pill--accent">+{hiddenSkills} skills</span> : null}
+        {visibleTools.map((tool) => (
+          <span key={`${agentType}-tool-${tool}`} className="soft-pill">
+            {tool}
+          </span>
+        ))}
+        {hiddenTools > 0 ? <span className="soft-pill">+{hiddenTools} tools</span> : null}
+      </div>
+
+      <div className="config-agent-overview__footer">
+        <span>Monitor-style overview. Open edit mode when you need to change provider, role, tools, or skills.</span>
+        <div className="config-agent-overview__actions">
+          <button type="button" className="primary-button compact-button" onClick={onEdit} disabled={disabled}>
+            Edit
+          </button>
+          <button type="button" className="secondary-button compact-button" onClick={onTest} disabled={disabled}>
+            Test
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export function ConfigTab({
   config,
   activeSection,
@@ -204,6 +333,7 @@ export function ConfigTab({
       })),
     [agentEntries],
   );
+  const hasEditingAgent = useMemo(() => Object.values(editingAgents).some(Boolean), [editingAgents]);
 
   useEffect(() => {
     const draft = buildGlobalDraft(config);
@@ -418,7 +548,7 @@ export function ConfigTab({
 
   if (activeSection === "skills") {
     return (
-      <section className="panel-grid panel-grid--config">
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
         <div className="panel-card panel-card--full">
           <div className="panel-card-header">
             <div>
@@ -437,7 +567,7 @@ export function ConfigTab({
               <span className="soft-pill">{marketplaces.length} sources</span>
             </div>
             {marketplaceError ? <div className="config-inline-error">{marketplaceError}</div> : null}
-            <div className="skill-marketplace-grid">
+            <AdaptiveCardDeck className="skill-marketplace-grid" itemCount={marketplaces.length} minCardWidth={260} idealCardWidth={320} maxCardWidth={380} maxColumns={4}>
               {marketplaces.map((marketplace) => {
                 const isBusy = updatingMarketplace === marketplace.id;
                 const commandState =
@@ -492,34 +622,20 @@ export function ConfigTab({
                       );
                     })()}
                   </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+            </AdaptiveCardDeck>
           </div>
 
-          <div className="config-agent-stack">
+          <AdaptiveCardDeck className="config-skill-deck" itemCount={skillRows.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={6}>
             {skillRows.length === 0 ? (
               <div className="empty-card">No skills configured yet.</div>
             ) : (
               skillRows.map((skill) => (
-                <div key={skill.name} className="config-agent-card">
-                  <div className="config-agent-card__header">
-                    <div>
-                      <h3>{skill.name}</h3>
-                      <p className="config-agent-card__eyebrow">{skill.agents.length} agent bindings</p>
-                    </div>
-                    <span className="soft-pill">{skill.agents.length}</span>
-                  </div>
-                  <PreviewCard
-                    title={skill.name}
-                    subtitle="Agents currently configured to use this skill"
-                    items={skill.agents.map((agent) => ({ label: "Agent", value: agent }))}
-                    onActivate={() => undefined}
-                  />
-                </div>
+                <SkillGalleryCard key={skill.name} name={skill.name} agents={skill.agents} />
               ))
             )}
-          </div>
+          </AdaptiveCardDeck>
         </div>
       </section>
     );
@@ -527,7 +643,7 @@ export function ConfigTab({
 
   if (activeSection === "memory") {
     return (
-      <section className="panel-grid panel-grid--config">
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
         <div className="panel-card panel-card--full">
           <div className="panel-card-header">
             <div>
@@ -537,7 +653,7 @@ export function ConfigTab({
             <span className="soft-pill">{memoryRows.length} agents</span>
           </div>
 
-          <div className="config-agent-stack">
+          <AdaptiveCardDeck className="config-agent-stack" itemCount={memoryRows.length} minCardWidth={280} idealCardWidth={320} maxCardWidth={380} maxColumns={5}>
             {memoryRows.map((agent) => (
               <div key={agent.type} className="config-agent-card">
                 <div className="config-agent-card__header">
@@ -558,14 +674,14 @@ export function ConfigTab({
                 />
               </div>
             ))}
-          </div>
+          </AdaptiveCardDeck>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="panel-grid panel-grid--config">
+    <section className="panel-grid panel-grid--config panel-grid--config-fluid">
       <div className="config-top-row">
         <div className={`panel-card panel-card--config-main ${editingGlobal ? "is-editing" : ""}`}>
           <div className="panel-card-header">
@@ -753,69 +869,47 @@ export function ConfigTab({
           <span className="soft-pill">LLM + role + soul + tools + skills</span>
         </div>
 
-        <div className="config-agent-stack">
+        <AdaptiveCardDeck
+          className="config-agent-stack"
+          itemCount={agentEntries.length}
+          minCardWidth={hasEditingAgent ? 760 : 260}
+          idealCardWidth={hasEditingAgent ? 920 : 300}
+          maxCardWidth={hasEditingAgent ? 1280 : 360}
+          maxColumns={hasEditingAgent ? 1 : 6}
+        >
           {agentEntries.map(([agentType, agentConfig]) => {
             const effective = agentConfigs[agentType];
             const draft = agentDrafts[agentType] ?? buildAgentDraft(agentConfig, effective);
             const displayName = agentConfig.name?.trim() || defaultAgentName(agentType);
             const isEditing = Boolean(editingAgents[agentType]);
-            const previewItems = [
-              { label: "Base URL", value: previewText(agentConfig.provider?.baseUrl || effective?.baseUrl, "Inherit global") },
-              { label: "Model", value: previewText(agentConfig.default_model || effective?.model, "Inherit global") },
-              {
-                label: "API Key",
-                value: agentConfig.provider?.apiKey?.trim()
-                  ? previewSecret(agentConfig.provider.apiKey, "Inherit global")
-                  : effective?.hasApiKey
-                    ? "Inherit global"
-                    : "Not set",
-              },
-              { label: "Role", value: previewText(agentConfig.role?.title, "Not configured") },
-              { label: "Identity", value: previewText(agentConfig.soul?.identity, "Not configured") },
-              { label: "Style", value: previewText(agentConfig.soul?.style, "Not configured") },
-              { label: "Responsibilities", value: previewList(agentConfig.role?.responsibilities, "Not configured") },
-              { label: "Rules", value: previewList(agentConfig.role?.rules, "Not configured") },
-              { label: "Values", value: previewList(agentConfig.soul?.values, "Not configured") },
-              { label: "Tools", value: previewList(agentConfig.tools, "None") },
-              { label: "Skills", value: previewList(agentConfig.skills, "None") },
-            ];
 
             return (
-              <div key={agentType} className={`config-agent-card ${isEditing ? "is-editing" : ""}`}>
-                <div className="config-agent-card__header">
-                  <div>
-                    <h3>{displayName}</h3>
-                    <p className="config-agent-card__eyebrow">@{agentType}</p>
-                    <p>
-                      Source: <strong>{effective?.source || "global"}</strong>
-                      {effective?.model ? ` · ${effective.model}` : ""}
-                    </p>
-                  </div>
-                  <div className="config-agent-card__actions config-actions-row">
-                    {isEditing ? (
-                      <>
-                        <button type="button" className="primary-button compact-button" onClick={() => void handleSaveAgentDraft(agentType)} disabled={saving}>
-                          Save
-                        </button>
-                        <button type="button" className="secondary-button compact-button" onClick={() => cancelEditingAgent(agentType)} disabled={saving}>
-                          Cancel
-                        </button>
-                        <button type="button" className="secondary-button compact-button" onClick={() => void handleClearAgent(agentType)} disabled={saving}>
-                          Use Global
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" className="primary-button compact-button" onClick={() => startEditingAgent(agentType)} disabled={saving}>
-                        Edit
+              isEditing ? (
+                <div key={agentType} className="config-agent-card is-editing adaptive-card-deck__item--editing">
+                  <div className="config-agent-card__header">
+                    <div>
+                      <h3>{displayName}</h3>
+                      <p className="config-agent-card__eyebrow">@{agentType}</p>
+                      <p>
+                        Source: <strong>{effective?.source || "global"}</strong>
+                        {effective?.model ? ` · ${effective.model}` : ""}
+                      </p>
+                    </div>
+                    <div className="config-agent-card__actions config-actions-row">
+                      <button type="button" className="primary-button compact-button" onClick={() => void handleSaveAgentDraft(agentType)} disabled={saving}>
+                        Save
                       </button>
-                    )}
-                    <button type="button" className="secondary-button compact-button" onClick={() => void onTestAgentConfig(agentType)} disabled={saving}>
-                      Test
-                    </button>
+                      <button type="button" className="secondary-button compact-button" onClick={() => cancelEditingAgent(agentType)} disabled={saving}>
+                        Cancel
+                      </button>
+                      <button type="button" className="secondary-button compact-button" onClick={() => void handleClearAgent(agentType)} disabled={saving}>
+                        Use Global
+                      </button>
+                      <button type="button" className="secondary-button compact-button" onClick={() => void onTestAgentConfig(agentType)} disabled={saving}>
+                        Test
+                      </button>
+                    </div>
                   </div>
-                </div>
-
-                {isEditing ? (
                   <div className="config-agent-card__grid">
                     <label>
                       <span>Base URL</span>
@@ -866,18 +960,29 @@ export function ConfigTab({
                       <textarea value={draft.skills} onChange={(event) => updateAgentDraft(agentType, { skills: event.target.value })} rows={3} placeholder="One skill per line" />
                     </label>
                   </div>
-                ) : (
-                  <PreviewCard
-                    title={`${displayName} Settings`}
-                    subtitle="Click anywhere on this card body to start editing"
-                    items={previewItems}
-                    onActivate={() => startEditingAgent(agentType)}
-                  />
-                )}
-              </div>
+                </div>
+              ) : (
+                <AgentGalleryCard
+                  key={agentType}
+                  displayName={displayName}
+                  agentType={agentType}
+                  sourceLabel={effective?.source || "global"}
+                  modelLabel={previewText(agentConfig.default_model || effective?.model, "Inherit global")}
+                  roleTitle={previewText(agentConfig.role?.title, "Not configured")}
+                  identity={previewText(agentConfig.soul?.identity, "Not configured")}
+                  style={previewText(agentConfig.soul?.style, "Not configured")}
+                  responsibilities={agentConfig.role?.responsibilities ?? []}
+                  rules={agentConfig.role?.rules ?? []}
+                  tools={agentConfig.tools ?? []}
+                  skills={agentConfig.skills ?? []}
+                  onEdit={() => startEditingAgent(agentType)}
+                  onTest={() => void onTestAgentConfig(agentType)}
+                  disabled={saving}
+                />
+              )
             );
           })}
-        </div>
+        </AdaptiveCardDeck>
       </div>
     </section>
   );

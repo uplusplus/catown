@@ -1,0 +1,15 @@
+.adaptive-card-deck {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(var(--adaptive-card-columns, 1), minmax(0, 1fr));
+  gap: var(--adaptive-card-gap, 14px);
+  align-items: start;
+}
+
+.adaptive-card-deck > * {
+  min-width: 0;
+}
+
+.adaptive-card-deck__item--editing {
+  grid-column: 1 / -1;
+}

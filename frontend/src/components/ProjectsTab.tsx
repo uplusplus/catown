@@ -1,6 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 
 import { FormSuggestionStrip } from "./FormSuggestionStrip";
+import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import type { AgentInfo, GitHubProjectImportPayload, ProjectSummary } from "../types";
 import { DEFAULT_AGENT_TYPE, getAgentDisplayName, getAgentType } from "../utils/agents";
 import {
@@ -122,7 +123,7 @@ export function ProjectsTab({
 
   return (
     <section className="panel-grid panel-grid--projects">
-      <div className="panel-card panel-card--compact">
+      <div className="panel-card panel-card--compact panel-card--projects-import">
         <div className="panel-card-header panel-card-header--compact">
           <div>
             <p className="eyebrow">Repository Import</p>
@@ -209,14 +210,14 @@ export function ProjectsTab({
         </form>
       </div>
 
-      <div className="panel-card panel-card--compact">
+      <div className="panel-card panel-card--compact panel-card--projects-list">
         <div className="panel-card-header panel-card-header--compact">
           <div>
             <p className="eyebrow">Room Switcher</p>
             <h2>Existing Sessions</h2>
           </div>
         </div>
-        <div className="project-list">
+        <AdaptiveCardDeck className="project-list" itemCount={projects.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={4}>
           {projects.length === 0 ? (
             <div className="empty-card">No projects yet.</div>
           ) : (
@@ -236,7 +237,7 @@ export function ProjectsTab({
               </button>
             ))
           )}
-        </div>
+        </AdaptiveCardDeck>
       </div>
     </section>
   );

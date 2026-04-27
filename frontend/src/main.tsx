@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 
 import App from "./App";
 import "./styles.css";
+import "./card-layout.css";
 import { startNetworkMonitor } from "./utils/networkMonitor";
 import { startVersionGuard } from "./versionGuard";
 

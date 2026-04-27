@@ -286,6 +286,11 @@ textarea {
   margin: 0 auto;
 }
 
+.page--fluid {
+  max-width: none;
+  padding: 16px 12px 24px;
+}
+
 #page-overview {
   max-width: 1600px;
   padding: 8px 12px 24px;
@@ -2007,6 +2012,61 @@ textarea {
 .integration-card,
 .security-card {
   padding: 14px;
+}
+
+.skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.skill-card__title {
+  min-width: 0;
+}
+
+.skill-card__hint {
+  margin-top: 4px;
+}
+
+.skill-card__counts {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skill-card__detail {
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skill-card__projects {
+  padding-top: 2px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.skill-card--compact .skill-card__counts {
+  gap: 4px;
+}
+
+.skill-card--compact .skill-card__projects {
+  border-top: none;
+  padding-top: 0;
 }
 
 .skill-card__meta,
