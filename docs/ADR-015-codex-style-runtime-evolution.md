@@ -1676,3 +1676,52 @@ monitor 上也同步做了投影：
 
 - 不只知道最后一轮
 - 也开始知道“最近几轮该带什么、再早的轮次该怎么折叠”
+
+### 11.24 2026-04-25 新进展：continuation state 已开始回填到 follow-up runtime turn
+
+在 11.23 之前，Catown 已经能：
+
+- 派生 continuation cursor
+- 派生 turn-local state
+- 派生 multi-round protocol tail
+
+但这些状态仍然主要停留在“可观测层”，没有真正接回运行态。
+
+这一轮把第一条消费链补上了：
+
+- `build_turn_state_from_checkpoint_snapshot(...)`
+  - 现在能从 `checkpoint_snapshot` 回填：
+    - `continuation_protocol_messages`
+    - `continuation_summaries`
+  - 并把它们装回 `TurnContextState`
+
+- `TurnContextState.protocol_messages()`
+  - 现在会先输出 continuation protocol tail
+  - 再拼接本轮新增的 tool round protocol
+
+- `TurnContextState.summarized_tool_lines()`
+  - 现在也会先带上 prior round summaries
+  - 再接本轮运行中继续累积的 summary lines
+
+- runtime approval replay follow-up
+  - 在重新触发 `trigger_agent_response(...)` 时
+  - 不再只传一段 `extra_context`
+  - 而是同时把 `checkpoint_snapshot` 回填到 `TurnContextState`
+
+这意味着当前的 follow-up runtime turn 已经开始真正消费：
+
+- prior tool-call protocol
+- multi-round continuation tail
+- older round summaries
+
+而不再只是“给模型一句文字描述”。
+
+这一步仍然不是完整的 executor continuation：
+
+- 当前只接回了 runtime follow-up 这条链
+- orchestration / pipeline / startup recovery 还没有统一消费这一套 state
+
+但意义很明确：
+
+- continuation state 第一次从“监控/调试数据”
+- 进入“实际运行态输入”

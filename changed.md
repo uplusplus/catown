@@ -146,3 +146,19 @@
 - 从多个 `tool_round_recorded` 事件派生 `protocol_tail_messages` 与 `prior_round_summaries`
 - 让 `turn_local_state` 不再只看最近一轮，而是显式保留多轮 continuation tail
 - 补 monitor 断言，覆盖 recent tail 与 older summaries 的组合场景
+
+### `Rehydrate continuation state into follow-up turns`
+
+范围：
+
+- `backend/services/turn_state.py`
+- `backend/routes/api.py`
+- `backend/tests/test_prompt_context_builder.py`
+- `backend/tests/test_api_routes.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 增加从 `checkpoint_snapshot` 回填 `TurnContextState` 的 helper，把 protocol tail 与 prior summaries 真接回运行态
+- 让 runtime approved replay follow-up 在重新触发 agent 时优先消费 continuation state，而不是只靠纯文本 `extra_context`
+- 补 unit test 与 blocked-tool replay integration test，确认 follow-up prompt 中带回了 prior tool-call protocol

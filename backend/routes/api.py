@@ -83,7 +83,7 @@ from services.orchestration_scheduler import (
     OrchestrationRuntimeQueue,
     build_orchestration_schedule,
 )
-from services.turn_state import TurnContextState, build_tool_result_record, normalize_tool_call
+from services.turn_state import TurnContextState, build_tool_result_record, build_turn_state_from_checkpoint_snapshot, normalize_tool_call
 from services.session_service import SessionService
 from services.run_ledger import (
     append_task_event,
@@ -666,6 +666,7 @@ async def _trigger_standalone_assistant_response(
     client_turn_id: Optional[str] = None,
     task_run: Optional[TaskRun] = None,
     extra_context: str = "",
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
     """Generate a plain assistant reply for standalone chats."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -713,6 +714,10 @@ async def _trigger_standalone_assistant_response(
             "client_turn_id": client_turn_id,
         },
     )
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        checkpoint_snapshot,
+        previous_agent_work=extra_context or "",
+    )
     context_messages = _assemble_chat_messages(
         db=db,
         agent=assistant,
@@ -726,6 +731,7 @@ async def _trigger_standalone_assistant_response(
         history_limit=10,
         standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
         extra_context=extra_context,
+        turn_state=turn_state,
         on_compaction=compaction_callback,
     )
 
@@ -978,6 +984,7 @@ async def trigger_agent_response(
     client_turn_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
     extra_context: str = "",
+    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
@@ -1063,6 +1070,7 @@ async def trigger_agent_response(
                 client_turn_id,
                 task_run=task_run,
                 extra_context=extra_context,
+                checkpoint_snapshot=checkpoint_snapshot,
             )
             return
         
@@ -1181,7 +1189,10 @@ async def trigger_agent_response(
 
         visibility = chatroom.message_visibility or "all"
         recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=20)
-        turn_state = TurnContextState()
+        turn_state = build_turn_state_from_checkpoint_snapshot(
+            checkpoint_snapshot,
+            previous_agent_work=extra_context or "",
+        )
         tool_schemas = tool_registry.get_schemas()
         runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
         compaction_callback = _build_context_compaction_callback(
@@ -4256,6 +4267,7 @@ async def _continue_runtime_after_approved_tool_replay(
             "message_id": getattr(saved, "id", None),
         },
     )
+    followup_snapshot = build_task_run_checkpoint_snapshot(task_run)
     try:
         await trigger_agent_response(
             getattr(item, "chatroom_id", None),
@@ -4263,6 +4275,7 @@ async def _continue_runtime_after_approved_tool_replay(
             getattr(task_run, "client_turn_id", None),
             task_run_id=task_run.id,
             extra_context=followup_context,
+            checkpoint_snapshot=followup_snapshot,
         )
     except Exception as exc:
         append_task_event(

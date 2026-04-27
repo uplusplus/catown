@@ -55,6 +55,8 @@ class TurnContextState:
     boss_instructions: list[str] = field(default_factory=list)
     inter_agent_messages: list[dict[str, Any]] = field(default_factory=list)
     tool_rounds: list[ToolRoundRecord] = field(default_factory=list)
+    continuation_protocol_messages: list[dict[str, Any]] = field(default_factory=list)
+    continuation_summaries: list[str] = field(default_factory=list)
     max_protocol_rounds: int = 1
 
     def add_boss_instructions(self, instructions: Iterable[str]) -> None:
@@ -84,20 +86,20 @@ class TurnContextState:
         )
 
     def protocol_messages(self) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = [dict(message) for message in self.continuation_protocol_messages]
         if self.max_protocol_rounds <= 0:
-            return []
+            return messages
         rounds = self.tool_rounds[-self.max_protocol_rounds :]
-        messages: list[dict[str, Any]] = []
         for round_record in rounds:
             messages.extend(round_record.protocol_messages())
         return messages
 
     def summarized_tool_lines(self) -> list[str]:
-        if not self.tool_rounds:
+        if not self.tool_rounds and not self.continuation_summaries:
             return []
 
         summary_rounds = self.tool_rounds[:-self.max_protocol_rounds] if self.max_protocol_rounds > 0 else self.tool_rounds
-        lines: list[str] = []
+        lines: list[str] = list(self.continuation_summaries)
         for index, round_record in enumerate(summary_rounds, start=1):
             assistant_preview = _compact_text(round_record.assistant_content, limit=140)
             if assistant_preview:
@@ -110,6 +112,65 @@ class TurnContextState:
                     f"- {result.tool_name}({arg_preview}) [{status}] -> {result_preview}"
                 )
         return lines
+
+    def seed_continuation_state(
+        self,
+        *,
+        protocol_messages: Iterable[dict[str, Any]] | None = None,
+        prior_round_summaries: Iterable[str] | None = None,
+    ) -> None:
+        self.continuation_protocol_messages = [
+            dict(message)
+            for message in (protocol_messages or [])
+            if isinstance(message, Mapping) and message
+        ]
+        self.continuation_summaries = [
+            str(summary or "").strip()
+            for summary in (prior_round_summaries or [])
+            if str(summary or "").strip()
+        ]
+
+
+def build_turn_state_from_checkpoint_snapshot(
+    checkpoint_snapshot: Any,
+    *,
+    previous_agent_work: str = "",
+    max_protocol_rounds: int = 1,
+) -> TurnContextState:
+    snapshot = checkpoint_snapshot if isinstance(checkpoint_snapshot, Mapping) else {}
+    turn_local_state = snapshot.get("turn_local_state") if isinstance(snapshot.get("turn_local_state"), Mapping) else {}
+    protocol_tail_messages = turn_local_state.get("protocol_tail_messages")
+    if not isinstance(protocol_tail_messages, list):
+        protocol_tail_messages = []
+
+    raw_prior_round_summaries = turn_local_state.get("prior_round_summaries")
+    formatted_prior_round_summaries: list[str] = []
+    if isinstance(raw_prior_round_summaries, list):
+        for index, item in enumerate(raw_prior_round_summaries, start=1):
+            if not isinstance(item, Mapping):
+                continue
+            turn = item.get("turn")
+            assistant_content = _compact_text(item.get("assistant_content"), limit=140)
+            tool_names = item.get("tool_names") if isinstance(item.get("tool_names"), list) else []
+            blocked_tool_count = item.get("blocked_tool_count")
+            parts = [f"- Prior round {turn or index}"]
+            if tool_names:
+                parts.append(f"tools={', '.join(str(name) for name in tool_names if str(name).strip())}")
+            if blocked_tool_count not in (None, 0):
+                parts.append(f"blocked={blocked_tool_count}")
+            if assistant_content:
+                parts.append(f"intent: {assistant_content}")
+            formatted_prior_round_summaries.append(" · ".join(parts))
+
+    turn_state = TurnContextState(
+        previous_agent_work=previous_agent_work or "",
+        max_protocol_rounds=max_protocol_rounds,
+    )
+    turn_state.seed_continuation_state(
+        protocol_messages=protocol_tail_messages,
+        prior_round_summaries=formatted_prior_round_summaries,
+    )
+    return turn_state
 
 
 def normalize_tool_call(tool_call: Any) -> dict[str, Any]:

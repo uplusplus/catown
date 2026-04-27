@@ -27,7 +27,7 @@ from services.context_builder import (  # noqa: E402
     build_turn_state_developer_fragments,
     build_turn_state_user_fragments,
 )
-from services.turn_state import TurnContextState, build_tool_result_record  # noqa: E402
+from services.turn_state import TurnContextState, build_tool_result_record, build_turn_state_from_checkpoint_snapshot  # noqa: E402
 from services.task_state import build_task_state, build_task_state_fragments  # noqa: E402
 
 
@@ -604,3 +604,50 @@ def test_turn_state_fragments_keep_recent_protocol_and_summarize_older_tool_roun
         "list_files" not in json.dumps(message, ensure_ascii=False)
         for message in protocol_messages
     )
+
+
+def test_turn_state_can_be_seeded_from_checkpoint_snapshot():
+    turn_state = build_turn_state_from_checkpoint_snapshot(
+        {
+            "turn_local_state": {
+                "protocol_tail_messages": [
+                    {
+                        "role": "assistant",
+                        "content": "Open the API route file next.",
+                        "tool_calls": [
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": "{\"file_path\": \"backend/routes/api.py\"}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_2",
+                        "name": "read_file",
+                        "content": "async def send_message(...",
+                    },
+                ],
+                "prior_round_summaries": [
+                    {
+                        "turn": 1,
+                        "tool_names": ["list_files"],
+                        "blocked_tool_count": 0,
+                        "assistant_content": "Inspect the repository layout first.",
+                    }
+                ],
+            }
+        },
+        previous_agent_work="Continue after replay.",
+    )
+
+    protocol_messages = turn_state.protocol_messages()
+    summarized_lines = turn_state.summarized_tool_lines()
+
+    assert turn_state.previous_agent_work == "Continue after replay."
+    assert len(protocol_messages) == 2
+    assert protocol_messages[0]["role"] == "assistant"
+    assert protocol_messages[0]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert any("Prior round 1" in line for line in summarized_lines)
+    assert any("list_files" in line for line in summarized_lines)

@@ -1975,6 +1975,17 @@ class TestSSEStreaming:
             messages = client.get(f"/api/chatrooms/{cid}/messages").json()
             tool_result_message = next(message for message in messages if message["message_type"] == "tool_result")
             assert "deleted" in tool_result_message["content"].lower()
+            followup_call = mock_llm.chat_with_tools.await_args_list[-1]
+            followup_messages = followup_call.args[0]
+            assert any(
+                message.get("role") == "assistant"
+                and isinstance(message.get("tool_calls"), list)
+                and any(
+                    tool_call.get("function", {}).get("name") == "delete_file"
+                    for tool_call in message.get("tool_calls", [])
+                )
+                for message in followup_messages
+            )
             assert any(
                 message["message_type"] == "text"
                 and message["agent_name"] == "analyst"
