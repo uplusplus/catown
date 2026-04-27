@@ -3912,3 +3912,46 @@ P1 继续把 orchestration loop 的 step primitive 往 service 层收口。本�
 
 - agent turn execution 本身仍分别走 `_run_single_agent_turn` 与 streaming `_iter_agent_turn_events`
 - 但 step 完成后的 scheduler state transition 已经完成共享收口
+
+### 11.74 2026-04-27 新进展：nonstream orchestration step runner 已抽出
+
+P1 开始从“拆小 helper”进入真正的 step runner 收口。本轮先覆盖非流式 orchestration 与 recovery，两者都可以用 async function 返回完整 step result，不受 SSE yield 约束。
+
+之前非流式 orchestration 与 interrupted recovery 各自执行：
+
+1. 记录 `scheduler_step_dispatched`
+2. 调 `_run_single_agent_turn(...)`
+3. publish saved chat message
+4. 记录 step output state
+5. complete scheduler step / resume next steps / handoff
+6. 异常时记录 `scheduler_step_failed`
+
+本轮新增：
+
+- `backend/services/orchestration_step_runner.py`
+  - `OrchestrationStepRunResult`
+  - `run_nonstream_orchestration_step(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- interrupted orchestration recovery
+
+runner 参数化差异：
+
+- sync path：`include_result=True`，保留既有 `results` 统计
+- recovery path：`include_result=False`，只更新 completed turns
+- recovery path：dispatch payload 额外携带 checkpoint snapshot 与 recovery continuation state
+- recovery path：completion/resume/handoff 携带 `recovered: true`
+
+这一步的意义是：
+
+- dispatch -> execute -> publish -> output state -> complete step 的主链第一次形成共享 runner
+- 非流式与 recovery 的 executor loop 不再各自手写 step 主流程
+- route 层只负责准备 step context 与错误终止 TaskRun
+- 下一步可以把 streaming path 的 event-yield 特殊性包成 stream runner，或者继续把 failure finalization 收口
+
+边界：
+
+- streaming orchestration 仍保留独立 loop，因为它需要逐 chunk yield SSE
+- `_run_single_agent_turn(...)` 本身仍是 route-local callable，通过参数传入 runner，后续可以继续下沉

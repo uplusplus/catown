@@ -1149,3 +1149,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `complete_orchestration_scheduler_step(...)`
 - 保持 recovered path 的 `recovered: true` metadata 与 Recovery summary prefix 兼容
 - 补 completion helper 单测，并跑 sync/stream/recovery orchestration 回归
+
+### `Extract nonstream orchestration step runner`
+
+范围：
+
+- `backend/services/orchestration_step_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_step_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 nonstream orchestration step runner，统一 dispatch、agent turn execution、message publish、output state、step completion、failure event
+- 让非流式 orchestration 与 interrupted recovery 复用 `run_nonstream_orchestration_step(...)`
+- 保留 sync path 的 results 更新与 recovery path 的 completed-turn-only 更新差异
+- 支持 recovery dispatch 额外携带 checkpoint snapshot 与 recovery continuation state
+- 补 step runner 成功/失败单测，并跑 sync orchestration 与 recovery 回归

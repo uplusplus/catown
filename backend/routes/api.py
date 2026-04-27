@@ -155,6 +155,7 @@ from services.orchestration_handoffs import (
 from services.orchestration_finalizer import finalize_orchestration_task_run, summarize_orchestration_result
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
+from services.orchestration_step_runner import run_nonstream_orchestration_step
 
 logger = logging.getLogger("catown.api")
 
@@ -2371,71 +2372,32 @@ async def _run_multi_agent_orchestration(
         agent_label = agent_name_of(agent)
         step_policy = find_stage_policy(orchestration_policy, step.step_id)
         logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
-        record_scheduler_step_dispatched(
-            db,
-            task_run,
-            agent_name=agent_label,
-            queue=queue,
-            step=step,
-            stage_policy=step_policy,
-        )
-
         try:
-            content, msg = await _run_single_agent_turn(
+            step_result = await run_nonstream_orchestration_step(
+                db=db,
+                task_run=task_run,
+                queue=queue,
+                step=step,
                 agent=agent,
+                agent_name=agent_label,
                 chatroom_id=chatroom_id,
                 project=project,
                 agents=agents,
                 user_message=user_message,
-                extra_context=f"{_build_orchestration_previous_work(completed_turns)}\n{extra_context}".strip(),
-                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
-                db=db,
                 client_turn_id=client_turn_id,
-                task_run=task_run,
-            )
-        except Exception as exc:
-            record_scheduler_step_failed(
-                db,
-                task_run,
-                queue,
-                step,
-                agent_name=agent_label,
+                output_state=output_state,
+                pending_handoffs=pending_handoffs,
+                orchestration_policy=orchestration_policy,
                 stage_policy=step_policy,
-                error=exc,
+                execute_turn=_run_single_agent_turn,
+                publish_message=_publish_saved_chat_message,
+                message_metadata=_message_metadata_with_turn(client_turn_id),
+                extra_context=extra_context,
             )
+            content = step_result.content
+        except Exception:
             complete_task_run(db, task_run, status="failed", summary=f"Orchestration failed at {agent_label}.")
             raise
-
-        if content:
-            await _publish_saved_chat_message(
-                db,
-                chatroom_id,
-                message_id=msg.id,
-                content=content,
-                agent_name=agent_name_of(agent),
-                message_type="text",
-                created_at=msg.created_at,
-                metadata=_message_metadata_with_turn(client_turn_id),
-            )
-
-            record_orchestration_step_output(
-                output_state,
-                agent_name=agent_label,
-                content=content,
-                dispatch_kind=step.dispatch_kind,
-            )
-
-        complete_orchestration_scheduler_step(
-            db,
-            task_run,
-            queue=queue,
-            step=step,
-            orchestration_policy=orchestration_policy,
-            agent_name=agent_label,
-            content=content,
-            pending_handoffs=pending_handoffs,
-            stage_policy=step_policy,
-        )
         if not content and step.dispatch_kind == "blocking":
             logger.warning(f"[Collab] {agent.name} returned empty response")
 
@@ -2675,64 +2637,28 @@ async def _resume_interrupted_orchestration_task_run(
             db.refresh(task_run)
             step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
             step_recovery_continuation_state = _describe_recovery_continuation_state(step_checkpoint_snapshot)
-            record_scheduler_step_dispatched(
-                db,
-                task_run,
-                agent_name=agent_label,
+            await run_nonstream_orchestration_step(
+                db=db,
+                task_run=task_run,
                 queue=queue,
                 step=step,
-                summary_prefix="Recovery",
-                stage_policy=step_policy,
-                extra={
-                    "recovered": True,
-                    "checkpoint_snapshot": step_checkpoint_snapshot,
-                    "recovery_continuation_state": step_recovery_continuation_state,
-                },
-            )
-
-            content, msg = await _run_single_agent_turn(
                 agent=agent,
+                agent_name=agent_label,
                 chatroom_id=chatroom.id,
                 project=project,
                 agents=agents,
                 user_message=task_run.user_request or "",
-                extra_context=_build_orchestration_previous_work(completed_turns),
-                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
-                db=db,
                 client_turn_id=task_run.client_turn_id,
-                task_run=task_run,
-                checkpoint_snapshot=step_checkpoint_snapshot,
-            )
-
-            if content:
-                await _publish_saved_chat_message(
-                    db,
-                    chatroom.id,
-                    message_id=msg.id,
-                    content=content,
-                    agent_name=agent_label,
-                    message_type="text",
-                    created_at=msg.created_at,
-                    metadata=_message_metadata_with_turn(task_run.client_turn_id),
-                )
-                record_orchestration_step_output(
-                    output_state,
-                    agent_name=agent_label,
-                    content=content,
-                    dispatch_kind=step.dispatch_kind,
-                    include_result=False,
-                )
-
-            complete_orchestration_scheduler_step(
-                db,
-                task_run,
-                queue=queue,
-                step=step,
-                orchestration_policy=orchestration_policy,
-                agent_name=agent_label,
-                content=content,
+                output_state=output_state,
                 pending_handoffs=pending_handoffs,
+                orchestration_policy=orchestration_policy,
                 stage_policy=step_policy,
+                execute_turn=_run_single_agent_turn,
+                publish_message=_publish_saved_chat_message,
+                message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
+                checkpoint_snapshot=step_checkpoint_snapshot,
+                dispatch_extra={"recovery_continuation_state": step_recovery_continuation_state},
+                include_result=False,
                 summary_prefix="Recovery",
                 recovered=True,
             )
