@@ -153,6 +153,7 @@ from services.orchestration_handoffs import (
     record_orchestration_handoffs,
 )
 from services.orchestration_finalizer import finalize_orchestration_task_run, summarize_orchestration_result
+from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 
 logger = logging.getLogger("catown.api")
 
@@ -2317,10 +2318,10 @@ async def _run_multi_agent_orchestration(
         return
 
     logger.info(f"[Collab] Orchestration: {' -> '.join(_agent_type(a) for a in resolved_agents)}")
-    completed_turns: List[Dict[str, str]] = []
+    output_state = OrchestrationStepOutputState()
+    completed_turns = output_state.completed_turns
+    results = output_state.results
     pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
-    results = []
-    last_blocking_result = ""
     plan = prepared.plan
     orchestration_policy = prepared.runner_policy
     if plan is None or orchestration_policy is None:
@@ -2416,10 +2417,12 @@ async def _run_multi_agent_orchestration(
                 metadata=_message_metadata_with_turn(client_turn_id),
             )
 
-            results.append({"agent": agent_label, "content": content})
-            completed_turns.append({"agent": agent_label, "content": content})
-            if step.dispatch_kind == "blocking":
-                last_blocking_result = content
+            record_orchestration_step_output(
+                output_state,
+                agent_name=agent_label,
+                content=content,
+                dispatch_kind=step.dispatch_kind,
+            )
 
         ready_steps = queue.mark_completed(step.step_id)
         record_scheduler_step_completed(
@@ -2460,7 +2463,7 @@ async def _run_multi_agent_orchestration(
     finalize_orchestration_task_run(
         db,
         task_run,
-        last_blocking_result=last_blocking_result,
+        last_blocking_result=output_state.last_blocking_result,
         results=results,
         fallback="Orchestration completed without agent output.",
     )
@@ -2607,6 +2610,10 @@ async def _resume_interrupted_orchestration_task_run(
             task_run=task_run,
             queue=queue,
         )
+        output_state = OrchestrationStepOutputState(
+            completed_turns=completed_turns,
+            last_blocking_result=last_blocking_result,
+        )
         agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
         append_task_event(
             db,
@@ -2728,9 +2735,13 @@ async def _resume_interrupted_orchestration_task_run(
                     created_at=msg.created_at,
                     metadata=_message_metadata_with_turn(task_run.client_turn_id),
                 )
-                completed_turns.append({"agent": agent_label, "content": content})
-                if step.dispatch_kind == "blocking":
-                    last_blocking_result = content
+                record_orchestration_step_output(
+                    output_state,
+                    agent_name=agent_label,
+                    content=content,
+                    dispatch_kind=step.dispatch_kind,
+                    include_result=False,
+                )
 
             ready_steps = queue.mark_completed(step.step_id)
             record_scheduler_step_completed(
@@ -2794,7 +2805,7 @@ async def _resume_interrupted_orchestration_task_run(
                 lease_expires_at=lease_expires_at,
             )
         recovery_summary = summarize_orchestration_result(
-            last_blocking_result=last_blocking_result,
+            last_blocking_result=output_state.last_blocking_result,
             completed_turns=completed_turns,
             fallback="Recovered orchestration completed.",
         )
@@ -2813,7 +2824,7 @@ async def _resume_interrupted_orchestration_task_run(
         finalize_orchestration_task_run(
             db,
             task_run,
-            last_blocking_result=last_blocking_result,
+            last_blocking_result=output_state.last_blocking_result,
             completed_turns=completed_turns,
             fallback="Recovered orchestration completed.",
         )
@@ -2925,9 +2936,9 @@ async def _stream_multi_agent_orchestration(
         yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
 
-    completed_turns: List[Dict[str, str]] = []
+    output_state = OrchestrationStepOutputState()
+    completed_turns = output_state.completed_turns
     pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
-    last_blocking_result = ""
     standalone_note = (
         "This is a standalone chat. Reply directly, stay concise, "
         "and coordinate with the other mentioned agents."
@@ -3057,9 +3068,13 @@ async def _stream_multi_agent_orchestration(
                             asyncio.create_task(
                                 _extract_memories(agent.id, _agent_type(agent), user_message, step_content)
                             )
-                        completed_turns.append({"agent": agent_label, "content": step_content})
-                        if step.dispatch_kind == "blocking":
-                            last_blocking_result = step_content
+                        record_orchestration_step_output(
+                            output_state,
+                            agent_name=agent_label,
+                            content=step_content,
+                            dispatch_kind=step.dispatch_kind,
+                            include_result=False,
+                        )
                     continue
 
                 yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
@@ -3117,7 +3132,7 @@ async def _stream_multi_agent_orchestration(
     finalize_orchestration_task_run(
         db,
         task_run,
-        last_blocking_result=last_blocking_result,
+        last_blocking_result=output_state.last_blocking_result,
         completed_turns=completed_turns,
         fallback="Streaming orchestration completed.",
     )

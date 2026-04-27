@@ -3838,3 +3838,40 @@ P1 继续把 orchestration executor 的末端行为从 API route 中拆出。本
 
 - failure finalization 仍有多处按具体错误路径处理
 - 但正常完成路径已完成 sync / stream / recovery 的共享 finalizer 收口
+
+### 11.72 2026-04-27 新进展：orchestration step output state helper 已抽出
+
+P1 继续拆 orchestration loop 内部状态。本轮处理每个 step 完成后的输出状态更新。
+
+之前 sync orchestration、stream orchestration、recovery orchestration 分别维护：
+
+- `completed_turns.append(...)`
+- `results.append(...)`
+- blocking step 更新 `last_blocking_result`
+
+这些状态是 finalizer、previous-work、handoff、recovery rebuild 的共同输入。它们如果继续在三条路径里手工维护，后续抽统一 executor step primitive 会继续有分叉。
+
+本轮新增：
+
+- `backend/services/orchestration_step_state.py`
+  - `OrchestrationStepOutputState`
+  - `record_orchestration_step_output(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- 流式 multi-agent orchestration
+- interrupted orchestration recovery
+
+兼容边界：
+
+- sync orchestration 仍维护 `results`，用于既有响应统计与 final summary fallback
+- stream / recovery 只写 completed turns，不额外写 results
+- recovery rebuild 仍会从历史 agent_turn_completed event 还原初始 state
+
+这一步的意义是：
+
+- step output state 更新规则统一
+- finalizer / handoff / previous-work 的输入状态更稳定
+- route loop 中又少一块手工状态拼装
+- 后续可继续把 “run one step -> record output -> complete/resume/handoff” 合成单一 executor step helper

@@ -1115,3 +1115,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `finalize_orchestration_task_run(...)`
 - recovery completion event 与 TaskRun final summary 复用同一套 `summarize_orchestration_result(...)`
 - 补 finalizer helper 单测，并跑 sync/stream/recovery orchestration 回归
+
+### `Extract orchestration step output state helper`
+
+范围：
+
+- `backend/services/orchestration_step_state.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_step_state.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 orchestration step output state service，统一 completed turns、results、last blocking result 的更新规则
+- 让 sync orchestration、stream orchestration 与 recovery orchestration 复用 `record_orchestration_step_output(...)`
+- 区分普通 sync results 与 stream/recovery 的 completed-turn-only 更新，保持 finalizer 行为兼容
+- 补 step output state 单测，并跑 sync/stream/recovery orchestration 回归
