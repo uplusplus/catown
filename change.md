@@ -1029,3 +1029,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 approval queue resolution lease claim helper，避免多个恢复/处理者同时解决同一个 pending item
 - continuation cursor 与 queue serialization 暴露 resume token / lease 状态
 - 补 approval queue lease 单测，并跑 approval replay / monitor queue 回归
+
+### `Enforce approval queue resolution leases in API`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_approval_queue.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- approve / reject API 在处理 pending queue item 前先 claim resolution lease
+- 如果 queue item 已被其他 resolver lease，API 返回 409，避免重复处理同一 approval / escalation item
+- 保持 resolve 后清理 lease，后续 serialization 可看到处理期间的 owner / expiry
+- 修正 approval queue 单测导入方式，避免测试数据库 reload 时持有旧 mapper
+- 跑 approval/escalation API 回归与 approval queue lease 单测

@@ -3663,3 +3663,23 @@ P1 的第三个核心差距是 sandbox escalation resume token / lease。Catown 
 - 有 expiry 允许 lease 丢失后重新处理
 
 后续还需要把 approve / reject API 强制接入 lease 校验，以及把 sandbox escalation policy 与 executor action resume 合成更完整的 runtime primitive。
+
+### 11.67 2026-04-27 新进展：approve / reject API 接入 approval queue resolution lease
+
+上一轮已经为 approval / escalation queue item 增加了 resume token 与 resolution lease 字段，但 API 还没有强制使用 lease。
+
+本轮把 approve / reject 入口接入 lease claim：
+
+- approve 前 claim `resolution_owner = approval-api:<resolved_by>:<item_id>`
+- reject 前 claim 同样的 resolution lease
+- 如果 item 已被其他 resolver 持有且 lease 未过期，返回 409
+- resolve 完成后清理 lease owner / expiry
+
+这一步让 approval / escalation queue 的处理路径具备最小互斥语义：
+
+- pending item 不是任意多个处理者都能同时解决
+- resolver identity 可观测
+- lease 过期后可重新 claim
+- continuation cursor / monitor serialization 可以看到 token 与 lease 状态
+
+这仍不是完整 sandbox action runtime，但 approval / escalation 的 durable resume token + resolution lease 已经落到实际 API 执行路径。

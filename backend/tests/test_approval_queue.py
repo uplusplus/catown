@@ -1,16 +1,16 @@
 from datetime import datetime, timedelta
 
-from services.approval_queue import (
-    claim_approval_queue_resolution_lease,
-    create_approval_queue_item,
-    ensure_approval_queue_resume_token,
-    resolve_approval_queue_item,
-    serialize_approval_queue_item,
-)
-from services.approval_replay import build_pending_approval_continuation_cursor
-
 
 def test_approval_queue_resume_token_and_resolution_lease(fresh_db):
+    from services.approval_queue import (
+        claim_approval_queue_resolution_lease,
+        create_approval_queue_item,
+        ensure_approval_queue_resume_token,
+        resolve_approval_queue_item,
+        serialize_approval_queue_item,
+    )
+    from services.approval_replay import build_pending_approval_continuation_cursor
+
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
 
     db = fresh_db.SessionLocal()

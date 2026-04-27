@@ -102,6 +102,7 @@ from services.runner_lifecycle import (
     start_agent_turn as record_agent_turn_started,
 )
 from services.approval_queue import (
+    claim_approval_queue_resolution_lease,
     get_approval_queue_item,
     list_approval_queue_items,
     resolve_approval_queue_item,
@@ -4616,6 +4617,12 @@ async def approve_approval_queue_item(
     request_payload = load_approval_queue_request_payload(item.request_payload_json)
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
+    if not claim_approval_queue_resolution_lease(
+        db,
+        item,
+        owner=f"approval-api:{resolved_by}:{item_id}",
+    ):
+        raise HTTPException(status_code=409, detail="Approval queue item is leased by another resolver.")
 
     if (item.target_kind or "") == "pipeline_gate":
         pipeline_id = request_payload.get("pipeline_id")
@@ -4717,6 +4724,12 @@ async def reject_approval_queue_item(
     request_payload = load_approval_queue_request_payload(item.request_payload_json)
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
+    if not claim_approval_queue_resolution_lease(
+        db,
+        item,
+        owner=f"approval-api:{resolved_by}:{item_id}",
+    ):
+        raise HTTPException(status_code=409, detail="Approval queue item is leased by another resolver.")
 
     if (item.target_kind or "") == "pipeline_gate":
         pipeline_id = request_payload.get("pipeline_id")
