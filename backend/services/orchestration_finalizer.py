@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TaskRun
 from services.orchestration_handoffs import compact_runtime_text
-from services.run_ledger import complete_task_run
+from services.run_ledger import append_task_event, complete_task_run
 
 
 def summarize_orchestration_result(
@@ -51,3 +51,28 @@ def finalize_orchestration_task_run(
         fallback=fallback,
     )
     return complete_task_run(db, task_run, status=status, summary=summary)
+
+
+def fail_orchestration_task_run(
+    db: Session,
+    task_run: TaskRun | None,
+    *,
+    summary: str,
+    event_type: str = "task_run_failed",
+    agent_name: str | None = None,
+    event_summary: str | None = None,
+    payload: Any = None,
+    limit: int = 280,
+) -> TaskRun | None:
+    """Record a terminal orchestration failure event and close the task run."""
+
+    compact_summary = compact_runtime_text(summary or "Orchestration failed.", limit=limit)
+    append_task_event(
+        db,
+        task_run,
+        event_type,
+        agent_name=agent_name,
+        summary=event_summary or compact_summary,
+        payload=payload,
+    )
+    return complete_task_run(db, task_run, status="failed", summary=compact_summary)

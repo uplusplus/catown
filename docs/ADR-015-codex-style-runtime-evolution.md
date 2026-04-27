@@ -3992,3 +3992,31 @@ P1 继续补齐 streaming orchestration 的 executor 收口。上一轮 nonstrea
 
 - streaming runner 还不是完整 async generator runner，route 仍持有 yield 控制
 - 但 dispatch、turn_complete、failure、completion 四个稳定节点已经下沉
+
+### 11.76 2026-04-27 新进展：orchestration failure finalizer 已收口
+
+P1 在完成正常 completion finalizer 后，继续补齐失败终结路径。此前 sync orchestration、streaming orchestration 与 interrupted recovery 的失败分支仍在 route 层直接调用 `complete_task_run(... status="failed" ...)`，导致失败事件、TaskRun 终态 summary 与 recovery failure 语义分散。
+
+本轮新增/扩展：
+
+- `backend/services/orchestration_finalizer.py`
+  - `fail_orchestration_task_run(...)`
+
+并接入：
+
+- 非流式 orchestration：无有效 agent、runtime 未准备、step exception
+- streaming orchestration：无有效 agent、runtime 未准备、step exception
+- interrupted recovery：chatroom 缺失、无有效 agent、无 runnable plan、无 runnable steps、incomplete、exception
+
+这一步的意义是：
+
+- orchestration 成功与失败终结都进入同一个 service 边界
+- route 层不再手写主要 orchestration failure terminalization
+- failure event 与 TaskRun failed summary 的关系更稳定，便于后续接 executor-level typed failure event
+- recovery 失败路径继续保留 `task_run_recovery_failed` 事件类型，但终态写入统一走 finalizer helper
+
+边界：
+
+- route 中仍有 standalone / single-agent streaming 的失败终结逻辑，它们不属于本轮 orchestration 收口范围
+- step-level failure event 仍由 step runner / stream runner 负责，task-run terminal failure 由 finalizer 负责
+- 下一步应继续下沉 `_run_single_agent_turn(...)`，减少 route 对 agent turn runtime 的直接持有

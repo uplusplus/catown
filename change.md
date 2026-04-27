@@ -1184,3 +1184,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 stream orchestration route 复用 `start_stream_orchestration_step(...)`、`iter_stream_orchestration_agent_events(...)`、`handle_stream_orchestration_turn_complete(...)`、`complete_stream_orchestration_step(...)`
 - 保持 SSE payload shape 兼容，包括 `collab_step` 与 `collab_step_done`
 - 补 stream runner helper 单测，并跑 streaming orchestration ledger / sidecar 回归
+
+### `Centralize orchestration failure finalization`
+
+范围：
+
+- `backend/services/orchestration_finalizer.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_finalizer.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `fail_orchestration_task_run(...)`，统一记录 terminal failure event 并关闭 TaskRun
+- 让 sync orchestration、stream orchestration 与 interrupted recovery 的主要失败终结路径复用 failure finalizer
+- 保留 recovery 的 `task_run_recovery_failed` 事件类型，同时统一 failed summary 写入规则
+- 补 failure finalizer 单测，继续削薄 `backend/routes/api.py` 的 orchestration 运行时职责

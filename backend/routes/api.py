@@ -152,7 +152,11 @@ from services.orchestration_handoffs import (
     compact_runtime_text as compact_orchestration_text,
     record_orchestration_handoffs,
 )
-from services.orchestration_finalizer import finalize_orchestration_task_run, summarize_orchestration_result
+from services.orchestration_finalizer import (
+    fail_orchestration_task_run,
+    finalize_orchestration_task_run,
+    summarize_orchestration_result,
+)
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_runner import run_nonstream_orchestration_step
@@ -2316,14 +2320,12 @@ async def _run_multi_agent_orchestration(
 
     if not resolved_agents:
         logger.warning("[Collab] No valid agents found for multi-agent orchestration")
-        append_task_event(
+        fail_orchestration_task_run(
             db,
             task_run,
-            "task_run_failed",
             summary="No valid agents resolved for orchestration.",
             payload={"requested_agents": agent_names},
         )
-        complete_task_run(db, task_run, status="failed", summary="No valid agents resolved.")
         return
 
     logger.info(f"[Collab] Orchestration: {' -> '.join(_agent_type(a) for a in resolved_agents)}")
@@ -2334,7 +2336,12 @@ async def _run_multi_agent_orchestration(
     plan = prepared.plan
     orchestration_policy = prepared.runner_policy
     if plan is None or orchestration_policy is None:
-        complete_task_run(db, task_run, status="failed", summary="Orchestration runtime was not prepared.")
+        fail_orchestration_task_run(
+            db,
+            task_run,
+            summary="Orchestration runtime was not prepared.",
+            payload={"requested_agents": agent_names},
+        )
         return
     queue = OrchestrationRuntimeQueue(plan)
     agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
@@ -2402,8 +2409,14 @@ async def _run_multi_agent_orchestration(
                 extra_context=extra_context,
             )
             content = step_result.content
-        except Exception:
-            complete_task_run(db, task_run, status="failed", summary=f"Orchestration failed at {agent_label}.")
+        except Exception as exc:
+            fail_orchestration_task_run(
+                db,
+                task_run,
+                summary=f"Orchestration failed at {agent_label}.",
+                agent_name=agent_label,
+                payload={"error": str(exc), "step_id": step.step_id},
+            )
             raise
         if not content and step.dispatch_kind == "blocking":
             logger.warning(f"[Collab] {agent.name} returned empty response")
@@ -2457,14 +2470,14 @@ async def _resume_interrupted_orchestration_task_run(
 
         chatroom = db.query(Chatroom).filter(Chatroom.id == task_run.chatroom_id).first()
         if chatroom is None:
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary="Recovery aborted because the chatroom no longer exists.",
+                event_type="task_run_recovery_failed",
+                summary="Recovery failed: chatroom missing.",
+                event_summary="Recovery aborted because the chatroom no longer exists.",
                 payload={"task_run_id": task_run.id},
             )
-            complete_task_run(db, task_run, status="failed", summary="Recovery failed: chatroom missing.")
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -2482,14 +2495,14 @@ async def _resume_interrupted_orchestration_task_run(
         targets = _resolve_orchestration_targets(db, project, agents, agent_names)
         resolved_agents = [agent for _, agent in targets if agent is not None]
         if not resolved_agents:
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary="Recovery aborted because no valid orchestration agents could be resolved.",
+                event_type="task_run_recovery_failed",
+                summary="Recovery failed: no valid agents resolved.",
+                event_summary="Recovery aborted because no valid orchestration agents could be resolved.",
                 payload={"requested_agents": agent_names},
             )
-            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no valid agents resolved.")
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -2510,14 +2523,14 @@ async def _resume_interrupted_orchestration_task_run(
         plan = prepared_orchestration.plan
         orchestration_policy = prepared_orchestration.runner_policy
         if plan is None or orchestration_policy is None:
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary="Recovery failed because orchestration runtime preparation returned no runnable plan.",
+                event_type="task_run_recovery_failed",
+                summary="Recovery failed: no runnable orchestration plan.",
+                event_summary="Recovery failed because orchestration runtime preparation returned no runnable plan.",
                 payload={"requested_agents": agent_names},
             )
-            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no runnable orchestration plan.")
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -2590,17 +2603,17 @@ async def _resume_interrupted_orchestration_task_run(
             initial_runtime.ready_step_count == 0
             and initial_runtime.completed_step_count < initial_runtime.step_count
         ):
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary="Recovery rebuilt the scheduler state but found no runnable steps.",
+                event_type="task_run_recovery_failed",
+                summary="Recovery failed: no runnable steps after rebuild.",
+                event_summary="Recovery rebuilt the scheduler state but found no runnable steps.",
                 payload=_scheduler_plan_payload(
                     queue,
                     extra={"runner_policy": orchestration_policy.to_payload()},
                 ),
             )
-            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no runnable steps after rebuild.")
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -2672,17 +2685,17 @@ async def _resume_interrupted_orchestration_task_run(
 
         final_runtime = queue.runtime_snapshot()
         if final_runtime.completed_step_count < final_runtime.step_count:
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary="Recovery stopped before all scheduled steps completed.",
+                event_type="task_run_recovery_failed",
+                summary="Recovery failed: orchestration remained incomplete.",
+                event_summary="Recovery stopped before all scheduled steps completed.",
                 payload=_scheduler_plan_payload(
                     queue,
                     extra={"runner_policy": orchestration_policy.to_payload()},
                 ),
             )
-            complete_task_run(db, task_run, status="failed", summary="Recovery failed: orchestration remained incomplete.")
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -2729,14 +2742,14 @@ async def _resume_interrupted_orchestration_task_run(
         logger.exception(f"[Recovery] Failed to recover task run {task_run_id}: {exc}")
         task_run = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
         if task_run is not None and (task_run.status or "").lower() == "running":
-            append_task_event(
+            fail_orchestration_task_run(
                 db,
                 task_run,
-                "task_run_recovery_failed",
-                summary=f"Interrupted orchestration recovery failed: {exc}",
+                event_type="task_run_recovery_failed",
+                summary=f"Recovery failed: {exc}",
+                event_summary=f"Interrupted orchestration recovery failed: {exc}",
                 payload={"task_run_id": task_run_id},
             )
-            complete_task_run(db, task_run, status="failed", summary=f"Recovery failed: {exc}")
         return TaskRunRecoveryResult(
             task_run_id=task_run_id,
             resumed=False,
@@ -2810,14 +2823,12 @@ async def _stream_multi_agent_orchestration(
 
     yield f"data: {sse_json.dumps({'type': 'collab_start', 'agents': agent_names}, ensure_ascii=False)}\n\n"
     if not resolved_agents:
-        append_task_event(
+        fail_orchestration_task_run(
             db,
             task_run,
-            "task_run_failed",
             summary="No valid agents resolved for streaming orchestration.",
             payload={"requested_agents": agent_names},
         )
-        complete_task_run(db, task_run, status="failed", summary="No valid agents resolved.")
         for requested_name, agent in targets:
             if agent is None:
                 yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
@@ -2840,7 +2851,12 @@ async def _stream_multi_agent_orchestration(
     plan = prepared.plan
     orchestration_policy = prepared.runner_policy
     if plan is None or orchestration_policy is None:
-        complete_task_run(db, task_run, status="failed", summary="Streaming orchestration runtime was not prepared.")
+        fail_orchestration_task_run(
+            db,
+            task_run,
+            summary="Streaming orchestration runtime was not prepared.",
+            payload={"requested_agents": agent_names},
+        )
         yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
     queue = OrchestrationRuntimeQueue(plan)
@@ -2958,7 +2974,13 @@ async def _stream_multi_agent_orchestration(
                 stage_policy=step_policy,
                 error=exc,
             )
-            complete_task_run(db, task_run, status="failed", summary=f"Streaming orchestration failed at {agent_label}.")
+            fail_orchestration_task_run(
+                db,
+                task_run,
+                summary=f"Streaming orchestration failed at {agent_label}.",
+                agent_name=agent_label,
+                payload={"error": str(exc), "step_id": step.step_id},
+            )
             yield f"data: {sse_json.dumps({'type': 'error', 'error': str(exc)[:2000], 'agent_name': agent_label, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
             yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': agent_label, 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
             return
