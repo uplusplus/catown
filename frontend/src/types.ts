@@ -91,6 +91,25 @@ export type TaskRunSummary = {
   recovery_claimed_at?: string | null;
   recovery_lease_expires_at?: string | null;
   summary?: string | null;
+  continuation_cursor?: {
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    source_event_type?: string | null;
+    source_event_at?: string | null;
+    turn?: number | null;
+    tool_name?: string | null;
+    tool_names?: string[] | null;
+    blocked_kind?: string | null;
+    blocked_tool_count?: number | null;
+    queue_item_id?: number | null;
+    pipeline_run_id?: number | null;
+    pipeline_stage_id?: number | null;
+    completed_step_count?: number | null;
+    ready_step_count?: number | null;
+    running_step_count?: number | null;
+    waiting_step_count?: number | null;
+  } | null;
+  continuation_cursor_summary?: string | null;
   continuation_state?: {
     consumed?: boolean;
     next_action?: string | null;
@@ -150,6 +169,7 @@ export type TaskRunCheckpointSnapshot = {
     running_step_count?: number | null;
     waiting_step_count?: number | null;
   };
+  continuation_cursor_summary?: string | null;
   continuation_state?: {
     consumed?: boolean;
     next_action?: string | null;

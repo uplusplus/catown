@@ -2648,3 +2648,72 @@ Monitor 侧也顺手做了投影：
 - scheduler 当前运行态开始成为 task-run summary 的一等字段
 - operator 不必先点开 checkpoint raw payload 才能看出排队态势
 - summary / checkpoint / raw event 三层的职责继续分离：summary 用来扫态势，checkpoint 用来恢复，raw event 用来追溯
+
+### 11.41 2026-04-27 新进展：continuation cursor 摘要已提升到 task-run summary / snapshot
+
+11.40 之后，task-run summary 顶层已经能直接回答 scheduler 当前运行态，但 monitor 上还有一块恢复语义仍然留在前端本地拼装：
+
+- `checkpoint_snapshot.continuation_cursor`
+  - 已经有结构化字段
+- 但 run 列表和 detail 卡片想快速回答：
+  - “这个 run 下一步到底准备怎么续？”
+  - “是等 approval、继续 turn，还是 resume scheduler？”
+- 仍然需要前端自己从：
+  - `next_action`
+  - `resume_strategy`
+  - `tool_name`
+  - `turn`
+  - runtime counts
+  再拼一遍短摘要
+
+这跟前面已经收口的 continuation state / latest continuation event / scheduler runtime 一样，仍然会造成 summary 语义来源分叉：
+
+- snapshot 有原始字段
+- UI 再自行拼装字符串
+- 不同列表 / 卡片很容易继续出现不同口径
+
+这一轮把 cursor 摘要也正式提升出来：
+
+- `build_task_run_checkpoint_snapshot(...)`
+  - 现在直接附带：
+    - `continuation_cursor_summary`
+- `serialize_task_run_summary(...)`
+  - 也把它提升到顶层：
+    - `continuation_cursor`
+    - `continuation_cursor_summary`
+
+摘要规则保持轻量，只回答 operator 最关心的恢复入口：
+
+- `await approval`
+- `continue agent turn`
+- `resume scheduler`
+- 再按需补：
+  - `via ...`
+  - `tool ...`
+  - `turn ...`
+  - `ready / running / waiting` 计数
+
+测试同步补上：
+
+- `test_monitor_task_runs_exposes_continuation_cursor`
+  - 新增断言：
+    - `entry["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"`
+    - `entry["checkpoint_snapshot"]["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"`
+- 无 continuation cursor 的 summary / snapshot
+  - 断言 `continuation_cursor_summary is None`
+
+前端也继续收口：
+
+- Monitor run 列表
+  - 直接显示顶层 `run.continuation_cursor_summary`
+- Selected Run Detail
+  - 新增 summary 级 `Continuation Cursor`
+  - 优先读顶层 summary，再回退到 snapshot
+- Checkpoint Snapshot detail 卡片
+  - 也优先消费后端给出的 `continuation_cursor_summary`
+
+这一步的意义是：
+
+- “下一步怎么续” 开始成为 summary 层的一等语义
+- cursor 的短摘要不再散落在前端本地拼装逻辑里
+- summary / snapshot / raw payload 的职责继续向 Codex 式编排靠拢：summary 先回答动作入口，snapshot 保留恢复所需结构，raw payload 保留追溯细节

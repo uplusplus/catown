@@ -401,3 +401,19 @@
 - 让 `serialize_task_run_summary(...)` 直接输出顶层 `latest_scheduler_runtime` 与 `scheduler_runtime_summary`
 - 补 monitor 测试，确认带 runtime payload 的 task-run summary 会直接暴露最新 scheduler snapshot 与格式化摘要
 - Monitor run 列表与 detail 卡片直接消费顶层 scheduler runtime 摘要，继续减少对嵌套 checkpoint 字段的依赖
+
+### `Promote continuation cursor summaries to task run summaries`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `checkpoint_snapshot` 与 `serialize_task_run_summary(...)` 直接输出 `continuation_cursor_summary`
+- 补 monitor 测试，确认 blocked-tool run 会直接返回 cursor 摘要，而无 cursor 的 run 返回 `null`
+- Monitor run 列表与 detail 卡片优先消费后端给出的 cursor 摘要，继续减少前端本地字符串拼装

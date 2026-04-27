@@ -175,6 +175,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
     latest_continuation_event = _find_latest_continuation_event(list(task_run.events or []))
     latest_scheduler_runtime = checkpoint_snapshot.get("latest_scheduler_runtime")
+    continuation_cursor = checkpoint_snapshot.get("continuation_cursor")
     return {
         "id": task_run.id,
         "chatroom_id": task_run.chatroom_id,
@@ -193,6 +194,8 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
             task_run.recovery_lease_expires_at.isoformat() if task_run.recovery_lease_expires_at else None
         ),
         "summary": task_run.summary,
+        "continuation_cursor": continuation_cursor,
+        "continuation_cursor_summary": checkpoint_snapshot.get("continuation_cursor_summary"),
         "continuation_state": checkpoint_snapshot.get("continuation_state"),
         "continuation_state_summary": checkpoint_snapshot.get("continuation_state_summary"),
         "latest_continuation_event_type": latest_continuation_event.get("event_type") if latest_continuation_event else None,
@@ -379,6 +382,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "status": task_run.status,
         "summary": task_run.summary,
     }
+    snapshot["continuation_cursor_summary"] = summarize_continuation_cursor(snapshot["continuation_cursor"])
     snapshot["continuation_state"] = describe_checkpoint_continuation_state(snapshot)
     snapshot["continuation_state_summary"] = summarize_continuation_state(snapshot["continuation_state"])
     return snapshot
@@ -483,6 +487,45 @@ def summarize_scheduler_runtime(runtime: Any) -> str | None:
     if not parts:
         return None
     return " · ".join(parts)
+
+
+def summarize_continuation_cursor(cursor: Any) -> str | None:
+    state = cursor if isinstance(cursor, dict) else {}
+    next_action = str(state.get("next_action") or "").strip()
+    if not next_action or next_action == "none":
+        return None
+
+    parts = [next_action.replace("_", " ")]
+
+    resume_strategy = str(state.get("resume_strategy") or "").strip()
+    if resume_strategy:
+        parts.append(f"via {resume_strategy}")
+
+    tool_name = str(state.get("tool_name") or "").strip()
+    if tool_name:
+        parts.append(f"tool {tool_name}")
+
+    turn = _coerce_int(state.get("turn"))
+    if turn is not None:
+        parts.append(f"turn {turn}")
+
+    for key, label in [
+        ("ready_step_count", "ready"),
+        ("running_step_count", "running"),
+        ("waiting_step_count", "waiting"),
+    ]:
+        value = _coerce_int(state.get(key))
+        if value is not None:
+            parts.append(f"{value} {label}")
+
+    return " · ".join(parts) if parts else None
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _latest_checkpoint_turn_events(events: list[TaskRunEvent]) -> list[TaskRunEvent]:

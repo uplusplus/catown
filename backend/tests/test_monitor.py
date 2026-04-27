@@ -390,10 +390,13 @@ class TestMonitorOverview:
         assert entry["status"] == "completed"
         assert entry["event_count"] == 2
         assert entry["latest_event_type"] == "handoff_created"
+        assert entry["continuation_cursor"]["next_action"] == "none"
+        assert entry["continuation_cursor_summary"] is None
         assert entry["latest_scheduler_runtime"] is None
         assert entry["scheduler_runtime_summary"] is None
         assert entry["checkpoint_snapshot"]["event_count"] == 2
         assert entry["checkpoint_snapshot"]["latest_event_type"] == "handoff_created"
+        assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] is None
 
     def test_monitor_approval_queue_returns_enriched_items(self, client):
         from models.database import ApprovalQueueItem, Chatroom, Project, SessionLocal, TaskRun
@@ -798,6 +801,8 @@ class TestMonitorOverview:
         assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
         assert cursor["tool_name"] == "delete_file"
         assert cursor["turn"] == 3
+        assert entry["continuation_cursor"]["next_action"] == "await_approval"
+        assert entry["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"
         assert entry["continuation_state"]["consumed"] is True
         assert entry["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
         assert entry["latest_scheduler_runtime"]["completed_step_count"] == 1
@@ -809,6 +814,7 @@ class TestMonitorOverview:
         assert continuation_state["protocol_tail_message_count"] == 4
         assert continuation_state["prior_round_summary_count"] == 1
         assert "protocol_tail" in continuation_state["consumed_layers"]
+        assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"
         assert entry["checkpoint_snapshot"]["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] == 3
@@ -939,8 +945,10 @@ class TestMonitorOverview:
         data = response.json()
         entry = next(item for item in data["entries"] if item["id"] == task_run_id)
         assert entry["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "none"
+        assert entry["continuation_cursor_summary"] is None
         assert entry["continuation_state"]["consumed"] is False
         assert entry["continuation_state_summary"] is None
+        assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] is None
         assert entry["checkpoint_snapshot"]["continuation_state"]["consumed"] is False
         assert entry["checkpoint_snapshot"]["continuation_state_summary"] is None
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]

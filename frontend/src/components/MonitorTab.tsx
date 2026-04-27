@@ -393,6 +393,29 @@ function continuationStateSummary(value: unknown): string | null {
   ].filter(Boolean).join(" · ");
 }
 
+function continuationCursorSummary(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const cursor = value as {
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    tool_name?: string | null;
+    turn?: number | null;
+    ready_step_count?: number | null;
+    running_step_count?: number | null;
+    waiting_step_count?: number | null;
+  };
+  if (!cursor.next_action || cursor.next_action === "none") return null;
+  return [
+    titleCaseLabel(cursor.next_action),
+    cursor.resume_strategy ? `via ${cursor.resume_strategy}` : null,
+    cursor.tool_name ? `tool ${cursor.tool_name}` : null,
+    cursor.turn !== null && cursor.turn !== undefined ? `turn ${cursor.turn}` : null,
+    cursor.ready_step_count !== null && cursor.ready_step_count !== undefined ? `${cursor.ready_step_count} ready` : null,
+    cursor.running_step_count !== null && cursor.running_step_count !== undefined ? `${cursor.running_step_count} running` : null,
+    cursor.waiting_step_count !== null && cursor.waiting_step_count !== undefined ? `${cursor.waiting_step_count} waiting` : null,
+  ].filter(Boolean).join(" · ");
+}
+
 function schedulerRuntimeSummary(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
   const runtime = value as Record<string, unknown>;
@@ -4883,6 +4906,9 @@ export function MonitorTab() {
                       {run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state) ? (
                         <span>{run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)}</span>
                       ) : null}
+                      {run.continuation_cursor_summary || continuationCursorSummary(run.continuation_cursor ?? run.checkpoint_snapshot?.continuation_cursor) ? (
+                        <span>{run.continuation_cursor_summary || continuationCursorSummary(run.continuation_cursor ?? run.checkpoint_snapshot?.continuation_cursor)}</span>
+                      ) : null}
                       {run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime) ? (
                         <span>{run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime)}</span>
                       ) : null}
@@ -4979,6 +5005,15 @@ export function MonitorTab() {
                       {selectedTaskRunSummary.scheduler_runtime_summary
                         || schedulerRuntimeSummary(selectedTaskRunSummary.latest_scheduler_runtime ?? selectedTaskRunSummary.checkpoint_snapshot?.latest_scheduler_runtime)
                         || "No scheduler runtime snapshot recorded."}
+                    </div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Continuation Cursor</strong>
+                    <div className="small-note">
+                      {selectedTaskRunSummary.continuation_cursor_summary
+                        || selectedTaskRunSummary.checkpoint_snapshot?.continuation_cursor_summary
+                        || continuationCursorSummary(selectedTaskRunSummary.continuation_cursor ?? selectedTaskRunSummary.checkpoint_snapshot?.continuation_cursor)
+                        || "No continuation cursor derived."}
                     </div>
                   </div>
                   {RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "") || selectedTaskRunRecoveryState?.recovery_owner ? (
@@ -5180,20 +5215,10 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Continuation Cursor</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor?.next_action
-                            ? [
-                                titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.next_action),
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.resume_strategy
-                                  ? `via ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.resume_strategy}`
-                                  : null,
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.tool_name
-                                  ? `tool ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.tool_name}`
-                                  : null,
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.turn
-                                  ? `turn ${selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor.turn}`
-                                  : null,
-                              ].filter(Boolean).join(" · ")
-                            : "No continuation cursor derived."}
+                          {selectedTaskRunDetail.continuation_cursor_summary
+                            || selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor_summary
+                            || continuationCursorSummary(selectedTaskRunDetail.continuation_cursor ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor)
+                            || "No continuation cursor derived."}
                         </div>
                       </div>
                       <div className="simple-row">
