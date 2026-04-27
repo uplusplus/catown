@@ -17,6 +17,7 @@ from services.approval_replay import (
     build_pipeline_gate_request_key,
     build_pipeline_gate_request_payload,
     build_pipeline_gate_resolution_payload,
+    build_pending_approval_continuation_cursor,
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
     build_replay_tool_result_record,
@@ -178,6 +179,37 @@ def test_replay_request_helpers_normalize_payload_and_cursor_fields():
     chat_item = SimpleNamespace(id=78, target_name="read_file", pipeline_run_id=None, pipeline_stage_id=None)
     assert approval_queue_item_has_pipeline_cursor(chat_item, {}) is False
     assert approval_queue_resume_strategy(chat_item, {}) == "replay_tool_then_continue_turn"
+
+
+def test_pending_approval_continuation_cursor_uses_request_and_pipeline_cursor():
+    item = SimpleNamespace(id=77, target_name="read_file", pipeline_run_id=None, pipeline_stage_id=None)
+
+    cursor = build_pending_approval_continuation_cursor(
+        item,
+        request_payload={
+            "turn": 3,
+            "blocked_kind": "approval",
+            "pipeline_run_id": 9,
+            "pipeline_stage_id": 10,
+        },
+        blocked_payload={"turn": 2, "tool_name": "fallback_tool", "blocked_kind": "sandbox"},
+        tool_round_payload={"turn": 1},
+        source_event_type="tool_call_blocked",
+        source_event_at="2026-04-27T12:00:00",
+    )
+
+    assert cursor == {
+        "next_action": "await_approval",
+        "resume_strategy": "resume_pipeline_stage_after_replay",
+        "source_event_type": "tool_call_blocked",
+        "source_event_at": "2026-04-27T12:00:00",
+        "turn": 3,
+        "tool_name": "read_file",
+        "blocked_kind": "approval",
+        "queue_item_id": 77,
+        "pipeline_run_id": 9,
+        "pipeline_stage_id": 10,
+    }
 
 
 def test_replay_tool_result_record_uses_queue_item_call_id():

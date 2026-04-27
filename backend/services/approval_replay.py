@@ -202,6 +202,32 @@ def approval_queue_resume_strategy(item: Any, request_payload: Dict[str, Any] | 
     return "replay_tool_then_continue_turn"
 
 
+def build_pending_approval_continuation_cursor(
+    item: Any,
+    *,
+    request_payload: Dict[str, Any] | None = None,
+    blocked_payload: Dict[str, Any] | None = None,
+    tool_round_payload: Dict[str, Any] | None = None,
+    source_event_type: Any = None,
+    source_event_at: Any = None,
+) -> Dict[str, Any]:
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    blocked_payload = blocked_payload if isinstance(blocked_payload, dict) else {}
+    tool_round_payload = tool_round_payload if isinstance(tool_round_payload, dict) else {}
+    return {
+        "next_action": "await_approval",
+        "resume_strategy": approval_queue_resume_strategy(item, request_payload),
+        "source_event_type": source_event_type,
+        "source_event_at": source_event_at,
+        "turn": request_payload.get("turn") or blocked_payload.get("turn") or tool_round_payload.get("turn"),
+        "tool_name": getattr(item, "target_name", None) or blocked_payload.get("tool_name"),
+        "blocked_kind": request_payload.get("blocked_kind") or blocked_payload.get("blocked_kind"),
+        "queue_item_id": getattr(item, "id", None),
+        "pipeline_run_id": resolve_pipeline_replay_run_id(item, request_payload),
+        "pipeline_stage_id": resolve_pipeline_replay_stage_id(item, request_payload),
+    }
+
+
 def build_approval_queue_item_created_event_payload(item: Any) -> Dict[str, Any]:
     return {
         "queue_item_id": getattr(item, "id", None),

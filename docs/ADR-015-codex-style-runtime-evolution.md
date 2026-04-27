@@ -3384,3 +3384,30 @@ approved replay 现在有两类后续路径：
 - approval queue 的 pipeline cursor 判断不再由 route 与 ledger 各自实现
 - monitor/recovery 看到的 pending approval continuation strategy 与 API 实际 replay/follow-up 分流保持一致
 - 后续把 approval queue 抽成 runner continuation node 时，resume strategy 已经有共享入口
+
+### 11.59 2026-04-27 新进展：pending approval continuation cursor 已共享
+
+P0.3 继续把 approval queue 与 checkpoint/recovery 的连接点收口。
+
+run ledger 在构造 `checkpoint_snapshot.continuation_cursor` 时，需要把 pending approval queue item 映射成：
+
+- `next_action=await_approval`
+- resume strategy
+- source blocked event
+- turn/tool/blocked_kind
+- queue item id
+- pipeline run/stage cursor
+
+这份 cursor 是 monitor 与 recovery 理解“当前 run 卡在哪里”的核心结构。之前它直接在 `run_ledger.py` 内联拼装，虽然已经复用了部分 request/cursor resolver，但 pending approval cursor 的整体 shape 仍由 ledger 私有定义。
+
+本轮新增：
+
+- `build_pending_approval_continuation_cursor(...)`
+
+并让 run ledger 在发现 pending tool approval queue item 时直接调用该 helper。
+
+这一步的意义是：
+
+- pending approval 的 continuation cursor shape 从 run ledger 私有逻辑中拆出
+- approval queue runtime helper 现在同时覆盖 request、replay、event、follow-up context、pending cursor
+- 后续把 approval queue 抽成 runner continuation node 时，checkpoint cursor 已有共享协议入口

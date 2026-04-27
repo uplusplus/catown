@@ -895,3 +895,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 API replay 分流、runtime follow-up guard、approve follow-up 分流共用同一套 pipeline cursor 判断
 - 让 run ledger continuation cursor 使用共享 request payload 解析和 pipeline run/stage resolver
 - 补 helper 单测，并跑 approval replay 与 run recovery 聚焦回归
+
+### `Share pending approval continuation cursor helper`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽取 pending approval continuation cursor helper，统一 `await_approval` cursor shape
+- 让 run ledger 构造 checkpoint continuation cursor 时复用 approval replay service
+- 保持 source event、turn/tool、blocked kind、queue item、pipeline run/stage cursor 字段一致
+- 补 helper 单测，并跑 approval replay helper 与 run recovery 聚焦回归

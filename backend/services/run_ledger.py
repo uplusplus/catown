@@ -14,10 +14,8 @@ from sqlalchemy.orm import Session
 from models.database import Chatroom, Project, TaskRun, TaskRunEvent
 from services.approval_queue import serialize_approval_queue_item
 from services.approval_replay import (
-    approval_queue_resume_strategy,
+    build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
-    resolve_pipeline_replay_run_id,
-    resolve_pipeline_replay_stage_id,
 )
 
 
@@ -630,18 +628,18 @@ def _build_task_run_continuation_cursor(
         request_payload = load_approval_queue_request_payload(
             getattr(pending_tool_queue_item, "request_payload_json", None)
         )
-        return {
-            "next_action": "await_approval",
-            "resume_strategy": approval_queue_resume_strategy(pending_tool_queue_item, request_payload),
-            "source_event_type": latest_tool_blocked.event_type if latest_tool_blocked is not None else None,
-            "source_event_at": latest_tool_blocked.created_at.isoformat() if latest_tool_blocked and latest_tool_blocked.created_at else None,
-            "turn": request_payload.get("turn") or blocked_payload.get("turn") or tool_round_payload.get("turn"),
-            "tool_name": getattr(pending_tool_queue_item, "target_name", None) or blocked_payload.get("tool_name"),
-            "blocked_kind": request_payload.get("blocked_kind") or blocked_payload.get("blocked_kind"),
-            "queue_item_id": getattr(pending_tool_queue_item, "id", None),
-            "pipeline_run_id": resolve_pipeline_replay_run_id(pending_tool_queue_item, request_payload),
-            "pipeline_stage_id": resolve_pipeline_replay_stage_id(pending_tool_queue_item, request_payload),
-        }
+        return build_pending_approval_continuation_cursor(
+            pending_tool_queue_item,
+            request_payload=request_payload,
+            blocked_payload=blocked_payload,
+            tool_round_payload=tool_round_payload,
+            source_event_type=latest_tool_blocked.event_type if latest_tool_blocked is not None else None,
+            source_event_at=(
+                latest_tool_blocked.created_at.isoformat()
+                if latest_tool_blocked and latest_tool_blocked.created_at
+                else None
+            ),
+        )
 
     if latest_followup is not None:
         return {
