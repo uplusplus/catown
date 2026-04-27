@@ -141,6 +141,15 @@ class TaskRunRecoveryResult:
     lease_expires_at: Optional[datetime] = None
 
 
+@dataclass
+class PreparedOrchestrationRuntime:
+    targets: List[Any]
+    resolved_agents: List[Agent]
+    available_tools: List[str]
+    plan: Any | None
+    runner_policy: Any | None
+
+
 def _build_tool_prompt(tool_names: List[str]) -> str:
     if not tool_names:
         return ""
@@ -1024,13 +1033,28 @@ async def trigger_agent_response(
         if not project:
             mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', user_message)] if '@' in user_message else []
             if len(mentioned_names) > 1:
+                prepared_orchestration = _prepare_orchestration_runtime(
+                    db=db,
+                    project=None,
+                    agents=_list_global_agents(db),
+                    agent_names=mentioned_names,
+                    streaming=False,
+                )
                 update_task_run(db, task_run, run_kind="multi_agent_orchestration")
                 append_task_event(
                     db,
                     task_run,
                     "runtime_mode_selected",
                     summary="Selected standalone multi-agent orchestration mode.",
-                    payload={"agents": mentioned_names, "project_id": None},
+                    payload={
+                        "agents": mentioned_names,
+                        "project_id": None,
+                        "runner_policy": (
+                            prepared_orchestration.runner_policy.to_payload()
+                            if prepared_orchestration.runner_policy is not None
+                            else None
+                        ),
+                    },
                 )
                 logger.info(f"[Collab] Standalone multi-agent orchestration triggered: {mentioned_names}")
                 await _run_multi_agent_orchestration(
@@ -1043,6 +1067,7 @@ async def trigger_agent_response(
                     client_turn_id=client_turn_id,
                     task_run=task_run,
                     extra_context=extra_context,
+                    prepared_runtime=prepared_orchestration,
                 )
                 return
             standalone_target = _resolve_standalone_target_agent(db, user_message)
@@ -1095,13 +1120,28 @@ async def trigger_agent_response(
 
         # 多 Agent 协作：多个 @mention 或包含协作关键词
         if len(mentioned_names) > 1:
+            prepared_orchestration = _prepare_orchestration_runtime(
+                db=db,
+                project=project,
+                agents=agents,
+                agent_names=mentioned_names,
+                streaming=False,
+            )
             update_task_run(db, task_run, run_kind="multi_agent_orchestration")
             append_task_event(
                 db,
                 task_run,
                 "runtime_mode_selected",
                 summary="Selected project multi-agent orchestration mode.",
-                payload={"agents": mentioned_names, "project_id": project.id},
+                payload={
+                    "agents": mentioned_names,
+                    "project_id": project.id,
+                    "runner_policy": (
+                        prepared_orchestration.runner_policy.to_payload()
+                        if prepared_orchestration.runner_policy is not None
+                        else None
+                    ),
+                },
             )
             logger.info(f"[Collab] Multi-agent orchestration triggered: {mentioned_names}")
             await _run_multi_agent_orchestration(
@@ -1114,6 +1154,7 @@ async def trigger_agent_response(
                 client_turn_id=client_turn_id,
                 task_run=task_run,
                 extra_context=extra_context,
+                prepared_runtime=prepared_orchestration,
             )
             return
 
@@ -1559,6 +1600,47 @@ def _build_orchestration_runner_policy(
         tool_names=tool_names or [],
         tool_policy_pack=runtime_tool_registry.get_policy_pack(tool_names or []),
         streaming=streaming,
+    )
+
+
+def _prepare_orchestration_runtime(
+    *,
+    db: Session,
+    project: Optional[Project],
+    agents: List[Agent],
+    agent_names: List[str],
+    streaming: bool,
+) -> PreparedOrchestrationRuntime:
+    from tools import tool_registry as runtime_tool_registry
+
+    targets = _resolve_orchestration_targets(db, project, agents, agent_names)
+    resolved_agents = [agent for _, agent in targets if agent is not None]
+    available_tools = runtime_tool_registry.list_tools()
+    if not resolved_agents:
+        return PreparedOrchestrationRuntime(
+            targets=targets,
+            resolved_agents=[],
+            available_tools=available_tools,
+            plan=None,
+            runner_policy=None,
+        )
+
+    plan = build_orchestration_schedule(
+        [(requested_name, agent) for requested_name, agent in targets if agent is not None],
+        sidecar_agent_types=_configured_sidecar_agent_types(),
+    )
+    runner_policy = _build_orchestration_runner_policy(
+        plan=plan,
+        project_id=project.id if project else None,
+        tool_names=available_tools,
+        streaming=streaming,
+    )
+    return PreparedOrchestrationRuntime(
+        targets=targets,
+        resolved_agents=resolved_agents,
+        available_tools=available_tools,
+        plan=plan,
+        runner_policy=runner_policy,
     )
 
 
@@ -2114,17 +2196,22 @@ async def _run_multi_agent_orchestration(
     client_turn_id: Optional[str] = None,
     task_run: Optional[TaskRun] = None,
     extra_context: str = "",
+    prepared_runtime: Optional[PreparedOrchestrationRuntime] = None,
 ):
     """
     多 Agent 协作编排
 
     以 turn/inbox/handoff 驱动执行，而不是固定 stage pipeline。
     """
-    from tools import tool_registry
-
-    targets = _resolve_orchestration_targets(db, project, agents, agent_names)
-    resolved_agents = [agent for _, agent in targets if agent is not None]
-    available_tools = tool_registry.list_tools()
+    prepared = prepared_runtime or _prepare_orchestration_runtime(
+        db=db,
+        project=project,
+        agents=agents,
+        agent_names=agent_names,
+        streaming=False,
+    )
+    targets = prepared.targets
+    resolved_agents = prepared.resolved_agents
 
     if not resolved_agents:
         logger.warning("[Collab] No valid agents found for multi-agent orchestration")
@@ -2143,16 +2230,11 @@ async def _run_multi_agent_orchestration(
     pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
     results = []
     last_blocking_result = ""
-    plan = build_orchestration_schedule(
-        [(requested_name, agent) for requested_name, agent in targets if agent is not None],
-        sidecar_agent_types=_configured_sidecar_agent_types(),
-    )
-    orchestration_policy = _build_orchestration_runner_policy(
-        plan=plan,
-        project_id=project.id if project else None,
-        tool_names=available_tools,
-        streaming=False,
-    )
+    plan = prepared.plan
+    orchestration_policy = prepared.runner_policy
+    if plan is None or orchestration_policy is None:
+        complete_task_run(db, task_run, status="failed", summary="Orchestration runtime was not prepared.")
+        return
     queue = OrchestrationRuntimeQueue(plan)
     agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
 
@@ -2399,16 +2481,33 @@ async def _resume_interrupted_orchestration_task_run(
                 lease_expires_at=lease_expires_at,
             )
 
-        plan = build_orchestration_schedule(
-            [(requested_name, agent) for requested_name, agent in targets if agent is not None],
-            sidecar_agent_types=_configured_sidecar_agent_types(),
-        )
-        orchestration_policy = _build_orchestration_runner_policy(
-            plan=plan,
-            project_id=project.id if project else None,
-            tool_names=available_tools,
+        prepared_orchestration = _prepare_orchestration_runtime(
+            db=db,
+            project=project,
+            agents=agents,
+            agent_names=agent_names,
             streaming=(task_run.run_kind == "multi_agent_orchestration_stream"),
         )
+        plan = prepared_orchestration.plan
+        orchestration_policy = prepared_orchestration.runner_policy
+        if plan is None or orchestration_policy is None:
+            append_task_event(
+                db,
+                task_run,
+                "task_run_recovery_failed",
+                summary="Recovery failed because orchestration runtime preparation returned no runnable plan.",
+                payload={"requested_agents": agent_names},
+            )
+            complete_task_run(db, task_run, status="failed", summary="Recovery failed: no runnable orchestration plan.")
+            return TaskRunRecoveryResult(
+                task_run_id=task_run_id,
+                resumed=False,
+                reason="no_runnable_plan",
+                status="failed",
+                detail="Recovery failed: no runnable orchestration plan.",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+            )
         queue = OrchestrationRuntimeQueue(plan)
         recovery_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
         recovery_continuation_state = _describe_recovery_continuation_state(recovery_checkpoint_snapshot)
@@ -2755,12 +2854,17 @@ async def _stream_multi_agent_orchestration(
     sse_card,
     set_active_agent=None,
     task_run: Optional[TaskRun] = None,
+    prepared_runtime: Optional[PreparedOrchestrationRuntime] = None,
 ):
-    from tools import tool_registry
-
-    targets = _resolve_orchestration_targets(db, project, agents, agent_names)
-    resolved_agents = [agent for _, agent in targets if agent is not None]
-    available_tools = tool_registry.list_tools()
+    prepared = prepared_runtime or _prepare_orchestration_runtime(
+        db=db,
+        project=project,
+        agents=agents,
+        agent_names=agent_names,
+        streaming=True,
+    )
+    targets = prepared.targets
+    resolved_agents = prepared.resolved_agents
 
     yield f"data: {sse_json.dumps({'type': 'collab_start', 'agents': agent_names}, ensure_ascii=False)}\n\n"
     if not resolved_agents:
@@ -2791,16 +2895,12 @@ async def _stream_multi_agent_orchestration(
         if agent is None:
             yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
 
-    plan = build_orchestration_schedule(
-        [(requested_name, agent) for requested_name, agent in targets if agent is not None],
-        sidecar_agent_types=_configured_sidecar_agent_types(),
-    )
-    orchestration_policy = _build_orchestration_runner_policy(
-        plan=plan,
-        project_id=project.id if project else None,
-        tool_names=available_tools,
-        streaming=True,
-    )
+    plan = prepared.plan
+    orchestration_policy = prepared.runner_policy
+    if plan is None or orchestration_policy is None:
+        complete_task_run(db, task_run, status="failed", summary="Streaming orchestration runtime was not prepared.")
+        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+        return
     queue = OrchestrationRuntimeQueue(plan)
     agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
 
@@ -4925,13 +5025,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)] if '@' in message.content else []
                 if len(mentioned_names) > 1:
                     agents = _list_global_agents(db)
+                    prepared_orchestration = _prepare_orchestration_runtime(
+                        db=db,
+                        project=None,
+                        agents=agents,
+                        agent_names=mentioned_names,
+                        streaming=True,
+                    )
                     update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
                     append_task_event(
                         db,
                         task_run,
                         "runtime_mode_selected",
                         summary="Selected standalone multi-agent streaming orchestration mode.",
-                        payload={"agents": mentioned_names, "project_id": None},
+                        payload={
+                            "agents": mentioned_names,
+                            "project_id": None,
+                            "runner_policy": (
+                                prepared_orchestration.runner_policy.to_payload()
+                                if prepared_orchestration.runner_policy is not None
+                                else None
+                            ),
+                        },
                     )
                     async for chunk in _stream_multi_agent_orchestration(
                         db=db,
@@ -4945,6 +5060,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         sse_card=_sse_card,
                         set_active_agent=_mark_active_agent,
                         task_run=task_run,
+                        prepared_runtime=prepared_orchestration,
                     ):
                         yield chunk
                     return
@@ -4998,13 +5114,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 ).all()
                 agent_ids = [a.agent_id for a in assignments]
                 agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+                prepared_orchestration = _prepare_orchestration_runtime(
+                    db=db,
+                    project=project,
+                    agents=agents,
+                    agent_names=mentioned_names,
+                    streaming=True,
+                )
                 update_task_run(db, task_run, run_kind="multi_agent_orchestration_stream")
                 append_task_event(
                     db,
                     task_run,
                     "runtime_mode_selected",
                     summary="Selected project multi-agent streaming orchestration mode.",
-                    payload={"agents": mentioned_names, "project_id": project.id},
+                    payload={
+                        "agents": mentioned_names,
+                        "project_id": project.id,
+                        "runner_policy": (
+                            prepared_orchestration.runner_policy.to_payload()
+                            if prepared_orchestration.runner_policy is not None
+                            else None
+                        ),
+                    },
                 )
                 async for chunk in _stream_multi_agent_orchestration(
                     db=db,
@@ -5018,6 +5149,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     sse_card=_sse_card,
                     set_active_agent=_mark_active_agent,
                     task_run=task_run,
+                    prepared_runtime=prepared_orchestration,
                 ):
                     yield chunk
                 return

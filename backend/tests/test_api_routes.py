@@ -867,7 +867,11 @@ class TestChatEndpoints:
         assert run["summary"] == "Mocked agent response."
 
         detail = client.get(f"/api/task-runs/{run['id']}").json()
+        mode_event = next(event for event in detail["events"] if event["event_type"] == "runtime_mode_selected")
         schedule_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_plan_created")
+        assert mode_event["payload"]["runner_policy"]["mode"] == "blocking_chain_with_sidecars"
+        assert mode_event["payload"]["runner_policy"]["stage_count"] == 4
+        assert mode_event["payload"]["runner_policy"]["metadata"]["sidecar_step_count"] == 1
         assert schedule_event["payload"]["mode"] == "blocking_chain_with_sidecars"
         assert schedule_event["payload"]["blocking_step_count"] == 3
         assert schedule_event["payload"]["sidecar_step_count"] == 1
@@ -1191,6 +1195,7 @@ class TestSSEStreaming:
         assert run["status"] == "completed"
 
         detail = client.get(f"/api/task-runs/{run['id']}").json()
+        mode_event = next(event for event in detail["events"] if event["event_type"] == "runtime_mode_selected")
         event_types = [event["event_type"] for event in detail["events"]]
 
         assert event_types[0] == "user_message_saved"
@@ -1204,6 +1209,9 @@ class TestSSEStreaming:
         assert event_types.count("agent_turn_completed") == 2
         assert "handoff_created" in event_types
 
+        assert mode_event["payload"]["runner_policy"]["mode"] == "linear_blocking_chain"
+        assert mode_event["payload"]["runner_policy"]["stage_count"] == 2
+        assert mode_event["payload"]["runner_policy"]["metadata"]["tool_policy_summary"]["tool_count"] >= 1
         schedule_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_plan_created")
         assert schedule_event["payload"]["mode"] == "linear_blocking_chain"
         assert schedule_event["payload"]["step_count"] == 2
@@ -1258,7 +1266,11 @@ class TestSSEStreaming:
         assert run["summary"] == "Hello!"
 
         detail = client.get(f"/api/task-runs/{run['id']}").json()
+        mode_event = next(event for event in detail["events"] if event["event_type"] == "runtime_mode_selected")
         schedule_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_plan_created")
+        assert mode_event["payload"]["runner_policy"]["mode"] == "blocking_chain_with_sidecars"
+        assert mode_event["payload"]["runner_policy"]["stage_count"] == 4
+        assert mode_event["payload"]["runner_policy"]["metadata"]["sidecar_step_count"] == 1
         assert schedule_event["payload"]["mode"] == "blocking_chain_with_sidecars"
         assert schedule_event["payload"]["blocking_step_count"] == 3
         assert schedule_event["payload"]["sidecar_step_count"] == 1

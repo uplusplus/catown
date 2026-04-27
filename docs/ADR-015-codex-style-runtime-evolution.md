@@ -2717,3 +2717,79 @@ Monitor 侧也顺手做了投影：
 - “下一步怎么续” 开始成为 summary 层的一等语义
 - cursor 的短摘要不再散落在前端本地拼装逻辑里
 - summary / snapshot / raw payload 的职责继续向 Codex 式编排靠拢：summary 先回答动作入口，snapshot 保留恢复所需结构，raw payload 保留追溯细节
+
+### 11.42 2026-04-27 新进展：orchestration startup policy 已在 sync / stream / recovery 间共享
+
+前面几轮主要都在收 observability 和 summary 层，但真正往 `P0` 靠的时候，一个很具体的 runner 分叉点开始明显：
+
+- sync multi-agent orchestration
+- stream multi-agent orchestration
+- recovery rebuild
+
+三条路径虽然最终都会：
+
+- resolve targets
+- build schedule
+- compile orchestration runner policy
+
+但这些动作之前还是各做各的，而且 startup 时刻的 policy projection 也不一致：
+
+- `scheduler_plan_created`
+  - 已经会带完整 `runner_policy`
+- 但 `runtime_mode_selected`
+  - 对 multi-agent orchestration 还只带：
+    - `agents`
+    - `project_id`
+  - 还没有把编排 policy 提前暴露出来
+
+这意味着 run startup 还没有真正成为统一 envelope：
+
+- mode selection 只告诉你“选了 orchestration”
+- 却没有同时告诉你“这次 orchestration 准备按什么 runner policy 跑”
+- sync / stream / recovery 也仍在各自重建同一套 startup 准备逻辑
+
+这一轮先做一个最小的 `P0.1` 收口：
+
+- `backend/routes/api.py`
+  - 新增共享的 orchestration startup 准备逻辑
+  - 统一负责：
+    - target resolution
+    - schedule build
+    - orchestration runner policy compile
+- sync orchestration
+  - 改为消费这份共享 prepared runtime
+- stream orchestration
+  - 改为消费同一份共享 prepared runtime
+- recovery rebuild
+  - 也开始复用同一份 orchestration startup 准备逻辑
+
+同时把 policy projection 前移到 startup 事件：
+
+- `runtime_mode_selected`
+  - 对 multi-agent orchestration / streaming orchestration
+  - 现在也直接输出：
+    - `runner_policy`
+
+这样当前 run 在一开始就能回答：
+
+- 这次是不是 orchestration
+- 是 linear blocking 还是 blocking-chain-with-sidecars
+- 一共多少 step
+- sidecar 数量多少
+- tool policy pack 是什么
+
+测试同步补上：
+
+- sync multi-agent orchestration
+  - 断言 `runtime_mode_selected.payload.runner_policy`
+  - 与后续 `scheduler_plan_created.payload.runner_policy`
+  - 在 `mode` / `stage_count` / `sidecar_step_count` 上保持一致
+- stream multi-agent orchestration
+  - 同样补上对应断言
+
+这一步的意义是：
+
+- `runtime_mode_selected` 不再只是“模式标签事件”
+- 它开始变成真正的 runner startup envelope 投影
+- orchestration 的 startup 准备逻辑第一次在 sync / stream / recovery 三条主链上开始共享
+- 这还不是完整统一 runner，但已经是一个真实的 `P0` 内核收口点，而不再只是外围 summary 整理

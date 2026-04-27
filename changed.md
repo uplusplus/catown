@@ -417,3 +417,17 @@
 - 让 `checkpoint_snapshot` 与 `serialize_task_run_summary(...)` 直接输出 `continuation_cursor_summary`
 - 补 monitor 测试，确认 blocked-tool run 会直接返回 cursor 摘要，而无 cursor 的 run 返回 `null`
 - Monitor run 列表与 detail 卡片优先消费后端给出的 cursor 摘要，继续减少前端本地字符串拼装
+
+### `Share orchestration startup policy across runtime entry points`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_api_routes.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 把 orchestration target resolution / schedule build / runner policy 编译提取成共享准备逻辑，供 sync、stream、recovery 共用
+- 让 multi-agent `runtime_mode_selected` 事件也直接携带 orchestration `runner_policy`，把 policy projection 提前到 run startup 时刻
+- 补 API 测试，确认 sync / stream orchestration 的 mode-selected 事件与后续 scheduler plan 在 mode / stage_count / sidecar metadata 上保持一致
