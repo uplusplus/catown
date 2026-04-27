@@ -3,6 +3,7 @@
 Database model definitions.
 """
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
@@ -283,6 +284,9 @@ class ApprovalQueueItem(Base):
     target_kind = Column(String, nullable=False, default="tool", index=True)
     target_name = Column(String, nullable=True, index=True)
     request_key = Column(String, nullable=True, index=True)
+    resume_token = Column(String, nullable=True, index=True)
+    resolution_owner = Column(String, nullable=True, index=True)
+    resolution_lease_expires_at = Column(DateTime, nullable=True, index=True)
     request_payload_json = Column(Text, default="{}")
     resolution_note = Column(Text)
     resolution_payload_json = Column(Text, default="{}")
@@ -686,6 +690,40 @@ def init_database():
             )
         if "source_chatroom_id" not in existing_chatroom_columns:
             connection.execute(text("ALTER TABLE chatrooms ADD COLUMN source_chatroom_id INTEGER"))
+
+        existing_approval_queue_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(approval_queue_items)")).fetchall()
+        }
+        if existing_approval_queue_columns:
+            if "resume_token" not in existing_approval_queue_columns:
+                connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resume_token VARCHAR"))
+            if "resolution_owner" not in existing_approval_queue_columns:
+                connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resolution_owner VARCHAR"))
+            if "resolution_lease_expires_at" not in existing_approval_queue_columns:
+                connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resolution_lease_expires_at DATETIME"))
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_approval_queue_items_resume_token ON approval_queue_items (resume_token)")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_approval_queue_items_resolution_owner "
+                    "ON approval_queue_items (resolution_owner)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_approval_queue_items_resolution_lease_expires_at "
+                    "ON approval_queue_items (resolution_lease_expires_at)"
+                )
+            )
+            missing_token_rows = connection.execute(
+                text("SELECT id FROM approval_queue_items WHERE resume_token IS NULL OR resume_token = ''")
+            ).fetchall()
+            for (queue_item_id,) in missing_token_rows:
+                connection.execute(
+                    text("UPDATE approval_queue_items SET resume_token = :resume_token WHERE id = :id"),
+                    {"resume_token": uuid4().hex, "id": queue_item_id},
+                )
 
         existing_task_run_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(task_runs)")).fetchall()

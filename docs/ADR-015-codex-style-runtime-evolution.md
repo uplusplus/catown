@@ -3627,3 +3627,39 @@ projection 保留：
 - cancelled 已进入 lifecycle projection model，等待后续 cancel primitive 接入
 
 它仍不是完整 Codex subagent runtime，但已经补齐了最关键的 terminal-state 可观测性，避免异常时 parent run 与 child step 状态脱节。
+
+### 11.66 2026-04-27 新进展：approval / escalation queue 开始具备 resume token 与 resolution lease
+
+P1 的第三个核心差距是 sandbox escalation resume token / lease。Catown 已经能把 blocked tool 放进 approval / escalation queue，但 queue item 本身缺少 durable resume token，也缺少 resolution 侧的 lease。
+
+这会带来两个问题：
+
+- recovery / follow-up 只能依赖 queue item id 与 payload 推断恢复点，缺少稳定 resume token
+- 多个处理者同时 approve / reject 同一个 pending item 时，没有显式 resolution owner / lease
+
+本轮新增字段：
+
+- `approval_queue_items.resume_token`
+- `approval_queue_items.resolution_owner`
+- `approval_queue_items.resolution_lease_expires_at`
+
+并新增 service 能力：
+
+- `ensure_approval_queue_resume_token(...)`
+- `claim_approval_queue_resolution_lease(...)`
+
+创建新的 approval / escalation item 时会自动生成 `resume_token`。数据库初始化会给历史 item 回填 token。
+
+同时：
+
+- approval queue serialization 暴露 resume token / lease state
+- pending approval continuation cursor 携带 resume token / resolution lease state
+- resolve item 后会清理 resolution lease
+
+这一步的意义是把 approval / sandbox escalation 从“一个 pending 队列项”推进成更接近 Codex 风格的 resumable action token：
+
+- 有稳定 token 表示恢复对象
+- 有 lease owner 表示当前处理者
+- 有 expiry 允许 lease 丢失后重新处理
+
+后续还需要把 approve / reject API 强制接入 lease 校验，以及把 sandbox escalation policy 与 executor action resume 合成更完整的 runtime primitive。

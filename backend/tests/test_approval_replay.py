@@ -209,6 +209,9 @@ def test_pending_approval_continuation_cursor_uses_request_and_pipeline_cursor()
         "tool_name": "read_file",
         "blocked_kind": "approval",
         "queue_item_id": 77,
+        "resume_token": None,
+        "resolution_owner": None,
+        "resolution_lease_expires_at": None,
         "pipeline_run_id": 9,
         "pipeline_stage_id": 10,
     }

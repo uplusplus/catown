@@ -223,6 +223,13 @@ def build_pending_approval_continuation_cursor(
         "tool_name": getattr(item, "target_name", None) or blocked_payload.get("tool_name"),
         "blocked_kind": request_payload.get("blocked_kind") or blocked_payload.get("blocked_kind"),
         "queue_item_id": getattr(item, "id", None),
+        "resume_token": getattr(item, "resume_token", None),
+        "resolution_owner": getattr(item, "resolution_owner", None),
+        "resolution_lease_expires_at": (
+            getattr(item, "resolution_lease_expires_at", None).isoformat()
+            if getattr(item, "resolution_lease_expires_at", None) is not None
+            else None
+        ),
         "pipeline_run_id": resolve_pipeline_replay_run_id(item, request_payload),
         "pipeline_stage_id": resolve_pipeline_replay_stage_id(item, request_payload),
     }

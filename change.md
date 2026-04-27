@@ -1010,3 +1010,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 非流式 orchestration step 执行异常时记录 failed lifecycle event，并把 task run 标记为 failed
 - 流式 orchestration step 执行异常时记录 failed lifecycle event，返回 SSE error/done，并把 task run 标记为 failed
 - 补 failed/cancelled projection 单测，并跑 sync/stream orchestration ledger 回归
+
+### `Add approval queue resume token leases`
+
+范围：
+
+- `backend/models/database.py`
+- `backend/services/approval_queue.py`
+- `backend/services/approval_replay.py`
+- `backend/tests/test_approval_queue.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 为 approval/escalation queue item 增加 `resume_token`、`resolution_owner`、`resolution_lease_expires_at`
+- 创建 queue item 时生成 durable resume token，并在数据库初始化时为历史 item 回填 token
+- 新增 approval queue resolution lease claim helper，避免多个恢复/处理者同时解决同一个 pending item
+- continuation cursor 与 queue serialization 暴露 resume token / lease 状态
+- 补 approval queue lease 单测，并跑 approval replay / monitor queue 回归

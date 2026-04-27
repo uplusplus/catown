@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
+from uuid import uuid4
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.database import ApprovalQueueItem, TaskRun
@@ -84,6 +86,7 @@ def create_approval_queue_item(
         target_kind=(target_kind or "tool").strip() or "tool",
         target_name=(target_name or "").strip() or None,
         request_key=normalized_request_key,
+        resume_token=uuid4().hex,
         request_payload_json=_dump_payload(request_payload),
     )
     db.add(item)
@@ -113,11 +116,69 @@ def resolve_approval_queue_item(
     item.resolved_by = (resolved_by or "").strip() or None
     item.resolution_note = (resolution_note or "").strip() or None
     item.resolution_payload_json = _dump_payload(resolution_payload)
+    item.resolution_owner = None
+    item.resolution_lease_expires_at = None
     item.resolved_at = datetime.now()
     db.add(item)
     db.commit()
     db.refresh(item)
     return item
+
+
+def ensure_approval_queue_resume_token(db: Session, item: ApprovalQueueItem | None) -> str | None:
+    if item is None:
+        return None
+    if item.resume_token:
+        return item.resume_token
+    item.resume_token = uuid4().hex
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item.resume_token
+
+
+def claim_approval_queue_resolution_lease(
+    db: Session,
+    item: ApprovalQueueItem | None,
+    *,
+    owner: str,
+    lease_seconds: int = 300,
+) -> bool:
+    if item is None or item.status != "pending":
+        return False
+    normalized_owner = (owner or "").strip()
+    if not normalized_owner:
+        raise ValueError("owner is required")
+
+    now = datetime.now()
+    lease_expires_at = now + timedelta(seconds=max(1, lease_seconds))
+    updated = (
+        db.query(ApprovalQueueItem)
+        .filter(
+            ApprovalQueueItem.id == item.id,
+            ApprovalQueueItem.status == "pending",
+            or_(
+                ApprovalQueueItem.resolution_owner.is_(None),
+                ApprovalQueueItem.resolution_owner == normalized_owner,
+                ApprovalQueueItem.resolution_lease_expires_at.is_(None),
+                ApprovalQueueItem.resolution_lease_expires_at < now,
+            ),
+        )
+        .update(
+            {
+                ApprovalQueueItem.resolution_owner: normalized_owner,
+                ApprovalQueueItem.resolution_lease_expires_at: lease_expires_at,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if not updated:
+        db.refresh(item)
+        return False
+    db.refresh(item)
+    ensure_approval_queue_resume_token(db, item)
+    return True
 
 
 def list_approval_queue_items(
@@ -161,6 +222,11 @@ def serialize_approval_queue_item(item: ApprovalQueueItem) -> dict[str, Any]:
         "target_kind": item.target_kind,
         "target_name": item.target_name,
         "request_key": item.request_key,
+        "resume_token": item.resume_token,
+        "resolution_owner": item.resolution_owner,
+        "resolution_lease_expires_at": (
+            item.resolution_lease_expires_at.isoformat() if item.resolution_lease_expires_at else None
+        ),
         "request_payload": _load_payload(item.request_payload_json),
         "resolution_note": item.resolution_note,
         "resolution_payload": _load_payload(item.resolution_payload_json),
