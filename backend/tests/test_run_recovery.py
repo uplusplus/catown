@@ -225,10 +225,16 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert recovery_state_event["payload"]["runtime"]["ready_step_count"] == 1
         assert recovery_state_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
         assert recovery_state_event["payload"]["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "resume_scheduler"
+        assert recovery_state_event["payload"]["recovery_continuation_state"]["consumed"] is True
+        assert recovery_state_event["payload"]["recovery_continuation_state"]["resume_strategy"] == "rebuild_from_runtime_snapshot"
+        assert "runtime_snapshot" in recovery_state_event["payload"]["recovery_continuation_state"]["consumed_layers"]
         recovery_started_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_started")
         assert recovery_started_event["payload"]["trigger"] == "startup"
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["continuation_cursor"]["resume_strategy"] == "rebuild_from_runtime_snapshot"
+        assert recovery_started_event["payload"]["recovery_continuation_state"]["next_action"] == "resume_scheduler"
+        recovery_completed_event = next(event for event in detail["events"] if event["event_type"] == "task_run_recovery_completed")
+        assert recovery_completed_event["payload"]["recovery_continuation_state"]["consumed"] is True
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
         assistant_messages = [message["content"] for message in messages if message.get("agent_name")]
@@ -270,6 +276,8 @@ def test_manual_resume_endpoint_recovers_interrupted_orchestration_run(tmp_path)
         assert recovery_started_event["payload"]["trigger"] == "manual"
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Analyst checkpoint before restart."
         assert recovery_started_event["payload"]["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "resume_scheduler"
+        assert recovery_started_event["payload"]["recovery_continuation_state"]["consumed"] is True
+        assert recovery_started_event["payload"]["recovery_continuation_state"]["resume_strategy"] == "rebuild_from_runtime_snapshot"
 
         messages = client.get(f"/api/chatrooms/{chatroom_id}/messages").json()
         assistant_messages = [message["content"] for message in messages if message.get("agent_name")]

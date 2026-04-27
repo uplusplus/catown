@@ -1725,3 +1725,49 @@ monitor 上也同步做了投影：
 
 - continuation state 第一次从“监控/调试数据”
 - 进入“实际运行态输入”
+
+### 11.25 2026-04-25 新进展：recovery 事件已开始显式声明 continuation-state consumption
+
+在 11.24 之后，runtime follow-up 已经会真实消费 continuation state，但 startup/manual recovery 仍有一个可见性缺口：
+
+- 恢复链本身虽然依赖 checkpoint snapshot
+- 但事件层还没有明确声明：
+  - “这次恢复到底消费了哪类 continuation state”
+
+这一轮先把这层恢复元数据补齐：
+
+- 新增 `recovery_continuation_state`
+  - 当前由 recovery 起点 snapshot 派生
+  - 会显式记录：
+    - `consumed`
+    - `next_action`
+    - `resume_strategy`
+    - `consumed_layers`
+    - `protocol_tail_message_count`
+    - `prior_round_summary_count`
+
+- 这份元数据现在会进入：
+  - `task_run_recovery_started`
+  - `scheduler_recovery_state_rebuilt`
+  - `task_run_recovery_completed`
+
+对于当前 orchestration recovery，这层元数据最常见的表达是：
+
+- `next_action = resume_scheduler`
+- `resume_strategy = rebuild_from_runtime_snapshot`
+- `consumed_layers` 至少包含 `runtime_snapshot`
+
+这一步的意义是：
+
+- recovery 不再只是“做了恢复”
+- 而是开始显式说明“恢复消费了什么 continuation state”
+
+它仍然不是完整的 recovery executor integration：
+
+- 现在更多是恢复路径的消费声明与观测增强
+- 不是让 orchestration recovery 直接反序列化 `protocol_tail_messages` 去推进执行
+
+但它把 recovery 也纳入了同一套 continuation-state 语义体系里：
+
+- follow-up runtime turn 已经消费
+- recovery 事件现在也开始声明消费

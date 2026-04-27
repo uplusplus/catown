@@ -162,3 +162,17 @@
 - 增加从 `checkpoint_snapshot` 回填 `TurnContextState` 的 helper，把 protocol tail 与 prior summaries 真接回运行态
 - 让 runtime approved replay follow-up 在重新触发 agent 时优先消费 continuation state，而不是只靠纯文本 `extra_context`
 - 补 unit test 与 blocked-tool replay integration test，确认 follow-up prompt 中带回了 prior tool-call protocol
+
+### `Record continuation-state consumption in recovery`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_run_recovery.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 startup/manual orchestration recovery 事件显式记录本次恢复消费了哪类 continuation state
+- 在 `task_run_recovery_started`、`scheduler_recovery_state_rebuilt`、`task_run_recovery_completed` 中补 `recovery_continuation_state`
+- 补 recovery 测试，确保恢复路径明确声明使用了 `runtime_snapshot` 等层

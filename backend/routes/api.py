@@ -2399,6 +2399,8 @@ async def _resume_interrupted_orchestration_task_run(
             streaming=(task_run.run_kind == "multi_agent_orchestration_stream"),
         )
         queue = OrchestrationRuntimeQueue(plan)
+        recovery_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+        recovery_continuation_state = _describe_recovery_continuation_state(recovery_checkpoint_snapshot)
         append_task_event(
             db,
             task_run,
@@ -2418,7 +2420,8 @@ async def _resume_interrupted_orchestration_task_run(
                 "trigger": trigger,
                 "recovery_owner": RECOVERY_INSTANCE_ID,
                 "recovery_lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
-                "checkpoint_snapshot": build_task_run_checkpoint_snapshot(task_run),
+                "checkpoint_snapshot": recovery_checkpoint_snapshot,
+                "recovery_continuation_state": recovery_continuation_state,
                 "runner_policy": orchestration_policy.to_payload(),
             },
         )
@@ -2439,7 +2442,8 @@ async def _resume_interrupted_orchestration_task_run(
             payload=_scheduler_plan_payload(
                 queue,
                 extra={
-                    "checkpoint_snapshot": build_task_run_checkpoint_snapshot(task_run),
+                    "checkpoint_snapshot": recovery_checkpoint_snapshot,
+                    "recovery_continuation_state": recovery_continuation_state,
                     "runner_policy": orchestration_policy.to_payload(),
                     "recovery": {
                         "completed_step_ids": completed_step_ids,
@@ -2650,6 +2654,7 @@ async def _resume_interrupted_orchestration_task_run(
                 "task_run_id": task_run.id,
                 "completed_step_count": queue.runtime_snapshot().completed_step_count,
                 "step_count": len(queue.plan.steps),
+                "recovery_continuation_state": recovery_continuation_state,
             },
         )
         complete_task_run(db, task_run, summary=recovery_summary)
@@ -4174,6 +4179,37 @@ def _build_tool_replay_followup_context(item: Any, replay_result: Any) -> str:
         f"- Result: {result_preview}\n"
         "Continue from this result. Do not rerun the same tool call unless the user explicitly asks or the result shows it did not complete."
     )
+
+
+def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str, Any]:
+    snapshot = checkpoint_snapshot if isinstance(checkpoint_snapshot, dict) else {}
+    continuation_cursor = snapshot.get("continuation_cursor") if isinstance(snapshot.get("continuation_cursor"), dict) else {}
+    turn_local_state = snapshot.get("turn_local_state") if isinstance(snapshot.get("turn_local_state"), dict) else {}
+    protocol_tail_messages = (
+        turn_local_state.get("protocol_tail_messages")
+        if isinstance(turn_local_state.get("protocol_tail_messages"), list)
+        else []
+    )
+    prior_round_summaries = (
+        turn_local_state.get("prior_round_summaries")
+        if isinstance(turn_local_state.get("prior_round_summaries"), list)
+        else []
+    )
+    consumed_layers: list[str] = []
+    if continuation_cursor.get("resume_strategy") == "rebuild_from_runtime_snapshot":
+        consumed_layers.append("runtime_snapshot")
+    if protocol_tail_messages:
+        consumed_layers.append("protocol_tail")
+    if prior_round_summaries:
+        consumed_layers.append("prior_round_summaries")
+    return {
+        "consumed": bool(consumed_layers),
+        "next_action": continuation_cursor.get("next_action"),
+        "resume_strategy": continuation_cursor.get("resume_strategy"),
+        "consumed_layers": consumed_layers,
+        "protocol_tail_message_count": len(protocol_tail_messages),
+        "prior_round_summary_count": len(prior_round_summaries),
+    }
 
 
 def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:
