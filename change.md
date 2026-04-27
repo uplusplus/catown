@@ -1218,3 +1218,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - route 改为通过 `OrchestrationAgentTurnDeps` 注入 runtime preparation、prompt assembly、message save 与 memory extraction adapter
 - sync orchestration 与 interrupted recovery 改用 service-level agent turn executor
 - 补 agent turn runner 单测，验证 lifecycle event、message save 与 memory scheduling 行为
+
+### `Extract stream orchestration agent turn event runner`
+
+范围：
+
+- `backend/services/orchestration_agent_turn.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_agent_turn.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `StreamOrchestrationAgentTurnDeps` 与 `iter_stream_orchestration_agent_turn_events(...)`
+- 将 route-local streaming `_iter_agent_turn_events(...)` 主逻辑迁入 service
+- streaming orchestration route 改为通过 dependency adapter 注入 prompt assembly、LLM card builder 与 stream helper
+- 补 streaming agent turn event runner 单测，并跑 stream orchestration 回归

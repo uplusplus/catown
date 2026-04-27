@@ -157,7 +157,12 @@ from services.orchestration_finalizer import (
     finalize_orchestration_task_run,
     summarize_orchestration_result,
 )
-from services.orchestration_agent_turn import OrchestrationAgentTurnDeps, run_orchestration_agent_turn
+from services.orchestration_agent_turn import (
+    OrchestrationAgentTurnDeps,
+    StreamOrchestrationAgentTurnDeps,
+    iter_stream_orchestration_agent_turn_events,
+    run_orchestration_agent_turn,
+)
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_runner import run_nonstream_orchestration_step
@@ -2037,113 +2042,20 @@ def _ensure_collaboration_context(agents: List[Agent], chatroom_id: int) -> None
         )
 
 
-async def _iter_agent_turn_events(
-    *,
-    agent: Agent,
-    chatroom_id: int,
-    chatroom: Chatroom,
-    project: Optional[Project],
-    agents: List[Agent],
-    user_message: str,
-    db: Session,
-    client_turn_id: Optional[str] = None,
-    previous_agent_work: str = "",
-    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
-    history_limit: int = 4,
-    standalone_note: str = "",
-    task_run: Optional[TaskRun] = None,
-    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
-):
-    _ensure_collaboration_context(agents, chatroom_id)
-    runtime = await _prepare_chat_turn_runtime(
-        agent=agent,
-        chatroom_id=chatroom_id,
-        project=project,
-        checkpoint_snapshot=checkpoint_snapshot,
-        previous_agent_work=previous_agent_work,
-        inter_agent_messages=inter_agent_messages or [],
-        recent_message_limit=max(history_limit + 2, 6),
-    )
-    record_agent_turn_started(
-        db,
-        task_run,
-        agent_name=runtime.agent_label,
-        summary=f"{runtime.agent_label} started an orchestrated streaming turn.",
-        payload=build_runtime_event_payload(
-            client_turn_id=client_turn_id,
-            inter_agent_message_count=len(inter_agent_messages or []),
-        ),
-    )
 
-    def _assemble_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
-        return _assemble_chat_messages(
-            db=db,
-            agent=agent,
-            agent_name=runtime.agent_label,
-            model_id=getattr(runtime.llm_client, "model", ""),
-            chatroom=chatroom,
-            project=project,
-            agents=agents,
-            recent_messages=runtime.recent_messages,
-            user_message=user_message,
-            available_tools=runtime.available_tools,
-            history_limit=history_limit,
-            standalone_note=standalone_note,
-            turn_state=current_turn_state,
-        )
-
-    async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
-        from tools import tool_registry
-
-        return await tool_registry.execute(tool_name, **tool_args, **runtime.runtime_kwargs)
-
-    async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
-        record_runner_tool_round(
-            db,
-            task_run,
-            agent_name=runtime.agent_label,
-            turn=frame.turn_index,
-            tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
-            tool_results=tool_results,
-            summary=f"{runtime.agent_label} completed a streaming tool round.",
-        )
-
-    def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
-        return _build_llm_card_payload(
-            agent_name=runtime.agent_label,
-            llm_client=runtime.llm_client,
-            turn=frame.turn_index,
-            duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
-            system_prompt=frame.system_prompt,
-            prompt_messages=frame.prompt_snapshot,
-            response_content=response_content,
-            tool_call_previews=tool_call_previews,
-            raw_tool_calls=raw_tool_calls,
-            usage=raw_event.get("usage"),
-            finish_reason=raw_event.get("finish_reason"),
-            timings=raw_event.get("timings"),
-        )
-
-    async for event in iter_stream_turn_events(
-        llm_client=runtime.llm_client,
-        tools=runtime.tool_schemas,
-        turn_state=runtime.turn_state,
-        agent_name=runtime.agent_label,
-        client_turn_id=client_turn_id,
-        assemble_messages=_assemble_stream_messages,
-        execute_tool=_execute_stream_tool,
-        build_llm_runtime_card=_build_stream_llm_card,
+def _build_stream_orchestration_agent_turn_iterator():
+    deps = StreamOrchestrationAgentTurnDeps(
+        ensure_collaboration_context=_ensure_collaboration_context,
+        prepare_chat_turn_runtime=_prepare_chat_turn_runtime,
+        assemble_chat_messages=_assemble_chat_messages,
+        build_llm_card_payload=_build_llm_card_payload,
         snapshot_messages=_snapshot_llm_messages,
         preview_tool_calls=_preview_tool_calls,
         format_prompt_messages=_format_json_block,
         tool_result_success=_tool_result_succeeded,
-        max_turns=MAX_TOOL_ITERATIONS,
-        on_tool_round=_on_stream_tool_round,
-    ):
-        if event["type"] == "turn_complete":
-            event["agent"] = agent
-        yield event
-
+        max_tool_iterations=MAX_TOOL_ITERATIONS,
+    )
+    return partial(iter_stream_orchestration_agent_turn_events, deps=deps)
 
 
 def _build_orchestration_agent_turn_executor():
@@ -2734,6 +2646,7 @@ async def _stream_multi_agent_orchestration(
         return
     queue = OrchestrationRuntimeQueue(plan)
     agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
+    iter_orchestration_agent_events = _build_stream_orchestration_agent_turn_iterator()
 
     append_task_event(
         db,
@@ -2793,7 +2706,7 @@ async def _stream_multi_agent_orchestration(
         step_content = ""
         try:
             async for event in iter_stream_orchestration_agent_events(
-                iter_agent_events=_iter_agent_turn_events,
+                iter_agent_events=iter_orchestration_agent_events,
                 agent=agent,
                 chatroom=chatroom,
                 project=project,

@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ from services.runner_lifecycle import (
     start_agent_turn as record_agent_turn_started,
 )
 from services.runtime_event_helpers import build_runtime_event_payload
+from services.stream_turn_executor import iter_stream_turn_events
 from services.turn_state import TurnContextState, build_tool_result_record
 
 
@@ -33,6 +35,21 @@ class OrchestrationAgentTurnDeps:
     save_message: Callable[..., Awaitable[Any]]
     message_metadata: Callable[[str | None], dict[str, Any]]
     schedule_memory_extraction: Callable[[Any, str, str], Any]
+    max_tool_iterations: int = 50
+
+
+@dataclass(frozen=True)
+class StreamOrchestrationAgentTurnDeps:
+    """Route-owned dependencies required to stream an orchestrated agent turn."""
+
+    ensure_collaboration_context: Callable[[list[Any], int], None]
+    prepare_chat_turn_runtime: Callable[..., Awaitable[Any]]
+    assemble_chat_messages: Callable[..., list[dict[str, Any]]]
+    build_llm_card_payload: Callable[..., dict[str, Any]]
+    snapshot_messages: Callable[..., Any]
+    preview_tool_calls: Callable[..., Any]
+    format_prompt_messages: Callable[..., str]
+    tool_result_success: Callable[..., bool]
     max_tool_iterations: int = 50
 
 
@@ -181,3 +198,114 @@ async def run_orchestration_agent_turn(
             asyncio.create_task(scheduled)
 
     return response_content, agent_msg
+
+
+async def iter_stream_orchestration_agent_turn_events(
+    *,
+    deps: StreamOrchestrationAgentTurnDeps,
+    agent: Any,
+    chatroom_id: int,
+    chatroom: Any,
+    project: Any,
+    agents: list[Any],
+    user_message: str,
+    db: Session,
+    client_turn_id: str | None = None,
+    previous_agent_work: str = "",
+    inter_agent_messages: List[Dict[str, Any]] | None = None,
+    history_limit: int = 4,
+    standalone_note: str = "",
+    task_run: TaskRun | None = None,
+    checkpoint_snapshot: Dict[str, Any] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield stream turn events for one orchestrated agent turn."""
+
+    deps.ensure_collaboration_context(agents, chatroom_id)
+    runtime = await deps.prepare_chat_turn_runtime(
+        agent=agent,
+        chatroom_id=chatroom_id,
+        project=project,
+        checkpoint_snapshot=checkpoint_snapshot,
+        previous_agent_work=previous_agent_work,
+        inter_agent_messages=inter_agent_messages or [],
+        recent_message_limit=max(history_limit + 2, 6),
+    )
+    record_agent_turn_started(
+        db,
+        task_run,
+        agent_name=runtime.agent_label,
+        summary=f"{runtime.agent_label} started an orchestrated streaming turn.",
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            inter_agent_message_count=len(inter_agent_messages or []),
+        ),
+    )
+
+    def _assemble_stream_messages(current_turn_state: TurnContextState) -> list[dict[str, Any]]:
+        return deps.assemble_chat_messages(
+            db=db,
+            agent=agent,
+            agent_name=runtime.agent_label,
+            model_id=getattr(runtime.llm_client, "model", ""),
+            chatroom=chatroom,
+            project=project,
+            agents=agents,
+            recent_messages=runtime.recent_messages,
+            user_message=user_message,
+            available_tools=runtime.available_tools,
+            history_limit=history_limit,
+            standalone_note=standalone_note,
+            turn_state=current_turn_state,
+        )
+
+    async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+        from tools import tool_registry
+
+        return await tool_registry.execute(tool_name, **tool_args, **runtime.runtime_kwargs)
+
+    async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=runtime.agent_label,
+            turn=frame.turn_index,
+            tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
+            tool_results=tool_results,
+            summary=f"{runtime.agent_label} completed a streaming tool round.",
+        )
+
+    def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
+        return deps.build_llm_card_payload(
+            agent_name=runtime.agent_label,
+            llm_client=runtime.llm_client,
+            turn=frame.turn_index,
+            duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
+            system_prompt=frame.system_prompt,
+            prompt_messages=frame.prompt_snapshot,
+            response_content=response_content,
+            tool_call_previews=tool_call_previews,
+            raw_tool_calls=raw_tool_calls,
+            usage=raw_event.get("usage"),
+            finish_reason=raw_event.get("finish_reason"),
+            timings=raw_event.get("timings"),
+        )
+
+    async for event in iter_stream_turn_events(
+        llm_client=runtime.llm_client,
+        tools=runtime.tool_schemas,
+        turn_state=runtime.turn_state,
+        agent_name=runtime.agent_label,
+        client_turn_id=client_turn_id,
+        assemble_messages=_assemble_stream_messages,
+        execute_tool=_execute_stream_tool,
+        build_llm_runtime_card=_build_stream_llm_card,
+        snapshot_messages=deps.snapshot_messages,
+        preview_tool_calls=deps.preview_tool_calls,
+        format_prompt_messages=deps.format_prompt_messages,
+        tool_result_success=deps.tool_result_success,
+        max_turns=deps.max_tool_iterations,
+        on_tool_round=_on_stream_tool_round,
+    ):
+        if event["type"] == "turn_complete":
+            event["agent"] = agent
+        yield event

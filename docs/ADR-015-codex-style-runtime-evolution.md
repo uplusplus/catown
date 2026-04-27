@@ -4052,3 +4052,35 @@ P1 继续削薄 `backend/routes/api.py`。此前 `_run_single_agent_turn(...)` �
 
 - streaming `_iter_agent_turn_events(...)` 仍在 route 层，下一步应按同样模式下沉为 stream agent event runner
 - `_prepare_chat_turn_runtime(...)` 与 `_assemble_chat_messages(...)` 仍是 route-local dependency，后续可继续拆到 chat runtime service
+
+### 11.78 2026-04-27 新进展：stream orchestration agent turn event runner 已下沉
+
+P1 继续处理 streaming orchestration 与 Codex 风格 executor 的差距。上一轮已将 nonstream `_run_single_agent_turn(...)` 下沉为 service，本轮对 streaming `_iter_agent_turn_events(...)` 做同样收口。
+
+本轮扩展：
+
+- `backend/services/orchestration_agent_turn.py`
+  - `StreamOrchestrationAgentTurnDeps`
+  - `iter_stream_orchestration_agent_turn_events(...)`
+
+并接入：
+
+- streaming multi-agent orchestration step execution
+- `orchestration_stream_runner.iter_stream_orchestration_agent_events(...)` 的 route callback 参数
+
+设计取舍：
+
+- streaming agent turn 的主逻辑下沉到 service
+- route 只保留 `_build_stream_orchestration_agent_turn_iterator()` dependency adapter
+- SSE yield 仍由 route 控制，避免本轮同时改变 transport 行为
+
+这一步的意义是：
+
+- route 不再直接持有 streaming agent turn runtime loop
+- stream turn lifecycle event、tool round event、runtime card 构建入口统一进入 service-level runner
+- streaming path 与 nonstream path 现在都通过 orchestration agent turn service 进入底层 LLM/tool loop
+
+边界：
+
+- streaming orchestration route 仍负责 `async for` 事件分发与 SSE 序列化
+- 下一步应把 streaming orchestration route 改成消费 service-level typed runtime events，使 transport 只负责 render
