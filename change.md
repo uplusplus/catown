@@ -1167,3 +1167,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 保留 sync path 的 results 更新与 recovery path 的 completed-turn-only 更新差异
 - 支持 recovery dispatch 额外携带 checkpoint snapshot 与 recovery continuation state
 - 补 step runner 成功/失败单测，并跑 sync orchestration 与 recovery 回归
+
+### `Extract stream orchestration step runner helpers`
+
+范围：
+
+- `backend/services/orchestration_stream_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_stream_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 streaming orchestration step runner helper，收口 streaming dispatch、agent event iterator 参数、turn_complete 保存、failure、step completion payload
+- 让 stream orchestration route 复用 `start_stream_orchestration_step(...)`、`iter_stream_orchestration_agent_events(...)`、`handle_stream_orchestration_turn_complete(...)`、`complete_stream_orchestration_step(...)`
+- 保持 SSE payload shape 兼容，包括 `collab_step` 与 `collab_step_done`
+- 补 stream runner helper 单测，并跑 streaming orchestration ledger / sidecar 回归

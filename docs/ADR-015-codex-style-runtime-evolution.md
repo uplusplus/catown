@@ -3955,3 +3955,40 @@ runner 参数化差异：
 
 - streaming orchestration 仍保留独立 loop，因为它需要逐 chunk yield SSE
 - `_run_single_agent_turn(...)` 本身仍是 route-local callable，通过参数传入 runner，后续可以继续下沉
+
+### 11.75 2026-04-27 新进展：stream orchestration step runner helper 已抽出
+
+P1 继续补齐 streaming orchestration 的 executor 收口。上一轮 nonstream / recovery 已经共享 `run_nonstream_orchestration_step(...)`，但 streaming path 因为需要逐 chunk yield SSE，不能直接复用同一个 await-return runner。
+
+本轮采用更实际的做法：先把 streaming step 的稳定协议拆成 helper，route 保留 async generator 的 yield 控制。
+
+新增：
+
+- `backend/services/orchestration_stream_runner.py`
+  - `start_stream_orchestration_step(...)`
+  - `iter_stream_orchestration_agent_events(...)`
+  - `handle_stream_orchestration_turn_complete(...)`
+  - `fail_stream_orchestration_step(...)`
+  - `complete_stream_orchestration_step(...)`
+
+并接入 streaming orchestration route。
+
+收口内容：
+
+- `scheduler_step_dispatched` 与 `collab_step` payload
+- `_iter_agent_turn_events(...)` 的 shared 参数组装
+- `turn_complete` 后保存 message、publish message、record agent turn completed、memory extraction、output state update
+- `scheduler_step_failed`
+- scheduler step completion 与 `collab_step_done` payload
+
+这一步的意义是：
+
+- streaming path 的 step lifecycle 协议也开始由 service 管理
+- sync / recovery / stream 三条路径现在都围绕 step runner/helper 组织
+- route 中剩下的主要职责是 SSE 事件转发与错误响应 yield
+- 继续向 Codex 风格“一个 executor 管生命周期，transport 只负责呈现”靠拢
+
+边界：
+
+- streaming runner 还不是完整 async generator runner，route 仍持有 yield 控制
+- 但 dispatch、turn_complete、failure、completion 四个稳定节点已经下沉

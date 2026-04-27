@@ -156,6 +156,13 @@ from services.orchestration_finalizer import finalize_orchestration_task_run, su
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_runner import run_nonstream_orchestration_step
+from services.orchestration_stream_runner import (
+    complete_stream_orchestration_step,
+    fail_stream_orchestration_step,
+    handle_stream_orchestration_turn_complete,
+    iter_stream_orchestration_agent_events,
+    start_stream_orchestration_step,
+)
 
 logger = logging.getLogger("catown.api")
 
@@ -2883,31 +2890,31 @@ async def _stream_multi_agent_orchestration(
         step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
         if callable(set_active_agent):
             set_active_agent(agent_label, agent.id)
-        record_scheduler_step_dispatched(
+        step_payload = start_stream_orchestration_step(
             db,
             task_run,
-            agent_name=agent_label,
             queue=queue,
             step=step,
+            agent_name=agent_label,
             stage_policy=step_policy,
         )
-        yield f"data: {sse_json.dumps({'type': 'collab_step', 'step': step.position, 'total': len(plan.steps), 'agent': step.requested_name, 'agent_name': agent_label, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id)}, ensure_ascii=False)}\n\n"
+        yield f"data: {sse_json.dumps(step_payload, ensure_ascii=False)}\n\n"
 
         saved = None
         step_content = ""
         try:
-            async for event in _iter_agent_turn_events(
+            async for event in iter_stream_orchestration_agent_events(
+                iter_agent_events=_iter_agent_turn_events,
                 agent=agent,
-                chatroom_id=chatroom.id,
                 chatroom=chatroom,
                 project=project,
                 agents=agents,
                 user_message=user_message,
                 db=db,
                 client_turn_id=client_turn_id,
-                previous_agent_work=_build_orchestration_previous_work(completed_turns),
-                inter_agent_messages=pending_handoffs.pop(step.step_id, []),
-                history_limit=3,
+                output_state=output_state,
+                pending_handoffs=pending_handoffs,
+                step=step,
                 standalone_note=standalone_note,
                 task_run=task_run,
                 checkpoint_snapshot=step_checkpoint_snapshot,
@@ -2919,52 +2926,34 @@ async def _stream_multi_agent_orchestration(
                 if event["type"] == "turn_complete":
                     step_content = event.get("content") or ""
                     if step_content:
-                        saved = await chatroom_manager.send_message(
-                            chatroom_id=chatroom.id,
-                            agent_id=agent.id,
+                        saved = await handle_stream_orchestration_turn_complete(
+                            db=db,
+                            task_run=task_run,
+                            chatroom=chatroom,
+                            agent=agent,
+                            agent_name=agent_label,
+                            step=step,
                             content=step_content,
-                            message_type="text",
-                            metadata=_message_metadata_with_turn(client_turn_id),
-                            agent_name=agent_label,
-                        )
-                        await _publish_saved_chat_message(
-                            db,
-                            chatroom.id,
-                            message_id=saved.id,
-                            content=step_content,
-                            agent_name=agent_label,
-                            message_type="text",
-                            created_at=saved.created_at,
-                            metadata=_message_metadata_with_turn(client_turn_id),
-                        )
-                        record_agent_turn_completed(
-                            db,
-                            task_run,
-                            agent_name=agent_label,
-                            message_id=saved.id,
-                            response_content=step_content,
-                            summary=f"{agent_label} completed the orchestrated streaming turn.",
-                        )
-                        if len(step_content) > 30:
-                            asyncio.create_task(
-                                _extract_memories(agent.id, _agent_type(agent), user_message, step_content)
-                            )
-                        record_orchestration_step_output(
-                            output_state,
-                            agent_name=agent_label,
-                            content=step_content,
-                            dispatch_kind=step.dispatch_kind,
-                            include_result=False,
+                            client_turn_id=client_turn_id,
+                            output_state=output_state,
+                            save_message=chatroom_manager.send_message,
+                            publish_message=_publish_saved_chat_message,
+                            record_turn_completed=record_agent_turn_completed,
+                            message_metadata=_message_metadata_with_turn(client_turn_id),
+                            schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
+                                _extract_memories(current_agent.id, _agent_type(current_agent), request, response)
+                            ),
+                            user_message=user_message,
                         )
                     continue
 
                 yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
-            record_scheduler_step_failed(
+            fail_stream_orchestration_step(
                 db,
                 task_run,
-                queue,
-                step,
+                queue=queue,
+                step=step,
                 agent_name=agent_label,
                 stage_policy=step_policy,
                 error=exc,
@@ -2974,7 +2963,7 @@ async def _stream_multi_agent_orchestration(
             yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': agent_label, 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
             return
 
-        ready_steps = complete_orchestration_scheduler_step(
+        ready_steps, step_done_payload = complete_stream_orchestration_step(
             db,
             task_run,
             queue=queue,
@@ -2985,8 +2974,9 @@ async def _stream_multi_agent_orchestration(
             pending_handoffs=pending_handoffs,
             stage_policy=step_policy,
         )
+        step_done_payload["message_id"] = saved.id if saved else None
 
-        yield f"data: {sse_json.dumps({'type': 'collab_step_done', 'agent': step.requested_name, 'agent_name': agent_label, 'message_id': saved.id if saved else None, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id), 'released_step_ids': [next_step.step_id for next_step in ready_steps]}, ensure_ascii=False)}\n\n"
+        yield f"data: {sse_json.dumps(step_done_payload, ensure_ascii=False)}\n\n"
 
     resolved_names = [agent_name_of(agent) for agent in resolved_agents]
     finalize_orchestration_task_run(
