@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from models.database import TaskRun
 from services.approval_queue import create_approval_queue_item
 from services.approval_replay import (
+    build_approval_queue_item_created_event_payload,
     blocked_tool_queue_kind,
     blocked_tool_queue_title,
     blocked_tool_resume_supported,
@@ -188,14 +189,7 @@ def record_tool_round(
                 "approval_queue_item_created",
                 agent_name=agent_name,
                 summary=f"Queued {queue_kind} item for {blocked_tool['tool_name']}.",
-                payload={
-                    "queue_item_id": queue_item.id,
-                    "queue_kind": queue_item.queue_kind,
-                    "target_kind": queue_item.target_kind,
-                    "target_name": queue_item.target_name,
-                    "status": queue_item.status,
-                    "source": queue_item.source,
-                },
+                payload=build_approval_queue_item_created_event_payload(queue_item),
             )
         append_task_event(
             db,

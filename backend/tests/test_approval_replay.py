@@ -4,6 +4,8 @@ from services.approval_replay import (
     blocked_tool_queue_kind,
     blocked_tool_queue_title,
     blocked_tool_resume_supported,
+    build_approval_queue_item_created_event_payload,
+    build_approval_queue_item_resolved_event_payload,
     build_approval_queue_replay_round_payload,
     build_blocked_tool_request_key,
     build_blocked_tool_request_payload,
@@ -14,6 +16,7 @@ from services.approval_replay import (
     build_pipeline_gate_request_payload,
     build_pipeline_gate_resolution_payload,
     build_queue_replay_resolution_payload,
+    build_queue_rejection_resolution_payload,
     replay_result_is_actionable,
 )
 
@@ -100,6 +103,62 @@ def test_pipeline_gate_payload_helpers_preserve_gate_cursor():
         "stage_name": "qa_gate",
         "display_name": "QA Gate",
     }
+
+
+def test_queue_resolution_event_payload_helpers_share_ledger_shape():
+    item = SimpleNamespace(
+        id=55,
+        queue_kind="approval",
+        target_kind="tool",
+        target_name="read_file",
+        status="approved",
+        source="tool_call_blocked",
+        resolved_by="user",
+    )
+
+    assert build_approval_queue_item_created_event_payload(item) == {
+        "queue_item_id": 55,
+        "queue_kind": "approval",
+        "target_kind": "tool",
+        "target_name": "read_file",
+        "status": "approved",
+        "source": "tool_call_blocked",
+    }
+    assert build_approval_queue_item_resolved_event_payload(
+        item,
+        status="approved",
+        request_payload={"resume_supported": True},
+        resolution_payload={
+            "action_taken": "tool_replayed",
+            "replay_status": "succeeded",
+            "replay_success": True,
+            "replay_blocked": False,
+        },
+    ) == {
+        "queue_item_id": 55,
+        "queue_kind": "approval",
+        "target_kind": "tool",
+        "target_name": "read_file",
+        "status": "approved",
+        "resolved_by": "user",
+        "resume_supported": True,
+        "action_taken": "tool_replayed",
+        "replay_status": "succeeded",
+        "replay_success": True,
+        "replay_blocked": False,
+    }
+
+
+def test_queue_rejection_resolution_payload_omits_absent_rollback():
+    assert build_queue_rejection_resolution_payload(request_payload={"resume_supported": False}) == {
+        "request_payload": {"resume_supported": False},
+        "resume_supported": False,
+        "action_taken": "queue_resolved_only",
+    }
+    assert build_queue_rejection_resolution_payload(
+        request_payload={"resume_supported": True},
+        rollback_to="analysis",
+    )["rollback_to"] == "analysis"
 
 
 def test_replay_result_is_actionable_requires_success_without_block():

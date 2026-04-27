@@ -3197,3 +3197,34 @@ pipeline gate 与 blocked-tool replay 不同：它不需要重放 tool call，�
 - approval queue 不再只有 blocked-tool replay 语义被共享，manual gate 也开始进入同一组 approval runtime helpers
 - pipeline engine 保留 gate 状态推进职责，request/resolution payload shape 由共享 service 决定
 - 后续把 approval queue 进一步抽成 runner continuation node 时，blocked tool 与 pipeline gate 已经有可复用的 request envelope 基础
+
+### 11.53 2026-04-27 新进展：approval queue created/resolved event payload 已共享
+
+P0.3 继续把 approval 主链的事件投影层收口。
+
+在 blocked-tool、pipeline gate 的 request / replay payload 逐步共享后，仍有一层重复留在调用方：
+
+- `approval_queue_item_created` event payload
+- `approval_queue_item_resolved` event payload
+- reject queue item 时的 resolution payload
+
+这些事件是 runtime ledger、monitor、recovery cursor 共同消费的审计面。如果 created/resolved payload 继续由 route、pipeline engine、runner lifecycle 分别拼装，后续 approval/sandbox/escalation 字段仍会很容易漂移。
+
+本轮新增共享 helper：
+
+- `build_approval_queue_item_created_event_payload(...)`
+- `build_approval_queue_item_resolved_event_payload(...)`
+- `build_queue_rejection_resolution_payload(...)`
+
+并接入：
+
+- runtime blocked-tool queue item created event
+- pipeline gate queue item created event
+- runtime approve/reject resolved event
+- pipeline approve/reject resolved event
+
+这一步的意义是：
+
+- approval queue 的 request、replay、follow-up、created/resolved event 四个面都开始有共享 payload helper
+- route / engine / lifecycle 不再各自定义 approval ledger payload shape
+- 这为下一步把 approval queue 抽象成更完整的 runner continuation node 减少了接口漂移风险

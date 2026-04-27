@@ -793,3 +793,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 pipeline engine gate queue/resolve 路径复用统一 helper，不再内联定义 approval queue payload shape
 - 补 helper 单测，确认 pipeline/run/stage cursor 与 stage policy payload 被稳定保留
 - 跑 approval replay helper 与 pipeline gate approval 聚焦回归
+
+### `Share approval queue event payload helpers`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/services/runner_lifecycle.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 抽取 approval queue item created/resolved event payload helper，统一 queue item ledger 投影 shape
+- 抽取 reject queue item 的 resolution payload helper，统一 `queue_resolved_only` 与 `resume_supported` 语义
+- 让 runtime approve/reject、runner blocked-tool queue created、pipeline gate queue created/resolved 都复用共享 helper
+- 补 helper 单测，并跑 approval replay、sandbox blocked、pipeline gate、pipeline blocked-tool ledger 聚焦回归

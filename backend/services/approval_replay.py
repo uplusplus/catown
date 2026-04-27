@@ -113,6 +113,58 @@ def build_pipeline_gate_resolution_payload(
     }
 
 
+def build_queue_rejection_resolution_payload(
+    *,
+    request_payload: Dict[str, Any],
+    rollback_to: Any = None,
+) -> Dict[str, Any]:
+    payload = {
+        "request_payload": request_payload,
+        "resume_supported": bool(request_payload.get("resume_supported")),
+        "action_taken": "queue_resolved_only",
+    }
+    if rollback_to is not None:
+        payload["rollback_to"] = rollback_to
+    return payload
+
+
+def build_approval_queue_item_created_event_payload(item: Any) -> Dict[str, Any]:
+    return {
+        "queue_item_id": getattr(item, "id", None),
+        "queue_kind": getattr(item, "queue_kind", None),
+        "target_kind": getattr(item, "target_kind", None),
+        "target_name": getattr(item, "target_name", None),
+        "status": getattr(item, "status", None),
+        "source": getattr(item, "source", None),
+    }
+
+
+def build_approval_queue_item_resolved_event_payload(
+    item: Any,
+    *,
+    status: str,
+    resolved_by: Any = None,
+    request_payload: Dict[str, Any] | None = None,
+    resolution_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    resolution_payload = resolution_payload if isinstance(resolution_payload, dict) else {}
+    payload = {
+        "queue_item_id": getattr(item, "id", None),
+        "queue_kind": getattr(item, "queue_kind", None),
+        "target_kind": getattr(item, "target_kind", None),
+        "target_name": getattr(item, "target_name", None),
+        "status": status,
+        "resolved_by": resolved_by if resolved_by is not None else getattr(item, "resolved_by", None),
+    }
+    if request_payload:
+        payload["resume_supported"] = bool(request_payload.get("resume_supported"))
+    for key in ("action_taken", "replay_status", "replay_success", "replay_blocked", "replay_blocked_kind"):
+        if resolution_payload.get(key) is not None:
+            payload[key] = resolution_payload.get(key)
+    return payload
+
+
 def replay_result_is_actionable(replay_result: Any) -> bool:
     """A replay can continue execution only after a successful, unblocked tool result."""
 

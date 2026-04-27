@@ -47,6 +47,8 @@ from services.approval_queue import (
     resolve_approval_queue_item,
 )
 from services.approval_replay import (
+    build_approval_queue_item_created_event_payload,
+    build_approval_queue_item_resolved_event_payload,
     build_pipeline_gate_request_key,
     build_pipeline_gate_request_payload,
     build_pipeline_gate_resolution_payload,
@@ -1096,14 +1098,10 @@ class PipelineEngine:
                 run,
                 "approval_queue_item_resolved",
                 summary=f"Resolved approval item for {stage.display_name}.",
-                payload={
-                    "queue_item_id": queue_item.id,
-                    "queue_kind": queue_item.queue_kind,
-                    "target_kind": queue_item.target_kind,
-                    "target_name": queue_item.target_name,
-                    "status": queue_item.status,
-                    "resolved_by": queue_item.resolved_by,
-                },
+                payload=build_approval_queue_item_resolved_event_payload(
+                    queue_item,
+                    status=queue_item.status,
+                ),
             )
         logger.info(f"Gate approved: pipeline={pipeline_id}, stage={stage.stage_name}")
 
@@ -1222,14 +1220,10 @@ class PipelineEngine:
                 run,
                 "approval_queue_item_resolved",
                 summary=f"Resolved approval item for {stage.display_name}.",
-                payload={
-                    "queue_item_id": queue_item.id,
-                    "queue_kind": queue_item.queue_kind,
-                    "target_kind": queue_item.target_kind,
-                    "target_name": queue_item.target_name,
-                    "status": queue_item.status,
-                    "resolved_by": queue_item.resolved_by,
-                },
+                payload=build_approval_queue_item_resolved_event_payload(
+                    queue_item,
+                    status=queue_item.status,
+                ),
             )
 
         # 恢复执行
@@ -1789,14 +1783,7 @@ class PipelineEngine:
                         "approval_queue_item_created",
                         agent_name=stage_policy.agent_name,
                         summary=f"Queued approval item for {stage_policy.display_name}.",
-                        payload={
-                            "queue_item_id": getattr(queue_item, "id", None),
-                            "queue_kind": "approval",
-                            "target_kind": "pipeline_gate",
-                            "target_name": stage_policy.stage_name,
-                            "status": "pending",
-                            "source": "pipeline_gate",
-                        },
+                        payload=build_approval_queue_item_created_event_payload(queue_item),
                     )
                     _append_pipeline_task_event(
                         db,

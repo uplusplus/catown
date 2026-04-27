@@ -108,11 +108,13 @@ from services.approval_queue import (
     serialize_approval_queue_item,
 )
 from services.approval_replay import (
+    build_approval_queue_item_resolved_event_payload,
     build_approval_queue_replay_round_payload,
     build_followup_continued_payload,
     build_followup_failed_payload,
     build_followup_skipped_payload,
     build_queue_replay_resolution_payload,
+    build_queue_rejection_resolution_payload,
     replay_result_is_actionable,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
@@ -4662,20 +4664,13 @@ async def approve_approval_queue_item(
         "approval_queue_item_resolved",
         agent_name=item.agent_name,
         summary=f"Approved queue item for {item.target_name or item.target_kind}.",
-        payload={
-            "queue_item_id": resolved.id if resolved is not None else item.id,
-            "queue_kind": item.queue_kind,
-            "target_kind": item.target_kind,
-            "target_name": item.target_name,
-            "status": "approved",
-            "resolved_by": resolved_by,
-            "resume_supported": bool(request_payload.get("resume_supported")),
-            "action_taken": resolution_payload.get("action_taken"),
-            "replay_status": resolution_payload.get("replay_status"),
-            "replay_success": resolution_payload.get("replay_success"),
-            "replay_blocked": resolution_payload.get("replay_blocked"),
-            "replay_blocked_kind": resolution_payload.get("replay_blocked_kind"),
-        },
+        payload=build_approval_queue_item_resolved_event_payload(
+            resolved or item,
+            status="approved",
+            resolved_by=resolved_by,
+            request_payload=request_payload,
+            resolution_payload=resolution_payload,
+        ),
     )
     return serialize_approval_queue_item(resolved or item)
 
@@ -4716,12 +4711,10 @@ async def reject_approval_queue_item(
         status="rejected",
         resolved_by=resolved_by,
         resolution_note=resolution_note or f"Rejected {item.target_kind or 'action'} from the API.",
-        resolution_payload={
-            "request_payload": request_payload,
-            "resume_supported": bool(request_payload.get("resume_supported")),
-            "action_taken": "queue_resolved_only",
-            "rollback_to": req.rollback_to if req else None,
-        },
+        resolution_payload=build_queue_rejection_resolution_payload(
+            request_payload=request_payload,
+            rollback_to=req.rollback_to if req else None,
+        ),
     )
     task_run = get_task_run(db, item.task_run_id)
     append_task_event(
@@ -4730,15 +4723,12 @@ async def reject_approval_queue_item(
         "approval_queue_item_resolved",
         agent_name=item.agent_name,
         summary=f"Rejected queue item for {item.target_name or item.target_kind}.",
-        payload={
-            "queue_item_id": resolved.id if resolved is not None else item.id,
-            "queue_kind": item.queue_kind,
-            "target_kind": item.target_kind,
-            "target_name": item.target_name,
-            "status": "rejected",
-            "resolved_by": resolved_by,
-            "resume_supported": bool(request_payload.get("resume_supported")),
-        },
+        payload=build_approval_queue_item_resolved_event_payload(
+            resolved or item,
+            status="rejected",
+            resolved_by=resolved_by,
+            request_payload=request_payload,
+        ),
     )
     return serialize_approval_queue_item(resolved or item)
 
