@@ -118,8 +118,8 @@ from services.approval_replay import (
     build_tool_replay_followup_context,
     load_approval_queue_request_payload,
     parse_replay_arguments,
+    build_replay_tool_result_record,
     replay_result_is_actionable,
-    replay_tool_call_id,
     resolve_replay_arguments_text,
     resolve_replay_tool_name,
 )
@@ -4276,8 +4276,8 @@ async def _replay_runtime_blocked_tool_queue_item(
     tool_name = resolve_replay_tool_name(item, request_payload)
     arguments_text = resolve_replay_arguments_text(request_payload)
     if not tool_name:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(item, "tool"),
+        return build_replay_tool_result_record(
+            item,
             tool_name=getattr(item, "target_name", "tool"),
             arguments=arguments_text,
             result="Error executing blocked tool replay: missing tool_name.",
@@ -4286,8 +4286,8 @@ async def _replay_runtime_blocked_tool_queue_item(
 
     loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
     if arguments_error is not None:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(item, tool_name),
+        return build_replay_tool_result_record(
+            item,
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error executing blocked tool replay: invalid arguments ({arguments_error}).",
@@ -4296,8 +4296,8 @@ async def _replay_runtime_blocked_tool_queue_item(
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == getattr(item, "chatroom_id", None)).first()
     if chatroom is None:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(item, tool_name),
+        return build_replay_tool_result_record(
+            item,
             tool_name=tool_name,
             arguments=arguments_text,
             result="Error executing blocked tool replay: chatroom no longer exists.",
@@ -4322,8 +4322,8 @@ async def _replay_runtime_blocked_tool_queue_item(
         tool_result_text = f"Error executing {tool_name}: {exc}"
         tool_success = False
 
-    return build_tool_result_record(
-        tool_call_id=replay_tool_call_id(item, tool_name),
+    return build_replay_tool_result_record(
+        item,
         tool_name=tool_name,
         arguments=arguments_text,
         result=tool_result_text,

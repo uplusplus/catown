@@ -54,7 +54,7 @@ from services.approval_replay import (
     build_pipeline_gate_resolution_payload,
     load_approval_queue_request_payload,
     parse_replay_arguments,
-    replay_tool_call_id,
+    build_replay_tool_result_record,
     resolve_pipeline_replay_run_id,
     resolve_pipeline_replay_stage_id,
     resolve_replay_arguments_text,
@@ -622,8 +622,8 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
     tool_name = resolve_replay_tool_name(queue_item, request_payload)
     arguments_text = resolve_replay_arguments_text(request_payload)
     if not tool_name:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(queue_item, "tool"),
+        return build_replay_tool_result_record(
+            queue_item,
             tool_name=getattr(queue_item, "target_name", "tool"),
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing tool_name.",
@@ -632,8 +632,8 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
 
     run_id = resolve_pipeline_replay_run_id(queue_item, request_payload)
     if not run_id:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(queue_item, tool_name),
+        return build_replay_tool_result_record(
+            queue_item,
             tool_name=tool_name,
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing pipeline_run_id.",
@@ -642,8 +642,8 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
 
     run = db.query(PipelineRun).filter(PipelineRun.id == int(run_id)).first()
     if run is None:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(queue_item, tool_name),
+        return build_replay_tool_result_record(
+            queue_item,
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error: pipeline run not found for blocked tool replay ({run_id}).",
@@ -652,8 +652,8 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
 
     loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
     if arguments_error is not None:
-        return build_tool_result_record(
-            tool_call_id=replay_tool_call_id(queue_item, tool_name),
+        return build_replay_tool_result_record(
+            queue_item,
             tool_name=tool_name,
             arguments=arguments_text,
             result=f"Error: invalid blocked pipeline tool replay arguments: {arguments_error}",
@@ -669,8 +669,8 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
         stage_id=resolve_pipeline_replay_stage_id(queue_item, request_payload),
     )
     tool_result_text = str(tool_result or "(no output)")
-    return build_tool_result_record(
-        tool_call_id=replay_tool_call_id(queue_item, tool_name),
+    return build_replay_tool_result_record(
+        queue_item,
         tool_name=tool_name,
         arguments=arguments_text,
         result=tool_result_text,

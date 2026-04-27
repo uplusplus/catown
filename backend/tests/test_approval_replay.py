@@ -17,6 +17,7 @@ from services.approval_replay import (
     build_pipeline_gate_resolution_payload,
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
+    build_replay_tool_result_record,
     build_tool_replay_followup_context,
     load_approval_queue_request_payload,
     parse_replay_arguments,
@@ -169,6 +170,24 @@ def test_replay_request_helpers_normalize_payload_and_cursor_fields():
     assert replay_tool_call_id(item, "write_file") == "queue-replay-77"
     assert resolve_pipeline_replay_run_id(item, payload) == 9
     assert resolve_pipeline_replay_stage_id(item, payload) == 10
+
+
+def test_replay_tool_result_record_uses_queue_item_call_id():
+    item = SimpleNamespace(id=77, target_name="read_file")
+
+    result = build_replay_tool_result_record(
+        item,
+        tool_name="read_file",
+        arguments='{"path": "README.md"}',
+        result="content",
+        success=True,
+    )
+
+    assert result.tool_call_id == "queue-replay-77"
+    assert result.tool_name == "read_file"
+    assert result.arguments == '{"path": "README.md"}'
+    assert result.result == "content"
+    assert result.success is True
 
 
 def test_parse_replay_arguments_requires_json_object():

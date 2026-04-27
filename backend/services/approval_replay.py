@@ -6,6 +6,8 @@ import hashlib
 import json
 from typing import Any, Dict
 
+from services.turn_state import build_tool_result_record
+
 
 def blocked_tool_queue_kind(blocked_kind: Any) -> str:
     return "escalation" if str(blocked_kind or "").strip().lower() == "sandbox" else "approval"
@@ -144,6 +146,23 @@ def load_approval_queue_request_payload(raw_payload: Any) -> Dict[str, Any]:
 def replay_tool_call_id(item: Any, tool_name: Any = None) -> str:
     fallback = tool_name if tool_name is not None else getattr(item, "target_name", "tool")
     return f"queue-replay-{getattr(item, 'id', fallback or 'tool')}"
+
+
+def build_replay_tool_result_record(
+    item: Any,
+    *,
+    tool_name: Any,
+    arguments: Any,
+    result: Any,
+    success: bool,
+) -> Any:
+    return build_tool_result_record(
+        tool_call_id=replay_tool_call_id(item, tool_name),
+        tool_name=str(tool_name or getattr(item, "target_name", None) or "tool"),
+        arguments=arguments,
+        result=result,
+        success=success,
+    )
 
 
 def resolve_replay_tool_name(item: Any, request_payload: Dict[str, Any]) -> str:

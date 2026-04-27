@@ -3319,3 +3319,31 @@ runtime replay 与 pipeline replay 都需要把 approval queue 中保存的 `arg
 - approved replay 的 request payload 解析、cursor 解析、arguments JSON object 校验都已经在共享 helper 内收口
 - runtime 与 pipeline 在真正执行 tool 前的参数校验口径一致
 - 后续抽 runner continuation action 时，replay executor 可以直接复用这组解析/校验 helper
+
+### 11.57 2026-04-27 新进展：replay tool result record 构造已共享
+
+P0.3 继续收口 approved replay 执行结果写回 ledger 前的 record 构造。
+
+runtime replay 与 pipeline replay 都会把 replay 执行结果包装成 `ToolResultRecord`，并且需要稳定使用：
+
+- `queue-replay-<queue_item_id>` 作为 tool call id
+- 原始 arguments text
+- replay result text
+- success/status/block 分类逻辑
+
+之前两边各自调用 `build_tool_result_record(...)` 并重复拼 `tool_call_id`。这会让 replay 结果与 queue item 的关联规则散落在不同执行器里。
+
+本轮新增：
+
+- `build_replay_tool_result_record(...)`
+
+并接入：
+
+- runtime blocked-tool replay 的成功/失败返回
+- pipeline blocked-tool replay 的成功/失败返回
+
+这一步的意义是：
+
+- approved replay 的 request 解析、参数解析、tool result record 构造都已经进入共享 helper
+- runtime 与 pipeline replay 写回 ledger 的 tool call id 与 result classification 口径一致
+- 后续把 replay 执行器抽成 runner continuation action 时，结果落 ledger 的协议已经有可复用入口
