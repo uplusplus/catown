@@ -2175,3 +2175,61 @@ monitor 上也同步做了投影：
 - pipeline 不只是执行器内部吃到了 checkpoint continuation
 - 它的 stage-start event 现在也能把这份消费状态 durable 地投影出来
 - execution semantics 与 observability semantics 又进一步对齐
+
+### 11.33 2026-04-25 新进展：pipeline resume 事件已开始投影 checkpoint continuation consumption
+
+11.32 把 `pipeline_stage_started` 的 checkpoint consumption 投影出来之后，pipeline 事件层还剩最后一个明显断点：
+
+- `pipeline_resumed`
+  - 仍然只说明“pipeline 恢复了”
+- 但看不到：
+  - 恢复那一刻 task run 上实际持有什么 `checkpoint_snapshot`
+  - 以及 resume 将继续消费多少 protocol tail / prior summaries
+
+这会让 approval replay 之后的观测链缺一段：
+
+- `approval_queue_item_followup_triggered`
+  - 会说 follow-up 原因是 `pipeline_resumed`
+- `pipeline_stage_started`
+  - 之后会说 stage 起步时拿到了什么 continuation state
+- 但中间这个真正的 `resume` 动作本身
+  - 还不能直接说明它恢复时看到的 checkpoint continuation 输入
+
+这一轮把这段链补齐：
+
+- `pipeline_engine.resume(...)`
+  - 在把 run 状态切回 `running` 后
+  - 先拿关联 `task_run` 构建 `checkpoint_snapshot`
+  - 再用 `describe_checkpoint_continuation_state(...)`
+    派生 `continuation_state`
+
+- `pipeline_resumed`
+  - payload 现在额外带上：
+    - `checkpoint_snapshot`
+    - `continuation_state`
+
+这样 pipeline resume event 现在也能回答：
+
+- 这次 resume 是不是带着 continuation state 恢复
+- 当时 snapshot 中最近的 turn-local payload 是什么
+- protocol tail / prior summaries 分别有多少
+
+测试也同步补上：
+
+- `test_resume_appends_checkpoint_continuation_state`
+  - 预先种入：
+    - `agent_turn_started`
+    - `tool_round_recorded`
+    - `approval_queue_item_followup_triggered`
+  - 调 `engine.resume(...)`
+  - 断言 `pipeline_resumed` 事件中：
+    - `checkpoint_snapshot.turn_local_state.assistant_content == "Open the design doc before continuing."`
+    - `continuation_state.consumed is True`
+    - `continuation_state.protocol_tail_message_count == 2`
+
+这一步的意义是：
+
+- approval replay -> pipeline resume -> stage start
+  - 这整条恢复链的每个关键事件
+  - 现在都能投影 checkpoint continuation consumption
+- pipeline 的执行语义与事件可观测语义又少了一层断点

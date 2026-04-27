@@ -278,3 +278,17 @@
 - 抽出通用 `describe_checkpoint_continuation_state(...)` helper，避免 recovery/pipeline 各自复制 continuation-state 统计逻辑
 - 让 `pipeline_stage_started` 事件显式携带当次 stage 实际看到的 `checkpoint_snapshot` 与 `continuation_state`
 - 补 pipeline engine 测试，确认 resumed stage 的 stage-start 事件会投影 protocol tail 消费情况，而新开 stage 则明确显示为空
+
+### `Project pipeline resume continuation state into resume events`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `pipeline_resumed` 事件也显式携带 resume 当下的 `checkpoint_snapshot` 与 `continuation_state`
+- 这样 approval replay 后的 pipeline resume 不再只是“恢复了”，而是能说明恢复时实际看到了哪些 protocol tail / summaries
+- 补 pipeline resume 测试，确认 resume 事件会投影 checkpoint 中的 assistant/tool continuation state

@@ -1035,12 +1035,20 @@ class PipelineEngine:
         if run:
             run.status = "running"
             db.commit()
+            task_run = _pipeline_task_run(db, run)
+            checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+            continuation_state = describe_checkpoint_continuation_state(checkpoint_snapshot)
             _append_pipeline_task_event(
                 db,
                 run,
                 "pipeline_resumed",
                 summary="Pipeline resumed.",
-                payload={"pipeline_id": pipeline_id, "pipeline_run_id": run.id},
+                payload={
+                    "pipeline_id": pipeline_id,
+                    "pipeline_run_id": run.id,
+                    "checkpoint_snapshot": checkpoint_snapshot,
+                    "continuation_state": continuation_state,
+                },
             )
             task = asyncio.create_task(self._execute_pipeline(run.id))
             self._running_tasks[pipeline_id] = task

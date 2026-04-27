@@ -1011,6 +1011,143 @@ async def test_instruct_appends_pipeline_task_run_event(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_resume_appends_checkpoint_continuation_state(fresh_db):
+    engine_mod = _reload_pipeline_engine()
+    _install_test_pipeline_template(engine_mod)
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        project, chatroom, pipeline = _seed_pipeline_project(
+            fresh_db,
+            db,
+            project_name="Pipeline Resume Snapshot Project",
+        )
+        pipeline.status = "paused"
+        db.commit()
+        db.refresh(pipeline)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Resume pipeline snapshot",
+            user_request="Resume this pipeline with checkpoint continuation.",
+            target_agent_name="analyst",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="paused",
+            input_requirement="Continue after approved tool replay.",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        for event_index, event_type, payload in [
+            (1, "agent_turn_started", {"pipeline_id": pipeline.id, "pipeline_run_id": run.id}),
+            (
+                2,
+                "tool_round_recorded",
+                {
+                    "turn": 1,
+                    "tool_names": ["read_file"],
+                    "tool_count": 1,
+                    "tool_status_counts": {"succeeded": 1},
+                    "blocked_tool_count": 0,
+                    "turn_local_state": {
+                        "assistant_content": "Open the design doc before continuing.",
+                        "tool_results": [
+                            {
+                                "tool_call_id": "resume_pipeline_call_1",
+                                "tool_name": "read_file",
+                                "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                "result": "Design checkpoint contents",
+                                "success": True,
+                                "status": "succeeded",
+                                "blocked": False,
+                                "blocked_kind": None,
+                                "blocked_reason": None,
+                            }
+                        ],
+                        "protocol_messages": [
+                            {
+                                "role": "assistant",
+                                "content": "Open the design doc before continuing.",
+                                "tool_calls": [
+                                    {
+                                        "id": "resume_pipeline_call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "resume_pipeline_call_1",
+                                "name": "read_file",
+                                "content": "Design checkpoint contents",
+                            },
+                        ],
+                    },
+                },
+            ),
+            (
+                3,
+                "approval_queue_item_followup_triggered",
+                {"followup_status": "continued", "followup_reason": "pipeline_resumed"},
+            ),
+        ]:
+            db.add(
+                fresh_db.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=event_index,
+                    event_type=event_type,
+                    agent_name="analyst",
+                    summary=f"analyst {event_type}",
+                    payload_json=json.dumps(payload, ensure_ascii=False),
+                )
+            )
+        db.commit()
+
+        engine = engine_mod.PipelineEngine()
+
+        async def _noop_execute_pipeline(run_id):
+            return None
+
+        engine._execute_pipeline = _noop_execute_pipeline
+        await engine.resume(db, pipeline.id)
+
+        db.refresh(run)
+        assert run.status == "running"
+
+        events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        resumed_payload = json.loads(events[-1].payload_json)
+        assert events[-1].event_type == "pipeline_resumed"
+        assert resumed_payload["checkpoint_snapshot"]["turn_local_state"]["assistant_content"] == "Open the design doc before continuing."
+        assert resumed_payload["continuation_state"]["consumed"] is True
+        assert resumed_payload["continuation_state"]["protocol_tail_message_count"] == 2
+        assert "protocol_tail" in resumed_payload["continuation_state"]["consumed_layers"]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_db, tmp_path):
     engine_mod = _reload_pipeline_engine()
     from pipeline.config import PipelineConfig, StageConfig
