@@ -130,3 +130,19 @@
 - 让 `tool_round_recorded` payload 开始携带最近一轮可恢复的 turn-local state，包括 protocol messages 与 tool results
 - 让 `checkpoint_snapshot` 派生 `turn_local_state`，把最近一轮 continuation payload 放进 monitor / recovery 视图
 - 补 blocked tool 与 monitor task-run 的断言，保证 turn-local continuation state 可读可用
+
+### `Expose multi-round continuation tail`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 从多个 `tool_round_recorded` 事件派生 `protocol_tail_messages` 与 `prior_round_summaries`
+- 让 `turn_local_state` 不再只看最近一轮，而是显式保留多轮 continuation tail
+- 补 monitor 断言，覆盖 recent tail 与 older summaries 的组合场景

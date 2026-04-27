@@ -304,6 +304,8 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         pending_tool_queue_item=pending_tool_queue_item,
     )
     turn_local_state = _build_task_run_turn_local_state(
+        events=events,
+        payload_by_event_id=payload_by_event_id,
         latest_tool_round_payload=latest_tool_round_payload,
         latest_tool_blocked_payload=latest_tool_blocked_payload,
     )
@@ -437,6 +439,8 @@ def _build_task_run_continuation_cursor(
 
 def _build_task_run_turn_local_state(
     *,
+    events: list[TaskRunEvent],
+    payload_by_event_id: dict[int, Any],
     latest_tool_round_payload: Any,
     latest_tool_blocked_payload: Any,
 ) -> dict[str, Any]:
@@ -454,12 +458,45 @@ def _build_task_run_turn_local_state(
     if not isinstance(tool_results, list):
         tool_results = []
 
+    tool_round_payloads = [
+        payload_by_event_id.get(event.id)
+        for event in events
+        if event.event_type == "tool_round_recorded" and isinstance(payload_by_event_id.get(event.id), dict)
+    ]
+    recent_round_payloads = tool_round_payloads[-2:]
+    prior_round_payloads = tool_round_payloads[:-2]
+    protocol_tail_messages: list[Any] = []
+    for round_payload in recent_round_payloads:
+        round_turn_local_state = round_payload.get("turn_local_state") if isinstance(round_payload, dict) else None
+        round_protocol_messages = (
+            round_turn_local_state.get("protocol_messages")
+            if isinstance(round_turn_local_state, dict)
+            else None
+        )
+        if isinstance(round_protocol_messages, list):
+            protocol_tail_messages.extend(round_protocol_messages)
+    prior_round_summaries = [
+        {
+            "turn": round_payload.get("turn"),
+            "tool_names": round_payload.get("tool_names"),
+            "blocked_tool_count": round_payload.get("blocked_tool_count"),
+            "assistant_content": (
+                round_payload.get("turn_local_state", {}).get("assistant_content")
+                if isinstance(round_payload.get("turn_local_state"), dict)
+                else None
+            ),
+        }
+        for round_payload in prior_round_payloads
+    ]
+
     return {
         "turn": tool_round_payload.get("turn"),
         "tool_names": tool_round_payload.get("tool_names"),
         "blocked_tool_count": tool_round_payload.get("blocked_tool_count"),
         "assistant_content": turn_local_state.get("assistant_content"),
         "protocol_messages": protocol_messages,
+        "protocol_tail_messages": protocol_tail_messages,
+        "prior_round_summaries": prior_round_summaries,
         "tool_results": tool_results,
         "blocked_tool": {
             "tool_name": blocked_payload.get("tool_name"),

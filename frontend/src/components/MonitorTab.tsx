@@ -5094,13 +5094,16 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Turn-Local State</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_messages?.length
+                          {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_tail_messages?.length
                             ? [
                                 selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.turn
                                   ? `turn ${selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.turn}`
                                   : null,
                                 selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.tool_names?.length
                                   ? `${selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.tool_names.join(", ")}`
+                                  : null,
+                                selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.prior_round_summaries?.length
+                                  ? `${selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.prior_round_summaries.length} prior summaries`
                                   : null,
                                 selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool?.["tool_name"]
                                   ? `blocked ${String(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool["tool_name"])}`
@@ -5110,7 +5113,7 @@ export function MonitorTab() {
                         </div>
                       </div>
                     </div>
-                    {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_messages?.length ? (
+                    {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_tail_messages?.length ? (
                       <details className="run-event-row__payload" style={{ marginTop: 12 }}>
                         <summary>Turn-Local State Payload</summary>
                         <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state)}</pre>

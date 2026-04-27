@@ -142,6 +142,8 @@ export type TaskRunCheckpointSnapshot = {
     blocked_tool_count?: number | null;
     assistant_content?: string | null;
     protocol_messages?: Record<string, unknown>[] | null;
+    protocol_tail_messages?: Record<string, unknown>[] | null;
+    prior_round_summaries?: Record<string, unknown>[] | null;
     tool_results?: Record<string, unknown>[] | null;
     blocked_tool?: Record<string, unknown> | null;
   };

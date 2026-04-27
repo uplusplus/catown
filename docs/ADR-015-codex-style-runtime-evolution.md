@@ -1626,3 +1626,53 @@ monitor 上也同步做了投影：
 
 - 有恢复建议
 - 也有最近一轮可直接复用的 turn-local continuation payload
+
+### 11.23 2026-04-25 新进展：turn-local continuation state 已开始保留 multi-round protocol tail
+
+在 11.22 把最近一轮 tool turn 的 continuation payload 放进 snapshot 之后，还有一个明显差距：
+
+- 只能看到“最后一轮”
+- 看不到多轮 tool turn 的最近 protocol tail
+- 也看不到更早轮次已经被压缩成了什么摘要
+
+这一轮继续保持纯派生路线，从已有 `tool_round_recorded` event 序列里补了两层结构：
+
+- `protocol_tail_messages`
+  - 当前取最近两轮 tool round 的 protocol messages
+  - 作为“恢复时最值得保留的 recent protocol tail”
+
+- `prior_round_summaries`
+  - 更早的 tool round 不再混在 tail 里
+  - 而是派生为更轻量的 per-round summary
+    - `turn`
+    - `tool_names`
+    - `blocked_tool_count`
+    - `assistant_content`
+
+于是当前的 `turn_local_state` 分成了三层：
+
+- 最新一轮：
+  - `protocol_messages`
+  - `tool_results`
+- 最近多轮 tail：
+  - `protocol_tail_messages`
+- 更老轮次摘要：
+  - `prior_round_summaries`
+
+这一步的意义是：
+
+- snapshot 不再只是“最近一轮的孤立 payload”
+- 而开始接近真正 continuation object 会需要的：
+  - recent protocol tail
+  - older round summary
+  - blocked tool marker
+
+它仍然不是完整的 executor continuation object：
+
+- tail 长度现在是派生规则，不是 executor 显式 checkpoint policy
+- older summary 仍然是展示/恢复辅助结构，不是 turn engine 直接消费的原生 state
+
+但已经比 11.22 更接近 Codex 风格：
+
+- 不只知道最后一轮
+- 也开始知道“最近几轮该带什么、再早的轮次该怎么折叠”

@@ -553,7 +553,115 @@ class TestMonitorOverview:
                     summary="Analyst completed a tool round.",
                     payload_json=json.dumps(
                         {
-                            "turn": 2,
+                            "turn": 1,
+                            "tool_names": ["list_files"],
+                            "tool_count": 1,
+                            "tool_status_counts": {"succeeded": 1},
+                            "blocked_tool_count": 0,
+                            "turn_local_state": {
+                                "assistant_content": "Inspect the repository layout first.",
+                                "tool_results": [
+                                    {
+                                        "tool_call_id": "call_1",
+                                        "tool_name": "list_files",
+                                        "arguments": "{\"path\": \".\"}",
+                                        "result": "README.md\\nbackend/",
+                                        "success": True,
+                                        "status": "succeeded",
+                                        "blocked": False,
+                                        "blocked_kind": None,
+                                        "blocked_reason": None,
+                                    }
+                                ],
+                                "protocol_messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": "Inspect the repository layout first.",
+                                        "tool_calls": [
+                                            {
+                                                "id": "call_1",
+                                                "type": "function",
+                                                "function": {"name": "list_files", "arguments": "{\"path\": \".\"}"},
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": "call_1",
+                                        "name": "list_files",
+                                        "content": "README.md\\nbackend/",
+                                    },
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="tool_round_recorded",
+                    agent_name="Analyst",
+                    summary="Analyst completed a second tool round.",
+                    payload_json=json.dumps(
+                        {
+                            "turn": 3,
+                            "tool_names": ["read_file"],
+                            "tool_count": 1,
+                            "tool_status_counts": {"succeeded": 1},
+                            "blocked_tool_count": 0,
+                            "turn_local_state": {
+                                "assistant_content": "Open the API route file next.",
+                                "tool_results": [
+                                    {
+                                        "tool_call_id": "call_2",
+                                        "tool_name": "read_file",
+                                        "arguments": "{\"file_path\": \"backend/routes/api.py\"}",
+                                        "result": "async def send_message(...",
+                                        "success": True,
+                                        "status": "succeeded",
+                                        "blocked": False,
+                                        "blocked_kind": None,
+                                        "blocked_reason": None,
+                                    }
+                                ],
+                                "protocol_messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": "Open the API route file next.",
+                                        "tool_calls": [
+                                            {
+                                                "id": "call_2",
+                                                "type": "function",
+                                                "function": {"name": "read_file", "arguments": "{\"file_path\": \"backend/routes/api.py\"}"},
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": "call_2",
+                                        "name": "read_file",
+                                        "content": "async def send_message(...",
+                                    },
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=3,
+                    event_type="tool_round_recorded",
+                    agent_name="Analyst",
+                    summary="Analyst completed a tool round.",
+                    payload_json=json.dumps(
+                        {
+                            "turn": 3,
                             "tool_names": ["delete_file"],
                             "tool_count": 1,
                             "tool_status_counts": {"approval_blocked": 1},
@@ -567,6 +675,41 @@ class TestMonitorOverview:
                                     "blocked_reason": "delete_file requires approval",
                                 }
                             ],
+                            "turn_local_state": {
+                                "assistant_content": "Delete the dangerous file next.",
+                                "tool_results": [
+                                    {
+                                        "tool_call_id": "call_2",
+                                        "tool_name": "delete_file",
+                                        "arguments": "{\"file_path\": \"danger.txt\"}",
+                                        "result": "delete_file requires approval",
+                                        "success": False,
+                                        "status": "approval_blocked",
+                                        "blocked": True,
+                                        "blocked_kind": "approval",
+                                        "blocked_reason": "delete_file requires approval",
+                                    }
+                                ],
+                                "protocol_messages": [
+                                    {
+                                        "role": "assistant",
+                                        "content": "Delete the dangerous file next.",
+                                        "tool_calls": [
+                                            {
+                                                "id": "call_2",
+                                                "type": "function",
+                                                "function": {"name": "delete_file", "arguments": "{\"file_path\": \"danger.txt\"}"},
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": "call_2",
+                                        "name": "delete_file",
+                                        "content": "delete_file requires approval",
+                                    },
+                                ],
+                            },
                         },
                         ensure_ascii=False,
                     ),
@@ -575,7 +718,7 @@ class TestMonitorOverview:
             db.add(
                 TaskRunEvent(
                     task_run_id=task_run.id,
-                    event_index=2,
+                    event_index=4,
                     event_type="tool_call_blocked",
                     agent_name="Analyst",
                     summary="delete_file was blocked.",
@@ -608,7 +751,7 @@ class TestMonitorOverview:
                 target_name="delete_file",
                 request_payload_json=json.dumps(
                     {
-                        "turn": 2,
+                        "turn": 3,
                         "tool_name": "delete_file",
                         "arguments": "{\"file_path\": \"danger.txt\"}",
                         "blocked_kind": "approval",
@@ -631,12 +774,15 @@ class TestMonitorOverview:
         assert cursor["next_action"] == "await_approval"
         assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
         assert cursor["tool_name"] == "delete_file"
-        assert cursor["turn"] == 2
+        assert cursor["turn"] == 3
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
-        assert turn_local_state["turn"] == 2
+        assert turn_local_state["turn"] == 3
         assert turn_local_state["tool_names"] == ["delete_file"]
         assert turn_local_state["blocked_tool"]["tool_name"] == "delete_file"
-        assert turn_local_state["protocol_messages"] == []
+        assert len(turn_local_state["protocol_messages"]) == 2
+        assert len(turn_local_state["protocol_tail_messages"]) == 4
+        assert len(turn_local_state["prior_round_summaries"]) == 1
+        assert turn_local_state["prior_round_summaries"][0]["tool_names"] == ["list_files"]
 
     def test_logs_endpoint_returns_real_backend_logs(self, client):
         from monitoring import monitor_log_buffer
