@@ -137,6 +137,15 @@ from services.runtime_event_helpers import build_context_compaction_callback, bu
 from services.stream_turn_executor import iter_stream_turn_events
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.subagent_lifecycle import cancellable_subagents_from_lifecycle
+from services.orchestration_events import (
+    record_scheduler_step_cancelled,
+    record_scheduler_step_completed,
+    record_scheduler_step_dispatched,
+    record_scheduler_step_failed,
+    record_scheduler_step_resumed,
+    scheduler_event_payload,
+    scheduler_plan_payload,
+)
 
 logger = logging.getLogger("catown.api")
 
@@ -1513,12 +1522,7 @@ def _scheduler_event_payload(
     *,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    payload = step.to_payload()
-    payload["step_state"] = queue.runtime_state_payload_for_step(step.step_id)
-    payload["runtime"] = queue.runtime_snapshot_payload()
-    if extra:
-        payload.update(extra)
-    return payload
+    return scheduler_event_payload(queue, step, extra=extra)
 
 
 def _scheduler_plan_payload(
@@ -1526,11 +1530,7 @@ def _scheduler_plan_payload(
     *,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    payload = queue.plan.to_payload()
-    payload["runtime"] = queue.runtime_snapshot_payload()
-    if extra:
-        payload.update(extra)
-    return payload
+    return scheduler_plan_payload(queue, extra=extra)
 
 
 def _build_single_agent_runner_policy(
@@ -2381,19 +2381,13 @@ async def _run_multi_agent_orchestration(
         agent_label = agent_name_of(agent)
         step_policy = find_stage_policy(orchestration_policy, step.step_id)
         logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
-        append_task_event(
+        record_scheduler_step_dispatched(
             db,
             task_run,
-            "scheduler_step_dispatched",
             agent_name=agent_label,
-            summary=f"Scheduler dispatched {step.dispatch_kind} work to {agent_label}.",
-            payload=_scheduler_event_payload(
-                queue,
-                step,
-                extra={
-                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                },
-            ),
+            queue=queue,
+            step=step,
+            stage_policy=step_policy,
         )
 
         try:
@@ -2410,20 +2404,14 @@ async def _run_multi_agent_orchestration(
                 task_run=task_run,
             )
         except Exception as exc:
-            append_task_event(
+            record_scheduler_step_failed(
                 db,
                 task_run,
-                "scheduler_step_failed",
+                queue,
+                step,
                 agent_name=agent_label,
-                summary=f"Scheduler marked {agent_label} failed.",
-                payload=_scheduler_event_payload(
-                    queue,
-                    step,
-                    extra={
-                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                        "error": str(exc)[:2000],
-                    },
-                ),
+                stage_policy=step_policy,
+                error=exc,
             )
             complete_task_run(db, task_run, status="failed", summary=f"Orchestration failed at {agent_label}.")
             raise
@@ -2446,46 +2434,26 @@ async def _run_multi_agent_orchestration(
                 last_blocking_result = content
 
         ready_steps = queue.mark_completed(step.step_id)
-        append_task_event(
+        record_scheduler_step_completed(
             db,
             task_run,
-            "scheduler_step_completed",
+            queue,
+            step,
             agent_name=agent_label,
-            summary=(
-                f"Scheduler marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
-                if ready_steps
-                else f"Scheduler marked {agent_label} complete."
-            ),
-            payload=_scheduler_event_payload(
-                queue,
-                step,
-                extra={
-                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                    "released_step_ids": [next_step.step_id for next_step in ready_steps],
-                    "released_step_count": len(ready_steps),
-                    "completed_with_output": bool(content),
-                },
-            ),
+            ready_steps=ready_steps,
+            completed_with_output=bool(content),
+            stage_policy=step_policy,
         )
         for next_step in ready_steps:
             next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-            append_task_event(
+            record_scheduler_step_resumed(
                 db,
                 task_run,
-                "scheduler_step_resumed",
-                agent_name=next_step.agent_name,
-                summary=f"Scheduler resumed {next_step.agent_name} after {agent_label}.",
-                payload=_scheduler_event_payload(
-                    queue,
-                    next_step,
-                    extra={
-                        "stage_policy": (
-                            next_step_policy.to_payload() if next_step_policy is not None else None
-                        ),
-                        "resumed_by_step_id": step.step_id,
-                        "resumed_by_agent": agent_label,
-                    },
-                ),
+                queue,
+                next_step,
+                stage_policy=next_step_policy,
+                resumed_by_step_id=step.step_id,
+                resumed_by_agent=agent_label,
             )
         if content:
             handoff = _build_orchestration_handoff(agent_label, content)
@@ -2743,22 +2711,19 @@ async def _resume_interrupted_orchestration_task_run(
             db.refresh(task_run)
             step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
             step_recovery_continuation_state = _describe_recovery_continuation_state(step_checkpoint_snapshot)
-            append_task_event(
+            record_scheduler_step_dispatched(
                 db,
                 task_run,
-                "scheduler_step_dispatched",
                 agent_name=agent_label,
-                summary=f"Recovery dispatched {step.dispatch_kind} work to {agent_label}.",
-                payload=_scheduler_event_payload(
-                    queue,
-                    step,
-                    extra={
-                        "recovered": True,
-                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                        "checkpoint_snapshot": step_checkpoint_snapshot,
-                        "recovery_continuation_state": step_recovery_continuation_state,
-                    },
-                ),
+                queue=queue,
+                step=step,
+                summary_prefix="Recovery",
+                stage_policy=step_policy,
+                extra={
+                    "recovered": True,
+                    "checkpoint_snapshot": step_checkpoint_snapshot,
+                    "recovery_continuation_state": step_recovery_continuation_state,
+                },
             )
 
             content, msg = await _run_single_agent_turn(
@@ -2791,48 +2756,30 @@ async def _resume_interrupted_orchestration_task_run(
                     last_blocking_result = content
 
             ready_steps = queue.mark_completed(step.step_id)
-            append_task_event(
+            record_scheduler_step_completed(
                 db,
                 task_run,
-                "scheduler_step_completed",
+                queue,
+                step,
                 agent_name=agent_label,
-                summary=(
-                    f"Recovery marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
-                    if ready_steps
-                    else f"Recovery marked {agent_label} complete."
-                ),
-                payload=_scheduler_event_payload(
-                    queue,
-                    step,
-                    extra={
-                        "recovered": True,
-                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                        "released_step_ids": [next_step.step_id for next_step in ready_steps],
-                        "released_step_count": len(ready_steps),
-                        "completed_with_output": bool(content),
-                    },
-                ),
+                ready_steps=ready_steps,
+                completed_with_output=bool(content),
+                summary_prefix="Recovery",
+                stage_policy=step_policy,
+                extra={"recovered": True},
             )
             for next_step in ready_steps:
                 next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-                append_task_event(
+                record_scheduler_step_resumed(
                     db,
                     task_run,
-                    "scheduler_step_resumed",
-                    agent_name=next_step.agent_name,
-                    summary=f"Recovery resumed {next_step.agent_name} after {agent_label}.",
-                    payload=_scheduler_event_payload(
-                        queue,
-                        next_step,
-                        extra={
-                            "recovered": True,
-                            "stage_policy": (
-                                next_step_policy.to_payload() if next_step_policy is not None else None
-                            ),
-                            "resumed_by_step_id": step.step_id,
-                            "resumed_by_agent": agent_label,
-                        },
-                    ),
+                    queue,
+                    next_step,
+                    summary_prefix="Recovery",
+                    stage_policy=next_step_policy,
+                    resumed_by_step_id=step.step_id,
+                    resumed_by_agent=agent_label,
+                    extra={"recovered": True},
                 )
 
             if content:
@@ -3070,19 +3017,13 @@ async def _stream_multi_agent_orchestration(
         step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
         if callable(set_active_agent):
             set_active_agent(agent_label, agent.id)
-        append_task_event(
+        record_scheduler_step_dispatched(
             db,
             task_run,
-            "scheduler_step_dispatched",
             agent_name=agent_label,
-            summary=f"Scheduler dispatched {step.dispatch_kind} work to {agent_label}.",
-            payload=_scheduler_event_payload(
-                queue,
-                step,
-                extra={
-                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                },
-            ),
+            queue=queue,
+            step=step,
+            stage_policy=step_policy,
         )
         yield f"data: {sse_json.dumps({'type': 'collab_step', 'step': step.position, 'total': len(plan.steps), 'agent': step.requested_name, 'agent_name': agent_label, 'dispatch_kind': step.dispatch_kind, 'attached_to_step_id': step.attached_to_step_id, 'runtime': queue.runtime_snapshot_payload(), 'step_state': queue.runtime_state_payload_for_step(step.step_id)}, ensure_ascii=False)}\n\n"
 
@@ -3149,20 +3090,14 @@ async def _stream_multi_agent_orchestration(
 
                 yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
-            append_task_event(
+            record_scheduler_step_failed(
                 db,
                 task_run,
-                "scheduler_step_failed",
+                queue,
+                step,
                 agent_name=agent_label,
-                summary=f"Scheduler marked {agent_label} failed.",
-                payload=_scheduler_event_payload(
-                    queue,
-                    step,
-                    extra={
-                        "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                        "error": str(exc)[:2000],
-                    },
-                ),
+                stage_policy=step_policy,
+                error=exc,
             )
             complete_task_run(db, task_run, status="failed", summary=f"Streaming orchestration failed at {agent_label}.")
             yield f"data: {sse_json.dumps({'type': 'error', 'error': str(exc)[:2000], 'agent_name': agent_label, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
@@ -3170,46 +3105,26 @@ async def _stream_multi_agent_orchestration(
             return
 
         ready_steps = queue.mark_completed(step.step_id)
-        append_task_event(
+        record_scheduler_step_completed(
             db,
             task_run,
-            "scheduler_step_completed",
+            queue,
+            step,
             agent_name=agent_label,
-            summary=(
-                f"Scheduler marked {agent_label} complete and released {len(ready_steps)} waiting step(s)."
-                if ready_steps
-                else f"Scheduler marked {agent_label} complete."
-            ),
-            payload=_scheduler_event_payload(
-                queue,
-                step,
-                extra={
-                    "stage_policy": step_policy.to_payload() if step_policy is not None else None,
-                    "released_step_ids": [next_step.step_id for next_step in ready_steps],
-                    "released_step_count": len(ready_steps),
-                    "completed_with_output": bool(step_content),
-                },
-            ),
+            ready_steps=ready_steps,
+            completed_with_output=bool(step_content),
+            stage_policy=step_policy,
         )
         for next_step in ready_steps:
             next_step_policy = find_stage_policy(orchestration_policy, next_step.step_id)
-            append_task_event(
+            record_scheduler_step_resumed(
                 db,
                 task_run,
-                "scheduler_step_resumed",
-                agent_name=next_step.agent_name,
-                summary=f"Scheduler resumed {next_step.agent_name} after {agent_label}.",
-                payload=_scheduler_event_payload(
-                    queue,
-                    next_step,
-                    extra={
-                        "stage_policy": (
-                            next_step_policy.to_payload() if next_step_policy is not None else None
-                        ),
-                        "resumed_by_step_id": step.step_id,
-                        "resumed_by_agent": agent_label,
-                    },
-                ),
+                queue,
+                next_step,
+                stage_policy=next_step_policy,
+                resumed_by_step_id=step.step_id,
+                resumed_by_agent=agent_label,
             )
         if step_content:
             handoff = _build_orchestration_handoff(agent_label, step_content)
@@ -4341,25 +4256,12 @@ async def cancel_task_run(
     note = ((req.note if req else None) or "").strip()
 
     for subagent in cancellable_subagents:
-        agent_name = str(subagent.get("agent_name") or "").strip() or None
-        append_task_event(
+        record_scheduler_step_cancelled(
             db,
             task_run,
-            "scheduler_step_cancelled",
-            agent_name=agent_name,
-            summary=f"Cancelled subagent {agent_name or subagent.get('step_id')}.",
-            payload={
-                "step_id": subagent.get("step_id"),
-                "position": subagent.get("position"),
-                "agent_name": subagent.get("agent_name"),
-                "agent_type": subagent.get("agent_type"),
-                "dispatch_kind": subagent.get("dispatch_kind"),
-                "wait_for_step_id": subagent.get("wait_for_step_id"),
-                "attached_to_step_id": subagent.get("attached_to_step_id"),
-                "previous_status": subagent.get("status"),
-                "cancelled_by": cancelled_by,
-                "note": note or None,
-            },
+            subagent,
+            cancelled_by=cancelled_by,
+            note=note,
         )
 
     append_task_event(

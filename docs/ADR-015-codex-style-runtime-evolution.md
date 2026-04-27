@@ -3713,3 +3713,51 @@ P1 subagent lifecycle 已有 cancelled projection，但之前只是状态模型�
 - 这不是正在运行中 agent coroutine 的抢占式 cancellation
 - 还没有 worker/process 级 interrupt
 - 但 ledger、checkpoint、subagent terminal state 已经一致，后续可以把真实 executor interrupt 接到同一个 cancellation event model 上
+
+### 11.69 2026-04-27 新进展：orchestration scheduler event helper 已抽出
+
+P1 继续向单一 executor loop 靠拢。本轮没有直接重写 executor，而是先把 orchestration step lifecycle 事件从 API route 中抽成共享 service。
+
+之前 sync orchestration、stream orchestration、recovery orchestration 与 cancel API 都在各自路径中手工拼：
+
+- `scheduler_step_dispatched`
+- `scheduler_step_completed`
+- `scheduler_step_resumed`
+- `scheduler_step_failed`
+- `scheduler_step_cancelled`
+- `runtime`
+- `step_state`
+- `stage_policy`
+- released / resumed / recovered metadata
+
+这些字段是 subagent lifecycle、monitor、recovery cursor 共同依赖的协议面。如果继续散落在 route 里，后续真正抽 executor loop 时会继续重复。
+
+本轮新增：
+
+- `backend/services/orchestration_events.py`
+  - `scheduler_event_payload(...)`
+  - `scheduler_plan_payload(...)`
+  - `record_scheduler_step_dispatched(...)`
+  - `record_scheduler_step_completed(...)`
+  - `record_scheduler_step_resumed(...)`
+  - `record_scheduler_step_failed(...)`
+  - `record_scheduler_step_cancelled(...)`
+
+并接入：
+
+- 非流式 multi-agent orchestration
+- 流式 multi-agent orchestration
+- interrupted orchestration recovery
+- task-run cancellation API
+
+这一步的意义是：
+
+- scheduler step lifecycle event shape 开始由 service 管理
+- subagent lifecycle projection 的上游事件来源更稳定
+- API route 不再直接拥有 step lifecycle payload 细节
+- 后续抽 parent executor / child subagent primitive 时，可以复用这组 event helper，而不是重新定义事件协议
+
+边界：
+
+- 这仍不是完整单一 executor loop
+- 但它把 sync / stream / recovery / cancel 四条路径中最关键的 step lifecycle ledger 写入统一到了一个 service

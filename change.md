@@ -1062,3 +1062,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 写入 `task_run_cancelled` ledger event 后，将 TaskRun 状态改为 `cancelled`
 - 新增 `cancellable_subagents_from_lifecycle(...)`，让 cancel primitive 复用统一 lifecycle projection
 - 补 API 单测，覆盖 active subagent terminalize 与 non-running run 409
+
+### `Extract orchestration scheduler event helpers`
+
+范围：
+
+- `backend/services/orchestration_events.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_events.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 orchestration scheduler event helper service，统一 scheduler plan / step payload shape
+- 抽取 dispatch / complete / resume / fail / cancel 的 ledger event record helper
+- 让 sync orchestration、stream orchestration、recovery orchestration 与 cancel API 复用统一 step lifecycle event helper
+- 保持原有 event type 与 payload 字段兼容，减少 API route 内重复拼装 runtime / step_state / stage_policy 的代码
+- 补 helper 单测，并跑 sync/stream/recovery/cancel 聚焦回归
