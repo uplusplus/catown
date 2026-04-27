@@ -841,6 +841,8 @@ async def _stream_standalone_assistant_response(
             "client_turn_id": client_turn_id,
         },
     )
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
     final_content = ""
 
     def _assemble_standalone_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -883,7 +885,7 @@ async def _stream_standalone_assistant_response(
         async for event in iter_stream_turn_events(
             llm_client=llm_client,
             tools=None,
-            turn_state=TurnContextState(),
+            turn_state=turn_state,
             agent_name=assistant_name,
             client_turn_id=client_turn_id,
             assemble_messages=_assemble_standalone_stream_messages,
@@ -5119,7 +5121,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             # 5. 构建该 Agent 的消息上下文
             llm_client = get_llm_client_for_agent(_agent_type(target_agent))
             recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=10)
-            turn_state = TurnContextState()
+            checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+            turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
             tool_schemas = tool_registry.get_schemas()
             runtime_kwargs = _tool_runtime_kwargs(target_agent, chatroom_id, project)
             compaction_callback = _build_context_compaction_callback(

@@ -1672,6 +1672,111 @@ class TestSSEStreaming:
         messages = client.get(f"/api/chatrooms/{cid}/messages").json()
         assert any(message.get("agent_name") == "analyst" for message in messages)
 
+    def test_project_single_agent_stream_rehydrates_checkpoint_state(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+        from services.run_ledger import append_task_event
+
+        seen_messages = []
+
+        async def scripted_stream(messages, tools=None):
+            seen_messages.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            yield {"type": "content", "delta": "Resumed."}
+            yield {"type": "done", "full_content": "Resumed.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = scripted_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        original_create_task_run = api_routes.create_task_run
+
+        def seeded_create_task_run(db, *args, **kwargs):
+            task_run = original_create_task_run(db, *args, **kwargs)
+            append_task_event(
+                db,
+                task_run,
+                "tool_round_recorded",
+                agent_name="analyst",
+                summary="analyst completed a tool round before streaming resume.",
+                payload={
+                    "turn": 1,
+                    "tool_names": ["read_file"],
+                    "tool_count": 1,
+                    "tool_status_counts": {"succeeded": 1},
+                    "blocked_tool_count": 0,
+                    "turn_local_state": {
+                        "assistant_content": "Open the design doc before continuing.",
+                        "tool_results": [
+                            {
+                                "tool_call_id": "stream_resume_call_1",
+                                "tool_name": "read_file",
+                                "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                "result": "Design checkpoint contents",
+                                "success": True,
+                                "status": "succeeded",
+                                "blocked": False,
+                                "blocked_kind": None,
+                                "blocked_reason": None,
+                            }
+                        ],
+                        "protocol_messages": [
+                            {
+                                "role": "assistant",
+                                "content": "Open the design doc before continuing.",
+                                "tool_calls": [
+                                    {
+                                        "id": "stream_resume_call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": "{\"file_path\": \"docs/design.md\"}",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "stream_resume_call_1",
+                                "name": "read_file",
+                                "content": "Design checkpoint contents",
+                            },
+                        ],
+                    },
+                },
+            )
+            return task_run
+
+        r = client.post("/api/projects", json={"name": "Stream Resume Project", "agent_names": ["analyst"]})
+        cid = r.json()["chatroom_id"]
+
+        with patch.object(api_routes, "create_task_run", side_effect=seeded_create_task_run):
+            stream = client.post(
+                f"/api/chatrooms/{cid}/messages/stream",
+                json={"content": "Resume the approved streaming work", "client_turn_id": "turn-stream-resume-1"},
+            )
+
+        assert stream.status_code == 200
+        assert len(seen_messages) == 1
+        first_call_messages = seen_messages[0]
+        assert any(
+            message.get("role") == "assistant"
+            and isinstance(message.get("tool_calls"), list)
+            and any(
+                tool_call.get("function", {}).get("name") == "read_file"
+                for tool_call in message.get("tool_calls", [])
+            )
+            for message in first_call_messages
+        )
+        assert any(
+            message.get("role") == "tool"
+            and message.get("name") == "read_file"
+            and "Design checkpoint contents" in str(message.get("content") or "")
+            for message in first_call_messages
+        )
+
     def test_stream_persists_final_done_content_without_delta(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes

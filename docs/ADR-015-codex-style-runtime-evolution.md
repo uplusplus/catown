@@ -2054,3 +2054,56 @@ monitor 上也同步做了投影：
 - 而是开始共享同一套 checkpoint-backed prompt rehydration 语义
 - `non-stream / stream / recovery / pipeline`
   - 几条主执行路径的 continuation model 又收敛了一步
+
+### 11.31 2026-04-25 新进展：streaming single-agent 入口也已接入 checkpoint continuation state
+
+11.30 之后，多 agent streaming orchestration 已不再从空白 turn state 起步，但还有两处单 agent stream 入口仍保留旧逻辑：
+
+- standalone assistant stream
+- project single-agent stream
+
+这两条路径的问题一致：
+
+- stream turn loop 启动前直接 new 一个空白 `TurnContextState()`
+- 即便关联 `task_run` 已经带有 checkpoint continuation 信息
+- 首次 streaming LLM 调用也不会把这份状态重新带回 prompt
+
+这会形成一个不必要的行为分叉：
+
+- non-stream single-agent 已接 checkpoint snapshot
+- stream orchestration 已接 checkpoint snapshot
+- pipeline resumed stage 已接 checkpoint snapshot
+- 但 single-agent stream 仍停留在“每次都从空白 turn state 开始”
+
+这一轮把这两个入口也接回统一语义：
+
+- `_stream_standalone_assistant_response(...)`
+  - 在启动 `iter_stream_turn_events(...)` 前
+  - 先从 `task_run` 构建 `checkpoint_snapshot`
+  - 再通过 `build_turn_state_from_checkpoint_snapshot(...)`
+    初始化 stream turn state
+
+- project single-agent stream 分支
+  - 同样先从当前 `task_run` 构建 `checkpoint_snapshot`
+  - 再用它初始化 streaming turn state
+
+因此现在的 single-agent stream 入口：
+
+- 不再强制从空白 `TurnContextState()` 起步
+- 如果当前 run 已保留 recent protocol tail / prior summaries
+  - 首个 streaming prompt 也会真实消费这份 continuation state
+
+测试也同步补上：
+
+- `test_project_single_agent_stream_rehydrates_checkpoint_state`
+  - 在创建 streaming `task_run` 后立刻种入一段 `tool_round_recorded`
+  - 然后发起 project single-agent stream
+  - 断言首个 streaming LLM 输入中确实带回：
+    - `read_file` assistant tool-call
+    - `Design checkpoint contents` tool result
+
+这一步的意义是：
+
+- 剩余直接 new 空白 `TurnContextState()` 的主 stream 入口进一步减少
+- single-agent / multi-agent / recovery / pipeline 开始共享更一致的 continuation rehydration 语义
+- “streaming 是不是会丢 checkpoint continuation” 这类分叉行为又少了一层

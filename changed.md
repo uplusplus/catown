@@ -248,3 +248,17 @@
 - 让 streaming orchestration 在每个 step dispatch 前也从 `task_run` 重建一次 `checkpoint_snapshot`
 - 让 `_iter_agent_turn_events(...)` 用 checkpoint-seeded `TurnContextState` 起步，而不是只靠 `previous_agent_work` 纯文本摘要
 - 补 stream 测试，确认后续 agent step 的首次 LLM 输入重新带回上一位 agent 最近的 tool protocol
+
+### `Seed streaming single-agent turns from checkpoint continuation state`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_api_routes.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 standalone/project single-agent streaming 入口在启动 stream turn loop 前也先构建 `checkpoint_snapshot`
+- 用 `build_turn_state_from_checkpoint_snapshot(...)` 初始化 stream turn state，避免这些入口继续从空白 `TurnContextState()` 起步
+- 补 project stream 测试，确认首个 streaming LLM 调用会重新带回 checkpoint 中的 assistant/tool protocol
