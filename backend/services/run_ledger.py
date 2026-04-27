@@ -173,6 +173,7 @@ def append_task_event(
 def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     approval_items = list(getattr(task_run, "approval_queue_items", []) or [])
     checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    latest_continuation_event = _find_latest_continuation_event(list(task_run.events or []))
     return {
         "id": task_run.id,
         "chatroom_id": task_run.chatroom_id,
@@ -193,6 +194,9 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "summary": task_run.summary,
         "continuation_state": checkpoint_snapshot.get("continuation_state"),
         "continuation_state_summary": checkpoint_snapshot.get("continuation_state_summary"),
+        "latest_continuation_event_type": latest_continuation_event.get("event_type") if latest_continuation_event else None,
+        "latest_continuation_event_summary": latest_continuation_event.get("continuation_state_summary") if latest_continuation_event else None,
+        "latest_continuation_event_at": latest_continuation_event.get("created_at") if latest_continuation_event else None,
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
@@ -244,6 +248,14 @@ def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
         "continuation_state_summary": summarize_continuation_state(continuation_state),
         "created_at": event.created_at.isoformat() if event.created_at else None,
     }
+
+
+def _find_latest_continuation_event(events: list[TaskRunEvent]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        serialized = _serialize_task_run_event(event)
+        if serialized.get("continuation_state_summary"):
+            return serialized
+    return None
 
 
 def _default_title(user_request: str) -> str:

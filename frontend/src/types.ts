@@ -100,6 +100,9 @@ export type TaskRunSummary = {
     prior_round_summary_count?: number | null;
   } | null;
   continuation_state_summary?: string | null;
+  latest_continuation_event_type?: string | null;
+  latest_continuation_event_summary?: string | null;
+  latest_continuation_event_at?: string | null;
   checkpoint_snapshot?: TaskRunCheckpointSnapshot;
   approval_queue_count?: number;
   pending_approval_count?: number;

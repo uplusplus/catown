@@ -262,6 +262,8 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert detail["summary"] == "Mocked agent response."
         assert detail["checkpoint_snapshot"]["latest_agent_turn"]["response_preview"] == "Mocked agent response."
         assert detail["checkpoint_snapshot"]["continuation_cursor"]["next_action"] == "none"
+        assert detail["latest_continuation_event_type"] == "task_run_recovery_completed"
+        assert detail["latest_continuation_event_summary"] == "resume scheduler · via rebuild_from_runtime_snapshot · 2 tail messages · runtime_snapshot, protocol_tail"
 
         event_types = [event["event_type"] for event in detail["events"]]
         assert "task_run_recovery_started" in event_types

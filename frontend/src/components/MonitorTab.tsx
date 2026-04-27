@@ -4479,7 +4479,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "skills" ? "active" : ""}`} id="page-skills">
+      <section className={`page page--fluid ${activePage === "skills" ? "active" : ""}`} id="page-skills">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Skills</div>
@@ -4517,7 +4517,7 @@ export function MonitorTab() {
         </div>
 
         {skillsView === "grid" ? (
-          <AdaptiveCardDeck className="skill-grid" itemCount={skills.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={4}>
+          <AdaptiveCardDeck className="skill-grid" itemCount={skills.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={6}>
             {skills.map((skill) => (
               <SkillCard key={skill.name} skill={skill} />
             ))}
@@ -4866,6 +4866,7 @@ export function MonitorTab() {
                       {run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state) ? (
                         <span>{run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)}</span>
                       ) : null}
+                      {run.latest_continuation_event_summary ? <span>{run.latest_continuation_event_summary}</span> : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                       {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
                     </div>
@@ -4935,6 +4936,22 @@ export function MonitorTab() {
                   <div className="simple-row">
                     <strong>Summary</strong>
                     <div className="small-note">{selectedTaskRunSummary.summary || selectedTaskRunSummary.user_request || "No summary recorded."}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Latest Continuation Event</strong>
+                    <div className="small-note">
+                      {selectedTaskRunSummary.latest_continuation_event_summary
+                        ? [
+                            selectedTaskRunSummary.latest_continuation_event_type
+                              ? titleCaseLabel(selectedTaskRunSummary.latest_continuation_event_type)
+                              : null,
+                            selectedTaskRunSummary.latest_continuation_event_summary,
+                            selectedTaskRunSummary.latest_continuation_event_at
+                              ? shortDate(selectedTaskRunSummary.latest_continuation_event_at)
+                              : null,
+                          ].filter(Boolean).join(" · ")
+                        : "No continuation event summary recorded."}
+                    </div>
                   </div>
                   {RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "") || selectedTaskRunRecoveryState?.recovery_owner ? (
                     <>

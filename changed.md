@@ -369,3 +369,19 @@
 - 让 `serialize_task_run_summary(...)` 直接输出顶层 `continuation_state` 与 `continuation_state_summary`，不再只嵌在 `checkpoint_snapshot` 下
 - 补 monitor 测试，确认 task-run 列表接口直接返回这些顶层字段
 - Monitor run 列表与 detail 卡片优先消费顶层 continuation 摘要，继续减少对嵌套 checkpoint 字段的耦合
+
+### `Expose latest continuation event summaries on task-run summaries`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_recovery.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `serialize_task_run_summary(...)` 直接输出 `latest_continuation_event_type` / `latest_continuation_event_summary` / `latest_continuation_event_at`
+- 补 recovery 测试，确认恢复完成后的 task-run detail 会直接指出最近一次 continuation 事件摘要
+- Monitor run 列表与 detail 区开始直接展示最近一次 continuation 事件，而不必从完整事件流中回看

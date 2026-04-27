@@ -2537,3 +2537,61 @@ Monitor 侧也顺手做了投影：
 - continuation summary 终于进入 task-run summary 顶层对象
 - run 列表/详情页对嵌套 checkpoint 结构的依赖进一步降低
 - summary / snapshot / event 三层对象的职责开始更清晰
+
+### 11.39 2026-04-25 新进展：task-run summary 已直接暴露 latest continuation event 摘要
+
+11.38 之后，task-run summary 已经直接带当前 snapshot 的 continuation 摘要，但仍有一个“当前状态 vs 最近动作”的语义差：
+
+- `continuation_state_summary`
+  - 描述的是当前 snapshot 的 continuation 状态
+- 它不一定告诉你：
+  - 最近一次真正发生的 continuation 相关事件是什么
+  - 比如最近一次 recovery started / pipeline resumed / stage started 到底是哪一步
+
+于是当 operator 想快速扫列表时，仍会遇到一个细小断点：
+
+- 当前 snapshot 可能已经被后续 turn 前滚覆盖
+- 但你还想知道“最近一次 continuation 动作”到底是什么
+- 还是得点开完整事件流往回找
+
+这一轮把这个“最近动作摘要”也提到 summary 顶层：
+
+- `serialize_task_run_summary(...)`
+  - 现在会回扫 events
+  - 找到最近一条带 `continuation_state_summary` 的事件
+  - 直接输出：
+    - `latest_continuation_event_type`
+    - `latest_continuation_event_summary`
+    - `latest_continuation_event_at`
+
+因此 task-run summary 现在同时有两类 continuation 语义：
+
+- 当前 snapshot continuation
+  - `continuation_state`
+  - `continuation_state_summary`
+
+- 最近一次 continuation 动作
+  - `latest_continuation_event_type`
+  - `latest_continuation_event_summary`
+  - `latest_continuation_event_at`
+
+测试也同步补上：
+
+- `test_startup_recovers_interrupted_orchestration_run`
+  - 新增断言：
+    - `latest_continuation_event_type == "task_run_recovery_completed"`
+    - `latest_continuation_event_summary == "resume scheduler · via rebuild_from_runtime_snapshot · 2 tail messages · runtime_snapshot, protocol_tail"`
+
+前端也顺手接上：
+
+- Monitor run 列表
+  - 直接显示 `latest_continuation_event_summary`
+- detail 卡片
+  - 新增 `Latest Continuation Event`
+  - 直接展示 event type + summary + 时间
+
+这一步的意义是：
+
+- task-run summary 不再只回答“当前 continuation 状态是什么”
+- 也开始回答“最近一次 continuation 动作是什么”
+- current state 与 recent action 两条线索在 summary 层开始并列可见
