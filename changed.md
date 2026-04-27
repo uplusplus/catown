@@ -353,3 +353,19 @@
 - 让 `checkpoint_snapshot` 直接附带 `continuation_state_summary`，与 event 级 summary 一样由后端统一生成
 - 补 monitor 测试，确认 blocked-tool snapshot 会返回稳定 summary，而无 continuation 的 snapshot 返回 `null`
 - Monitor run 列表与 detail 卡片优先使用后端给出的 snapshot summary，继续减少前端本地字符串拼装
+
+### `Promote continuation summaries to top-level task-run summaries`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_monitor.py`
+- `frontend/src/types.ts`
+- `frontend/src/components/MonitorTab.tsx`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `serialize_task_run_summary(...)` 直接输出顶层 `continuation_state` 与 `continuation_state_summary`，不再只嵌在 `checkpoint_snapshot` 下
+- 补 monitor 测试，确认 task-run 列表接口直接返回这些顶层字段
+- Monitor run 列表与 detail 卡片优先消费顶层 continuation 摘要，继续减少对嵌套 checkpoint 字段的耦合

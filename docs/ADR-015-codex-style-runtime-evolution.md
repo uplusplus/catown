@@ -2480,3 +2480,60 @@ Monitor 侧也顺手做了投影：
   - 三类 continuation 摘要现在都开始优先依赖后端统一产物
 - 前端本地字符串拼装再次减少
 - snapshot 与 event 的 continuation summary 来源进一步统一
+
+### 11.38 2026-04-25 新进展：continuation summary 已提升为 task-run summary 顶层字段
+
+11.37 之后，snapshot 与 event 都已经直接带 continuation summary，但 task-run summary 本身还保留着一层嵌套依赖：
+
+- run 列表想读 continuation summary
+- 仍然需要先走到：
+  - `checkpoint_snapshot.continuation_state_summary`
+
+虽然这已经比前端自己拼字符串好多了，但对 summary 视角来说仍然不够直接：
+
+- task-run summary 本身就是列表接口的主对象
+- continuation summary 既然已经是 summary 级语义
+- 最自然的位置应该就是 summary 顶层字段
+
+这一轮把它再往上提一层：
+
+- `serialize_task_run_summary(...)`
+  - 现在除了 `checkpoint_snapshot`
+  - 还会直接附带：
+    - `continuation_state`
+    - `continuation_state_summary`
+
+这样：
+
+- task-run 列表接口
+- task-run detail 接口
+- monitor websocket detail payload
+
+都会天然带上同一份顶层 continuation 摘要，而不需要调用方再钻进 checkpoint 子对象里找。
+
+测试也同步补上：
+
+- `test_monitor_task_runs_exposes_continuation_cursor`
+  - 新增断言：
+    - `entry["continuation_state"]["consumed"] is True`
+    - `entry["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"`
+
+- `test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn`
+  - 新增断言：
+    - `entry["continuation_state"]["consumed"] is False`
+    - `entry["continuation_state_summary"] is None`
+
+前端也顺手收口：
+
+- Monitor run 列表
+  - 优先读顶层 `run.continuation_state_summary`
+- detail 卡片
+  - 也优先读顶层 `selectedTaskRunDetail.continuation_state_summary`
+- `checkpoint_snapshot.continuation_state_summary`
+  - 仍保留为兼容与下钻视图来源
+
+这一步的意义是：
+
+- continuation summary 终于进入 task-run summary 顶层对象
+- run 列表/详情页对嵌套 checkpoint 结构的依赖进一步降低
+- summary / snapshot / event 三层对象的职责开始更清晰

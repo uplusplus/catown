@@ -4863,8 +4863,8 @@ export function MonitorTab() {
                     <div className="run-history-item__foot">
                       <span>{run.event_count} events</span>
                       {run.latest_event_type ? <span>{titleCaseLabel(run.latest_event_type)}</span> : null}
-                      {run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.checkpoint_snapshot?.continuation_state) ? (
-                        <span>{run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.checkpoint_snapshot?.continuation_state)}</span>
+                      {run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state) ? (
+                        <span>{run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)}</span>
                       ) : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                       {hasActiveRecoveryLease(run) ? <span>{compactOwnerLabel(run.recovery_owner)}</span> : null}
@@ -5154,11 +5154,13 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Continuation State</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
-                            || continuationStateSummary(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
+                          {selectedTaskRunDetail.continuation_state_summary
+                            || selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
+                            || continuationStateSummary(selectedTaskRunDetail.continuation_state ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
                             ? (
-                                selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
-                                || continuationStateSummary(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
+                                selectedTaskRunDetail.continuation_state_summary
+                                || selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
+                                || continuationStateSummary(selectedTaskRunDetail.continuation_state ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
                               )
                             : "No continuation-state consumption derived."}
                         </div>

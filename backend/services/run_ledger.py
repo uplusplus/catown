@@ -191,6 +191,8 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
             task_run.recovery_lease_expires_at.isoformat() if task_run.recovery_lease_expires_at else None
         ),
         "summary": task_run.summary,
+        "continuation_state": checkpoint_snapshot.get("continuation_state"),
+        "continuation_state_summary": checkpoint_snapshot.get("continuation_state_summary"),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),

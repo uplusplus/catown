@@ -91,6 +91,15 @@ export type TaskRunSummary = {
   recovery_claimed_at?: string | null;
   recovery_lease_expires_at?: string | null;
   summary?: string | null;
+  continuation_state?: {
+    consumed?: boolean;
+    next_action?: string | null;
+    resume_strategy?: string | null;
+    consumed_layers?: string[] | null;
+    protocol_tail_message_count?: number | null;
+    prior_round_summary_count?: number | null;
+  } | null;
+  continuation_state_summary?: string | null;
   checkpoint_snapshot?: TaskRunCheckpointSnapshot;
   approval_queue_count?: number;
   pending_approval_count?: number;
