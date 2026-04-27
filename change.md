@@ -811,3 +811,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 抽取 reject queue item 的 resolution payload helper，统一 `queue_resolved_only` 与 `resume_supported` 语义
 - 让 runtime approve/reject、runner blocked-tool queue created、pipeline gate queue created/resolved 都复用共享 helper
 - 补 helper 单测，并跑 approval replay、sandbox blocked、pipeline gate、pipeline blocked-tool ledger 聚焦回归
+
+### `Share approved tool replay follow-up context helper`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/routes/api.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 把 approved tool replay follow-up context 从 API route 抽到共享 approval replay service
+- 让 chat runtime 与 pipeline approved replay continuation 共用同一套 tool/status/result preview 文案
+- 明确保留“继续执行但不要无条件重跑同一 tool call”的恢复语义
+- 补 helper 单测，并跑 approval replay runtime/pipeline 聚焦回归

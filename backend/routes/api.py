@@ -115,6 +115,7 @@ from services.approval_replay import (
     build_followup_skipped_payload,
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
+    build_tool_replay_followup_context,
     replay_result_is_actionable,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
@@ -4340,18 +4341,6 @@ async def _replay_blocked_tool_queue_item(
     return await _replay_runtime_blocked_tool_queue_item(db, item, request_payload)
 
 
-def _build_tool_replay_followup_context(item: Any, replay_result: Any) -> str:
-    tool_name = str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip() or "tool"
-    result_preview = _compact_runtime_text(getattr(replay_result, "result", ""), limit=400)
-    return (
-        "Approved tool replay completed.\n"
-        f"- Tool: {tool_name}\n"
-        f"- Status: {getattr(replay_result, 'status', 'unknown')}\n"
-        f"- Result: {result_preview}\n"
-        "Continue from this result. Do not rerun the same tool call unless the user explicitly asks or the result shows it did not complete."
-    )
-
-
 def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str, Any]:
     return describe_checkpoint_continuation_state(checkpoint_snapshot)
 
@@ -4425,7 +4414,7 @@ async def _continue_runtime_after_approved_tool_replay(
     if not replay_result_is_actionable(replay_result):
         return build_followup_skipped_payload("replay_not_actionable")
 
-    followup_context = _build_tool_replay_followup_context(item, replay_result)
+    followup_context = build_tool_replay_followup_context(item, replay_result)
     saved = await _publish_replayed_tool_result_message(
         db,
         item,
@@ -4520,7 +4509,7 @@ async def _continue_pipeline_after_approved_tool_replay(
             db,
             pipeline.id,
             str(item.agent_name or request_payload.get("agent_name") or "").strip() or "agent",
-            _build_tool_replay_followup_context(item, replay_result),
+            build_tool_replay_followup_context(item, replay_result),
         )
         if (pipeline.status or "").lower() == "paused":
             await pipeline_engine.resume(db, pipeline.id)

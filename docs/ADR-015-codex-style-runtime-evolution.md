@@ -3228,3 +3228,33 @@ P0.3 继续把 approval 主链的事件投影层收口。
 - approval queue 的 request、replay、follow-up、created/resolved event 四个面都开始有共享 payload helper
 - route / engine / lifecycle 不再各自定义 approval ledger payload shape
 - 这为下一步把 approval queue 抽象成更完整的 runner continuation node 减少了接口漂移风险
+
+### 11.54 2026-04-27 新进展：approved tool replay follow-up context 已共享
+
+P0.3 继续收口 approved blocked-tool replay 后的 continuation prompt。
+
+之前 replay 成功后，runtime follow-up 与 pipeline follow-up 都依赖 API route 内的 `_build_tool_replay_followup_context(...)` 拼出一段额外上下文：
+
+- replay 的 tool name
+- replay status
+- replay result preview
+- 明确要求继续执行，不要无条件重跑同一个 tool call
+
+这段文本虽然看起来只是 prompt，但实际上是 approved replay continuation 的核心协议：它决定 agent/pipeline 恢复时如何理解已经完成的工具结果。
+
+本轮把它并入共享 approval runtime helper：
+
+- `build_tool_replay_followup_context(...)`
+
+并让：
+
+- chat runtime approved replay follow-up
+- pipeline approved replay follow-up
+
+都复用同一段 context 构造逻辑。
+
+这一步的意义是：
+
+- approved replay 后的 continuation context 不再藏在 API route 内
+- runtime 与 pipeline 恢复时收到同一套“已 replay tool result，继续但不要重复执行”的指令语义
+- approval replay 主链现在从 request、resolution、ledger event 到 continuation prompt 都更接近统一 runner envelope

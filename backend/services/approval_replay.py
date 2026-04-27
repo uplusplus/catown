@@ -198,6 +198,22 @@ def build_followup_continued_payload(**fields: Any) -> Dict[str, Any]:
     return payload
 
 
+def build_tool_replay_followup_context(item: Any, replay_result: Any, *, result_preview_limit: int = 400) -> str:
+    tool_name = (
+        str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip()
+        or "tool"
+    )
+    result_preview = _compact_text(getattr(replay_result, "result", ""), limit=result_preview_limit)
+    return (
+        "Approved tool replay completed.\n"
+        f"- Tool: {tool_name}\n"
+        f"- Status: {getattr(replay_result, 'status', 'unknown')}\n"
+        f"- Result: {result_preview}\n"
+        "Continue from this result. Do not rerun the same tool call unless the user explicitly asks "
+        "or the result shows it did not complete."
+    )
+
+
 def build_queue_replay_resolution_payload(
     *,
     request_payload: Dict[str, Any],

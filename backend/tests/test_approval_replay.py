@@ -17,6 +17,7 @@ from services.approval_replay import (
     build_pipeline_gate_resolution_payload,
     build_queue_replay_resolution_payload,
     build_queue_rejection_resolution_payload,
+    build_tool_replay_followup_context,
     replay_result_is_actionable,
 )
 
@@ -159,6 +160,22 @@ def test_queue_rejection_resolution_payload_omits_absent_rollback():
         request_payload={"resume_supported": True},
         rollback_to="analysis",
     )["rollback_to"] == "analysis"
+
+
+def test_tool_replay_followup_context_preserves_status_and_truncated_result():
+    item = SimpleNamespace(target_name="read_file")
+    replay_result = SimpleNamespace(
+        tool_name=None,
+        status="succeeded",
+        result="first line\nsecond line that should be truncated",
+    )
+
+    context = build_tool_replay_followup_context(item, replay_result, result_preview_limit=24)
+
+    assert "- Tool: read_file" in context
+    assert "- Status: succeeded" in context
+    assert "- Result: first line second line..." in context
+    assert "Do not rerun the same tool call" in context
 
 
 def test_replay_result_is_actionable_requires_success_without_block():
