@@ -713,3 +713,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 提取统一的 context compaction callback helper，收口去重、payload 组装、summary 文案生成
 - 让 chat runtime 与 pipeline stage runtime 共用同一套 compaction event 语义，只保留各自的事件落点适配
 - 补 helper 单测，确保 compaction event 会去重且无 compacted 标记时不会误发事件
+
+### `Share runtime lifecycle event payload building`
+
+范围：
+
+- `backend/services/runtime_event_helpers.py`
+- `backend/routes/api.py`
+- `backend/pipeline/engine.py`
+- `backend/tests/test_runtime_event_helpers.py`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 提取统一的 runtime lifecycle payload helper，收口 `client_turn_id`、`stage_policy`、target/pipeline metadata 的组装规则
+- 让 chat standalone、project single-agent、orchestration turn 与 pipeline stage turn 共用同一套基础 payload 语义
+- 补 helper 单测，确认可序列化 policy payload 且会过滤缺失字段

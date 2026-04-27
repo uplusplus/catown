@@ -3028,3 +3028,45 @@ Monitor 侧也顺手做了投影：
 - turn envelope 不只是开始共享“怎么准备上下文”
 - 也开始共享“上下文被压缩时怎么投影成运行时事件”
 - 这让 compaction 从 UI 观测项，进一步变成统一 runner 语义的一部分
+
+### 11.48 2026-04-27 新进展：runtime lifecycle event payload building 已开始共享
+
+继续检查 `agent_turn_started` / `agent_turn_completed` 这一层时，当前重复点不在事件落库函数本身：
+
+- `runner_lifecycle.py` 已经统一了事件类型和写入
+
+真正分散的是各调用方手工拼基础 payload：
+
+- `client_turn_id`
+- `stage_policy`
+- `target_agent_name`
+- pipeline id / run id / stage name / display name
+
+这些字段看似只是元数据，但它们是 runner envelope 的重要部分：
+
+- operator 依赖这些字段知道一个 turn 属于哪个入口
+- recovery / monitor 依赖这些字段把 turn 与 stage / policy 关联起来
+- 后续如果要加入 ownership / approval / sandbox policy，也会继续挂在这里
+
+这一轮把这层基础 payload 组装抽到共享 helper：
+
+- `backend/services/runtime_event_helpers.py`
+  - 新增 runtime lifecycle payload helper
+  - 统一负责：
+    - optional 字段过滤
+    - `client_turn_id`
+    - `stage_policy.to_payload()`
+    - extra metadata merge
+
+目前已接入：
+
+- standalone sync / stream turn start
+- project single-agent sync / stream turn start
+- orchestrated sync / stream turn start
+- pipeline stage turn start / completed
+
+这一步的意义是：
+
+- lifecycle event 不再只共享“写入函数”
+- 也开始共享“基础 payload shape”
+- P0.2 的 turn envelope 继续往下收：从 context preparation、compaction projection，推进到 lifecycle metadata projection

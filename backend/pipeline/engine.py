@@ -72,7 +72,7 @@ from services.runner_lifecycle import (
     record_tool_round as record_runner_tool_round,
     start_agent_turn as record_agent_turn_started,
 )
-from services.runtime_event_helpers import build_context_compaction_callback
+from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
 
 logger = logging.getLogger("catown.pipeline.engine")
@@ -2075,12 +2075,12 @@ class PipelineEngine:
             linked_task_run,
             agent_name=stage_cfg.agent,
             summary=f"{stage_cfg.agent} started a pipeline stage turn.",
-            payload={
-                "pipeline_id": pipeline.id,
-                "pipeline_run_id": run.id,
-                "stage_name": stage_cfg.name,
-                "display_name": stage_cfg.display_name,
-            },
+            payload=build_runtime_event_payload(
+                pipeline_id=pipeline.id,
+                pipeline_run_id=run.id,
+                stage_name=stage_cfg.name,
+                display_name=stage_cfg.display_name,
+            ),
         )
 
         def _assemble_pipeline_stage_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -2331,12 +2331,12 @@ class PipelineEngine:
             agent_name=stage_cfg.agent,
             response_content=final_content,
             summary=f"{stage_cfg.agent} completed the pipeline stage turn.",
-            payload={
-                "pipeline_id": pipeline.id,
-                "pipeline_run_id": run.id,
-                "stage_name": stage_cfg.name,
-                "display_name": stage_cfg.display_name,
-            },
+            payload=build_runtime_event_payload(
+                pipeline_id=pipeline.id,
+                pipeline_run_id=run.id,
+                stage_name=stage_cfg.name,
+                display_name=stage_cfg.display_name,
+            ),
         )
 
         return final_content

@@ -1,4 +1,26 @@
-from services.runtime_event_helpers import build_context_compaction_callback
+from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
+
+
+class StubPolicy:
+    def to_payload(self):
+        return {"stage_name": "analysis"}
+
+
+def test_runtime_event_payload_omits_absent_fields_and_serializes_policy():
+    payload = build_runtime_event_payload(
+        client_turn_id="turn-1",
+        stage_policy=StubPolicy(),
+        target_agent_name="Analyst",
+        pipeline_id=None,
+        extra_payload={"pipeline_run_id": 7, "ignored": None},
+    )
+
+    assert payload == {
+        "target_agent_name": "Analyst",
+        "client_turn_id": "turn-1",
+        "stage_policy": {"stage_name": "analysis"},
+        "pipeline_run_id": 7,
+    }
 
 
 def test_context_compaction_callback_deduplicates_and_formats_summary():

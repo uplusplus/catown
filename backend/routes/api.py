@@ -113,7 +113,7 @@ from services.runner_policy import (
     compile_single_agent_run_policy,
     find_stage_policy,
 )
-from services.runtime_event_helpers import build_context_compaction_callback
+from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 
@@ -715,10 +715,10 @@ async def _trigger_standalone_assistant_response(
         task_run,
         agent_name=runtime.assistant_name,
         summary=f"{runtime.assistant_name} started a standalone assistant turn.",
-        payload={
-            "client_turn_id": client_turn_id,
-            "stage_policy": standalone_policy.stages[0].to_payload() if standalone_policy.stages else None,
-        },
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            stage_policy=standalone_policy.stages[0] if standalone_policy.stages else None,
+        ),
     )
 
     compaction_callback = _build_context_compaction_callback(
@@ -828,14 +828,10 @@ async def _stream_standalone_assistant_response(
         task_run,
         agent_name=runtime.assistant_name,
         summary=f"{runtime.assistant_name} started a standalone streaming turn.",
-        payload={
-            "client_turn_id": client_turn_id,
-            "stage_policy": (
-                standalone_stream_policy.stages[0].to_payload()
-                if standalone_stream_policy.stages
-                else None
-            ),
-        },
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            stage_policy=standalone_stream_policy.stages[0] if standalone_stream_policy.stages else None,
+        ),
     )
 
     compaction_callback = _build_context_compaction_callback(
@@ -1209,13 +1205,13 @@ async def trigger_agent_response(
         record_agent_turn_started(
             db,
             task_run,
-            agent_name=runtime.agent_label,
-            summary=f"{runtime.agent_label} started working on the request.",
-            payload={
-                "target_agent_name": runtime.agent_label,
-                "client_turn_id": client_turn_id,
-                "stage_policy": single_agent_policy.stages[0].to_payload() if single_agent_policy.stages else None,
-            },
+        agent_name=runtime.agent_label,
+        summary=f"{runtime.agent_label} started working on the request.",
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            stage_policy=single_agent_policy.stages[0] if single_agent_policy.stages else None,
+            target_agent_name=runtime.agent_label,
+        ),
         )
 
         def _assemble_project_single_agent_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -2049,10 +2045,10 @@ async def _iter_agent_turn_events(
         task_run,
         agent_name=runtime.agent_label,
         summary=f"{runtime.agent_label} started an orchestrated streaming turn.",
-        payload={
-            "client_turn_id": client_turn_id,
-            "inter_agent_message_count": len(inter_agent_messages or []),
-        },
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            inter_agent_message_count=len(inter_agent_messages or []),
+        ),
     )
 
     def _assemble_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -2170,10 +2166,10 @@ async def _run_single_agent_turn(
         task_run,
         agent_name=runtime.agent_label,
         summary=f"{runtime.agent_label} started an orchestrated turn.",
-        payload={
-            "client_turn_id": client_turn_id,
-            "inter_agent_message_count": len(inter_agent_messages or []),
-        },
+        payload=build_runtime_event_payload(
+            client_turn_id=client_turn_id,
+            inter_agent_message_count=len(inter_agent_messages or []),
+        ),
     )
 
     def _assemble_orchestration_turn_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -5296,15 +5292,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 task_run,
                 agent_name=target_agent_label,
                 summary=f"{target_agent_label} started a streaming turn.",
-                payload={
-                    "target_agent_name": target_agent_label,
-                    "client_turn_id": message.client_turn_id,
-                    "stage_policy": (
-                        project_single_agent_stream_policy.stages[0].to_payload()
+                payload=build_runtime_event_payload(
+                    client_turn_id=message.client_turn_id,
+                    stage_policy=(
+                        project_single_agent_stream_policy.stages[0]
                         if project_single_agent_stream_policy.stages
                         else None
                     ),
-                },
+                    target_agent_name=target_agent_label,
+                ),
             )
 
             final_content = ""

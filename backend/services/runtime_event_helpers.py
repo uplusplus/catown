@@ -6,6 +6,32 @@ import json
 from typing import Any, Callable, Dict, Optional
 
 
+def build_runtime_event_payload(
+    *,
+    client_turn_id: str | None = None,
+    stage_policy: Any = None,
+    extra_payload: Optional[Dict[str, Any]] = None,
+    **fields: Any,
+) -> Dict[str, Any]:
+    """Build a compact event payload while omitting absent optional fields."""
+
+    payload: Dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    if client_turn_id is not None:
+        payload["client_turn_id"] = client_turn_id
+    if stage_policy is not None:
+        payload["stage_policy"] = (
+            stage_policy.to_payload()
+            if hasattr(stage_policy, "to_payload")
+            else stage_policy
+        )
+    if isinstance(extra_payload, dict):
+        payload.update({key: value for key, value in extra_payload.items() if value is not None})
+    return payload
+
+
 def build_context_compaction_callback(
     *,
     emit_event: Callable[[str, str, Dict[str, Any]], Any],
