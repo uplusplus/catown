@@ -1,8 +1,14 @@
+from types import SimpleNamespace
+
 from services.orchestration_events import (
+    record_orchestration_started,
+    record_scheduler_plan_created,
+    record_scheduler_recovery_state_rebuilt,
     record_scheduler_step_completed,
     record_scheduler_step_dispatched,
     record_scheduler_step_failed,
     record_scheduler_step_resumed,
+    record_task_run_recovery_started,
     scheduler_event_payload,
     scheduler_plan_payload,
 )
@@ -89,5 +95,81 @@ def test_scheduler_step_event_recorders_share_payload_shape(fresh_db):
         assert failed.event_type == "scheduler_step_failed"
         assert "released 1 waiting step" in completed.summary
         assert "boom" in failed.payload_json
+    finally:
+        db.close()
+
+
+def test_orchestration_start_plan_and_recovery_event_helpers_share_payload_shape(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Orchestration runtime events")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="running",
+            title="Orchestration runtime event helper",
+            user_request="Coordinate.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        queue = _queue()
+        policy = SimpleNamespace(to_payload=lambda: {"mode": "linear_blocking_chain"})
+        started = record_orchestration_started(
+            db,
+            task_run,
+            requested_agents=["analyst", "developer"],
+            resolved_agents=["Analyst", "Developer"],
+            project_id=None,
+            runner_policy=policy,
+            client_turn_id="turn-1",
+            streaming=True,
+        )
+        planned = record_scheduler_plan_created(
+            db,
+            task_run,
+            queue,
+            runner_policy=policy,
+            streaming=True,
+        )
+        recovery_started = record_task_run_recovery_started(
+            db,
+            task_run,
+            run_kind=task_run.run_kind,
+            requested_agents=["analyst", "developer"],
+            resolved_agents=["Analyst", "Developer"],
+            project_id=None,
+            chatroom_id=chatroom.id,
+            trigger="manual",
+            recovery_owner="instance-1",
+            recovery_lease_expires_at=None,
+            checkpoint_snapshot={"event_count": 3},
+            recovery_continuation_state={"next_action": "resume"},
+            runner_policy=policy,
+        )
+        rebuilt = record_scheduler_recovery_state_rebuilt(
+            db,
+            task_run,
+            queue,
+            checkpoint_snapshot={"event_count": 3},
+            recovery_continuation_state={"next_action": "resume"},
+            runner_policy=policy,
+            completed_step_ids=["step-1"],
+            replayed_turn_count=1,
+        )
+
+        assert started.event_type == "orchestration_started"
+        assert planned.event_type == "scheduler_plan_created"
+        assert recovery_started.event_type == "task_run_recovery_started"
+        assert rebuilt.event_type == "scheduler_recovery_state_rebuilt"
+        assert '"client_turn_id": "turn-1"' in started.payload_json
+        assert "streaming schedule" in planned.summary
+        assert "Manual resume started recovery" in recovery_started.summary
+        assert '"completed_step_ids": ["step-1"]' in rebuilt.payload_json
     finally:
         db.close()

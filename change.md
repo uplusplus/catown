@@ -1335,3 +1335,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - sync multi-agent orchestration 与 interrupted recovery 改为复用 shared nonstream step loop
 - recovery 的 lease renewal 与 checkpoint context 通过 callback / step-context factory 注入，而不是继续手写整段 while-loop
 - 补 runtime runner focused tests，并跑 sync orchestration / recovery 回归
+
+### `Centralize orchestration startup and recovery event helpers`
+
+范围：
+
+- `backend/services/orchestration_events.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_events.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `record_orchestration_started(...)`、`record_scheduler_plan_created(...)`、`record_task_run_recovery_started(...)`、`record_scheduler_recovery_state_rebuilt(...)`
+- sync orchestration、stream orchestration 与 interrupted recovery 改为复用 shared event helper，而不是在 route 中手写 payload
+- 补 event helper focused tests，并跑 sync/stream/recovery API 回归验证 payload shape 兼容

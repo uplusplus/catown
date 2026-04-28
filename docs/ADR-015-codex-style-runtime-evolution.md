@@ -4242,3 +4242,37 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍保留 `orchestration_started` / `scheduler_plan_created` / recovery started/rebuilt 这些前置事件
 - recovery lease 的续约与 lease lost 分支仍由 route callback 提供
 - 下一步如果继续逼近 Codex，可以把这些前置事件和 lease orchestration 也纳入统一 runtime driver
+
+### 11.84 2026-04-28 新进展：orchestration startup / recovery 事件辅助已收口
+
+在 11.83 之后，sync / stream / recovery 虽然已经更多依赖 service-level runtime runner，但 route 仍保留一段重复的前置事件拼装逻辑：
+
+- `orchestration_started`
+- `scheduler_plan_created`
+- `task_run_recovery_started`
+- `scheduler_recovery_state_rebuilt`
+
+本轮扩展 `backend/services/orchestration_events.py`，新增：
+
+- `record_orchestration_started(...)`
+- `record_scheduler_plan_created(...)`
+- `record_task_run_recovery_started(...)`
+- `record_scheduler_recovery_state_rebuilt(...)`
+
+并接入：
+
+- sync orchestration startup
+- stream orchestration startup
+- interrupted recovery startup / rebuild
+
+这一步的意义是：
+
+- orchestration 的“准备态协议”也开始脱离 route，统一进入 event helper service
+- sync / stream / recovery 的 started-plan payload shape 更稳定，测试也可以直接覆盖 helper
+- route 进一步收敛为 runtime wiring，而不是持续手写 event payload 细节
+
+边界：
+
+- no-agent / no-plan 失败分支仍在 route
+- recovery lease claim / renew / lease-lost 编排仍在 route
+- 下一步如果继续压缩 route，可以继续把这些失败与 lease 协议推进到 runtime driver / lease service

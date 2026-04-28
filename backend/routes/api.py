@@ -143,11 +143,15 @@ from services.stream_turn_executor import iter_stream_turn_events
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.subagent_lifecycle import cancellable_subagents_from_lifecycle
 from services.orchestration_events import (
+    record_orchestration_started,
+    record_scheduler_plan_created,
+    record_scheduler_recovery_state_rebuilt,
     record_scheduler_step_cancelled,
     record_scheduler_step_completed,
     record_scheduler_step_dispatched,
     record_scheduler_step_failed,
     record_scheduler_step_resumed,
+    record_task_run_recovery_started,
     scheduler_event_payload,
     scheduler_plan_payload,
 )
@@ -1998,32 +2002,20 @@ async def _run_multi_agent_orchestration(
     queue = OrchestrationRuntimeQueue(plan)
     execute_orchestration_turn = _build_orchestration_agent_turn_executor()
 
-    append_task_event(
+    record_orchestration_started(
         db,
         task_run,
-        "orchestration_started",
-        summary="Multi-agent orchestration started.",
-        payload={
-            "requested_agents": agent_names,
-            "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
-            "project_id": project.id if project else None,
-            "runner_policy": orchestration_policy.to_payload(),
-        },
+        requested_agents=agent_names,
+        resolved_agents=[agent_name_of(agent) for agent in resolved_agents],
+        project_id=project.id if project else None,
+        runner_policy=orchestration_policy,
     )
 
-    append_task_event(
+    record_scheduler_plan_created(
         db,
         task_run,
-        "scheduler_plan_created",
-        summary=(
-            "Built a blocking-chain orchestration schedule with sidecars."
-            if plan.mode == "blocking_chain_with_sidecars"
-            else "Built a linear blocking orchestration schedule."
-        ),
-        payload=_scheduler_plan_payload(
-            queue,
-            extra={"runner_policy": orchestration_policy.to_payload()},
-        ),
+        queue,
+        runner_policy=orchestration_policy,
     )
 
     try:
@@ -2184,29 +2176,20 @@ async def _resume_interrupted_orchestration_task_run(
         queue = OrchestrationRuntimeQueue(plan)
         recovery_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
         recovery_continuation_state = _describe_recovery_continuation_state(recovery_checkpoint_snapshot)
-        append_task_event(
+        record_task_run_recovery_started(
             db,
             task_run,
-            "task_run_recovery_started",
-            summary=(
-                "Manual resume started recovery for an interrupted orchestration run."
-                if trigger == "manual"
-                else "Detected an interrupted orchestration run and started recovery."
-            ),
-            payload={
-                "task_run_id": task_run.id,
-                "run_kind": task_run.run_kind,
-                "requested_agents": agent_names,
-                "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
-                "project_id": project.id if project else None,
-                "chatroom_id": chatroom.id,
-                "trigger": trigger,
-                "recovery_owner": RECOVERY_INSTANCE_ID,
-                "recovery_lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
-                "checkpoint_snapshot": recovery_checkpoint_snapshot,
-                "recovery_continuation_state": recovery_continuation_state,
-                "runner_policy": orchestration_policy.to_payload(),
-            },
+            run_kind=task_run.run_kind,
+            requested_agents=agent_names,
+            resolved_agents=[agent_name_of(agent) for agent in resolved_agents],
+            project_id=project.id if project else None,
+            chatroom_id=chatroom.id,
+            trigger=trigger,
+            recovery_owner=RECOVERY_INSTANCE_ID,
+            recovery_lease_expires_at=lease_expires_at,
+            checkpoint_snapshot=recovery_checkpoint_snapshot,
+            recovery_continuation_state=recovery_continuation_state,
+            runner_policy=orchestration_policy,
         )
         completed_turns, pending_handoffs, last_blocking_result, completed_step_ids = _rebuild_orchestration_recovery_state(
             db,
@@ -2218,26 +2201,15 @@ async def _resume_interrupted_orchestration_task_run(
             last_blocking_result=last_blocking_result,
         )
         execute_orchestration_turn = _build_orchestration_agent_turn_executor()
-        append_task_event(
+        record_scheduler_recovery_state_rebuilt(
             db,
             task_run,
-            "scheduler_recovery_state_rebuilt",
-            summary=(
-                f"Rebuilt scheduler state with {len(completed_step_ids)} completed step(s) and "
-                f"{queue.runtime_snapshot().ready_step_count} ready step(s)."
-            ),
-            payload=_scheduler_plan_payload(
-                queue,
-                extra={
-                    "checkpoint_snapshot": recovery_checkpoint_snapshot,
-                    "recovery_continuation_state": recovery_continuation_state,
-                    "runner_policy": orchestration_policy.to_payload(),
-                    "recovery": {
-                        "completed_step_ids": completed_step_ids,
-                        "replayed_turn_count": len(completed_turns),
-                    }
-                },
-            ),
+            queue,
+            checkpoint_snapshot=recovery_checkpoint_snapshot,
+            recovery_continuation_state=recovery_continuation_state,
+            runner_policy=orchestration_policy,
+            completed_step_ids=completed_step_ids,
+            replayed_turn_count=len(completed_turns),
         )
         initial_runtime = queue.runtime_snapshot()
         if (
@@ -2512,33 +2484,23 @@ async def _stream_multi_agent_orchestration(
         yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
     queue = OrchestrationRuntimeQueue(plan)
-    append_task_event(
+    record_orchestration_started(
         db,
         task_run,
-        "orchestration_started",
-        summary="Multi-agent streaming orchestration started.",
-        payload={
-            "requested_agents": agent_names,
-            "resolved_agents": [agent_name_of(agent) for agent in resolved_agents],
-            "project_id": project.id if project else None,
-            "client_turn_id": client_turn_id,
-            "runner_policy": orchestration_policy.to_payload(),
-        },
+        requested_agents=agent_names,
+        resolved_agents=[agent_name_of(agent) for agent in resolved_agents],
+        project_id=project.id if project else None,
+        runner_policy=orchestration_policy,
+        client_turn_id=client_turn_id,
+        streaming=True,
     )
 
-    append_task_event(
+    record_scheduler_plan_created(
         db,
         task_run,
-        "scheduler_plan_created",
-        summary=(
-            "Built a blocking-chain streaming schedule with sidecars."
-            if plan.mode == "blocking_chain_with_sidecars"
-            else "Built a linear blocking streaming schedule."
-        ),
-        payload=_scheduler_plan_payload(
-            queue,
-            extra={"runner_policy": orchestration_policy.to_payload()},
-        ),
+        queue,
+        runner_policy=orchestration_policy,
+        streaming=True,
     )
 
     stream_runtime_deps = StreamOrchestrationRuntimeDeps(
