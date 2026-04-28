@@ -171,7 +171,10 @@ from services.orchestration_agent_turn import (
 )
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
-from services.orchestration_step_runner import run_nonstream_orchestration_step
+from services.orchestration_runtime_runner import (
+    NonstreamOrchestrationRuntimeDeps,
+    run_nonstream_orchestration_runtime,
+)
 from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
     iter_stream_orchestration_runtime_events,
@@ -200,6 +203,10 @@ class TaskRunRecoveryResult:
     detail: Optional[str] = None
     owner: Optional[str] = None
     lease_expires_at: Optional[datetime] = None
+
+
+class RecoveryLeaseLostError(RuntimeError):
+    """Raised when recovery loses ownership of the task-run lease mid-loop."""
 
 
 @dataclass
@@ -1989,7 +1996,6 @@ async def _run_multi_agent_orchestration(
         )
         return
     queue = OrchestrationRuntimeQueue(plan)
-    agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
     execute_orchestration_turn = _build_orchestration_agent_turn_executor()
 
     append_task_event(
@@ -2021,58 +2027,39 @@ async def _run_multi_agent_orchestration(
     )
 
     try:
-        while True:
-            raise_if_task_run_cancelled(db, task_run, context="orchestration step loop")
-            step = queue.pop_ready()
-            if step is None:
-                break
-
-            agent = agents_by_id.get(step.agent_id)
-            if agent is None:
-                continue
-
-            agent_label = agent_name_of(agent)
-            step_policy = find_stage_policy(orchestration_policy, step.step_id)
-            logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
-            try:
-                step_result = await run_nonstream_orchestration_step(
-                    db=db,
-                    task_run=task_run,
-                    queue=queue,
-                    step=step,
-                    agent=agent,
-                    agent_name=agent_label,
-                    chatroom_id=chatroom_id,
-                    project=project,
-                    agents=agents,
-                    user_message=user_message,
-                    client_turn_id=client_turn_id,
-                    output_state=output_state,
-                    pending_handoffs=pending_handoffs,
-                    orchestration_policy=orchestration_policy,
-                    stage_policy=step_policy,
-                    execute_turn=execute_orchestration_turn,
-                    publish_message=_publish_saved_chat_message,
-                    message_metadata=_message_metadata_with_turn(client_turn_id),
-                    extra_context=extra_context,
-                )
-                content = step_result.content
-            except TaskRunCancelledError:
-                raise
-            except Exception as exc:
-                fail_orchestration_task_run(
-                    db,
-                    task_run,
-                    summary=f"Orchestration failed at {agent_label}.",
-                    agent_name=agent_label,
-                    payload={"error": str(exc), "step_id": step.step_id},
-                )
-                raise
-            if not content and step.dispatch_kind == "blocking":
-                logger.warning(f"[Collab] {agent.name} returned empty response")
+        await run_nonstream_orchestration_runtime(
+            db=db,
+            task_run=task_run,
+            queue=queue,
+            resolved_agents=resolved_agents,
+            chatroom_id=chatroom_id,
+            project=project,
+            agents=agents,
+            user_message=user_message,
+            client_turn_id=client_turn_id,
+            output_state=output_state,
+            pending_handoffs=pending_handoffs,
+            orchestration_policy=orchestration_policy,
+            deps=NonstreamOrchestrationRuntimeDeps(
+                execute_turn=execute_orchestration_turn,
+                publish_message=_publish_saved_chat_message,
+                message_metadata=_message_metadata_with_turn(client_turn_id),
+                build_step_context=lambda step, agent, agent_label: {"extra_context": extra_context},
+                log_agent_type=_agent_type,
+            ),
+        )
     except TaskRunCancelledError:
         logger.info("[Collab] Orchestration task run %s observed cancellation and stopped.", getattr(task_run, "id", None))
         return
+    except Exception as exc:
+        logger.exception("[Collab] Orchestration runtime failed: %s", exc)
+        fail_orchestration_task_run(
+            db,
+            task_run,
+            summary=f"Orchestration failed: {exc}",
+            payload={"error": str(exc)},
+        )
+        raise
 
     raise_if_task_run_cancelled(db, task_run, context="orchestration finalize")
     logger.info(f"[Collab] Orchestration complete: {len(results)}/{len(resolved_agents)} agents responded")
@@ -2230,7 +2217,6 @@ async def _resume_interrupted_orchestration_task_run(
             completed_turns=completed_turns,
             last_blocking_result=last_blocking_result,
         )
-        agents_by_id = {getattr(agent, "id", None): agent for agent in resolved_agents}
         execute_orchestration_turn = _build_orchestration_agent_turn_executor()
         append_task_event(
             db,
@@ -2279,65 +2265,51 @@ async def _resume_interrupted_orchestration_task_run(
                 lease_expires_at=lease_expires_at,
             )
 
-        while True:
-            raise_if_task_run_cancelled(db, task_run, context="recovery step loop")
+        def _before_recovery_step():
+            nonlocal lease_expires_at
             lease_expires_at = _renew_task_run_recovery_lease(db, task_run.id)
-            if lease_expires_at is None:
-                logger.warning(
-                    "[Recovery] Lost lease for task run %s while %s was attempting resume",
-                    task_run.id,
-                    RECOVERY_INSTANCE_ID,
-                )
-                refreshed = db.query(TaskRun).filter(TaskRun.id == task_run.id).first()
-                return TaskRunRecoveryResult(
-                    task_run_id=task_run_id,
-                    resumed=False,
-                    reason="lease_lost",
-                    status=refreshed.status if refreshed is not None else task_run.status,
-                    detail="Recovery lease was lost before the orchestration could finish.",
-                    owner=refreshed.recovery_owner if refreshed is not None else None,
-                    lease_expires_at=(
-                        refreshed.recovery_lease_expires_at if refreshed is not None else None
-                    ),
-                )
-            step = queue.pop_ready()
-            if step is None:
-                break
+            if lease_expires_at is not None:
+                return None
+            logger.warning(
+                "[Recovery] Lost lease for task run %s while %s was attempting resume",
+                task_run.id,
+                RECOVERY_INSTANCE_ID,
+            )
+            raise RecoveryLeaseLostError(task_run.id)
 
-            agent = agents_by_id.get(step.agent_id)
-            if agent is None:
-                continue
-
-            agent_label = agent_name_of(agent)
-            step_policy = find_stage_policy(orchestration_policy, step.step_id)
+        def _build_recovery_step_context(step, agent, agent_label):
             db.refresh(task_run)
             step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
             step_recovery_continuation_state = _describe_recovery_continuation_state(step_checkpoint_snapshot)
-            await run_nonstream_orchestration_step(
-                db=db,
-                task_run=task_run,
-                queue=queue,
-                step=step,
-                agent=agent,
-                agent_name=agent_label,
-                chatroom_id=chatroom.id,
-                project=project,
-                agents=agents,
-                user_message=task_run.user_request or "",
-                client_turn_id=task_run.client_turn_id,
-                output_state=output_state,
-                pending_handoffs=pending_handoffs,
-                orchestration_policy=orchestration_policy,
-                stage_policy=step_policy,
+            return {
+                "checkpoint_snapshot": step_checkpoint_snapshot,
+                "dispatch_extra": {"recovery_continuation_state": step_recovery_continuation_state},
+                "include_result": False,
+                "summary_prefix": "Recovery",
+                "recovered": True,
+            }
+
+        await run_nonstream_orchestration_runtime(
+            db=db,
+            task_run=task_run,
+            queue=queue,
+            resolved_agents=resolved_agents,
+            chatroom_id=chatroom.id,
+            project=project,
+            agents=agents,
+            user_message=task_run.user_request or "",
+            client_turn_id=task_run.client_turn_id,
+            output_state=output_state,
+            pending_handoffs=pending_handoffs,
+            orchestration_policy=orchestration_policy,
+            deps=NonstreamOrchestrationRuntimeDeps(
                 execute_turn=execute_orchestration_turn,
                 publish_message=_publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
-                checkpoint_snapshot=step_checkpoint_snapshot,
-                dispatch_extra={"recovery_continuation_state": step_recovery_continuation_state},
-                include_result=False,
-                summary_prefix="Recovery",
-                recovered=True,
-            )
+                before_next_step=_before_recovery_step,
+                build_step_context=_build_recovery_step_context,
+            ),
+        )
 
         raise_if_task_run_cancelled(db, task_run, context="recovery finalize")
         final_runtime = queue.runtime_snapshot()
@@ -2394,6 +2366,19 @@ async def _resume_interrupted_orchestration_task_run(
             detail=recovery_summary,
             owner=RECOVERY_INSTANCE_ID,
             lease_expires_at=lease_expires_at,
+        )
+    except RecoveryLeaseLostError:
+        refreshed = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        return TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="lease_lost",
+            status=refreshed.status if refreshed is not None else task_run.status,
+            detail="Recovery lease was lost before the orchestration could finish.",
+            owner=refreshed.recovery_owner if refreshed is not None else None,
+            lease_expires_at=(
+                refreshed.recovery_lease_expires_at if refreshed is not None else None
+            ),
         )
     except TaskRunCancelledError:
         refreshed = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()

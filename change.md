@@ -1318,3 +1318,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - nonstream / stream turn executor 增加 turn/tool/event 边界 callback 插口，供 orchestration runtime 注入 cooperative cancellation check
 - sync orchestration、stream orchestration 与 interrupted recovery 改为在 executor loop 中观察 cancelled 状态并尽早停止
 - 补 cancellation focused tests，覆盖 nonstream agent turn 提前停机、stream runtime `done(cancelled=true)` 收口与既有 API/recovery 回归
+
+### `Extract shared nonstream orchestration runtime runner`
+
+范围：
+
+- `backend/services/orchestration_runtime_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_runtime_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `NonstreamOrchestrationRuntimeDeps` 与 `run_nonstream_orchestration_runtime(...)`
+- sync multi-agent orchestration 与 interrupted recovery 改为复用 shared nonstream step loop
+- recovery 的 lease renewal 与 checkpoint context 通过 callback / step-context factory 注入，而不是继续手写整段 while-loop
+- 补 runtime runner focused tests，并跑 sync orchestration / recovery 回归

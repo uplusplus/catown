@@ -4209,3 +4209,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 仍不能强杀已经在飞行中的单次 LLM 请求或外部工具进程
 - 当前是“cooperative cancellation”，不是 preemptive interrupt
 - 下一步如果要更接近 Codex，需要把 cancel token 继续传到更底层的模型/工具执行单元
+
+### 11.83 2026-04-28 新进展：nonstream orchestration runtime loop 已抽成 shared service
+
+在 11.79 抽出 streaming orchestration runtime event runner 后，Catown 仍保留一块明显差距：sync orchestration 和 interrupted recovery 的顶层 step loop 还分别定义在 route 内，只是都调用了 shared step runner。
+
+本轮新增：
+
+- `backend/services/orchestration_runtime_runner.py`
+  - `NonstreamOrchestrationRuntimeDeps`
+  - `run_nonstream_orchestration_runtime(...)`
+
+并接入：
+
+- sync multi-agent orchestration
+- interrupted orchestration recovery
+
+设计取舍：
+
+- 这次先统一 nonstream 顶层 runtime loop，不强行把 start/plan event、lease claim、finalization 一次性全部并进去
+- service 负责：step pop、agent resolve、cancellation check、step context build、step runner 调度
+- route 仍负责：前置 runtime 准备、recovery lease 续约 callback、terminal result/finalizer 组装
+
+这一步的意义是：
+
+- sync orchestration 与 recovery 首次复用同一条顶层 nonstream executor loop
+- orchestration runtime 的“顶层 while step loop”现在 stream / nonstream 两边都已有 service 边界
+- route 中剩下的非传输逻辑进一步收敛到准备态和 terminalization，而不是持续持有 step 调度循环
+
+边界：
+
+- route 仍保留 `orchestration_started` / `scheduler_plan_created` / recovery started/rebuilt 这些前置事件
+- recovery lease 的续约与 lease lost 分支仍由 route callback 提供
+- 下一步如果继续逼近 Codex，可以把这些前置事件和 lease orchestration 也纳入统一 runtime driver
