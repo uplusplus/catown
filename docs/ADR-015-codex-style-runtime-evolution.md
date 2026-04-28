@@ -4856,3 +4856,38 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - stream finalizer 仍会额外补 `payload`
 - sync finalizer 仍不需要 `payload`
 - 如果继续推进，下一步可以考虑把 sync/stream finalizer 的外部接口也统一成更一致的返回契约
+
+### 11.103 2026-04-28 新进展：single-agent managed session stack 已开始落地
+
+在 11.102 之后，single-agent sync/stream 虽然已经有 unified facade，但 route 里 still retained 一层更高的会话控制：
+
+- sync：
+  - 组 `UnifiedSingleAgentSyncSessionSpec`
+  - 手工调用 unified sync facade
+- stream：
+  - 组 `UnifiedSingleAgentStreamSessionSpec`
+  - 手工处理 stream session 的 success/failure finalizer 与 terminal payload
+
+本轮在 `backend/services/single_agent_session_orchestrator.py` 上继续扩展：
+
+- `ManagedSingleAgentSyncSessionSpec`
+- `ManagedSingleAgentStreamSessionSpec`
+- `run_managed_single_agent_sync_session(...)`
+- `iter_managed_single_agent_stream_session(...)`
+
+并接入：
+
+- standalone assistant sync/stream
+- project single-agent sync/stream
+
+这一步的意义是：
+
+- route 进一步从 single-agent session control flow 中退出
+- stream path 的 final done/error payload 也开始由 managed stack 统一发出，而不是 route 手写
+- single-agent session stack 的层次现在更完整：driver -> finalizer -> managed orchestrator
+
+边界：
+
+- managed sync/stream 仍分别基于不同底层 runner
+- finalizer 外部接口仍未完全同构
+- 如果继续推进，下一步可以进一步统一 single-agent sync/stream 的 spec/result 契约

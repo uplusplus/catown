@@ -1659,3 +1659,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared terminal helper 与 `SingleAgentSessionTerminalResult`，统一 single-agent sync/stream finalizer 的核心结果模型
 - sync/stream finalizer 改为复用 shared success persistence / failure terminalization helper
 - 补 finalizer 回归，验证 sync single-agent、standalone stream、project stream 的行为兼容
+
+### `Promote managed single-agent session stack`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator facade 上新增 managed sync/stream session stack，统一更高层的 single-agent 会话控制流
+- standalone assistant sync/stream 与 project single-agent sync/stream 改为复用 managed stack，而不是 route 手工驱动 unified session + finalizer
+- 补 managed stack focused tests，并跑 single-agent sync/stream API 回归

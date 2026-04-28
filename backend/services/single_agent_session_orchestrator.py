@@ -11,11 +11,13 @@ from services.single_agent_session_runner import (
     SingleAgentSessionRunnerResult,
     run_single_agent_session,
 )
+from services.single_agent_stream_finalizer import SingleAgentStreamFinalizeResult
 from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
     SingleAgentStreamSessionResult,
     iter_single_agent_stream_session,
 )
+from services.stream_transport import render_sse_payload
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,19 @@ class UnifiedSingleAgentSyncSessionSpec:
 @dataclass(frozen=True)
 class UnifiedSingleAgentStreamSessionSpec:
     deps: SingleAgentStreamSessionDeps
+
+
+@dataclass(frozen=True)
+class ManagedSingleAgentSyncSessionSpec:
+    session: UnifiedSingleAgentSyncSessionSpec
+
+
+@dataclass(frozen=True)
+class ManagedSingleAgentStreamSessionSpec:
+    session: UnifiedSingleAgentStreamSessionSpec
+    finalize_success: Callable[[str], Awaitable[SingleAgentStreamFinalizeResult]]
+    finalize_failure: Callable[[Exception], Awaitable[SingleAgentStreamFinalizeResult]]
+    serialize_payload: Callable[[Any], str]
 
 
 async def run_sync_single_agent_session(
@@ -86,3 +101,33 @@ async def iter_unified_single_agent_stream_session(
 
     async for item in iter_single_agent_stream_session(spec.deps):
         yield item
+
+
+async def run_managed_single_agent_sync_session(
+    spec: ManagedSingleAgentSyncSessionSpec,
+) -> SingleAgentSessionRunnerResult:
+    """Run one sync single-agent session through the managed stack surface."""
+
+    return await run_unified_single_agent_sync_session(spec.session)
+
+
+async def iter_managed_single_agent_stream_session(
+    spec: ManagedSingleAgentStreamSessionSpec,
+) -> AsyncIterator[str]:
+    """Run one stream single-agent session through the managed stack surface."""
+
+    final_content = ""
+    try:
+        async for item in iter_unified_single_agent_stream_session(spec.session):
+            if item.final_content is not None:
+                final_content = item.final_content
+                continue
+            if item.chunk is not None:
+                yield item.chunk
+    except Exception as exc:
+        finalized = await spec.finalize_failure(exc)
+        yield render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload)
+        return
+
+    finalized = await spec.finalize_success(final_content)
+    yield render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload)
