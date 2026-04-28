@@ -1534,3 +1534,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared persistence service，统一 runtime-card public payload、runtime-card 持久化发布与 stream failure fallback 持久化
 - standalone assistant stream、project single-agent stream、runtime-card replay endpoint 改为复用 shared service
 - 补 focused persistence tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
+
+### `Extract shared saved-message publish service`
+
+范围：
+
+- `backend/services/chat_publish.py`
+- `backend/routes/api.py`
+- `backend/tests/test_chat_publish.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared saved-message publish service，统一 chat message 的 room broadcast 与 monitor broadcast
+- 普通消息发送、tool replay result、streaming path 与 stream runtime persistence 改为复用 `publish_saved_chat_message(...)`
+- 补 focused publish service test，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry

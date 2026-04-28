@@ -4627,3 +4627,31 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - websocket/monitor publish 仍通过 shared service 内部依赖 `websocket_manager`
 - `_publish_saved_chat_message(...)` 仍由 route 注入给 failure persistence helper
 - 如果继续推进，下一步可以考虑把 `_publish_saved_chat_message(...)` 本身也继续往 shared message/runtime publish service 收
+
+### 11.96 2026-04-28 新进展：saved-message publish 已抽成 shared service
+
+在 11.95 之后，route 里还残留一个经常被调用的发布侧 helper：`_publish_saved_chat_message(...)`。它本质上只是“消息已落库后，向 room/monitor 广播”的适配器。
+
+本轮新增：
+
+- `backend/services/chat_publish.py`
+  - `publish_saved_chat_message(...)`
+
+并接入：
+
+- 普通 `send_message(...)`
+- tool replay result publish
+- standalone / single-agent / orchestration stream path
+- `stream_runtime_persistence.persist_stream_failure(...)`
+
+这一步的意义是：
+
+- route 又少了一段重复的 websocket / monitor publish 辅助逻辑
+- saved chat message 的 room/monitor 广播协议现在有了独立 service 边界和 focused test
+- stream runtime persistence 也不再需要 route 传 message publish callback
+
+边界：
+
+- `chat_publish` 仍直接依赖 `websocket_manager`
+- route 仍保留 `_publish_saved_chat_message` 之外的 message save 决策
+- 如果继续推进，下一步可以进一步看普通 non-stream path 的 message save + publish + ledger completion 是否也值得统一成 shared session finalizer

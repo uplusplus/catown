@@ -58,8 +58,8 @@ from monitoring import monitor_network_buffer
 from skills import import_skill_from_marketplace, list_marketplaces, load_skill_registry, set_marketplace_enabled
 from services.monitor_projection import (
     resolve_chatroom_project as monitor_resolve_chatroom_project,
-    serialize_monitor_message_item,
 )
+from services.chat_publish import publish_saved_chat_message
 from services.context_builder import (
     ContextSelector,
     assemble_messages,
@@ -763,7 +763,7 @@ async def _trigger_standalone_assistant_response(
         metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=runtime.assistant_name,
     )
-    await _publish_saved_chat_message(
+    await publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=agent_response.id,
@@ -923,7 +923,6 @@ async def _stream_standalone_assistant_response(
             final_message_saved=False,
             persist_failure=lambda current_db, **kwargs: persist_stream_failure(
                 current_db,
-                publish_saved_message=_publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn,
                 detail=traceback.format_exc(),
                 **kwargs,
@@ -942,7 +941,7 @@ async def _stream_standalone_assistant_response(
         agent_name=runtime.assistant_name,
         final_content=final_content,
         save_message=chatroom_manager.send_message,
-        publish_message=_publish_saved_chat_message,
+        publish_message=publish_saved_chat_message,
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
         compact_summary=lambda content: _compact_runtime_text(content, limit=280),
@@ -1291,7 +1290,7 @@ async def trigger_agent_response(
         
         logger.debug(f"[ Agent response saved: id={agent_response.id}")
         
-        await _publish_saved_chat_message(
+        await publish_saved_chat_message(
             db,
             chatroom_id,
             message_id=agent_response.id,
@@ -1971,7 +1970,7 @@ async def _run_multi_agent_orchestration(
             orchestration_policy=orchestration_policy,
             deps=NonstreamOrchestrationRuntimeDeps(
                 execute_turn=execute_orchestration_turn,
-                publish_message=_publish_saved_chat_message,
+                publish_message=publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(client_turn_id),
                 build_step_context=lambda step, agent, agent_label: {"extra_context": extra_context},
                 log_agent_type=_agent_type,
@@ -2099,7 +2098,7 @@ async def _resume_interrupted_orchestration_task_run(
                 describe_recovery_continuation_state=_describe_recovery_continuation_state,
                 rebuild_recovery_state=_rebuild_orchestration_recovery_state,
                 execute_turn=execute_orchestration_turn,
-                publish_message=_publish_saved_chat_message,
+                publish_message=publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
                 renew_lease=_before_recovery_step,
                 recovery_owner=RECOVERY_INSTANCE_ID,
@@ -2227,7 +2226,7 @@ async def _stream_multi_agent_orchestration(
     stream_runtime_deps = StreamOrchestrationRuntimeDeps(
         iter_agent_events=_build_stream_orchestration_agent_turn_iterator(),
         save_message=chatroom_manager.send_message,
-        publish_message=_publish_saved_chat_message,
+        publish_message=publish_saved_chat_message,
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
         schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
@@ -2407,57 +2406,6 @@ class TaskRunCancelRequest(BaseModel):
     note: Optional[str] = None
     cancelled_by: Optional[str] = "user"
 
-
-async def _publish_saved_chat_message(
-    db: Session,
-    chatroom_id: int,
-    *,
-    message_id: int,
-    content: str,
-    agent_name: Optional[str],
-    message_type: str,
-    created_at: Any,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> None:
-    from routes.websocket import websocket_manager
-
-    created_value = created_at.isoformat() if hasattr(created_at, "isoformat") else created_at
-    room_payload = {
-        "type": "chat_message",
-        "chatroom_id": chatroom_id,
-        "id": message_id,
-        "content": content,
-        "agent_name": agent_name,
-        "message_type": message_type,
-        "created_at": created_value,
-        "client_turn_id": (metadata or {}).get("client_turn_id"),
-    }
-    await websocket_manager.broadcast_to_room(room_payload, chatroom_id)
-
-    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-    if not chatroom:
-        return
-
-    project = monitor_resolve_chatroom_project(db, chatroom)
-    monitor_payload = serialize_monitor_message_item(
-        message_id=message_id,
-        chatroom_id=chatroom_id,
-        chat_title=chatroom.title,
-        project_id=project.id if project else None,
-        project_name=project.name if project else None,
-        agent_name=agent_name,
-        content=content,
-        message_type=message_type,
-        created_at=created_value,
-        metadata=metadata,
-    )
-    await websocket_manager.broadcast_to_topic(
-        {
-            "type": "monitor_message",
-            "payload": monitor_payload,
-        },
-        "monitor",
-    )
 
 def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     metadata = dict(extra or {})
@@ -3340,7 +3288,7 @@ async def _publish_replayed_tool_result_message(
         metadata=metadata,
         agent_name=getattr(item, "agent_name", None),
     )
-    await _publish_saved_chat_message(
+    await publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=saved.id,
@@ -3722,7 +3670,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         message_type="text",
         metadata=_message_metadata_with_turn(message.client_turn_id),
     )
-    await _publish_saved_chat_message(
+    await publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=response_msg.id,
@@ -3951,7 +3899,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 message_type="text",
                 metadata=_message_metadata_with_turn(message.client_turn_id),
             )
-            await _publish_saved_chat_message(
+            await publish_saved_chat_message(
                 db,
                 chatroom_id,
                 message_id=user_msg.id,
@@ -4284,7 +4232,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 agent_name=target_agent_label,
                 final_content=final_content,
                 save_message=chatroom_manager.send_message,
-                publish_message=_publish_saved_chat_message,
+                publish_message=publish_saved_chat_message,
                 record_turn_completed=record_agent_turn_completed,
                 message_metadata=_message_metadata_with_turn,
                 compact_summary=lambda content: _compact_runtime_text(content, limit=280),
@@ -4320,7 +4268,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     final_message_saved=final_message_saved,
                     persist_failure=lambda current_db, **kwargs: persist_stream_failure(
                         current_db,
-                        publish_saved_message=_publish_saved_chat_message,
                         message_metadata=_message_metadata_with_turn,
                         detail=traceback.format_exc(),
                         **kwargs,

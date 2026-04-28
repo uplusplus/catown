@@ -9,6 +9,7 @@ from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name
 from chatrooms.manager import chatroom_manager
 from models.database import Chatroom, SessionLocal
 from routes.websocket import websocket_manager
+from services.chat_publish import publish_saved_chat_message
 from services.monitor_projection import (
     resolve_chatroom_project as monitor_resolve_chatroom_project,
     serialize_monitor_runtime_item,
@@ -124,7 +125,6 @@ async def persist_stream_failure(
     chatroom_id: int,
     client_turn_id: Optional[str],
     error_message: str,
-    publish_saved_message: Callable[..., Awaitable[Any]],
     message_metadata: Callable[[Optional[str], Optional[Dict[str, Any]]], Dict[str, Any]],
     agent_name: Optional[str] = None,
     agent_id: Optional[int] = None,
@@ -174,7 +174,7 @@ async def persist_stream_failure(
         ),
         agent_name=safe_agent_name,
     )
-    await publish_saved_message(
+    await publish_saved_chat_message(
         db,
         chatroom_id,
         message_id=saved.id,

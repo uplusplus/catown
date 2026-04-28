@@ -41,18 +41,18 @@ async def test_persist_stream_failure_creates_visible_fallback_and_uses_shared_s
     async def fake_send_message(**kwargs):
         return saved_message
 
-    async def fake_publish_saved_message(*args, **kwargs):
+    async def fake_publish_saved_chat_message(*args, **kwargs):
         published_messages.append(kwargs)
 
     monkeypatch.setattr(persistence_mod, "store_runtime_card", fake_store_runtime_card)
     monkeypatch.setattr(persistence_mod.chatroom_manager, "send_message", fake_send_message)
+    monkeypatch.setattr(persistence_mod, "publish_saved_chat_message", fake_publish_saved_chat_message)
 
     result = await persistence_mod.persist_stream_failure(
         type("DB", (), {"rollback": lambda self: None})(),
         chatroom_id=7,
         client_turn_id="turn-1",
         error_message="boom",
-        publish_saved_message=fake_publish_saved_message,
         message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, **(extra or {})},
         agent_name="Analyst",
         agent_id=9,
