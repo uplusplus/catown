@@ -38,14 +38,11 @@ class UnifiedSingleAgentSessionOutcome:
 
 
 @dataclass(frozen=True)
-class UnifiedSingleAgentSyncSessionSpec:
-    execute_turn: Callable[[], Awaitable[str | None]]
+class UnifiedSingleAgentSessionSpec:
+    mode: str
+    execute_turn: Callable[[], Awaitable[str | None]] | None = None
+    stream_deps: SingleAgentStreamSessionDeps | None = None
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None
-
-
-@dataclass(frozen=True)
-class UnifiedSingleAgentStreamSessionSpec:
-    deps: SingleAgentStreamSessionDeps
 
 
 @dataclass(frozen=True)
@@ -57,7 +54,7 @@ class ManagedSingleAgentSessionCallbacks:
 
 @dataclass(frozen=True)
 class ManagedSingleAgentSessionSpec:
-    session: Any
+    session: UnifiedSingleAgentSessionSpec
     callbacks: ManagedSingleAgentSessionCallbacks
 
 
@@ -79,9 +76,11 @@ async def iter_stream_single_agent_session(
 
 
 async def run_unified_single_agent_sync_session(
-    spec: UnifiedSingleAgentSyncSessionSpec,
+    spec: UnifiedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the higher-level unified facade."""
+    if spec.mode != "sync" or spec.execute_turn is None:
+        raise ValueError("Unified sync session requires mode='sync' and execute_turn.")
     final_content = await spec.execute_turn()
     if not final_content and spec.on_empty is not None:
         await _maybe_await(spec.on_empty())
@@ -89,11 +88,12 @@ async def run_unified_single_agent_sync_session(
 
 
 async def iter_unified_single_agent_stream_session(
-    spec: UnifiedSingleAgentStreamSessionSpec,
+    spec: UnifiedSingleAgentSessionSpec,
 ) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the higher-level unified facade."""
-
-    async for item in iter_single_agent_stream_session(spec.deps):
+    if spec.mode != "stream" or spec.stream_deps is None:
+        raise ValueError("Unified stream session requires mode='stream' and stream_deps.")
+    async for item in iter_single_agent_stream_session(spec.stream_deps):
         yield UnifiedSingleAgentSessionOutcome(
             final_content=item.final_content,
             chunk=item.chunk,

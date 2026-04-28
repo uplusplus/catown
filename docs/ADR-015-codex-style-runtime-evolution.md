@@ -4970,3 +4970,26 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `UnifiedSingleAgentSyncSessionSpec` 与 `UnifiedSingleAgentStreamSessionSpec` 仍分别存在
 - managed callbacks 对 sync 仍有“未使用”字段
 - 如果继续推进，下一步可以进一步统一 sync/stream 的 unified spec/result 契约
+
+### 11.107 2026-04-28 新进展：managed single-agent spec 已统一为一套 contract
+
+在 11.106 之后，managed stack 已经开始同构，但 route 和 orchestrator 仍然混用不同的 managed spec 名称与 shape。
+
+本轮继续把 managed 层彻底收口为：
+
+- `ManagedSingleAgentSessionSpec`
+- `ManagedSingleAgentSessionCallbacks`
+
+并让 standalone/project 的 sync/stream path 都通过这套 contract 构造 managed stack。
+
+这一步的意义是：
+
+- single-agent sync/stream 的 managed 输入模型正式统一
+- route 构造 single-agent session stack 的方式进一步同构
+- 后续如果继续统一 `UnifiedSingleAgentSessionSpec` 或结果模型，改动面会更集中在 orchestrator 内部
+
+边界：
+
+- `UnifiedSingleAgentSyncSessionSpec` 与 `UnifiedSingleAgentStreamSessionSpec` 仍分别存在
+- sync 与 stream 依然通过不同的底层 deps 表达执行差异
+- 如果继续推进，下一步就该考虑把 unified sync/stream spec 本身也收成更统一的一套
