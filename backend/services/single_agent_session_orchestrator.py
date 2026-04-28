@@ -13,20 +13,9 @@ from services.single_agent_session_runner import (
 )
 from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
-    SingleAgentStreamSessionResult,
     iter_single_agent_stream_session,
 )
 from services.stream_transport import render_sse_payload
-
-
-@dataclass(frozen=True)
-class SyncSingleAgentSessionSpec:
-    deps: SingleAgentSessionRunnerDeps
-
-
-@dataclass(frozen=True)
-class StreamSingleAgentSessionSpec:
-    deps: SingleAgentStreamSessionDeps
 
 
 @dataclass(frozen=True)
@@ -56,23 +45,6 @@ class ManagedSingleAgentSessionCallbacks:
 class ManagedSingleAgentSessionSpec:
     session: UnifiedSingleAgentSessionSpec
     callbacks: ManagedSingleAgentSessionCallbacks
-
-
-async def run_sync_single_agent_session(
-    spec: SyncSingleAgentSessionSpec,
-) -> SingleAgentSessionRunnerResult:
-    """Run one sync single-agent session using the shared orchestrator surface."""
-
-    return await run_single_agent_session(spec.deps)
-
-
-async def iter_stream_single_agent_session(
-    spec: StreamSingleAgentSessionSpec,
-) -> AsyncIterator[SingleAgentStreamSessionResult]:
-    """Run one stream single-agent session using the shared orchestrator surface."""
-
-    async for item in iter_single_agent_stream_session(spec.deps):
-        yield item
 
 
 async def run_unified_single_agent_sync_session(

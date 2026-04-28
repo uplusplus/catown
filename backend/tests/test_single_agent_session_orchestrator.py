@@ -13,7 +13,6 @@ from services.single_agent_stream_session import SingleAgentStreamSessionDeps
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_unified_single_agent_stream_session_delegates_to_stream_runner():
     class FakeLLM:
         model = "test"

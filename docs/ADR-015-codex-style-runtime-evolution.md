@@ -4993,3 +4993,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `UnifiedSingleAgentSyncSessionSpec` 与 `UnifiedSingleAgentStreamSessionSpec` 仍分别存在
 - sync 与 stream 依然通过不同的底层 deps 表达执行差异
 - 如果继续推进，下一步就该考虑把 unified sync/stream spec 本身也收成更统一的一套
+
+### 11.108 2026-04-28 新进展：legacy single-agent wrapper spec 已移除
+
+在 11.107 之后，orchestrator 内仍残留两层已经不再被 route 使用的 legacy wrapper：
+
+- `SyncSingleAgentSessionSpec`
+- `StreamSingleAgentSessionSpec`
+- `run_sync_single_agent_session(...)`
+- `iter_stream_single_agent_session(...)`
+
+本轮把这些 wrapper 从 orchestrator 与 focused tests 中移除，single-agent 栈进一步收敛到：
+
+- `UnifiedSingleAgentSessionSpec`
+- `ManagedSingleAgentSessionSpec`
+- `ManagedSingleAgentSessionCallbacks`
+
+这一步的意义是：
+
+- single-agent orchestrator 的抽象层次更清楚，不再保留“旧入口 + 新入口”双轨
+- 后续继续统一 unified sync/stream spec 时，内部结构更干净
+- focused tests 也更直接反映当前真实公开契约
+
+边界：
+
+- `UnifiedSingleAgentSessionSpec` 仍有 `mode + execute_turn` / `mode + stream_deps` 的差异
+- route 仍需显式构造这套 unified spec
+- 如果继续推进，下一步就该尝试把 unified sync/stream spec 进一步同构

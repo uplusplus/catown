@@ -1739,3 +1739,18 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 继续把 managed single-agent sync/stream 路径统一到同一组 contract 与调用面
 - route 不再混用多套 managed spec 名称，而是统一围绕 `ManagedSingleAgentSessionSpec + ManagedSingleAgentSessionCallbacks`
 - 补 focused orchestrator tests，并跑 single-agent sync/stream API 回归确认行为兼容
+
+### `Remove legacy single-agent wrapper specs`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 删除已经不再被 route 使用的 legacy wrapper spec 与入口：`SyncSingleAgentSessionSpec`、`StreamSingleAgentSessionSpec`、`run_sync_single_agent_session(...)`、`iter_stream_single_agent_session(...)`
+- 让 focused tests 直接围绕 `UnifiedSingleAgentSessionSpec` 与 `ManagedSingleAgentSessionSpec` 构建
+- 继续压缩 single-agent orchestrator 的公开契约，减少“旧入口 + 新入口”并存
