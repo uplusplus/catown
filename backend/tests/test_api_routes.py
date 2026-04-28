@@ -212,7 +212,7 @@ class TestToolsEndpoint:
         data = r.json()
         assert data["count"] >= 14
         tool_names = [t["name"] for t in data["tools"]]
-        for t in ["web_search", "execute_code", "delegate_task", "save_memory", "read_file"]:
+        for t in ["web_search", "execute_code", "run_shell", "delegate_task", "save_memory", "read_file"]:
             assert t in tool_names, f"Missing tool: {t}"
 
 

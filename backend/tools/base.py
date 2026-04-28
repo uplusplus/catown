@@ -101,6 +101,29 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         },
         "side_effect_scope": "ephemeral_exec",
     },
+    "run_shell": {
+        "risk_level": "high",
+        "approval": {
+            "kind": "manual",
+            "required": True,
+            "notes": ["Shell commands can mutate the workspace or external systems and must be explicitly approved."],
+        },
+        "sandbox": {
+            "mode": "workspace_shell",
+            "workspace_scope": "workspace_write",
+            "network_access": "host_inherited",
+            "notes": [
+                "Commands run inside the active workspace only.",
+                "Output is capped and execution is time-boxed, but the host shell semantics still apply.",
+            ],
+        },
+        "escalation": {
+            "possible": True,
+            "hint": "Escalate only after reviewing whether the command mutates git state, installs packages, or touches external systems.",
+            "triggers": ["shell_mutation", "package_install", "external_command"],
+        },
+        "side_effect_scope": "workspace_command",
+    },
     "web_search": {
         "sandbox": {"mode": "network_client", "network_access": "enabled"},
         "side_effect_scope": "network_read",

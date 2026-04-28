@@ -7,6 +7,7 @@ from .base import ToolRegistry, BaseTool
 from .web_search import WebSearchTool
 from .web_fetch import WebFetchTool
 from .execute_code import ExecuteCodeTool
+from .run_shell import RunShellTool
 from .retrieve_memory import RetrieveMemoryTool
 from .file_operations import (
     ReadFileTool, 
@@ -48,6 +49,7 @@ def set_collaboration_coordinator(coordinator):
 tool_registry.register(WebSearchTool())
 tool_registry.register(WebFetchTool())
 tool_registry.register(ExecuteCodeTool(workspace=WORKSPACE))
+tool_registry.register(RunShellTool(workspace=WORKSPACE))
 tool_registry.register(RetrieveMemoryTool())
 from .save_memory import SaveMemoryTool
 tool_registry.register(SaveMemoryTool())
@@ -87,6 +89,7 @@ __all__ = [
     'BaseTool', 
     'WebSearchTool', 
     'ExecuteCodeTool', 
+    'RunShellTool',
     'RetrieveMemoryTool',
     'ReadFileTool',
     'WriteFileTool',

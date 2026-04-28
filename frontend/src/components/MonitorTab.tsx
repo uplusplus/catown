@@ -1811,8 +1811,8 @@ const FLOW_CAPABILITY_PRESETS: Record<
   },
   exec: {
     nodeId: "flow-capability-exec",
-    title: "Exec Shell",
-    subtitle: "PTY, patch and shell tools",
+    title: "Code + Shell",
+    subtitle: "Sandboxed code and workspace commands",
     kind: "tool",
     order: 2,
   },

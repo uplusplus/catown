@@ -72,7 +72,7 @@ class TestToolRegistry:
         from tools import tool_registry
         tool_names = tool_registry.list_tools()
         expected = [
-            "web_search", "execute_code", "retrieve_memory", "save_memory",
+            "web_search", "execute_code", "run_shell", "retrieve_memory", "save_memory",
             "read_file", "write_file", "list_files", "delete_file", "search_files",
             "delegate_task", "broadcast_message", "check_task_status",
             "list_collaborators", "send_direct_message"
@@ -102,6 +102,19 @@ class TestToolRegistry:
         from tools import tool_registry
         result = await tool_registry.execute("execute_code", code="print(2+3)")
         assert "5" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_run_shell(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CATOWN_WORKSPACE", str(tmp_path))
+        from tools import tool_registry
+
+        result = await tool_registry.execute(
+            "run_shell",
+            command="printf 7",
+            __catown_approval_granted=True,
+        )
+
+        assert "7" in str(result)
 
     @pytest.mark.asyncio
     async def test_file_operations(self, tmp_path, monkeypatch):

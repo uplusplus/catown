@@ -190,6 +190,7 @@
         "write_file",
         "list_files",
         "execute_code",
+        "run_shell",
         "search_files",
         "send_direct_message",
         "query_agent",
@@ -256,6 +257,7 @@
         "retrieve_memory",
         "read_file",
         "execute_code",
+        "run_shell",
         "list_files",
         "search_files",
         "send_direct_message",
@@ -315,7 +317,7 @@
           "使用语义化版本号：MAJOR.MINOR.PATCH",
           "CHANGELOG 用用户语言，不用技术术语",
           "写入 CHANGELOG.md",
-          "用 execute_code 执行 git 命令打 tag"
+          "用 run_shell 执行 git 命令打 tag"
         ]
       },
       "tools": [
@@ -324,6 +326,7 @@
         "write_file",
         "list_files",
         "execute_code",
+        "run_shell",
         "send_direct_message",
         "query_agent",
         "github_manager",

@@ -121,21 +121,21 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
             soul={"identity": "注重代码质量的工程师", "values": ["可读性优先"], "style": "简洁"},
             role={"title": "开发工程师", "responsibilities": ["基于 spec 写代码", "写测试"], "rules": ["代码写到 src/"]},
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "search_files"]
+            tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "run_shell", "search_files"]
         ),
         create_agent_config_from_provider(
             agent_type="tester",
             soul={"identity": "天生多疑的QA", "values": ["边界条件是bug的温床"], "style": "冷静精确"},
             role={"title": "测试工程师", "responsibilities": ["测试软件找bug"], "rules": ["安全问题标记blocker"]},
             provider_config=default_provider,
-            tools=["retrieve_memory", "read_file", "execute_code", "list_files", "search_files"]
+            tools=["retrieve_memory", "read_file", "execute_code", "run_shell", "list_files", "search_files"]
         ),
         create_agent_config_from_provider(
             agent_type="release",
             soul={"identity": "谨慎的发布守门人", "values": ["测试报告是唯一准绳"], "style": "保守果断"},
             role={"title": "发布经理", "responsibilities": ["审查测试报告", "发布版本"], "rules": ["有blocker不发布"]},
             provider_config=default_provider,
-            tools=["retrieve_memory", "read_file", "write_file", "list_files", "execute_code"]
+            tools=["retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "run_shell"]
         ),
     ]
 

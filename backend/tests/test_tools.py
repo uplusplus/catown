@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.base import BaseTool, ToolRegistry, build_tool_policy_pack
 from tools.web_search import WebSearchTool
 from tools.execute_code import ExecuteCodeTool
+from tools.run_shell import RunShellTool
 from tools.retrieve_memory import RetrieveMemoryTool
 from tools.github_manager import GitHubManagerTool
 from tools.skill_manager import SkillManagerTool
@@ -42,8 +43,9 @@ class TestToolRegistry:
         registry = ToolRegistry()
         registry.register(WebSearchTool())
         registry.register(ExecuteCodeTool())
+        registry.register(RunShellTool())
         schemas = registry.get_schemas()
-        assert len(schemas) == 2
+        assert len(schemas) == 3
         assert schemas[0]["type"] == "function"
         assert schemas[0]["function"]["name"] == "web_search"
 
@@ -51,6 +53,7 @@ class TestToolRegistry:
         registry = ToolRegistry()
         registry.register(WebSearchTool())
         registry.register(ExecuteCodeTool())
+        registry.register(RunShellTool())
         schemas = registry.get_schemas(["web_search"])
         assert len(schemas) == 1
         assert schemas[0]["function"]["name"] == "web_search"
@@ -103,22 +106,26 @@ class TestToolRegistry:
         from tools import tool_registry
 
         assert "skill_manager" in tool_registry.list_tools()
+        assert "run_shell" in tool_registry.list_tools()
 
     def test_get_policy_pack_surfaces_approval_sandbox_and_escalation(self):
         registry = ToolRegistry()
         registry.register(WebSearchTool())
         registry.register(ExecuteCodeTool())
+        registry.register(RunShellTool())
         registry.register(GitHubManagerTool())
 
-        pack = registry.get_policy_pack(["execute_code", "web_search", "github_manager"])
+        pack = registry.get_policy_pack(["execute_code", "run_shell", "web_search", "github_manager"])
 
-        assert pack["tool_policy_summary"]["tool_count"] == 3
-        assert pack["tool_policy_summary"]["network_enabled_count"] == 2
-        assert pack["tool_policy_summary"]["escalation_possible_count"] == 1
+        assert pack["tool_policy_summary"]["tool_count"] == 4
+        assert pack["tool_policy_summary"]["network_enabled_count"] == 3
+        assert pack["tool_policy_summary"]["escalation_possible_count"] == 2
 
         policies = {policy["name"]: policy for policy in pack["tool_policies"]}
         assert policies["execute_code"]["sandbox"]["mode"] == "language_sandbox"
         assert policies["execute_code"]["sandbox"]["network_access"] == "blocked"
+        assert policies["run_shell"]["approval"]["required"] is True
+        assert policies["run_shell"]["sandbox"]["mode"] == "workspace_shell"
         assert policies["web_search"]["sandbox"]["network_access"] == "enabled"
         assert policies["github_manager"]["approval"]["kind"] == "conditional"
         assert policies["github_manager"]["escalation"]["possible"] is True
@@ -147,6 +154,19 @@ class TestToolRegistry:
 
         assert "Approval Blocked" in result
         assert "approved" in result
+
+    @pytest.mark.asyncio
+    async def test_run_shell_executes_after_approval(self, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        result = await registry.execute(
+            "run_shell",
+            command="printf ok",
+            __catown_approval_granted=True,
+        )
+
+        assert "ok" in result
 
 
 class TestSkillManagerTool:

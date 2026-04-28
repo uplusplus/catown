@@ -13,6 +13,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import subprocess
 import time
 import traceback
 from datetime import datetime
@@ -497,6 +499,55 @@ def _tool_execute_code(workspace: Path, code: str, language: str = "python") -> 
             pass
 
 
+def _tool_run_shell(workspace: Path, command: str, cwd: str = ".", timeout_seconds: int = 20) -> str:
+    """运行真实 shell 命令（限定在 workspace 内）"""
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return "Error: command is required"
+
+    requested = Path(str(cwd or ".").strip() or ".")
+    target_cwd = (requested if requested.is_absolute() else (workspace / requested)).resolve()
+    err = _validate_path(workspace, target_cwd)
+    if err:
+        return err
+    if not target_cwd.exists():
+        return f"Error: directory not found: {cwd}"
+    if not target_cwd.is_dir():
+        return f"Error: not a directory: {cwd}"
+
+    timeout = max(1, min(int(timeout_seconds or 20), 60))
+    if os.name == "nt":
+        shell_cmd = [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/s", "/c", normalized_command]
+    else:
+        shell_bin = os.environ.get("SHELL") or shutil.which("bash") or shutil.which("sh")
+        if not shell_bin:
+            return "Error: no supported shell found"
+        shell_cmd = [shell_bin, "-lc", normalized_command]
+
+    try:
+        result = subprocess.run(
+            shell_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(target_cwd),
+            env={**os.environ, "TERM": "dumb"},
+        )
+    except subprocess.TimeoutExpired:
+        return f"Error: execution timed out ({timeout}s)"
+    except Exception as e:
+        return f"Error: {e}"
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    output = "\n".join(part for part in [stdout, stderr] if part).strip()[:50000]
+    if result.returncode == 0:
+        return output or "(no output)"
+    if not output:
+        output = f"Command exited with status {result.returncode}."
+    return f"exit_code: {result.returncode}\n{output}"
+
+
 def _tool_web_search(workspace: Path, query: str) -> str:
     """网络搜索（DuckDuckGo Instant Answer API）"""
     import urllib.request
@@ -549,6 +600,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
     "write_file": {"fn": _tool_write_file, "params": ["file_path", "content"], "desc": "Write content to a file in workspace"},
     "list_files": {"fn": _tool_list_files, "params": ["dir_path?"], "desc": "List files in workspace directory"},
     "execute_code": {"fn": _tool_execute_code, "params": ["code", "language?"], "desc": "Execute code (python)"},
+    "run_shell": {"fn": _tool_run_shell, "params": ["command", "cwd?", "timeout_seconds?"], "desc": "Run a shell command in the workspace"},
     "web_search": {"fn": _tool_web_search, "params": ["query"], "desc": "Search the web"},
     "send_message": {"fn": _tool_send_message_placeholder, "params": ["to_agent", "content", "message_type?"], "desc": "Send a message to another agent in this pipeline (e.g. ask architect for clarification)"},
 }
