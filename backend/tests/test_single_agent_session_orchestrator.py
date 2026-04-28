@@ -178,9 +178,9 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
     async def store_runtime_card(*args, **kwargs):
         return None
 
-    chunks = [
-        chunk
-        async for chunk in iter_managed_single_agent_stream_session(
+    outcomes = [
+        outcome
+        async for outcome in iter_managed_single_agent_stream_session(
             ManagedSingleAgentStreamSessionSpec(
                 session=UnifiedSingleAgentStreamSessionSpec(
                     deps=SingleAgentStreamSessionDeps(
@@ -210,7 +210,8 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
         )
     ]
 
-    assert chunks[-1] == 'data: {"type":"done"}\n\n'
+    assert outcomes[-1].chunk == 'data: {"type":"done"}\n\n'
+    assert outcomes[-1].payload == {"type": "done"}
 
 
 async def _async_stream_finalize(final_content):

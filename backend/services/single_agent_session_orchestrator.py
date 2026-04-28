@@ -34,6 +34,8 @@ class StreamSingleAgentSessionSpec:
 class UnifiedSingleAgentSessionOutcome:
     final_content: str | None = None
     chunk: str | None = None
+    payload: dict[str, Any] | None = None
+    error_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,10 +83,10 @@ async def iter_stream_single_agent_session(
 
 async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSyncSessionSpec,
-) -> SingleAgentSessionRunnerResult:
+) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the higher-level unified facade."""
 
-    return await run_single_agent_session(
+    result = await run_single_agent_session(
         SingleAgentSessionRunnerDeps(
             execute_turn=spec.execute_turn,
             finalize_success=spec.finalize_success,
@@ -92,20 +94,24 @@ async def run_unified_single_agent_sync_session(
             on_empty=spec.on_empty,
         )
     )
+    return UnifiedSingleAgentSessionOutcome(final_content=result.final_content)
 
 
 async def iter_unified_single_agent_stream_session(
     spec: UnifiedSingleAgentStreamSessionSpec,
-) -> AsyncIterator[SingleAgentStreamSessionResult]:
+) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the higher-level unified facade."""
 
     async for item in iter_single_agent_stream_session(spec.deps):
-        yield item
+        yield UnifiedSingleAgentSessionOutcome(
+            final_content=item.final_content,
+            chunk=item.chunk,
+        )
 
 
 async def run_managed_single_agent_sync_session(
     spec: ManagedSingleAgentSyncSessionSpec,
-) -> SingleAgentSessionRunnerResult:
+) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the managed stack surface."""
 
     return await run_unified_single_agent_sync_session(spec.session)
@@ -113,7 +119,7 @@ async def run_managed_single_agent_sync_session(
 
 async def iter_managed_single_agent_stream_session(
     spec: ManagedSingleAgentStreamSessionSpec,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the managed stack surface."""
 
     final_content = ""
@@ -123,11 +129,19 @@ async def iter_managed_single_agent_stream_session(
                 final_content = item.final_content
                 continue
             if item.chunk is not None:
-                yield item.chunk
+                yield item
     except Exception as exc:
         finalized = await spec.finalize_failure(exc)
-        yield render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload)
+        yield UnifiedSingleAgentSessionOutcome(
+            chunk=render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload),
+            payload=dict(finalized.payload or {}),
+            error_text=getattr(finalized, "error_text", None),
+        )
         return
 
     finalized = await spec.finalize_success(final_content)
-    yield render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload)
+    yield UnifiedSingleAgentSessionOutcome(
+        final_content=final_content,
+        chunk=render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload),
+        payload=dict(finalized.payload or {}),
+    )

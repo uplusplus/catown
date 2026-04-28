@@ -891,7 +891,7 @@ async def _stream_standalone_assistant_response(
             timings=raw_event.get("timings"),
         )
 
-    async for chunk in iter_managed_single_agent_stream_session(
+    async for outcome in iter_managed_single_agent_stream_session(
         ManagedSingleAgentStreamSessionSpec(
             session=UnifiedSingleAgentStreamSessionSpec(
                 deps=SingleAgentStreamSessionDeps(
@@ -959,7 +959,8 @@ async def _stream_standalone_assistant_response(
             serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
         )
     ):
-        yield chunk
+        if outcome.chunk is not None:
+            yield outcome.chunk
 
 
 async def trigger_agent_response(
@@ -4185,7 +4186,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     timings=raw_event.get("timings"),
                 )
 
-            async for chunk in iter_managed_single_agent_stream_session(
+            async for outcome in iter_managed_single_agent_stream_session(
                 ManagedSingleAgentStreamSessionSpec(
                     session=UnifiedSingleAgentStreamSessionSpec(
                         deps=SingleAgentStreamSessionDeps(
@@ -4254,7 +4255,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
                 )
             ):
-                yield chunk
+                if outcome.chunk is not None:
+                    yield outcome.chunk
 
         except Exception as persist_exc:
             logger.error(f"[SSE] Failed to drive streaming session: {persist_exc}")

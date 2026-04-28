@@ -1691,3 +1691,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - route 不再直接调用底层 single-agent sync/stream runner，而是统一走更高层的 unified facade / managed stack 入口
 - 补 focused orchestrator tests，覆盖 unified sync/stream facade 与 managed stream 终结输出
 - 跑 single-agent sync + standalone stream + project single-agent stream 回归，验证行为兼容
+
+### `Refine managed single-agent stack around unified facade`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 继续把 standalone assistant sync/stream 与 project single-agent sync/stream 收口到 unified facade 调用面
+- 让 route 进一步减少对底层 single-agent runner 的直接依赖
+- 补 focused orchestrator tests，并跑 single-agent sync/stream 回归确认行为兼容
