@@ -188,6 +188,10 @@ from services.orchestration_runtime_runner import (
     NonstreamOrchestrationRuntimeDeps,
     run_nonstream_orchestration_runtime,
 )
+from services.orchestration_recovery_runner import (
+    OrchestrationRecoveryRuntimeDeps,
+    run_orchestration_recovery_runtime,
+)
 from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
     iter_stream_orchestration_runtime_events,
@@ -2106,70 +2110,7 @@ async def _resume_interrupted_orchestration_task_run(
                 owner=outcome.owner,
                 lease_expires_at=outcome.lease_expires_at,
             )
-        queue = OrchestrationRuntimeQueue(plan)
-        recovery_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-        recovery_continuation_state = _describe_recovery_continuation_state(recovery_checkpoint_snapshot)
-        record_task_run_recovery_started(
-            db,
-            task_run,
-            run_kind=task_run.run_kind,
-            requested_agents=agent_names,
-            resolved_agents=[agent_name_of(agent) for agent in resolved_agents],
-            project_id=project.id if project else None,
-            chatroom_id=chatroom.id,
-            trigger=trigger,
-            recovery_owner=RECOVERY_INSTANCE_ID,
-            recovery_lease_expires_at=lease_expires_at,
-            checkpoint_snapshot=recovery_checkpoint_snapshot,
-            recovery_continuation_state=recovery_continuation_state,
-            runner_policy=orchestration_policy,
-        )
-        completed_turns, pending_handoffs, last_blocking_result, completed_step_ids = _rebuild_orchestration_recovery_state(
-            db,
-            task_run=task_run,
-            queue=queue,
-        )
-        output_state = OrchestrationStepOutputState(
-            completed_turns=completed_turns,
-            last_blocking_result=last_blocking_result,
-        )
         execute_orchestration_turn = _build_orchestration_agent_turn_executor()
-        record_scheduler_recovery_state_rebuilt(
-            db,
-            task_run,
-            queue,
-            checkpoint_snapshot=recovery_checkpoint_snapshot,
-            recovery_continuation_state=recovery_continuation_state,
-            runner_policy=orchestration_policy,
-            completed_step_ids=completed_step_ids,
-            replayed_turn_count=len(completed_turns),
-        )
-        initial_runtime = queue.runtime_snapshot()
-        if (
-            initial_runtime.ready_step_count == 0
-            and initial_runtime.completed_step_count < initial_runtime.step_count
-        ):
-            outcome = fail_recovery_guard(
-                db,
-                task_run,
-                task_run_id=task_run_id,
-                kind="no_runnable_steps",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
-                payload=_scheduler_plan_payload(
-                    queue,
-                    extra={"runner_policy": orchestration_policy.to_payload()},
-                ),
-            )
-            return TaskRunRecoveryResult(
-                task_run_id=task_run_id,
-                resumed=False,
-                reason=outcome.reason,
-                status=outcome.status,
-                detail=outcome.detail,
-                owner=outcome.owner,
-                lease_expires_at=outcome.lease_expires_at,
-            )
 
         def _before_recovery_step():
             nonlocal lease_expires_at
@@ -2182,97 +2123,38 @@ async def _resume_interrupted_orchestration_task_run(
                 RECOVERY_INSTANCE_ID,
             )
             raise RecoveryLeaseLostError(task_run.id)
-
-        def _build_recovery_step_context(step, agent, agent_label):
-            db.refresh(task_run)
-            step_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-            step_recovery_continuation_state = _describe_recovery_continuation_state(step_checkpoint_snapshot)
-            return {
-                "checkpoint_snapshot": step_checkpoint_snapshot,
-                "dispatch_extra": {"recovery_continuation_state": step_recovery_continuation_state},
-                "include_result": False,
-                "summary_prefix": "Recovery",
-                "recovered": True,
-            }
-
-        await run_nonstream_orchestration_runtime(
+        recovery_result = await run_orchestration_recovery_runtime(
             db=db,
             task_run=task_run,
-            queue=queue,
-            resolved_agents=resolved_agents,
-            chatroom_id=chatroom.id,
+            task_run_id=task_run_id,
+            chatroom=chatroom,
             project=project,
             agents=agents,
-            user_message=task_run.user_request or "",
-            client_turn_id=task_run.client_turn_id,
-            output_state=output_state,
-            pending_handoffs=pending_handoffs,
+            agent_names=agent_names,
+            resolved_agents=resolved_agents,
+            plan=plan,
             orchestration_policy=orchestration_policy,
-            deps=NonstreamOrchestrationRuntimeDeps(
+            trigger=trigger,
+            lease_expires_at=lease_expires_at,
+            deps=OrchestrationRecoveryRuntimeDeps(
+                build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
+                describe_recovery_continuation_state=_describe_recovery_continuation_state,
+                rebuild_recovery_state=_rebuild_orchestration_recovery_state,
                 execute_turn=execute_orchestration_turn,
                 publish_message=_publish_saved_chat_message,
                 message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
-                before_next_step=_before_recovery_step,
-                build_step_context=_build_recovery_step_context,
+                renew_lease=_before_recovery_step,
+                recovery_owner=RECOVERY_INSTANCE_ID,
             ),
-        )
-
-        raise_if_task_run_cancelled(db, task_run, context="recovery finalize")
-        final_runtime = queue.runtime_snapshot()
-        if final_runtime.completed_step_count < final_runtime.step_count:
-            outcome = fail_recovery_guard(
-                db,
-                task_run,
-                task_run_id=task_run_id,
-                kind="incomplete",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
-                payload=_scheduler_plan_payload(
-                    queue,
-                    extra={"runner_policy": orchestration_policy.to_payload()},
-                ),
-            )
-            return TaskRunRecoveryResult(
-                task_run_id=task_run_id,
-                resumed=False,
-                reason=outcome.reason,
-                status=outcome.status,
-                detail=outcome.detail,
-                owner=outcome.owner,
-                lease_expires_at=outcome.lease_expires_at,
-            )
-        recovery_summary = summarize_orchestration_result(
-            last_blocking_result=output_state.last_blocking_result,
-            completed_turns=completed_turns,
-            fallback="Recovered orchestration completed.",
-        )
-        append_task_event(
-            db,
-            task_run,
-            "task_run_recovery_completed",
-            summary="Interrupted orchestration recovery completed.",
-            payload={
-                "task_run_id": task_run.id,
-                "completed_step_count": queue.runtime_snapshot().completed_step_count,
-                "step_count": len(queue.plan.steps),
-                "recovery_continuation_state": recovery_continuation_state,
-            },
-        )
-        finalize_orchestration_task_run(
-            db,
-            task_run,
-            last_blocking_result=output_state.last_blocking_result,
-            completed_turns=completed_turns,
-            fallback="Recovered orchestration completed.",
         )
         return TaskRunRecoveryResult(
             task_run_id=task_run_id,
-            resumed=True,
-            reason="completed",
-            status="completed",
-            detail=recovery_summary,
-            owner=RECOVERY_INSTANCE_ID,
-            lease_expires_at=lease_expires_at,
+            resumed=recovery_result.resumed,
+            reason=recovery_result.reason,
+            status=recovery_result.status,
+            detail=recovery_result.detail,
+            owner=recovery_result.owner,
+            lease_expires_at=recovery_result.lease_expires_at,
         )
     except RecoveryLeaseLostError:
         refreshed = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()

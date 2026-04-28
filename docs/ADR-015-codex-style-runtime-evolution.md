@@ -4339,3 +4339,33 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - stream route 对 `collab_skip` / `done` 的 transport 输出仍在 route
 - recovery 主驱动与 no-agent/no-plan 的决策点仍在 route，只是失败动作已共享
 - 下一步可以继续把 recovery 主驱动整体推向 service，或者开始收口 stream route 的 transport-only 渲染边界
+
+### 11.87 2026-04-28 新进展：recovery 主驱动已抽成 shared runtime service
+
+在 11.86 之后，interrupted recovery route 里仍保留一段最大的控制流：在 prepared runtime 之上完成 recovery started/rebuilt、scheduler rebuild、runtime 执行、incomplete guard、completed result/finalizer 整形。
+
+本轮新增：
+
+- `backend/services/orchestration_recovery_runner.py`
+  - `OrchestrationRecoveryRuntimeDeps`
+  - `OrchestrationRecoveryRuntimeResult`
+  - `run_orchestration_recovery_runtime(...)`
+
+并接入 `backend/routes/api.py`。
+
+新的边界：
+
+- service 负责：prepared recovery runtime 的 started/rebuilt event、rebuild state、nonstream runtime execute、no-runnable/incomplete guard、completed result/finalizer
+- route 负责：claim lease、chatroom/project/agent resolve、prepared runtime compile、exception fallback
+
+这一步的意义是：
+
+- interrupted recovery 不再在 route 中持有完整执行主链
+- recovery 现在和 sync/stream runtime 一样，开始拥有独立的 service-level runtime driver
+- route 中剩下的 orchestration 控制协议进一步集中到前置解析与 transport/exception 边界
+
+边界：
+
+- chatroom/project/agent resolve 仍在 route
+- recovery claim lease 与 top-level exception mapping 仍在 route
+- 下一步可以继续把这些前置解析 / claim 协议也推向 recovery driver，或者转去收 stream route 的 transport-only 边界
