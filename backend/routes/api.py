@@ -152,6 +152,10 @@ from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
     finalize_single_agent_session_success,
 )
+from services.single_agent_session_runner import (
+    SingleAgentSessionRunnerDeps,
+    run_single_agent_session,
+)
 from services.single_agent_stream_finalizer import (
     finalize_single_agent_stream_failure,
     finalize_single_agent_stream_success,
@@ -754,35 +758,42 @@ async def _trigger_standalone_assistant_response(
         on_compaction=compaction_callback,
     )
 
-    response_content = await runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200)
-    if not response_content:
-        logger.debug("[ Standalone assistant returned empty response")
-        return
-
-    await finalize_single_agent_session_success(
-        db,
-        task_run,
-        chatroom_id=chatroom_id,
-        client_turn_id=client_turn_id,
-        agent_id=runtime.assistant_id,
-        agent_name=runtime.assistant_name,
-        final_content=response_content,
-        save_message=chatroom_manager.send_message,
-        publish_message=publish_saved_chat_message,
-        record_turn_completed=record_agent_turn_completed,
-        message_metadata=_message_metadata_with_turn,
-        compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-        completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
-        schedule_memory_extraction=(
-            (lambda: asyncio.create_task(_extract_memories(
+    await run_single_agent_session(
+        SingleAgentSessionRunnerDeps(
+            execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
+            finalize_success=lambda response_content: finalize_single_agent_session_success(
+                db,
+                task_run,
+                chatroom_id=chatroom_id,
+                client_turn_id=client_turn_id,
                 agent_id=runtime.assistant_id,
-                agent_type=runtime.assistant_name,
-                user_message=user_message,
-                agent_response=response_content,
-            )))
-            if runtime.assistant_id and len(response_content) > 30
-            else None
-        ),
+                agent_name=runtime.assistant_name,
+                final_content=response_content,
+                save_message=chatroom_manager.send_message,
+                publish_message=publish_saved_chat_message,
+                record_turn_completed=record_agent_turn_completed,
+                message_metadata=_message_metadata_with_turn,
+                compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
+                schedule_memory_extraction=(
+                    (lambda: asyncio.create_task(_extract_memories(
+                        agent_id=runtime.assistant_id,
+                        agent_type=runtime.assistant_name,
+                        user_message=user_message,
+                        agent_response=response_content,
+                    )))
+                    if runtime.assistant_id and len(response_content) > 30
+                    else None
+                ),
+            ),
+            finalize_failure=lambda exc: finalize_single_agent_session_failure(
+                db,
+                task_run,
+                error=exc,
+                failure_summary=f"Agent response failed: {exc}",
+            ),
+            on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+        )
     )
 
 
@@ -1254,49 +1265,55 @@ async def trigger_agent_response(
                 summary=f"{runtime.agent_label} completed a tool round.",
             )
 
-        response_content = await execute_non_stream_turn_loop(
-            llm_client=runtime.llm_client,
-            tools=runtime.tool_schemas,
-            turn_state=runtime.turn_state,
-            assemble_messages=_assemble_project_single_agent_messages,
-            execute_tool_call=_execute_project_single_agent_tool,
-            max_turns=MAX_TOOL_ITERATIONS,
-            on_tool_round=_on_project_single_agent_tool_round,
-        )
-
-        if not response_content:
-            logger.error(f"[ LLM returned empty response after all tool iterations")
-            return
-        
-        finalized = await finalize_single_agent_session_success(
-            db,
-            task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_id=target_agent.id,
-            agent_name=runtime.agent_label,
-            final_content=response_content,
-            save_message=chatroom_manager.send_message,
-            publish_message=publish_saved_chat_message,
-            record_turn_completed=record_agent_turn_completed,
-            message_metadata=_message_metadata_with_turn,
-            compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-            completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
-            schedule_memory_extraction=(
-                (lambda: asyncio.create_task(_extract_memories(
+        finalized = await run_single_agent_session(
+            SingleAgentSessionRunnerDeps(
+                execute_turn=lambda: execute_non_stream_turn_loop(
+                    llm_client=runtime.llm_client,
+                    tools=runtime.tool_schemas,
+                    turn_state=runtime.turn_state,
+                    assemble_messages=_assemble_project_single_agent_messages,
+                    execute_tool_call=_execute_project_single_agent_tool,
+                    max_turns=MAX_TOOL_ITERATIONS,
+                    on_tool_round=_on_project_single_agent_tool_round,
+                ),
+                finalize_success=lambda response_content: finalize_single_agent_session_success(
+                    db,
+                    task_run,
+                    chatroom_id=chatroom_id,
+                    client_turn_id=client_turn_id,
                     agent_id=target_agent.id,
-                    agent_type=_agent_type(target_agent),
-                    user_message=user_message,
-                    agent_response=response_content
-                )))
-                if len(response_content) > 30
-                else None
-            ),
+                    agent_name=runtime.agent_label,
+                    final_content=response_content,
+                    save_message=chatroom_manager.send_message,
+                    publish_message=publish_saved_chat_message,
+                    record_turn_completed=record_agent_turn_completed,
+                    message_metadata=_message_metadata_with_turn,
+                    compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                    completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
+                    schedule_memory_extraction=(
+                        (lambda: asyncio.create_task(_extract_memories(
+                            agent_id=target_agent.id,
+                            agent_type=_agent_type(target_agent),
+                            user_message=user_message,
+                            agent_response=response_content
+                        )))
+                        if len(response_content) > 30
+                        else None
+                    ),
+                ),
+                finalize_failure=lambda exc: finalize_single_agent_session_failure(
+                    db,
+                    task_run,
+                    error=exc,
+                    failure_summary=f"Agent response failed: {exc}",
+                ),
+                on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+            )
         )
 
-        logger.debug(f"[ Agent response saved: id={finalized.saved_message.id if finalized.saved_message else 'unknown'}")
-
-        logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
+        if finalized.final_content:
+            logger.debug(f"[ Agent response saved: id=completed")
+            logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
 
     except Exception as e:
         logger.error(f"[ Agent response failed: {str(e)}")

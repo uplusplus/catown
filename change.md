@@ -1589,3 +1589,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `stream_runtime_persistence` 改为直接复用 shared publish service，不再要求 route 注入 publish callback
 - route 删除 `_publish_saved_chat_message(...)` 本地实现，普通消息发送、tool replay result、streaming path 与 runtime-card replay 全部改走 shared publish/persistence stack
 - 补 focused publish/persistence tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
+
+### `Extract shared single-agent sync session runner`
+
+范围：
+
+- `backend/services/single_agent_session_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_runner.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared single-agent sync session runner，统一 execute / empty / success finalizer / failure finalizer 的控制流
+- standalone non-stream assistant 与 project single-agent sync path 改为复用 `run_single_agent_session(...)`
+- 补 focused session-runner tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry

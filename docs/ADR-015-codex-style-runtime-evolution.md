@@ -4726,3 +4726,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - websocket/monitor 仍由 service 内部直接依赖 manager/serializer
 - 普通 non-stream path 还没有统一更高层的 session driver
 - 下一步可以继续把 single-agent sync/stream 的更高层 session driver 进一步合并
+
+### 11.99 2026-04-28 新进展：single-agent sync session driver 已抽成 shared service
+
+在 11.98 之后，single-agent sync path 还保留一块和 streaming session driver 对应的控制流：
+
+- 执行 session 主体
+- 空响应 early-exit
+- success finalizer
+- failure finalizer
+
+本轮新增：
+
+- `backend/services/single_agent_session_runner.py`
+  - `SingleAgentSessionRunnerDeps`
+  - `SingleAgentSessionRunnerResult`
+  - `run_single_agent_session(...)`
+
+并接入：
+
+- standalone non-stream assistant path
+- project single-agent non-stream path
+
+这一步的意义是：
+
+- single-agent sync 和 single-agent stream 两条路径都开始拥有独立的 shared session driver
+- route 中 non-stream path 不再手写“execute -> if empty -> finalize success/failure”控制流
+- 继续逼近 single-agent sync/stream 的更高层会话统一
+
+边界：
+
+- sync 与 stream 仍分别使用不同的 driver，而不是统一成一个更高层 session abstraction
+- orchestration path 不复用这个 single-agent session driver
+- 如果继续推进，下一步可以考虑把 single-agent sync/stream 再合成更高层 unified session driver
