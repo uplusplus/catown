@@ -6,6 +6,8 @@ import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
+import { FlowTopologyView } from "./FlowTopologyView";
+import type { FlowTopologyGraph, FlowTopologyNode, FlowTopologyStatus } from "./FlowTopologyView";
 import type {
   ApprovalQueueItem,
   AgentInfo,
@@ -129,6 +131,8 @@ type SkillRow = {
   detail: string;
   alwaysLoadedHint: string;
 };
+
+type AgentDirectoryEntry = AgentInfo & { projects: string[] };
 
 type ModelRow = {
   name: string;
@@ -1781,110 +1785,800 @@ function BarChart({
   );
 }
 
-function FlowSvg({ llmCalls, toolCalls, totalTokens }: { llmCalls: number; toolCalls: number; totalTokens: number }) {
-  return (
-    <svg className="flow-svg" viewBox="0 0 980 550" preserveAspectRatio="xMidYMid meet">
-      <defs>
-        <pattern id="flow-grid" width="40" height="40" patternUnits="userSpaceOnUse">
-          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#edf1f5" strokeWidth="0.5" />
-        </pattern>
-      </defs>
-      <rect width="980" height="550" fill="#ffffff" rx="12" />
-      <rect width="980" height="550" fill="url(#flow-grid)" />
+type FlowCapabilityKey = "subagents" | "exec" | "browser" | "search" | "memory" | "approval" | "toolbox";
 
-      <path d="M 60 56 C 60 70, 65 85, 75 100" fill="none" stroke="#d1d5db" strokeWidth="3" />
-      <path d="M 60 56 C 55 90, 60 140, 75 170" fill="none" stroke="#d1d5db" strokeWidth="3" />
-      <path d="M 130 120 C 150 120, 160 165, 180 170" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 130 190 C 150 190, 160 185, 180 183" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 290 183 C 305 183, 315 175, 330 175" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 510 160 C 530 150, 545 143, 560 139" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 510 175 C 530 175, 545 189, 560 189" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 510 185 C 530 200, 545 230, 560 239" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 510 215 C 530 290, 545 370, 560 389" fill="none" stroke="#cbd5e1" strokeWidth="3" />
-      <path d="M 380 220 C 300 350, 150 400, 95 450" fill="none" stroke="#d1d5db" strokeDasharray="6 4" strokeWidth="2" />
-      <path d="M 615 408 C 550 420, 470 435, 425 450" fill="none" stroke="#d1d5db" strokeDasharray="6 4" strokeWidth="2" />
+type FlowCapabilitySummary = {
+  key: FlowCapabilityKey;
+  calls: number;
+  errors: number;
+  durationTotal: number;
+  durationCount: number;
+  lastAt: number;
+  configuredAgents: Set<string>;
+  toolCounts: Map<string, number>;
+};
 
-      <g>
-        <circle cx="60" cy="30" r="22" fill="#7c3aed" />
-        <text x="60" y="68" fill="#7c3aed" fontSize="13" fontWeight="800" textAnchor="middle">
-          You
-        </text>
-      </g>
+const FLOW_CAPABILITY_PRESETS: Record<
+  FlowCapabilityKey,
+  { nodeId: string; title: string; subtitle: string; kind: FlowTopologyNode["kind"]; order: number }
+> = {
+  subagents: {
+    nodeId: "flow-capability-subagents",
+    title: "Subagent Bus",
+    subtitle: "Parallel workers and handoffs",
+    kind: "collaboration",
+    order: 1,
+  },
+  exec: {
+    nodeId: "flow-capability-exec",
+    title: "Exec Shell",
+    subtitle: "PTY, patch and shell tools",
+    kind: "tool",
+    order: 2,
+  },
+  browser: {
+    nodeId: "flow-capability-browser",
+    title: "Browser Session",
+    subtitle: "Open, click and page capture",
+    kind: "web",
+    order: 3,
+  },
+  search: {
+    nodeId: "flow-capability-search",
+    title: "Search + Fetch",
+    subtitle: "Search APIs and remote lookups",
+    kind: "tool",
+    order: 4,
+  },
+  memory: {
+    nodeId: "flow-capability-memory",
+    title: "Memory Store",
+    subtitle: "Recall, summaries and compaction",
+    kind: "memory",
+    order: 5,
+  },
+  approval: {
+    nodeId: "flow-capability-approval",
+    title: "Approval Queue",
+    subtitle: "Human checkpoints and guardrails",
+    kind: "approval",
+    order: 6,
+  },
+  toolbox: {
+    nodeId: "flow-capability-toolbox",
+    title: "Toolbox",
+    subtitle: "Other attached tools",
+    kind: "tool",
+    order: 7,
+  },
+};
 
-      <g>
-        <rect x="20" y="100" width="110" height="40" rx="10" fill="#2196f3" />
-        <text x="75" y="125" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          TUI / Web
-        </text>
-      </g>
-      <g>
-        <rect x="20" y="170" width="110" height="40" rx="10" fill="#2e8b7a" />
-        <text x="75" y="195" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          API / WS
-        </text>
-      </g>
-      <g>
-        <rect x="180" y="160" width="110" height="45" rx="10" fill="#37474f" />
-        <text x="235" y="188" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          Gateway
-        </text>
-      </g>
-      <g>
-        <rect x="330" y="115" width="180" height="120" rx="12" fill="#c62828" />
-        <text x="345" y="133" fill="#ffccbc" fontSize="8" style={{ textTransform: "uppercase", letterSpacing: "1px" }}>
-          Agent Runtime
-        </text>
-        <text x="420" y="155" fontSize="20" textAnchor="middle">
-          Brain
-        </text>
-        <text x="356" y="176" fill="#ffd54f" fontSize="12" fontWeight="700">
-          LLM calls: {formatNumber(llmCalls)}
-        </text>
-        <text x="356" y="190" fill="#ffccbc" fontSize="10">
-          Tokens: {formatNumber(totalTokens)}
-        </text>
-        <text x="356" y="206" fill="#ffccbc" fontSize="10">
-          Tool actions: {formatNumber(toolCalls)}
-        </text>
-      </g>
-      <g>
-        <rect x="560" y="120" width="110" height="38" rx="10" fill="#e65100" />
-        <text x="615" y="144" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          Exec
-        </text>
-      </g>
-      <g>
-        <rect x="560" y="170" width="110" height="38" rx="10" fill="#6a1b9a" />
-        <text x="615" y="194" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          Web
-        </text>
-      </g>
-      <g>
-        <rect x="560" y="220" width="110" height="38" rx="10" fill="#00695c" />
-        <text x="615" y="244" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          Search
-        </text>
-      </g>
-      <g>
-        <rect x="560" y="370" width="110" height="38" rx="10" fill="#283593" />
-        <text x="615" y="394" fill="#ffffff" fontSize="13" fontWeight="700" textAnchor="middle">
-          Memory
-        </text>
-      </g>
-      <g>
-        <rect x="20" y="450" width="160" height="54" rx="12" fill="#0f172a" />
-        <text x="100" y="476" fill="#cbd5e1" fontSize="10" textAnchor="middle">
-          Runtime feed mirrored from Catown
-        </text>
-        <text x="100" y="492" fill="#ffffff" fontSize="14" fontWeight="700" textAnchor="middle">
-          Self-bootstrap monitor
-        </text>
-      </g>
-      <text x="480" y="520" fill="#667085" fontSize="10" textAnchor="middle">
-        {"Channels -> Gateway -> Brain -> Tools / Memory"}
-      </text>
-    </svg>
+function incrementCounter(map: Map<string, number>, key: string, amount = 1) {
+  map.set(key, (map.get(key) ?? 0) + amount);
+}
+
+function sortedCounterKeys(map: Map<string, number>, limit: number) {
+  return [...map.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([value]) => value);
+}
+
+function flowHasRecentActivity(lastAt: number, windowMs = 2 * 60 * 1000) {
+  return lastAt > 0 && Date.now() - lastAt <= windowMs;
+}
+
+function flowStatusFromActivity(activityCount: number, errorCount: number, lastAt: number): FlowTopologyStatus {
+  if (errorCount > 0) {
+    return errorCount >= Math.max(2, Math.ceil(activityCount / 2)) ? "error" : "warning";
+  }
+  if (flowHasRecentActivity(lastAt)) return "active";
+  return activityCount > 0 ? "idle" : "idle";
+}
+
+function flowStatusFromFlag(active: boolean, warning = false): FlowTopologyStatus {
+  if (warning) return "warning";
+  return active ? "active" : "idle";
+}
+
+function flowCapabilityKeyForTool(value: string) {
+  const text = value.toLowerCase().trim();
+  if (!text) return null;
+  if (
+    text.includes("spawn_agent") ||
+    text.includes("wait_agent") ||
+    text.includes("send_input") ||
+    text.includes("resume_agent") ||
+    text.includes("close_agent")
+  ) {
+    return "subagents" as const;
+  }
+  if (
+    text.includes("exec") ||
+    text.includes("command") ||
+    text.includes("stdin") ||
+    text.includes("shell") ||
+    text.includes("patch")
+  ) {
+    return "exec" as const;
+  }
+  if (
+    text.includes("browser") ||
+    text.includes("web.") ||
+    text === "open" ||
+    text === "click" ||
+    text.includes("screenshot") ||
+    text.includes("image_query")
+  ) {
+    return "browser" as const;
+  }
+  if (
+    text.includes("search") ||
+    text.includes("find") ||
+    text.includes("finance") ||
+    text.includes("weather") ||
+    text.includes("sports") ||
+    text.includes("time")
+  ) {
+    return "search" as const;
+  }
+  if (text.includes("memory") || text.includes("recall") || text.includes("context") || text.includes("vector")) {
+    return "memory" as const;
+  }
+  if (text.includes("approval") || text.includes("approve") || text.includes("reject")) {
+    return "approval" as const;
+  }
+  return "toolbox" as const;
+}
+
+function ensureFlowCapability(map: Map<FlowCapabilityKey, FlowCapabilitySummary>, key: FlowCapabilityKey) {
+  const existing = map.get(key);
+  if (existing) return existing;
+  const created: FlowCapabilitySummary = {
+    key,
+    calls: 0,
+    errors: 0,
+    durationTotal: 0,
+    durationCount: 0,
+    lastAt: 0,
+    configuredAgents: new Set<string>(),
+    toolCounts: new Map<string, number>(),
+  };
+  map.set(key, created);
+  return created;
+}
+
+function averageDuration(durationTotal: number, durationCount: number) {
+  if (durationCount <= 0) return "--";
+  return formatDuration(durationTotal / durationCount);
+}
+
+function formatLastActive(lastAt: number) {
+  return lastAt > 0 ? formatTimeAgo(new Date(lastAt).toISOString()) : "--";
+}
+
+function flowNodeWidthBounds(kind: FlowTopologyNode["kind"], compact: boolean) {
+  if (compact) {
+    return {
+      min: {
+        entry: 156,
+        client: 170,
+        gateway: 176,
+        runtime: 196,
+        agent: 184,
+        llm: 180,
+        tool: 176,
+        memory: 180,
+        web: 180,
+        approval: 176,
+        collaboration: 184,
+      }[kind],
+      max: {
+        entry: 232,
+        client: 248,
+        gateway: 256,
+        runtime: 312,
+        agent: 280,
+        llm: 272,
+        tool: 264,
+        memory: 272,
+        web: 272,
+        approval: 256,
+        collaboration: 280,
+      }[kind],
+    };
+  }
+
+  return {
+    min: {
+      entry: 168,
+      client: 182,
+      gateway: 188,
+      runtime: 216,
+      agent: 198,
+      llm: 194,
+      tool: 188,
+      memory: 194,
+      web: 194,
+      approval: 188,
+      collaboration: 198,
+    }[kind],
+    max: {
+      entry: 276,
+      client: 292,
+      gateway: 304,
+      runtime: 368,
+      agent: 336,
+      llm: 318,
+      tool: 296,
+      memory: 316,
+      web: 316,
+      approval: 300,
+      collaboration: 336,
+    }[kind],
+  };
+}
+
+function estimateFlowNodeLayout(node: FlowTopologyNode, compact: boolean) {
+  const metrics = node.metrics ?? [];
+  const chips = node.chips ?? [];
+  const headerWidth = 82 + node.title.length * (compact ? 7.2 : 8.2) + (node.badge?.length ?? 0) * (compact ? 6 : 6.8);
+  const subtitleWidth = node.subtitle ? 112 + Math.min(node.subtitle.length * (compact ? 1.1 : 1.4), compact ? 28 : 42) : 0;
+  const metricWidths = metrics
+    .map((metric) => 28 + metric.label.length * 3.2 + metric.value.length * 6.4)
+    .sort((left, right) => right - left);
+  const metricRowWidth = metricWidths.length
+    ? metricWidths
+        .slice(0, compact ? 2 : 3)
+        .reduce((total, metricWidth) => total + metricWidth, 0) + Math.max(0, Math.min(metricWidths.length, compact ? 2 : 3) - 1) * 8
+    : 0;
+  const chipWidths = chips
+    .map((chip) => 18 + chip.length * (compact ? 5.2 : 6))
+    .sort((left, right) => right - left);
+  const chipRowWidth = chipWidths.length
+    ? chipWidths
+        .slice(0, compact ? 2 : 3)
+        .reduce((total, chipWidth) => total + chipWidth, 0) + Math.max(0, Math.min(chipWidths.length, compact ? 2 : 3) - 1) * 6
+    : 0;
+  const previewWidth = node.preview ? 132 + Math.min(node.preview.length * (compact ? 0.32 : 0.46), compact ? 32 : 84) : 0;
+  const { min: kindMinWidth, max: kindMaxWidth } = flowNodeWidthBounds(node.kind, compact);
+  const preferredWidth = clamp(
+    Math.round(Math.max(headerWidth, subtitleWidth, metricRowWidth, chipRowWidth, previewWidth, kindMinWidth)),
+    kindMinWidth,
+    kindMaxWidth,
   );
+  const contentWidthBudget = preferredWidth - (compact ? 24 : 28);
+  const singleRowMetrics = metrics.length > 0 && metrics.length <= 3 && metricRowWidth <= contentWidthBudget;
+
+  return {
+    preferredWidth,
+    singleRowMetrics,
+  };
+}
+
+function buildFlowTopologyGraph({
+  overview,
+  networkEntries,
+  agentDirectory,
+  modelPrimary,
+  connectionState,
+  pendingApprovalCount,
+  approvalQueueTotal,
+  compact,
+}: {
+  overview: MonitorOverview | null;
+  networkEntries: MonitorNetworkEvent[];
+  agentDirectory: AgentDirectoryEntry[];
+  modelPrimary: string;
+  connectionState: "connected" | "disconnected";
+  pendingApprovalCount: number;
+  approvalQueueTotal: number;
+  compact: boolean;
+}): FlowTopologyGraph {
+  const runtimeEntries = overview?.recent_runtime ?? [];
+  const recentMessages = overview?.recent_messages ?? [];
+  const filteredNetworkEntries = networkEntries.filter((entry) => !isMonitorPageNetwork(entry) && !isFrontendBackendHeartbeat(entry) && !isFrontendMetaRequest(entry));
+
+  let frontendRequestCount = 0;
+  let frontendRequestErrors = 0;
+  let frontendBytes = 0;
+  let frontendDurationTotal = 0;
+  let frontendDurationCount = 0;
+  let frontendLastAt = 0;
+
+  let llmNetworkCount = 0;
+  let llmNetworkErrors = 0;
+  let llmNetworkDurationTotal = 0;
+  let llmNetworkDurationCount = 0;
+  let llmNetworkLastAt = 0;
+
+  let externalRequestCount = 0;
+  let externalRequestErrors = 0;
+  let externalBytes = 0;
+  let externalDurationTotal = 0;
+  let externalDurationCount = 0;
+  let externalLastAt = 0;
+  const externalHosts = new Map<string, number>();
+
+  filteredNetworkEntries.forEach((entry) => {
+    const lastAt = monitorCreatedAtMs(entry.created_at);
+    const failed = entry.success === false || ((entry.status_code ?? 0) >= 400 && (entry.status_code ?? 0) < 600);
+    const totalBytes = entry.total_bytes || entry.request_bytes + entry.response_bytes;
+    const entities = getNetworkEntities(entry);
+
+    if (isFrontendBackendTraffic(entry)) {
+      frontendRequestCount += 1;
+      if (failed) frontendRequestErrors += 1;
+      frontendBytes += totalBytes;
+      if (entry.duration_ms > 0) {
+        frontendDurationTotal += entry.duration_ms;
+        frontendDurationCount += 1;
+      }
+      frontendLastAt = Math.max(frontendLastAt, lastAt);
+    }
+
+    if (entities.from === "llm" || entities.to === "llm") {
+      llmNetworkCount += 1;
+      if (failed) llmNetworkErrors += 1;
+      if (entry.duration_ms > 0) {
+        llmNetworkDurationTotal += entry.duration_ms;
+        llmNetworkDurationCount += 1;
+      }
+      llmNetworkLastAt = Math.max(llmNetworkLastAt, lastAt);
+    }
+
+    if (entities.from === "web" || entities.to === "web") {
+      externalRequestCount += 1;
+      if (failed) externalRequestErrors += 1;
+      externalBytes += totalBytes;
+      if (entry.duration_ms > 0) {
+        externalDurationTotal += entry.duration_ms;
+        externalDurationCount += 1;
+      }
+      externalLastAt = Math.max(externalLastAt, lastAt);
+      const host = (entry.host || "").trim() || compactMonitorText(entry.url, 48);
+      if (host) incrementCounter(externalHosts, host);
+    }
+  });
+
+  const capabilitySummaries = new Map<FlowCapabilityKey, FlowCapabilitySummary>();
+  agentDirectory.forEach((agent) => {
+    (agent.tools ?? []).forEach((tool) => {
+      const key = flowCapabilityKeyForTool(tool);
+      if (!key) return;
+      const summary = ensureFlowCapability(capabilitySummaries, key);
+      summary.configuredAgents.add(agent.name);
+      incrementCounter(summary.toolCounts, tool, 0);
+    });
+  });
+
+  let runtimeErrorCount = 0;
+  let runtimeLastAt = 0;
+  let latestRuntimeAt = 0;
+  let latestRuntimePreview = "";
+
+  let llmCallCount = 0;
+  let llmErrorCount = 0;
+  let llmDurationTotal = 0;
+  let llmDurationCount = 0;
+  let llmLastAt = 0;
+  let llmTokenTotal = 0;
+
+  const activeAgents = new Map<string, { calls: number; llm: number; tool: number; errors: number; lastAt: number }>();
+  const activeModels = new Map<string, number>();
+
+  runtimeEntries.forEach((item) => {
+    const lastAt = monitorCreatedAtMs(item.created_at);
+    runtimeLastAt = Math.max(runtimeLastAt, lastAt);
+    if (lastAt >= latestRuntimeAt) {
+      latestRuntimeAt = lastAt;
+      latestRuntimePreview = compactMonitorText(item.preview || item.title, compact ? 88 : 160);
+    }
+
+    const agentName = normalizeEntity(item.agent || item.from_entity, "runtime");
+    const agentSummary = activeAgents.get(agentName) ?? { calls: 0, llm: 0, tool: 0, errors: 0, lastAt: 0 };
+    agentSummary.calls += 1;
+    agentSummary.lastAt = Math.max(agentSummary.lastAt, lastAt);
+
+    const failed = item.success === false || item.type === "agent_error";
+    if (failed) {
+      runtimeErrorCount += 1;
+      agentSummary.errors += 1;
+    }
+
+    if (item.type === "llm_call") {
+      llmCallCount += 1;
+      agentSummary.llm += 1;
+      llmTokenTotal += runtimeTokenTotal(item);
+      llmLastAt = Math.max(llmLastAt, lastAt);
+      if (item.duration_ms) {
+        llmDurationTotal += item.duration_ms;
+        llmDurationCount += 1;
+      }
+      if (item.success === false) {
+        llmErrorCount += 1;
+      }
+      if (item.model) incrementCounter(activeModels, item.model);
+    }
+
+    if (item.type === "tool_call") {
+      agentSummary.tool += 1;
+      const key = flowCapabilityKeyForTool(item.tool_name || item.to_entity || "");
+      const summary = ensureFlowCapability(capabilitySummaries, key ?? "toolbox");
+      summary.calls += 1;
+      summary.lastAt = Math.max(summary.lastAt, lastAt);
+      summary.configuredAgents.add(agentName);
+      if (item.duration_ms) {
+        summary.durationTotal += item.duration_ms;
+        summary.durationCount += 1;
+      }
+      if (item.success === false) {
+        summary.errors += 1;
+      }
+      incrementCounter(summary.toolCounts, item.tool_name || item.to_entity || "tool");
+    }
+
+    activeAgents.set(agentName, agentSummary);
+  });
+
+  (overview?.usage_window.top_tools ?? []).forEach((tool) => {
+    const key = flowCapabilityKeyForTool(tool.tool_name);
+    const summary = ensureFlowCapability(capabilitySummaries, key ?? "toolbox");
+    summary.calls = Math.max(summary.calls, tool.call_count);
+    summary.errors = Math.max(summary.errors, tool.failure_count);
+    if (tool.avg_duration_ms > 0) {
+      const syntheticCount = Math.max(tool.call_count, 1);
+      summary.durationTotal = Math.max(summary.durationTotal, tool.avg_duration_ms * syntheticCount);
+      summary.durationCount = Math.max(summary.durationCount, syntheticCount);
+    }
+    incrementCounter(summary.toolCounts, tool.tool_name, tool.call_count);
+  });
+
+  const collaboration = overview?.system.collaboration;
+  const activeCollaborators = collaboration?.active_collaborators ?? 0;
+  const pendingTasks = collaboration?.pending_tasks ?? 0;
+  if (agentDirectory.length > 1 || activeCollaborators > 0 || pendingTasks > 0) {
+    const summary = ensureFlowCapability(capabilitySummaries, "subagents");
+    summary.calls = Math.max(summary.calls, activeCollaborators + pendingTasks);
+    summary.lastAt = Math.max(summary.lastAt, runtimeLastAt);
+    agentDirectory.forEach((agent) => summary.configuredAgents.add(agent.name));
+  }
+
+  const contextCompactions = overview?.system.stats.context_compactions ?? overview?.recent_compactions?.length ?? 0;
+  if (contextCompactions > 0) {
+    const summary = ensureFlowCapability(capabilitySummaries, "memory");
+    summary.calls = Math.max(summary.calls, contextCompactions);
+    summary.lastAt = Math.max(summary.lastAt, runtimeLastAt);
+  }
+
+  if (approvalQueueTotal > 0 || pendingApprovalCount > 0) {
+    const summary = ensureFlowCapability(capabilitySummaries, "approval");
+    summary.calls = Math.max(summary.calls, approvalQueueTotal);
+    summary.errors = Math.max(summary.errors, pendingApprovalCount > 0 ? 1 : 0);
+    summary.lastAt = Math.max(summary.lastAt, monitorCreatedAtMs(overview?.captured_at));
+  }
+
+  const llmCallsWindow = overview?.usage_window.llm_calls ?? llmCallCount;
+  const toolCallsWindow = overview?.usage_window.tool_calls ?? (overview?.usage_window.top_tools.reduce((total, item) => total + item.call_count, 0) ?? 0);
+  const totalTokensWindow = overview?.usage_window.total_tokens ?? llmTokenTotal;
+  const activeAgentNames = [...activeAgents.entries()]
+    .sort((left, right) => right[1].calls - left[1].calls || right[1].lastAt - left[1].lastAt)
+    .map(([name]) => name);
+
+  const llmStatus = flowStatusFromActivity(llmCallsWindow || llmCallCount, llmErrorCount + llmNetworkErrors, Math.max(llmLastAt, llmNetworkLastAt));
+  const runtimeStatus = flowStatusFromActivity(runtimeEntries.length, runtimeErrorCount, runtimeLastAt);
+  const frontendStatus = connectionState === "disconnected"
+    ? "warning"
+    : flowStatusFromActivity(frontendRequestCount + recentMessages.length, frontendRequestErrors, Math.max(frontendLastAt, monitorCreatedAtMs(overview?.system.last_message_at)));
+  const gatewayStatus = flowStatusFromActivity(frontendRequestCount + runtimeEntries.length, frontendRequestErrors + runtimeErrorCount, Math.max(frontendLastAt, runtimeLastAt));
+  const userStatus = flowStatusFromFlag(recentMessages.length > 0 || Boolean(overview?.system.stats.visible_chats));
+  const externalStatus = flowStatusFromActivity(externalRequestCount, externalRequestErrors, externalLastAt);
+
+  const nodes: FlowTopologyNode[] = [
+    {
+      id: "flow-user",
+      lane: 0,
+      order: 0,
+      kind: "entry",
+      title: "User / Chats",
+      subtitle: "Incoming prompts and chat surfaces",
+      badge: `${formatNumber(overview?.system.stats.visible_chats)} chats`,
+      status: userStatus,
+      metrics: [
+        { label: "Msgs", value: formatNumber(recentMessages.length) },
+        { label: "Rooms", value: formatNumber(overview?.system.stats.chatrooms) },
+      ],
+      preview: `Last message ${formatTimeAgo(overview?.system.last_message_at || recentMessages[0]?.created_at)}`,
+    },
+    {
+      id: "flow-frontend",
+      lane: 1,
+      order: 0,
+      kind: "client",
+      title: "Web / TUI",
+      subtitle: connectionState === "connected" ? "Realtime client transport online" : "Realtime transport needs attention",
+      badge: connectionState === "connected" ? "WS live" : "offline",
+      status: frontendStatus,
+      metrics: [
+        { label: "Msgs", value: formatNumber(recentMessages.length) },
+        { label: "HTTP", value: formatNumber(frontendRequestCount) },
+        { label: "Avg", value: averageDuration(frontendDurationTotal, frontendDurationCount) },
+      ],
+      preview: `Frontend -> backend ${formatBytes(frontendBytes)} in current monitor window.`,
+    },
+    {
+      id: "flow-gateway",
+      lane: 2,
+      order: 0,
+      kind: "gateway",
+      title: "API Gateway",
+      subtitle: "HTTP, SSE and runtime bridge",
+      badge: overview?.system.status || "runtime",
+      status: gatewayStatus,
+      metrics: [
+        { label: "Reqs", value: formatNumber(frontendRequestCount) },
+        { label: "Errs", value: formatNumber(frontendRequestErrors) },
+        { label: "Bytes", value: formatBytes(frontendBytes) },
+      ],
+      preview: `Status ${overview?.system.status ?? "unknown"} · last traffic ${formatLastActive(Math.max(frontendLastAt, runtimeLastAt))}.`,
+    },
+    {
+      id: "flow-runtime",
+      lane: 3,
+      order: 0,
+      kind: "runtime",
+      title: "Agent Runtime",
+      subtitle: `${formatNumber(agentDirectory.length)} configured agents across current workspace`,
+      badge: `${formatNumber(activeAgentNames.length)} hot`,
+      status: runtimeStatus,
+      metrics: [
+        { label: "Actions", value: formatNumber(runtimeEntries.length) },
+        { label: "LLM", value: formatNumber(llmCallsWindow) },
+        { label: "Tools", value: formatNumber(toolCallsWindow) },
+      ],
+      chips: activeAgentNames.slice(0, compact ? 3 : 6),
+      preview: latestRuntimePreview || "Runtime events will surface here as soon as the agent starts talking to tools or models.",
+    },
+    {
+      id: "flow-llm",
+      lane: 4,
+      order: 0,
+      kind: "llm",
+      title: "LLM Router",
+      subtitle: modelPrimary,
+      badge: `${formatNumber(llmCallsWindow)} calls`,
+      status: llmStatus,
+      metrics: [
+        { label: "Calls", value: formatNumber(llmCallsWindow) },
+        { label: "Tokens", value: formatNumber(totalTokensWindow) },
+        {
+          label: "Avg",
+          value: averageDuration(
+            llmDurationTotal || llmNetworkDurationTotal,
+            llmDurationCount || llmNetworkDurationCount,
+          ),
+        },
+      ],
+      chips: sortedCounterKeys(activeModels, compact ? 2 : 4),
+      preview:
+        sortedCounterKeys(activeModels, compact ? 2 : 4).join(" · ") ||
+        "No recent model activity captured in the current runtime window.",
+    },
+  ];
+
+  const edges: FlowTopologyGraph["edges"] = [
+    {
+      id: "flow-edge-user-frontend",
+      from: "flow-user",
+      to: "flow-frontend",
+      label: "chat input",
+      detail: `${formatNumber(recentMessages.length)} recent messages`,
+      volume: Math.max(recentMessages.length, 1),
+      status: userStatus,
+      active: recentMessages.length > 0,
+    },
+    {
+      id: "flow-edge-frontend-gateway",
+      from: "flow-frontend",
+      to: "flow-gateway",
+      label: "http / ws",
+      detail: `${averageDuration(frontendDurationTotal, frontendDurationCount)} avg`,
+      volume: Math.max(frontendRequestCount, 1),
+      status: connectionState === "disconnected" ? "warning" : flowStatusFromActivity(frontendRequestCount, frontendRequestErrors, frontendLastAt),
+      active: flowHasRecentActivity(frontendLastAt),
+    },
+    {
+      id: "flow-edge-gateway-runtime",
+      from: "flow-gateway",
+      to: "flow-runtime",
+      label: "runtime cards",
+      detail: `${formatNumber(overview?.usage_window.runtime_cards_considered ?? runtimeEntries.length)} observed`,
+      volume: Math.max(runtimeEntries.length, 1),
+      status: runtimeStatus,
+      active: flowHasRecentActivity(runtimeLastAt),
+    },
+    {
+      id: "flow-edge-runtime-llm",
+      from: "flow-runtime",
+      to: "flow-llm",
+      label: "llm calls",
+      detail: `${formatNumber(totalTokensWindow)} tok`,
+      volume: Math.max(llmCallsWindow, 1),
+      status: llmStatus,
+      active: flowHasRecentActivity(Math.max(llmLastAt, llmNetworkLastAt)),
+    },
+  ];
+
+  const capabilityCandidates = [...capabilitySummaries.values()]
+    .filter((summary) => {
+      if (summary.key === "approval") return approvalQueueTotal > 0 || pendingApprovalCount > 0;
+      if (summary.key === "subagents") return agentDirectory.length > 1 || activeCollaborators > 0 || pendingTasks > 0;
+      if (summary.key === "memory") return summary.calls > 0 || summary.configuredAgents.size > 0 || contextCompactions > 0;
+      return summary.calls > 0 || summary.configuredAgents.size > 0;
+    })
+    .sort((left, right) => {
+      const leftScore =
+        left.calls * 100 +
+        left.errors * 40 +
+        left.configuredAgents.size * 12 +
+        (flowHasRecentActivity(left.lastAt) ? 20 : 0) +
+        (left.key === "approval" && pendingApprovalCount > 0 ? 120 : 0) +
+        (left.key === "subagents" && activeCollaborators > 0 ? 80 : 0);
+      const rightScore =
+        right.calls * 100 +
+        right.errors * 40 +
+        right.configuredAgents.size * 12 +
+        (flowHasRecentActivity(right.lastAt) ? 20 : 0) +
+        (right.key === "approval" && pendingApprovalCount > 0 ? 120 : 0) +
+        (right.key === "subagents" && activeCollaborators > 0 ? 80 : 0);
+      return rightScore - leftScore || FLOW_CAPABILITY_PRESETS[left.key].order - FLOW_CAPABILITY_PRESETS[right.key].order;
+    });
+
+  const selectedCapabilityKeys = capabilityCandidates
+    .slice(0, compact ? 3 : 6)
+    .map((summary) => summary.key);
+
+  selectedCapabilityKeys.forEach((key) => {
+    const summary = capabilitySummaries.get(key);
+    if (!summary) return;
+    const preset = FLOW_CAPABILITY_PRESETS[key];
+    const topTools = sortedCounterKeys(summary.toolCounts, compact ? 2 : 4);
+    const metrics =
+      key === "subagents"
+        ? [
+            { label: "Live", value: formatNumber(activeCollaborators) },
+            { label: "Queue", value: formatNumber(pendingTasks) },
+            { label: "Agents", value: formatNumber(agentDirectory.length) },
+          ]
+        : key === "approval"
+          ? [
+              { label: "Pending", value: formatNumber(pendingApprovalCount) },
+              { label: "Queued", value: formatNumber(approvalQueueTotal) },
+              { label: "State", value: pendingApprovalCount > 0 ? "hold" : "clear" },
+            ]
+          : key === "memory"
+            ? [
+                { label: "Calls", value: formatNumber(summary.calls) },
+                { label: "Compacts", value: formatNumber(contextCompactions) },
+                { label: "Agents", value: formatNumber(summary.configuredAgents.size) },
+              ]
+            : [
+                { label: "Calls", value: formatNumber(summary.calls) },
+                { label: "Errs", value: formatNumber(summary.errors) },
+                { label: "Avg", value: averageDuration(summary.durationTotal, summary.durationCount) },
+              ];
+
+    const status =
+      key === "approval"
+        ? (pendingApprovalCount > 0 ? "warning" : approvalQueueTotal > 0 ? "active" : "idle")
+        : key === "subagents"
+          ? (activeCollaborators > 0 || pendingTasks > 0 ? "active" : flowStatusFromFlag(agentDirectory.length > 1))
+          : flowStatusFromActivity(summary.calls, summary.errors, summary.lastAt);
+
+    nodes.push({
+      id: preset.nodeId,
+      lane: 4,
+      order: preset.order,
+      kind: preset.kind,
+      title: preset.title,
+      subtitle: preset.subtitle,
+      badge:
+        key === "approval"
+          ? `${formatNumber(pendingApprovalCount)} pending`
+          : key === "subagents"
+            ? `${formatNumber(agentDirectory.length)} total`
+            : `${formatNumber(Math.max(summary.calls, summary.configuredAgents.size))}`,
+      status,
+      metrics,
+      chips:
+        key === "subagents"
+          ? activeAgentNames.slice(0, compact ? 2 : 5)
+          : topTools.length
+            ? topTools
+            : [...summary.configuredAgents].slice(0, compact ? 2 : 4),
+      preview:
+        key === "subagents"
+          ? `Active ${formatNumber(activeCollaborators)} · pending ${formatNumber(pendingTasks)} · last runtime ${formatLastActive(runtimeLastAt)}.`
+          : key === "approval"
+            ? pendingApprovalCount > 0
+              ? "Manual decisions are currently blocking one or more runtime actions."
+              : "Approval rail is configured and currently clear."
+            : key === "memory"
+              ? `Recent memory activity ${formatLastActive(summary.lastAt)}.`
+              : `${topTools.join(" · ") || "Configured tools present."} · last active ${formatLastActive(summary.lastAt)}.`,
+    });
+
+    edges.push({
+      id: `flow-edge-runtime-${key}`,
+      from: "flow-runtime",
+      to: preset.nodeId,
+      label:
+        key === "subagents"
+          ? "handoff"
+          : key === "approval"
+            ? "guardrail"
+            : key === "memory"
+              ? "memory ops"
+              : "tool calls",
+      detail:
+        key === "approval"
+          ? `${formatNumber(pendingApprovalCount)} pending`
+          : key === "subagents"
+            ? `${formatNumber(activeCollaborators)} live`
+            : key === "memory"
+              ? `${formatNumber(contextCompactions)} compactions`
+              : averageDuration(summary.durationTotal, summary.durationCount),
+      volume: Math.max(summary.calls, key === "subagents" ? activeCollaborators + pendingTasks : 1),
+      status,
+      active: key === "approval" ? pendingApprovalCount > 0 : flowHasRecentActivity(summary.lastAt) || (key === "subagents" && activeCollaborators > 0),
+    });
+  });
+
+  if (externalRequestCount > 0 || externalHosts.size > 0) {
+    nodes.push({
+      id: "flow-external",
+      lane: 5,
+      order: 0,
+      kind: "web",
+      title: "External APIs",
+      subtitle: "Remote hosts, web surfaces and vendor calls",
+      badge: `${formatNumber(externalRequestCount)} reqs`,
+      status: externalStatus,
+      metrics: [
+        { label: "Reqs", value: formatNumber(externalRequestCount) },
+        { label: "Errs", value: formatNumber(externalRequestErrors) },
+        { label: "Bytes", value: formatBytes(externalBytes) },
+      ],
+      chips: sortedCounterKeys(externalHosts, compact ? 2 : 4),
+      preview:
+        sortedCounterKeys(externalHosts, compact ? 2 : 4).join(" · ") ||
+        "No host metadata captured for current outbound traffic.",
+    });
+
+    edges.push({
+      id: "flow-edge-runtime-external",
+      from: "flow-runtime",
+      to: "flow-external",
+      label: "outbound net",
+      detail: averageDuration(externalDurationTotal, externalDurationCount),
+      volume: Math.max(externalRequestCount, 1),
+      status: externalStatus,
+      active: flowHasRecentActivity(externalLastAt),
+    });
+  }
+
+  return {
+    laneLabels: ["Entry", "Client", "Platform", "Runtime", "Capabilities", "Outside"],
+    nodes: nodes.map((node) => {
+      const layout = estimateFlowNodeLayout(node, compact);
+      return {
+        ...node,
+        preferredWidth: layout.preferredWidth,
+        singleRowMetrics: layout.singleRowMetrics,
+      };
+    }),
+    edges,
+  };
 }
 
 function collectSkills(projects: ProjectSummary[], agents: AgentInfo[]) {
@@ -2498,8 +3192,8 @@ function usageCostTotal(overview: MonitorOverview | null, period: "day" | "week"
     .reduce((total, item) => total + runtimeCost(item, pricing), 0);
 }
 
-function buildAgentDirectory(projects: ProjectSummary[], agents: AgentInfo[]) {
-  const directory = new Map<string, AgentInfo & { projects: string[] }>();
+function buildAgentDirectory(projects: ProjectSummary[], agents: AgentInfo[]): AgentDirectoryEntry[] {
+  const directory = new Map<string, AgentDirectoryEntry>();
 
   agents.forEach((agent) => {
     directory.set(agent.name, { ...agent, projects: [] });
@@ -3293,6 +3987,36 @@ export function MonitorTab() {
     : 0;
   const contextWindow = config?.global_llm?.default_model?.includes("128") ? 128000 : DEFAULT_CONTEXT_WINDOW;
   const contextUsage = overview ? clamp((overview.usage_window.total_tokens / contextWindow) * 100, 0, 100) : 0;
+  const pendingApprovalCount = approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending ?? 0;
+  const approvalQueueTotal = approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total ?? 0;
+  const overviewFlowGraph = useMemo(
+    () =>
+      buildFlowTopologyGraph({
+        overview,
+        networkEntries,
+        agentDirectory,
+        modelPrimary,
+        connectionState,
+        pendingApprovalCount,
+        approvalQueueTotal,
+        compact: true,
+      }),
+    [agentDirectory, approvalQueueTotal, connectionState, modelPrimary, networkEntries, overview, pendingApprovalCount],
+  );
+  const detailFlowGraph = useMemo(
+    () =>
+      buildFlowTopologyGraph({
+        overview,
+        networkEntries,
+        agentDirectory,
+        modelPrimary,
+        connectionState,
+        pendingApprovalCount,
+        approvalQueueTotal,
+        compact: false,
+      }),
+    [agentDirectory, approvalQueueTotal, connectionState, modelPrimary, networkEntries, overview, pendingApprovalCount],
+  );
 
   const securityChecks = useMemo(() => {
     if (!overview) return [] as Array<{ label: string; pass: boolean; detail: string }>;
@@ -3447,6 +4171,9 @@ export function MonitorTab() {
     }
   }
 
+  const pageClass = (pageId: string, layoutClass: string) =>
+    `page ${layoutClass} ${activePage === pageId ? "active" : ""}`;
+
   return (
     <div className="monitor-dashboard">
       <header className="nav">
@@ -3511,8 +4238,8 @@ export function MonitorTab() {
       ) : null}
       {loading && !overview ? <div className="page active"><div className="empty-state">Loading Catown monitor...</div></div> : null}
 
-      <section className={`page ${activePage === "overview" ? "active" : ""}`} id="page-overview">
-        <div className="card" style={{ marginBottom: 14, display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "start" }}>
+      <section className={pageClass("overview", "page--viz-readable")} id="page-overview">
+        <div className="card overview-hero-card">
           <div>
             <div className="card-title">How independent is your agent?</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
@@ -3523,7 +4250,7 @@ export function MonitorTab() {
             </div>
             <div className="card-sub">Weighted from tool success, tool adoption and recent runtime resilience.</div>
           </div>
-          <div style={{ textAlign: "right", minWidth: 180 }}>
+          <div className="overview-hero-card__meta">
             <div className="small-note">Last monitor window</div>
             <div className="mono" style={{ fontSize: 13, marginTop: 6 }}>
               {formatNumber(overview?.usage_window.llm_calls)} llm / {formatNumber(overview?.usage_window.tool_calls)} tools
@@ -3598,11 +4325,7 @@ export function MonitorTab() {
           <div>
             <div className="overview-flow-pane">
               <div className="flow-container" id="overview-flow-container">
-                <FlowSvg
-                  llmCalls={overview?.usage_window.llm_calls ?? 0}
-                  toolCalls={overview?.usage_window.tool_calls ?? 0}
-                  totalTokens={overview?.usage_window.total_tokens ?? 0}
-                />
+                <FlowTopologyView graph={overviewFlowGraph} compact />
               </div>
             </div>
             <div className="system-health-panel">
@@ -3701,7 +4424,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "flow" ? "active" : ""}`} id="page-flow">
+      <section className={pageClass("flow", "page--detail-full")} id="page-flow">
         <div className="flow-stats">
           <div className="flow-stat">
             <span className="flow-stat-label">Messages / min</span>
@@ -3722,11 +4445,7 @@ export function MonitorTab() {
         </div>
 
         <div className="card" style={{ padding: 8, marginBottom: 16 }}>
-          <FlowSvg
-            llmCalls={overview?.usage_window.llm_calls ?? 0}
-            toolCalls={overview?.usage_window.tool_calls ?? 0}
-            totalTokens={overview?.usage_window.total_tokens ?? 0}
-          />
+          <FlowTopologyView graph={detailFlowGraph} />
         </div>
 
         <div className="section-title">Runtime Feed</div>
@@ -3754,7 +4473,7 @@ export function MonitorTab() {
           ))}
         </div>
       </section>
-      <section className={`page ${activePage === "network" ? "active" : ""}`} id="page-network">
+      <section className={pageClass("network", "page--detail-full")} id="page-network">
         <div className="refresh-bar" style={{ width: "100%" }}>
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Network Transport</h2>
           <span className={`status-pill ${networkStreamState === "connected" ? "status-pill--live" : "status-pill--offline"}`}>
@@ -3768,23 +4487,12 @@ export function MonitorTab() {
             Refresh
           </button>
         </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            marginTop: 0,
-            marginBottom: 10,
-            width: "100%",
-          }}
-        >
-          <p className="small-note" style={{ margin: 0, minWidth: 0 }}>
+        <div className="network-toolbar">
+          <p className="small-note network-toolbar__note">
             Debug view only. No aggregation; each record is shown as one title line plus one raw HTTP wire block.
           </p>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto", flexWrap: "wrap", width: "min(100%, 560px)" }}>
-            <label className="small-note" style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 }}>
+          <div className="network-toolbar__controls">
+            <label className="small-note network-toolbar__toggle">
               <input
                 type="checkbox"
                 checked={showInternalNetwork}
@@ -3794,11 +4502,10 @@ export function MonitorTab() {
             </label>
             <input
               type="text"
-              className="search-input"
+              className="search-input network-toolbar__search"
               placeholder="Filter by host, path, peer, raw text..."
               value={networkFilter}
               onChange={(event) => setNetworkFilter(event.target.value)}
-              style={{ flex: "1 1 280px", width: "100%", minWidth: 180, maxWidth: "100%" }}
             />
           </div>
         </div>
@@ -3824,25 +4531,19 @@ export function MonitorTab() {
                   }}
                 >
                   <summary className="network-log-card__summary" style={{ cursor: "pointer", listStyle: "none", width: "100%", minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", width: "100%", minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 420px", flexWrap: "wrap", width: "100%" }}>
+                    <div className="network-log-card__head">
+                      <div className="network-log-card__title">
                         <span
                           title={direction}
+                          className="network-log-card__icon"
                           style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            width: 28,
-                            height: 28,
-                            borderRadius: 999,
                             background: `${flowColor}1a`,
                             color: flowColor,
-                            flexShrink: 0,
                           }}
                         >
                           <fromVisual.Icon size={16} strokeWidth={2.2} />
                         </span>
-                        <strong style={{ minWidth: 0, maxWidth: "100%", overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                        <strong>
                           {direction}
                           {" · "}
                           {entry.method || "NET"} {entry.path || entry.url}
@@ -3871,7 +4572,7 @@ export function MonitorTab() {
         )}
       </section>
 
-      <section className={`page ${activePage === "usage" ? "active" : ""}`} id="page-usage">
+      <section className={pageClass("usage", "page--viz-readable")} id="page-usage">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
             ↻ Refresh
@@ -4059,7 +4760,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "transcripts" ? "active" : ""}`} id="page-transcripts">
+      <section className={pageClass("transcripts", "page--dashboard-wide")} id="page-transcripts">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
             ↻ Refresh
@@ -4124,7 +4825,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "logs" ? "active" : ""}`} id="page-logs">
+      <section className={pageClass("logs", "page--detail-full")} id="page-logs">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshLogs()}>
             ↻ Refresh
@@ -4133,7 +4834,7 @@ export function MonitorTab() {
             value={logFilter}
             onChange={(event) => setLogFilter(event.target.value)}
             placeholder="Filter logs..."
-            style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border-primary)", minWidth: 220 }}
+            className="logs-filter-input"
           />
           <div className="inline-actions">
             {(["all", "info", "warn", "error"] as const).map((level) => (
@@ -4180,7 +4881,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "memory" ? "active" : ""}`} id="page-memory">
+      <section className={pageClass("memory", "page--dashboard-wide")} id="page-memory">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Memory</div>
@@ -4320,7 +5021,7 @@ export function MonitorTab() {
         )}
       </section>
 
-      <section className={`page ${activePage === "brain" ? "active" : ""}`} id="page-brain">
+      <section className={pageClass("brain", "page--dashboard-wide")} id="page-brain">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Brain - Unified Activity Stream</div>
@@ -4519,7 +5220,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page page--fluid ${activePage === "skills" ? "active" : ""}`} id="page-skills">
+      <section className={pageClass("skills", "page--detail-full")} id="page-skills">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Skills</div>
@@ -4557,7 +5258,7 @@ export function MonitorTab() {
         </div>
 
         {skillsView === "grid" ? (
-          <AdaptiveCardDeck className="skill-grid" itemCount={skills.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={6}>
+          <AdaptiveCardDeck className="skill-grid" itemCount={skills.length} minCardWidth={260} idealCardWidth={320} maxCardWidth={380} maxColumns={10}>
             {skills.map((skill) => (
               <SkillCard key={skill.name} skill={skill} />
             ))}
@@ -4617,7 +5318,7 @@ export function MonitorTab() {
         )}
       </section>
 
-      <section className={`page ${activePage === "models" ? "active" : ""}`} id="page-models">
+      <section className={pageClass("models", "page--viz-readable")} id="page-models">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
             ↻ Refresh
@@ -4679,7 +5380,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "context" ? "active" : ""}`} id="page-context">
+      <section className={pageClass("context", "page--dashboard-wide")} id="page-context">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">LLM Context Inspector</div>
@@ -4779,7 +5480,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "subagents" ? "active" : ""}`} id="page-subagents">
+      <section className={pageClass("subagents", "page--dashboard-wide")} id="page-subagents">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Sub-Agent Tree</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
@@ -4814,7 +5515,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "history" ? "active" : ""}`} id="page-history">
+      <section className={pageClass("history", "page--viz-readable")} id="page-history">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>History</h2>
           <div className="inline-actions">
@@ -5321,7 +6022,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "limits" ? "active" : ""}`} id="page-limits">
+      <section className={pageClass("limits", "page--viz-readable")} id="page-limits">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>API Rate Limit Monitor</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
@@ -5345,7 +6046,7 @@ export function MonitorTab() {
         <EmptyCard title="Hourly rate-limit history" detail="TODO: expose provider-specific rolling minute/hour budgets from Catown backend metrics." />
       </section>
 
-      <section className={`page ${activePage === "approvals" ? "active" : ""}`} id="page-approvals">
+      <section className={pageClass("approvals", "page--dashboard-wide")} id="page-approvals">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Approvals</div>
@@ -5509,7 +6210,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "clusters" ? "active" : ""}`} id="page-clusters">
+      <section className={pageClass("clusters", "page--dashboard-wide")} id="page-clusters">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Session Clusters</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
@@ -5536,7 +6237,7 @@ export function MonitorTab() {
         </AdaptiveCardDeck>
       </section>
 
-      <section className={`page ${activePage === "security" ? "active" : ""}`} id="page-security">
+      <section className={pageClass("security", "page--viz-readable")} id="page-security">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">Security</div>
@@ -5661,7 +6362,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "crons" ? "active" : ""}`} id="page-crons">
+      <section className={pageClass("crons", "page--dashboard-wide")} id="page-crons">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
             ↻ Refresh
@@ -5680,7 +6381,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "nemoclaw" ? "active" : ""}`} id="page-nemoclaw">
+      <section className={pageClass("nemoclaw", "page--dashboard-wide")} id="page-nemoclaw">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
             <div className="section-title">NemoClaw</div>
@@ -5713,7 +6414,7 @@ export function MonitorTab() {
         </div>
       </section>
 
-      <section className={`page ${activePage === "version-impact" ? "active" : ""}`} id="page-version-impact">
+      <section className={pageClass("version-impact", "page--dashboard-wide")} id="page-version-impact">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Upgrade Impact</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
