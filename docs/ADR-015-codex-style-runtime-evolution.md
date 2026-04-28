@@ -4944,3 +4944,29 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync/stream 仍通过不同的底层数据结构和 finalizer 工作
 - route 仍需要构造较多 lambda/deps
 - 如果继续推进，下一步就可以进一步统一 sync/stream 的 spec/result 契约
+
+### 11.106 2026-04-28 新进展：managed single-agent sync/stream spec 契约已统一一层
+
+在 11.105 之后，managed single-agent stack 的 sync/stream 输入形状仍不够统一：
+
+- sync 走 `ManagedSingleAgentSyncSessionSpec`
+- stream 走 `ManagedSingleAgentStreamSessionSpec`
+
+本轮改成统一的：
+
+- `ManagedSingleAgentSessionSpec`
+- `ManagedSingleAgentSessionCallbacks`
+
+并让 standalone/project 的 sync/stream path 都通过这一套 managed 契约进入 orchestrator。
+
+这一步的意义是：
+
+- single-agent sync/stream 的 managed 输入模型开始真正同构
+- route 侧构造 managed stack 的方式更一致
+- 后续继续压缩 callback/lambda 或统一 unified spec 时，有了更稳定的共同表面
+
+边界：
+
+- `UnifiedSingleAgentSyncSessionSpec` 与 `UnifiedSingleAgentStreamSessionSpec` 仍分别存在
+- managed callbacks 对 sync 仍有“未使用”字段
+- 如果继续推进，下一步可以进一步统一 sync/stream 的 unified spec/result 契约

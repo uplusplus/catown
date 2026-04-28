@@ -1,8 +1,8 @@
 import pytest
 
 from services.single_agent_session_orchestrator import (
-    ManagedSingleAgentStreamSessionSpec,
-    ManagedSingleAgentSyncSessionSpec,
+    ManagedSingleAgentSessionCallbacks,
+    ManagedSingleAgentSessionSpec,
     StreamSingleAgentSessionSpec,
     SyncSingleAgentSessionSpec,
     iter_managed_single_agent_stream_session,
@@ -84,23 +84,16 @@ async def test_iter_stream_single_agent_session_delegates_to_stream_runner():
 
 @pytest.mark.asyncio
 async def test_unified_single_agent_sync_session_delegates_to_sync_runner():
-    calls = []
-
     async def execute_turn():
         return "Hello"
-
-    async def finalize_success(content):
-        calls.append(content)
 
     result = await run_unified_single_agent_sync_session(
         UnifiedSingleAgentSyncSessionSpec(
             execute_turn=execute_turn,
-            finalize_success=finalize_success,
         )
     )
 
     assert result.final_content == "Hello"
-    assert calls == ["Hello"]
 
 
 @pytest.mark.asyncio
@@ -155,11 +148,15 @@ async def test_managed_single_agent_sync_session_delegates_to_unified_sync():
         calls.append(content)
 
     result = await run_managed_single_agent_sync_session(
-        ManagedSingleAgentSyncSessionSpec(
+        ManagedSingleAgentSessionSpec(
             session=UnifiedSingleAgentSyncSessionSpec(
                 execute_turn=execute_turn,
+            ),
+            callbacks=ManagedSingleAgentSessionCallbacks(
                 finalize_success=finalize_success,
-            )
+                finalize_failure=lambda exc: _async_stream_failure(str(exc)),
+                serialize_payload=None,
+            ),
         )
     )
 
@@ -181,7 +178,7 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
     outcomes = [
         outcome
         async for outcome in iter_managed_single_agent_stream_session(
-            ManagedSingleAgentStreamSessionSpec(
+            ManagedSingleAgentSessionSpec(
                 session=UnifiedSingleAgentStreamSessionSpec(
                     deps=SingleAgentStreamSessionDeps(
                         llm_client=FakeLLM(),
@@ -203,9 +200,11 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
                         max_turns=1,
                     )
                 ),
-                finalize_success=lambda final_content: _async_stream_finalize(final_content),
-                finalize_failure=lambda exc: _async_stream_failure(str(exc)),
-                serialize_payload=lambda payload: '{"type":"done"}',
+                callbacks=ManagedSingleAgentSessionCallbacks(
+                    finalize_success=lambda final_content: _async_stream_finalize(final_content),
+                    finalize_failure=lambda exc: _async_stream_failure(str(exc)),
+                    serialize_payload=lambda payload: '{"type":"done"}',
+                ),
             )
         )
     ]

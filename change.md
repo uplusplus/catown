@@ -1707,3 +1707,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 继续把 standalone assistant sync/stream 与 project single-agent sync/stream 收口到 unified facade 调用面
 - 让 route 进一步减少对底层 single-agent runner 的直接依赖
 - 补 focused orchestrator tests，并跑 single-agent sync/stream 回归确认行为兼容
+
+### `Unify managed single-agent sync/stream spec contract`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 将 managed single-agent sync/stream 输入形状统一为 `ManagedSingleAgentSessionSpec + ManagedSingleAgentSessionCallbacks`
+- standalone/project 的 sync/stream path 改为复用统一 managed 契约
+- 补 orchestrator focused tests，并跑 single-agent sync/stream API 回归验证行为兼容

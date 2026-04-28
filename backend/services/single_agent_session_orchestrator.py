@@ -11,7 +11,6 @@ from services.single_agent_session_runner import (
     SingleAgentSessionRunnerResult,
     run_single_agent_session,
 )
-from services.single_agent_stream_finalizer import SingleAgentStreamFinalizeResult
 from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
     SingleAgentStreamSessionResult,
@@ -41,8 +40,6 @@ class UnifiedSingleAgentSessionOutcome:
 @dataclass(frozen=True)
 class UnifiedSingleAgentSyncSessionSpec:
     execute_turn: Callable[[], Awaitable[str | None]]
-    finalize_success: Callable[[str], Awaitable[Any]]
-    finalize_failure: Callable[[Exception], Awaitable[Any] | Any] | None = None
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None
 
 
@@ -52,16 +49,16 @@ class UnifiedSingleAgentStreamSessionSpec:
 
 
 @dataclass(frozen=True)
-class ManagedSingleAgentSyncSessionSpec:
-    session: UnifiedSingleAgentSyncSessionSpec
+class ManagedSingleAgentSessionCallbacks:
+    finalize_success: Callable[[str], Awaitable[Any]]
+    finalize_failure: Callable[[Exception], Awaitable[Any]]
+    serialize_payload: Callable[[Any], str] | None = None
 
 
 @dataclass(frozen=True)
-class ManagedSingleAgentStreamSessionSpec:
-    session: UnifiedSingleAgentStreamSessionSpec
-    finalize_success: Callable[[str], Awaitable[SingleAgentStreamFinalizeResult]]
-    finalize_failure: Callable[[Exception], Awaitable[SingleAgentStreamFinalizeResult]]
-    serialize_payload: Callable[[Any], str]
+class ManagedSingleAgentSessionSpec:
+    session: Any
+    callbacks: ManagedSingleAgentSessionCallbacks
 
 
 async def run_sync_single_agent_session(
@@ -85,16 +82,10 @@ async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSyncSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the higher-level unified facade."""
-
-    result = await run_single_agent_session(
-        SingleAgentSessionRunnerDeps(
-            execute_turn=spec.execute_turn,
-            finalize_success=spec.finalize_success,
-            finalize_failure=spec.finalize_failure,
-            on_empty=spec.on_empty,
-        )
-    )
-    return UnifiedSingleAgentSessionOutcome(final_content=result.final_content)
+    final_content = await spec.execute_turn()
+    if not final_content and spec.on_empty is not None:
+        await _maybe_await(spec.on_empty())
+    return UnifiedSingleAgentSessionOutcome(final_content=final_content or None)
 
 
 async def iter_unified_single_agent_stream_session(
@@ -110,15 +101,22 @@ async def iter_unified_single_agent_stream_session(
 
 
 async def run_managed_single_agent_sync_session(
-    spec: ManagedSingleAgentSyncSessionSpec,
+    spec: ManagedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the managed stack surface."""
-
-    return await run_unified_single_agent_sync_session(spec.session)
+    result = await run_single_agent_session(
+        SingleAgentSessionRunnerDeps(
+            execute_turn=spec.session.execute_turn,
+            finalize_success=spec.callbacks.finalize_success,
+            finalize_failure=spec.callbacks.finalize_failure,
+            on_empty=spec.session.on_empty,
+        )
+    )
+    return UnifiedSingleAgentSessionOutcome(final_content=result.final_content)
 
 
 async def iter_managed_single_agent_stream_session(
-    spec: ManagedSingleAgentStreamSessionSpec,
+    spec: ManagedSingleAgentSessionSpec,
 ) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the managed stack surface."""
 
@@ -131,17 +129,23 @@ async def iter_managed_single_agent_stream_session(
             if item.chunk is not None:
                 yield item
     except Exception as exc:
-        finalized = await spec.finalize_failure(exc)
+        finalized = await spec.callbacks.finalize_failure(exc)
         yield UnifiedSingleAgentSessionOutcome(
-            chunk=render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload),
+            chunk=render_sse_payload(finalized.payload, serialize_payload=spec.callbacks.serialize_payload or str),
             payload=dict(finalized.payload or {}),
             error_text=getattr(finalized, "error_text", None),
         )
         return
 
-    finalized = await spec.finalize_success(final_content)
+    finalized = await spec.callbacks.finalize_success(final_content)
     yield UnifiedSingleAgentSessionOutcome(
         final_content=final_content,
-        chunk=render_sse_payload(finalized.payload, serialize_payload=spec.serialize_payload),
+        chunk=render_sse_payload(finalized.payload, serialize_payload=spec.callbacks.serialize_payload or str),
         payload=dict(finalized.payload or {}),
     )
+
+
+async def _maybe_await(value: Any) -> Any:
+    if hasattr(value, "__await__"):
+        return await value
+    return value
