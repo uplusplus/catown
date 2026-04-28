@@ -3,23 +3,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any
 
-from services.run_ledger import append_task_event, complete_task_run
-
-
-SaveMessage = Callable[..., Awaitable[Any]]
-PublishMessage = Callable[..., Awaitable[Any]]
-RecordTurnCompleted = Callable[..., Any]
-ScheduleMemoryExtraction = Callable[[], Any]
-MessageMetadataBuilder = Callable[[str | None], Dict[str, Any]]
-CompactSummary = Callable[[Any], str]
-
-
-@dataclass(frozen=True)
-class SingleAgentSessionFinalizeResult:
-    saved_message: Any | None = None
+from services.single_agent_session_terminal import (
+    SingleAgentSessionTerminalResult as SingleAgentSessionFinalizeResult,
+    persist_single_agent_session_success,
+    terminalize_single_agent_session_failure,
+)
 
 
 async def finalize_single_agent_session_success(
@@ -41,38 +31,22 @@ async def finalize_single_agent_session_success(
 ) -> SingleAgentSessionFinalizeResult:
     """Persist a completed non-stream single-agent turn."""
 
-    resolved_content = final_content or "(Agent returned empty response)"
-    metadata = message_metadata(client_turn_id)
-    saved_message = await save_message(
-        chatroom_id=chatroom_id,
-        agent_id=agent_id,
-        content=resolved_content,
-        message_type="text",
-        metadata=metadata,
-        agent_name=agent_name,
-    )
-    await publish_message(
-        db,
-        chatroom_id,
-        message_id=saved_message.id,
-        content=resolved_content,
-        agent_name=agent_name,
-        message_type="text",
-        created_at=saved_message.created_at,
-        metadata=metadata,
-    )
-    record_turn_completed(
+    return await persist_single_agent_session_success(
         db,
         task_run,
+        chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
+        agent_id=agent_id,
         agent_name=agent_name,
-        message_id=saved_message.id,
-        response_content=resolved_content,
-        summary=completion_summary,
+        final_content=final_content,
+        save_message=save_message,
+        publish_message=publish_message,
+        record_turn_completed=record_turn_completed,
+        message_metadata=message_metadata,
+        compact_summary=compact_summary,
+        completion_summary=completion_summary,
+        schedule_memory_extraction=schedule_memory_extraction,
     )
-    complete_task_run(db, task_run, summary=compact_summary(resolved_content))
-    if schedule_memory_extraction is not None:
-        schedule_memory_extraction()
-    return SingleAgentSessionFinalizeResult(saved_message=saved_message)
 
 
 def finalize_single_agent_session_failure(
@@ -81,15 +55,12 @@ def finalize_single_agent_session_failure(
     *,
     error: Exception | str,
     failure_summary: str,
-) -> None:
+) -> SingleAgentSessionFinalizeResult:
     """Terminalize a failed non-stream single-agent session."""
 
-    error_text = str(error)
-    append_task_event(
+    return terminalize_single_agent_session_failure(
         db,
         task_run,
-        "task_run_failed",
-        summary=failure_summary,
-        payload={"error": error_text},
+        error=error,
+        failure_summary=failure_summary,
     )
-    complete_task_run(db, task_run, status="failed", summary=error_text)

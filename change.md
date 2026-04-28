@@ -1641,3 +1641,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 orchestrator facade 上新增 `UnifiedSingleAgentSyncSessionSpec` / `UnifiedSingleAgentStreamSessionSpec` 与对应 unified entry
 - route 不再直接构造底层 sync/stream runner 调用，而是通过 unified facade 进入 single-agent session stack
 - 补 unified facade focused tests，并跑 single-agent sync/stream 回归
+
+### `Unify single-agent sync/stream terminal result model`
+
+范围：
+
+- `backend/services/single_agent_session_terminal.py`
+- `backend/services/single_agent_session_finalizer.py`
+- `backend/services/single_agent_stream_finalizer.py`
+- `backend/tests/test_single_agent_session_finalizer.py`
+- `backend/tests/test_single_agent_stream_finalizer.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared terminal helper 与 `SingleAgentSessionTerminalResult`，统一 single-agent sync/stream finalizer 的核心结果模型
+- sync/stream finalizer 改为复用 shared success persistence / failure terminalization helper
+- 补 finalizer 回归，验证 sync single-agent、standalone stream、project stream 的行为兼容

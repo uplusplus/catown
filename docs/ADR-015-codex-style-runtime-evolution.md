@@ -4823,3 +4823,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync 与 stream 底层实现仍分别存在
 - unified facade 目前仍是结构性统一，不是行为上完全同构
 - 如果继续推进，下一步就该考虑把 sync/stream finalizer 也往更统一的结果模型收
+
+### 11.102 2026-04-28 新进展：single-agent sync/stream finalizer 结果模型已统一
+
+在 11.101 之后，single-agent sync 与 stream 虽然已经通过 unified facade 进入 session stack，但它们的 finalizer 结果模型仍然不一致：
+
+- sync finalizer 返回 `saved_message`
+- stream finalizer 返回 `payload + saved_message`
+
+本轮新增：
+
+- `backend/services/single_agent_session_terminal.py`
+  - `SingleAgentSessionTerminalResult`
+  - `persist_single_agent_session_success(...)`
+  - `terminalize_single_agent_session_failure(...)`
+
+并让：
+
+- `single_agent_session_finalizer.py`
+- `single_agent_stream_finalizer.py`
+
+都复用这套 shared terminal helper。
+
+这一步的意义是：
+
+- single-agent sync/stream finalizer 首次共享同一个 terminal result model
+- success path 的消息保存/发布/记账/complete 逻辑不再重复维护两份
+- failure path 的 failed terminalization 也开始共享同一条 helper
+
+边界：
+
+- stream finalizer 仍会额外补 `payload`
+- sync finalizer 仍不需要 `payload`
+- 如果继续推进，下一步可以考虑把 sync/stream finalizer 的外部接口也统一成更一致的返回契约
