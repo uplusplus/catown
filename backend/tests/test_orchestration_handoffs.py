@@ -4,6 +4,7 @@ from services.orchestration_handoffs import (
     compact_runtime_text,
     record_orchestration_handoffs,
 )
+from services.orchestration_inbox import summarize_orchestration_handoff_inbox
 
 
 class DummyStep:
@@ -71,5 +72,7 @@ def test_record_orchestration_handoffs_enqueues_and_records_events(fresh_db):
         assert len(events) == 2
         assert events[0].summary == "Recovery created a handoff for developer."
         assert '"recovered": true' in events[0].payload_json
+        projection = summarize_orchestration_handoff_inbox(task_run)
+        assert projection["pending_delivery_count"] == 2
     finally:
         db.close()

@@ -243,6 +243,12 @@ class TaskRun(Base):
         order_by="ApprovalQueueItem.created_at.desc()",
     )
     pipeline_runs = relationship("PipelineRun", back_populates="task_run", order_by="PipelineRun.run_number.asc()")
+    orchestration_handoff_deliveries = relationship(
+        "OrchestrationHandoffDelivery",
+        back_populates="task_run",
+        order_by="OrchestrationHandoffDelivery.created_at.asc()",
+        cascade="all, delete-orphan",
+    )
 
 
 class TaskRunEvent(Base):
@@ -262,6 +268,33 @@ class TaskRunEvent(Base):
 
     task_run = relationship("TaskRun", back_populates="events")
     message = relationship("Message", foreign_keys=[message_id])
+
+
+class OrchestrationHandoffDelivery(Base):
+    """Durable orchestration handoff inbox entry for a scheduler step."""
+
+    __tablename__ = "orchestration_handoff_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=False, index=True)
+    from_agent = Column(String, nullable=False)
+    to_agent = Column(String, nullable=False, index=True)
+    from_step_id = Column(String, nullable=False, index=True)
+    to_step_id = Column(String, nullable=False, index=True)
+    dispatch_kind = Column(String, nullable=True)
+    attached_to_step_id = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending", index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    leased_at = Column(DateTime, nullable=True, index=True)
+    lease_owner = Column(String, nullable=True, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    consumed_at = Column(DateTime, nullable=True, index=True)
+    failed_at = Column(DateTime, nullable=True, index=True)
+
+    task_run = relationship("TaskRun", back_populates="orchestration_handoff_deliveries")
 
 
 class ApprovalQueueItem(Base):

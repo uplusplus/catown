@@ -1252,3 +1252,27 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 streaming orchestration step loop、runtime card 分流、turn completion persistence、failure handling 与 finalization 下沉到 service
 - route 改为消费 typed runtime events，只负责 `runtime_card` 与普通 SSE payload 的 render
 - 补 runtime event runner 单测，并跑 streaming orchestration ledger / sidecar 回归
+
+### `Add durable orchestration handoff inbox`
+
+范围：
+
+- `backend/models/database.py`
+- `backend/services/orchestration_inbox.py`
+- `backend/services/orchestration_handoffs.py`
+- `backend/services/orchestration_step_runner.py`
+- `backend/services/orchestration_stream_runner.py`
+- `backend/services/run_ledger.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_inbox.py`
+- `backend/tests/test_orchestration_handoffs.py`
+- `backend/tests/test_orchestration_step_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 orchestration durable handoff inbox 表与 service，提供 claim / ack / retry / dead-letter / projection 能力
+- `record_orchestration_handoffs(...)` 在保留兼容 `pending_handoffs` map 的同时落 durable delivery
+- nonstream / stream orchestration runner 改为在 step 执行前 claim durable handoff，成功后 ack，失败后 release retry
+- recovery rebuild 检测到 durable handoff 时跳过事件重建 pending map，并把 handoff inbox 投影进 checkpoint snapshot

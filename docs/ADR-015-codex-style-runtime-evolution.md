@@ -4115,3 +4115,34 @@ P1.2 将 streaming orchestration 的 step loop 从 route 层继续下沉。此�
 - `StreamOrchestrationRuntimeDeps` 仍注入 route-local prompt/runtime/message adapter
 - durable handoff 仍未接入，runtime event runner 仍使用 `pending_handoffs` map
 - 下一步优先处理 handoff durability，把 in-memory pending handoff 替换/桥接到 inbox/outbox
+
+### 11.80 2026-04-28 新进展：orchestration durable handoff inbox 已接入
+
+P1.3 开始把 orchestration handoff 从纯内存 `pending_handoffs` map 往 durable inbox 语义推进。此前 handoff_created 事件虽然可以用于 recovery rebuild，但运行时真正消费 handoff 仍依赖进程内 map，缺少 lease / retry / dead-letter 语义。
+
+本轮新增：
+
+- `backend/models/database.py`
+  - `OrchestrationHandoffDelivery`
+- `backend/services/orchestration_inbox.py`
+  - durable claim / ack / fail / projection helpers
+
+并接入：
+
+- `record_orchestration_handoffs(...)` 在保留兼容 map 的同时，写入 durable handoff delivery
+- nonstream step runner 在执行前 claim handoff，成功后 ack，失败后 release retry
+- streaming runtime event runner 复用同一套 durable handoff claim / ack / fail 语义
+- recovery rebuild 在检测到 durable handoff 存在时，不再额外从事件重建 pending map
+- checkpoint snapshot 新增 `orchestration_handoff_inbox` 与 summary 投影
+
+这一步的意义是：
+
+- orchestration handoff 首次拥有和 pipeline inbox 对齐的 lease/retry/dead-letter 基础语义
+- handoff 不再仅依赖内存 map，在 step 失败和 recovery 场景下更接近真正 durable inbox
+- route / runner 继续向统一 executor primitive 靠拢，handoff 输入源开始从“内存状态”过渡到“durable delivery state”
+
+边界：
+
+- 当前仍保留 `pending_handoffs` map 作为兼容层，便于老 recovery 路径和测试平滑过渡
+- durable handoff 目前是 orchestration 专用 inbox，而不是直接复用 pipeline 表
+- 下一步可以继续抽离 chat runtime preparation / prompt assembly，减少 route dependency adapter 持有

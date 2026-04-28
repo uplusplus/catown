@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from models.database import TaskRun
 from services.orchestration_events import record_scheduler_step_dispatched, record_scheduler_step_failed
-from services.orchestration_handoffs import build_orchestration_previous_work
+from services.orchestration_handoffs import (
+    acknowledge_orchestration_step_handoffs,
+    build_orchestration_previous_work,
+    claim_orchestration_step_handoffs,
+    fail_orchestration_step_handoffs,
+)
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 
@@ -293,6 +298,13 @@ async def iter_stream_orchestration_runtime_events(
 
         saved = None
         step_content = ""
+        handoff_state = claim_orchestration_step_handoffs(
+            db,
+            task_run=task_run,
+            step=step,
+            agent_name=agent_label,
+            pending_handoffs=pending_handoffs,
+        )
         try:
             async for event in iter_stream_orchestration_agent_events(
                 iter_agent_events=deps.iter_agent_events,
@@ -304,7 +316,7 @@ async def iter_stream_orchestration_runtime_events(
                 db=db,
                 client_turn_id=client_turn_id,
                 output_state=output_state,
-                pending_handoffs=pending_handoffs,
+                pending_handoffs={step.step_id: handoff_state.messages},
                 step=step,
                 standalone_note=standalone_note,
                 task_run=task_run,
@@ -342,6 +354,7 @@ async def iter_stream_orchestration_runtime_events(
 
                 yield StreamOrchestrationRuntimeEvent(type="sse", payload=event)
         except Exception as exc:
+            fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
             fail_stream_orchestration_step(
                 db,
                 task_run,
@@ -378,17 +391,22 @@ async def iter_stream_orchestration_runtime_events(
             )
             return
 
-        ready_steps, step_done_payload = complete_stream_orchestration_step(
-            db,
-            task_run,
-            queue=queue,
-            step=step,
-            orchestration_policy=orchestration_policy,
-            agent_name=agent_label,
-            content=step_content,
-            pending_handoffs=pending_handoffs,
-            stage_policy=step_policy,
-        )
+        try:
+            ready_steps, step_done_payload = complete_stream_orchestration_step(
+                db,
+                task_run,
+                queue=queue,
+                step=step,
+                orchestration_policy=orchestration_policy,
+                agent_name=agent_label,
+                content=step_content,
+                pending_handoffs=pending_handoffs,
+                stage_policy=step_policy,
+            )
+        except Exception as exc:
+            fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
+            raise
+        acknowledge_orchestration_step_handoffs(db, handoff_state)
         step_done_payload["message_id"] = saved.id if saved else None
         yield StreamOrchestrationRuntimeEvent(type="sse", payload=step_done_payload)
 

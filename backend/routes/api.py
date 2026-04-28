@@ -43,6 +43,7 @@ from models.database import (
     Message,
     TaskRun,
     TaskRunEvent,
+    OrchestrationHandoffDelivery,
     ApprovalQueueItem,
     SessionLocal,
     Base,
@@ -152,6 +153,7 @@ from services.orchestration_handoffs import (
     compact_runtime_text as compact_orchestration_text,
     record_orchestration_handoffs,
 )
+from services.orchestration_inbox import has_orchestration_handoffs_for_task_run
 from services.orchestration_finalizer import (
     fail_orchestration_task_run,
     finalize_orchestration_task_run,
@@ -1931,6 +1933,7 @@ def _rebuild_orchestration_recovery_state(
     completed_step_id_set: set[str] = set()
     last_blocking_result = ""
     step_by_agent_name = {step.agent_name.lower(): step for step in queue.plan.steps}
+    durable_handoffs_present = has_orchestration_handoffs_for_task_run(db, task_run_id=task_run.id)
 
     message_ids = [
         event.message_id
@@ -1966,6 +1969,8 @@ def _rebuild_orchestration_recovery_state(
             last_blocking_result = content
 
         if not content:
+            continue
+        if durable_handoffs_present:
             continue
         handoff = _build_orchestration_handoff(agent_name, content)
         for next_step in ready_steps:
@@ -3198,6 +3203,9 @@ def _delete_task_runs_by_ids(db: Session, task_run_ids: List[int]) -> None:
     ).delete(synchronize_session=False)
     db.query(TaskRunEvent).filter(
         TaskRunEvent.task_run_id.in_(unique_task_run_ids)
+    ).delete(synchronize_session=False)
+    db.query(OrchestrationHandoffDelivery).filter(
+        OrchestrationHandoffDelivery.task_run_id.in_(unique_task_run_ids)
     ).delete(synchronize_session=False)
     db.query(TaskRun).filter(TaskRun.id.in_(unique_task_run_ids)).delete(synchronize_session=False)
 

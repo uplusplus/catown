@@ -17,6 +17,10 @@ from services.approval_replay import (
     build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
 )
+from services.orchestration_inbox import (
+    summarize_orchestration_handoff_inbox,
+    summarize_orchestration_handoff_projection,
+)
 from services.pipeline_inbox import summarize_pipeline_run_inbox
 from services.subagent_lifecycle import build_subagent_lifecycle_from_events, summarize_subagent_lifecycle
 
@@ -210,6 +214,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "latest_scheduler_runtime": latest_scheduler_runtime,
         "scheduler_runtime_summary": summarize_scheduler_runtime(latest_scheduler_runtime),
         "pipeline_inbox_summary": checkpoint_snapshot.get("pipeline_inbox_summary"),
+        "orchestration_handoff_inbox_summary": checkpoint_snapshot.get("orchestration_handoff_inbox_summary"),
         "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
@@ -331,6 +336,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         summarize_pipeline_run_inbox(pipeline_run)
         for pipeline_run in list(getattr(task_run, "pipeline_runs", []) or [])
     ]
+    orchestration_handoff_inbox = summarize_orchestration_handoff_inbox(task_run)
     subagent_lifecycle = build_subagent_lifecycle_from_events(events)
     pending_tool_queue_item = next(
         (
@@ -390,6 +396,8 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
         "pipeline_inbox": pipeline_inbox,
         "pipeline_inbox_summary": summarize_pipeline_inbox_projection(pipeline_inbox),
+        "orchestration_handoff_inbox": orchestration_handoff_inbox,
+        "orchestration_handoff_inbox_summary": summarize_orchestration_handoff_projection(orchestration_handoff_inbox),
         "subagent_lifecycle": subagent_lifecycle,
         "subagent_lifecycle_summary": summarize_subagent_lifecycle(subagent_lifecycle),
         "continuation_cursor": continuation_cursor,

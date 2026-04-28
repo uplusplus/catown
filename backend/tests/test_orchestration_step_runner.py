@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.orchestration_inbox import create_orchestration_handoff_delivery
 from services.orchestration_scheduler import OrchestrationRuntimeQueue, build_orchestration_schedule
 from services.orchestration_step_runner import run_nonstream_orchestration_step
 from services.orchestration_step_state import OrchestrationStepOutputState
@@ -20,6 +21,76 @@ def _queue():
         ("developer", DummyAgent(2, "Developer", "developer")),
     ]
     return OrchestrationRuntimeQueue(build_orchestration_schedule(agents))
+
+
+@pytest.mark.asyncio
+async def test_run_nonstream_orchestration_step_claims_and_consumes_durable_handoffs(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Step runner durable handoff")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Run step with inbox",
+            user_request="Coordinate.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        queue = _queue()
+        step = queue.pop_ready()
+        create_orchestration_handoff_delivery(
+            db,
+            task_run=task_run,
+            from_agent="Architect",
+            to_agent="Analyst",
+            from_step_id="step-0",
+            to_step_id=step.step_id,
+            dispatch_kind=step.dispatch_kind,
+            attached_to_step_id=step.attached_to_step_id,
+            content="Use this architectural context.",
+        )
+        db.commit()
+
+        observed_messages = []
+
+        async def execute_turn(**kwargs):
+            observed_messages.extend(kwargs["inter_agent_messages"])
+            return "Analysis complete.", SimpleNamespace(id=99, created_at=None)
+
+        async def publish_message(*args, **kwargs):
+            return None
+
+        await run_nonstream_orchestration_step(
+            db=db,
+            task_run=task_run,
+            queue=queue,
+            step=step,
+            agent=DummyAgent(1, "Analyst", "analyst"),
+            agent_name="Analyst",
+            chatroom_id=chatroom.id,
+            project=None,
+            agents=[],
+            user_message="Coordinate.",
+            client_turn_id="turn-step-runner-durable",
+            output_state=OrchestrationStepOutputState(),
+            pending_handoffs={step.step_id: [{"content": "legacy fallback"}]},
+            orchestration_policy=None,
+            execute_turn=execute_turn,
+            publish_message=publish_message,
+        )
+
+        assert observed_messages[0]["content"] == "Use this architectural context."
+        db.refresh(task_run)
+        assert task_run.orchestration_handoff_deliveries[0].status == "consumed"
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio

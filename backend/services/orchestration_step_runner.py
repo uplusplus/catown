@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from models.database import TaskRun
 from services.orchestration_events import record_scheduler_step_dispatched, record_scheduler_step_failed
-from services.orchestration_handoffs import build_orchestration_previous_work
+from services.orchestration_handoffs import (
+    acknowledge_orchestration_step_handoffs,
+    build_orchestration_previous_work,
+    claim_orchestration_step_handoffs,
+    fail_orchestration_step_handoffs,
+)
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 
@@ -73,6 +78,13 @@ async def run_nonstream_orchestration_step(
 
     previous_work = build_orchestration_previous_work(output_state.completed_turns)
     resolved_extra_context = f"{previous_work}\n{extra_context}".strip() if extra_context else previous_work
+    handoff_state = claim_orchestration_step_handoffs(
+        db,
+        task_run=task_run,
+        step=step,
+        agent_name=agent_name,
+        pending_handoffs=pending_handoffs,
+    )
     try:
         content, message = await execute_turn(
             agent=agent,
@@ -81,7 +93,7 @@ async def run_nonstream_orchestration_step(
             agents=agents,
             user_message=user_message,
             extra_context=resolved_extra_context,
-            inter_agent_messages=pending_handoffs.pop(step.step_id, []),
+            inter_agent_messages=handoff_state.messages,
             db=db,
             client_turn_id=client_turn_id,
             task_run=task_run,
@@ -99,38 +111,44 @@ async def run_nonstream_orchestration_step(
             error=exc,
             extra={"recovered": True} if recovered else None,
         )
+        fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
         raise
 
-    if content:
-        await publish_message(
-            db,
-            chatroom_id,
-            message_id=message.id,
-            content=content,
-            agent_name=agent_name,
-            message_type="text",
-            created_at=message.created_at,
-            metadata=message_metadata or {},
-        )
-        record_orchestration_step_output(
-            output_state,
-            agent_name=agent_name,
-            content=content,
-            dispatch_kind=step.dispatch_kind,
-            include_result=include_result,
-        )
+    try:
+        if content:
+            await publish_message(
+                db,
+                chatroom_id,
+                message_id=message.id,
+                content=content,
+                agent_name=agent_name,
+                message_type="text",
+                created_at=message.created_at,
+                metadata=message_metadata or {},
+            )
+            record_orchestration_step_output(
+                output_state,
+                agent_name=agent_name,
+                content=content,
+                dispatch_kind=step.dispatch_kind,
+                include_result=include_result,
+            )
 
-    ready_steps = complete_orchestration_scheduler_step(
-        db,
-        task_run,
-        queue=queue,
-        step=step,
-        orchestration_policy=orchestration_policy,
-        agent_name=agent_name,
-        content=content,
-        pending_handoffs=pending_handoffs,
-        stage_policy=stage_policy,
-        summary_prefix=summary_prefix,
-        recovered=recovered,
-    )
+        ready_steps = complete_orchestration_scheduler_step(
+            db,
+            task_run,
+            queue=queue,
+            step=step,
+            orchestration_policy=orchestration_policy,
+            agent_name=agent_name,
+            content=content,
+            pending_handoffs=pending_handoffs,
+            stage_policy=stage_policy,
+            summary_prefix=summary_prefix,
+            recovered=recovered,
+        )
+    except Exception as exc:
+        fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
+        raise
+    acknowledge_orchestration_step_handoffs(db, handoff_state)
     return OrchestrationStepRunResult(content=content, message=message, ready_steps=ready_steps)
