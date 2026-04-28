@@ -4592,3 +4592,38 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - orchestration stream 仍走自己的 runtime/session wrapper，不复用这个 finalizer
 - `_persist_stream_failure(...)`、runtime-card 持久化和 websocket publish 仍在 route 侧 helper
 - 下一步如果继续统一，可以考虑把 `_persist_stream_failure(...)` 以及 runtime-card store/publish 也继续往 shared stream service 推
+
+### 11.95 2026-04-28 新进展：runtime-card 持久化与 stream failure fallback 已抽成 shared service
+
+在 11.94 之后，route 中还剩一块明显的 streaming 辅助逻辑：
+
+- runtime-card public payload 过滤
+- runtime-card 持久化 + websocket/monitor 发布
+- stream failure fallback 的 error card + 可见消息持久化
+
+本轮新增：
+
+- `backend/services/stream_runtime_persistence.py`
+  - `public_runtime_card_payload(...)`
+  - `publish_runtime_card_event(...)`
+  - `store_runtime_card(...)`
+  - `summarize_stream_error(...)`
+  - `persist_stream_failure(...)`
+
+并接入：
+
+- standalone assistant stream
+- project single-agent stream
+- stream transport helper / runtime-card replay endpoint
+
+这一步的意义是：
+
+- route 里又去掉了一整段 runtime-card / failure-fallback 细节实现
+- runtime-card public payload 规则与 failure fallback 文案现在有 shared service 边界和 focused tests
+- `_make_app` 的 test module reset 也继续扩充，避免服务拆分后出现 stale `models.database` registry
+
+边界：
+
+- websocket/monitor publish 仍通过 shared service 内部依赖 `websocket_manager`
+- `_publish_saved_chat_message(...)` 仍由 route 注入给 failure persistence helper
+- 如果继续推进，下一步可以考虑把 `_publish_saved_chat_message(...)` 本身也继续往 shared message/runtime publish service 收

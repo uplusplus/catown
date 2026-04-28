@@ -44,6 +44,7 @@ def _make_app(tmp_path):
         'services.orchestration_recovery_runner',
         'services.orchestration_guards',
         'services.orchestration_recovery_lease',
+        'services.stream_runtime_persistence',
         'services.stream_transport',
         'services.single_agent_stream_session',
         'services.single_agent_stream_finalizer',

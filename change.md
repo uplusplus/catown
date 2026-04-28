@@ -1516,3 +1516,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared single-agent stream finalizer，统一 success path 的最终消息保存/完成记账，以及 failure path 的 failed terminalization / fallback done-or-error payload
 - standalone assistant stream 与 project single-agent stream 改为复用 shared finalizer
 - 补 focused finalizer tests，并扩展 `_make_app` module reset，避免新 service 引入 stale `models.database` registry
+
+### `Extract shared stream runtime persistence service`
+
+范围：
+
+- `backend/services/stream_runtime_persistence.py`
+- `backend/routes/api.py`
+- `backend/tests/test_stream_runtime_persistence.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared persistence service，统一 runtime-card public payload、runtime-card 持久化发布与 stream failure fallback 持久化
+- standalone assistant stream、project single-agent stream、runtime-card replay endpoint 改为复用 shared service
+- 补 focused persistence tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
