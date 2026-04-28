@@ -76,3 +76,27 @@ async def render_stream_turn_event(
     if event_type == "turn_complete":
         return StreamTurnRenderResult(turn_complete_content=str(event.get("content") or ""))
     return StreamTurnRenderResult(chunk=render_sse_payload(event, serialize_payload=serialize_payload))
+
+
+async def iter_rendered_stream_turn_events(
+    event_iterator: Any,
+    *,
+    chatroom_id: int,
+    client_turn_id: str | None,
+    serialize_payload: SerializePayload,
+    store_runtime_card: StoreRuntimeCard,
+    public_runtime_card_payload: PublicRuntimeCardPayload,
+    source: str = "chatroom",
+):
+    """Yield rendered stream turn outputs from raw stream-turn events."""
+
+    async for event in event_iterator:
+        yield await render_stream_turn_event(
+            event,
+            chatroom_id=chatroom_id,
+            client_turn_id=client_turn_id,
+            serialize_payload=serialize_payload,
+            store_runtime_card=store_runtime_card,
+            public_runtime_card_payload=public_runtime_card_payload,
+            source=source,
+        )

@@ -1,6 +1,7 @@
 import pytest
 
 from services.stream_transport import (
+    iter_rendered_stream_turn_events,
     render_chatroom_runtime_card_sse,
     render_sse_payload,
     render_stream_turn_event,
@@ -70,3 +71,28 @@ async def test_render_stream_turn_event_handles_runtime_card_turn_complete_and_p
     assert runtime_card.chunk == 'data: {"type":"llm_call","agent":"Analyst"}\n\n'
     assert turn_complete.turn_complete_content == "Hello"
     assert plain.chunk == 'data: {"type":"content","delta":"Hi"}\n\n'
+
+
+@pytest.mark.asyncio
+async def test_iter_rendered_stream_turn_events_wraps_raw_iterator():
+    async def raw_events():
+        yield {"type": "content", "delta": "Hi"}
+        yield {"type": "turn_complete", "content": "Done"}
+
+    async def store_runtime_card(chatroom_id, payload):
+        return None
+
+    rendered = [
+        item
+        async for item in iter_rendered_stream_turn_events(
+            raw_events(),
+            chatroom_id=1,
+            client_turn_id="turn-1",
+            serialize_payload=lambda payload: '{"type":"content","delta":"Hi"}',
+            store_runtime_card=store_runtime_card,
+            public_runtime_card_payload=lambda payload: payload,
+        )
+    ]
+
+    assert rendered[0].chunk == 'data: {"type":"content","delta":"Hi"}\n\n'
+    assert rendered[1].turn_complete_content == "Done"

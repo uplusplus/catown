@@ -141,6 +141,7 @@ from services.runner_policy import (
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
 from services.stream_transport import (
+    iter_rendered_stream_turn_events,
     render_chatroom_runtime_card_sse,
     render_stream_turn_event,
 )
@@ -871,29 +872,28 @@ async def _stream_standalone_assistant_response(
         )
 
     try:
-        async for event in iter_stream_turn_events(
-            llm_client=runtime.llm_client,
-            tools=None,
-            turn_state=runtime.turn_state,
-            agent_name=runtime.assistant_name,
-            client_turn_id=client_turn_id,
-            assemble_messages=_assemble_standalone_stream_messages,
-            execute_tool=_execute_standalone_stream_tool,
-            build_llm_runtime_card=_build_standalone_stream_llm_card,
-            snapshot_messages=_snapshot_llm_messages,
-            preview_tool_calls=_preview_tool_calls,
-            format_prompt_messages=_format_json_block,
-            tool_result_success=_tool_result_succeeded,
-            max_turns=1,
-        ):
-            rendered = await render_stream_turn_event(
-                event,
-                chatroom_id=chatroom_id,
+        async for rendered in iter_rendered_stream_turn_events(
+            iter_stream_turn_events(
+                llm_client=runtime.llm_client,
+                tools=None,
+                turn_state=runtime.turn_state,
+                agent_name=runtime.assistant_name,
                 client_turn_id=client_turn_id,
-                serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
-                store_runtime_card=_store_runtime_card,
-                public_runtime_card_payload=_public_runtime_card_payload,
-            )
+                assemble_messages=_assemble_standalone_stream_messages,
+                execute_tool=_execute_standalone_stream_tool,
+                build_llm_runtime_card=_build_standalone_stream_llm_card,
+                snapshot_messages=_snapshot_llm_messages,
+                preview_tool_calls=_preview_tool_calls,
+                format_prompt_messages=_format_json_block,
+                tool_result_success=_tool_result_succeeded,
+                max_turns=1,
+            ),
+            chatroom_id=chatroom_id,
+            client_turn_id=client_turn_id,
+            serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+            store_runtime_card=_store_runtime_card,
+            public_runtime_card_payload=_public_runtime_card_payload,
+        ):
             if rendered.turn_complete_content is not None:
                 final_content = rendered.turn_complete_content
                 continue
@@ -4433,30 +4433,29 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     timings=raw_event.get("timings"),
                 )
 
-            async for event in iter_stream_turn_events(
-                llm_client=runtime.llm_client,
-                tools=runtime.tool_schemas,
-                turn_state=runtime.turn_state,
-                agent_name=target_agent_label,
-                client_turn_id=message.client_turn_id,
-                assemble_messages=_assemble_single_agent_stream_messages,
-                execute_tool=_execute_single_agent_stream_tool,
-                build_llm_runtime_card=_build_single_agent_stream_llm_card,
-                snapshot_messages=_snapshot_llm_messages,
-                preview_tool_calls=_preview_tool_calls,
-                format_prompt_messages=_format_json_block,
-                tool_result_success=_tool_result_succeeded,
-                max_turns=MAX_TOOL_ITERATIONS,
-                on_tool_round=_on_single_agent_stream_tool_round,
-            ):
-                rendered = await render_stream_turn_event(
-                    event,
-                    chatroom_id=chatroom_id,
+            async for rendered in iter_rendered_stream_turn_events(
+                iter_stream_turn_events(
+                    llm_client=runtime.llm_client,
+                    tools=runtime.tool_schemas,
+                    turn_state=runtime.turn_state,
+                    agent_name=target_agent_label,
                     client_turn_id=message.client_turn_id,
-                    serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
-                    store_runtime_card=_store_runtime_card,
-                    public_runtime_card_payload=_public_runtime_card_payload,
-                )
+                    assemble_messages=_assemble_single_agent_stream_messages,
+                    execute_tool=_execute_single_agent_stream_tool,
+                    build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                    snapshot_messages=_snapshot_llm_messages,
+                    preview_tool_calls=_preview_tool_calls,
+                    format_prompt_messages=_format_json_block,
+                    tool_result_success=_tool_result_succeeded,
+                    max_turns=MAX_TOOL_ITERATIONS,
+                    on_tool_round=_on_single_agent_stream_tool_round,
+                ),
+                chatroom_id=chatroom_id,
+                client_turn_id=message.client_turn_id,
+                serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=_store_runtime_card,
+                public_runtime_card_payload=_public_runtime_card_payload,
+            ):
                 if rendered.turn_complete_content is not None:
                     final_content = rendered.turn_complete_content
                     continue

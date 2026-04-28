@@ -4490,3 +4490,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍持有 `_store_runtime_card(...)` 与 `_public_runtime_card_payload(...)`
 - standalone / single-agent / orchestration 还没有共享更高层的 full streaming session driver
 - 下一步如果继续收口，可以考虑把这些 path 的 session-level streaming driver 再往统一 executor/transport 层抽
+
+### 11.92 2026-04-28 新进展：standalone / single-agent streaming render loop 已复用 shared helper
+
+在 11.91 之后，standalone assistant stream 和 project single-agent stream 虽然已经使用了 shared transport function，但仍各自手写：
+
+- `async for event in iter_stream_turn_events(...)`
+- `runtime_card / payload / turn_complete` 分支处理
+- `final_content` 提取
+
+本轮继续扩展 `backend/services/stream_transport.py`：
+
+- `iter_rendered_stream_turn_events(...)`
+
+并接入：
+
+- standalone assistant stream
+- project single-agent stream
+
+这一步的意义是：
+
+- 主要 streaming path 已经共享同一套 event-render loop helper
+- route 中不再散落两份几乎相同的 `iter_stream_turn_events -> render -> final_content` 控制流
+- 后续如果再统一 single-agent / standalone 的 session-level streaming driver，会更容易在这一层继续收口
+
+边界：
+
+- final response save / failure fallback 仍由各 route 分支控制
+- orchestration stream 已经更高一层复用 session wrapper，不需要再走同一个 helper
+- 下一步可以继续把 single-agent / standalone 的 success/failure session driver 也抽成 shared service
