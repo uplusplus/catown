@@ -192,6 +192,10 @@ from services.orchestration_recovery_runner import (
     OrchestrationRecoveryRuntimeDeps,
     run_orchestration_recovery_runtime,
 )
+from services.orchestration_recovery_prepare import (
+    PreparedOrchestrationRecoveryContext,
+    prepare_orchestration_recovery_context,
+)
 from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
     iter_stream_orchestration_runtime_events,
@@ -2018,8 +2022,6 @@ async def _resume_interrupted_orchestration_task_run(
     *,
     trigger: str = "startup",
 ) -> TaskRunRecoveryResult:
-    from tools import tool_registry
-
     db = SessionLocal()
     try:
         task_run, claim_result = _claim_task_run_recovery_lease(db, task_run_id)
@@ -2035,81 +2037,38 @@ async def _resume_interrupted_orchestration_task_run(
                 detail="Task run not found.",
             )
 
-        chatroom = db.query(Chatroom).filter(Chatroom.id == task_run.chatroom_id).first()
-        if chatroom is None:
-            outcome = fail_recovery_guard(
-                db,
-                task_run,
-                task_run_id=task_run_id,
-                kind="chatroom_missing",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
-                payload={"task_run_id": task_run.id},
-            )
-            return TaskRunRecoveryResult(
-                task_run_id=task_run_id,
-                resumed=False,
-                reason=outcome.reason,
-                status=outcome.status,
-                detail=outcome.detail,
-                owner=outcome.owner,
-                lease_expires_at=outcome.lease_expires_at,
-            )
-
-        project = _resolve_chatroom_project(db, chatroom)
-        agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
-        agent_names = _recover_orchestration_agent_names(task_run)
-        available_tools = tool_registry.list_tools()
-        targets = _resolve_orchestration_targets(db, project, agents, agent_names)
-        resolved_agents = [agent for _, agent in targets if agent is not None]
-        if not resolved_agents:
-            outcome = fail_recovery_guard(
-                db,
-                task_run,
-                task_run_id=task_run_id,
-                kind="no_valid_agents",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
-                requested_agents=agent_names,
-            )
-            return TaskRunRecoveryResult(
-                task_run_id=task_run_id,
-                resumed=False,
-                reason=outcome.reason,
-                status=outcome.status,
-                detail=outcome.detail,
-                owner=outcome.owner,
-                lease_expires_at=outcome.lease_expires_at,
-            )
-
-        prepared_orchestration = _prepare_orchestration_runtime(
+        prepared_recovery = prepare_orchestration_recovery_context(
             db=db,
-            project=project,
-            agents=agents,
-            agent_names=agent_names,
-            streaming=(task_run.run_kind == "multi_agent_orchestration_stream"),
+            task_run=task_run,
+            task_run_id=task_run_id,
+            recovery_owner=RECOVERY_INSTANCE_ID,
+            lease_expires_at=lease_expires_at,
+            resolve_chatroom=lambda current_db, chatroom_id: (
+                current_db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+            ),
+            resolve_chatroom_project=_resolve_chatroom_project,
+            serialize_project_agents=_serialize_project_agents,
+            list_global_agents=_list_global_agents,
+            recover_agent_names=_recover_orchestration_agent_names,
+            prepare_orchestration_runtime=_prepare_orchestration_runtime,
         )
-        plan = prepared_orchestration.plan
-        orchestration_policy = prepared_orchestration.runner_policy
-        if plan is None or orchestration_policy is None:
-            outcome = fail_recovery_guard(
-                db,
-                task_run,
-                task_run_id=task_run_id,
-                kind="no_runnable_plan",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
-                requested_agents=agent_names,
-            )
+        if not isinstance(prepared_recovery, PreparedOrchestrationRecoveryContext):
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason=outcome.reason,
-                status=outcome.status,
-                detail=outcome.detail,
-                owner=outcome.owner,
-                lease_expires_at=outcome.lease_expires_at,
+                reason=prepared_recovery.reason,
+                status=prepared_recovery.status,
+                detail=prepared_recovery.detail,
+                owner=prepared_recovery.owner,
+                lease_expires_at=prepared_recovery.lease_expires_at,
             )
+        chatroom = prepared_recovery.chatroom
+        project = prepared_recovery.project
+        agents = prepared_recovery.agents
+        agent_names = prepared_recovery.agent_names
+        resolved_agents = prepared_recovery.resolved_agents
+        plan = prepared_recovery.plan
+        orchestration_policy = prepared_recovery.orchestration_policy
         execute_orchestration_turn = _build_orchestration_agent_turn_executor()
 
         def _before_recovery_step():

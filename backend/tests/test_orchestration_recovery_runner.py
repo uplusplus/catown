@@ -1,12 +1,9 @@
 from datetime import datetime
 from types import SimpleNamespace
 
+import importlib
 import pytest
 
-from services.orchestration_recovery_runner import (
-    OrchestrationRecoveryRuntimeDeps,
-    run_orchestration_recovery_runtime,
-)
 from services.orchestration_scheduler import build_orchestration_schedule
 
 
@@ -28,6 +25,9 @@ async def _unexpected_execute_turn(**kwargs):
 
 @pytest.mark.asyncio
 async def test_run_orchestration_recovery_runtime_completes_and_finalizes(fresh_db):
+    import services.orchestration_recovery_runner as runner_mod
+
+    runner_mod = importlib.reload(runner_mod)
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
     try:
@@ -57,7 +57,7 @@ async def test_run_orchestration_recovery_runtime_completes_and_finalizes(fresh_
 
         lease_ticks = []
         policy = SimpleNamespace(to_payload=lambda: {"mode": "linear_blocking_chain"}, stages=[])
-        result = await run_orchestration_recovery_runtime(
+        result = await runner_mod.run_orchestration_recovery_runtime(
             db=db,
             task_run=task_run,
             task_run_id=task_run.id,
@@ -70,7 +70,7 @@ async def test_run_orchestration_recovery_runtime_completes_and_finalizes(fresh_
             orchestration_policy=policy,
             trigger="startup",
             lease_expires_at=datetime.now(),
-            deps=OrchestrationRecoveryRuntimeDeps(
+            deps=runner_mod.OrchestrationRecoveryRuntimeDeps(
                 build_checkpoint_snapshot=lambda current_task_run: {"event_count": len(current_task_run.events or [])},
                 describe_recovery_continuation_state=lambda snapshot: {"next_action": "resume_scheduler"},
                 rebuild_recovery_state=lambda db, task_run, queue: ([], {}, "", []),
@@ -96,6 +96,9 @@ async def test_run_orchestration_recovery_runtime_completes_and_finalizes(fresh_
 
 @pytest.mark.asyncio
 async def test_run_orchestration_recovery_runtime_returns_no_runnable_steps_outcome(fresh_db):
+    import services.orchestration_recovery_runner as runner_mod
+
+    runner_mod = importlib.reload(runner_mod)
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
     try:
@@ -118,7 +121,7 @@ async def test_run_orchestration_recovery_runtime_returns_no_runnable_steps_outc
         plan = build_orchestration_schedule([("analyst", resolved_agents[0])])
 
         policy = SimpleNamespace(to_payload=lambda: {"mode": "linear_blocking_chain"}, stages=[])
-        result = await run_orchestration_recovery_runtime(
+        result = await runner_mod.run_orchestration_recovery_runtime(
             db=db,
             task_run=task_run,
             task_run_id=task_run.id,
@@ -131,7 +134,7 @@ async def test_run_orchestration_recovery_runtime_returns_no_runnable_steps_outc
             orchestration_policy=policy,
             trigger="startup",
             lease_expires_at=datetime.now(),
-            deps=OrchestrationRecoveryRuntimeDeps(
+            deps=runner_mod.OrchestrationRecoveryRuntimeDeps(
                 build_checkpoint_snapshot=lambda current_task_run: {"event_count": len(current_task_run.events or [])},
                 describe_recovery_continuation_state=lambda snapshot: {"next_action": "resume_scheduler"},
                 rebuild_recovery_state=_rebuild_no_runnable,

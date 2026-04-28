@@ -30,6 +30,10 @@ def _make_app(tmp_path):
         'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
         'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
         'services.chat_runtime',
+        'services.orchestration_recovery_prepare',
+        'services.orchestration_recovery_runner',
+        'services.orchestration_guards',
+        'services.orchestration_recovery_lease',
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:

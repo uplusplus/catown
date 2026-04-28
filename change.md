@@ -1399,3 +1399,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 recovery runtime service，承接 prepared recovery runtime 的 started/rebuilt、scheduler rebuild、nonstream runtime execute、incomplete/no-runnable guard 与 completed result/finalizer
 - interrupted recovery route 改为调用 shared driver，而不是继续持有完整执行主链
 - 补 focused recovery runner tests，并跑 startup/manual recovery 回归
+
+### `Extract shared orchestration recovery preparation service`
+
+范围：
+
+- `backend/services/orchestration_recovery_prepare.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_recovery_prepare.py`
+- `backend/tests/test_orchestration_recovery_runner.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 recovery preparation service，统一 chatroom / project / agents / recovered agent names / prepared runtime resolve 与对应 guard
+- interrupted recovery route 改为调用 shared preparation service，再把 prepared context 交给 shared recovery runtime runner
+- 补 focused preparation tests，并更新 `_make_app` 的 module reset 列表，避免 stale service module 持有旧 `models.database` registry

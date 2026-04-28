@@ -4369,3 +4369,33 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - chatroom/project/agent resolve 仍在 route
 - recovery claim lease 与 top-level exception mapping 仍在 route
 - 下一步可以继续把这些前置解析 / claim 协议也推向 recovery driver，或者转去收 stream route 的 transport-only 边界
+
+### 11.88 2026-04-28 新进展：recovery 前置解析已抽成 shared preparation service
+
+在 11.87 之后，recovery route 剩余最重的一段非传输责任变成了前置解析：
+
+- resolve chatroom
+- resolve project / agents
+- recover requested agent names
+- prepare orchestration runtime
+- no-valid-agent / no-runnable-plan guard
+
+本轮新增：
+
+- `backend/services/orchestration_recovery_prepare.py`
+  - `PreparedOrchestrationRecoveryContext`
+  - `prepare_orchestration_recovery_context(...)`
+
+并接入 `backend/routes/api.py`。
+
+这一步的意义是：
+
+- interrupted recovery 的“准备态”与“执行态”现在都已经拥有独立 service 边界
+- route 中 recovery 剩余的责任进一步压缩到：claim lease、top-level exception mapping、结果转 API payload
+- 测试环境也同步补了 service module reset，避免 stale `models.database` registry 污染新一轮 app import
+
+边界：
+
+- recovery claim lease 仍由 route 驱动后再调用 preparation service
+- stream route 的 transport-only 渲染边界仍然是另一个可继续下沉的方向
+- 如果继续逼近 Codex，可以把 recovery 整体包装成一个更高层的 orchestration resume driver，对 route 暴露单入口
