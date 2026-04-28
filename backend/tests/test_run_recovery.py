@@ -30,6 +30,7 @@ def _make_app(tmp_path):
         "pipeline.engine",
         "routes.pipeline",
         "services.run_ledger",
+        "services.chat_publish",
         "services.chat_runtime",
         "services.orchestration_events",
         "services.orchestration_handoffs",

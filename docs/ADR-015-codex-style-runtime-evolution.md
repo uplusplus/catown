@@ -4693,3 +4693,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - tool loop / prompt assembly / runtime mode selection 仍在 route
 - streaming finalizer 与 non-stream finalizer 还没有再合成一层更高抽象
 - 下一步如果继续推进，可以考虑把 single-agent sync/stream 的 session driver 也往统一层收
+
+### 11.98 2026-04-28 新进展：saved-message publish 与 stream runtime persistence 已进一步收口
+
+在 11.97 之后，streaming path 里还有一块 route 侧辅助逻辑：
+
+- runtime-card public payload / store / publish
+- stream failure fallback 持久化
+- saved chat message 的 room/monitor 广播
+
+本轮继续推进两层收口：
+
+- `backend/services/chat_publish.py`
+  - `publish_saved_chat_message(...)`
+- `backend/services/stream_runtime_persistence.py`
+  - 继续承接 runtime-card / failure fallback 持久化，并改为直接复用 `chat_publish`
+
+效果：
+
+- route 中不再保留 `_publish_saved_chat_message(...)`
+- stream runtime persistence 不再需要 route 注入 publish callback
+- 普通消息发送、tool replay result、single-agent streaming、runtime-card replay 统一走 shared publish / persistence service
+
+这一步的意义是：
+
+- route 中 streaming 辅助逻辑继续变薄，更多转为 shared service graph
+- message publish 与 runtime persistence 现在各自拥有独立、可测的 service 边界
+- single-agent sync/stream 与 orchestration stream 都开始复用同一套下游发布能力
+
+边界：
+
+- websocket/monitor 仍由 service 内部直接依赖 manager/serializer
+- 普通 non-stream path 还没有统一更高层的 session driver
+- 下一步可以继续把 single-agent sync/stream 的更高层 session driver 进一步合并
