@@ -4399,3 +4399,35 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - recovery claim lease 仍由 route 驱动后再调用 preparation service
 - stream route 的 transport-only 渲染边界仍然是另一个可继续下沉的方向
 - 如果继续逼近 Codex，可以把 recovery 整体包装成一个更高层的 orchestration resume driver，对 route 暴露单入口
+
+### 11.89 2026-04-28 新进展：stream orchestration session wrapper 已抽成 shared helper
+
+在 11.88 之后，stream route 里剩下最明显的一段 transport-adjacent protocol 是：
+
+- `collab_start`
+- `collab_skip`
+- preflight `done`
+- stream runtime session 包装
+
+此前这些虽然不再属于核心 executor loop，但仍由 route 自己判断和发出。
+
+本轮扩展 `backend/services/orchestration_stream_runner.py`：
+
+- `stream_collab_start_payload(...)`
+- `stream_collab_skip_payload(...)`
+- `stream_collab_done_payload(...)`
+- `iter_stream_orchestration_session_events(...)`
+
+并接入 `backend/routes/api.py`。
+
+这一步的意义是：
+
+- stream route 更接近“只 render runtime events”，不再自己决定 startup/skip/done payload
+- stream orchestration 从 session start 到 runtime execution 现在都在 service 内有连续边界
+- 现有 SSE body shape 保持兼容，但 route 中的 stream 控制协议进一步减少
+
+边界：
+
+- route 仍负责把 `StreamOrchestrationRuntimeEvent` render 成真正的 SSE 文本
+- `runtime_card` 的 `sse_card(...)` 序列化仍在 route
+- 如果继续往 Codex 靠拢，下一步可以考虑把 render helper 也抽成更显式的 transport adapter

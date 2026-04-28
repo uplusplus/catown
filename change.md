@@ -1418,3 +1418,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 recovery preparation service，统一 chatroom / project / agents / recovered agent names / prepared runtime resolve 与对应 guard
 - interrupted recovery route 改为调用 shared preparation service，再把 prepared context 交给 shared recovery runtime runner
 - 补 focused preparation tests，并更新 `_make_app` 的 module reset 列表，避免 stale service module 持有旧 `models.database` registry
+
+### `Extract stream orchestration session wrapper helpers`
+
+范围：
+
+- `backend/services/orchestration_stream_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_stream_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `stream_collab_start_payload(...)`、`stream_collab_skip_payload(...)`、`stream_collab_done_payload(...)` 与 `iter_stream_orchestration_session_events(...)`
+- stream route 改为复用 shared session wrapper，减少 route 对 `collab_start / collab_skip / done` 协议的直接持有
+- 补 focused session wrapper 测试，并跑 stream orchestration ledger / sidecar 回归

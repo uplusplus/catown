@@ -198,6 +198,7 @@ from services.orchestration_recovery_prepare import (
 )
 from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
+    iter_stream_orchestration_session_events,
     iter_stream_orchestration_runtime_events,
 )
 
@@ -2218,67 +2219,11 @@ async def _stream_multi_agent_orchestration(
         agent_names=agent_names,
         streaming=True,
     )
-    targets = prepared.targets
-    resolved_agents = prepared.resolved_agents
-
-    yield f"data: {sse_json.dumps({'type': 'collab_start', 'agents': agent_names}, ensure_ascii=False)}\n\n"
-    if not resolved_agents:
-        fail_orchestration_preflight(
-            db,
-            task_run,
-            requested_agents=agent_names,
-            kind="no_valid_agents",
-            streaming=True,
-        )
-        for requested_name, agent in targets:
-            if agent is None:
-                yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
-        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
-        return
-
-    output_state = OrchestrationStepOutputState()
-    completed_turns = output_state.completed_turns
-    pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
     standalone_note = (
         "This is a standalone chat. Reply directly, stay concise, "
         "and coordinate with the other mentioned agents."
         if project is None
         else ""
-    )
-    for requested_name, agent in targets:
-        if agent is None:
-            yield f"data: {sse_json.dumps({'type': 'collab_skip', 'agent': requested_name, 'reason': 'not found'}, ensure_ascii=False)}\n\n"
-
-    plan = prepared.plan
-    orchestration_policy = prepared.runner_policy
-    if plan is None or orchestration_policy is None:
-        fail_orchestration_preflight(
-            db,
-            task_run,
-            requested_agents=agent_names,
-            kind="runtime_unprepared",
-            streaming=True,
-        )
-        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
-        return
-    queue = OrchestrationRuntimeQueue(plan)
-    record_orchestration_started(
-        db,
-        task_run,
-        requested_agents=agent_names,
-        resolved_agents=[agent_name_of(agent) for agent in resolved_agents],
-        project_id=project.id if project else None,
-        runner_policy=orchestration_policy,
-        client_turn_id=client_turn_id,
-        streaming=True,
-    )
-
-    record_scheduler_plan_created(
-        db,
-        task_run,
-        queue,
-        runner_policy=orchestration_policy,
-        streaming=True,
     )
 
     stream_runtime_deps = StreamOrchestrationRuntimeDeps(
@@ -2298,19 +2243,16 @@ async def _stream_multi_agent_orchestration(
         set_active_agent=set_active_agent,
     )
 
-    async for runtime_event in iter_stream_orchestration_runtime_events(
+    async for runtime_event in iter_stream_orchestration_session_events(
         db=db,
         task_run=task_run,
+        prepared_runtime=prepared,
         chatroom=chatroom,
         project=project,
         agents=agents,
-        resolved_agents=resolved_agents,
+        agent_names=agent_names,
         user_message=user_message,
         client_turn_id=client_turn_id,
-        queue=queue,
-        orchestration_policy=orchestration_policy,
-        output_state=output_state,
-        pending_handoffs=pending_handoffs,
         standalone_note=standalone_note,
         deps=stream_runtime_deps,
     ):

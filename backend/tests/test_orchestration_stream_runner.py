@@ -5,6 +5,7 @@ import pytest
 from services.orchestration_scheduler import OrchestrationRuntimeQueue, build_orchestration_schedule
 from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
+    iter_stream_orchestration_session_events,
     complete_stream_orchestration_step,
     fail_stream_orchestration_step,
     handle_stream_orchestration_turn_complete,
@@ -362,5 +363,73 @@ async def test_iter_stream_orchestration_runtime_events_stops_when_task_run_canc
         assert len(events) == 1
         assert events[0].payload["type"] == "done"
         assert events[0].payload["cancelled"] is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_orchestration_session_events_emits_start_skip_and_done_for_missing_agents(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Stream session wrapper")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="running",
+            title="Stream session wrapper",
+            user_request="Coordinate.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        prepared = SimpleNamespace(
+            targets=[("analyst", None), ("developer", None)],
+            resolved_agents=[],
+            plan=None,
+            runner_policy=None,
+        )
+        deps = StreamOrchestrationRuntimeDeps(
+            iter_agent_events=lambda **kwargs: None,
+            save_message=lambda **kwargs: None,
+            publish_message=lambda *args, **kwargs: None,
+            record_turn_completed=lambda *args, **kwargs: None,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda agent, request, response: None,
+            build_checkpoint_snapshot=lambda task_run: {},
+            find_stage_policy=lambda policy, step_id: None,
+            agent_name_of=lambda agent: getattr(agent, "name", "agent"),
+            fail_task_run=lambda *args, **kwargs: None,
+            finalize_task_run=lambda *args, **kwargs: None,
+        )
+
+        events = [
+            event
+            async for event in iter_stream_orchestration_session_events(
+                db=db,
+                task_run=task_run,
+                prepared_runtime=prepared,
+                chatroom=chatroom,
+                project=None,
+                agents=[],
+                agent_names=["analyst", "developer"],
+                user_message="Coordinate.",
+                client_turn_id="turn-stream",
+                standalone_note="note",
+                deps=deps,
+            )
+        ]
+
+        assert events[0].payload == {"type": "collab_start", "agents": ["analyst", "developer"]}
+        assert events[1].payload == {"type": "collab_skip", "agent": "analyst", "reason": "not found"}
+        assert events[2].payload == {"type": "collab_skip", "agent": "developer", "reason": "not found"}
+        assert events[-1].payload["type"] == "done"
+        db.refresh(task_run)
+        assert task_run.status == "failed"
+        assert task_run.summary == "No valid agents resolved for streaming orchestration."
     finally:
         db.close()

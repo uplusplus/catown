@@ -9,13 +9,20 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List
 from sqlalchemy.orm import Session
 
 from models.database import TaskRun
-from services.orchestration_events import record_scheduler_step_dispatched, record_scheduler_step_failed
+from services.orchestration_events import (
+    record_orchestration_started,
+    record_scheduler_plan_created,
+    record_scheduler_step_dispatched,
+    record_scheduler_step_failed,
+)
+from services.orchestration_guards import fail_orchestration_preflight
 from services.orchestration_handoffs import (
     acknowledge_orchestration_step_handoffs,
     build_orchestration_previous_work,
     claim_orchestration_step_handoffs,
     fail_orchestration_step_handoffs,
 )
+from services.orchestration_scheduler import OrchestrationRuntimeQueue
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.task_run_control import TaskRunCancelledError, raise_if_task_run_cancelled
@@ -62,6 +69,31 @@ class StreamOrchestrationRuntimeEvent:
     payload: Dict[str, Any] | None = None
     card_type: str | None = None
     card_payload: Dict[str, Any] | None = None
+
+
+def stream_collab_start_payload(agent_names: list[str]) -> dict[str, Any]:
+    return {"type": "collab_start", "agents": list(agent_names)}
+
+
+def stream_collab_skip_payload(agent_name: str, *, reason: str = "not found") -> dict[str, Any]:
+    return {"type": "collab_skip", "agent": agent_name, "reason": reason}
+
+
+def stream_collab_done_payload(
+    *,
+    agent_name: str,
+    client_turn_id: str | None,
+    cancelled: bool = False,
+) -> dict[str, Any]:
+    payload = {
+        "type": "done",
+        "agent_name": agent_name,
+        "collab": True,
+        "client_turn_id": client_turn_id,
+    }
+    if cancelled:
+        payload["cancelled"] = True
+    return payload
 
 
 def start_stream_orchestration_step(
@@ -247,6 +279,109 @@ def complete_stream_orchestration_step(
         "step_state": queue.runtime_state_payload_for_step(step.step_id),
         "released_step_ids": [next_step.step_id for next_step in ready_steps],
     }
+
+
+async def iter_stream_orchestration_session_events(
+    *,
+    db: Session,
+    task_run: TaskRun | None,
+    prepared_runtime: Any,
+    chatroom: Any,
+    project: Any,
+    agents: list[Any],
+    agent_names: list[str],
+    user_message: str,
+    client_turn_id: str | None,
+    standalone_note: str,
+    deps: StreamOrchestrationRuntimeDeps,
+) -> AsyncIterator[StreamOrchestrationRuntimeEvent]:
+    """Yield the full stream orchestration session as transport-neutral runtime events."""
+
+    targets = list(getattr(prepared_runtime, "targets", []) or [])
+    resolved_agents = list(getattr(prepared_runtime, "resolved_agents", []) or [])
+    yield StreamOrchestrationRuntimeEvent(type="sse", payload=stream_collab_start_payload(agent_names))
+
+    if not resolved_agents:
+        fail_orchestration_preflight(
+            db,
+            task_run,
+            requested_agents=agent_names,
+            kind="no_valid_agents",
+            streaming=True,
+        )
+        for requested_name, agent in targets:
+            if agent is None:
+                yield StreamOrchestrationRuntimeEvent(
+                    type="sse",
+                    payload=stream_collab_skip_payload(requested_name),
+                )
+        yield StreamOrchestrationRuntimeEvent(
+            type="sse",
+            payload=stream_collab_done_payload(agent_name="", client_turn_id=client_turn_id),
+        )
+        return
+
+    output_state = OrchestrationStepOutputState()
+    pending_handoffs: Dict[str, List[Dict[str, str]]] = {}
+    for requested_name, agent in targets:
+        if agent is None:
+            yield StreamOrchestrationRuntimeEvent(
+                type="sse",
+                payload=stream_collab_skip_payload(requested_name),
+            )
+
+    plan = getattr(prepared_runtime, "plan", None)
+    orchestration_policy = getattr(prepared_runtime, "runner_policy", None)
+    if plan is None or orchestration_policy is None:
+        fail_orchestration_preflight(
+            db,
+            task_run,
+            requested_agents=agent_names,
+            kind="runtime_unprepared",
+            streaming=True,
+        )
+        yield StreamOrchestrationRuntimeEvent(
+            type="sse",
+            payload=stream_collab_done_payload(agent_name="", client_turn_id=client_turn_id),
+        )
+        return
+
+    queue = OrchestrationRuntimeQueue(plan)
+    record_orchestration_started(
+        db,
+        task_run,
+        requested_agents=agent_names,
+        resolved_agents=[deps.agent_name_of(agent) for agent in resolved_agents],
+        project_id=project.id if project else None,
+        runner_policy=orchestration_policy,
+        client_turn_id=client_turn_id,
+        streaming=True,
+    )
+    record_scheduler_plan_created(
+        db,
+        task_run,
+        queue,
+        runner_policy=orchestration_policy,
+        streaming=True,
+    )
+
+    async for runtime_event in iter_stream_orchestration_runtime_events(
+        db=db,
+        task_run=task_run,
+        chatroom=chatroom,
+        project=project,
+        agents=agents,
+        resolved_agents=resolved_agents,
+        user_message=user_message,
+        client_turn_id=client_turn_id,
+        queue=queue,
+        orchestration_policy=orchestration_policy,
+        output_state=output_state,
+        pending_handoffs=pending_handoffs,
+        standalone_note=standalone_note,
+        deps=deps,
+    ):
+        yield runtime_event
 
 
 async def iter_stream_orchestration_runtime_events(
