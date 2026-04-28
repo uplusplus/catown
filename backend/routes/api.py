@@ -200,6 +200,7 @@ from services.orchestration_stream_runner import (
     StreamOrchestrationRuntimeDeps,
     iter_stream_orchestration_session_events,
     iter_stream_orchestration_runtime_events,
+    render_stream_runtime_event,
 )
 
 logger = logging.getLogger("catown.api")
@@ -2256,10 +2257,11 @@ async def _stream_multi_agent_orchestration(
         standalone_note=standalone_note,
         deps=stream_runtime_deps,
     ):
-        if runtime_event.type == "runtime_card":
-            yield await sse_card(runtime_event.card_type, runtime_event.card_payload)
-            continue
-        yield f"data: {sse_json.dumps(runtime_event.payload, ensure_ascii=False)}\n\n"
+        yield await render_stream_runtime_event(
+            runtime_event,
+            serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+            render_runtime_card=sse_card,
+        )
 
 
 

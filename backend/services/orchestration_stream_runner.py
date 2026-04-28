@@ -39,6 +39,8 @@ SaveMessage = Callable[..., Awaitable[Any]]
 PublishMessage = Callable[..., Awaitable[Any]]
 RecordTurnCompleted = Callable[..., Any]
 ScheduleMemoryExtraction = Callable[..., Any]
+SerializePayload = Callable[[Any], str]
+RenderRuntimeCard = Callable[[str, Dict[str, Any]], Awaitable[str]]
 BuildCheckpointSnapshot = Callable[[TaskRun | None], Dict[str, Any]]
 FindStagePolicy = Callable[[Any, str], Any]
 AgentNameOf = Callable[[Any], str]
@@ -94,6 +96,22 @@ def stream_collab_done_payload(
     if cancelled:
         payload["cancelled"] = True
     return payload
+
+
+async def render_stream_runtime_event(
+    runtime_event: StreamOrchestrationRuntimeEvent,
+    *,
+    serialize_payload: SerializePayload,
+    render_runtime_card: RenderRuntimeCard,
+) -> str:
+    """Render one runtime event into an SSE text chunk."""
+
+    if runtime_event.type == "runtime_card":
+        return await render_runtime_card(
+            runtime_event.card_type or "runtime_card",
+            runtime_event.card_payload or {},
+        )
+    return f"data: {serialize_payload(runtime_event.payload)}\n\n"
 
 
 def start_stream_orchestration_step(

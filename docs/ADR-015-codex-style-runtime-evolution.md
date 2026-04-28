@@ -4431,3 +4431,28 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍负责把 `StreamOrchestrationRuntimeEvent` render 成真正的 SSE 文本
 - `runtime_card` 的 `sse_card(...)` 序列化仍在 route
 - 如果继续往 Codex 靠拢，下一步可以考虑把 render helper 也抽成更显式的 transport adapter
+
+### 11.90 2026-04-28 新进展：stream runtime event 渲染已收口到 transport helper
+
+在 11.89 之后，stream route 还保留最后一层明显的 transport 分支：
+
+- `runtime_card` 走 `sse_card(...)`
+- 普通 payload 走 `json.dumps(...) -> data: ...`
+
+本轮继续扩展 `backend/services/orchestration_stream_runner.py`：
+
+- `render_stream_runtime_event(...)`
+
+并让 `backend/routes/api.py` 改为统一调用这个 helper。
+
+这一步的意义是：
+
+- stream route 更接近纯粹的 async yield 转发
+- `StreamOrchestrationRuntimeEvent -> SSE chunk` 现在有了独立 helper，可单测、可复用
+- orchestration streaming 从 session wrapper 到 transport rendering 基本都已有 service-level protocol 边界
+
+边界：
+
+- route 仍注入 `sse_card(...)` 与 `json.dumps(...)` 这两个 transport dependency
+- standalone / single-agent streaming 仍保留各自的 route-local SSE 分支
+- 如果继续收口，下一步可以把这套 renderer 泛化到其它 streaming path

@@ -11,6 +11,7 @@ from services.orchestration_stream_runner import (
     handle_stream_orchestration_turn_complete,
     iter_stream_orchestration_agent_events,
     iter_stream_orchestration_runtime_events,
+    render_stream_runtime_event,
     start_stream_orchestration_step,
 )
 from services.orchestration_step_state import OrchestrationStepOutputState
@@ -433,3 +434,24 @@ async def test_iter_stream_orchestration_session_events_emits_start_skip_and_don
         assert task_run.summary == "No valid agents resolved for streaming orchestration."
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_render_stream_runtime_event_formats_runtime_card_and_payload():
+    rendered_card = await render_stream_runtime_event(
+        SimpleNamespace(type="runtime_card", card_type="llm_call", card_payload={"agent": "Analyst"}),
+        serialize_payload=lambda payload: "unused",
+        render_runtime_card=_render_runtime_card_stub,
+    )
+    rendered_data = await render_stream_runtime_event(
+        SimpleNamespace(type="sse", payload={"type": "done", "agent_name": "Analyst"}),
+        serialize_payload=lambda payload: '{"type":"done","agent_name":"Analyst"}',
+        render_runtime_card=_render_runtime_card_stub,
+    )
+
+    assert rendered_card == "card:llm_call:Analyst"
+    assert rendered_data == 'data: {"type":"done","agent_name":"Analyst"}\n\n'
+
+
+async def _render_runtime_card_stub(event_type, payload):
+    return f"card:{event_type}:{payload['agent']}"
