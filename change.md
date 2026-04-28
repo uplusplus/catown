@@ -1675,3 +1675,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 orchestrator facade 上新增 managed sync/stream session stack，统一更高层的 single-agent 会话控制流
 - standalone assistant sync/stream 与 project single-agent sync/stream 改为复用 managed stack，而不是 route 手工驱动 unified session + finalizer
 - 补 managed stack focused tests，并跑 single-agent sync/stream API 回归
+
+### `Replace route-level single-agent calls with unified facade`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- route 不再直接调用底层 single-agent sync/stream runner，而是统一走更高层的 unified facade / managed stack 入口
+- 补 focused orchestrator tests，覆盖 unified sync/stream facade 与 managed stream 终结输出
+- 跑 single-agent sync + standalone stream + project single-agent stream 回归，验证行为兼容

@@ -4891,3 +4891,31 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - managed sync/stream 仍分别基于不同底层 runner
 - finalizer 外部接口仍未完全同构
 - 如果继续推进，下一步可以进一步统一 single-agent sync/stream 的 spec/result 契约
+
+### 11.104 2026-04-28 新进展：single-agent unified facade 已真正取代 route 直连
+
+在 11.103 之后，虽然已经有 managed stack，但 route 仍直接调用了底层 facade：
+
+- `run_single_agent_session(...)`
+- `iter_single_agent_stream_session(...)`
+
+本轮把 route 全部切到更高层入口：
+
+- `run_unified_single_agent_sync_session(...)`
+- `iter_unified_single_agent_stream_session(...)`
+- `run_managed_single_agent_sync_session(...)`
+- `iter_managed_single_agent_stream_session(...)`
+
+并补 focused tests 覆盖 unified facade 与 managed stack。
+
+这一步的意义是：
+
+- route 进一步退出 single-agent 会话实现细节
+- single-agent sync/stream 会话栈开始真正围绕统一抽象组织，而不是只是在 service 内并排存在
+- 后续继续统一 spec/result/driver 时，改动面会进一步集中到 orchestrator 内部
+
+边界：
+
+- sync/stream 底层 runner 与 finalizer 仍分别存在
+- managed stack 仍然需要 route 注入不少 lambda/deps
+- 如果继续推进，下一步可以再压一层，把 spec 构建也从 route 中抽掉
