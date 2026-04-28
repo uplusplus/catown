@@ -29,6 +29,7 @@ def _make_app(tmp_path):
         "routes.websocket",
         "pipeline.engine",
         "routes.pipeline",
+        "services.chat_runtime",
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:

@@ -1276,3 +1276,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `record_orchestration_handoffs(...)` 在保留兼容 `pending_handoffs` map 的同时落 durable delivery
 - nonstream / stream orchestration runner 改为在 step 执行前 claim durable handoff，成功后 ack，失败后 release retry
 - recovery rebuild 检测到 durable handoff 时跳过事件重建 pending map，并把 handoff inbox 投影进 checkpoint snapshot
+
+### `Extract shared chat runtime preparation service`
+
+范围：
+
+- `backend/services/chat_runtime.py`
+- `backend/routes/api.py`
+- `backend/tests/test_chat_runtime.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared chat runtime service，承接 `prepare_chat_turn_runtime(...)`、`assemble_runtime_chat_messages(...)` 与 `build_tool_runtime_kwargs(...)`
+- orchestration runner、project single-agent sync/stream、blocked tool replay 与 standalone assistant message assembly 改用 shared service
+- 移除 route-local `_prepare_chat_turn_runtime(...)`、`_assemble_chat_messages(...)`、`_tool_runtime_kwargs(...)` 主逻辑
+- 补 focused runtime 单测，并更新 API/recovery 测试的 module reset 以适配新的 service-level LLM mock 注入边界

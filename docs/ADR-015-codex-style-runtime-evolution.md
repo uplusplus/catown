@@ -4146,3 +4146,36 @@ P1.3 开始把 orchestration handoff 从纯内存 `pending_handoffs` map 往 dur
 - 当前仍保留 `pending_handoffs` map 作为兼容层，便于老 recovery 路径和测试平滑过渡
 - durable handoff 目前是 orchestration 专用 inbox，而不是直接复用 pipeline 表
 - 下一步可以继续抽离 chat runtime preparation / prompt assembly，减少 route dependency adapter 持有
+
+### 11.81 2026-04-28 新进展：chat runtime preparation 与 prompt assembly 已抽到 shared service
+
+P1.4 开始削 route 对 executor dependency adapter 的直接持有。此前 orchestration agent turn runner 和 project single-agent path 虽然已经把执行 loop 下沉，但底层仍通过 route-local `_prepare_chat_turn_runtime(...)`、`_assemble_chat_messages(...)`、`_tool_runtime_kwargs(...)` 组装 runtime。
+
+本轮新增：
+
+- `backend/services/chat_runtime.py`
+  - `PreparedChatTurnRuntime`
+  - `prepare_chat_turn_runtime(...)`
+  - `assemble_runtime_chat_messages(...)`
+  - `build_tool_runtime_kwargs(...)`
+
+并接入：
+
+- orchestration nonstream agent turn runner dependency adapter
+- orchestration stream agent turn iterator dependency adapter
+- project single-agent sync path
+- project single-agent stream path
+- blocked tool replay runtime kwargs
+- standalone assistant path的 message assembly 也改用 shared service
+
+这一步的意义是：
+
+- chat runtime preparation 和 prompt assembly 不再由 route 持有主逻辑
+- orchestration executor 依赖的 adapter 数量进一步收缩，route 更接近“少量 wiring + transport”
+- 相关测试环境也同步升级，`services.chat_runtime` 成为新的 LLM mock 注入边界
+
+边界：
+
+- standalone target agent resolution 仍在 route 层
+- context compaction callback 与 runtime card builder 仍是 route-local adapter
+- 下一步可以继续把 standalone runtime preparation 和更多 prompt/runtime callback 下沉，进一步压缩 route 责任

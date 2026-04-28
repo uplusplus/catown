@@ -74,10 +74,13 @@ from services.context_builder import (
 )
 from services.chat_prompt_builder import (
     agent_base_system_prompt as shared_agent_base_system_prompt,
-    assemble_chat_messages as shared_assemble_chat_messages,
     build_chat_context_selector as shared_build_chat_context_selector,
-    memory_context_lines as shared_memory_context_lines,
-    team_member_lines as shared_team_member_lines,
+)
+from services.chat_runtime import (
+    PreparedChatTurnRuntime,
+    assemble_runtime_chat_messages,
+    build_tool_runtime_kwargs,
+    prepare_chat_turn_runtime,
 )
 from services.orchestration_scheduler import (
     DEFAULT_SIDECAR_AGENT_TYPES,
@@ -208,17 +211,6 @@ class PreparedOrchestrationRuntime:
 
 
 @dataclass
-class PreparedChatTurnRuntime:
-    llm_client: Any
-    agent_label: str
-    recent_messages: List[Any]
-    available_tools: List[str]
-    tool_schemas: List[Dict[str, Any]]
-    runtime_kwargs: Dict[str, Any]
-    turn_state: TurnContextState
-
-
-@dataclass
 class PreparedStandaloneTurnRuntime:
     llm_client: Any
     assistant_name: str
@@ -226,23 +218,6 @@ class PreparedStandaloneTurnRuntime:
     assistant_id: Optional[int]
     recent_messages: List[Any]
     turn_state: TurnContextState
-
-
-def _build_tool_prompt(tool_names: List[str]) -> str:
-    if not tool_names:
-        return ""
-    prompt = f"\n\nYou have access to the following tools: {', '.join(tool_names)}"
-    if "skill_manager" in tool_names:
-        prompt += (
-            "\nTool guidance: when the user asks to install/add/download/import/enable/troubleshoot "
-            "a skill, 技能, or skill marketplace, call skill_manager. Use action='marketplaces' to "
-            "check configured marketplaces and CLI readiness. Use action='install' with marketplace "
-            "and source to install a skill, for example marketplace='skillhub-cn' and source='graphify'. "
-            "If the tool returns code='command_not_found', explain that the marketplace CLI is missing "
-            "and direct the user to install or enable that marketplace CLI from the Skills configuration page."
-        )
-    return prompt
-
 
 class LLMConfigModel(BaseModel):
     """LLM 配置验证模型"""
@@ -490,80 +465,6 @@ def _agent_base_system_prompt(agent: Optional[Agent], fallback_name: str, fallba
     return shared_agent_base_system_prompt(agent, fallback_name, fallback_role)
 
 
-def _agent_skill_ids(agent: Optional[Agent]) -> List[str]:
-    if agent is None:
-        return []
-    raw_skills = getattr(agent, "skills", None)
-    if isinstance(raw_skills, str):
-        try:
-            parsed = json.loads(raw_skills or "[]")
-        except (TypeError, json.JSONDecodeError):
-            parsed = []
-        return [str(skill) for skill in parsed if skill]
-    if isinstance(raw_skills, list):
-        return [str(skill) for skill in raw_skills if skill]
-    return []
-
-
-def _team_member_lines(agents: List[Agent]) -> List[str]:
-    return shared_team_member_lines(agents)
-
-
-def _memory_context_lines(db: Session, target_agent: Optional[Agent], agents: List[Agent]) -> List[str]:
-    return shared_memory_context_lines(db, target_agent, agents)
-
-
-def _assemble_chat_messages(
-    *,
-    db: Session,
-    agent: Optional[Agent],
-    agent_name: str,
-    model_id: str = "",
-    chatroom: Optional[Chatroom],
-    project: Optional[Project],
-    agents: Optional[List[Agent]] = None,
-    recent_messages: Optional[List[Any]] = None,
-    user_message: str = "",
-    available_tools: Optional[List[str]] = None,
-    history_limit: int = 10,
-    history_visibility: str = "all",
-    target_agent_name: Optional[str] = None,
-    prefix_assistant_name: bool = False,
-    standalone_note: str = "",
-    extra_context: str = "",
-    turn_state: Optional[TurnContextState] = None,
-    selector_profile: str = "chat_interactive",
-    on_compaction: Optional[Callable[[Dict[str, Any]], None]] = None,
-) -> List[Dict[str, Any]]:
-    tool_guidance = ""
-    if available_tools:
-        tool_guidance = _build_tool_prompt(available_tools)
-        if "When you need to use a tool" not in tool_guidance:
-            tool_guidance += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
-    return shared_assemble_chat_messages(
-        db=db,
-        agent=agent,
-        agent_name=agent_name,
-        model_id=model_id,
-        chatroom=chatroom,
-        project=project,
-        agents=agents,
-        recent_messages=recent_messages,
-        user_message=user_message,
-        available_tools=available_tools,
-        tool_guidance=tool_guidance,
-        history_limit=history_limit,
-        history_visibility=history_visibility,
-        target_agent_name=target_agent_name,
-        prefix_assistant_name=prefix_assistant_name,
-        standalone_note=standalone_note,
-        extra_context=extra_context,
-        turn_state=turn_state,
-        selector_profile=selector_profile,
-        on_compaction=on_compaction,
-    )
-
-
 @lru_cache(maxsize=8)
 def _load_agent_config_snapshot(config_path: str, modified_ns: int) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as handle:
@@ -786,7 +687,7 @@ async def _trigger_standalone_assistant_response(
             "client_turn_id": client_turn_id,
         },
     )
-    context_messages = _assemble_chat_messages(
+    context_messages = assemble_runtime_chat_messages(
         db=db,
         agent=None,
         agent_name=runtime.assistant_name,
@@ -902,7 +803,7 @@ async def _stream_standalone_assistant_response(
     final_content = ""
 
     def _assemble_standalone_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
-        return _assemble_chat_messages(
+        return assemble_runtime_chat_messages(
             db=db,
             agent=None,
             agent_name=runtime.assistant_name,
@@ -1239,7 +1140,7 @@ async def trigger_agent_response(
                 logger.info(f"[Collab] Auto-registered collaborator: {_agent_type(agent)}")
         
         visibility = chatroom.message_visibility or "all"
-        runtime = await _prepare_chat_turn_runtime(
+        runtime = await prepare_chat_turn_runtime(
             agent=target_agent,
             chatroom_id=chatroom_id,
             project=project,
@@ -1271,7 +1172,7 @@ async def trigger_agent_response(
         )
 
         def _assemble_project_single_agent_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
-            return _assemble_chat_messages(
+            return assemble_runtime_chat_messages(
                 db=db,
                 agent=target_agent,
                 agent_name=runtime.agent_label,
@@ -1500,17 +1401,6 @@ async def _extract_memories(agent_id: int, agent_type: str, user_message: str, a
     except Exception as e:
         logger.debug(f"[Memory] Extraction failed: {e}")
 
-
-def _tool_runtime_kwargs(agent: Optional[Agent], chatroom_id: int, project: Optional[Project]) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"chatroom_id": chatroom_id}
-    if agent is not None and getattr(agent, "id", None) is not None:
-        payload["agent_id"] = agent.id
-        payload["agent_name"] = agent_name_of(agent)
-    if project is not None and getattr(project, "id", None) is not None:
-        payload["project_id"] = project.id
-    return payload
-
-
 def _compact_runtime_text(value: Any, *, limit: int = 600) -> str:
     return compact_orchestration_text(value, limit=limit)
 
@@ -1690,37 +1580,6 @@ def _resolve_project_runtime_target_agent(
     if not target_agent:
         target_agent = find_agent_by_type(agents, DEFAULT_AGENT_TYPE) or (agents[0] if agents else None)
     return target_agent
-
-
-async def _prepare_chat_turn_runtime(
-    *,
-    agent: Agent,
-    chatroom_id: int,
-    project: Optional[Project],
-    checkpoint_snapshot: Optional[Dict[str, Any]] = None,
-    previous_agent_work: str = "",
-    inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
-    recent_message_limit: int = 10,
-) -> PreparedChatTurnRuntime:
-    from tools import tool_registry
-
-    llm_client = get_llm_client_for_agent(_agent_type(agent))
-    recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
-    turn_state = build_turn_state_from_checkpoint_snapshot(
-        checkpoint_snapshot,
-        previous_agent_work=previous_agent_work or "",
-    )
-    if inter_agent_messages:
-        turn_state.add_inter_agent_messages(inter_agent_messages)
-    return PreparedChatTurnRuntime(
-        llm_client=llm_client,
-        agent_label=agent_name_of(agent),
-        recent_messages=recent_messages,
-        available_tools=tool_registry.list_tools(),
-        tool_schemas=tool_registry.get_schemas(),
-        runtime_kwargs=_tool_runtime_kwargs(agent, chatroom_id, project),
-        turn_state=turn_state,
-    )
 
 
 async def _prepare_standalone_turn_runtime(
@@ -2048,8 +1907,8 @@ def _ensure_collaboration_context(agents: List[Agent], chatroom_id: int) -> None
 def _build_stream_orchestration_agent_turn_iterator():
     deps = StreamOrchestrationAgentTurnDeps(
         ensure_collaboration_context=_ensure_collaboration_context,
-        prepare_chat_turn_runtime=_prepare_chat_turn_runtime,
-        assemble_chat_messages=_assemble_chat_messages,
+        prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+        assemble_chat_messages=assemble_runtime_chat_messages,
         build_llm_card_payload=_build_llm_card_payload,
         snapshot_messages=_snapshot_llm_messages,
         preview_tool_calls=_preview_tool_calls,
@@ -2063,9 +1922,9 @@ def _build_stream_orchestration_agent_turn_iterator():
 def _build_orchestration_agent_turn_executor():
     deps = OrchestrationAgentTurnDeps(
         ensure_collaboration_context=_ensure_collaboration_context,
-        prepare_chat_turn_runtime=_prepare_chat_turn_runtime,
+        prepare_chat_turn_runtime=prepare_chat_turn_runtime,
         build_context_compaction_callback=_build_context_compaction_callback,
-        assemble_chat_messages=_assemble_chat_messages,
+        assemble_chat_messages=assemble_runtime_chat_messages,
         save_message=chatroom_manager.send_message,
         message_metadata=_message_metadata_with_turn,
         schedule_memory_extraction=lambda agent, request, response: asyncio.create_task(
@@ -3894,7 +3753,7 @@ async def _replay_runtime_blocked_tool_queue_item(
     project = _resolve_chatroom_project(db, chatroom)
     agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
     agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
-    runtime_kwargs = _tool_runtime_kwargs(agent, chatroom.id, project)
+    runtime_kwargs = build_tool_runtime_kwargs(agent, chatroom.id, project)
 
     try:
         tool_result = await tool_registry.execute(
@@ -4793,7 +4652,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             # 5. 构建该 Agent 的消息上下文
             checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-            runtime = await _prepare_chat_turn_runtime(
+            runtime = await prepare_chat_turn_runtime(
                 agent=target_agent,
                 chatroom_id=chatroom_id,
                 project=project,
@@ -4828,7 +4687,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             final_content = ""
             def _assemble_single_agent_stream_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
-                return _assemble_chat_messages(
+                return assemble_runtime_chat_messages(
                     db=db,
                     agent=target_agent,
                     agent_name=target_agent_label,
