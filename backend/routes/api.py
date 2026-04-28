@@ -146,15 +146,19 @@ from services.stream_runtime_persistence import (
 )
 from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
-    iter_single_agent_stream_session,
 )
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
     finalize_single_agent_session_success,
 )
+from services.single_agent_session_orchestrator import (
+    SyncSingleAgentSessionSpec,
+    StreamSingleAgentSessionSpec,
+    iter_stream_single_agent_session,
+    run_sync_single_agent_session,
+)
 from services.single_agent_session_runner import (
     SingleAgentSessionRunnerDeps,
-    run_single_agent_session,
 )
 from services.single_agent_stream_finalizer import (
     finalize_single_agent_stream_failure,
@@ -758,8 +762,9 @@ async def _trigger_standalone_assistant_response(
         on_compaction=compaction_callback,
     )
 
-    await run_single_agent_session(
-        SingleAgentSessionRunnerDeps(
+    await run_sync_single_agent_session(
+        SyncSingleAgentSessionSpec(
+            deps=SingleAgentSessionRunnerDeps(
             execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             finalize_success=lambda response_content: finalize_single_agent_session_success(
                 db,
@@ -793,6 +798,7 @@ async def _trigger_standalone_assistant_response(
                 failure_summary=f"Agent response failed: {exc}",
             ),
             on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+            )
         )
     )
 
@@ -886,8 +892,9 @@ async def _stream_standalone_assistant_response(
         )
 
     try:
-        async for rendered in iter_single_agent_stream_session(
-            SingleAgentStreamSessionDeps(
+        async for rendered in iter_stream_single_agent_session(
+            StreamSingleAgentSessionSpec(
+                deps=SingleAgentStreamSessionDeps(
                 llm_client=runtime.llm_client,
                 tools=None,
                 turn_state=runtime.turn_state,
@@ -905,6 +912,7 @@ async def _stream_standalone_assistant_response(
                 public_runtime_card_payload=public_runtime_card_payload,
                 chatroom_id=chatroom_id,
                 max_turns=1,
+                )
             )
         ):
             if rendered.final_content is not None:
@@ -1265,8 +1273,9 @@ async def trigger_agent_response(
                 summary=f"{runtime.agent_label} completed a tool round.",
             )
 
-        finalized = await run_single_agent_session(
-            SingleAgentSessionRunnerDeps(
+        finalized = await run_sync_single_agent_session(
+            SyncSingleAgentSessionSpec(
+                deps=SingleAgentSessionRunnerDeps(
                 execute_turn=lambda: execute_non_stream_turn_loop(
                     llm_client=runtime.llm_client,
                     tools=runtime.tool_schemas,
@@ -1308,6 +1317,7 @@ async def trigger_agent_response(
                     failure_summary=f"Agent response failed: {exc}",
                 ),
                 on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+                )
             )
         )
 
@@ -4183,8 +4193,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     timings=raw_event.get("timings"),
                 )
 
-            async for rendered in iter_single_agent_stream_session(
-                SingleAgentStreamSessionDeps(
+            async for rendered in iter_stream_single_agent_session(
+                StreamSingleAgentSessionSpec(
+                    deps=SingleAgentStreamSessionDeps(
                     llm_client=runtime.llm_client,
                     tools=runtime.tool_schemas,
                     turn_state=runtime.turn_state,
@@ -4203,6 +4214,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     chatroom_id=chatroom_id,
                     max_turns=MAX_TOOL_ITERATIONS,
                     on_tool_round=_on_single_agent_stream_tool_round,
+                    )
                 )
             ):
                 if rendered.final_content is not None:

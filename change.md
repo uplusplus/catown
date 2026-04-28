@@ -1607,3 +1607,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared single-agent sync session runner，统一 execute / empty / success finalizer / failure finalizer 的控制流
 - standalone non-stream assistant 与 project single-agent sync path 改为复用 `run_single_agent_session(...)`
 - 补 focused session-runner tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
+
+### `Wire single-agent sync/stream through unified orchestrator facade`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `backend/tests/test_api_routes.py`
+- `backend/tests/test_run_recovery.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 single-agent session orchestrator facade，统一 sync/stream session 的上层入口表面
+- standalone non-stream、project single-agent sync、standalone stream、project single-agent stream 改为通过 facade 调用底层 runner
+- 补 focused orchestrator tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry

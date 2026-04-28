@@ -4759,3 +4759,37 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync 与 stream 仍分别使用不同的 driver，而不是统一成一个更高层 session abstraction
 - orchestration path 不复用这个 single-agent session driver
 - 如果继续推进，下一步可以考虑把 single-agent sync/stream 再合成更高层 unified session driver
+
+### 11.100 2026-04-28 新进展：single-agent sync/stream 已接到统一 orchestrator facade
+
+在 11.99 之后，single-agent sync 与 single-agent stream 虽然都有 shared driver，但 route 仍分别直接依赖：
+
+- `run_single_agent_session(...)`
+- `iter_single_agent_stream_session(...)`
+
+本轮新增：
+
+- `backend/services/single_agent_session_orchestrator.py`
+  - `SyncSingleAgentSessionSpec`
+  - `StreamSingleAgentSessionSpec`
+  - `run_sync_single_agent_session(...)`
+  - `iter_stream_single_agent_session(...)`
+
+并接入：
+
+- standalone non-stream assistant
+- project single-agent sync
+- standalone assistant stream
+- project single-agent stream
+
+这一步的意义是：
+
+- route 现在不再直接依赖底层 sync/stream runner，而是通过更高层 orchestrator facade 进入 single-agent session stack
+- single-agent sync/stream 开始有统一的会话入口表面，后续再进一步合并 driver 时改动面更小
+- focused test 也可以直接覆盖这一层 facade，而不总是穿透到底层 runner
+
+边界：
+
+- facade 目前仍是薄封装，sync 与 stream 底层实现尚未合并成一个真正统一的 driver
+- single-agent finalizer 仍区分 sync 与 stream 两套实现
+- 如果继续推进，下一步就该考虑把 sync/stream finalizer 与 session driver 再往上一层统一
