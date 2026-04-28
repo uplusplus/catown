@@ -4519,3 +4519,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - final response save / failure fallback 仍由各 route 分支控制
 - orchestration stream 已经更高一层复用 session wrapper，不需要再走同一个 helper
 - 下一步可以继续把 single-agent / standalone 的 success/failure session driver 也抽成 shared service
+
+### 11.93 2026-04-28 新进展：standalone / single-agent streaming session driver 已复用 shared service
+
+在 11.92 之后，standalone assistant stream 和 project single-agent stream 仍各自保留一段几乎相同的 session-level 主链：
+
+- 调 `iter_stream_turn_events(...)`
+- 通过 shared render loop 渲染 chunk
+- 维护 `final_content`
+- 后续进入 route 自己的 success/failure 分支
+
+本轮新增：
+
+- `backend/services/single_agent_stream_session.py`
+  - `SingleAgentStreamSessionDeps`
+  - `SingleAgentStreamSessionResult`
+  - `iter_single_agent_stream_session(...)`
+
+并接入：
+
+- standalone assistant stream
+- project single-agent stream
+
+这一步的意义是：
+
+- 主要 single-agent streaming path 现在也拥有 shared session driver，而不仅仅是 shared render helper
+- route 中不再手写 `iter_stream_turn_events -> render -> final_content` 这条核心控制流
+- 后续如果继续统一 single-agent / standalone 的 success/failure 终结逻辑，会更容易在这一层继续推进
+
+边界：
+
+- success path 的消息保存 / `complete_task_run(...)` / memory extraction 仍在 route
+- failure path 的 error card / fallback message 仍在 route
+- 下一步可以继续把 single-agent / standalone 的 success/failure finalizer 也抽到 shared session service

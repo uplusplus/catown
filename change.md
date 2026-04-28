@@ -1482,3 +1482,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `iter_rendered_stream_turn_events(...)`，统一 `iter_stream_turn_events(...) -> render -> final_content` 控制流
 - standalone assistant stream 与 project single-agent stream 改为复用 shared render loop helper
 - 补 focused render-loop test，并跑 standalone / single-agent / runtime-card persistence / orchestration streaming 回归
+
+### `Extract shared single-agent streaming session runner`
+
+范围：
+
+- `backend/services/single_agent_stream_session.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_stream_session.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared single-agent streaming session runner，统一 `iter_stream_turn_events(...)`、render loop 与 `final_content` 提取
+- standalone assistant stream 与 project single-agent stream 改为复用 `iter_single_agent_stream_session(...)`
+- 补 focused session-runner test，并跑 standalone / single-agent / runtime-card persistence 回归
