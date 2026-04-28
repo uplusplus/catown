@@ -1351,3 +1351,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `record_orchestration_started(...)`、`record_scheduler_plan_created(...)`、`record_task_run_recovery_started(...)`、`record_scheduler_recovery_state_rebuilt(...)`
 - sync orchestration、stream orchestration 与 interrupted recovery 改为复用 shared event helper，而不是在 route 中手写 payload
 - 补 event helper focused tests，并跑 sync/stream/recovery API 回归验证 payload shape 兼容
+
+### `Extract shared orchestration recovery lease helpers`
+
+范围：
+
+- `backend/services/orchestration_recovery_lease.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_recovery_lease.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 recovery lease service，统一 claim / renew / ensure / lease-lost 异常与 claimed-result 语义
+- interrupted recovery route 改用 shared helper，而不是在 route 内手写 lease 条件和结果整形
+- 补 lease helper focused tests，并跑 startup/manual recovery 回归

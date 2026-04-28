@@ -4276,3 +4276,35 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - no-agent / no-plan 失败分支仍在 route
 - recovery lease claim / renew / lease-lost 编排仍在 route
 - 下一步如果继续压缩 route，可以继续把这些失败与 lease 协议推进到 runtime driver / lease service
+
+### 11.85 2026-04-28 新进展：recovery lease 协议已抽成 shared service
+
+在 11.84 之后，interrupted recovery 路径里最大的一块 route-local 控制协议变成了 recovery lease：
+
+- claim recovery lease
+- renew recovery lease
+- lease lost error
+- claimed / leased / not_running / not_recoverable 结果整形
+
+本轮新增：
+
+- `backend/services/orchestration_recovery_lease.py`
+  - `RecoveryLeaseClaimResult`
+  - `RecoveryLeaseLostError`
+  - `claim_recovery_lease(...)`
+  - `renew_recovery_lease(...)`
+  - `ensure_recovery_lease(...)`
+
+并接入 `backend/routes/api.py` 的 recovery flow。
+
+这一步的意义是：
+
+- recovery lease 从 route 内部状态机提升为可复用的 shared control primitive
+- manual resume / startup recovery 对 lease claimed、lease lost 的语义更集中、更容易测试
+- route 进一步减少底层 lease 条件判断和状态拼装
+
+边界：
+
+- recovery 主流程仍在 route 驱动，lease helper 只是先收口协议本身
+- sync/stream orchestration 的 no-agent / no-plan 早退失败仍在 route
+- 下一步继续收这些早退失败分支，或者把 recovery 主驱动整体往 service 推

@@ -20,7 +20,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Callable, List, Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
@@ -162,6 +161,12 @@ from services.orchestration_handoffs import (
     record_orchestration_handoffs,
 )
 from services.orchestration_inbox import has_orchestration_handoffs_for_task_run
+from services.orchestration_recovery_lease import (
+    RecoveryLeaseClaimResult,
+    RecoveryLeaseLostError,
+    claim_recovery_lease,
+    ensure_recovery_lease,
+)
 from services.orchestration_finalizer import (
     fail_orchestration_task_run,
     finalize_orchestration_task_run,
@@ -207,10 +212,6 @@ class TaskRunRecoveryResult:
     detail: Optional[str] = None
     owner: Optional[str] = None
     lease_expires_at: Optional[datetime] = None
-
-
-class RecoveryLeaseLostError(RuntimeError):
-    """Raised when recovery loses ownership of the task-run lease mid-loop."""
 
 
 @dataclass
@@ -1652,113 +1653,38 @@ def _json_column_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
 
-
-def _next_recovery_lease_expiry(now: Optional[datetime] = None) -> datetime:
-    return (now or datetime.now()) + timedelta(seconds=RECOVERY_LEASE_SECONDS)
-
-
-def _format_recovery_lease_detail(owner: Optional[str], lease_expires_at: Optional[datetime]) -> str:
-    if owner and lease_expires_at:
-        return f"Task run is already being recovered by {owner} until {lease_expires_at.isoformat()}."
-    if owner:
-        return f"Task run is already being recovered by {owner}."
-    return "Task run is already being recovered by another Catown instance."
-
-
 def _claim_task_run_recovery_lease(
     db: Session,
     task_run_id: int,
 ) -> tuple[Optional[TaskRun], TaskRunRecoveryResult]:
-    now = datetime.now()
-    lease_expires_at = _next_recovery_lease_expiry(now)
-    updated = (
-        db.query(TaskRun)
-        .filter(
-            TaskRun.id == task_run_id,
-            TaskRun.status == "running",
-            TaskRun.run_kind.in_(sorted(RECOVERABLE_ORCHESTRATION_RUN_KINDS)),
-            or_(
-                TaskRun.recovery_owner.is_(None),
-                TaskRun.recovery_lease_expires_at.is_(None),
-                TaskRun.recovery_lease_expires_at < now,
-            ),
-        )
-        .update(
-            {
-                TaskRun.recovery_owner: RECOVERY_INSTANCE_ID,
-                TaskRun.recovery_claimed_at: now,
-                TaskRun.recovery_lease_expires_at: lease_expires_at,
-            },
-            synchronize_session=False,
-        )
+    claim_result = claim_recovery_lease(
+        db,
+        task_run_id=task_run_id,
+        recoverable_run_kinds=RECOVERABLE_ORCHESTRATION_RUN_KINDS,
+        owner=RECOVERY_INSTANCE_ID,
+        lease_seconds=RECOVERY_LEASE_SECONDS,
     )
-    db.commit()
-
-    task_run = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
-    if updated:
-        if task_run is not None:
-            db.refresh(task_run)
-        return task_run, TaskRunRecoveryResult(
-            task_run_id=task_run_id,
-            resumed=False,
-            reason="claimed",
-            status=task_run.status if task_run is not None else "running",
-            owner=RECOVERY_INSTANCE_ID,
-            lease_expires_at=lease_expires_at,
-        )
-
-    if task_run is None:
-        return None, TaskRunRecoveryResult(
-            task_run_id=task_run_id,
-            resumed=False,
-            reason="not_found",
-            status=None,
-            detail="Task run not found.",
-        )
-    status = (task_run.status or "").lower()
-    if status != "running":
-        return task_run, TaskRunRecoveryResult(
-            task_run_id=task_run_id,
-            resumed=False,
-            reason="not_running",
-            status=task_run.status,
-            detail="Only running task runs can be resumed.",
-        )
-    if (task_run.run_kind or "") not in RECOVERABLE_ORCHESTRATION_RUN_KINDS:
-        return task_run, TaskRunRecoveryResult(
-            task_run_id=task_run_id,
-            resumed=False,
-            reason="not_recoverable",
-            status=task_run.status,
-            detail="Only recoverable orchestration runs can be resumed.",
-        )
-    return task_run, TaskRunRecoveryResult(
+    return claim_result.task_run, TaskRunRecoveryResult(
         task_run_id=task_run_id,
         resumed=False,
-        reason="leased",
-        status=task_run.status,
-        detail=_format_recovery_lease_detail(task_run.recovery_owner, task_run.recovery_lease_expires_at),
-        owner=task_run.recovery_owner,
-        lease_expires_at=task_run.recovery_lease_expires_at,
+        reason=claim_result.reason,
+        status=claim_result.status,
+        detail=claim_result.detail,
+        owner=claim_result.owner,
+        lease_expires_at=claim_result.lease_expires_at,
     )
 
 
 def _renew_task_run_recovery_lease(db: Session, task_run_id: int) -> Optional[datetime]:
-    lease_expires_at = _next_recovery_lease_expiry()
-    updated = (
-        db.query(TaskRun)
-        .filter(
-            TaskRun.id == task_run_id,
-            TaskRun.recovery_owner == RECOVERY_INSTANCE_ID,
-            TaskRun.status == "running",
+    try:
+        return ensure_recovery_lease(
+            db,
+            task_run_id=task_run_id,
+            owner=RECOVERY_INSTANCE_ID,
+            lease_seconds=RECOVERY_LEASE_SECONDS,
         )
-        .update(
-            {TaskRun.recovery_lease_expires_at: lease_expires_at},
-            synchronize_session=False,
-        )
-    )
-    db.commit()
-    return lease_expires_at if updated else None
+    except RecoveryLeaseLostError:
+        return None
 
 
 def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
