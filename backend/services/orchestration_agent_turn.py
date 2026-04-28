@@ -21,6 +21,7 @@ from services.runner_lifecycle import (
 )
 from services.runtime_event_helpers import build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
+from services.task_run_control import raise_if_task_run_cancelled
 from services.turn_state import TurnContextState, build_tool_result_record
 
 
@@ -162,6 +163,9 @@ async def run_orchestration_agent_turn(
             summary=f"{runtime.agent_label} completed a tool round.",
         )
 
+    async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
+        raise_if_task_run_cancelled(db, task_run, context=f"agent turn {runtime.agent_label}")
+
     response_content = await execute_non_stream_turn_loop(
         llm_client=runtime.llm_client,
         tools=runtime.tool_schemas,
@@ -169,11 +173,15 @@ async def run_orchestration_agent_turn(
         assemble_messages=_assemble_orchestration_turn_messages,
         execute_tool_call=_execute_orchestration_tool,
         max_turns=deps.max_tool_iterations,
+        before_turn=_check_cancel,
+        before_tool_call=_check_cancel,
         on_tool_round=_on_orchestration_tool_round,
     )
 
     if not response_content:
         return None, None
+
+    await _check_cancel()
 
     agent_msg = await deps.save_message(
         chatroom_id=chatroom_id,
@@ -274,6 +282,9 @@ async def iter_stream_orchestration_agent_turn_events(
             summary=f"{runtime.agent_label} completed a streaming tool round.",
         )
 
+    async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
+        raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {runtime.agent_label}")
+
     def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
         return deps.build_llm_card_payload(
             agent_name=runtime.agent_label,
@@ -304,6 +315,9 @@ async def iter_stream_orchestration_agent_turn_events(
         format_prompt_messages=deps.format_prompt_messages,
         tool_result_success=deps.tool_result_success,
         max_turns=deps.max_tool_iterations,
+        before_turn=_check_cancel,
+        before_event=_check_cancel,
+        before_tool_call=_check_cancel,
         on_tool_round=_on_stream_tool_round,
     ):
         if event["type"] == "turn_complete":

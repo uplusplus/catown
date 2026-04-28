@@ -1295,3 +1295,26 @@ No failures were observed in the new context builder unit tests or Python syntax
 - orchestration runner、project single-agent sync/stream、blocked tool replay 与 standalone assistant message assembly 改用 shared service
 - 移除 route-local `_prepare_chat_turn_runtime(...)`、`_assemble_chat_messages(...)`、`_tool_runtime_kwargs(...)` 主逻辑
 - 补 focused runtime 单测，并更新 API/recovery 测试的 module reset 以适配新的 service-level LLM mock 注入边界
+
+### `Add executor-level orchestration cancellation checks`
+
+范围：
+
+- `backend/services/task_run_control.py`
+- `backend/services/nonstream_turn_executor.py`
+- `backend/services/stream_turn_executor.py`
+- `backend/services/orchestration_agent_turn.py`
+- `backend/services/orchestration_step_runner.py`
+- `backend/services/orchestration_stream_runner.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_agent_turn.py`
+- `backend/tests/test_orchestration_stream_runner.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared cancellation primitive：`TaskRunCancelledError` 与 `raise_if_task_run_cancelled(...)`
+- nonstream / stream turn executor 增加 turn/tool/event 边界 callback 插口，供 orchestration runtime 注入 cooperative cancellation check
+- sync orchestration、stream orchestration 与 interrupted recovery 改为在 executor loop 中观察 cancelled 状态并尽早停止
+- 补 cancellation focused tests，覆盖 nonstream agent turn 提前停机、stream runtime `done(cancelled=true)` 收口与既有 API/recovery 回归

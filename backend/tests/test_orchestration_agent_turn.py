@@ -9,6 +9,7 @@ from services.orchestration_agent_turn import (
     iter_stream_orchestration_agent_turn_events,
     run_orchestration_agent_turn,
 )
+from services.task_run_control import TaskRunCancelledError
 from services.turn_state import TurnContextState
 
 
@@ -208,5 +209,72 @@ async def test_iter_stream_orchestration_agent_turn_events_records_start_and_yie
         db.refresh(task_run)
         assert task_run.events[0].event_type == "agent_turn_started"
         assert task_run.events[0].summary == "Developer started an orchestrated streaming turn."
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_orchestration_agent_turn_stops_before_llm_when_task_run_cancelled(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Cancelled agent turn")
+        agent = fresh_db.Agent(agent_type="developer", name="Developer", role="developer")
+        db.add_all([chatroom, agent])
+        db.commit()
+        db.refresh(chatroom)
+        db.refresh(agent)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration",
+            status="cancelled",
+            title="Cancelled turn",
+            user_request="Stop.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        class UnexpectedLLMClient:
+            model = "unexpected"
+
+            async def chat_with_tools(self, messages, tools):
+                raise AssertionError("LLM should not be called after cancellation")
+
+        async def prepare_chat_turn_runtime(**kwargs):
+            return SimpleNamespace(
+                llm_client=UnexpectedLLMClient(),
+                agent_label="Developer",
+                recent_messages=[],
+                available_tools=[],
+                tool_schemas=[],
+                runtime_kwargs={},
+                turn_state=TurnContextState(),
+            )
+
+        deps = OrchestrationAgentTurnDeps(
+            ensure_collaboration_context=lambda agents, chatroom_id: None,
+            prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+            build_context_compaction_callback=lambda *args, **kwargs: None,
+            assemble_chat_messages=lambda **kwargs: [{"role": "user", "content": "Stop."}],
+            save_message=lambda **kwargs: None,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda agent_obj, request, response: None,
+            max_tool_iterations=1,
+        )
+
+        with pytest.raises(TaskRunCancelledError):
+            await run_orchestration_agent_turn(
+                deps=deps,
+                agent=agent,
+                chatroom_id=chatroom.id,
+                project=None,
+                agents=[agent],
+                user_message="Stop.",
+                extra_context="",
+                db=db,
+                client_turn_id="turn-cancelled",
+                task_run=task_run,
+            )
     finally:
         db.close()

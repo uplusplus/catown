@@ -18,6 +18,7 @@ from services.orchestration_handoffs import (
 )
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
+from services.task_run_control import TaskRunCancelledError
 
 
 ExecuteTurn = Callable[..., Awaitable[tuple[str, Any]]]
@@ -99,6 +100,9 @@ async def run_nonstream_orchestration_step(
             task_run=task_run,
             checkpoint_snapshot=checkpoint_snapshot,
         )
+    except TaskRunCancelledError as exc:
+        fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
+        raise
     except Exception as exc:
         record_scheduler_step_failed(
             db,

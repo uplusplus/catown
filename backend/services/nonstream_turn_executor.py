@@ -32,6 +32,7 @@ async def execute_non_stream_turn_loop(
     before_llm_call: Callable[[NonStreamTurnFrame, TurnContextState], Awaitable[Any] | Any] | None = None,
     on_llm_response: Callable[[NonStreamTurnFrame, TurnContextState], Awaitable[None] | None] | None = None,
     on_llm_error: Callable[[NonStreamTurnFrame, Exception, TurnContextState], Awaitable[None] | None] | None = None,
+    before_tool_call: Callable[[NonStreamTurnFrame, dict[str, Any], TurnContextState], Awaitable[None] | None] | None = None,
     on_tool_round: Callable[[NonStreamTurnFrame, list[ToolResultRecord], TurnContextState], Awaitable[None] | None] | None = None,
 ) -> str:
     final_content = ""
@@ -70,6 +71,8 @@ async def execute_non_stream_turn_loop(
         if frame.normalized_tool_calls:
             tool_results: list[ToolResultRecord] = []
             for tool_call in frame.normalized_tool_calls:
+                if before_tool_call is not None:
+                    await _maybe_await(before_tool_call(frame, tool_call, turn_state))
                 tool_results.append(await execute_tool_call(frame, tool_call))
 
             turn_state.record_tool_round(

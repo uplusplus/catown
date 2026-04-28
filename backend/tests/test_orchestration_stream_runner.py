@@ -302,3 +302,65 @@ async def test_iter_stream_orchestration_runtime_events_yields_transport_neutral
         assert queue.runtime_snapshot().completed_step_count == 2
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_orchestration_runtime_events_stops_when_task_run_cancelled(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Cancelled stream runtime")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="cancelled",
+            title="Cancelled runtime",
+            user_request="Stop.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        queue = _queue()
+        deps = StreamOrchestrationRuntimeDeps(
+            iter_agent_events=lambda **kwargs: (_ for _ in ()).throw(AssertionError("stream loop should stop before agent events")),
+            save_message=lambda **kwargs: None,
+            publish_message=lambda *args, **kwargs: None,
+            record_turn_completed=lambda *args, **kwargs: None,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda agent, request, response: None,
+            build_checkpoint_snapshot=lambda task_run: {},
+            find_stage_policy=lambda policy, step_id: None,
+            agent_name_of=lambda agent: agent.name,
+            fail_task_run=lambda *args, **kwargs: None,
+            finalize_task_run=lambda *args, **kwargs: None,
+        )
+
+        events = [
+            event
+            async for event in iter_stream_orchestration_runtime_events(
+                db=db,
+                task_run=task_run,
+                chatroom=chatroom,
+                project=None,
+                agents=[],
+                resolved_agents=[DummyAgent(1, "Analyst", "analyst")],
+                user_message="Stop.",
+                client_turn_id="turn-cancelled",
+                queue=queue,
+                orchestration_policy=None,
+                output_state=OrchestrationStepOutputState(),
+                pending_handoffs={},
+                standalone_note="",
+                deps=deps,
+            )
+        ]
+
+        assert len(events) == 1
+        assert events[0].payload["type"] == "done"
+        assert events[0].payload["cancelled"] is True
+    finally:
+        db.close()

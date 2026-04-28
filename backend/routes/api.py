@@ -132,6 +132,7 @@ from services.approval_replay import (
     resolve_replay_tool_name,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
+from services.task_run_control import TaskRunCancelledError, raise_if_task_run_cancelled
 from services.runner_policy import (
     compile_orchestration_run_policy,
     compile_single_agent_run_policy,
@@ -2019,53 +2020,61 @@ async def _run_multi_agent_orchestration(
         ),
     )
 
-    while True:
-        step = queue.pop_ready()
-        if step is None:
-            break
+    try:
+        while True:
+            raise_if_task_run_cancelled(db, task_run, context="orchestration step loop")
+            step = queue.pop_ready()
+            if step is None:
+                break
 
-        agent = agents_by_id.get(step.agent_id)
-        if agent is None:
-            continue
+            agent = agents_by_id.get(step.agent_id)
+            if agent is None:
+                continue
 
-        agent_label = agent_name_of(agent)
-        step_policy = find_stage_policy(orchestration_policy, step.step_id)
-        logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
-        try:
-            step_result = await run_nonstream_orchestration_step(
-                db=db,
-                task_run=task_run,
-                queue=queue,
-                step=step,
-                agent=agent,
-                agent_name=agent_label,
-                chatroom_id=chatroom_id,
-                project=project,
-                agents=agents,
-                user_message=user_message,
-                client_turn_id=client_turn_id,
-                output_state=output_state,
-                pending_handoffs=pending_handoffs,
-                orchestration_policy=orchestration_policy,
-                stage_policy=step_policy,
-                execute_turn=execute_orchestration_turn,
-                publish_message=_publish_saved_chat_message,
-                message_metadata=_message_metadata_with_turn(client_turn_id),
-                extra_context=extra_context,
-            )
-            content = step_result.content
-        except Exception as exc:
-            fail_orchestration_task_run(
-                db,
-                task_run,
-                summary=f"Orchestration failed at {agent_label}.",
-                agent_name=agent_label,
-                payload={"error": str(exc), "step_id": step.step_id},
-            )
-            raise
-        if not content and step.dispatch_kind == "blocking":
-            logger.warning(f"[Collab] {agent.name} returned empty response")
+            agent_label = agent_name_of(agent)
+            step_policy = find_stage_policy(orchestration_policy, step.step_id)
+            logger.info(f"[Collab] Step {step.position}/{len(plan.steps)}: {_agent_type(agent)}")
+            try:
+                step_result = await run_nonstream_orchestration_step(
+                    db=db,
+                    task_run=task_run,
+                    queue=queue,
+                    step=step,
+                    agent=agent,
+                    agent_name=agent_label,
+                    chatroom_id=chatroom_id,
+                    project=project,
+                    agents=agents,
+                    user_message=user_message,
+                    client_turn_id=client_turn_id,
+                    output_state=output_state,
+                    pending_handoffs=pending_handoffs,
+                    orchestration_policy=orchestration_policy,
+                    stage_policy=step_policy,
+                    execute_turn=execute_orchestration_turn,
+                    publish_message=_publish_saved_chat_message,
+                    message_metadata=_message_metadata_with_turn(client_turn_id),
+                    extra_context=extra_context,
+                )
+                content = step_result.content
+            except TaskRunCancelledError:
+                raise
+            except Exception as exc:
+                fail_orchestration_task_run(
+                    db,
+                    task_run,
+                    summary=f"Orchestration failed at {agent_label}.",
+                    agent_name=agent_label,
+                    payload={"error": str(exc), "step_id": step.step_id},
+                )
+                raise
+            if not content and step.dispatch_kind == "blocking":
+                logger.warning(f"[Collab] {agent.name} returned empty response")
+    except TaskRunCancelledError:
+        logger.info("[Collab] Orchestration task run %s observed cancellation and stopped.", getattr(task_run, "id", None))
+        return
 
+    raise_if_task_run_cancelled(db, task_run, context="orchestration finalize")
     logger.info(f"[Collab] Orchestration complete: {len(results)}/{len(resolved_agents)} agents responded")
     finalize_orchestration_task_run(
         db,
@@ -2271,6 +2280,7 @@ async def _resume_interrupted_orchestration_task_run(
             )
 
         while True:
+            raise_if_task_run_cancelled(db, task_run, context="recovery step loop")
             lease_expires_at = _renew_task_run_recovery_lease(db, task_run.id)
             if lease_expires_at is None:
                 logger.warning(
@@ -2329,6 +2339,7 @@ async def _resume_interrupted_orchestration_task_run(
                 recovered=True,
             )
 
+        raise_if_task_run_cancelled(db, task_run, context="recovery finalize")
         final_runtime = queue.runtime_snapshot()
         if final_runtime.completed_step_count < final_runtime.step_count:
             fail_orchestration_task_run(
@@ -2383,6 +2394,16 @@ async def _resume_interrupted_orchestration_task_run(
             detail=recovery_summary,
             owner=RECOVERY_INSTANCE_ID,
             lease_expires_at=lease_expires_at,
+        )
+    except TaskRunCancelledError:
+        refreshed = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        return TaskRunRecoveryResult(
+            task_run_id=task_run_id,
+            resumed=False,
+            reason="cancelled",
+            status=(refreshed.status if refreshed is not None else "cancelled"),
+            detail="Recovery stopped because the task run was cancelled.",
+            owner=RECOVERY_INSTANCE_ID,
         )
     except Exception as exc:
         logger.exception(f"[Recovery] Failed to recover task run {task_run_id}: {exc}")

@@ -4179,3 +4179,33 @@ P1.4 开始削 route 对 executor dependency adapter 的直接持有。此前 or
 - standalone target agent resolution 仍在 route 层
 - context compaction callback 与 runtime card builder 仍是 route-local adapter
 - 下一步可以继续把 standalone runtime preparation 和更多 prompt/runtime callback 下沉，进一步压缩 route 责任
+
+### 11.82 2026-04-28 新进展：executor-level cancellation check primitive 已接入 orchestration
+
+P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop”这个问题。本轮不追求中断已经飞出去的单次模型请求，而是把 cancellation 变成 executor 在 step / turn / stream event 边界可观察的控制信号。
+
+本轮新增：
+
+- `backend/services/task_run_control.py`
+  - `TaskRunCancelledError`
+  - `raise_if_task_run_cancelled(...)`
+
+并接入：
+
+- `execute_non_stream_turn_loop(...)` 新增 `before_tool_call` callback
+- `iter_stream_turn_events(...)` 新增 `before_turn` / `before_event` / `before_tool_call` callback
+- orchestration nonstream agent turn 在 turn/tool 边界检查 cancelled
+- orchestration stream agent turn 在 turn/event/tool 边界检查 cancelled
+- sync orchestration step loop、stream orchestration runtime loop、interrupted recovery loop 在 step/finalize 边界检查 cancelled
+
+行为变化：
+
+- task run 被 API 标记为 `cancelled` 后，executor 不再继续自然跑完整个 orchestration 队列
+- streaming orchestration 会尽快收口成 `done(cancelled=true)`，而不是继续 dispatch 后续 step
+- recovery 过程中如果 task run 被取消，会返回 `reason=\"cancelled\"`，而不是误记为 failed
+
+边界：
+
+- 仍不能强杀已经在飞行中的单次 LLM 请求或外部工具进程
+- 当前是“cooperative cancellation”，不是 preemptive interrupt
+- 下一步如果要更接近 Codex，需要把 cancel token 继续传到更底层的模型/工具执行单元

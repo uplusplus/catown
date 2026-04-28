@@ -39,11 +39,16 @@ async def iter_stream_turn_events(
     format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
     tool_result_success: Callable[[str], bool],
     max_turns: int = 20,
+    before_turn: Callable[[int, TurnContextState], Awaitable[None] | None] | None = None,
+    before_event: Callable[[StreamTurnFrame, dict[str, Any], TurnContextState], Awaitable[None] | None] | None = None,
+    before_tool_call: Callable[[StreamTurnFrame, dict[str, Any], TurnContextState], Awaitable[None] | None] | None = None,
     on_tool_round: Callable[[StreamTurnFrame, list[dict[str, Any]], list[Any], TurnContextState], Awaitable[None] | None] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     final_content = ""
 
     for iteration in range(max_turns):
+        if before_turn is not None:
+            await _maybe_await(before_turn(iteration, turn_state))
         messages = assemble_messages(turn_state)
         prompt_snapshot = snapshot_messages(messages)
         system_prompt = messages[0]["content"] if messages else ""
@@ -68,6 +73,8 @@ async def iter_stream_turn_events(
         }
 
         async for event in _iter_with_heartbeat(llm_client.chat_stream(messages, tools or None)):
+            if before_event is not None:
+                await _maybe_await(before_event(frame, event, turn_state))
             event_type = event["type"]
             if event_type == "__heartbeat__":
                 elapsed_ms = int((time.time() - frame.llm_started_at) * 1000)
@@ -129,6 +136,8 @@ async def iter_stream_turn_events(
                     tool_calls_found = True
                     tool_results = []
                     for tool_index, tool_call in enumerate(normalized_tool_calls):
+                        if before_tool_call is not None:
+                            await _maybe_await(before_tool_call(frame, tool_call, turn_state))
                         tool_name = tool_call["function"]["name"]
                         tool_args_str = tool_call["function"].get("arguments", "{}")
                         tool_call_id = tool_call.get("id")
