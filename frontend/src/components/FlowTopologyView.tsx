@@ -86,6 +86,29 @@ type NodeBounds = {
   centerY: number;
 };
 
+type EdgeLabelPlacement = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type FlowTopologyViewport = {
+  width: number;
+  height: number;
+};
+
+type EdgeCurveGeometry = {
+  startX: number;
+  startY: number;
+  control1X: number;
+  control1Y: number;
+  control2X: number;
+  control2Y: number;
+  endX: number;
+  endY: number;
+};
+
 function kindVisual(kind: FlowTopologyNodeKind): { Icon: LucideIcon; accentClass: string } {
   switch (kind) {
     case "entry":
@@ -118,20 +141,193 @@ function statusClass(status: FlowTopologyStatus) {
   return `is-${status}`;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function edgeStrokeWidth(volume: number, maxVolume: number) {
   if (maxVolume <= 0) return 2;
   const ratio = Math.max(0, Math.min(volume / maxVolume, 1));
   return 2 + ratio * 4;
 }
 
-function buildEdgePath(from: NodeBounds, to: NodeBounds) {
+function buildEdgeCurve(from: NodeBounds, to: NodeBounds): EdgeCurveGeometry {
   const startX = from.right;
   const startY = from.centerY;
   const endX = to.left;
   const endY = to.centerY;
   const distance = Math.max(endX - startX, 80);
   const control = Math.max(70, distance * 0.42);
-  return `M ${startX} ${startY} C ${startX + control} ${startY}, ${endX - control} ${endY}, ${endX} ${endY}`;
+  return {
+    startX,
+    startY,
+    control1X: startX + control,
+    control1Y: startY,
+    control2X: endX - control,
+    control2Y: endY,
+    endX,
+    endY,
+  };
+}
+
+function buildEdgePath(curve: EdgeCurveGeometry) {
+  return `M ${curve.startX} ${curve.startY} C ${curve.control1X} ${curve.control1Y}, ${curve.control2X} ${curve.control2Y}, ${curve.endX} ${curve.endY}`;
+}
+
+function cubicBezierPoint(curve: EdgeCurveGeometry, t: number) {
+  const mt = 1 - t;
+  const x =
+    mt * mt * mt * curve.startX +
+    3 * mt * mt * t * curve.control1X +
+    3 * mt * t * t * curve.control2X +
+    t * t * t * curve.endX;
+  const y =
+    mt * mt * mt * curve.startY +
+    3 * mt * mt * t * curve.control1Y +
+    3 * mt * t * t * curve.control2Y +
+    t * t * t * curve.endY;
+  return { x, y };
+}
+
+function cubicBezierTangent(curve: EdgeCurveGeometry, t: number) {
+  const mt = 1 - t;
+  const x =
+    3 * mt * mt * (curve.control1X - curve.startX) +
+    6 * mt * t * (curve.control2X - curve.control1X) +
+    3 * t * t * (curve.endX - curve.control2X);
+  const y =
+    3 * mt * mt * (curve.control1Y - curve.startY) +
+    6 * mt * t * (curve.control2Y - curve.control1Y) +
+    3 * t * t * (curve.endY - curve.control2Y);
+  return { x, y };
+}
+
+function normalizeVector(x: number, y: number) {
+  const length = Math.hypot(x, y);
+  if (length <= 0.0001) {
+    return { x: 1, y: 0 };
+  }
+  return { x: x / length, y: y / length };
+}
+
+function rectIntersectsNode(
+  rect: { left: number; top: number; width: number; height: number },
+  node: NodeBounds,
+  margin = 10,
+) {
+  const right = rect.left + rect.width;
+  const bottom = rect.top + rect.height;
+  return !(
+    right < node.left - margin ||
+    rect.left > node.right + margin ||
+    bottom < node.top - margin ||
+    rect.top > node.bottom + margin
+  );
+}
+
+function rectIntersectsRect(
+  left: { left: number; top: number; width: number; height: number },
+  right: { left: number; top: number; width: number; height: number },
+  margin = 8,
+) {
+  return !(
+    left.left + left.width < right.left - margin ||
+    left.left > right.left + right.width + margin ||
+    left.top + left.height < right.top - margin ||
+    left.top > right.top + right.height + margin
+  );
+}
+
+function placementBlocked(
+  placement: EdgeLabelPlacement,
+  bounds: Record<string, NodeBounds>,
+  occupied: EdgeLabelPlacement[],
+) {
+  return (
+    Object.values(bounds).some((node) => rectIntersectsNode(placement, node)) ||
+    occupied.some((label) => rectIntersectsRect(placement, label))
+  );
+}
+
+function clampPlacementToViewport(
+  placement: EdgeLabelPlacement,
+  viewport: FlowTopologyViewport,
+  margin = 8,
+): EdgeLabelPlacement {
+  const maxLeft = Math.max(margin, viewport.width - placement.width - margin);
+  const maxTop = Math.max(margin, viewport.height - placement.height - margin);
+  return {
+    ...placement,
+    left: clamp(placement.left, margin, maxLeft),
+    top: clamp(placement.top, margin, maxTop),
+  };
+}
+
+function estimateEdgeLabelSize(edge: FlowTopologyEdge, compact: boolean) {
+  const mainWidth = 20 + edge.label.length * (compact ? 6.1 : 6.6);
+  const detailWidth =
+    compact || !edge.detail ? 0 : 20 + Math.min(edge.detail.length, 36) * 5.2;
+  return {
+    width: clamp(
+      Math.round(Math.max(mainWidth, detailWidth)),
+      compact ? 88 : 104,
+      compact ? 180 : 260,
+    ),
+    height: compact || !edge.detail ? 28 : 34,
+  };
+}
+
+function resolveEdgeLabelPlacement(
+  edge: FlowTopologyEdge,
+  from: NodeBounds,
+  to: NodeBounds,
+  bounds: Record<string, NodeBounds>,
+  compact: boolean,
+  occupied: EdgeLabelPlacement[],
+  viewport: FlowTopologyViewport,
+): EdgeLabelPlacement {
+  const { width, height } = estimateEdgeLabelSize(edge, compact);
+  const curve = buildEdgeCurve(from, to);
+  const tSamples = compact ? [0.42, 0.58, 0.32, 0.68, 0.5] : [0.38, 0.5, 0.62, 0.28, 0.72];
+  const normalOffsets = compact ? [-14, 14, -24, 24, 0] : [-18, 18, -30, 30, 0];
+  const tangentOffsets = compact ? [0, -14, 14, -26, 26] : [0, -18, 18, -32, 32];
+
+  for (const t of tSamples) {
+    const point = cubicBezierPoint(curve, t);
+    const tangent = cubicBezierTangent(curve, t);
+    const unitTangent = normalizeVector(tangent.x, tangent.y);
+    const unitNormal = { x: -unitTangent.y, y: unitTangent.x };
+
+    for (const normalOffset of normalOffsets) {
+      for (const tangentOffset of tangentOffsets) {
+        const centerX = point.x + unitNormal.x * normalOffset + unitTangent.x * tangentOffset;
+        const centerY = point.y + unitNormal.y * normalOffset + unitTangent.y * tangentOffset;
+        const placement = clampPlacementToViewport(
+          {
+            left: centerX - width / 2,
+            top: centerY - height / 2,
+            width,
+            height,
+          },
+          viewport,
+        );
+        if (!placementBlocked(placement, bounds, occupied)) {
+          return placement;
+        }
+      }
+    }
+  }
+
+  const fallbackPoint = cubicBezierPoint(curve, 0.5);
+  return clampPlacementToViewport(
+    {
+      left: fallbackPoint.x - width / 2,
+      top: fallbackPoint.y - height / 2 - (compact ? 14 : 18),
+      width,
+      height,
+    },
+    viewport,
+  );
 }
 
 function laneKey(label: string) {
@@ -199,6 +395,7 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
   const nodeRefs = useRef(new Map<string, HTMLDivElement>());
   const [bounds, setBounds] = useState<Record<string, NodeBounds>>({});
   const [containerWidth, setContainerWidth] = useState(0);
+  const [viewport, setViewport] = useState<FlowTopologyViewport>({ width: 0, height: 0 });
 
   const lanes = useMemo<FlowLane[]>(() => {
     const bucket = new Map<number, FlowTopologyNode[]>();
@@ -232,6 +429,10 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
       frameId = 0;
       const rootRect = container.getBoundingClientRect();
       setContainerWidth(rootRect.width);
+      setViewport({
+        width: Math.max(rootRect.width, container.scrollWidth),
+        height: Math.max(rootRect.height, container.scrollHeight),
+      });
       const nextBounds: Record<string, NodeBounds> = {};
       graph.nodes.forEach((node) => {
         const element = nodeRefs.current.get(node.id);
@@ -277,6 +478,52 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
   const maxEdgeVolume = useMemo(
     () => graph.edges.reduce((maxVolume, edge) => Math.max(maxVolume, edge.volume), 0),
     [graph.edges],
+  );
+
+  const maxEdgeLabelWidth = useMemo(
+    () =>
+      graph.edges.reduce(
+        (maxWidth, edge) => Math.max(maxWidth, estimateEdgeLabelSize(edge, compact).width),
+        compact ? 112 : 148,
+      ),
+    [compact, graph.edges],
+  );
+
+  const topologyStyle = useMemo(
+    () =>
+      ({
+        "--flow-topology-label-channel": `${Math.max(compact ? 40 : 96, maxEdgeLabelWidth + (compact ? 18 : 34))}px`,
+        "--flow-topology-inter-group-gap": `${Math.max(compact ? 16 : 44, Math.round(maxEdgeLabelWidth * 0.7))}px`,
+      }) as CSSProperties,
+    [compact, maxEdgeLabelWidth],
+  );
+
+  const edgeLabelPlacements = useMemo(
+    () => {
+      const occupied: EdgeLabelPlacement[] = [];
+      return graph.edges
+        .map((edge) => {
+          const from = bounds[edge.from];
+          const to = bounds[edge.to];
+          if (!from || !to) return null;
+          const placement = resolveEdgeLabelPlacement(edge, from, to, bounds, compact, occupied, viewport);
+          occupied.push(placement);
+          return { edge, placement };
+        })
+        .filter((item): item is { edge: FlowTopologyEdge; placement: EdgeLabelPlacement } => Boolean(item));
+    },
+    [bounds, compact, graph.edges, viewport],
+  );
+
+  const edgeLayerStyle = useMemo(
+    () =>
+      viewport.width > 0 && viewport.height > 0
+        ? ({
+            width: `${viewport.width}px`,
+            height: `${viewport.height}px`,
+          } as CSSProperties)
+        : undefined,
+    [viewport],
   );
 
   const isZoneGroup = (group: FlowLaneGroup) =>
@@ -353,17 +600,15 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
     <div
       ref={containerRef}
       className={["flow-topology", compact ? "flow-topology--compact" : "", className].filter(Boolean).join(" ")}
+      style={topologyStyle}
     >
-      <svg className="flow-topology__edges" aria-hidden="true">
+      <svg className="flow-topology__edges" aria-hidden="true" style={edgeLayerStyle}>
         {graph.edges.map((edge) => {
           const from = bounds[edge.from];
           const to = bounds[edge.to];
           if (!from || !to) return null;
 
-          const path = buildEdgePath(from, to);
-          const labelX = from.right + (to.left - from.right) * 0.5;
-          const labelY = from.centerY + (to.centerY - from.centerY) * 0.5;
-          const labelWidth = compact ? 112 : 144;
+          const path = buildEdgePath(buildEdgeCurve(from, to));
           const strokeWidth = edgeStrokeWidth(edge.volume, maxEdgeVolume);
 
           return (
@@ -372,21 +617,28 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
               {edge.active ? (
                 <path className="flow-topology__edge-path flow-topology__edge-path--active" d={path} strokeWidth={strokeWidth + 1} />
               ) : null}
-              <g className="flow-topology__edge-label" transform={`translate(${labelX - labelWidth / 2} ${labelY - 16})`}>
-                <rect width={labelWidth} height={compact ? 28 : 34} rx="10" />
-                <text x={10} y={14}>
-                  {edge.label}
-                </text>
-                {!compact && edge.detail ? (
-                  <text x={10} y={26} className="flow-topology__edge-detail">
-                    {edge.detail}
-                  </text>
-                ) : null}
-              </g>
             </g>
           );
         })}
       </svg>
+
+      <div className="flow-topology__edge-labels" aria-hidden="true" style={edgeLayerStyle}>
+        {edgeLabelPlacements.map(({ edge, placement }) => (
+          <div
+            key={edge.id}
+            className={`flow-topology__edge-label-badge ${statusClass(edge.status)}`}
+            style={{
+              left: `${placement.left}px`,
+              top: `${placement.top}px`,
+              width: `${placement.width}px`,
+              minHeight: `${placement.height}px`,
+            }}
+          >
+            <div className="flow-topology__edge-label-main">{edge.label}</div>
+            {!compact && edge.detail ? <div className="flow-topology__edge-label-sub">{edge.detail}</div> : null}
+          </div>
+        ))}
+      </div>
 
       <div
         className="flow-topology__lanes"

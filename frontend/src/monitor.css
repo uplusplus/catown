@@ -650,15 +650,22 @@ textarea {
 .flow-topology__edges {
   position: absolute;
   inset: 0;
+  z-index: 2;
   width: 100%;
   height: 100%;
   overflow: visible;
   pointer-events: none;
 }
 
+.flow-topology__edge-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
 .flow-topology__lanes {
   position: relative;
-  z-index: 1;
   display: grid;
   grid-template-columns: repeat(var(--flow-topology-columns, 1), max-content);
   column-gap: clamp(16px, 2vw, 28px);
@@ -669,6 +676,15 @@ textarea {
   min-width: 100%;
 }
 
+.flow-topology:not(.flow-topology--compact) .flow-topology__lanes {
+  display: flex;
+  gap: var(--flow-topology-inter-group-gap, clamp(28px, 3vw, 56px));
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
 .flow-topology__column {
   display: flex;
   flex-direction: column;
@@ -677,10 +693,30 @@ textarea {
   min-width: 0;
 }
 
+.flow-topology:not(.flow-topology--compact) .flow-topology__column {
+  flex: 0 0 auto;
+}
+
 .flow-topology__zone {
+  position: relative;
   min-width: min(100%, clamp(320px, 28vw, 560px));
   max-width: min(100%, clamp(520px, 40vw, 860px));
   padding: 14px;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone {
+  flex: 1 1 clamp(420px, 34vw, 960px);
+  width: auto;
+  min-width: clamp(420px, 34vw, 640px);
+  max-width: none;
+  padding: 18px;
+}
+
+.flow-topology__zone::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   border: 1px solid color-mix(in srgb, var(--border-primary) 88%, white);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.82));
@@ -688,6 +724,8 @@ textarea {
 }
 
 .flow-topology__zone-header {
+  position: relative;
+  z-index: 3;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -731,6 +769,13 @@ textarea {
   flex-wrap: wrap;
   gap: 12px;
   align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone-grid {
+  padding-left: var(--flow-topology-label-channel, 120px);
+  gap: clamp(18px, 2vw, 30px);
+  justify-content: space-between;
 }
 
 .flow-topology__lane {
@@ -751,6 +796,8 @@ textarea {
 }
 
 .flow-topology__lane-label {
+  position: relative;
+  z-index: 3;
   margin-bottom: 10px;
   font-size: 10px;
   font-weight: 800;
@@ -765,6 +812,14 @@ textarea {
   gap: 12px;
   width: max-content;
   min-width: 0;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__lane-stack {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: clamp(18px, 2vw, 30px);
+  max-width: min(100%, 40vw);
 }
 
 .flow-topology__edge {
@@ -797,37 +852,56 @@ textarea {
   filter: drop-shadow(0 0 10px rgba(14, 165, 233, 0.2));
 }
 
-.flow-topology__edge-label rect {
-  fill: rgba(255, 255, 255, 0.92);
-  stroke: color-mix(in srgb, var(--flow-edge-color) 28%, white);
-  stroke-width: 1;
+.flow-topology__edge-label-badge {
+  position: absolute;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(8px);
 }
 
-.flow-topology__edge-label text {
-  fill: var(--text-primary);
+.flow-topology__edge-label-badge.is-active {
+  border-color: rgba(14, 165, 233, 0.28);
+}
+
+.flow-topology__edge-label-badge.is-warning {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.flow-topology__edge-label-badge.is-error {
+  border-color: rgba(239, 68, 68, 0.34);
+}
+
+.flow-topology__edge-label-main {
+  color: var(--text-primary);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
-.flow-topology__edge-detail {
-  fill: var(--text-muted);
+.flow-topology__edge-label-sub {
+  margin-top: 2px;
+  color: var(--text-muted);
   font-size: 9px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .flow-node {
   --flow-node-accent: #64748b;
   position: relative;
+  z-index: 5;
   width: fit-content;
-  min-width: clamp(148px, 8vw, 188px);
+  min-width: clamp(136px, 7vw, 180px);
   max-width: var(--flow-node-max-width, 296px);
   border: 1px solid color-mix(in srgb, var(--flow-node-accent) 18%, var(--border-primary));
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--bg-secondary);
   box-shadow: 0 16px 28px rgba(15, 23, 42, 0.05), 0 4px 10px rgba(15, 23, 42, 0.04);
   padding: 14px;
-  backdrop-filter: blur(10px);
 }
 
 .flow-node::before {
@@ -845,12 +919,12 @@ textarea {
 
 .flow-node.is-warning {
   border-color: rgba(245, 158, 11, 0.34);
-  background: linear-gradient(180deg, rgba(255, 251, 235, 0.96), rgba(255, 255, 255, 0.94));
+  background: linear-gradient(180deg, #fffbeb, #ffffff);
 }
 
 .flow-node.is-error {
   border-color: rgba(239, 68, 68, 0.3);
-  background: linear-gradient(180deg, rgba(254, 242, 242, 0.96), rgba(255, 255, 255, 0.94));
+  background: linear-gradient(180deg, #fef2f2, #ffffff);
 }
 
 .flow-node--compact {

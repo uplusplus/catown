@@ -3269,6 +3269,7 @@ export function MonitorTab() {
   const monitorSocketRef = useRef<WebSocket | null>(null);
   const overviewSummaryRowRef = useRef<HTMLDivElement | null>(null);
   const overviewHeroCardRef = useRef<HTMLDivElement | null>(null);
+  const overviewRuntimeCardRef = useRef<HTMLDivElement | null>(null);
   const overviewRuntimeBarRef = useRef<HTMLDivElement | null>(null);
   const overviewRuntimeStatsItemRefs = useRef(new Map<string, HTMLDivElement>());
   const [overviewRuntimeStatsColumns, setOverviewRuntimeStatsColumns] = useState(3);
@@ -4129,7 +4130,9 @@ export function MonitorTab() {
 
       const rowStyle = window.getComputedStyle(row);
       const rowGap = Number.parseFloat(rowStyle.columnGap || rowStyle.gap || "14") || 14;
-      const heroWidth = overviewHeroCardRef.current?.getBoundingClientRect().width ?? 0;
+      const heroRect = overviewHeroCardRef.current?.getBoundingClientRect() ?? null;
+      const runtimeRect = overviewRuntimeCardRef.current?.getBoundingClientRect() ?? null;
+      const heroWidth = heroRect?.width ?? 0;
       const barWidth = overviewRuntimeBarRef.current?.scrollWidth ?? 0;
       const itemWidths = overviewRuntimeStats
         .map((item) => overviewRuntimeStatsItemRefs.current.get(item.id)?.getBoundingClientRect().width ?? 0)
@@ -4137,8 +4140,12 @@ export function MonitorTab() {
 
       if (!itemWidths.length) return;
 
-      const availableWidth = Math.max(rowWidth - heroWidth - rowGap, 0);
-      const fullWidth = Math.max(rowWidth, availableWidth);
+      const runtimeWrapped =
+        heroRect && runtimeRect ? runtimeRect.top - heroRect.top > Math.max(heroRect.height * 0.25, 12) : false;
+      const availableWidth = runtimeWrapped
+        ? rowWidth
+        : Math.max(rowWidth - heroWidth - rowGap, 0);
+      const fullWidth = rowWidth;
       const cardPadding = 32;
       const statsGap = 12;
 
@@ -4177,11 +4184,12 @@ export function MonitorTab() {
 
     if (typeof ResizeObserver === "undefined") return;
 
-    const observer = new ResizeObserver(() => scheduleMeasure());
-    observer.observe(row);
-    if (overviewHeroCardRef.current) observer.observe(overviewHeroCardRef.current);
-    if (overviewRuntimeBarRef.current) observer.observe(overviewRuntimeBarRef.current);
-    overviewRuntimeStatsItemRefs.current.forEach((element) => observer.observe(element));
+      const observer = new ResizeObserver(() => scheduleMeasure());
+      observer.observe(row);
+      if (overviewHeroCardRef.current) observer.observe(overviewHeroCardRef.current);
+      if (overviewRuntimeCardRef.current) observer.observe(overviewRuntimeCardRef.current);
+      if (overviewRuntimeBarRef.current) observer.observe(overviewRuntimeBarRef.current);
+      overviewRuntimeStatsItemRefs.current.forEach((element) => observer.observe(element));
 
     return () => {
       if (frameId) {
@@ -4402,6 +4410,7 @@ export function MonitorTab() {
 
           <div
             className="card overview-runtime-window-card"
+            ref={overviewRuntimeCardRef}
             style={
               {
                 "--overview-runtime-card-max-width": overviewRuntimeCardMaxWidth ? `${overviewRuntimeCardMaxWidth}px` : undefined,
