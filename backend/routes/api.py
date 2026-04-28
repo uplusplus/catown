@@ -156,6 +156,10 @@ from services.single_agent_session_orchestrator import (
     StreamSingleAgentSessionSpec,
     iter_stream_single_agent_session,
     run_sync_single_agent_session,
+    UnifiedSingleAgentStreamSessionSpec,
+    UnifiedSingleAgentSyncSessionSpec,
+    iter_unified_single_agent_stream_session,
+    run_unified_single_agent_sync_session,
 )
 from services.single_agent_session_runner import (
     SingleAgentSessionRunnerDeps,
@@ -762,9 +766,8 @@ async def _trigger_standalone_assistant_response(
         on_compaction=compaction_callback,
     )
 
-    await run_sync_single_agent_session(
-        SyncSingleAgentSessionSpec(
-            deps=SingleAgentSessionRunnerDeps(
+    await run_unified_single_agent_sync_session(
+        UnifiedSingleAgentSyncSessionSpec(
             execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             finalize_success=lambda response_content: finalize_single_agent_session_success(
                 db,
@@ -798,7 +801,6 @@ async def _trigger_standalone_assistant_response(
                 failure_summary=f"Agent response failed: {exc}",
             ),
             on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
-            )
         )
     )
 
@@ -892,8 +894,8 @@ async def _stream_standalone_assistant_response(
         )
 
     try:
-        async for rendered in iter_stream_single_agent_session(
-            StreamSingleAgentSessionSpec(
+        async for rendered in iter_unified_single_agent_stream_session(
+            UnifiedSingleAgentStreamSessionSpec(
                 deps=SingleAgentStreamSessionDeps(
                 llm_client=runtime.llm_client,
                 tools=None,
@@ -1273,9 +1275,8 @@ async def trigger_agent_response(
                 summary=f"{runtime.agent_label} completed a tool round.",
             )
 
-        finalized = await run_sync_single_agent_session(
-            SyncSingleAgentSessionSpec(
-                deps=SingleAgentSessionRunnerDeps(
+        finalized = await run_unified_single_agent_sync_session(
+            UnifiedSingleAgentSyncSessionSpec(
                 execute_turn=lambda: execute_non_stream_turn_loop(
                     llm_client=runtime.llm_client,
                     tools=runtime.tool_schemas,
@@ -1317,7 +1318,6 @@ async def trigger_agent_response(
                     failure_summary=f"Agent response failed: {exc}",
                 ),
                 on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
-                )
             )
         )
 
@@ -4193,8 +4193,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     timings=raw_event.get("timings"),
                 )
 
-            async for rendered in iter_stream_single_agent_session(
-                StreamSingleAgentSessionSpec(
+            async for rendered in iter_unified_single_agent_stream_session(
+                UnifiedSingleAgentStreamSessionSpec(
                     deps=SingleAgentStreamSessionDeps(
                     llm_client=runtime.llm_client,
                     tools=runtime.tool_schemas,

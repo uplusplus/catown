@@ -4793,3 +4793,33 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - facade 目前仍是薄封装，sync 与 stream 底层实现尚未合并成一个真正统一的 driver
 - single-agent finalizer 仍区分 sync 与 stream 两套实现
 - 如果继续推进，下一步就该考虑把 sync/stream finalizer 与 session driver 再往上一层统一
+
+### 11.101 2026-04-28 新进展：single-agent unified session abstraction 已替代直连 runner
+
+在 11.100 之后，虽然已经有 orchestrator facade，但 route 侧仍然在直接构造底层 sync/stream runner deps。为了让这层真正成为 single-agent 的统一会话抽象，本轮把 route 依赖面进一步压到 unified spec：
+
+- `UnifiedSingleAgentSyncSessionSpec`
+- `UnifiedSingleAgentStreamSessionSpec`
+- `run_unified_single_agent_sync_session(...)`
+- `iter_unified_single_agent_stream_session(...)`
+
+接入后：
+
+- standalone non-stream assistant
+- project single-agent sync
+- standalone assistant stream
+- project single-agent stream
+
+都不再直接依赖底层 `run_single_agent_session(...)` / `iter_single_agent_stream_session(...)`。
+
+这一步的意义是：
+
+- route 与底层 single-agent sync/stream runner 进一步解耦
+- single-agent 会话栈开始具备更稳定的上层抽象边界，后续合并 driver/finalizer 时只需调整 orchestrator 内部
+- focused tests 也开始覆盖 unified facade，而不是只盯底层 runner
+
+边界：
+
+- sync 与 stream 底层实现仍分别存在
+- unified facade 目前仍是结构性统一，不是行为上完全同构
+- 如果继续推进，下一步就该考虑把 sync/stream finalizer 也往更统一的结果模型收

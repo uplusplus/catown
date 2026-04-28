@@ -1625,3 +1625,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 single-agent session orchestrator facade，统一 sync/stream session 的上层入口表面
 - standalone non-stream、project single-agent sync、standalone stream、project single-agent stream 改为通过 facade 调用底层 runner
 - 补 focused orchestrator tests，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
+
+### `Promote single-agent unified session abstraction`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator facade 上新增 `UnifiedSingleAgentSyncSessionSpec` / `UnifiedSingleAgentStreamSessionSpec` 与对应 unified entry
+- route 不再直接构造底层 sync/stream runner 调用，而是通过 unified facade 进入 single-agent session stack
+- 补 unified facade focused tests，并跑 single-agent sync/stream 回归
