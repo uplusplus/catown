@@ -3267,6 +3267,12 @@ export function MonitorTab() {
   const logCursorRef = useRef(0);
   const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
+  const overviewSummaryRowRef = useRef<HTMLDivElement | null>(null);
+  const overviewHeroCardRef = useRef<HTMLDivElement | null>(null);
+  const overviewRuntimeBarRef = useRef<HTMLDivElement | null>(null);
+  const overviewRuntimeStatsItemRefs = useRef(new Map<string, HTMLDivElement>());
+  const [overviewRuntimeStatsColumns, setOverviewRuntimeStatsColumns] = useState(3);
+  const [overviewRuntimeCardMaxWidth, setOverviewRuntimeCardMaxWidth] = useState<number | null>(null);
 
   const loadMonitor = useCallback(async (silent = false) => {
     if (silent) {
@@ -4052,6 +4058,138 @@ export function MonitorTab() {
   const passedChecks = securityChecks.filter((check) => check.pass).length;
   const failedChecks = securityChecks.length - passedChecks;
   const securityScore = securityChecks.length ? Math.round((passedChecks / securityChecks.length) * 100) : 0;
+  const overviewRuntimeStats = useMemo(
+    () => [
+      {
+        id: "spending",
+        icon: "$",
+        label: "Spending",
+        value: formatCost(overview?.usage_window.estimated_cost_usd),
+        sub: `input ${formatNumber(overview?.usage_window.input_tokens)} · output ${formatNumber(overview?.usage_window.output_tokens)}`,
+      },
+      {
+        id: "model",
+        icon: "AI",
+        label: "Model",
+        value: modelPrimary,
+        sub: `${formatNumber(modelRows.length)} distinct models observed`,
+      },
+      {
+        id: "tokens",
+        icon: "Tok",
+        label: "Tokens",
+        value: formatNumber(overview?.usage_window.total_tokens),
+        sub: `context window usage ${formatPercent(contextUsage, 1)}`,
+      },
+      {
+        id: "sessions",
+        icon: "Chat",
+        label: "Sessions",
+        value: formatNumber(overview?.system.stats.chatrooms),
+        sub: `${formatNumber(clusters.length)} hot chats in runtime window`,
+      },
+      {
+        id: "reliability",
+        icon: "OK",
+        label: "Reliability",
+        value: formatPercent(securityScore),
+        sub: `${passedChecks}/${securityChecks.length || 0} checks passed`,
+      },
+      {
+        id: "approvals",
+        icon: "Q",
+        label: "Approvals",
+        value: formatNumber(pendingApprovalCount),
+        sub: `${formatNumber(approvalQueueTotal)} queued decisions`,
+      },
+    ],
+    [
+      approvalQueueTotal,
+      clusters.length,
+      contextUsage,
+      modelPrimary,
+      modelRows.length,
+      overview,
+      passedChecks,
+      pendingApprovalCount,
+      securityChecks.length,
+      securityScore,
+    ],
+  );
+
+  useEffect(() => {
+    const row = overviewSummaryRowRef.current;
+    if (!row) return;
+
+    let frameId = 0;
+    const measure = () => {
+      frameId = 0;
+      const rowWidth = row.getBoundingClientRect().width;
+      if (rowWidth <= 0) return;
+
+      const rowStyle = window.getComputedStyle(row);
+      const rowGap = Number.parseFloat(rowStyle.columnGap || rowStyle.gap || "14") || 14;
+      const heroWidth = overviewHeroCardRef.current?.getBoundingClientRect().width ?? 0;
+      const barWidth = overviewRuntimeBarRef.current?.scrollWidth ?? 0;
+      const itemWidths = overviewRuntimeStats
+        .map((item) => overviewRuntimeStatsItemRefs.current.get(item.id)?.getBoundingClientRect().width ?? 0)
+        .filter((width) => width > 0);
+
+      if (!itemWidths.length) return;
+
+      const availableWidth = Math.max(rowWidth - heroWidth - rowGap, 0);
+      const fullWidth = Math.max(rowWidth, availableWidth);
+      const cardPadding = 32;
+      const statsGap = 12;
+
+      const computeGridWidth = (columns: number) => {
+        const columnWidths = Array.from({ length: columns }, () => 0);
+        itemWidths.forEach((width, index) => {
+          const column = index % columns;
+          columnWidths[column] = Math.max(columnWidths[column], width);
+        });
+        return columnWidths.reduce((total, width) => total + width, 0) + Math.max(0, columns - 1) * statsGap;
+      };
+
+      let nextColumns = 1;
+      for (let columns = itemWidths.length; columns >= 1; columns -= 1) {
+        const contentWidth = Math.max(computeGridWidth(columns), barWidth);
+        if (contentWidth + cardPadding <= availableWidth) {
+          nextColumns = columns;
+          break;
+        }
+      }
+
+      const resolvedContentWidth = Math.max(computeGridWidth(nextColumns), Math.min(barWidth, fullWidth - cardPadding));
+      setOverviewRuntimeStatsColumns((current) => (current === nextColumns ? current : nextColumns));
+      setOverviewRuntimeCardMaxWidth((current) => {
+        const nextWidth = Math.min(fullWidth, resolvedContentWidth + cardPadding);
+        return current === nextWidth ? current : nextWidth;
+      });
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId) return;
+      frameId = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => scheduleMeasure());
+    observer.observe(row);
+    if (overviewHeroCardRef.current) observer.observe(overviewHeroCardRef.current);
+    if (overviewRuntimeBarRef.current) observer.observe(overviewRuntimeBarRef.current);
+    overviewRuntimeStatsItemRefs.current.forEach((element) => observer.observe(element));
+
+    return () => {
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+      observer.disconnect();
+    };
+  }, [overviewRuntimeStats]);
 
   const approvalsPending = useMemo(
     () => approvalQueueResponse?.entries.filter((item) => item.status === "pending") ?? [],
@@ -4238,85 +4376,71 @@ export function MonitorTab() {
       ) : null}
       {loading && !overview ? <div className="page active"><div className="empty-state">Loading Catown monitor...</div></div> : null}
 
-      <section className={pageClass("overview", "page--viz-readable")} id="page-overview">
-        <div className="card overview-hero-card">
-          <div>
-            <div className="card-title">How independent is your agent?</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <span className="card-value">{autonomyScore}%</span>
-              <span className={`tag ${autonomyScore >= 75 ? "tag--success" : autonomyScore >= 45 ? "tag--warning" : "tag--error"}`}>
-                {autonomyScore >= 75 ? "healthy" : autonomyScore >= 45 ? "watch" : "needs work"}
-              </span>
+      <section className={pageClass("overview", "page--detail-full")} id="page-overview">
+        <div className="overview-summary-row" ref={overviewSummaryRowRef}>
+          <div className="card overview-hero-card" ref={overviewHeroCardRef}>
+            <div>
+              <div className="card-title">How independent is your agent?</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+                <span className="card-value">{autonomyScore}%</span>
+                <span className={`tag ${autonomyScore >= 75 ? "tag--success" : autonomyScore >= 45 ? "tag--warning" : "tag--error"}`}>
+                  {autonomyScore >= 75 ? "healthy" : autonomyScore >= 45 ? "watch" : "needs work"}
+                </span>
+              </div>
+              <div className="card-sub">Weighted from tool success, tool adoption and recent runtime resilience.</div>
             </div>
-            <div className="card-sub">Weighted from tool success, tool adoption and recent runtime resilience.</div>
+            <div className="overview-hero-card__meta">
+              <div className="small-note">Last monitor window</div>
+              <div className="mono" style={{ fontSize: 13, marginTop: 6 }}>
+                {formatNumber(overview?.usage_window.llm_calls)} llm / {formatNumber(overview?.usage_window.tool_calls)} tools
+              </div>
+              <div className="small-note" style={{ marginTop: 6 }}>
+                {formatNumber(overview?.usage_window.tool_errors)} tool errors · {formatTimeAgo(overview?.captured_at)}
+              </div>
+            </div>
           </div>
-          <div className="overview-hero-card__meta">
-            <div className="small-note">Last monitor window</div>
-            <div className="mono" style={{ fontSize: 13, marginTop: 6 }}>
-              {formatNumber(overview?.usage_window.llm_calls)} llm / {formatNumber(overview?.usage_window.tool_calls)} tools
-            </div>
-            <div className="small-note" style={{ marginTop: 6 }}>
-              {formatNumber(overview?.usage_window.tool_errors)} tool errors · {formatTimeAgo(overview?.captured_at)}
-            </div>
-          </div>
-        </div>
 
-        <div className="refresh-bar" style={{ marginBottom: 8 }}>
-          <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻
-          </button>
-          <span className="pulse" />
-          <span className="live-badge">Live</span>
-          <span className="refresh-time">Live subscription · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
-        </div>
-
-        <div className="stats-footer">
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">$</span>
-            <div>
-              <div className="stats-footer-label">Spending</div>
-              <div className="stats-footer-value">{formatCost(overview?.usage_window.estimated_cost_usd)}</div>
-              <div className="stats-footer-sub">input {formatNumber(overview?.usage_window.input_tokens)} · output {formatNumber(overview?.usage_window.output_tokens)}</div>
+          <div
+            className="card overview-runtime-window-card"
+            style={
+              {
+                "--overview-runtime-card-max-width": overviewRuntimeCardMaxWidth ? `${overviewRuntimeCardMaxWidth}px` : undefined,
+              } as CSSProperties
+            }
+          >
+            <div className="card-title">Runtime Cards</div>
+            <div className="refresh-bar overview-runtime-window-card__bar" style={{ marginBottom: 0 }} ref={overviewRuntimeBarRef}>
+              <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+                ↻
+              </button>
+              <span className="pulse" />
+              <span className="live-badge">Live</span>
+              <span className="refresh-time">Live subscription · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
             </div>
-          </div>
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">AI</span>
-            <div>
-              <div className="stats-footer-label">Model</div>
-              <div className="stats-footer-value">{modelPrimary}</div>
-              <div className="stats-footer-sub">{formatNumber(modelRows.length)} distinct models observed</div>
-            </div>
-          </div>
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">Tok</span>
-            <div>
-              <div className="stats-footer-label">Tokens</div>
-              <div className="stats-footer-value">{formatNumber(overview?.usage_window.total_tokens)}</div>
-              <div className="stats-footer-sub">context window usage {formatPercent(contextUsage, 1)}</div>
-            </div>
-          </div>
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">Chat</span>
-            <div>
-              <div className="stats-footer-label">Sessions</div>
-              <div className="stats-footer-value">{formatNumber(overview?.system.stats.chatrooms)}</div>
-              <div className="stats-footer-sub">{formatNumber(clusters.length)} hot chats in runtime window</div>
-            </div>
-          </div>
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">OK</span>
-            <div>
-              <div className="stats-footer-label">Reliability</div>
-              <div className="stats-footer-value">{formatPercent(securityScore)}</div>
-              <div className="stats-footer-sub">{passedChecks}/{securityChecks.length || 0} checks passed</div>
-            </div>
-          </div>
-          <div className="stats-footer-item">
-            <span className="stats-footer-icon">Q</span>
-            <div>
-              <div className="stats-footer-label">Approvals</div>
-              <div className="stats-footer-value">{formatNumber(approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending)}</div>
-              <div className="stats-footer-sub">{formatNumber(approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total)} queued decisions</div>
+            <div
+              className="stats-footer overview-runtime-window-card__stats"
+              style={{ "--overview-runtime-stats-columns": `${overviewRuntimeStatsColumns}` } as CSSProperties}
+            >
+              {overviewRuntimeStats.map((item) => (
+                <div
+                  key={item.id}
+                  className="stats-footer-item"
+                  ref={(element) => {
+                    if (element) {
+                      overviewRuntimeStatsItemRefs.current.set(item.id, element);
+                    } else {
+                      overviewRuntimeStatsItemRefs.current.delete(item.id);
+                    }
+                  }}
+                >
+                  <span className="stats-footer-icon">{item.icon}</span>
+                  <div>
+                    <div className="stats-footer-label">{item.label}</div>
+                    <div className="stats-footer-value">{item.value}</div>
+                    <div className="stats-footer-sub">{item.sub}</div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

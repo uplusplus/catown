@@ -563,17 +563,64 @@ textarea {
   min-height: clamp(320px, 46vh, 560px);
 }
 
+.overview-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
 .overview-hero-card {
-  margin-bottom: 14px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) fit-content(clamp(180px, 22vw, 280px));
+  margin-bottom: 0;
+  flex: 0 1 auto;
+  display: inline-grid;
+  width: fit-content;
+  max-width: 100%;
+  grid-template-columns: minmax(0, auto) fit-content(clamp(180px, 22vw, 280px));
   gap: 16px;
   align-items: start;
 }
 
+.overview-hero-card > :first-child {
+  min-width: 0;
+  max-width: min(100%, 46ch);
+}
+
 .overview-hero-card__meta {
   text-align: right;
-  min-width: clamp(160px, 18vw, 240px);
+  min-width: fit-content;
+  max-width: min(100%, clamp(160px, 18vw, 240px));
+}
+
+.overview-runtime-window-card {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  width: fit-content;
+  min-width: min(100%, 420px);
+  max-width: min(100%, var(--overview-runtime-card-max-width, clamp(760px, 72vw, 1280px)));
+  margin-bottom: 0;
+}
+
+.overview-runtime-window-card__bar {
+  gap: 10px;
+}
+
+.overview-runtime-window-card__stats {
+  display: grid;
+  grid-template-columns: repeat(var(--overview-runtime-stats-columns, 1), max-content);
+  gap: 12px;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.overview-runtime-window-card__stats .stats-footer-item {
+  width: fit-content;
+  min-width: clamp(170px, 12vw, 220px);
+  max-width: min(100%, 320px);
 }
 
 .flow-container {
