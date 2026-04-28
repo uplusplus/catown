@@ -4308,3 +4308,34 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - recovery 主流程仍在 route 驱动，lease helper 只是先收口协议本身
 - sync/stream orchestration 的 no-agent / no-plan 早退失败仍在 route
 - 下一步继续收这些早退失败分支，或者把 recovery 主驱动整体往 service 推
+
+### 11.86 2026-04-28 新进展：orchestration 早退 failure guard 已收口
+
+在 11.85 之后，route 里还残留一类重复控制协议：setup/preflight 阶段的早退失败分支。
+
+主要包括：
+
+- sync orchestration：`no_valid_agents`、`runtime_unprepared`
+- stream orchestration：`no_valid_agents`、`runtime_unprepared`
+- interrupted recovery：`chatroom_missing`、`no_valid_agents`、`no_runnable_plan`、`no_runnable_steps`、`incomplete`
+
+本轮新增：
+
+- `backend/services/orchestration_guards.py`
+  - `fail_orchestration_preflight(...)`
+  - `fail_recovery_guard(...)`
+  - `RecoveryFailureOutcome`
+
+并接入 sync/stream/recovery route。
+
+这一步的意义是：
+
+- orchestration setup 阶段的 terminal early-exit wording、event type、TaskRun failed summary 与 recovery result detail 开始统一
+- route 进一步减少重复的 fail-event + result-object 拼装
+- 这些 guard 现在可以独立测试，不必每次都通过整条 route 链路覆盖
+
+边界：
+
+- stream route 对 `collab_skip` / `done` 的 transport 输出仍在 route
+- recovery 主驱动与 no-agent/no-plan 的决策点仍在 route，只是失败动作已共享
+- 下一步可以继续把 recovery 主驱动整体推向 service，或者开始收口 stream route 的 transport-only 渲染边界

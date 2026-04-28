@@ -1367,3 +1367,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 recovery lease service，统一 claim / renew / ensure / lease-lost 异常与 claimed-result 语义
 - interrupted recovery route 改用 shared helper，而不是在 route 内手写 lease 条件和结果整形
 - 补 lease helper focused tests，并跑 startup/manual recovery 回归
+
+### `Centralize orchestration early failure guards`
+
+范围：
+
+- `backend/services/orchestration_guards.py`
+- `backend/routes/api.py`
+- `backend/tests/test_orchestration_guards.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared early-failure guard helper，统一 sync/stream orchestration 的 no-agent / no-plan preflight failure
+- recovery 的 chatroom_missing / no_valid_agents / no_runnable_plan / no_runnable_steps / incomplete 改为复用 shared failure guard 与 normalized outcome
+- 补 focused guard tests，并跑 sync/stream/recovery API 回归验证现有 wording 与 detail 兼容

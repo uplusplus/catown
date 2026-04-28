@@ -161,6 +161,10 @@ from services.orchestration_handoffs import (
     record_orchestration_handoffs,
 )
 from services.orchestration_inbox import has_orchestration_handoffs_for_task_run
+from services.orchestration_guards import (
+    fail_orchestration_preflight,
+    fail_recovery_guard,
+)
 from services.orchestration_recovery_lease import (
     RecoveryLeaseClaimResult,
     RecoveryLeaseLostError,
@@ -1902,11 +1906,11 @@ async def _run_multi_agent_orchestration(
 
     if not resolved_agents:
         logger.warning("[Collab] No valid agents found for multi-agent orchestration")
-        fail_orchestration_task_run(
+        fail_orchestration_preflight(
             db,
             task_run,
-            summary="No valid agents resolved for orchestration.",
-            payload={"requested_agents": agent_names},
+            requested_agents=agent_names,
+            kind="no_valid_agents",
         )
         return
 
@@ -1918,11 +1922,11 @@ async def _run_multi_agent_orchestration(
     plan = prepared.plan
     orchestration_policy = prepared.runner_policy
     if plan is None or orchestration_policy is None:
-        fail_orchestration_task_run(
+        fail_orchestration_preflight(
             db,
             task_run,
-            summary="Orchestration runtime was not prepared.",
-            payload={"requested_agents": agent_names},
+            requested_agents=agent_names,
+            kind="runtime_unprepared",
         )
         return
     queue = OrchestrationRuntimeQueue(plan)
@@ -2029,22 +2033,23 @@ async def _resume_interrupted_orchestration_task_run(
 
         chatroom = db.query(Chatroom).filter(Chatroom.id == task_run.chatroom_id).first()
         if chatroom is None:
-            fail_orchestration_task_run(
+            outcome = fail_recovery_guard(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
-                summary="Recovery failed: chatroom missing.",
-                event_summary="Recovery aborted because the chatroom no longer exists.",
+                task_run_id=task_run_id,
+                kind="chatroom_missing",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
                 payload={"task_run_id": task_run.id},
             )
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason="chatroom_missing",
-                status="failed",
-                detail="Recovery failed: chatroom missing.",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
+                reason=outcome.reason,
+                status=outcome.status,
+                detail=outcome.detail,
+                owner=outcome.owner,
+                lease_expires_at=outcome.lease_expires_at,
             )
 
         project = _resolve_chatroom_project(db, chatroom)
@@ -2054,22 +2059,23 @@ async def _resume_interrupted_orchestration_task_run(
         targets = _resolve_orchestration_targets(db, project, agents, agent_names)
         resolved_agents = [agent for _, agent in targets if agent is not None]
         if not resolved_agents:
-            fail_orchestration_task_run(
+            outcome = fail_recovery_guard(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
-                summary="Recovery failed: no valid agents resolved.",
-                event_summary="Recovery aborted because no valid orchestration agents could be resolved.",
-                payload={"requested_agents": agent_names},
+                task_run_id=task_run_id,
+                kind="no_valid_agents",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+                requested_agents=agent_names,
             )
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason="no_valid_agents",
-                status="failed",
-                detail="Recovery failed: no valid agents resolved.",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
+                reason=outcome.reason,
+                status=outcome.status,
+                detail=outcome.detail,
+                owner=outcome.owner,
+                lease_expires_at=outcome.lease_expires_at,
             )
 
         prepared_orchestration = _prepare_orchestration_runtime(
@@ -2082,22 +2088,23 @@ async def _resume_interrupted_orchestration_task_run(
         plan = prepared_orchestration.plan
         orchestration_policy = prepared_orchestration.runner_policy
         if plan is None or orchestration_policy is None:
-            fail_orchestration_task_run(
+            outcome = fail_recovery_guard(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
-                summary="Recovery failed: no runnable orchestration plan.",
-                event_summary="Recovery failed because orchestration runtime preparation returned no runnable plan.",
-                payload={"requested_agents": agent_names},
+                task_run_id=task_run_id,
+                kind="no_runnable_plan",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
+                requested_agents=agent_names,
             )
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason="no_runnable_plan",
-                status="failed",
-                detail="Recovery failed: no runnable orchestration plan.",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
+                reason=outcome.reason,
+                status=outcome.status,
+                detail=outcome.detail,
+                owner=outcome.owner,
+                lease_expires_at=outcome.lease_expires_at,
             )
         queue = OrchestrationRuntimeQueue(plan)
         recovery_checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
@@ -2142,12 +2149,13 @@ async def _resume_interrupted_orchestration_task_run(
             initial_runtime.ready_step_count == 0
             and initial_runtime.completed_step_count < initial_runtime.step_count
         ):
-            fail_orchestration_task_run(
+            outcome = fail_recovery_guard(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
-                summary="Recovery failed: no runnable steps after rebuild.",
-                event_summary="Recovery rebuilt the scheduler state but found no runnable steps.",
+                task_run_id=task_run_id,
+                kind="no_runnable_steps",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
                 payload=_scheduler_plan_payload(
                     queue,
                     extra={"runner_policy": orchestration_policy.to_payload()},
@@ -2156,11 +2164,11 @@ async def _resume_interrupted_orchestration_task_run(
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason="no_runnable_steps",
-                status="failed",
-                detail="Recovery failed: no runnable steps after rebuild.",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
+                reason=outcome.reason,
+                status=outcome.status,
+                detail=outcome.detail,
+                owner=outcome.owner,
+                lease_expires_at=outcome.lease_expires_at,
             )
 
         def _before_recovery_step():
@@ -2212,12 +2220,13 @@ async def _resume_interrupted_orchestration_task_run(
         raise_if_task_run_cancelled(db, task_run, context="recovery finalize")
         final_runtime = queue.runtime_snapshot()
         if final_runtime.completed_step_count < final_runtime.step_count:
-            fail_orchestration_task_run(
+            outcome = fail_recovery_guard(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
-                summary="Recovery failed: orchestration remained incomplete.",
-                event_summary="Recovery stopped before all scheduled steps completed.",
+                task_run_id=task_run_id,
+                kind="incomplete",
+                owner=RECOVERY_INSTANCE_ID,
+                lease_expires_at=lease_expires_at,
                 payload=_scheduler_plan_payload(
                     queue,
                     extra={"runner_policy": orchestration_policy.to_payload()},
@@ -2226,11 +2235,11 @@ async def _resume_interrupted_orchestration_task_run(
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
-                reason="incomplete",
-                status="failed",
-                detail="Recovery failed: orchestration remained incomplete.",
-                owner=RECOVERY_INSTANCE_ID,
-                lease_expires_at=lease_expires_at,
+                reason=outcome.reason,
+                status=outcome.status,
+                detail=outcome.detail,
+                owner=outcome.owner,
+                lease_expires_at=outcome.lease_expires_at,
             )
         recovery_summary = summarize_orchestration_result(
             last_blocking_result=output_state.last_blocking_result,
@@ -2373,11 +2382,12 @@ async def _stream_multi_agent_orchestration(
 
     yield f"data: {sse_json.dumps({'type': 'collab_start', 'agents': agent_names}, ensure_ascii=False)}\n\n"
     if not resolved_agents:
-        fail_orchestration_task_run(
+        fail_orchestration_preflight(
             db,
             task_run,
-            summary="No valid agents resolved for streaming orchestration.",
-            payload={"requested_agents": agent_names},
+            requested_agents=agent_names,
+            kind="no_valid_agents",
+            streaming=True,
         )
         for requested_name, agent in targets:
             if agent is None:
@@ -2401,11 +2411,12 @@ async def _stream_multi_agent_orchestration(
     plan = prepared.plan
     orchestration_policy = prepared.runner_policy
     if plan is None or orchestration_policy is None:
-        fail_orchestration_task_run(
+        fail_orchestration_preflight(
             db,
             task_run,
-            summary="Streaming orchestration runtime was not prepared.",
-            payload={"requested_agents": agent_names},
+            requested_agents=agent_names,
+            kind="runtime_unprepared",
+            streaming=True,
         )
         yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': '', 'collab': True, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
         return
