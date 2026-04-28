@@ -4552,3 +4552,43 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - success path 的消息保存 / `complete_task_run(...)` / memory extraction 仍在 route
 - failure path 的 error card / fallback message 仍在 route
 - 下一步可以继续把 single-agent / standalone 的 success/failure finalizer 也抽到 shared session service
+
+### 11.94 2026-04-28 新进展：standalone / single-agent streaming session finalizer 已共享
+
+在 11.93 之后，standalone assistant stream 和 project single-agent stream 还各自保留一段重复的 session 终结逻辑：
+
+- success path：
+  - 保存最终消息
+  - publish saved message
+  - `record_agent_turn_completed(...)`
+  - `complete_task_run(...)`
+  - 发 `done`
+  - 可选 memory extraction
+- failure path：
+  - `task_run_failed`
+  - `complete_task_run(... failed ...)`
+  - 根据是否已有最终消息，返回 `error` 或 fallback `done`
+
+本轮新增：
+
+- `backend/services/single_agent_stream_finalizer.py`
+  - `finalize_single_agent_stream_success(...)`
+  - `finalize_single_agent_stream_failure(...)`
+  - `SingleAgentStreamFinalizeResult`
+
+并接入：
+
+- standalone assistant stream
+- project single-agent stream
+
+这一步的意义是：
+
+- single-agent streaming path 的 session-level success/failure 终结都开始共享
+- route 中剩下的 streaming 责任进一步压缩到上下文准备和 very-thin wiring
+- standalone 路径里原先对 `assistant_name/assistant_id` 的直接引用也顺带统一到 runtime context 字段
+
+边界：
+
+- orchestration stream 仍走自己的 runtime/session wrapper，不复用这个 finalizer
+- `_persist_stream_failure(...)`、runtime-card 持久化和 websocket publish 仍在 route 侧 helper
+- 下一步如果继续统一，可以考虑把 `_persist_stream_failure(...)` 以及 runtime-card store/publish 也继续往 shared stream service 推

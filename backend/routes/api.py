@@ -144,8 +144,13 @@ from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
     iter_single_agent_stream_session,
 )
+from services.single_agent_stream_finalizer import (
+    finalize_single_agent_stream_failure,
+    finalize_single_agent_stream_success,
+)
 from services.stream_transport import (
     iter_rendered_stream_turn_events,
+    render_sse_payload,
     render_chatroom_runtime_card_sse,
     render_stream_turn_event,
 )
@@ -903,71 +908,51 @@ async def _stream_standalone_assistant_response(
             if rendered.chunk is not None:
                 yield rendered.chunk
     except Exception as exc:
-        append_task_event(
+        finalized = await finalize_single_agent_stream_failure(
             db,
             task_run,
-            "task_run_failed",
-            agent_name=runtime.assistant_name,
-            summary=f"Standalone stream failed: {exc}",
-            payload={"error": str(exc)},
-        )
-        complete_task_run(db, task_run, status="failed", summary=str(exc))
-        saved = await _persist_stream_failure(
-            db,
             chatroom_id=chatroom_id,
             client_turn_id=client_turn_id,
-            error_message=str(exc),
+            error=exc,
             agent_name=runtime.assistant_name,
             agent_id=runtime.assistant_id,
-            detail=traceback.format_exc(),
+            final_message_saved=False,
+            persist_failure=lambda current_db, **kwargs: _persist_stream_failure(
+                current_db,
+                detail=traceback.format_exc(),
+                **kwargs,
+            ),
+            failure_summary=f"Standalone stream failed: {exc}",
         )
-        yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': runtime.assistant_name, 'message_id': saved.id, 'client_turn_id': client_turn_id}, ensure_ascii=False)}\n\n"
+        yield render_sse_payload(finalized.payload, serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False))
         return
 
-    if not final_content:
-        final_content = "(Agent returned empty response)"
-
-    agent_response = await chatroom_manager.send_message(
+    finalized = await finalize_single_agent_stream_success(
+        db,
+        task_run,
         chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
         agent_id=runtime.assistant_id,
-        content=final_content,
-        message_type="text",
-        metadata=_message_metadata_with_turn(client_turn_id),
         agent_name=runtime.assistant_name,
+        final_content=final_content,
+        save_message=chatroom_manager.send_message,
+        publish_message=_publish_saved_chat_message,
+        record_turn_completed=record_agent_turn_completed,
+        message_metadata=_message_metadata_with_turn,
+        compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+        completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
+        schedule_memory_extraction=(
+            (lambda: asyncio.create_task(_extract_memories(
+                agent_id=runtime.assistant_id,
+                agent_type=runtime.assistant_name,
+                user_message=user_message,
+                agent_response=final_content or "(Agent returned empty response)",
+            )))
+            if runtime.assistant_id and len((final_content or "").strip() or "(Agent returned empty response)") > 30
+            else None
+        ),
     )
-    await _publish_saved_chat_message(
-        db,
-        chatroom_id,
-        message_id=agent_response.id,
-        content=final_content,
-        agent_name=runtime.assistant_name,
-        message_type="text",
-        created_at=agent_response.created_at,
-        metadata=_message_metadata_with_turn(client_turn_id),
-    )
-    record_agent_turn_completed(
-        db,
-        task_run,
-        agent_name=runtime.assistant_name,
-        message_id=agent_response.id,
-        response_content=final_content,
-        summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
-    )
-    complete_task_run(
-        db,
-        task_run,
-        summary=_compact_runtime_text(final_content, limit=280),
-    )
-
-    yield f"data: {sse_json.dumps({'type': 'done', 'agent_name': assistant_name, 'message_id': agent_response.id, 'client_turn_id': client_turn_id})}\n\n"
-
-    if assistant_id and len(final_content) > 30:
-        asyncio.create_task(_extract_memories(
-            agent_id=assistant_id,
-            agent_name=assistant_name,
-            user_message=user_message,
-            agent_response=final_content,
-        ))
+    yield render_sse_payload(finalized.payload, serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False))
 
 
 async def trigger_agent_response(
@@ -4464,88 +4449,61 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 if rendered.chunk is not None:
                     yield rendered.chunk
 
-            # 7. 保存最终响应
-            if not final_content:
-                final_content = "(Agent returned empty response)"
-
-            agent_response = await chatroom_manager.send_message(
-                chatroom_id=chatroom_id,
-                agent_id=target_agent.id,
-                content=final_content,
-                message_type="text",
-                metadata=_message_metadata_with_turn(message.client_turn_id),
-                agent_name=target_agent_label
-            )
-
-            await _publish_saved_chat_message(
+            finalized = await finalize_single_agent_stream_success(
                 db,
-                chatroom_id,
-                message_id=agent_response.id,
-                content=final_content,
+                task_run,
+                chatroom_id=chatroom_id,
+                client_turn_id=message.client_turn_id,
+                agent_id=target_agent.id,
                 agent_name=target_agent_label,
-                message_type="text",
-                created_at=agent_response.created_at,
-                metadata=_message_metadata_with_turn(message.client_turn_id),
+                final_content=final_content,
+                save_message=chatroom_manager.send_message,
+                publish_message=_publish_saved_chat_message,
+                record_turn_completed=record_agent_turn_completed,
+                message_metadata=_message_metadata_with_turn,
+                compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                completion_summary=f"{target_agent_label} completed the streaming turn.",
+                schedule_memory_extraction=(
+                    (lambda: asyncio.create_task(_extract_memories(
+                        agent_id=target_agent.id,
+                        agent_type=_agent_type(target_agent),
+                        user_message=message.content,
+                        agent_response=final_content or "(Agent returned empty response)",
+                    )))
+                    if len((final_content or "").strip() or "(Agent returned empty response)") > 30
+                    else None
+                ),
             )
             final_message_saved = True
-            record_agent_turn_completed(
-                db,
-                task_run,
-                agent_name=target_agent_label,
-                message_id=agent_response.id,
-                response_content=final_content,
-                summary=f"{target_agent_label} completed the streaming turn.",
-            )
-            complete_task_run(
-                db,
-                task_run,
-                summary=_compact_runtime_text(final_content, limit=280),
-            )
-
-            yield f"data: {_json.dumps({'type': 'done', 'agent_name': target_agent_label, 'message_id': agent_response.id, 'client_turn_id': message.client_turn_id})}\n\n"
-
-            # 异步提取记忆
-            if len(final_content) > 30:
-                asyncio.create_task(_extract_memories(
-                    agent_id=target_agent.id,
-                    agent_type=_agent_type(target_agent),
-                    user_message=message.content,
-                    agent_response=final_content
-                ))
+            yield render_sse_payload(finalized.payload, serialize_payload=lambda payload: _json.dumps(payload))
 
         except Exception as e:
             logger.error(f"[SSE] Stream error: {e}")
             traceback.print_exc()
             stream_failed = True
             stream_error = str(e)
-            if task_run is not None and (task_run.status or "running") == "running":
-                append_task_event(
+            try:
+                finalized = await finalize_single_agent_stream_failure(
                     db,
                     task_run,
-                    "task_run_failed",
-                    agent_name=active_agent_name,
-                    summary=f"Streaming execution failed: {e}",
-                    payload={"error": str(e)},
-                )
-                complete_task_run(db, task_run, status="failed", summary=str(e))
-            if final_message_saved:
-                yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
-            else:
-                try:
-                    saved = await _persist_stream_failure(
-                        db,
-                        chatroom_id=chatroom_id,
-                        client_turn_id=message.client_turn_id,
-                        error_message=str(e),
-                        agent_name=active_agent_name,
-                        agent_id=active_agent_id,
+                    chatroom_id=chatroom_id,
+                    client_turn_id=message.client_turn_id,
+                    error=e,
+                    agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
+                    agent_id=active_agent_id,
+                    final_message_saved=final_message_saved,
+                    persist_failure=lambda current_db, **kwargs: _persist_stream_failure(
+                        current_db,
                         detail=traceback.format_exc(),
-                    )
-                    yield f"data: {_json.dumps({'type': 'done', 'agent_name': active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE), 'message_id': saved.id, 'client_turn_id': message.client_turn_id}, ensure_ascii=False)}\n\n"
-                except Exception as persist_exc:
-                    logger.error(f"[SSE] Failed to persist stream failure: {persist_exc}")
-                    traceback.print_exc()
-                    yield f"data: {_json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                        **kwargs,
+                    ),
+                    failure_summary=f"Streaming execution failed: {e}",
+                )
+                yield render_sse_payload(finalized.payload, serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False))
+            except Exception as persist_exc:
+                logger.error(f"[SSE] Failed to persist stream failure: {persist_exc}")
+                traceback.print_exc()
+                yield render_sse_payload({"type": "error", "error": str(e)}, serialize_payload=lambda payload: _json.dumps(payload))
         finally:
             if workspace_token is not None:
                 reset_active_workspace(workspace_token)
