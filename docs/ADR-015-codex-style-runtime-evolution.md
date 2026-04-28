@@ -4456,3 +4456,37 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍注入 `sse_card(...)` 与 `json.dumps(...)` 这两个 transport dependency
 - standalone / single-agent streaming 仍保留各自的 route-local SSE 分支
 - 如果继续收口，下一步可以把这套 renderer 泛化到其它 streaming path
+
+### 11.91 2026-04-28 新进展：shared streaming transport helper 已覆盖 standalone / single-agent / orchestration
+
+在 11.90 之后，orchestration streaming 已经走 shared render helper，但 standalone assistant stream 与 project single-agent stream 仍各自手写：
+
+- `runtime_card` 持久化与公开 payload
+- 普通 event -> `data: ...`
+- `turn_complete` 提取
+
+本轮新增：
+
+- `backend/services/stream_transport.py`
+  - `render_sse_payload(...)`
+  - `render_chatroom_runtime_card_sse(...)`
+  - `render_stream_turn_event(...)`
+  - `StreamTurnRenderResult`
+
+并接入：
+
+- standalone assistant stream
+- project single-agent stream
+- orchestration stream runtime renderer继续复用统一 transport helper 思路
+
+这一步的意义是：
+
+- Catown 主要 streaming path 的 transport adapter 形态开始统一
+- route 中不再散落多份 `runtime_card / payload / turn_complete` 渲染逻辑
+- runtime card 持久化与公开 payload 的协议可以被 focused test 直接覆盖
+
+边界：
+
+- route 仍持有 `_store_runtime_card(...)` 与 `_public_runtime_card_payload(...)`
+- standalone / single-agent / orchestration 还没有共享更高层的 full streaming session driver
+- 下一步如果继续收口，可以考虑把这些 path 的 session-level streaming driver 再往统一 executor/transport 层抽

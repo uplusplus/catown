@@ -1450,3 +1450,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `render_stream_runtime_event(...)`，统一 `runtime_card` 与普通 payload 的 SSE chunk 渲染
 - stream orchestration route 改为通过 shared render helper 输出 SSE，进一步逼近 transport-only 边界
 - 补 renderer focused test，并跑 stream orchestration API 回归验证 body shape 兼容
+
+### `Extract shared streaming transport helpers`
+
+范围：
+
+- `backend/services/stream_transport.py`
+- `backend/routes/api.py`
+- `backend/tests/test_stream_transport.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared streaming transport helper，统一 `runtime_card` 持久化/公开 payload、普通 event SSE 渲染与 `turn_complete` 提取
+- standalone assistant stream 与 project single-agent stream 改为复用 `render_stream_turn_event(...)`
+- 补 focused transport helper tests，并跑 standalone / single-agent / runtime-card persistence / orchestration streaming 回归

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Callable, List, Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
@@ -139,6 +140,10 @@ from services.runner_policy import (
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
+from services.stream_transport import (
+    render_chatroom_runtime_card_sse,
+    render_stream_turn_event,
+)
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.subagent_lifecycle import cancellable_subagents_from_lifecycle
 from services.orchestration_events import (
@@ -881,21 +886,19 @@ async def _stream_standalone_assistant_response(
             tool_result_success=_tool_result_succeeded,
             max_turns=1,
         ):
-            if event["type"] == "runtime_card":
-                payload = dict(event["payload"])
-                payload["type"] = event["card_type"]
-                payload["source"] = "chatroom"
-                if client_turn_id:
-                    payload["client_turn_id"] = client_turn_id
-                await _store_runtime_card(chatroom_id, payload)
-                yield f"data: {sse_json.dumps(_public_runtime_card_payload(payload), ensure_ascii=False)}\n\n"
+            rendered = await render_stream_turn_event(
+                event,
+                chatroom_id=chatroom_id,
+                client_turn_id=client_turn_id,
+                serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=_store_runtime_card,
+                public_runtime_card_payload=_public_runtime_card_payload,
+            )
+            if rendered.turn_complete_content is not None:
+                final_content = rendered.turn_complete_content
                 continue
-
-            if event["type"] == "turn_complete":
-                final_content = event.get("content") or ""
-                continue
-
-            yield f"data: {sse_json.dumps(event, ensure_ascii=False)}\n\n"
+            if rendered.chunk is not None:
+                yield rendered.chunk
     except Exception as exc:
         append_task_event(
             db,
@@ -4103,14 +4106,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
         from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
         async def _sse_card(event_type, data):
             """格式化卡片事件 SSE，附带 source=chatroom"""
-            payload = dict(data)
-            payload["type"] = event_type
-            payload["source"] = "chatroom"
-            if message.client_turn_id:
-                payload["client_turn_id"] = message.client_turn_id
-            await _store_runtime_card(chatroom_id, payload)
-            public_payload = _public_runtime_card_payload(payload)
-            return f"data: {_json.dumps(public_payload, ensure_ascii=False)}\n\n"
+            return await render_chatroom_runtime_card_sse(
+                event_type=event_type,
+                payload=data,
+                chatroom_id=chatroom_id,
+                client_turn_id=message.client_turn_id,
+                serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=_store_runtime_card,
+                public_runtime_card_payload=_public_runtime_card_payload,
+            )
 
         db = next(_get_db())
         workspace_token = None
@@ -4445,13 +4449,19 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 max_turns=MAX_TOOL_ITERATIONS,
                 on_tool_round=_on_single_agent_stream_tool_round,
             ):
-                if event["type"] == "runtime_card":
-                    yield await _sse_card(event["card_type"], event["payload"])
+                rendered = await render_stream_turn_event(
+                    event,
+                    chatroom_id=chatroom_id,
+                    client_turn_id=message.client_turn_id,
+                    serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                    store_runtime_card=_store_runtime_card,
+                    public_runtime_card_payload=_public_runtime_card_payload,
+                )
+                if rendered.turn_complete_content is not None:
+                    final_content = rendered.turn_complete_content
                     continue
-                if event["type"] == "turn_complete":
-                    final_content = event.get("content") or ""
-                    continue
-                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+                if rendered.chunk is not None:
+                    yield rendered.chunk
 
             # 7. 保存最终响应
             if not final_content:
