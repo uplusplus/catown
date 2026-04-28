@@ -4655,3 +4655,41 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `chat_publish` 仍直接依赖 `websocket_manager`
 - route 仍保留 `_publish_saved_chat_message` 之外的 message save 决策
 - 如果继续推进，下一步可以进一步看普通 non-stream path 的 message save + publish + ledger completion 是否也值得统一成 shared session finalizer
+
+### 11.97 2026-04-28 新进展：non-stream single-agent session finalizer 已共享
+
+在 11.96 之后，non-stream single-agent path 仍有一块和 streaming finalizer 对应的重复控制流：
+
+- success path：
+  - save final message
+  - publish saved message
+  - `record_agent_turn_completed(...)`
+  - `complete_task_run(...)`
+  - optional memory extraction
+- failure path：
+  - `task_run_failed`
+  - `complete_task_run(... failed ...)`
+
+本轮新增：
+
+- `backend/services/single_agent_session_finalizer.py`
+  - `finalize_single_agent_session_success(...)`
+  - `finalize_single_agent_session_failure(...)`
+  - `SingleAgentSessionFinalizeResult`
+
+并接入：
+
+- standalone non-stream assistant path
+- project single-agent non-stream path
+
+这一步的意义是：
+
+- single-agent sync 与 stream 两条路径的 session finalizer 终于开始对齐
+- route 中 non-stream path 的终结动作进一步收口，不再手写消息保存/发布/记账组合
+- 后续如果继续统一 single-agent path，会更容易抽出更高层的 session driver
+
+边界：
+
+- tool loop / prompt assembly / runtime mode selection 仍在 route
+- streaming finalizer 与 non-stream finalizer 还没有再合成一层更高抽象
+- 下一步如果继续推进，可以考虑把 single-agent sync/stream 的 session driver 也往统一层收

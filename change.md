@@ -1552,3 +1552,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared saved-message publish service，统一 chat message 的 room broadcast 与 monitor broadcast
 - 普通消息发送、tool replay result、streaming path 与 stream runtime persistence 改为复用 `publish_saved_chat_message(...)`
 - 补 focused publish service test，并扩展 `_make_app` module reset，避免新的 service graph 持有 stale `models.database` registry
+
+### `Extract shared non-stream single-agent session finalizer`
+
+范围：
+
+- `backend/services/single_agent_session_finalizer.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_finalizer.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared non-stream single-agent finalizer，统一 success path 的消息保存/发布/记账/完成，以及 failure path 的 failed terminalization
+- standalone non-stream assistant 与 project single-agent sync path 改为复用 shared finalizer
+- 补 focused finalizer tests，并跑 sync single-agent + standalone stream + project stream 回归
