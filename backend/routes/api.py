@@ -151,19 +151,16 @@ from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
 )
 from services.single_agent_session_orchestrator import (
-    build_single_agent_raw_execution_inputs,
     build_single_agent_raw_runtime_inputs,
     build_single_agent_runtime_profile_from_raw_inputs,
+    build_single_agent_stream_raw_execution_envelope,
+    build_single_agent_sync_raw_execution_envelope,
     build_single_agent_stream_failure_policy,
     iter_managed_single_agent_stream_runtime_profile,
     run_managed_single_agent_sync_runtime_profile,
 )
 from services.single_agent_session_runner import (
-    build_single_agent_sync_raw_execution_inputs,
     SingleAgentSessionRunnerDeps,
-)
-from services.single_agent_stream_session import (
-    build_single_agent_stream_raw_execution_inputs,
 )
 from services.stream_transport import (
     iter_rendered_stream_turn_events,
@@ -785,11 +782,9 @@ async def _trigger_standalone_assistant_response(
     await run_managed_single_agent_sync_runtime_profile(
         build_single_agent_runtime_profile_from_raw_inputs(
             runtime_inputs=standalone_runtime_inputs,
-            execution_inputs=build_single_agent_raw_execution_inputs(
-                execution=build_single_agent_sync_raw_execution_inputs(
-                    execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
-                    on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
-                )
+            execution_inputs=build_single_agent_sync_raw_execution_envelope(
+                execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
+                on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
             ),
         )
     )
@@ -903,23 +898,21 @@ async def _stream_standalone_assistant_response(
     async for outcome in iter_managed_single_agent_stream_runtime_profile(
         build_single_agent_runtime_profile_from_raw_inputs(
             runtime_inputs=standalone_stream_runtime_inputs,
-            execution_inputs=build_single_agent_raw_execution_inputs(
-                execution=build_single_agent_stream_raw_execution_inputs(
-                    llm_client=runtime.llm_client,
-                    tools=None,
-                    turn_state=runtime.turn_state,
-                    assemble_messages=_assemble_standalone_stream_messages,
-                    execute_tool=_execute_standalone_stream_tool,
-                    build_llm_runtime_card=_build_standalone_stream_llm_card,
-                    snapshot_messages=_snapshot_llm_messages,
-                    preview_tool_calls=_preview_tool_calls,
-                    format_prompt_messages=_format_json_block,
-                    tool_result_success=_tool_result_succeeded,
-                    serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
-                    store_runtime_card=store_runtime_card,
-                    public_runtime_card_payload=public_runtime_card_payload,
-                    max_turns=1,
-                )
+            execution_inputs=build_single_agent_stream_raw_execution_envelope(
+                llm_client=runtime.llm_client,
+                tools=None,
+                turn_state=runtime.turn_state,
+                assemble_messages=_assemble_standalone_stream_messages,
+                execute_tool=_execute_standalone_stream_tool,
+                build_llm_runtime_card=_build_standalone_stream_llm_card,
+                snapshot_messages=_snapshot_llm_messages,
+                preview_tool_calls=_preview_tool_calls,
+                format_prompt_messages=_format_json_block,
+                tool_result_success=_tool_result_succeeded,
+                serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=store_runtime_card,
+                public_runtime_card_payload=public_runtime_card_payload,
+                max_turns=1,
             ),
             stream_failure=build_single_agent_stream_failure_policy(
                 detail_builder=traceback.format_exc,
@@ -1256,19 +1249,17 @@ async def trigger_agent_response(
         finalized = await run_managed_single_agent_sync_runtime_profile(
             build_single_agent_runtime_profile_from_raw_inputs(
                 runtime_inputs=project_single_agent_runtime_inputs,
-                execution_inputs=build_single_agent_raw_execution_inputs(
-                    execution=build_single_agent_sync_raw_execution_inputs(
-                        execute_turn=lambda: execute_non_stream_turn_loop(
-                            llm_client=runtime.llm_client,
-                            tools=runtime.tool_schemas,
-                            turn_state=runtime.turn_state,
-                            assemble_messages=_assemble_project_single_agent_messages,
-                            execute_tool_call=_execute_project_single_agent_tool,
-                            max_turns=MAX_TOOL_ITERATIONS,
-                            on_tool_round=_on_project_single_agent_tool_round,
-                        ),
-                        on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
-                    )
+                execution_inputs=build_single_agent_sync_raw_execution_envelope(
+                    execute_turn=lambda: execute_non_stream_turn_loop(
+                        llm_client=runtime.llm_client,
+                        tools=runtime.tool_schemas,
+                        turn_state=runtime.turn_state,
+                        assemble_messages=_assemble_project_single_agent_messages,
+                        execute_tool_call=_execute_project_single_agent_tool,
+                        max_turns=MAX_TOOL_ITERATIONS,
+                        on_tool_round=_on_project_single_agent_tool_round,
+                    ),
+                    on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
                 ),
             )
         )
@@ -4093,24 +4084,22 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             async for outcome in iter_managed_single_agent_stream_runtime_profile(
                 build_single_agent_runtime_profile_from_raw_inputs(
                     runtime_inputs=project_single_agent_stream_runtime_inputs,
-                    execution_inputs=build_single_agent_raw_execution_inputs(
-                        execution=build_single_agent_stream_raw_execution_inputs(
-                            llm_client=runtime.llm_client,
-                            tools=runtime.tool_schemas,
-                            turn_state=runtime.turn_state,
-                            assemble_messages=_assemble_single_agent_stream_messages,
-                            execute_tool=_execute_single_agent_stream_tool,
-                            build_llm_runtime_card=_build_single_agent_stream_llm_card,
-                            snapshot_messages=_snapshot_llm_messages,
-                            preview_tool_calls=_preview_tool_calls,
-                            format_prompt_messages=_format_json_block,
-                            tool_result_success=_tool_result_succeeded,
-                            serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
-                            store_runtime_card=store_runtime_card,
-                            public_runtime_card_payload=public_runtime_card_payload,
-                            max_turns=MAX_TOOL_ITERATIONS,
-                            on_tool_round=_on_single_agent_stream_tool_round,
-                        )
+                    execution_inputs=build_single_agent_stream_raw_execution_envelope(
+                        llm_client=runtime.llm_client,
+                        tools=runtime.tool_schemas,
+                        turn_state=runtime.turn_state,
+                        assemble_messages=_assemble_single_agent_stream_messages,
+                        execute_tool=_execute_single_agent_stream_tool,
+                        build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                        snapshot_messages=_snapshot_llm_messages,
+                        preview_tool_calls=_preview_tool_calls,
+                        format_prompt_messages=_format_json_block,
+                        tool_result_success=_tool_result_succeeded,
+                        serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                        store_runtime_card=store_runtime_card,
+                        public_runtime_card_payload=public_runtime_card_payload,
+                        max_turns=MAX_TOOL_ITERATIONS,
+                        on_tool_round=_on_single_agent_stream_tool_round,
                     ),
                     stream_failure=build_single_agent_stream_failure_policy(
                         failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),

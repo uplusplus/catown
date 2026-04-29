@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from services.single_agent_session_callbacks import (
     build_single_agent_stream_callback_profile,
@@ -88,6 +88,7 @@ class SingleAgentRawRuntimeInputs:
 
 @dataclass(frozen=True)
 class SingleAgentRawExecutionInputs:
+    mode: Literal["sync", "stream"]
     execution: SingleAgentSyncRawExecutionInputs | SingleAgentStreamRawExecutionInputs
 
 
@@ -394,11 +395,70 @@ def build_single_agent_session_runtime_context_from_raw_inputs(
 
 def build_single_agent_raw_execution_inputs(
     *,
+    mode: Literal["sync", "stream"],
     execution: SingleAgentSyncRawExecutionInputs | SingleAgentStreamRawExecutionInputs,
 ) -> SingleAgentRawExecutionInputs:
     """Build the shared raw execution input envelope for one single-agent turn."""
 
-    return SingleAgentRawExecutionInputs(execution=execution)
+    return SingleAgentRawExecutionInputs(mode=mode, execution=execution)
+
+
+def build_single_agent_sync_raw_execution_envelope(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> SingleAgentRawExecutionInputs:
+    """Build the top-level raw execution envelope for one sync single-agent turn."""
+
+    return build_single_agent_raw_execution_inputs(
+        mode="sync",
+        execution=build_single_agent_sync_raw_execution_inputs(
+            execute_turn=execute_turn,
+            on_empty=on_empty,
+        ),
+    )
+
+
+def build_single_agent_stream_raw_execution_envelope(
+    *,
+    llm_client: Any,
+    tools: list[dict[str, Any]] | None,
+    turn_state: Any,
+    assemble_messages: Callable[[Any], list[dict[str, Any]]],
+    execute_tool: Callable[..., Awaitable[Any]],
+    build_llm_runtime_card: Callable[..., dict[str, Any]],
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
+    tool_result_success: Callable[[str], bool],
+    serialize_payload: Callable[[Any], str],
+    store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
+    public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
+    max_turns: int,
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
+) -> SingleAgentRawExecutionInputs:
+    """Build the top-level raw execution envelope for one streaming single-agent turn."""
+
+    return build_single_agent_raw_execution_inputs(
+        mode="stream",
+        execution=build_single_agent_stream_raw_execution_inputs(
+            llm_client=llm_client,
+            tools=tools,
+            turn_state=turn_state,
+            assemble_messages=assemble_messages,
+            execute_tool=execute_tool,
+            build_llm_runtime_card=build_llm_runtime_card,
+            snapshot_messages=snapshot_messages,
+            preview_tool_calls=preview_tool_calls,
+            format_prompt_messages=format_prompt_messages,
+            tool_result_success=tool_result_success,
+            serialize_payload=serialize_payload,
+            store_runtime_card=store_runtime_card,
+            public_runtime_card_payload=public_runtime_card_payload,
+            max_turns=max_turns,
+            on_tool_round=on_tool_round,
+        ),
+    )
 
 
 def build_single_agent_runtime_profile(
@@ -499,13 +559,13 @@ def build_single_agent_runtime_profile_from_raw_inputs(
     """Build the top-level single-agent runtime profile directly from raw inputs."""
 
     execution = execution_inputs.execution
-    if hasattr(execution, "execute_turn") and not hasattr(execution, "llm_client"):
+    if execution_inputs.mode == "sync":
         return build_single_agent_sync_runtime_profile(
             runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
             execution=build_single_agent_sync_execution_context_from_raw_inputs(execution),
         )
 
-    if hasattr(execution, "llm_client") and hasattr(execution, "assemble_messages"):
+    if execution_inputs.mode == "stream":
         return build_single_agent_stream_runtime_profile(
             runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
             execution=build_single_agent_stream_execution_context_from_raw_inputs(execution),
