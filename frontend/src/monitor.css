@@ -678,11 +678,13 @@ textarea {
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__lanes {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--flow-topology-inter-group-gap, clamp(28px, 3vw, 56px));
   width: 100%;
   min-width: 0;
   justify-content: flex-start;
   align-items: flex-start;
+  align-content: flex-start;
 }
 
 .flow-topology__column {
@@ -705,11 +707,16 @@ textarea {
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__zone {
-  flex: 1 1 clamp(420px, 34vw, 960px);
+  flex: 1 1 auto;
   width: auto;
-  min-width: clamp(420px, 34vw, 640px);
+  min-width: var(--flow-zone-min-width, clamp(420px, 28vw, 640px));
   max-width: none;
   padding: 18px;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone--outside {
+  flex: 0 1 auto;
+  width: fit-content;
 }
 
 .flow-topology__zone::before {
@@ -766,14 +773,29 @@ textarea {
 
 .flow-topology__zone-grid {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone-grid {
+  padding-left: var(--flow-zone-label-channel, var(--flow-topology-label-channel, 120px));
+  gap: clamp(18px, 2vw, 30px);
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone--outside .flow-topology__zone-grid {
+  padding-left: 0;
+}
+
+.flow-topology__zone-row {
+  display: flex;
+  flex-wrap: nowrap;
   gap: 12px;
   align-items: flex-start;
   justify-content: flex-start;
 }
 
-.flow-topology:not(.flow-topology--compact) .flow-topology__zone-grid {
-  padding-left: var(--flow-topology-label-channel, 120px);
+.flow-topology:not(.flow-topology--compact) .flow-topology__zone-row {
   gap: clamp(18px, 2vw, 30px);
   justify-content: space-between;
 }

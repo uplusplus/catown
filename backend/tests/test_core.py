@@ -104,31 +104,40 @@ class TestToolRegistry:
         assert "5" in str(result)
 
     @pytest.mark.asyncio
-    async def test_run_shell(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CATOWN_WORKSPACE", str(tmp_path))
+    async def test_run_shell(self, tmp_path):
         from tools import tool_registry
+        from tools.file_operations import reset_active_workspace, set_active_workspace
 
-        result = await tool_registry.execute(
-            "run_shell",
-            command="printf 7",
-            __catown_approval_granted=True,
-        )
+        token = set_active_workspace(str(tmp_path))
+        try:
+            result = await tool_registry.execute(
+                "run_shell",
+                command="printf 7",
+                __catown_approval_granted=True,
+            )
+        finally:
+            reset_active_workspace(token)
 
         assert "7" in str(result)
 
     @pytest.mark.asyncio
-    async def test_file_operations(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CATOWN_WORKSPACE", str(tmp_path))
+    async def test_file_operations(self, tmp_path):
         from tools import tool_registry
+        from tools.file_operations import reset_active_workspace, set_active_workspace
 
-        # 写文件
-        await tool_registry.execute("write_file", file_path="test.txt", content="hello")
-        # 读文件
-        result = await tool_registry.execute("read_file", file_path="test.txt")
+        token = set_active_workspace(str(tmp_path))
+        try:
+            # 写文件
+            await tool_registry.execute("write_file", file_path="test.txt", content="hello")
+            # 读文件
+            result = await tool_registry.execute("read_file", file_path="test.txt")
+            # 列文件
+            listed = await tool_registry.execute("list_files", directory=".")
+        finally:
+            reset_active_workspace(token)
+
         assert "hello" in str(result)
-        # 列文件
-        result = await tool_registry.execute("list_files", directory=".")
-        assert "test.txt" in str(result)
+        assert "test.txt" in str(listed)
 
 
 class TestAgentMemory:

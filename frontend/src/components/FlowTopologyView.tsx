@@ -28,6 +28,8 @@ export type FlowTopologyNode = {
   order: number;
   kind: FlowTopologyNodeKind;
   preferredWidth?: number;
+  minWidthOverride?: number;
+  maxWidthOverride?: number;
   singleRowMetrics?: boolean;
   title: string;
   subtitle?: string;
@@ -109,6 +111,18 @@ type EdgeCurveGeometry = {
   endY: number;
 };
 
+type ZoneLayoutPlan = {
+  rows: FlowTopologyNode[][];
+};
+
+type EdgeAnchorPair = {
+  orientation: "horizontal" | "vertical";
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+};
+
 function kindVisual(kind: FlowTopologyNodeKind): { Icon: LucideIcon; accentClass: string } {
   switch (kind) {
     case "entry":
@@ -151,13 +165,82 @@ function edgeStrokeWidth(volume: number, maxVolume: number) {
   return 2 + ratio * 4;
 }
 
+function clampWithinNode(value: number, min: number, max: number, inset = 16) {
+  return clamp(value, min + inset, max - inset);
+}
+
+function anchorDistance(anchor: EdgeAnchorPair) {
+  return Math.hypot(anchor.endX - anchor.startX, anchor.endY - anchor.startY);
+}
+
 function buildEdgeCurve(from: NodeBounds, to: NodeBounds): EdgeCurveGeometry {
-  const startX = from.right;
-  const startY = from.centerY;
-  const endX = to.left;
-  const endY = to.centerY;
-  const distance = Math.max(endX - startX, 80);
-  const control = Math.max(70, distance * 0.42);
+  const rightGap = to.left - from.right;
+  const leftGap = from.left - to.right;
+  const downGap = to.top - from.bottom;
+  const upGap = from.top - to.bottom;
+  const preferredAxis =
+    Math.max(downGap, upGap) > Math.max(rightGap, leftGap) + 24
+      ? "vertical"
+      : Math.max(rightGap, leftGap) > Math.max(downGap, upGap) + 24
+        ? "horizontal"
+        : null;
+  const anchors: EdgeAnchorPair[] = [
+    {
+      orientation: "horizontal",
+      startX: from.right,
+      startY: clampWithinNode(to.centerY, from.top, from.bottom),
+      endX: to.left,
+      endY: clampWithinNode(from.centerY, to.top, to.bottom),
+    },
+    {
+      orientation: "horizontal",
+      startX: from.left,
+      startY: clampWithinNode(to.centerY, from.top, from.bottom),
+      endX: to.right,
+      endY: clampWithinNode(from.centerY, to.top, to.bottom),
+    },
+    {
+      orientation: "vertical",
+      startX: clampWithinNode(to.centerX, from.left, from.right),
+      startY: from.bottom,
+      endX: clampWithinNode(from.centerX, to.left, to.right),
+      endY: to.top,
+    },
+    {
+      orientation: "vertical",
+      startX: clampWithinNode(to.centerX, from.left, from.right),
+      startY: from.top,
+      endX: clampWithinNode(from.centerX, to.left, to.right),
+      endY: to.bottom,
+    },
+  ];
+
+  const candidateAnchors = preferredAxis
+    ? anchors.filter((anchor) => anchor.orientation === preferredAxis)
+    : anchors;
+  const anchor = candidateAnchors.reduce((best, current) =>
+    anchorDistance(current) < anchorDistance(best) ? current : best,
+  );
+  const { startX, startY, endX, endY } = anchor;
+  const distance =
+    anchor.orientation === "horizontal"
+      ? Math.max(Math.abs(endX - startX), 80)
+      : Math.max(Math.abs(endY - startY), 80);
+  const control = Math.max(56, distance * 0.38);
+
+  if (anchor.orientation === "vertical") {
+    return {
+      startX,
+      startY,
+      control1X: startX,
+      control1Y: startY + (endY >= startY ? control : -control),
+      control2X: endX,
+      control2Y: endY - (endY >= startY ? control : -control),
+      endX,
+      endY,
+    };
+  }
+
   return {
     startX,
     startY,
@@ -366,6 +449,14 @@ function laneGroupsWidth(groups: FlowLaneGroup[], gap: number) {
 }
 
 function buildAdaptiveLaneGroups(lanes: FlowLane[], containerWidth: number, compact: boolean) {
+  if (!compact) {
+    return lanes.map((lane) => ({
+      id: lane.key,
+      lanes: [lane],
+      preferredWidth: lane.preferredWidth,
+    }));
+  }
+
   const gap = compact ? 12 : 16;
   const horizontalPadding = compact ? 28 : 36;
   const availableWidth = containerWidth > 0 ? Math.max(containerWidth - horizontalPadding, 0) : Number.POSITIVE_INFINITY;
@@ -388,6 +479,96 @@ function buildAdaptiveLaneGroups(lanes: FlowLane[], containerWidth: number, comp
   }
 
   return groups;
+}
+
+function zoneGroupKind(group: FlowLaneGroup) {
+  const keys = new Set(group.lanes.map((lane) => lane.key));
+  if (keys.size === 1 && keys.has("outside")) return "outside";
+  if (keys.size === 1 && keys.has("capabilities")) return "capabilities";
+  return "mixed";
+}
+
+function zoneTitleForGroup(group: FlowLaneGroup) {
+  const kind = zoneGroupKind(group);
+  if (kind === "outside") return "Outside Boundary";
+  if (kind === "capabilities") return "Capabilities Boundary";
+  return "Capabilities + Outside";
+}
+
+function zoneRowContentWidth(group: FlowLaneGroup, compact: boolean) {
+  const cardGap = compact ? 12 : 24;
+  const nodeWidths = group.lanes.flatMap((lane) => lane.nodes.map((node) => node.preferredWidth ?? (compact ? 236 : 296)));
+  return nodeWidths.reduce((total, width) => total + width, 0) + Math.max(0, nodeWidths.length - 1) * cardGap;
+}
+
+function zoneHeaderWidth(group: FlowLaneGroup, compact: boolean) {
+  const titleWidth = 28 + zoneTitleForGroup(group).length * (compact ? 6 : 7);
+  const tagsWidth =
+    group.lanes.reduce((total, lane) => total + 18 + lane.label.length * (compact ? 5 : 6), 0) +
+    Math.max(0, group.lanes.length - 1) * 6;
+  return Math.max(titleWidth, tagsWidth);
+}
+
+function displayGroupOrder(group: FlowLaneGroup) {
+  const key = group.lanes[0]?.key ?? "";
+  if (key === "entry") return 0;
+  if (key === "client") return 1;
+  if (key === "platform") return 2;
+  if (key === "runtime") return 3;
+  if (key === "outside") return 4;
+  if (key === "capabilities") return 5;
+  return 99;
+}
+
+function measureNodeWidth(node: FlowTopologyNode, compact: boolean) {
+  return node.preferredWidth ?? (compact ? 236 : 296);
+}
+
+function buildZoneLayoutPlan(group: FlowLaneGroup, compact: boolean, availableWidth: number): ZoneLayoutPlan {
+  const nodes = group.lanes.flatMap((lane) => lane.nodes);
+  if (compact || nodes.length <= 1) {
+    return { rows: [nodes] };
+  }
+
+  const gap = 24;
+  const widths = nodes.map((node) => measureNodeWidth(node, compact));
+  const totalWidth = widths.reduce((sum, width) => sum + width, 0) + Math.max(0, widths.length - 1) * gap;
+  if (totalWidth <= availableWidth) {
+    return { rows: [nodes] };
+  }
+
+  let bestPlan: ZoneLayoutPlan | null = null;
+  let bestWaste = Number.POSITIVE_INFINITY;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let splitIndex = 1; splitIndex < nodes.length; splitIndex += 1) {
+    const topNodes = nodes.slice(0, splitIndex);
+    const bottomNodes = nodes.slice(splitIndex);
+    const topWidth =
+      widths.slice(0, splitIndex).reduce((sum, width) => sum + width, 0) + Math.max(0, topNodes.length - 1) * gap;
+    const bottomWidth =
+      widths.slice(splitIndex).reduce((sum, width) => sum + width, 0) + Math.max(0, bottomNodes.length - 1) * gap;
+    const overflow = Math.max(0, topWidth - availableWidth) + Math.max(0, bottomWidth - availableWidth);
+    const waste = Math.abs(topWidth - bottomWidth);
+    const score = overflow * 1000 + waste;
+
+    if (score < bestScore || (score === bestScore && waste < bestWaste)) {
+      bestScore = score;
+      bestWaste = waste;
+      bestPlan = { rows: [topNodes, bottomNodes] };
+    }
+  }
+
+  return bestPlan ?? { rows: [nodes] };
+}
+
+function zoneContentWidth(group: FlowLaneGroup, compact: boolean, labelChannelWidth: number) {
+  const kind = zoneGroupKind(group);
+  const horizontalPadding = compact ? 28 : 36;
+  const effectiveLabelChannel = kind === "outside" ? (compact ? 20 : 36) : labelChannelWidth;
+  const headerReserve = zoneHeaderWidth(group, compact);
+  const rowWidth = zoneRowContentWidth(group, compact);
+  return horizontalPadding + effectiveLabelChannel + Math.max(headerReserve, rowWidth);
 }
 
 export function FlowTopologyView({ graph, compact = false, className }: FlowTopologyViewProps) {
@@ -420,6 +601,11 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
     [compact, containerWidth, lanes],
   );
 
+  const displayLaneGroups = useMemo(
+    () => [...laneGroups].sort((left, right) => displayGroupOrder(left) - displayGroupOrder(right)),
+    [laneGroups],
+  );
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -438,8 +624,8 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
         const element = nodeRefs.current.get(node.id);
         if (!element) return;
         const rect = element.getBoundingClientRect();
-        const left = rect.left - rootRect.left;
-        const top = rect.top - rootRect.top;
+        const left = rect.left - rootRect.left + container.scrollLeft;
+        const top = rect.top - rootRect.top + container.scrollTop;
         nextBounds[node.id] = {
           left,
           top,
@@ -489,13 +675,23 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
     [compact, graph.edges],
   );
 
+  const labelChannelWidth = useMemo(
+    () => Math.max(compact ? 40 : 96, maxEdgeLabelWidth + (compact ? 18 : 34)),
+    [compact, maxEdgeLabelWidth],
+  );
+
+  const interGroupGap = useMemo(
+    () => Math.max(compact ? 16 : 44, Math.round(maxEdgeLabelWidth * 0.7)),
+    [compact, maxEdgeLabelWidth],
+  );
+
   const topologyStyle = useMemo(
     () =>
       ({
-        "--flow-topology-label-channel": `${Math.max(compact ? 40 : 96, maxEdgeLabelWidth + (compact ? 18 : 34))}px`,
-        "--flow-topology-inter-group-gap": `${Math.max(compact ? 16 : 44, Math.round(maxEdgeLabelWidth * 0.7))}px`,
+        "--flow-topology-label-channel": `${labelChannelWidth}px`,
+        "--flow-topology-inter-group-gap": `${interGroupGap}px`,
       }) as CSSProperties,
-    [compact, maxEdgeLabelWidth],
+    [interGroupGap, labelChannelWidth],
   );
 
   const edgeLabelPlacements = useMemo(
@@ -528,6 +724,39 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
 
   const isZoneGroup = (group: FlowLaneGroup) =>
     group.lanes.some((lane) => lane.key === "capabilities" || lane.key === "outside");
+
+  const zoneGroupStyle = (group: FlowLaneGroup): CSSProperties | undefined => {
+    if (compact) return undefined;
+    const kind = zoneGroupKind(group);
+    const rowWidth = zoneRowContentWidth(group, compact);
+    const headerWidth = zoneHeaderWidth(group, compact);
+    const minWidth =
+      kind === "outside"
+        ? clamp(Math.max(rowWidth, headerWidth) + 36, 220, 620)
+        : clamp(Math.max(rowWidth * 0.72, headerWidth) + labelChannelWidth + 36, 360, 960);
+    const maxWidth = Math.max(minWidth, containerWidth - 8);
+    const contentWidth = zoneContentWidth(group, compact, labelChannelWidth);
+    const resolvedWidth = clamp(contentWidth, minWidth, maxWidth);
+    return {
+      "--flow-zone-min-width": `${minWidth}px`,
+      "--flow-zone-width": `${resolvedWidth}px`,
+      "--flow-zone-label-channel": `${kind === "outside" ? 0 : labelChannelWidth}px`,
+      width: `${resolvedWidth}px`,
+      flexBasis: `${resolvedWidth}px`,
+      flexGrow: 0,
+      flexShrink: 1,
+    } as CSSProperties;
+  };
+
+  const zoneLayoutPlan = (group: FlowLaneGroup): ZoneLayoutPlan => {
+    if (compact) {
+      return { rows: [group.lanes.flatMap((lane) => lane.nodes)] };
+    }
+    const style = zoneGroupStyle(group);
+    const widthSource = style?.width ?? containerWidth ?? 0;
+    const availableWidth = Number.parseFloat(String(widthSource)) || containerWidth;
+    return buildZoneLayoutPlan(group, compact, availableWidth);
+  };
 
   const renderNode = (node: FlowTopologyNode, laneLabel?: string) => {
     const visual = kindVisual(node.kind);
@@ -644,11 +873,18 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
         className="flow-topology__lanes"
         style={{ "--flow-topology-columns": `${Math.max(laneGroups.length, 1)}` } as CSSProperties}
       >
-        {laneGroups.map((group) =>
+        {displayLaneGroups.map((group) =>
           isZoneGroup(group) ? (
-            <section key={group.id} className="flow-topology__zone">
+            <section
+              key={group.id}
+              className={[
+                "flow-topology__zone",
+                `flow-topology__zone--${zoneGroupKind(group)}`,
+              ].join(" ")}
+              style={zoneGroupStyle(group)}
+            >
               <div className="flow-topology__zone-header">
-                <div className="flow-topology__zone-title">Capabilities Boundary</div>
+                <div className="flow-topology__zone-title">{zoneTitleForGroup(group)}</div>
                 <div className="flow-topology__zone-tags">
                   {group.lanes.map((lane) => (
                     <span key={lane.key} className="flow-topology__zone-chip">
@@ -658,7 +894,14 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
                 </div>
               </div>
               <div className="flow-topology__zone-grid">
-                {group.lanes.flatMap((lane) => lane.nodes.map((node) => renderNode(node, lane.label)))}
+                {zoneLayoutPlan(group).rows.map((rowNodes, rowIndex) => (
+                  <div key={`${group.id}-row-${rowIndex}`} className="flow-topology__zone-row">
+                    {rowNodes.map((node) => {
+                      const lane = group.lanes.find((item) => item.nodes.some((candidate) => candidate.id === node.id));
+                      return renderNode(node, lane?.label);
+                    })}
+                  </div>
+                ))}
               </div>
             </section>
           ) : (

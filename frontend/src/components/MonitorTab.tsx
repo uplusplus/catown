@@ -2041,7 +2041,9 @@ function estimateFlowNodeLayout(node: FlowTopologyNode, compact: boolean) {
         .reduce((total, chipWidth) => total + chipWidth, 0) + Math.max(0, Math.min(chipWidths.length, compact ? 2 : 3) - 1) * 6
     : 0;
   const previewWidth = node.preview ? 132 + Math.min(node.preview.length * (compact ? 0.32 : 0.46), compact ? 32 : 84) : 0;
-  const { min: kindMinWidth, max: kindMaxWidth } = flowNodeWidthBounds(node.kind, compact);
+  const kindBounds = flowNodeWidthBounds(node.kind, compact);
+  const kindMinWidth = node.minWidthOverride ?? kindBounds.min;
+  const kindMaxWidth = node.maxWidthOverride ?? kindBounds.max;
   const preferredWidth = clamp(
     Math.round(Math.max(headerWidth, subtitleWidth, metricRowWidth, chipRowWidth, previewWidth, kindMinWidth)),
     kindMinWidth,
@@ -2534,38 +2536,39 @@ function buildFlowTopologyGraph({
     });
   });
 
-  if (externalRequestCount > 0 || externalHosts.size > 0) {
-    nodes.push({
-      id: "flow-external",
-      lane: 5,
-      order: 0,
-      kind: "web",
-      title: "External APIs",
-      subtitle: "Remote hosts, web surfaces and vendor calls",
-      badge: `${formatNumber(externalRequestCount)} reqs`,
-      status: externalStatus,
-      metrics: [
-        { label: "Reqs", value: formatNumber(externalRequestCount) },
-        { label: "Errs", value: formatNumber(externalRequestErrors) },
-        { label: "Bytes", value: formatBytes(externalBytes) },
-      ],
-      chips: sortedCounterKeys(externalHosts, compact ? 2 : 4),
-      preview:
-        sortedCounterKeys(externalHosts, compact ? 2 : 4).join(" · ") ||
-        "No host metadata captured for current outbound traffic.",
-    });
+  const externalHostChips = sortedCounterKeys(externalHosts, compact ? 2 : 4);
+  nodes.push({
+    id: "flow-external",
+    lane: 5,
+    order: 0,
+    kind: "web",
+    minWidthOverride: compact ? 150 : 170,
+    maxWidthOverride: compact ? 360 : 520,
+    title: "External APIs",
+    subtitle: externalHostChips.length ? "Remote endpoints" : "External traffic",
+    badge: `${formatNumber(externalRequestCount)} reqs`,
+    status: externalStatus,
+    metrics: [
+      { label: "Reqs", value: formatNumber(externalRequestCount) },
+      { label: "Errs", value: formatNumber(externalRequestErrors) },
+      { label: "Bytes", value: formatBytes(externalBytes) },
+    ],
+    chips: externalHostChips,
+    preview: externalHostChips.length
+      ? undefined
+      : "No recent outbound traffic captured in the current monitor window.",
+  });
 
-    edges.push({
-      id: "flow-edge-runtime-external",
-      from: "flow-runtime",
-      to: "flow-external",
-      label: "outbound net",
-      detail: averageDuration(externalDurationTotal, externalDurationCount),
-      volume: Math.max(externalRequestCount, 1),
-      status: externalStatus,
-      active: flowHasRecentActivity(externalLastAt),
-    });
-  }
+  edges.push({
+    id: "flow-edge-runtime-external",
+    from: "flow-runtime",
+    to: "flow-external",
+    label: "outbound net",
+    detail: averageDuration(externalDurationTotal, externalDurationCount),
+    volume: Math.max(externalRequestCount, 1),
+    status: externalStatus,
+    active: flowHasRecentActivity(externalLastAt),
+  });
 
   return {
     laneLabels: ["Entry", "Client", "Platform", "Runtime", "Capabilities", "Outside"],
