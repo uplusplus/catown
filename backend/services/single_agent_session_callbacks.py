@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from services.memory_extraction import schedule_agent_memory_extraction
 from services.single_agent_session_orchestrator import (
     ManagedSingleAgentSessionCallbacks,
 )
@@ -326,8 +327,13 @@ def build_single_agent_memory_extraction_callback(
             return None
 
         def _schedule():
-            return schedule_task(
-                extract_memories(agent_id, agent_type, user_message, resolved_content)
+            return schedule_agent_memory_extraction(
+                extract_memories,
+                agent_id=agent_id,
+                agent_type=agent_type,
+                user_message=user_message,
+                agent_response=resolved_content,
+                schedule_task=schedule_task,
             )
 
         return _schedule

@@ -2,6 +2,7 @@ from services.memory_extraction import (
     build_memory_extraction_messages,
     parse_memory_extraction_response,
     persist_extracted_memories,
+    schedule_agent_memory_extraction,
 )
 
 
@@ -84,3 +85,27 @@ def test_persist_extracted_memories_filters_and_clamps():
             "importance": 1,
         },
     ]
+
+
+def test_schedule_agent_memory_extraction_uses_scheduler():
+    recorded = {}
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        recorded["payload"] = (agent_id, agent_type, user_message, agent_response)
+
+    def schedule_task(coro):
+        recorded["scheduled"] = coro
+        return "task"
+
+    task = schedule_agent_memory_extraction(
+        extract_memories,
+        agent_id=9,
+        agent_type="Analyst",
+        user_message="Need help",
+        agent_response="Use the shared runtime service.",
+        schedule_task=schedule_task,
+    )
+
+    assert task == "task"
+    assert recorded["scheduled"] is not None
+    recorded["scheduled"].close()

@@ -1916,3 +1916,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 route 内的 `_extract_memories(...)` 下沉到 shared `memory_extraction` service，并让 single-agent 与 orchestration memory scheduling 统一复用该 service
 - 修正 memory extraction prompt 中错误引用未定义 `agent_name` 的问题，统一使用传入的 `agent_type` 生成 extraction messages
 - 新增 focused memory extraction tests，并跑 memory/callback/orchestrator/API 回归确认行为兼容
+
+### `Unify memory extraction scheduling helper`
+
+范围：
+
+- `backend/services/memory_extraction.py`
+- `backend/services/single_agent_session_callbacks.py`
+- `backend/routes/api.py`
+- `backend/tests/test_memory_extraction.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 `memory_extraction` service 中新增 shared task-scheduling helper，让 memory extraction 的 `asyncio.create_task(...)` 包装不再散落在 callback builder 与 orchestration route lambda 中
+- single-agent callback helper 与 orchestration memory scheduling 改为统一复用该 scheduling helper
+- 补 focused scheduling helper tests，并跑 memory/callback/orchestrator/API 回归确认行为兼容

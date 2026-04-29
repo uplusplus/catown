@@ -138,7 +138,10 @@ from services.runner_policy import (
     find_stage_policy,
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
-from services.memory_extraction import extract_agent_memories
+from services.memory_extraction import (
+    extract_agent_memories,
+    schedule_agent_memory_extraction,
+)
 from services.stream_turn_executor import iter_stream_turn_events
 from services.stream_runtime_persistence import (
     public_runtime_card_payload,
@@ -1739,8 +1742,12 @@ def _build_orchestration_agent_turn_executor():
         assemble_chat_messages=assemble_runtime_chat_messages,
         save_message=chatroom_manager.send_message,
         message_metadata=_message_metadata_with_turn,
-        schedule_memory_extraction=lambda agent, request, response: asyncio.create_task(
-            extract_agent_memories(agent.id, _agent_type(agent), request, response)
+        schedule_memory_extraction=lambda agent, request, response: schedule_agent_memory_extraction(
+            extract_agent_memories,
+            agent_id=agent.id,
+            agent_type=_agent_type(agent),
+            user_message=request,
+            agent_response=response,
         ),
         max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
@@ -2093,8 +2100,12 @@ async def _stream_multi_agent_orchestration(
         publish_message=publish_saved_chat_message,
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
-        schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
-            extract_agent_memories(current_agent.id, _agent_type(current_agent), request, response)
+        schedule_memory_extraction=lambda current_agent, request, response: schedule_agent_memory_extraction(
+            extract_agent_memories,
+            agent_id=current_agent.id,
+            agent_type=_agent_type(current_agent),
+            user_message=request,
+            agent_response=response,
         ),
         build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
         find_stage_policy=find_stage_policy,

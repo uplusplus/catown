@@ -3,14 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from agents.identity import normalize_agent_type
 
 
 logger = logging.getLogger("catown.memory")
+
+ScheduleTask = Callable[[Awaitable[Any]], Any]
 
 _MEMORY_EXTRACTION_SYSTEM_PROMPT = (
     "You are a memory extraction system. Analyze the conversation and extract "
@@ -98,6 +101,22 @@ def persist_extracted_memories(
     except Exception:
         db.rollback()
         raise
+
+
+def schedule_agent_memory_extraction(
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    *,
+    agent_id: int,
+    agent_type: str,
+    user_message: str,
+    agent_response: str,
+    schedule_task: ScheduleTask = asyncio.create_task,
+) -> Any:
+    """Schedule one memory-extraction task through the provided task scheduler."""
+
+    return schedule_task(
+        extract_memories(agent_id, agent_type, user_message, agent_response)
+    )
 
 
 async def extract_agent_memories(

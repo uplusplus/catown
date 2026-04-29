@@ -5306,3 +5306,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - memory extraction 仍通过现有 LLM client 和数据库接口直接工作，尚未进一步纳入统一 runtime policy registry
 - save-memory tool 与 auto extraction 还没有进一步收口到统一 memory write policy
 - 如果继续推进，下一步可以考虑把 single-agent callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.119 2026-04-29 新进展：memory extraction scheduling 也已共享
+
+在 11.118 之后，memory extraction 的核心实现虽然已经移到 service，但任务调度入口还残留两套写法：
+
+- single-agent callback helper 内部单独包装 `asyncio.create_task(...)`
+- orchestration route 里也各自写一层 `asyncio.create_task(extract_agent_memories(...))`
+
+这意味着 memory extraction 这项能力虽然已经是 shared service，但其调度语义还没有真正统一。
+
+本轮把这层调度也收回来：
+
+- `memory_extraction.py` 新增 shared scheduling helper
+- single-agent callback helper 改为复用该 scheduler
+- orchestration memory scheduling lambda 改为复用同一个 scheduler
+
+这一步的意义是：
+
+- memory extraction 从“共享实现 + 分散调度”进一步演进成“共享实现 + 共享调度入口”
+- single-agent 与 orchestration 在 memory scheduling 上开始真正共享同一条 helper 路径
+- 后续如果需要给 memory extraction 增加 tracing / throttling / queueing，这一层已有统一挂点
+
+边界：
+
+- 当前 scheduler 仍是轻量的 task launcher，不包含限流或去重语义
+- orchestration runner 自身的长度阈值判断仍保留在现有上层逻辑
+- 如果继续推进，下一步可以考虑把 single-agent callback profile 与 stream session deps 再往更高层 session profile 合并
