@@ -158,10 +158,10 @@ from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
 )
 from services.single_agent_session_orchestrator import (
-    build_managed_single_agent_stream_session_spec_from_callback_profile,
-    build_managed_single_agent_sync_session_spec_from_callback_profile,
-    iter_managed_single_agent_stream_session,
-    run_managed_single_agent_sync_session,
+    build_managed_single_agent_stream_session_profile,
+    build_managed_single_agent_sync_session_profile,
+    iter_managed_single_agent_stream_session_profile,
+    run_managed_single_agent_sync_session_profile,
 )
 from services.single_agent_session_runner import (
     SingleAgentSessionRunnerDeps,
@@ -782,8 +782,8 @@ async def _trigger_standalone_assistant_response(
         extract_memories=extract_agent_memories,
     )
 
-    await run_managed_single_agent_sync_session(
-        build_managed_single_agent_sync_session_spec_from_callback_profile(
+    await run_managed_single_agent_sync_session_profile(
+        build_managed_single_agent_sync_session_profile(
             execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
             callback_profile=standalone_callback_profile,
@@ -897,8 +897,8 @@ async def _stream_standalone_assistant_response(
         detail_builder=traceback.format_exc,
     )
 
-    async for outcome in iter_managed_single_agent_stream_session(
-        build_managed_single_agent_stream_session_spec_from_callback_profile(
+    async for outcome in iter_managed_single_agent_stream_session_profile(
+        build_managed_single_agent_stream_session_profile(
             deps=build_single_agent_stream_session_deps(
                 llm_client=runtime.llm_client,
                 tools=None,
@@ -1247,8 +1247,8 @@ async def trigger_agent_response(
             extract_memories=extract_agent_memories,
         )
 
-        finalized = await run_managed_single_agent_sync_session(
-            build_managed_single_agent_sync_session_spec_from_callback_profile(
+        finalized = await run_managed_single_agent_sync_session_profile(
+            build_managed_single_agent_sync_session_profile(
                 execute_turn=lambda: execute_non_stream_turn_loop(
                     llm_client=runtime.llm_client,
                     tools=runtime.tool_schemas,
@@ -4083,8 +4083,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 detail_builder=traceback.format_exc,
             )
 
-            async for outcome in iter_managed_single_agent_stream_session(
-                build_managed_single_agent_stream_session_spec_from_callback_profile(
+            async for outcome in iter_managed_single_agent_stream_session_profile(
+                build_managed_single_agent_stream_session_profile(
                     deps=build_single_agent_stream_session_deps(
                         llm_client=runtime.llm_client,
                         tools=runtime.tool_schemas,

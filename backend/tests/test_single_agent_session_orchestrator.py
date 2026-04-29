@@ -7,15 +7,17 @@ from services.single_agent_session_callbacks import (
     build_single_agent_sync_callback_profile,
 )
 from services.single_agent_session_orchestrator import (
-    build_managed_single_agent_stream_session_spec_from_callback_profile,
+    build_managed_single_agent_stream_session_profile,
     build_managed_single_agent_stream_session_spec,
-    build_managed_single_agent_sync_session_spec_from_callback_profile,
+    build_managed_single_agent_sync_session_profile,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
+    iter_managed_single_agent_stream_session_profile,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
     iter_managed_single_agent_stream_session,
+    run_managed_single_agent_sync_session_profile,
     run_managed_single_agent_sync_session,
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
@@ -215,8 +217,8 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
     async def extract_memories(agent_id, agent_type, user_message, agent_response):
         calls.append(("memory", {"agent_id": agent_id, "content": agent_response}))
 
-    result = await run_managed_single_agent_sync_session(
-        build_managed_single_agent_sync_session_spec_from_callback_profile(
+    result = await run_managed_single_agent_sync_session_profile(
+        build_managed_single_agent_sync_session_profile(
             execute_turn=execute_turn,
             callback_profile=build_single_agent_sync_callback_profile(
                 db=object(),
@@ -269,8 +271,8 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
 
     outcomes = [
         outcome
-        async for outcome in iter_managed_single_agent_stream_session(
-            build_managed_single_agent_stream_session_spec_from_callback_profile(
+        async for outcome in iter_managed_single_agent_stream_session_profile(
+            build_managed_single_agent_stream_session_profile(
                 deps=build_single_agent_stream_session_deps(
                     llm_client=FakeLLM(),
                     tools=None,

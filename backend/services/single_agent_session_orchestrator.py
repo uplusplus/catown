@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from services.single_agent_session_callbacks import (
@@ -28,6 +29,19 @@ from services.single_agent_stream_session import (
     iter_single_agent_stream_session,
 )
 from services.stream_transport import render_sse_payload
+
+
+@dataclass(frozen=True)
+class ManagedSingleAgentSyncSessionProfile:
+    execute_turn: Callable[[], Awaitable[str | None]]
+    callback_profile: SingleAgentSyncCallbackProfile
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None
+
+
+@dataclass(frozen=True)
+class ManagedSingleAgentStreamSessionProfile:
+    deps: SingleAgentStreamSessionDeps
+    callback_profile: SingleAgentStreamCallbackProfile
 
 
 async def run_unified_single_agent_sync_session(
@@ -163,18 +177,31 @@ def build_managed_single_agent_sync_session_spec(
     )
 
 
-def build_managed_single_agent_sync_session_spec_from_callback_profile(
+def build_managed_single_agent_sync_session_profile(
     *,
     execute_turn: Callable[[], Awaitable[str | None]],
     callback_profile: SingleAgentSyncCallbackProfile,
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> ManagedSingleAgentSyncSessionProfile:
+    """Build the higher-level sync session profile from runtime components."""
+
+    return ManagedSingleAgentSyncSessionProfile(
+        execute_turn=execute_turn,
+        callback_profile=callback_profile,
+        on_empty=on_empty,
+    )
+
+
+def build_managed_single_agent_sync_session_spec_from_callback_profile(
+    *,
+    profile: ManagedSingleAgentSyncSessionProfile,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the managed sync session spec from a higher-level callback profile."""
 
     return build_managed_single_agent_sync_session_spec(
-        execute_turn=execute_turn,
-        callbacks=build_single_agent_sync_callbacks(callback_profile),
-        on_empty=on_empty,
+        execute_turn=profile.execute_turn,
+        callbacks=build_single_agent_sync_callbacks(profile.callback_profile),
+        on_empty=profile.on_empty,
     )
 
 
@@ -194,17 +221,54 @@ def build_managed_single_agent_stream_session_spec(
     )
 
 
-def build_managed_single_agent_stream_session_spec_from_callback_profile(
+def build_managed_single_agent_stream_session_profile(
     *,
     deps: SingleAgentStreamSessionDeps,
     callback_profile: SingleAgentStreamCallbackProfile,
+) -> ManagedSingleAgentStreamSessionProfile:
+    """Build the higher-level stream session profile from runtime components."""
+
+    return ManagedSingleAgentStreamSessionProfile(
+        deps=deps,
+        callback_profile=callback_profile,
+    )
+
+
+def build_managed_single_agent_stream_session_spec_from_callback_profile(
+    *,
+    profile: ManagedSingleAgentStreamSessionProfile,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the managed stream session spec from a higher-level callback profile."""
 
     return build_managed_single_agent_stream_session_spec(
-        deps=deps,
-        callbacks=build_single_agent_stream_callbacks(callback_profile),
+        deps=profile.deps,
+        callbacks=build_single_agent_stream_callbacks(profile.callback_profile),
     )
+
+
+async def run_managed_single_agent_sync_session_profile(
+    profile: ManagedSingleAgentSyncSessionProfile,
+) -> UnifiedSingleAgentSessionOutcome:
+    """Run one managed sync single-agent session from the higher-level profile."""
+
+    return await run_managed_single_agent_sync_session(
+        build_managed_single_agent_sync_session_spec_from_callback_profile(
+            profile=profile,
+        )
+    )
+
+
+async def iter_managed_single_agent_stream_session_profile(
+    profile: ManagedSingleAgentStreamSessionProfile,
+) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
+    """Run one managed stream single-agent session from the higher-level profile."""
+
+    async for outcome in iter_managed_single_agent_stream_session(
+        build_managed_single_agent_stream_session_spec_from_callback_profile(
+            profile=profile,
+        )
+    ):
+        yield outcome
 
 
 async def _consume_sync_session(spec: UnifiedSingleAgentSessionSpec) -> str | None:

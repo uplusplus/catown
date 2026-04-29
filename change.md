@@ -1998,3 +1998,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 orchestrator 中新增从 callback profile 直接构造 managed session spec 的 helper，省掉 route 先 build callbacks 再传给 managed session builder 的中间样板
 - standalone / project single-agent sync/stream route 改为把 callback profile 直接传给 managed session builder
 - 新增/更新 focused orchestrator tests，覆盖 callback-profile 到 managed session spec 的组合路径
+
+### `Promote managed single-agent session profiles`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator 中新增更高层的 `ManagedSingleAgentSyncSessionProfile` / `ManagedSingleAgentStreamSessionProfile` 及其 builder/run helper
+- standalone / project single-agent sync/stream route 改为直接构造 managed session profile，并通过 profile runner 执行，不再显式拼 managed spec
+- focused orchestrator / API 回归更新为围绕 session profile 入口验证行为兼容

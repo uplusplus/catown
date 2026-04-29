@@ -5450,3 +5450,33 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍分别构造 callback profile 与 stream deps，两者尚未统一成单一 session profile
 - sync / stream 两条路径仍然存在两套 profile-to-spec helper，而不是一个自动判别入口
 - 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.124 2026-04-29 新进展：managed single-agent session profile 已抬高一层
+
+在 11.123 之后，route 虽然已经不再手工把 callback profile 转成 callbacks bundle，但仍然保留一段 spec-level glue：
+
+- route 先构造 callback profile
+- 再调用 orchestrator 的 profile-to-spec helper
+- 再把结果传给 `run_managed_single_agent_sync_session(...)` 或 `iter_managed_single_agent_stream_session(...)`
+
+这说明 route 还知道 managed session spec 这一层实现细节，而没有真正只面向更高层 session profile。
+
+本轮继续把 single-agent 入口往上抬：
+
+- orchestrator 新增 `ManagedSingleAgentSyncSessionProfile`
+- orchestrator 新增 `ManagedSingleAgentStreamSessionProfile`
+- 新增对应 profile builder
+- 新增直接从 profile 运行 sync/stream session 的 helper
+- standalone / project single-agent sync/stream route 改为直接构造 managed session profile 并执行
+
+这一步的意义是：
+
+- route 进一步退出 managed spec 组装与执行细节
+- single-agent session stack 开始具备真正更高层的 session profile 入口，而不只是 callback profile 和 spec builder 的串联
+- 后续如果继续把 callback profile 与 stream deps 做更高层默认化/模板化，这一层 profile runner 已经是稳定承接点
+
+边界：
+
+- route 仍分别构造 callback profile 与 stream deps，再交给 managed session profile builder
+- sync / stream 仍是两套 profile 类型，而不是统一的单一 profile
+- 如果继续推进，下一步可以考虑把 callback profile 与 stream deps 再进一步合并成更完整的 single-agent runtime profile
