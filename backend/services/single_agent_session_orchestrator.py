@@ -168,8 +168,7 @@ def build_unified_stream_single_agent_session_spec(
 def build_managed_single_agent_sync_session_spec(
     *,
     execute_turn: Callable[[], Awaitable[str | None]],
-    finalize_success: Callable[[str], Awaitable[Any]],
-    finalize_failure: Callable[[Exception], Awaitable[Any] | Any],
+    callbacks: ManagedSingleAgentSessionCallbacks,
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a sync single-agent session."""
@@ -179,27 +178,20 @@ def build_managed_single_agent_sync_session_spec(
             execute_turn=execute_turn,
             on_empty=on_empty,
         ),
-        callbacks=ManagedSingleAgentSessionCallbacks(
-            finalize_success=finalize_success,
-            finalize_failure=finalize_failure,
-        ),
+        callbacks=callbacks,
     )
 
 
 def build_managed_single_agent_stream_session_spec(
     *,
     deps: SingleAgentStreamSessionDeps,
-    finalize_success: Callable[[str], Awaitable[Any]],
-    finalize_failure: Callable[[Exception], Awaitable[Any] | Any],
+    callbacks: ManagedSingleAgentSessionCallbacks,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a streaming single-agent session."""
 
     return ManagedSingleAgentSessionSpec(
         session=build_unified_stream_single_agent_session_spec(deps=deps),
-        callbacks=ManagedSingleAgentSessionCallbacks(
-            finalize_success=finalize_success,
-            finalize_failure=finalize_failure,
-        ),
+        callbacks=callbacks,
         stream_transport=ManagedSingleAgentStreamTransport(
             serialize_payload=deps.serialize_payload,
         ),

@@ -786,8 +786,7 @@ async def _trigger_standalone_assistant_response(
         build_managed_single_agent_sync_session_spec(
             execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
-            finalize_success=standalone_callbacks.finalize_success,
-            finalize_failure=standalone_callbacks.finalize_failure,
+            callbacks=standalone_callbacks,
         )
     )
 
@@ -921,8 +920,7 @@ async def _stream_standalone_assistant_response(
                 chatroom_id=chatroom_id,
                 max_turns=1,
             ),
-            finalize_success=standalone_stream_callbacks.finalize_success,
-            finalize_failure=standalone_stream_callbacks.finalize_failure,
+            callbacks=standalone_stream_callbacks,
         )
     ):
         if outcome.chunk is not None:
@@ -1265,8 +1263,7 @@ async def trigger_agent_response(
                     on_tool_round=_on_project_single_agent_tool_round,
                 ),
                 on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
-                finalize_success=project_single_agent_callbacks.finalize_success,
-                finalize_failure=project_single_agent_callbacks.finalize_failure,
+                callbacks=project_single_agent_callbacks,
             )
         )
 
@@ -4187,8 +4184,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         max_turns=MAX_TOOL_ITERATIONS,
                         on_tool_round=_on_single_agent_stream_tool_round,
                     ),
-                    finalize_success=project_single_agent_stream_callbacks.finalize_success,
-                    finalize_failure=project_single_agent_stream_callbacks.finalize_failure,
+                    callbacks=project_single_agent_stream_callbacks,
                 )
             ):
                 if outcome.chunk is not None:

@@ -2,6 +2,9 @@ import asyncio
 
 import pytest
 
+from services.single_agent_session_orchestrator import (
+    ManagedSingleAgentSessionCallbacks,
+)
 from services.single_agent_session_callbacks import (
     build_single_agent_memory_extraction_callback,
     build_single_agent_session_failure_callback,
@@ -11,7 +14,6 @@ from services.single_agent_session_callbacks import (
     build_single_agent_stream_failure_callback,
     build_single_agent_stream_success_callback,
     build_single_agent_sync_callbacks,
-    SingleAgentManagedCallbackSet,
     SingleAgentSessionFailureCallbackDeps,
     SingleAgentSessionSuccessCallbackDeps,
     SingleAgentStreamCallbackProfile,
@@ -271,7 +273,7 @@ async def test_build_single_agent_sync_callbacks_returns_managed_callback_set():
         )
     )
 
-    assert isinstance(callbacks, SingleAgentManagedCallbackSet)
+    assert isinstance(callbacks, ManagedSingleAgentSessionCallbacks)
     result = await callbacks.finalize_success("Hello world with enough detail for memory extraction.")
     await asyncio.sleep(0)
 

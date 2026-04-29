@@ -5248,3 +5248,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍要提供 runtime-specific profile inputs，例如 agent identity、user message、traceback builder
 - managed session spec builder 仍直接接收 `finalize_success` / `finalize_failure`，尚未直接消费 callback set
 - 如果继续推进，下一步可以考虑让 managed session spec builder 直接接受 callback bundle，进一步压 route 参数面
+
+### 11.117 2026-04-29 新进展：managed session builder 已直接接收 callback bundle
+
+在 11.116 之后，single-agent route 虽然已经不再分别拼 success/failure deps，但仍有最后一层机械拆包：
+
+- callback profile builder 先产出一组 managed callbacks
+- route 再把这组 callbacks 拆成 `finalize_success` / `finalize_failure`
+- managed session builder 再在内部重新组回 `ManagedSingleAgentSessionCallbacks`
+
+这是一段纯粹的参数搬运，没有新增任何语义。
+
+本轮把这层拆包去掉：
+
+- `build_managed_single_agent_sync_session_spec(...)` 直接接收 callback bundle
+- `build_managed_single_agent_stream_session_spec(...)` 直接接收 callback bundle
+- callback profile builder 直接产出 orchestrator 使用的 `ManagedSingleAgentSessionCallbacks`
+- standalone / project single-agent sync/stream route 改为把 callback bundle 直接传给 managed session builder
+
+这一步的意义是：
+
+- single-agent callback assembly 与 managed session builder 的契约正式对齐
+- route 不再承担“拆 bundle 再传回去”的中间样板
+- callback service 与 orchestrator 开始共享同一套 callback contract，而不是各自维护一层近似结果模型
+
+边界：
+
+- callback profile builder 仍然独立于 managed session builder，本轮没有把二者进一步合并
+- route 仍要构造 stream deps / execute_turn 等 runtime input
+- 如果继续推进，下一步可以考虑把 callback profile 与 managed session spec 再往更高层 session profile 合并

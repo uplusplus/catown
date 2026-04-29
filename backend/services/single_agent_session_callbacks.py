@@ -7,6 +7,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from services.single_agent_session_orchestrator import (
+    ManagedSingleAgentSessionCallbacks,
+)
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
     finalize_single_agent_session_success,
@@ -70,12 +73,6 @@ class SingleAgentStreamFailureCallbackDeps:
 
 
 @dataclass(frozen=True)
-class SingleAgentManagedCallbackSet:
-    finalize_success: Callable[[str], Awaitable[Any]]
-    finalize_failure: Callable[[Exception], Awaitable[Any] | Any]
-
-
-@dataclass(frozen=True)
 class SingleAgentSyncCallbackProfile:
     db: Any
     task_run: Any
@@ -125,10 +122,10 @@ class SingleAgentStreamCallbackProfile:
 
 def build_single_agent_sync_callbacks(
     profile: SingleAgentSyncCallbackProfile,
-) -> SingleAgentManagedCallbackSet:
+) -> ManagedSingleAgentSessionCallbacks:
     """Build the standard managed callback pair for a sync single-agent turn."""
 
-    return SingleAgentManagedCallbackSet(
+    return ManagedSingleAgentSessionCallbacks(
         finalize_success=build_single_agent_session_success_callback(
             SingleAgentSessionSuccessCallbackDeps(
                 db=profile.db,
@@ -164,10 +161,10 @@ def build_single_agent_sync_callbacks(
 
 def build_single_agent_stream_callbacks(
     profile: SingleAgentStreamCallbackProfile,
-) -> SingleAgentManagedCallbackSet:
+) -> ManagedSingleAgentSessionCallbacks:
     """Build the standard managed callback pair for a streaming single-agent turn."""
 
-    return SingleAgentManagedCallbackSet(
+    return ManagedSingleAgentSessionCallbacks(
         finalize_success=build_single_agent_stream_success_callback(
             SingleAgentSessionSuccessCallbackDeps(
                 db=profile.db,
