@@ -5158,3 +5158,34 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍需要构造 `SingleAgentStreamSessionDeps`
 - raw `ManagedSingleAgentSessionSpec` 仍允许缺失 transport，本轮只收 builder 主路径
 - 如果继续推进，下一步可以考虑把 finalize lambda 与 deps 构造进一步抽成更高层 helper
+
+### 11.114 2026-04-29 新进展：single-agent finalizer callback 装配已从 route 下沉
+
+在 11.113 之后，single-agent route 侧还残留一段相当机械的 managed callback 样板：
+
+- sync path 手工拼 `finalize_single_agent_session_success(...)` / `finalize_single_agent_session_failure(...)`
+- stream path 手工拼 `finalize_single_agent_stream_success(...)` / `finalize_single_agent_stream_failure(...)`
+- standalone 与 project 两条路径还在重复构造 memory extraction / failure summary / stream failure persistence 这些 callback 细节
+
+这说明 route 虽然已经不再手工拼 managed spec，但仍深度了解 finalizer 级别的实现细节。
+
+本轮继续把这层往 service 收：
+
+- 新增 `single_agent_session_callbacks.py`
+- 引入 `SingleAgentSessionSuccessCallbackDeps`
+- 引入 `SingleAgentSessionFailureCallbackDeps`
+- 引入 `SingleAgentStreamFailureCallbackDeps`
+- 用 shared builder 生成 sync/stream success/failure callbacks
+- standalone / project single-agent sync/stream route 改为复用这些 callback builders
+
+这一步的意义是：
+
+- single-agent route 更接近只负责准备 runtime input，而不是拼装 terminalization control flow
+- managed session stack 的三层分工更清楚：session builder、callback builder、底层 finalizer
+- 后续若继续收 memory extraction / stream failure persistence 等策略，落点会更集中在 service 层
+
+边界：
+
+- route 仍要提供 callback deps，尚未把这些 deps 再进一步收成更高层 policy object
+- stream failure 的 `persist_stream_failure(...)` 适配仍由 route 注入
+- 如果继续推进，下一步可以考虑把 success/failure deps 里的 memory extraction 与 stream failure persistence 再抽成共享 policy helper

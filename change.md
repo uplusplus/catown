@@ -1834,3 +1834,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 `build_managed_single_agent_stream_session_spec(...)` 直接复用 `SingleAgentStreamSessionDeps.serialize_payload`，不再要求 route/tests 额外传第二份 terminal serializer
 - standalone / project single-agent streaming path 去掉重复的 `serialize_payload` 透传，stream builder 自动从 deps 派生 transport
 - focused tests 改为验证 builder 派生的 serializer 仍能产出正确 terminal SSE，并保留 raw-spec 缺失 transport 的负向契约
+
+### `Extract single-agent finalizer callback builders`
+
+范围：
+
+- `backend/services/single_agent_session_callbacks.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_callbacks.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 shared single-agent callback builder service，把 sync/stream success/failure finalizer 的 route-local lambda 装配下沉为可复用 deps + builder
+- standalone / project single-agent sync/stream path 改为复用 callback builders，而不是在 route 中直接拼接 finalizer 调用细节
+- 新增 focused callback builder tests，并跑 callback/orchestrator/API 回归确认行为兼容
