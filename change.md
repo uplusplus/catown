@@ -2160,6 +2160,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - standalone / project single-agent sync/stream route 改为先构造 shared raw runtime inputs，再交给 sync/stream raw-runtime builder
 - focused orchestrator / API 回归更新为围绕 shared raw runtime input bundle 验证行为兼容
 
+### `Promote shared raw-runtime bundle into route entrypoint`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- sync/stream raw-runtime builder 统一改为消费 `SingleAgentRawRuntimeInputs`，不再接受那一长串公共原始参数
+- standalone / project single-agent sync/stream route 改为显式构造 shared raw-runtime bundle，再交给 sync/stream builder
+- focused orchestrator / API 回归更新为围绕 shared raw-runtime bundle 入口验证行为兼容
+
 ### `Unify single-agent runtime profile shape`
 
 范围：

@@ -5768,6 +5768,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - shared raw input bundle 之上还没有进一步形成更统一的 top-level builder 参数对象
 - 如果继续推进，下一步可以考虑进一步统一 sync/stream raw-runtime builder 的 execution-specific 参数分组
 
+### 11.134 2026-04-29 新进展：shared raw-runtime bundle 已成为 single-agent route 入口公共面
+
+在 11.133 之后，虽然 shared raw-runtime bundle 已经存在，但 route 仍然要各自把那一长串公共参数原样透传给 sync/stream raw-runtime builder。
+
+这说明 shared bundle 被定义出来了，但还没有真正成为高层入口的主参数面。
+
+本轮继续把这层切换完成：
+
+- sync raw-runtime builder 改为直接接收 `SingleAgentRawRuntimeInputs`
+- stream raw-runtime builder 也改为直接接收 `SingleAgentRawRuntimeInputs`
+- standalone / project single-agent sync/stream route 改为显式构造 shared raw-runtime bundle，再交给 builder
+
+这一步的意义是：
+
+- single-agent route 终于拥有一套明确的共享高层输入面，而不是继续传长参数列表
+- sync / stream raw-runtime builder 的公共输入 contract 首次真正一致
+- 后续如果继续统一 execution-specific 参数，就可以在 `raw-runtime bundle + execution-specific inputs` 这两个层面上干净推进
+
+边界：
+
+- sync / stream raw-runtime builder 仍各自持有自己的 execution-specific 参数
+- shared raw-runtime bundle 还没有进一步和 execution-specific inputs 合并为单一顶层 request model
+- 如果继续推进，下一步可以考虑进一步统一 sync/stream execution-specific 参数分组
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
