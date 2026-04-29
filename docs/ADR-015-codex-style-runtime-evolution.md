@@ -5480,3 +5480,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍分别构造 callback profile 与 stream deps，再交给 managed session profile builder
 - sync / stream 仍是两套 profile 类型，而不是统一的单一 profile
 - 如果继续推进，下一步可以考虑把 callback profile 与 stream deps 再进一步合并成更完整的 single-agent runtime profile
+
+### 11.125 2026-04-29 新进展：managed single-agent session profile 已可直接从 runtime inputs 构造
+
+在 11.124 之后，route 虽然已经面向 managed session profile 执行，但 still retained 一层装配：
+
+- sync path 先 build callback profile
+- stream path 先 build callback profile
+- stream path 还要再 build stream deps
+- 最后再把这些中间对象交给 managed session profile builder
+
+这说明 route 虽然退出了 spec 层，但还在串装多个中间 profile/deps object。
+
+本轮把这层装配继续收回 orchestrator：
+
+- orchestrator 新增从 runtime inputs 直接构造 managed sync session profile 的 helper
+- orchestrator 新增从 runtime inputs 直接构造 managed stream session profile 的 helper
+- standalone / project single-agent sync/stream route 改为直接把 runtime inputs 传给这些 runtime-profile builder
+
+这一步的意义是：
+
+- route 再退出一层中间 object assembly
+- callback profile 与 stream deps 开始真正被吸收到更高层 managed session profile builder 后面
+- single-agent session stack 更接近“route 只提供 runtime inputs，service 负责装配 profile/spec/runner”的 Codex 风格边界
+
+边界：
+
+- runtime-profile builder 目前参数仍然较多，本轮主要解决装配层级，不是参数瘦身
+- sync / stream 仍然各自维护一套 runtime-profile builder，而不是统一单入口
+- 如果继续推进，下一步可以考虑把 sync/stream 共享的 runtime input 再抽成更高层公共 session runtime model

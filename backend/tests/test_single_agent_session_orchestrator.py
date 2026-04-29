@@ -2,14 +2,10 @@ import asyncio
 
 import pytest
 
-from services.single_agent_session_callbacks import (
-    build_single_agent_stream_callback_profile,
-    build_single_agent_sync_callback_profile,
-)
 from services.single_agent_session_orchestrator import (
-    build_managed_single_agent_stream_session_profile,
+    build_managed_single_agent_stream_session_profile_from_runtime,
     build_managed_single_agent_stream_session_spec,
-    build_managed_single_agent_sync_session_profile,
+    build_managed_single_agent_sync_session_profile_from_runtime,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
@@ -218,26 +214,24 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
         calls.append(("memory", {"agent_id": agent_id, "content": agent_response}))
 
     result = await run_managed_single_agent_sync_session_profile(
-        build_managed_single_agent_sync_session_profile(
+        build_managed_single_agent_sync_session_profile_from_runtime(
             execute_turn=execute_turn,
-            callback_profile=build_single_agent_sync_callback_profile(
-                db=object(),
-                task_run=None,
-                chatroom_id=7,
-                client_turn_id="turn-1",
-                agent_id=9,
-                agent_name="Analyst",
-                agent_type="Analyst",
-                user_message="Need help",
-                save_message=save_message,
-                publish_message=publish_message,
-                record_turn_completed=record_turn_completed,
-                message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
-                compact_summary=lambda content: content[:5],
-                completion_summary="Analyst completed the turn.",
-                failure_summary=lambda error: f"Agent response failed: {error}",
-                extract_memories=extract_memories,
-            ),
+            db=object(),
+            task_run=None,
+            chatroom_id=7,
+            client_turn_id="turn-1",
+            agent_id=9,
+            agent_name="Analyst",
+            agent_type="Analyst",
+            user_message="Need help",
+            save_message=save_message,
+            publish_message=publish_message,
+            record_turn_completed=record_turn_completed,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            compact_summary=lambda content: content[:5],
+            completion_summary="Analyst completed the turn.",
+            failure_summary=lambda error: f"Agent response failed: {error}",
+            extract_memories=extract_memories,
         )
     )
     await asyncio.sleep(0)
@@ -272,45 +266,39 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
     outcomes = [
         outcome
         async for outcome in iter_managed_single_agent_stream_session_profile(
-            build_managed_single_agent_stream_session_profile(
-                deps=build_single_agent_stream_session_deps(
-                    llm_client=FakeLLM(),
-                    tools=None,
-                    turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
-                    agent_name="Analyst",
-                    client_turn_id="turn-1",
-                    assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
-                    execute_tool=lambda *args, **kwargs: None,
-                    build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
-                    snapshot_messages=lambda messages: list(messages),
-                    preview_tool_calls=lambda raw_tool_calls: [],
-                    format_prompt_messages=lambda messages: "formatted",
-                    tool_result_success=lambda result: True,
-                    serialize_payload=lambda payload: '{"type":"done"}',
-                    store_runtime_card=store_runtime_card,
-                    public_runtime_card_payload=lambda payload: payload,
-                    chatroom_id=7,
-                    max_turns=1,
-                ),
-                callback_profile=build_single_agent_stream_callback_profile(
-                    db=object(),
-                    task_run=None,
-                    chatroom_id=7,
-                    client_turn_id="turn-1",
-                    agent_id=9,
-                    agent_name="Analyst",
-                    agent_type="Analyst",
-                    user_message="Need help",
-                    save_message=save_message,
-                    publish_message=publish_message,
-                    record_turn_completed=record_turn_completed,
-                    message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
-                    compact_summary=lambda content: content[:5],
-                    completion_summary="Analyst completed the streaming turn.",
-                    failure_summary=lambda error: f"Streaming execution failed: {error}",
-                    extract_memories=extract_memories,
-                    stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
-                ),
+            build_managed_single_agent_stream_session_profile_from_runtime(
+                llm_client=FakeLLM(),
+                tools=None,
+                turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+                agent_name="Analyst",
+                client_turn_id="turn-1",
+                assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
+                execute_tool=lambda *args, **kwargs: None,
+                build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+                snapshot_messages=lambda messages: list(messages),
+                preview_tool_calls=lambda raw_tool_calls: [],
+                format_prompt_messages=lambda messages: "formatted",
+                tool_result_success=lambda result: True,
+                serialize_payload=lambda payload: '{"type":"done"}',
+                store_runtime_card=store_runtime_card,
+                public_runtime_card_payload=lambda payload: payload,
+                chatroom_id=7,
+                max_turns=1,
+                db=object(),
+                task_run=None,
+                session_agent_id=9,
+                session_agent_name="Analyst",
+                session_agent_type="Analyst",
+                user_message="Need help",
+                save_message=save_message,
+                publish_message=publish_message,
+                record_turn_completed=record_turn_completed,
+                message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+                compact_summary=lambda content: content[:5],
+                completion_summary="Analyst completed the streaming turn.",
+                failure_summary=lambda error: f"Streaming execution failed: {error}",
+                extract_memories=extract_memories,
+                stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
             )
         )
     ]

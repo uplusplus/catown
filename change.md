@@ -2014,3 +2014,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 orchestrator 中新增更高层的 `ManagedSingleAgentSyncSessionProfile` / `ManagedSingleAgentStreamSessionProfile` 及其 builder/run helper
 - standalone / project single-agent sync/stream route 改为直接构造 managed session profile，并通过 profile runner 执行，不再显式拼 managed spec
 - focused orchestrator / API 回归更新为围绕 session profile 入口验证行为兼容
+
+### `Build managed single-agent session profiles from runtime inputs`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator 中新增从 runtime inputs 直接构造 managed sync/stream session profile 的 helper，把 callback profile 与 stream deps 的组装一并收进去
+- standalone / project single-agent sync/stream route 改为直接把 runtime inputs 传给 orchestrator 的 runtime-profile builder，不再分别 build callback profile 与 stream deps
+- focused orchestrator / API 回归更新为围绕 runtime-profile builder 入口验证行为兼容

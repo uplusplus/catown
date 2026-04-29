@@ -9,7 +9,9 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from services.single_agent_session_callbacks import (
     SingleAgentStreamCallbackProfile,
     SingleAgentSyncCallbackProfile,
+    build_single_agent_stream_callback_profile,
     build_single_agent_stream_callbacks,
+    build_single_agent_sync_callback_profile,
     build_single_agent_sync_callbacks,
 )
 from services.single_agent_session_contracts import (
@@ -26,6 +28,7 @@ from services.single_agent_session_runner import (
 )
 from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
+    build_single_agent_stream_session_deps,
     iter_single_agent_stream_session,
 )
 from services.stream_transport import render_sse_payload
@@ -192,6 +195,55 @@ def build_managed_single_agent_sync_session_profile(
     )
 
 
+def build_managed_single_agent_sync_session_profile_from_runtime(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    db: Any,
+    task_run: Any,
+    chatroom_id: int,
+    client_turn_id: str | None,
+    agent_id: int | None,
+    agent_name: str,
+    agent_type: str,
+    user_message: str,
+    save_message: Callable[..., Awaitable[Any]],
+    publish_message: Callable[..., Awaitable[Any]],
+    record_turn_completed: Callable[..., Any],
+    message_metadata: Callable[[str | None], dict[str, Any]],
+    compact_summary: Callable[[Any], str],
+    completion_summary: str,
+    failure_summary: str | Callable[[Exception], str],
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+    min_response_length: int = 30,
+) -> ManagedSingleAgentSyncSessionProfile:
+    """Build the higher-level sync session profile directly from runtime inputs."""
+
+    return build_managed_single_agent_sync_session_profile(
+        execute_turn=execute_turn,
+        callback_profile=build_single_agent_sync_callback_profile(
+            db=db,
+            task_run=task_run,
+            chatroom_id=chatroom_id,
+            client_turn_id=client_turn_id,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            agent_type=agent_type,
+            user_message=user_message,
+            save_message=save_message,
+            publish_message=publish_message,
+            record_turn_completed=record_turn_completed,
+            message_metadata=message_metadata,
+            compact_summary=compact_summary,
+            completion_summary=completion_summary,
+            failure_summary=failure_summary,
+            extract_memories=extract_memories,
+            min_response_length=min_response_length,
+        ),
+        on_empty=on_empty,
+    )
+
+
 def build_managed_single_agent_sync_session_spec_from_callback_profile(
     *,
     profile: ManagedSingleAgentSyncSessionProfile,
@@ -231,6 +283,99 @@ def build_managed_single_agent_stream_session_profile(
     return ManagedSingleAgentStreamSessionProfile(
         deps=deps,
         callback_profile=callback_profile,
+    )
+
+
+def build_managed_single_agent_stream_session_profile_from_runtime(
+    *,
+    llm_client: Any,
+    tools: list[dict[str, Any]] | None,
+    turn_state: Any,
+    agent_name: str,
+    client_turn_id: str | None,
+    assemble_messages: Callable[[Any], list[dict[str, Any]]],
+    execute_tool: Callable[..., Awaitable[Any]],
+    build_llm_runtime_card: Callable[..., dict[str, Any]],
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
+    tool_result_success: Callable[[str], bool],
+    serialize_payload: Callable[[Any], str],
+    store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
+    public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
+    chatroom_id: int,
+    max_turns: int,
+    db: Any,
+    task_run: Any,
+    session_agent_id: int | None,
+    session_agent_name: str,
+    session_agent_type: str,
+    user_message: str,
+    save_message: Callable[..., Awaitable[Any]],
+    publish_message: Callable[..., Awaitable[Any]],
+    record_turn_completed: Callable[..., Any],
+    message_metadata: Callable[[str | None], dict[str, Any]],
+    compact_summary: Callable[[Any], str],
+    completion_summary: str,
+    failure_summary: str | Callable[[Exception], str],
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]],
+    failure_agent_name: str | None = None,
+    failure_agent_id: int | None = None,
+    detail_builder: Callable[[], str] | None = None,
+    final_message_saved: bool = False,
+    empty_response_text: str = "(Agent returned empty response)",
+    min_response_length: int = 30,
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
+) -> ManagedSingleAgentStreamSessionProfile:
+    """Build the higher-level stream session profile directly from runtime inputs."""
+
+    return build_managed_single_agent_stream_session_profile(
+        deps=build_single_agent_stream_session_deps(
+            llm_client=llm_client,
+            tools=tools,
+            turn_state=turn_state,
+            agent_name=agent_name,
+            client_turn_id=client_turn_id,
+            assemble_messages=assemble_messages,
+            execute_tool=execute_tool,
+            build_llm_runtime_card=build_llm_runtime_card,
+            snapshot_messages=snapshot_messages,
+            preview_tool_calls=preview_tool_calls,
+            format_prompt_messages=format_prompt_messages,
+            tool_result_success=tool_result_success,
+            serialize_payload=serialize_payload,
+            store_runtime_card=store_runtime_card,
+            public_runtime_card_payload=public_runtime_card_payload,
+            chatroom_id=chatroom_id,
+            max_turns=max_turns,
+            on_tool_round=on_tool_round,
+        ),
+        callback_profile=build_single_agent_stream_callback_profile(
+            db=db,
+            task_run=task_run,
+            chatroom_id=chatroom_id,
+            client_turn_id=client_turn_id,
+            agent_id=session_agent_id,
+            agent_name=session_agent_name,
+            agent_type=session_agent_type,
+            user_message=user_message,
+            save_message=save_message,
+            publish_message=publish_message,
+            record_turn_completed=record_turn_completed,
+            message_metadata=message_metadata,
+            compact_summary=compact_summary,
+            completion_summary=completion_summary,
+            failure_summary=failure_summary,
+            extract_memories=extract_memories,
+            stream_failure_message_metadata=stream_failure_message_metadata,
+            failure_agent_name=failure_agent_name,
+            failure_agent_id=failure_agent_id,
+            detail_builder=detail_builder,
+            final_message_saved=final_message_saved,
+            empty_response_text=empty_response_text,
+            min_response_length=min_response_length,
+        ),
     )
 
 
