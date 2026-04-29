@@ -156,6 +156,7 @@ from services.single_agent_session_orchestrator import (
     build_unified_sync_single_agent_session_spec,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
+    ManagedSingleAgentStreamTransport,
     iter_managed_single_agent_stream_session,
     run_managed_single_agent_sync_session,
     UnifiedSingleAgentSessionSpec,
@@ -803,7 +804,6 @@ async def _trigger_standalone_assistant_response(
                     error=exc,
                     failure_summary=f"Agent response failed: {exc}",
                 ),
-                serialize_payload=None,
             ),
         )
     )
@@ -961,6 +961,8 @@ async def _stream_standalone_assistant_response(
                     ),
                     failure_summary=f"Standalone stream failed: {exc}",
                 ),
+            ),
+            stream_transport=ManagedSingleAgentStreamTransport(
                 serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
             ),
         )
@@ -1319,7 +1321,6 @@ async def trigger_agent_response(
                         error=exc,
                         failure_summary=f"Agent response failed: {exc}",
                     ),
-                    serialize_payload=None,
                 ),
             )
         )
@@ -4262,6 +4263,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                             ),
                             failure_summary=f"Streaming execution failed: {e}",
                         ),
+                    ),
+                    stream_transport=ManagedSingleAgentStreamTransport(
                         serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
                     ),
                 )

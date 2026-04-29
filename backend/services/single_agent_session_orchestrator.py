@@ -15,7 +15,7 @@ from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
     iter_single_agent_stream_session,
 )
-from services.stream_transport import render_sse_payload
+from services.stream_transport import SerializePayload, render_sse_payload
 
 
 @dataclass(frozen=True)
@@ -34,14 +34,19 @@ class UnifiedSingleAgentSessionSpec:
 @dataclass(frozen=True)
 class ManagedSingleAgentSessionCallbacks:
     finalize_success: Callable[[str], Awaitable[Any]]
-    finalize_failure: Callable[[Exception], Awaitable[Any]]
-    serialize_payload: Callable[[Any], str] | None = None
+    finalize_failure: Callable[[Exception], Awaitable[Any] | Any]
+
+
+@dataclass(frozen=True)
+class ManagedSingleAgentStreamTransport:
+    serialize_payload: SerializePayload
 
 
 @dataclass(frozen=True)
 class ManagedSingleAgentSessionSpec:
     session: UnifiedSingleAgentSessionSpec
     callbacks: ManagedSingleAgentSessionCallbacks
+    stream_transport: ManagedSingleAgentStreamTransport | None = None
 
 
 async def run_unified_single_agent_sync_session(
@@ -86,6 +91,7 @@ async def iter_managed_single_agent_stream_session(
 ) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the managed stack surface."""
 
+    transport = _require_stream_transport(spec)
     final_content = ""
     try:
         async for item in iter_unified_single_agent_stream_session(spec.session):
@@ -97,7 +103,7 @@ async def iter_managed_single_agent_stream_session(
     except Exception as exc:
         finalized = await spec.callbacks.finalize_failure(exc)
         yield UnifiedSingleAgentSessionOutcome(
-            chunk=render_sse_payload(finalized.payload, serialize_payload=spec.callbacks.serialize_payload or str),
+            chunk=render_sse_payload(finalized.payload, serialize_payload=transport.serialize_payload),
             payload=dict(finalized.payload or {}),
             error_text=getattr(finalized, "error_text", None),
         )
@@ -106,7 +112,7 @@ async def iter_managed_single_agent_stream_session(
     finalized = await spec.callbacks.finalize_success(final_content)
     yield UnifiedSingleAgentSessionOutcome(
         final_content=final_content,
-        chunk=render_sse_payload(finalized.payload, serialize_payload=spec.callbacks.serialize_payload or str),
+        chunk=render_sse_payload(finalized.payload, serialize_payload=transport.serialize_payload),
         payload=dict(finalized.payload or {}),
     )
 
@@ -115,6 +121,14 @@ async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+def _require_stream_transport(
+    spec: ManagedSingleAgentSessionSpec,
+) -> ManagedSingleAgentStreamTransport:
+    if spec.stream_transport is None:
+        raise ValueError("Managed single-agent stream session requires stream transport.")
+    return spec.stream_transport
 
 
 def build_unified_sync_single_agent_session_spec(

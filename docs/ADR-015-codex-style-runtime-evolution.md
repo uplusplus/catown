@@ -5073,3 +5073,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - managed callbacks 仍保留 sync/stream 的终结差异
 - stream path 仍需要 `serialize_payload` 这类 transport 细节
 - 如果继续推进，下一步可以继续压缩 managed callbacks 的差异
+
+### 11.111 2026-04-29 新进展：managed single-agent stream transport 已从 callbacks 拆出
+
+在 11.110 之后，managed single-agent stack 还残留一处很明显的异味：
+
+- `ManagedSingleAgentSessionCallbacks` 里同时放 lifecycle finalizer 和 stream-only `serialize_payload`
+- sync path 只能被迫传 `serialize_payload=None`
+- transport 细节继续污染本应只描述 session terminalization 的 managed callbacks
+
+本轮继续把这层 contract 收紧：
+
+- `ManagedSingleAgentSessionCallbacks` 只保留 `finalize_success` / `finalize_failure`
+- 新增 `ManagedSingleAgentStreamTransport`
+- `ManagedSingleAgentSessionSpec` 通过 `stream_transport` 显式承载 streaming terminal SSE 序列化能力
+- standalone assistant stream 与 project single-agent stream 改为单独注入 transport，而 sync path 不再传空的 stream 字段
+
+这一步的意义是：
+
+- managed callbacks 更接近纯 lifecycle contract，而不是混合 transport concerns
+- single-agent sync path 不再被 stream-only 参数污染
+- 后续如果继续把 managed session builder 再往上收，会有更清楚的 execution / finalization / transport 分层
+
+边界：
+
+- route 仍需要手工构造 `ManagedSingleAgentStreamTransport`
+- stream terminal output 仍由 managed stream 入口单独渲染
+- 如果继续推进，下一步可以考虑把 managed sync/stream spec 的 route-local 构造再包成更高层 builder

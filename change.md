@@ -1786,3 +1786,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 去掉 `UnifiedSingleAgentSessionSpec` 内部显式 `mode` 分叉，统一为单一 iterator-based contract
 - 让 route 与 focused tests 全部通过 sync/stream builder 构造 unified spec，而不再直接传 `mode`
 - 跑 single-agent sync/stream focused 回归，验证 orchestrator 行为兼容
+
+### `Split managed single-agent stream transport from callbacks`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 将 managed single-agent callbacks 收敛为纯 success/failure finalizer 契约，不再混入 stream-only `serialize_payload`
+- 新增 `ManagedSingleAgentStreamTransport`，由 standalone / project single-agent streaming path 显式提供终结 SSE 序列化能力
+- 补 focused contract test，覆盖缺失 stream transport 的失败分支，并跑 single-agent sync/stream API 回归确认行为兼容
