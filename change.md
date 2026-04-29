@@ -2064,3 +2064,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 stream session service 中新增 `SingleAgentStreamExecutionContext` 与 builder，把 stream-specific execution inputs 收成独立模型
 - orchestrator 的 stream runtime-profile builder 改为消费 `runtime context + execution context`
 - standalone / project single-agent stream route 不再直接把长串 execution 参数传给 orchestrator，focused stream/orchestrator/API 回归围绕新入口验证兼容
+
+### `Extract single-agent sync execution context`
+
+范围：
+
+- `backend/services/single_agent_session_runner.py`
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_runner.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 non-stream runner 中新增 `SingleAgentSyncExecutionContext` 与 builder，把 sync-side `execute_turn/on_empty` 收成独立 execution model
+- orchestrator 的 sync runtime-profile builder 改为消费 `runtime context + sync execution context`
+- standalone / project single-agent sync route 不再直接把 `execute_turn/on_empty` 裸传给 orchestrator，focused runner/orchestrator/API 回归围绕新入口验证兼容

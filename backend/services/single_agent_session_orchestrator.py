@@ -22,6 +22,9 @@ from services.single_agent_session_contracts import (
     UnifiedSingleAgentSessionSpec,
 )
 from services.single_agent_session_runner import (
+    build_single_agent_session_runner_deps_from_execution_context,
+    build_single_agent_sync_execution_context,
+    SingleAgentSyncExecutionContext,
     SingleAgentSessionRunnerDeps,
     SingleAgentSessionRunnerResult,
     run_single_agent_session,
@@ -38,9 +41,8 @@ from services.stream_transport import render_sse_payload
 
 @dataclass(frozen=True)
 class ManagedSingleAgentSyncSessionProfile:
-    execute_turn: Callable[[], Awaitable[str | None]]
+    execution: SingleAgentSyncExecutionContext
     callback_profile: SingleAgentSyncCallbackProfile
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -99,8 +101,10 @@ async def run_managed_single_agent_sync_session(
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the managed stack surface."""
     result = await run_single_agent_session(
-        SingleAgentSessionRunnerDeps(
-            execute_turn=lambda: _consume_sync_session(spec.session),
+        build_single_agent_session_runner_deps_from_execution_context(
+            execution=build_single_agent_sync_execution_context(
+                execute_turn=lambda: _consume_sync_session(spec.session),
+            ),
             finalize_success=spec.callbacks.finalize_success,
             finalize_failure=spec.callbacks.finalize_failure,
         )
@@ -189,16 +193,15 @@ def build_unified_stream_single_agent_session_spec(
 
 def build_managed_single_agent_sync_session_spec(
     *,
-    execute_turn: Callable[[], Awaitable[str | None]],
+    execution: SingleAgentSyncExecutionContext,
     callbacks: ManagedSingleAgentSessionCallbacks,
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a sync single-agent session."""
 
     return ManagedSingleAgentSessionSpec(
         session=build_unified_sync_single_agent_session_spec(
-            execute_turn=execute_turn,
-            on_empty=on_empty,
+            execute_turn=execution.execute_turn,
+            on_empty=execution.on_empty,
         ),
         callbacks=callbacks,
     )
@@ -206,16 +209,14 @@ def build_managed_single_agent_sync_session_spec(
 
 def build_managed_single_agent_sync_session_profile(
     *,
-    execute_turn: Callable[[], Awaitable[str | None]],
+    execution: SingleAgentSyncExecutionContext,
     callback_profile: SingleAgentSyncCallbackProfile,
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
 ) -> ManagedSingleAgentSyncSessionProfile:
     """Build the higher-level sync session profile from runtime components."""
 
     return ManagedSingleAgentSyncSessionProfile(
-        execute_turn=execute_turn,
+        execution=execution,
         callback_profile=callback_profile,
-        on_empty=on_empty,
     )
 
 
@@ -266,14 +267,13 @@ def build_single_agent_session_runtime_context(
 
 def build_managed_single_agent_sync_session_profile_from_runtime(
     *,
-    execute_turn: Callable[[], Awaitable[str | None]],
     runtime: SingleAgentSessionRuntimeContext,
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+    execution: SingleAgentSyncExecutionContext,
 ) -> ManagedSingleAgentSyncSessionProfile:
     """Build the higher-level sync session profile directly from runtime inputs."""
 
     return build_managed_single_agent_sync_session_profile(
-        execute_turn=execute_turn,
+        execution=execution,
         callback_profile=build_single_agent_sync_callback_profile(
             db=runtime.db,
             task_run=runtime.task_run,
@@ -293,7 +293,6 @@ def build_managed_single_agent_sync_session_profile_from_runtime(
             extract_memories=runtime.extract_memories,
             min_response_length=runtime.min_response_length,
         ),
-        on_empty=on_empty,
     )
 
 
@@ -304,9 +303,8 @@ def build_managed_single_agent_sync_session_spec_from_callback_profile(
     """Build the managed sync session spec from a higher-level callback profile."""
 
     return build_managed_single_agent_sync_session_spec(
-        execute_turn=profile.execute_turn,
+        execution=profile.execution,
         callbacks=build_single_agent_sync_callbacks(profile.callback_profile),
-        on_empty=profile.on_empty,
     )
 
 

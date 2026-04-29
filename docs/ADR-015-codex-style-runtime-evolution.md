@@ -5586,3 +5586,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync 路径还没有对应的 execution context，因为它目前只有 `execute_turn`
 - `runtime context + execution context` 仍然在 orchestrator 内二次组合，尚未进一步合成单一统一 runtime profile model
 - 如果继续推进，下一步可以考虑把 sync/stream 的 runtime context 与 execution context 再往更高层统一 single-agent runtime profile 合并
+
+### 11.128 2026-04-29 新进展：single-agent sync execution context 也已抽出
+
+在 11.127 之后，stream 路径已经拥有 `execution context`，但 sync 路径还停留在更低层形态：
+
+- route 仍直接把 `execute_turn`
+- 以及可选 `on_empty`
+  裸传给 orchestrator
+
+这使得 sync / stream 在 runtime profile 形状上依然不完全对称。
+
+本轮把 sync 也补齐：
+
+- `single_agent_session_runner.py` 新增 `SingleAgentSyncExecutionContext`
+- 新增 sync execution context builder
+- orchestrator 的 sync runtime-profile builder 改为消费 `runtime context + sync execution context`
+- standalone / project single-agent sync route 改为先构造 sync execution context，再交给 orchestrator
+
+这一步的意义是：
+
+- single-agent sync / stream 终于都拥有 `runtime context + execution context` 的对称入口形状
+- route 进一步退出对 low-level execution fields 的直接装配
+- 后续若继续往更高层统一 single-agent runtime profile 演进，sync / stream 现在已经拥有可对齐的两块输入模型
+
+边界：
+
+- sync execution context 仍然非常轻，只包含 `execute_turn` 与可选 `on_empty`
+- sync / stream 还没有真正共享同一份 execution context 类型
+- 如果继续推进，下一步可以考虑把 sync/stream 的 `runtime context + execution context` 再合并成更统一的 single-agent runtime profile model

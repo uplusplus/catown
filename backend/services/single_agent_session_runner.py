@@ -16,8 +16,43 @@ class SingleAgentSessionRunnerDeps:
 
 
 @dataclass(frozen=True)
+class SingleAgentSyncExecutionContext:
+    execute_turn: Callable[[], Awaitable[str | None]]
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None
+
+
+@dataclass(frozen=True)
 class SingleAgentSessionRunnerResult:
     final_content: str | None = None
+
+
+def build_single_agent_sync_execution_context(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> SingleAgentSyncExecutionContext:
+    """Build the sync-side execution context for one single-agent turn."""
+
+    return SingleAgentSyncExecutionContext(
+        execute_turn=execute_turn,
+        on_empty=on_empty,
+    )
+
+
+def build_single_agent_session_runner_deps_from_execution_context(
+    *,
+    execution: SingleAgentSyncExecutionContext,
+    finalize_success: Callable[[str], Awaitable[Any]],
+    finalize_failure: Callable[[Exception], Awaitable[Any] | Any] | None = None,
+) -> SingleAgentSessionRunnerDeps:
+    """Build runner deps from the higher-level sync execution context."""
+
+    return SingleAgentSessionRunnerDeps(
+        execute_turn=execution.execute_turn,
+        finalize_success=finalize_success,
+        finalize_failure=finalize_failure,
+        on_empty=execution.on_empty,
+    )
 
 
 async def run_single_agent_session(

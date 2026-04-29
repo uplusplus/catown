@@ -161,6 +161,7 @@ from services.single_agent_session_orchestrator import (
     run_managed_single_agent_sync_session_profile,
 )
 from services.single_agent_session_runner import (
+    build_single_agent_sync_execution_context,
     SingleAgentSessionRunnerDeps,
 )
 from services.stream_transport import (
@@ -782,9 +783,11 @@ async def _trigger_standalone_assistant_response(
 
     await run_managed_single_agent_sync_session_profile(
         build_managed_single_agent_sync_session_profile_from_runtime(
-            execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             runtime=standalone_runtime_context,
-            on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+            execution=build_single_agent_sync_execution_context(
+                execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
+                on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+            ),
         )
     )
 
@@ -1246,17 +1249,19 @@ async def trigger_agent_response(
 
         finalized = await run_managed_single_agent_sync_session_profile(
             build_managed_single_agent_sync_session_profile_from_runtime(
-                execute_turn=lambda: execute_non_stream_turn_loop(
-                    llm_client=runtime.llm_client,
-                    tools=runtime.tool_schemas,
-                    turn_state=runtime.turn_state,
-                    assemble_messages=_assemble_project_single_agent_messages,
-                    execute_tool_call=_execute_project_single_agent_tool,
-                    max_turns=MAX_TOOL_ITERATIONS,
-                    on_tool_round=_on_project_single_agent_tool_round,
-                ),
                 runtime=project_single_agent_runtime_context,
-                on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+                execution=build_single_agent_sync_execution_context(
+                    execute_turn=lambda: execute_non_stream_turn_loop(
+                        llm_client=runtime.llm_client,
+                        tools=runtime.tool_schemas,
+                        turn_state=runtime.turn_state,
+                        assemble_messages=_assemble_project_single_agent_messages,
+                        execute_tool_call=_execute_project_single_agent_tool,
+                        max_turns=MAX_TOOL_ITERATIONS,
+                        on_tool_round=_on_project_single_agent_tool_round,
+                    ),
+                    on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+                ),
             )
         )
 

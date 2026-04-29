@@ -1,6 +1,8 @@
 import pytest
 
 from services.single_agent_session_runner import (
+    build_single_agent_session_runner_deps_from_execution_context,
+    build_single_agent_sync_execution_context,
     SingleAgentSessionRunnerDeps,
     run_single_agent_session,
 )
@@ -61,3 +63,26 @@ async def test_run_single_agent_session_handles_empty_and_failure():
     assert empty_result.final_content is None
     assert failure_result.final_content is None
     assert calls == [("empty", None), ("failure", "boom")]
+
+
+@pytest.mark.asyncio
+async def test_build_single_agent_session_runner_deps_from_execution_context_projects_fields():
+    calls = []
+
+    async def execute_turn():
+        return "Hello"
+
+    async def finalize_success(content):
+        calls.append(("success", content))
+
+    result = await run_single_agent_session(
+        build_single_agent_session_runner_deps_from_execution_context(
+            execution=build_single_agent_sync_execution_context(
+                execute_turn=execute_turn,
+            ),
+            finalize_success=finalize_success,
+        )
+    )
+
+    assert result.final_content == "Hello"
+    assert calls == [("success", "Hello")]

@@ -19,6 +19,9 @@ from services.single_agent_session_orchestrator import (
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
 )
+from services.single_agent_session_runner import (
+    build_single_agent_sync_execution_context,
+)
 from services.single_agent_stream_session import (
     build_single_agent_stream_execution_context,
     build_single_agent_stream_session_deps,
@@ -92,7 +95,9 @@ async def test_managed_single_agent_sync_session_delegates_to_unified_sync():
 
     result = await run_managed_single_agent_sync_session(
         build_managed_single_agent_sync_session_spec(
-            execute_turn=execute_turn,
+            execution=build_single_agent_sync_execution_context(
+                execute_turn=execute_turn,
+            ),
             callbacks=ManagedSingleAgentSessionCallbacks(
                 finalize_success=finalize_success,
                 finalize_failure=lambda exc: _async_stream_failure(str(exc)),
@@ -219,7 +224,6 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
 
     result = await run_managed_single_agent_sync_session_profile(
         build_managed_single_agent_sync_session_profile_from_runtime(
-            execute_turn=execute_turn,
             runtime=build_single_agent_session_runtime_context(
                 db=object(),
                 task_run=None,
@@ -238,6 +242,9 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
                 failure_summary=lambda error: f"Agent response failed: {error}",
                 extract_memories=extract_memories,
                 stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
+            ),
+            execution=build_single_agent_sync_execution_context(
+                execute_turn=execute_turn,
             ),
         )
     )
