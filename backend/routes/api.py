@@ -153,8 +153,7 @@ from services.single_agent_session_finalizer import (
 from services.single_agent_session_orchestrator import (
     build_single_agent_raw_execution_inputs,
     build_single_agent_raw_runtime_inputs,
-    build_single_agent_stream_runtime_profile_from_runtime,
-    build_single_agent_sync_runtime_profile_from_runtime,
+    build_single_agent_runtime_profile_from_raw_inputs,
     iter_managed_single_agent_stream_runtime_profile,
     run_managed_single_agent_sync_runtime_profile,
 )
@@ -783,7 +782,7 @@ async def _trigger_standalone_assistant_response(
     )
 
     await run_managed_single_agent_sync_runtime_profile(
-        build_single_agent_sync_runtime_profile_from_runtime(
+        build_single_agent_runtime_profile_from_raw_inputs(
             runtime_inputs=standalone_runtime_inputs,
             execution_inputs=build_single_agent_raw_execution_inputs(
                 execution=build_single_agent_sync_raw_execution_inputs(
@@ -901,7 +900,7 @@ async def _stream_standalone_assistant_response(
     )
 
     async for outcome in iter_managed_single_agent_stream_runtime_profile(
-        build_single_agent_stream_runtime_profile_from_runtime(
+        build_single_agent_runtime_profile_from_raw_inputs(
             runtime_inputs=standalone_stream_runtime_inputs,
             execution_inputs=build_single_agent_raw_execution_inputs(
                 execution=build_single_agent_stream_raw_execution_inputs(
@@ -1252,7 +1251,7 @@ async def trigger_agent_response(
         )
 
         finalized = await run_managed_single_agent_sync_runtime_profile(
-            build_single_agent_sync_runtime_profile_from_runtime(
+            build_single_agent_runtime_profile_from_raw_inputs(
                 runtime_inputs=project_single_agent_runtime_inputs,
                 execution_inputs=build_single_agent_raw_execution_inputs(
                     execution=build_single_agent_sync_raw_execution_inputs(
@@ -4089,7 +4088,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             )
 
             async for outcome in iter_managed_single_agent_stream_runtime_profile(
-                build_single_agent_stream_runtime_profile_from_runtime(
+                build_single_agent_runtime_profile_from_raw_inputs(
                     runtime_inputs=project_single_agent_stream_runtime_inputs,
                     execution_inputs=build_single_agent_raw_execution_inputs(
                         execution=build_single_agent_stream_raw_execution_inputs(

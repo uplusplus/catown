@@ -4,12 +4,11 @@ import pytest
 
 from services.single_agent_session_orchestrator import (
     build_single_agent_runtime_profile,
+    build_single_agent_runtime_profile_from_raw_inputs,
     build_single_agent_raw_execution_inputs,
     build_single_agent_raw_runtime_inputs,
-    build_single_agent_stream_runtime_profile_from_runtime,
     build_single_agent_session_runtime_context,
     build_managed_single_agent_stream_session_spec,
-    build_single_agent_sync_runtime_profile_from_runtime,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
@@ -228,7 +227,7 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
         calls.append(("memory", {"agent_id": agent_id, "content": agent_response}))
 
     result = await run_managed_single_agent_sync_runtime_profile(
-        build_single_agent_sync_runtime_profile_from_runtime(
+        build_single_agent_runtime_profile_from_raw_inputs(
             runtime_inputs=build_single_agent_raw_runtime_inputs(
                 db=object(),
                 task_run=None,
@@ -287,7 +286,7 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
     outcomes = [
         outcome
         async for outcome in iter_managed_single_agent_stream_runtime_profile(
-            build_single_agent_stream_runtime_profile_from_runtime(
+            build_single_agent_runtime_profile_from_raw_inputs(
                 runtime_inputs=build_single_agent_raw_runtime_inputs(
                     db=object(),
                     task_run=None,

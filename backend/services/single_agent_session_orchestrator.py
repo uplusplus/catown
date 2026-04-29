@@ -461,6 +461,41 @@ def build_single_agent_runtime_profile(
     raise TypeError("Unsupported single-agent execution context.")
 
 
+def build_single_agent_runtime_profile_from_raw_inputs(
+    *,
+    runtime_inputs: SingleAgentRawRuntimeInputs,
+    execution_inputs: SingleAgentRawExecutionInputs,
+    failure_agent_name: str | None = None,
+    failure_agent_id: int | None = None,
+    detail_builder: Callable[[], str] | None = None,
+    final_message_saved: bool = False,
+    empty_response_text: str = "(Agent returned empty response)",
+) -> SingleAgentRuntimeProfile:
+    """Build the top-level single-agent runtime profile directly from raw inputs."""
+
+    execution = execution_inputs.execution
+    if hasattr(execution, "execute_turn") and not hasattr(execution, "llm_client"):
+        return build_single_agent_sync_runtime_profile(
+            runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
+            execution=build_single_agent_sync_execution_context_from_raw_inputs(execution),
+        )
+
+    if hasattr(execution, "llm_client") and hasattr(execution, "assemble_messages"):
+        return build_single_agent_stream_runtime_profile(
+            runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
+            execution=build_single_agent_stream_execution_context_from_raw_inputs(execution),
+            failure_agent_name=failure_agent_name,
+            failure_agent_id=failure_agent_id,
+            detail_builder=detail_builder,
+            final_message_saved=final_message_saved,
+            empty_response_text=empty_response_text,
+        )
+
+    raise TypeError(
+        f"Unsupported single-agent raw execution inputs: {type(execution)!r}."
+    )
+
+
 def build_single_agent_sync_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
@@ -481,11 +516,9 @@ def build_single_agent_sync_runtime_profile_from_runtime(
 ) -> SingleAgentRuntimeProfile:
     """Build the full sync runtime profile directly from raw runtime inputs."""
 
-    return build_single_agent_sync_runtime_profile(
-        runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
-        execution=build_single_agent_sync_execution_context_from_raw_inputs(
-            execution_inputs.execution,
-        ),
+    return build_single_agent_runtime_profile_from_raw_inputs(
+        runtime_inputs=runtime_inputs,
+        execution_inputs=execution_inputs,
     )
 
 
@@ -524,11 +557,9 @@ def build_single_agent_stream_runtime_profile_from_runtime(
 ) -> SingleAgentRuntimeProfile:
     """Build the full stream runtime profile directly from raw runtime inputs."""
 
-    return build_single_agent_stream_runtime_profile(
-        runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
-        execution=build_single_agent_stream_execution_context_from_raw_inputs(
-            execution_inputs.execution,
-        ),
+    return build_single_agent_runtime_profile_from_raw_inputs(
+        runtime_inputs=runtime_inputs,
+        execution_inputs=execution_inputs,
         failure_agent_name=failure_agent_name,
         failure_agent_id=failure_agent_id,
         detail_builder=detail_builder,
