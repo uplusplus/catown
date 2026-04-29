@@ -1770,3 +1770,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 用 `build_unified_sync_single_agent_session_spec(...)` / `build_unified_stream_single_agent_session_spec(...)` 取代 `mode + execute_turn/stream_deps` 的手工构造
 - `UnifiedSingleAgentSessionSpec` 收敛为统一的 iterator-based contract
 - 补 focused orchestrator tests，并跑 single-agent sync/stream API 回归验证行为兼容
+
+### `Remove explicit mode split from unified single-agent spec`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 去掉 `UnifiedSingleAgentSessionSpec` 内部显式 `mode` 分叉，统一为单一 iterator-based contract
+- 让 route 与 focused tests 全部通过 sync/stream builder 构造 unified spec，而不再直接传 `mode`
+- 跑 single-agent sync/stream focused 回归，验证 orchestrator 行为兼容

@@ -5048,3 +5048,28 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync/stream 的底层执行方式仍然不同，只是被 builder 隐藏到了统一 spec 背后
 - managed stack 的 callbacks 仍需分别处理 sync 与 stream 的终结差异
 - 如果继续推进，下一步可以继续压缩 managed callbacks 的差异
+
+### 11.110 2026-04-29 新进展：single-agent unified spec 已去掉显式 mode 分叉
+
+在 11.109 之后，single-agent unified spec 虽然已经通过 builder 构造，但内部仍保留一个显式 `mode` 分叉：
+
+- sync：`mode="sync"`
+- stream：`mode="stream"`
+
+本轮继续把统一层往前推进：
+
+- `UnifiedSingleAgentSessionSpec` 收敛为单一 `iterate` 契约
+- `build_unified_sync_single_agent_session_spec(...)` 与 `build_unified_stream_single_agent_session_spec(...)` 负责把 sync/stream 差异隐藏到 builder 内部
+- route 和 focused tests 都改为直接通过 builder 构造 unified spec
+
+这一步的意义是：
+
+- unified 层不再暴露 sync/stream 的结构分叉
+- single-agent sync/stream 在 orchestrator 内部第一次真正共享同一种 spec 形状
+- 后续若继续收 managed callbacks 或更高层 session 结果模型，基础会更干净
+
+边界：
+
+- managed callbacks 仍保留 sync/stream 的终结差异
+- stream path 仍需要 `serialize_payload` 这类 transport 细节
+- 如果继续推进，下一步可以继续压缩 managed callbacks 的差异
