@@ -154,11 +154,11 @@ from services.single_agent_stream_session import (
     build_single_agent_stream_execution_context,
 )
 from services.single_agent_session_orchestrator import (
-    build_managed_single_agent_stream_session_profile_from_runtime,
+    build_single_agent_stream_runtime_profile,
+    build_single_agent_sync_runtime_profile,
     build_single_agent_session_runtime_context,
-    build_managed_single_agent_sync_session_profile_from_runtime,
-    iter_managed_single_agent_stream_session_profile,
-    run_managed_single_agent_sync_session_profile,
+    iter_managed_single_agent_stream_runtime_profile,
+    run_managed_single_agent_sync_runtime_profile,
 )
 from services.single_agent_session_runner import (
     build_single_agent_sync_execution_context,
@@ -781,8 +781,8 @@ async def _trigger_standalone_assistant_response(
         stream_failure_message_metadata=_message_metadata_with_turn,
     )
 
-    await run_managed_single_agent_sync_session_profile(
-        build_managed_single_agent_sync_session_profile_from_runtime(
+    await run_managed_single_agent_sync_runtime_profile(
+        build_single_agent_sync_runtime_profile(
             runtime=standalone_runtime_context,
             execution=build_single_agent_sync_execution_context(
                 execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
@@ -913,8 +913,8 @@ async def _stream_standalone_assistant_response(
         max_turns=1,
     )
 
-    async for outcome in iter_managed_single_agent_stream_session_profile(
-        build_managed_single_agent_stream_session_profile_from_runtime(
+    async for outcome in iter_managed_single_agent_stream_runtime_profile(
+        build_single_agent_stream_runtime_profile(
             runtime=standalone_stream_runtime_context,
             execution=standalone_stream_execution,
             detail_builder=traceback.format_exc,
@@ -1247,8 +1247,8 @@ async def trigger_agent_response(
             stream_failure_message_metadata=_message_metadata_with_turn,
         )
 
-        finalized = await run_managed_single_agent_sync_session_profile(
-            build_managed_single_agent_sync_session_profile_from_runtime(
+        finalized = await run_managed_single_agent_sync_runtime_profile(
+            build_single_agent_sync_runtime_profile(
                 runtime=project_single_agent_runtime_context,
                 execution=build_single_agent_sync_execution_context(
                     execute_turn=lambda: execute_non_stream_turn_loop(
@@ -4099,8 +4099,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 on_tool_round=_on_single_agent_stream_tool_round,
             )
 
-            async for outcome in iter_managed_single_agent_stream_session_profile(
-                build_managed_single_agent_stream_session_profile_from_runtime(
+            async for outcome in iter_managed_single_agent_stream_runtime_profile(
+                build_single_agent_stream_runtime_profile(
                     runtime=project_single_agent_stream_runtime_context,
                     execution=project_single_agent_stream_execution,
                     failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),

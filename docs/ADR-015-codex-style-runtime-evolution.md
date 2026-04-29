@@ -5615,3 +5615,37 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync execution context 仍然非常轻，只包含 `execute_turn` 与可选 `on_empty`
 - sync / stream 还没有真正共享同一份 execution context 类型
 - 如果继续推进，下一步可以考虑把 sync/stream 的 `runtime context + execution context` 再合并成更统一的 single-agent runtime profile model
+
+### 11.129 2026-04-29 新进展：single-agent runtime profile runner 已抬为最高层入口
+
+在 11.128 之后，single-agent sync / stream 已经拥有：
+
+- shared runtime context
+- sync/stream execution context
+
+但 route 还保留一段中间跳转：
+
+- 先构造 runtime profile
+- 再交给 session-profile builder
+- 再通过 session-profile runner 执行
+
+这说明 route 虽然已经不直接碰 spec / callback / deps，但仍知道 session-profile 这层中间对象。
+
+本轮继续把执行入口抬高：
+
+- orchestrator 新增 `SingleAgentSyncRuntimeProfile`
+- orchestrator 新增 `SingleAgentStreamRuntimeProfile`
+- 新增直接运行 sync/stream runtime profile 的 helper
+- standalone / project single-agent sync/stream route 改为直接构造并运行 runtime profile
+
+这一步的意义是：
+
+- route 进一步退出 single-agent session stack 的中间层细节
+- single-agent sync / stream 终于都有明确的最高层 runtime profile runner 入口
+- 后续如果继续把 sync/stream runtime profile 自身再统一一层，落点已经非常集中
+
+边界：
+
+- sync / stream runtime profile 仍是两套类型
+- runtime profile 内部仍要再经过 session-profile/spec 组合链
+- 如果继续推进，下一步可以考虑把 sync/stream runtime profile 再统一成更共享的 single-agent runtime model

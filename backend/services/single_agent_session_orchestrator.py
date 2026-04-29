@@ -73,6 +73,23 @@ class SingleAgentSessionRuntimeContext:
     min_response_length: int = 30
 
 
+@dataclass(frozen=True)
+class SingleAgentSyncRuntimeProfile:
+    runtime: SingleAgentSessionRuntimeContext
+    execution: SingleAgentSyncExecutionContext
+
+
+@dataclass(frozen=True)
+class SingleAgentStreamRuntimeProfile:
+    runtime: SingleAgentSessionRuntimeContext
+    execution: SingleAgentStreamExecutionContext
+    failure_agent_name: str | None = None
+    failure_agent_id: int | None = None
+    detail_builder: Callable[[], str] | None = None
+    final_message_saved: bool = False
+    empty_response_text: str = "(Agent returned empty response)"
+
+
 async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
@@ -220,6 +237,19 @@ def build_managed_single_agent_sync_session_profile(
     )
 
 
+def build_single_agent_sync_runtime_profile(
+    *,
+    runtime: SingleAgentSessionRuntimeContext,
+    execution: SingleAgentSyncExecutionContext,
+) -> SingleAgentSyncRuntimeProfile:
+    """Build the higher-level sync runtime profile from shared runtime and execution context."""
+
+    return SingleAgentSyncRuntimeProfile(
+        runtime=runtime,
+        execution=execution,
+    )
+
+
 def build_single_agent_session_runtime_context(
     *,
     db: Any,
@@ -272,26 +302,40 @@ def build_managed_single_agent_sync_session_profile_from_runtime(
 ) -> ManagedSingleAgentSyncSessionProfile:
     """Build the higher-level sync session profile directly from runtime inputs."""
 
+    return build_managed_single_agent_sync_session_profile_from_runtime_profile(
+        profile=build_single_agent_sync_runtime_profile(
+            runtime=runtime,
+            execution=execution,
+        )
+    )
+
+
+def build_managed_single_agent_sync_session_profile_from_runtime_profile(
+    *,
+    profile: SingleAgentSyncRuntimeProfile,
+) -> ManagedSingleAgentSyncSessionProfile:
+    """Build the higher-level sync session profile from one sync runtime profile."""
+
     return build_managed_single_agent_sync_session_profile(
-        execution=execution,
+        execution=profile.execution,
         callback_profile=build_single_agent_sync_callback_profile(
-            db=runtime.db,
-            task_run=runtime.task_run,
-            chatroom_id=runtime.chatroom_id,
-            client_turn_id=runtime.client_turn_id,
-            agent_id=runtime.agent_id,
-            agent_name=runtime.agent_name,
-            agent_type=runtime.agent_type,
-            user_message=runtime.user_message,
-            save_message=runtime.save_message,
-            publish_message=runtime.publish_message,
-            record_turn_completed=runtime.record_turn_completed,
-            message_metadata=runtime.message_metadata,
-            compact_summary=runtime.compact_summary,
-            completion_summary=runtime.completion_summary,
-            failure_summary=runtime.failure_summary,
-            extract_memories=runtime.extract_memories,
-            min_response_length=runtime.min_response_length,
+            db=profile.runtime.db,
+            task_run=profile.runtime.task_run,
+            chatroom_id=profile.runtime.chatroom_id,
+            client_turn_id=profile.runtime.client_turn_id,
+            agent_id=profile.runtime.agent_id,
+            agent_name=profile.runtime.agent_name,
+            agent_type=profile.runtime.agent_type,
+            user_message=profile.runtime.user_message,
+            save_message=profile.runtime.save_message,
+            publish_message=profile.runtime.publish_message,
+            record_turn_completed=profile.runtime.record_turn_completed,
+            message_metadata=profile.runtime.message_metadata,
+            compact_summary=profile.runtime.compact_summary,
+            completion_summary=profile.runtime.completion_summary,
+            failure_summary=profile.runtime.failure_summary,
+            extract_memories=profile.runtime.extract_memories,
+            min_response_length=profile.runtime.min_response_length,
         ),
     )
 
@@ -337,6 +381,29 @@ def build_managed_single_agent_stream_session_profile(
     )
 
 
+def build_single_agent_stream_runtime_profile(
+    *,
+    runtime: SingleAgentSessionRuntimeContext,
+    execution: SingleAgentStreamExecutionContext,
+    failure_agent_name: str | None = None,
+    failure_agent_id: int | None = None,
+    detail_builder: Callable[[], str] | None = None,
+    final_message_saved: bool = False,
+    empty_response_text: str = "(Agent returned empty response)",
+) -> SingleAgentStreamRuntimeProfile:
+    """Build the higher-level stream runtime profile from shared runtime and execution context."""
+
+    return SingleAgentStreamRuntimeProfile(
+        runtime=runtime,
+        execution=execution,
+        failure_agent_name=failure_agent_name,
+        failure_agent_id=failure_agent_id,
+        detail_builder=detail_builder,
+        final_message_saved=final_message_saved,
+        empty_response_text=empty_response_text,
+    )
+
+
 def build_managed_single_agent_stream_session_profile_from_runtime(
     *,
     runtime: SingleAgentSessionRuntimeContext,
@@ -349,43 +416,66 @@ def build_managed_single_agent_stream_session_profile_from_runtime(
 ) -> ManagedSingleAgentStreamSessionProfile:
     """Build the higher-level stream session profile directly from runtime inputs."""
 
-    return build_managed_single_agent_stream_session_profile(
-        deps=build_single_agent_stream_session_deps_from_execution_context(
+    return build_managed_single_agent_stream_session_profile_from_runtime_profile(
+        profile=build_single_agent_stream_runtime_profile(
+            runtime=runtime,
             execution=execution,
-            agent_name=runtime.agent_name,
-            client_turn_id=runtime.client_turn_id,
-            chatroom_id=runtime.chatroom_id,
-        ),
-        callback_profile=build_single_agent_stream_callback_profile(
-            db=runtime.db,
-            task_run=runtime.task_run,
-            chatroom_id=runtime.chatroom_id,
-            client_turn_id=runtime.client_turn_id,
-            agent_id=runtime.agent_id,
-            agent_name=runtime.agent_name,
-            agent_type=runtime.agent_type,
-            user_message=runtime.user_message,
-            save_message=runtime.save_message,
-            publish_message=runtime.publish_message,
-            record_turn_completed=runtime.record_turn_completed,
-            message_metadata=runtime.message_metadata,
-            compact_summary=runtime.compact_summary,
-            completion_summary=runtime.completion_summary,
-            failure_summary=runtime.failure_summary,
-            extract_memories=runtime.extract_memories,
-            stream_failure_message_metadata=(
-                runtime.stream_failure_message_metadata or runtime.message_metadata
-            ),
-            failure_agent_name=(
-                failure_agent_name if failure_agent_name is not None else runtime.agent_name
-            ),
-            failure_agent_id=(
-                failure_agent_id if failure_agent_id is not None else runtime.agent_id
-            ),
+            failure_agent_name=failure_agent_name,
+            failure_agent_id=failure_agent_id,
             detail_builder=detail_builder,
             final_message_saved=final_message_saved,
             empty_response_text=empty_response_text,
-            min_response_length=runtime.min_response_length,
+        )
+    )
+
+
+def build_managed_single_agent_stream_session_profile_from_runtime_profile(
+    *,
+    profile: SingleAgentStreamRuntimeProfile,
+) -> ManagedSingleAgentStreamSessionProfile:
+    """Build the higher-level stream session profile from one stream runtime profile."""
+
+    return build_managed_single_agent_stream_session_profile(
+        deps=build_single_agent_stream_session_deps_from_execution_context(
+            execution=profile.execution,
+            agent_name=profile.runtime.agent_name,
+            client_turn_id=profile.runtime.client_turn_id,
+            chatroom_id=profile.runtime.chatroom_id,
+        ),
+        callback_profile=build_single_agent_stream_callback_profile(
+            db=profile.runtime.db,
+            task_run=profile.runtime.task_run,
+            chatroom_id=profile.runtime.chatroom_id,
+            client_turn_id=profile.runtime.client_turn_id,
+            agent_id=profile.runtime.agent_id,
+            agent_name=profile.runtime.agent_name,
+            agent_type=profile.runtime.agent_type,
+            user_message=profile.runtime.user_message,
+            save_message=profile.runtime.save_message,
+            publish_message=profile.runtime.publish_message,
+            record_turn_completed=profile.runtime.record_turn_completed,
+            message_metadata=profile.runtime.message_metadata,
+            compact_summary=profile.runtime.compact_summary,
+            completion_summary=profile.runtime.completion_summary,
+            failure_summary=profile.runtime.failure_summary,
+            extract_memories=profile.runtime.extract_memories,
+            stream_failure_message_metadata=(
+                profile.runtime.stream_failure_message_metadata or profile.runtime.message_metadata
+            ),
+            failure_agent_name=(
+                profile.failure_agent_name
+                if profile.failure_agent_name is not None
+                else profile.runtime.agent_name
+            ),
+            failure_agent_id=(
+                profile.failure_agent_id
+                if profile.failure_agent_id is not None
+                else profile.runtime.agent_id
+            ),
+            detail_builder=profile.detail_builder,
+            final_message_saved=profile.final_message_saved,
+            empty_response_text=profile.empty_response_text,
+            min_response_length=profile.runtime.min_response_length,
         ),
     )
 
@@ -414,6 +504,18 @@ async def run_managed_single_agent_sync_session_profile(
     )
 
 
+async def run_managed_single_agent_sync_runtime_profile(
+    profile: SingleAgentSyncRuntimeProfile,
+) -> UnifiedSingleAgentSessionOutcome:
+    """Run one managed sync single-agent session from the higher-level runtime profile."""
+
+    return await run_managed_single_agent_sync_session_profile(
+        build_managed_single_agent_sync_session_profile_from_runtime_profile(
+            profile=profile,
+        )
+    )
+
+
 async def iter_managed_single_agent_stream_session_profile(
     profile: ManagedSingleAgentStreamSessionProfile,
 ) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
@@ -421,6 +523,19 @@ async def iter_managed_single_agent_stream_session_profile(
 
     async for outcome in iter_managed_single_agent_stream_session(
         build_managed_single_agent_stream_session_spec_from_callback_profile(
+            profile=profile,
+        )
+    ):
+        yield outcome
+
+
+async def iter_managed_single_agent_stream_runtime_profile(
+    profile: SingleAgentStreamRuntimeProfile,
+) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
+    """Run one managed stream single-agent session from the higher-level runtime profile."""
+
+    async for outcome in iter_managed_single_agent_stream_session_profile(
+        build_managed_single_agent_stream_session_profile_from_runtime_profile(
             profile=profile,
         )
     ):

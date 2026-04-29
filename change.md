@@ -2082,3 +2082,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 non-stream runner 中新增 `SingleAgentSyncExecutionContext` 与 builder，把 sync-side `execute_turn/on_empty` 收成独立 execution model
 - orchestrator 的 sync runtime-profile builder 改为消费 `runtime context + sync execution context`
 - standalone / project single-agent sync route 不再直接把 `execute_turn/on_empty` 裸传给 orchestrator，focused runner/orchestrator/API 回归围绕新入口验证兼容
+
+### `Promote single-agent runtime profile runners`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator 中新增更高层的 `SingleAgentSyncRuntimeProfile` / `SingleAgentStreamRuntimeProfile` 及其 runner helper
+- standalone / project single-agent sync/stream route 改为直接构造并运行 runtime profile，而不再显式经过 session-profile 转换层
+- focused orchestrator / API 回归更新为围绕 runtime-profile runner 入口验证行为兼容

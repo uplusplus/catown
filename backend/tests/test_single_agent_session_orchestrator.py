@@ -3,18 +3,18 @@ import asyncio
 import pytest
 
 from services.single_agent_session_orchestrator import (
-    build_managed_single_agent_stream_session_profile_from_runtime,
+    build_single_agent_stream_runtime_profile,
     build_single_agent_session_runtime_context,
     build_managed_single_agent_stream_session_spec,
-    build_managed_single_agent_sync_session_profile_from_runtime,
+    build_single_agent_sync_runtime_profile,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
-    iter_managed_single_agent_stream_session_profile,
+    iter_managed_single_agent_stream_runtime_profile,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
     iter_managed_single_agent_stream_session,
-    run_managed_single_agent_sync_session_profile,
+    run_managed_single_agent_sync_runtime_profile,
     run_managed_single_agent_sync_session,
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
@@ -222,8 +222,8 @@ async def test_managed_single_agent_sync_session_profile_builder_composes_callba
     async def extract_memories(agent_id, agent_type, user_message, agent_response):
         calls.append(("memory", {"agent_id": agent_id, "content": agent_response}))
 
-    result = await run_managed_single_agent_sync_session_profile(
-        build_managed_single_agent_sync_session_profile_from_runtime(
+    result = await run_managed_single_agent_sync_runtime_profile(
+        build_single_agent_sync_runtime_profile(
             runtime=build_single_agent_session_runtime_context(
                 db=object(),
                 task_run=None,
@@ -279,8 +279,8 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
 
     outcomes = [
         outcome
-        async for outcome in iter_managed_single_agent_stream_session_profile(
-            build_managed_single_agent_stream_session_profile_from_runtime(
+        async for outcome in iter_managed_single_agent_stream_runtime_profile(
+            build_single_agent_stream_runtime_profile(
                 runtime=build_single_agent_session_runtime_context(
                     db=object(),
                     task_run=None,
