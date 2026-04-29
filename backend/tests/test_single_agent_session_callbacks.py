@@ -7,18 +7,18 @@ from services.single_agent_session_orchestrator import (
 )
 from services.single_agent_session_callbacks import (
     build_single_agent_memory_extraction_callback,
+    build_single_agent_stream_callback_profile,
     build_single_agent_session_failure_callback,
     build_single_agent_session_success_callback,
     build_single_agent_stream_callbacks,
     build_single_agent_stream_persist_failure_callback,
     build_single_agent_stream_failure_callback,
     build_single_agent_stream_success_callback,
+    build_single_agent_sync_callback_profile,
     build_single_agent_sync_callbacks,
     SingleAgentSessionFailureCallbackDeps,
     SingleAgentSessionSuccessCallbackDeps,
-    SingleAgentStreamCallbackProfile,
     SingleAgentStreamFailureCallbackDeps,
-    SingleAgentSyncCallbackProfile,
 )
 
 
@@ -253,7 +253,7 @@ async def test_build_single_agent_sync_callbacks_returns_managed_callback_set():
         calls.append(("memory", {"agent": agent_id, "content": agent_response}))
 
     callbacks = build_single_agent_sync_callbacks(
-        SingleAgentSyncCallbackProfile(
+        build_single_agent_sync_callback_profile(
             db=object(),
             task_run=None,
             chatroom_id=7,
@@ -307,7 +307,7 @@ async def test_build_single_agent_stream_callbacks_uses_failure_agent_overrides(
     persistence_mod.persist_stream_failure = fake_persist_stream_failure
     try:
         callbacks = build_single_agent_stream_callbacks(
-            SingleAgentStreamCallbackProfile(
+            build_single_agent_stream_callback_profile(
                 db=object(),
                 task_run=None,
                 chatroom_id=7,

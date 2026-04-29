@@ -5392,3 +5392,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - builder 当前主要是隐藏 dataclass 装配，本轮没有继续压缩参数数量
 - single-agent sync path 仍没有对应的 low-level deps dataclass，因此这里只有 stream 路径收口
 - 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.122 2026-04-29 新进展：single-agent callback profile 也已改为 builder 入口
+
+在 11.121 之后，single-agent route 虽然已经不再直接 new stream runner deps，但 callback profile 这层还保留同类形态：
+
+- route 仍直接构造 `SingleAgentSyncCallbackProfile`
+- route 仍直接构造 `SingleAgentStreamCallbackProfile`
+- callback tests 也仍然直接依赖这些 dataclass 形状
+
+这与前面已 builder 化的 stream deps / managed spec / unified spec 边界仍然不一致。
+
+本轮把 callback profile 也统一收成 builder 入口：
+
+- `single_agent_session_callbacks.py` 新增 `build_single_agent_sync_callback_profile(...)`
+- `single_agent_session_callbacks.py` 新增 `build_single_agent_stream_callback_profile(...)`
+- standalone / project single-agent sync/stream route 改为通过 builder 构造 callback profile
+- focused callback tests 也切到 builder
+
+这一步的意义是：
+
+- route 进一步退出对 callback profile dataclass shape 的直接依赖
+- single-agent callback assembly layer 与 stream deps builder 一样开始提供稳定 builder surface
+- 后续如果继续把 callback profile 与 stream session deps 合成更高层 session profile，builder 迁移成本更低
+
+边界：
+
+- builder 仍主要隐藏 dataclass 装配，本轮没有减少 callback profile 所需参数
+- route 仍分别构造 callback profile 与 stream deps，两者尚未合并到统一 session profile
+- 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并

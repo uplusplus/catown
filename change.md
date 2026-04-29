@@ -1966,3 +1966,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 streaming session service 中新增 `build_single_agent_stream_session_deps(...)`，把底层 stream runner deps dataclass 的装配隐藏到 builder 后面
 - standalone / project single-agent streaming route 改为通过 builder 进入底层 stream session stack，不再直接 new `SingleAgentStreamSessionDeps`
 - focused stream-session / orchestrator / API 回归改为围绕 builder 验证行为兼容
+
+### `Hide single-agent callback profiles behind builders`
+
+范围：
+
+- `backend/services/single_agent_session_callbacks.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_callbacks.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 callback service 中新增 `build_single_agent_sync_callback_profile(...)` 与 `build_single_agent_stream_callback_profile(...)`
+- standalone / project single-agent sync/stream route 改为通过 builder 构造 callback profile，而不再直接 new callback profile dataclass
+- focused callback / API 回归改为围绕 profile builder 验证行为兼容

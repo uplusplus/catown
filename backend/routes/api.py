@@ -151,10 +151,10 @@ from services.single_agent_stream_session import (
     build_single_agent_stream_session_deps,
 )
 from services.single_agent_session_callbacks import (
+    build_single_agent_stream_callback_profile,
     build_single_agent_stream_callbacks,
+    build_single_agent_sync_callback_profile,
     build_single_agent_sync_callbacks,
-    SingleAgentStreamCallbackProfile,
-    SingleAgentSyncCallbackProfile,
 )
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
@@ -766,7 +766,7 @@ async def _trigger_standalone_assistant_response(
         on_compaction=compaction_callback,
     )
     standalone_callbacks = build_single_agent_sync_callbacks(
-        SingleAgentSyncCallbackProfile(
+        build_single_agent_sync_callback_profile(
             db=db,
             task_run=task_run,
             chatroom_id=chatroom_id,
@@ -881,7 +881,7 @@ async def _stream_standalone_assistant_response(
             timings=raw_event.get("timings"),
         )
     standalone_stream_callbacks = build_single_agent_stream_callbacks(
-        SingleAgentStreamCallbackProfile(
+        build_single_agent_stream_callback_profile(
             db=db,
             task_run=task_run,
             chatroom_id=chatroom_id,
@@ -1235,7 +1235,7 @@ async def trigger_agent_response(
                 summary=f"{runtime.agent_label} completed a tool round.",
             )
         project_single_agent_callbacks = build_single_agent_sync_callbacks(
-            SingleAgentSyncCallbackProfile(
+            build_single_agent_sync_callback_profile(
                 db=db,
                 task_run=task_run,
                 chatroom_id=chatroom_id,
@@ -4069,7 +4069,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     timings=raw_event.get("timings"),
                 )
             project_single_agent_stream_callbacks = build_single_agent_stream_callbacks(
-                SingleAgentStreamCallbackProfile(
+                build_single_agent_stream_callback_profile(
                     db=db,
                     task_run=task_run,
                     chatroom_id=chatroom_id,

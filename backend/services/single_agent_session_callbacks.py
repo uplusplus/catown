@@ -94,6 +94,49 @@ class SingleAgentSyncCallbackProfile:
     min_response_length: int = 30
 
 
+def build_single_agent_sync_callback_profile(
+    *,
+    db: Any,
+    task_run: Any,
+    chatroom_id: int,
+    client_turn_id: str | None,
+    agent_id: int | None,
+    agent_name: str,
+    agent_type: str,
+    user_message: str,
+    save_message: SaveMessage,
+    publish_message: PublishMessage,
+    record_turn_completed: RecordTurnCompleted,
+    message_metadata: MessageMetadataBuilder,
+    compact_summary: CompactSummary,
+    completion_summary: str,
+    failure_summary: str | Callable[[Exception], str],
+    extract_memories: ExtractMemories,
+    min_response_length: int = 30,
+) -> SingleAgentSyncCallbackProfile:
+    """Build the standard callback profile for one sync single-agent turn."""
+
+    return SingleAgentSyncCallbackProfile(
+        db=db,
+        task_run=task_run,
+        chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        agent_type=agent_type,
+        user_message=user_message,
+        save_message=save_message,
+        publish_message=publish_message,
+        record_turn_completed=record_turn_completed,
+        message_metadata=message_metadata,
+        compact_summary=compact_summary,
+        completion_summary=completion_summary,
+        failure_summary=failure_summary,
+        extract_memories=extract_memories,
+        min_response_length=min_response_length,
+    )
+
+
 @dataclass(frozen=True)
 class SingleAgentStreamCallbackProfile:
     db: Any
@@ -119,6 +162,61 @@ class SingleAgentStreamCallbackProfile:
     final_message_saved: bool = False
     empty_response_text: str = "(Agent returned empty response)"
     min_response_length: int = 30
+
+
+def build_single_agent_stream_callback_profile(
+    *,
+    db: Any,
+    task_run: Any,
+    chatroom_id: int,
+    client_turn_id: str | None,
+    agent_id: int | None,
+    agent_name: str,
+    agent_type: str,
+    user_message: str,
+    save_message: SaveMessage,
+    publish_message: PublishMessage,
+    record_turn_completed: RecordTurnCompleted,
+    message_metadata: MessageMetadataBuilder,
+    compact_summary: CompactSummary,
+    completion_summary: str,
+    failure_summary: str | Callable[[Exception], str],
+    extract_memories: ExtractMemories,
+    stream_failure_message_metadata: StreamFailureMetadataBuilder,
+    failure_agent_name: str | None = None,
+    failure_agent_id: int | None = None,
+    detail_builder: StreamFailureDetailBuilder | None = None,
+    final_message_saved: bool = False,
+    empty_response_text: str = "(Agent returned empty response)",
+    min_response_length: int = 30,
+) -> SingleAgentStreamCallbackProfile:
+    """Build the standard callback profile for one streaming single-agent turn."""
+
+    return SingleAgentStreamCallbackProfile(
+        db=db,
+        task_run=task_run,
+        chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        agent_type=agent_type,
+        user_message=user_message,
+        save_message=save_message,
+        publish_message=publish_message,
+        record_turn_completed=record_turn_completed,
+        message_metadata=message_metadata,
+        compact_summary=compact_summary,
+        completion_summary=completion_summary,
+        failure_summary=failure_summary,
+        extract_memories=extract_memories,
+        stream_failure_message_metadata=stream_failure_message_metadata,
+        failure_agent_name=failure_agent_name,
+        failure_agent_id=failure_agent_id,
+        detail_builder=detail_builder,
+        final_message_saved=final_message_saved,
+        empty_response_text=empty_response_text,
+        min_response_length=min_response_length,
+    )
 
 
 def build_single_agent_sync_callbacks(
