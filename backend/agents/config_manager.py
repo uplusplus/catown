@@ -33,9 +33,19 @@ class AgentConfigManager:
         文件格式示例：
         {
             "agents": {
-                "assistant": {
-                    "role": "通用助手",
-                    "system_prompt": "...",
+                "valet": {
+                    "name": "Valet",
+                    "soul": {
+                        "identity": "一个万能打杂的助手",
+                        "values": ["能帮就帮"],
+                        "style": "友好随和",
+                        "quirks": ""
+                    },
+                    "role": {
+                        "title": "通用助手",
+                        "responsibilities": ["回答问题"],
+                        "rules": ["不确定时提问"]
+                    },
                     "provider": {
                         "baseUrl": "...",
                         "apiKey": "...",
@@ -68,13 +78,8 @@ class AgentConfigManager:
 
         for raw_agent_type, agent_data in agents_data.items():
             agent_type = normalize_agent_type(raw_agent_type)
-            # 提取 soul/role
             soul_data = agent_data.get("soul", {})
             role_data = agent_data.get("role", {})
-
-            # 如果 role 是旧格式字符串，转为 dict
-            if isinstance(role_data, str):
-                role_data = {"title": role_data, "responsibilities": [], "rules": []}
 
             tools = agent_data.get("tools", [])
             skills = agent_data.get("skills", [])

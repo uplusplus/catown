@@ -67,9 +67,19 @@ def example_new_config_format():
     
     # 创建 Agent 配置
     agent_config = create_agent_config_from_provider(
-        agent_name="my_agent",
-        role="自定义Agent",
-        system_prompt="You are a helpful assistant.",
+        agent_type="my_agent",
+        name="My Agent",
+        soul={
+            "identity": "一个乐于助人的助手",
+            "values": ["清晰优先"],
+            "style": "友好",
+            "quirks": "",
+        },
+        role={
+            "title": "自定义Agent",
+            "responsibilities": ["回答问题"],
+            "rules": ["保持简洁"],
+        },
         provider_config=config_dict,
         tools=["web_search"],
         default_model="GLM-V5-128K"
@@ -109,8 +119,17 @@ def example_new_config_format():
     
     config = AgentConfigV2(
         name="expert_agent",
-        role="专家Agent",
-        system_prompt="You are an expert in your field.",
+        soul={
+            "identity": "在自己的领域里经验丰富。",
+            "values": ["正确优先"],
+            "style": "严谨",
+            "quirks": "",
+        },
+        role={
+            "title": "专家Agent",
+            "responsibilities": ["提供专业建议"],
+            "rules": ["避免无根据断言"],
+        },
         provider=provider,
         default_model="Qwen-V3.5-256K"
     )
@@ -165,7 +184,7 @@ def example_load_from_file():
         print(f"   加载了 {len(configs)} 个 Agent 配置")
         
         for name, config in configs.items():
-            print(f"   - {name}: {config.role}")
+            print(f"   - {name}: {config.role.title}")
             print(f"     模型: {config.get_effective_model()}")
     except Exception as e:
         print(f"   错误: {e}")
@@ -230,9 +249,19 @@ def example_model_selection():
     }
     
     config = create_agent_config_from_provider(
-        agent_name="smart_agent",
-        role="智能Agent",
-        system_prompt="You are a smart agent with model selection.",
+        agent_type="smart_agent",
+        name="Smart Agent",
+        soul={
+            "identity": "会根据任务选择合适模型。",
+            "values": ["匹配场景比盲目堆参数更重要"],
+            "style": "务实",
+            "quirks": "",
+        },
+        role={
+            "title": "智能Agent",
+            "responsibilities": ["根据任务选择模型"],
+            "rules": ["优先使用最合适而非最贵模型"],
+        },
         provider_config=provider_config
     )
     
@@ -283,5 +312,5 @@ if __name__ == "__main__":
     print("✓ 支持动态模型切换")
     print("✓ 支持上下文窗口配置")
     print("✓ 支持成本配置")
-    print("✓ 兼容旧配置格式")
+    print("✓ 使用结构化 SOUL/ROLE 配置")
     print("✓ 支持从 JSON/YAML 文件加载")

@@ -35,8 +35,17 @@ def agents_config_file(tmp_path):
         },
         "agents": {
             "analyst": {
-                "role": "分析师",
-                "system_prompt": "You are an analyst.",
+                "soul": {
+                    "identity": "Analyzes requirements carefully.",
+                    "values": ["clarity"],
+                    "style": "structured",
+                    "quirks": "",
+                },
+                "role": {
+                    "title": "分析师",
+                    "responsibilities": ["梳理需求"],
+                    "rules": ["输出清晰结论"],
+                },
                 "tools": ["read_file", "write_file"],
                 "default_model": "analyst-model",
                 "provider": {
@@ -46,15 +55,33 @@ def agents_config_file(tmp_path):
                 }
             },
             "developer": {
-                "role": "开发者",
-                "system_prompt": "You are a developer.",
+                "soul": {
+                    "identity": "Builds maintainable code.",
+                    "values": ["readability"],
+                    "style": "practical",
+                    "quirks": "",
+                },
+                "role": {
+                    "title": "开发者",
+                    "responsibilities": ["实现功能"],
+                    "rules": ["优先简单方案"],
+                },
                 "tools": ["read_file", "write_file", "execute_code"],
                 "default_model": "",
                 "provider": {}  # 无自身配置，应 fallback 到 global
             },
             "tester": {
-                "role": "测试员",
-                "system_prompt": "You are a tester.",
+                "soul": {
+                    "identity": "Finds regressions before release.",
+                    "values": ["safety"],
+                    "style": "precise",
+                    "quirks": "",
+                },
+                "role": {
+                    "title": "测试员",
+                    "responsibilities": ["验证质量"],
+                    "rules": ["标记 blocker"],
+                },
                 "tools": ["read_file", "execute_code"],
                 # 无 provider 字段
             }
@@ -240,8 +267,17 @@ class TestGetFirstProvider:
             },
             "agents": {
                 "no_provider_agent": {
-                    "role": "test",
-                    "system_prompt": "test",
+                    "soul": {
+                        "identity": "Handles generic tasks.",
+                        "values": [],
+                        "style": "",
+                        "quirks": "",
+                    },
+                    "role": {
+                        "title": "test",
+                        "responsibilities": [],
+                        "rules": [],
+                    },
                     "provider": {}
                 }
             }
@@ -277,25 +313,43 @@ class TestConfigAPIEndpoints:
                 "provider": {
                     "baseUrl": "http://global.com/v1",
                     "apiKey": "global-key",
-                    "models": [{"id": "gpt-4"}]
+                    "models": [{"id": "gpt-4", "name": "GPT-4"}]
                 },
                 "default_model": "gpt-4"
             },
             "agents": {
                 "assistant": {
-                    "role": "助手",
-                    "system_prompt": "You are helpful.",
+                    "soul": {
+                        "identity": "Helps users move work forward.",
+                        "values": ["clarity"],
+                        "style": "friendly",
+                        "quirks": "",
+                    },
+                    "role": {
+                        "title": "助手",
+                        "responsibilities": ["回答问题"],
+                        "rules": ["不确定时提问"],
+                    },
                     "tools": ["read_file"],
                     "default_model": "gpt-3.5-turbo",
                     "provider": {
                         "baseUrl": "http://assistant.com/v1",
                         "apiKey": "asst-key",
-                        "models": [{"id": "gpt-3.5-turbo"}]
+                        "models": [{"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo"}]
                     }
                 },
                 "coder": {
-                    "role": "程序员",
-                    "system_prompt": "You code.",
+                    "soul": {
+                        "identity": "Writes production code.",
+                        "values": ["quality"],
+                        "style": "direct",
+                        "quirks": "",
+                    },
+                    "role": {
+                        "title": "程序员",
+                        "responsibilities": ["实现代码"],
+                        "rules": ["补充必要测试"],
+                    },
                     "tools": ["read_file", "execute_code"],
                     "provider": {}
                 }
@@ -367,9 +421,9 @@ class TestConfigAPIEndpoints:
 
         agent_cfgs = data["agent_llm_configs"]
 
-        # assistant 有自身 provider → source=agent
-        assert agent_cfgs["assistant"]["source"] == "agent"
-        assert agent_cfgs["assistant"]["baseUrl"] == "http://assistant.com/v1"
+        # 默认助手会归一化为 valet；有自身 provider → source=agent
+        assert agent_cfgs["valet"]["source"] == "agent"
+        assert agent_cfgs["valet"]["baseUrl"] == "http://assistant.com/v1"
 
         # coder 无 provider → source=global
         assert agent_cfgs["coder"]["source"] == "global"
@@ -450,11 +504,11 @@ class TestConfigAPIEndpoints:
         })
         assert r.status_code == 200
 
-        # 验证 GET /config 中 assistant 现在 source=global
+        # 验证 GET /config 中 valet 现在 source=global
         r2 = client.get("/api/config")
         data = r2.json()
-        assert data["agent_llm_configs"]["assistant"]["source"] == "global"
-        assert data["agent_llm_configs"]["assistant"]["baseUrl"] == "http://global.com/v1"
+        assert data["agent_llm_configs"]["valet"]["source"] == "global"
+        assert data["agent_llm_configs"]["valet"]["baseUrl"] == "http://global.com/v1"
 
     def test_roundtrip_global_then_agent_override(self, client_with_config):
         """完整流程：设全局 → Agent 覆盖 → 清除 Agent → 回到全局"""

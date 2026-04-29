@@ -190,8 +190,17 @@ class TestAgentConfig:
 
         config = AgentConfigV2(
             name="coder",
-            role="Code Expert",
-            system_prompt="You are a coding expert.",
+            soul={
+                "identity": "Builds production-ready software.",
+                "values": ["readability first"],
+                "style": "concise",
+                "quirks": "",
+            },
+            role={
+                "title": "Code Expert",
+                "responsibilities": ["Implement features"],
+                "rules": ["Prefer maintainable solutions"],
+            },
             tools=["execute_code", "web_search"],
             provider=AgentProviderConfig(
                 baseUrl="http://localhost:8000/v1",
@@ -214,14 +223,24 @@ class TestAgentConfig:
         }
 
         config = create_agent_config_from_provider(
-            agent_name="researcher",
-            role="Research Expert",
-            system_prompt="You research things.",
+            agent_type="researcher",
+            soul={
+                "identity": "Researches thoroughly.",
+                "values": ["verify before concluding"],
+                "style": "structured",
+                "quirks": "",
+            },
+            role={
+                "title": "Research Expert",
+                "responsibilities": ["Investigate topics"],
+                "rules": ["Cite primary sources"],
+            },
             provider_config=provider_config,
             tools=["web_search"]
         )
 
-        assert config.name == "researcher"
+        assert config.name == "Researcher"
+        assert config.type == "researcher"
         assert config.tools == ["web_search"]
         assert config.provider is not None
 

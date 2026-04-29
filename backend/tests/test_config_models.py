@@ -9,6 +9,23 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
+def _soul(identity: str = "Builds practical software.") -> dict:
+    return {
+        "identity": identity,
+        "values": ["clarity"],
+        "style": "direct",
+        "quirks": "",
+    }
+
+
+def _role(title: str = "Engineer") -> dict:
+    return {
+        "title": title,
+        "responsibilities": ["Ship maintainable code"],
+        "rules": ["Keep changes focused"],
+    }
+
+
 class TestModelConfig:
     """ModelConfig 测试"""
 
@@ -91,33 +108,29 @@ class TestAgentConfigV2:
 
     def test_create_minimal(self):
         from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="test", role="r", system_prompt="sp")
+        c = AgentConfigV2(name="test", soul=_soul(), role=_role())
         assert c.name == "test"
+        assert c.type == "test"
         assert c.tools == []
         assert c.provider is None
 
     def test_effective_url_from_provider(self):
         from agents.config_models import AgentConfigV2, AgentProviderConfig
         c = AgentConfigV2(
-            name="t", role="r", system_prompt="sp",
+            name="t", soul=_soul(), role=_role(),
             provider=AgentProviderConfig(baseUrl="http://custom/v1", apiKey="k")
         )
         assert c.get_effective_base_url() == "http://custom/v1"
 
-    def test_effective_url_fallback(self):
-        from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="t", role="r", system_prompt="sp", llm_base_url="http://fallback/v1")
-        assert c.get_effective_base_url() == "http://fallback/v1"
-
     def test_effective_url_default(self):
         from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="t", role="r", system_prompt="sp")
+        c = AgentConfigV2(name="t", soul=_soul(), role=_role())
         assert "openai" in c.get_effective_base_url()
 
     def test_effective_api_key_from_provider(self):
         from agents.config_models import AgentConfigV2, AgentProviderConfig
         c = AgentConfigV2(
-            name="t", role="r", system_prompt="sp",
+            name="t", soul=_soul(), role=_role(),
             provider=AgentProviderConfig(baseUrl="http://x", apiKey="sk-provider-key")
         )
         assert c.get_effective_api_key() == "sk-provider-key"
@@ -125,7 +138,7 @@ class TestAgentConfigV2:
     def test_effective_model_prefer_default(self):
         from agents.config_models import AgentConfigV2, AgentProviderConfig, ModelConfig
         c = AgentConfigV2(
-            name="t", role="r", system_prompt="sp",
+            name="t", soul=_soul(), role=_role(),
             provider=AgentProviderConfig(
                 baseUrl="http://x", apiKey="k",
                 models=[ModelConfig(id="m1", name="M1")]
@@ -137,7 +150,7 @@ class TestAgentConfigV2:
     def test_effective_model_from_provider(self):
         from agents.config_models import AgentConfigV2, AgentProviderConfig, ModelConfig
         c = AgentConfigV2(
-            name="t", role="r", system_prompt="sp",
+            name="t", soul=_soul(), role=_role(),
             provider=AgentProviderConfig(
                 baseUrl="http://x", apiKey="k",
                 models=[ModelConfig(id="provider-m", name="PM")]
@@ -145,20 +158,15 @@ class TestAgentConfigV2:
         )
         assert c.get_effective_model() == "provider-m"
 
-    def test_effective_model_fallback(self):
-        from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="t", role="r", system_prompt="sp", llm_model="fallback-model")
-        assert c.get_effective_model() == "fallback-model"
-
     def test_effective_model_ultimate_default(self):
         from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="t", role="r", system_prompt="sp")
+        c = AgentConfigV2(name="t", soul=_soul(), role=_role())
         assert c.get_effective_model() == "gpt-4"
 
     def test_get_model_config(self):
         from agents.config_models import AgentConfigV2, AgentProviderConfig, ModelConfig
         c = AgentConfigV2(
-            name="t", role="r", system_prompt="sp",
+            name="t", soul=_soul(), role=_role(),
             provider=AgentProviderConfig(
                 baseUrl="http://x", apiKey="k",
                 models=[ModelConfig(id="abc", name="ABC", contextWindow=64000)]
@@ -170,8 +178,21 @@ class TestAgentConfigV2:
 
     def test_get_model_config_no_provider(self):
         from agents.config_models import AgentConfigV2
-        c = AgentConfigV2(name="t", role="r", system_prompt="sp")
+        c = AgentConfigV2(name="t", soul=_soul(), role=_role())
         assert c.get_model_config("any") is None
+
+    def test_build_system_prompt_uses_structured_soul_and_role(self):
+        from agents.config_models import AgentConfigV2
+
+        c = AgentConfigV2(name="Builder", soul=_soul("Builds practical software."), role=_role("Developer"))
+        prompt = c.build_system_prompt(project_memory="Project scope", long_term_memory="Prefer tests")
+
+        assert "Builder" in prompt
+        assert "Builds practical software." in prompt
+        assert "Ship maintainable code" in prompt
+        assert "Keep changes focused" in prompt
+        assert "Project scope" in prompt
+        assert "Prefer tests" in prompt
 
 
 class TestCreateAgentConfigFromProvider:
@@ -180,9 +201,9 @@ class TestCreateAgentConfigFromProvider:
     def test_basic_creation(self):
         from agents.config_models import create_agent_config_from_provider
         c = create_agent_config_from_provider(
-            agent_name="researcher",
-            role="Research Expert",
-            system_prompt="You research things.",
+            agent_type="researcher",
+            soul=_soul("Researches thoroughly."),
+            role=_role("Research Expert"),
             provider_config={
                 "baseUrl": "http://localhost:8000/v1",
                 "apiKey": "sk-test",
@@ -190,7 +211,8 @@ class TestCreateAgentConfigFromProvider:
             },
             tools=["web_search"]
         )
-        assert c.name == "researcher"
+        assert c.name == "Researcher"
+        assert c.type == "researcher"
         assert c.tools == ["web_search"]
         assert c.provider is not None
         assert c.get_effective_model() == "gpt-4"
@@ -198,7 +220,7 @@ class TestCreateAgentConfigFromProvider:
     def test_with_default_model(self):
         from agents.config_models import create_agent_config_from_provider
         c = create_agent_config_from_provider(
-            agent_name="a", role="r", system_prompt="s",
+            agent_type="a", soul=_soul("Handles requests."), role=_role("Responder"),
             provider_config={
                 "baseUrl": "http://x", "apiKey": "k",
                 "models": [
@@ -213,7 +235,7 @@ class TestCreateAgentConfigFromProvider:
     def test_multiple_models(self):
         from agents.config_models import create_agent_config_from_provider
         c = create_agent_config_from_provider(
-            agent_name="a", role="r", system_prompt="s",
+            agent_type="a", soul=_soul("Handles requests."), role=_role("Responder"),
             provider_config={
                 "baseUrl": "http://x", "apiKey": "k",
                 "models": [
