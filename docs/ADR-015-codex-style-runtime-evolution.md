@@ -5820,6 +5820,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - execution-specific 参数本身还没有被进一步抽象成更共享的字段层
 - 如果继续推进，下一步可以考虑进一步统一 sync/stream raw execution input 的参数组织方式
 
+### 11.136 2026-04-29 新进展：shared raw execution envelope 已成为 single-agent route 入口公共面
+
+在 11.135 之后，`SingleAgentRawExecutionInputs` 已经存在，但 route 仍各自把 execution-specific 参数原样透传给 sync/stream raw-runtime builder。
+
+也就是说，execution envelope 被定义出来了，但还没有真正成为高层入口的主参数面。
+
+本轮继续把这层切换完成：
+
+- sync raw-runtime builder 改为直接接收 `SingleAgentRawExecutionInputs`
+- stream raw-runtime builder 也改为直接接收 `SingleAgentRawExecutionInputs`
+- standalone / project single-agent sync/stream route 改为显式构造 shared raw execution envelope，再交给 builder
+
+这一步的意义是：
+
+- single-agent sync / stream 的 raw-runtime builder 终于都变成 `raw runtime inputs + raw execution inputs`
+- route 进一步退出 execution-specific 长参数传递
+- 后续如果继续统一 execution-side 参数组织，可以直接围绕 shared execution envelope 推进，而不再围绕散落的参数列表
+
+边界：
+
+- `SingleAgentRawExecutionInputs` 之下仍依赖 sync/stream 各自的 raw execution input 类型
+- execution-side 还没有进一步合并成更共享的字段模型
+- 如果继续推进，下一步可以考虑收 execution envelope 之下的 sync/stream 参数组织方式
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

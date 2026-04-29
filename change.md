@@ -2211,3 +2211,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `SingleAgentRawExecutionInputs` 以及 sync/stream 两侧的 raw execution input bundle，让 sync/stream raw-runtime builder 都通过统一 envelope 接 execution-specific 参数
 - standalone / project single-agent sync/stream route 改为显式构造 shared raw execution input envelope，再交给 raw-runtime builder
 - focused runner/stream/orchestrator/API 回归更新为围绕 shared raw execution input envelope 验证行为兼容
+
+### `Promote shared raw execution envelope into route entrypoint`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- sync/stream raw-runtime builder 统一改为消费 `SingleAgentRawExecutionInputs`，不再接受 execution-specific 长参数列表
+- standalone / project single-agent sync/stream route 改为显式构造 shared raw execution envelope，再交给 raw-runtime builder
+- focused orchestrator / API 回归更新为围绕 shared raw execution envelope 入口验证行为兼容
