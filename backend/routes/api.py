@@ -152,14 +152,10 @@ from services.single_agent_session_finalizer import (
     finalize_single_agent_session_success,
 )
 from services.single_agent_session_orchestrator import (
-    build_unified_stream_single_agent_session_spec,
-    build_unified_sync_single_agent_session_spec,
-    ManagedSingleAgentSessionCallbacks,
-    ManagedSingleAgentSessionSpec,
-    ManagedSingleAgentStreamTransport,
+    build_managed_single_agent_stream_session_spec,
+    build_managed_single_agent_sync_session_spec,
     iter_managed_single_agent_stream_session,
     run_managed_single_agent_sync_session,
-    UnifiedSingleAgentSessionSpec,
 )
 from services.single_agent_session_runner import (
     SingleAgentSessionRunnerDeps,
@@ -767,43 +763,39 @@ async def _trigger_standalone_assistant_response(
     )
 
     await run_managed_single_agent_sync_session(
-        ManagedSingleAgentSessionSpec(
-            session=build_unified_sync_single_agent_session_spec(
-                execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
-                on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+        build_managed_single_agent_sync_session_spec(
+            execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
+            on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
+            finalize_success=lambda response_content: finalize_single_agent_session_success(
+                db,
+                task_run,
+                chatroom_id=chatroom_id,
+                client_turn_id=client_turn_id,
+                agent_id=runtime.assistant_id,
+                agent_name=runtime.assistant_name,
+                final_content=response_content,
+                save_message=chatroom_manager.send_message,
+                publish_message=publish_saved_chat_message,
+                record_turn_completed=record_agent_turn_completed,
+                message_metadata=_message_metadata_with_turn,
+                compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
+                schedule_memory_extraction=(
+                    (lambda: asyncio.create_task(_extract_memories(
+                        agent_id=runtime.assistant_id,
+                        agent_type=runtime.assistant_name,
+                        user_message=user_message,
+                        agent_response=response_content,
+                    )))
+                    if runtime.assistant_id and len(response_content) > 30
+                    else None
+                ),
             ),
-            callbacks=ManagedSingleAgentSessionCallbacks(
-                finalize_success=lambda response_content: finalize_single_agent_session_success(
-                    db,
-                    task_run,
-                    chatroom_id=chatroom_id,
-                    client_turn_id=client_turn_id,
-                    agent_id=runtime.assistant_id,
-                    agent_name=runtime.assistant_name,
-                    final_content=response_content,
-                    save_message=chatroom_manager.send_message,
-                    publish_message=publish_saved_chat_message,
-                    record_turn_completed=record_agent_turn_completed,
-                    message_metadata=_message_metadata_with_turn,
-                    compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-                    completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
-                    schedule_memory_extraction=(
-                        (lambda: asyncio.create_task(_extract_memories(
-                            agent_id=runtime.assistant_id,
-                            agent_type=runtime.assistant_name,
-                            user_message=user_message,
-                            agent_response=response_content,
-                        )))
-                        if runtime.assistant_id and len(response_content) > 30
-                        else None
-                    ),
-                ),
-                finalize_failure=lambda exc: finalize_single_agent_session_failure(
-                    db,
-                    task_run,
-                    error=exc,
-                    failure_summary=f"Agent response failed: {exc}",
-                ),
+            finalize_failure=lambda exc: finalize_single_agent_session_failure(
+                db,
+                task_run,
+                error=exc,
+                failure_summary=f"Agent response failed: {exc}",
             ),
         )
     )
@@ -896,9 +888,8 @@ async def _stream_standalone_assistant_response(
         )
 
     async for outcome in iter_managed_single_agent_stream_session(
-        ManagedSingleAgentSessionSpec(
-            session=build_unified_stream_single_agent_session_spec(
-                deps=SingleAgentStreamSessionDeps(
+        build_managed_single_agent_stream_session_spec(
+            deps=SingleAgentStreamSessionDeps(
                 llm_client=runtime.llm_client,
                 tools=None,
                 turn_state=runtime.turn_state,
@@ -916,55 +907,50 @@ async def _stream_standalone_assistant_response(
                 public_runtime_card_payload=public_runtime_card_payload,
                 chatroom_id=chatroom_id,
                 max_turns=1,
-                )
             ),
-            callbacks=ManagedSingleAgentSessionCallbacks(
-                finalize_success=lambda final_content: finalize_single_agent_stream_success(
-                    db,
-                    task_run,
-                    chatroom_id=chatroom_id,
-                    client_turn_id=client_turn_id,
-                    agent_id=runtime.assistant_id,
-                    agent_name=runtime.assistant_name,
-                    final_content=final_content,
-                    save_message=chatroom_manager.send_message,
-                    publish_message=publish_saved_chat_message,
-                    record_turn_completed=record_agent_turn_completed,
+            finalize_success=lambda final_content: finalize_single_agent_stream_success(
+                db,
+                task_run,
+                chatroom_id=chatroom_id,
+                client_turn_id=client_turn_id,
+                agent_id=runtime.assistant_id,
+                agent_name=runtime.assistant_name,
+                final_content=final_content,
+                save_message=chatroom_manager.send_message,
+                publish_message=publish_saved_chat_message,
+                record_turn_completed=record_agent_turn_completed,
+                message_metadata=_message_metadata_with_turn,
+                compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
+                schedule_memory_extraction=(
+                    (lambda: asyncio.create_task(_extract_memories(
+                        agent_id=runtime.assistant_id,
+                        agent_type=runtime.assistant_name,
+                        user_message=user_message,
+                        agent_response=final_content or "(Agent returned empty response)",
+                    )))
+                    if runtime.assistant_id and len((final_content or "").strip() or "(Agent returned empty response)") > 30
+                    else None
+                ),
+            ),
+            finalize_failure=lambda exc: finalize_single_agent_stream_failure(
+                db,
+                task_run,
+                chatroom_id=chatroom_id,
+                client_turn_id=client_turn_id,
+                error=exc,
+                agent_name=runtime.assistant_name,
+                agent_id=runtime.assistant_id,
+                final_message_saved=False,
+                persist_failure=lambda current_db, **kwargs: persist_stream_failure(
+                    current_db,
                     message_metadata=_message_metadata_with_turn,
-                    compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-                    completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
-                    schedule_memory_extraction=(
-                        (lambda: asyncio.create_task(_extract_memories(
-                            agent_id=runtime.assistant_id,
-                            agent_type=runtime.assistant_name,
-                            user_message=user_message,
-                            agent_response=final_content or "(Agent returned empty response)",
-                        )))
-                        if runtime.assistant_id and len((final_content or "").strip() or "(Agent returned empty response)") > 30
-                        else None
-                    ),
+                    detail=traceback.format_exc(),
+                    **kwargs,
                 ),
-                finalize_failure=lambda exc: finalize_single_agent_stream_failure(
-                    db,
-                    task_run,
-                    chatroom_id=chatroom_id,
-                    client_turn_id=client_turn_id,
-                    error=exc,
-                    agent_name=runtime.assistant_name,
-                    agent_id=runtime.assistant_id,
-                    final_message_saved=False,
-                    persist_failure=lambda current_db, **kwargs: persist_stream_failure(
-                        current_db,
-                        message_metadata=_message_metadata_with_turn,
-                        detail=traceback.format_exc(),
-                        **kwargs,
-                    ),
-                    failure_summary=f"Standalone stream failed: {exc}",
-                ),
+                failure_summary=f"Standalone stream failed: {exc}",
             ),
-            stream_transport=ManagedSingleAgentStreamTransport(
-                serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
-            ),
+            serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
         )
     ):
         if outcome.chunk is not None:
@@ -1276,51 +1262,47 @@ async def trigger_agent_response(
             )
 
         finalized = await run_managed_single_agent_sync_session(
-            ManagedSingleAgentSessionSpec(
-                session=build_unified_sync_single_agent_session_spec(
-                    execute_turn=lambda: execute_non_stream_turn_loop(
-                        llm_client=runtime.llm_client,
-                        tools=runtime.tool_schemas,
-                        turn_state=runtime.turn_state,
-                        assemble_messages=_assemble_project_single_agent_messages,
-                        execute_tool_call=_execute_project_single_agent_tool,
-                        max_turns=MAX_TOOL_ITERATIONS,
-                        on_tool_round=_on_project_single_agent_tool_round,
-                    ),
-                    on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+            build_managed_single_agent_sync_session_spec(
+                execute_turn=lambda: execute_non_stream_turn_loop(
+                    llm_client=runtime.llm_client,
+                    tools=runtime.tool_schemas,
+                    turn_state=runtime.turn_state,
+                    assemble_messages=_assemble_project_single_agent_messages,
+                    execute_tool_call=_execute_project_single_agent_tool,
+                    max_turns=MAX_TOOL_ITERATIONS,
+                    on_tool_round=_on_project_single_agent_tool_round,
                 ),
-                callbacks=ManagedSingleAgentSessionCallbacks(
-                    finalize_success=lambda response_content: finalize_single_agent_session_success(
-                        db,
-                        task_run,
-                        chatroom_id=chatroom_id,
-                        client_turn_id=client_turn_id,
-                        agent_id=target_agent.id,
-                        agent_name=runtime.agent_label,
-                        final_content=response_content,
-                        save_message=chatroom_manager.send_message,
-                        publish_message=publish_saved_chat_message,
-                        record_turn_completed=record_agent_turn_completed,
-                        message_metadata=_message_metadata_with_turn,
-                        compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-                        completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
-                        schedule_memory_extraction=(
-                            (lambda: asyncio.create_task(_extract_memories(
-                                agent_id=target_agent.id,
-                                agent_type=_agent_type(target_agent),
-                                user_message=user_message,
-                                agent_response=response_content
-                            )))
-                            if len(response_content) > 30
-                            else None
-                        ),
+                on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+                finalize_success=lambda response_content: finalize_single_agent_session_success(
+                    db,
+                    task_run,
+                    chatroom_id=chatroom_id,
+                    client_turn_id=client_turn_id,
+                    agent_id=target_agent.id,
+                    agent_name=runtime.agent_label,
+                    final_content=response_content,
+                    save_message=chatroom_manager.send_message,
+                    publish_message=publish_saved_chat_message,
+                    record_turn_completed=record_agent_turn_completed,
+                    message_metadata=_message_metadata_with_turn,
+                    compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                    completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
+                    schedule_memory_extraction=(
+                        (lambda: asyncio.create_task(_extract_memories(
+                            agent_id=target_agent.id,
+                            agent_type=_agent_type(target_agent),
+                            user_message=user_message,
+                            agent_response=response_content
+                        )))
+                        if len(response_content) > 30
+                        else None
                     ),
-                    finalize_failure=lambda exc: finalize_single_agent_session_failure(
-                        db,
-                        task_run,
-                        error=exc,
-                        failure_summary=f"Agent response failed: {exc}",
-                    ),
+                ),
+                finalize_failure=lambda exc: finalize_single_agent_session_failure(
+                    db,
+                    task_run,
+                    error=exc,
+                    failure_summary=f"Agent response failed: {exc}",
                 ),
             )
         )
@@ -4197,76 +4179,70 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 )
 
             async for outcome in iter_managed_single_agent_stream_session(
-                ManagedSingleAgentSessionSpec(
-                    session=build_unified_stream_single_agent_session_spec(
-                        deps=SingleAgentStreamSessionDeps(
-                            llm_client=runtime.llm_client,
-                            tools=runtime.tool_schemas,
-                            turn_state=runtime.turn_state,
-                            agent_name=target_agent_label,
-                            client_turn_id=message.client_turn_id,
-                            assemble_messages=_assemble_single_agent_stream_messages,
-                            execute_tool=_execute_single_agent_stream_tool,
-                            build_llm_runtime_card=_build_single_agent_stream_llm_card,
-                            snapshot_messages=_snapshot_llm_messages,
-                            preview_tool_calls=_preview_tool_calls,
-                            format_prompt_messages=_format_json_block,
-                            tool_result_success=_tool_result_succeeded,
-                            serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
-                            store_runtime_card=store_runtime_card,
-                            public_runtime_card_payload=public_runtime_card_payload,
-                            chatroom_id=chatroom_id,
-                            max_turns=MAX_TOOL_ITERATIONS,
-                            on_tool_round=_on_single_agent_stream_tool_round,
-                        )
-                    ),
-                    callbacks=ManagedSingleAgentSessionCallbacks(
-                        finalize_success=lambda final_content: finalize_single_agent_stream_success(
-                            db,
-                            task_run,
-                            chatroom_id=chatroom_id,
-                            client_turn_id=message.client_turn_id,
-                            agent_id=target_agent.id,
-                            agent_name=target_agent_label,
-                            final_content=final_content,
-                            save_message=chatroom_manager.send_message,
-                            publish_message=publish_saved_chat_message,
-                            record_turn_completed=record_agent_turn_completed,
-                            message_metadata=_message_metadata_with_turn,
-                            compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-                            completion_summary=f"{target_agent_label} completed the streaming turn.",
-                            schedule_memory_extraction=(
-                                (lambda: asyncio.create_task(_extract_memories(
-                                    agent_id=target_agent.id,
-                                    agent_type=_agent_type(target_agent),
-                                    user_message=message.content,
-                                    agent_response=final_content or "(Agent returned empty response)",
-                                )))
-                                if len((final_content or "").strip() or "(Agent returned empty response)") > 30
-                                else None
-                            ),
-                        ),
-                        finalize_failure=lambda e: finalize_single_agent_stream_failure(
-                            db,
-                            task_run,
-                            chatroom_id=chatroom_id,
-                            client_turn_id=message.client_turn_id,
-                            error=e,
-                            agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
-                            agent_id=active_agent_id,
-                            final_message_saved=False,
-                            persist_failure=lambda current_db, **kwargs: persist_stream_failure(
-                                current_db,
-                                message_metadata=_message_metadata_with_turn,
-                                detail=traceback.format_exc(),
-                                **kwargs,
-                            ),
-                            failure_summary=f"Streaming execution failed: {e}",
-                        ),
-                    ),
-                    stream_transport=ManagedSingleAgentStreamTransport(
+                build_managed_single_agent_stream_session_spec(
+                    deps=SingleAgentStreamSessionDeps(
+                        llm_client=runtime.llm_client,
+                        tools=runtime.tool_schemas,
+                        turn_state=runtime.turn_state,
+                        agent_name=target_agent_label,
+                        client_turn_id=message.client_turn_id,
+                        assemble_messages=_assemble_single_agent_stream_messages,
+                        execute_tool=_execute_single_agent_stream_tool,
+                        build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                        snapshot_messages=_snapshot_llm_messages,
+                        preview_tool_calls=_preview_tool_calls,
+                        format_prompt_messages=_format_json_block,
+                        tool_result_success=_tool_result_succeeded,
                         serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                        store_runtime_card=store_runtime_card,
+                        public_runtime_card_payload=public_runtime_card_payload,
+                        chatroom_id=chatroom_id,
+                        max_turns=MAX_TOOL_ITERATIONS,
+                        on_tool_round=_on_single_agent_stream_tool_round,
                     ),
+                    finalize_success=lambda final_content: finalize_single_agent_stream_success(
+                        db,
+                        task_run,
+                        chatroom_id=chatroom_id,
+                        client_turn_id=message.client_turn_id,
+                        agent_id=target_agent.id,
+                        agent_name=target_agent_label,
+                        final_content=final_content,
+                        save_message=chatroom_manager.send_message,
+                        publish_message=publish_saved_chat_message,
+                        record_turn_completed=record_agent_turn_completed,
+                        message_metadata=_message_metadata_with_turn,
+                        compact_summary=lambda content: _compact_runtime_text(content, limit=280),
+                        completion_summary=f"{target_agent_label} completed the streaming turn.",
+                        schedule_memory_extraction=(
+                            (lambda: asyncio.create_task(_extract_memories(
+                                agent_id=target_agent.id,
+                                agent_type=_agent_type(target_agent),
+                                user_message=message.content,
+                                agent_response=final_content or "(Agent returned empty response)",
+                            )))
+                            if len((final_content or "").strip() or "(Agent returned empty response)") > 30
+                            else None
+                        ),
+                    ),
+                    finalize_failure=lambda e: finalize_single_agent_stream_failure(
+                        db,
+                        task_run,
+                        chatroom_id=chatroom_id,
+                        client_turn_id=message.client_turn_id,
+                        error=e,
+                        agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
+                        agent_id=active_agent_id,
+                        final_message_saved=False,
+                        persist_failure=lambda current_db, **kwargs: persist_stream_failure(
+                            current_db,
+                            message_metadata=_message_metadata_with_turn,
+                            detail=traceback.format_exc(),
+                            **kwargs,
+                        ),
+                        failure_summary=f"Streaming execution failed: {e}",
+                    ),
+                    serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
                 )
             ):
                 if outcome.chunk is not None:

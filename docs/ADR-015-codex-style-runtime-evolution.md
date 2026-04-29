@@ -5100,3 +5100,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍需要手工构造 `ManagedSingleAgentStreamTransport`
 - stream terminal output 仍由 managed stream 入口单独渲染
 - 如果继续推进，下一步可以考虑把 managed sync/stream spec 的 route-local 构造再包成更高层 builder
+
+### 11.112 2026-04-29 新进展：managed single-agent spec 的 route-local 组装已下沉为 builder
+
+在 11.111 之后，虽然 managed callbacks 与 stream transport 已经分层，但 route 侧还保留一块重复样板：
+
+- standalone assistant sync 手工拼 `ManagedSingleAgentSessionSpec(...)`
+- standalone assistant stream 手工拼 `ManagedSingleAgentSessionSpec(...)`
+- project single-agent sync / stream 也各自重复同一种 managed spec 装配
+
+这意味着 route 虽然不再直连底层 runner，但仍然知道太多 managed contract 的内部结构。
+
+本轮继续把这层收下去：
+
+- 新增 `build_managed_single_agent_sync_session_spec(...)`
+- 新增 `build_managed_single_agent_stream_session_spec(...)`
+- route 改为直接调用 managed builders，而不是自己拼 `ManagedSingleAgentSessionSpec`
+- focused tests 也跟随切到 managed builders，只保留一条 raw-spec 负向用例验证缺失 transport 的契约
+
+这一步的意义是：
+
+- single-agent route 进一步退出会话栈内部装配细节
+- managed spec 的公开进入方式开始和 unified spec 一样走 builder，而不是 route 手工 new dataclass
+- 后续如果继续压 session builder / finalizer / transport 的边界，改动面会更集中在 orchestrator service
+
+边界：
+
+- route 仍要提供 finalize lambdas 和 stream deps，本轮只收了 spec 装配层
+- managed sync/stream 仍分别走不同 builder，而不是单一自动判别入口
+- 如果继续推进，下一步可以考虑把 finalize / transport 这层 route-local lambda 继续往更高层 helper 收

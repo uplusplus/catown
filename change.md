@@ -1802,3 +1802,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 managed single-agent callbacks 收敛为纯 success/failure finalizer 契约，不再混入 stream-only `serialize_payload`
 - 新增 `ManagedSingleAgentStreamTransport`，由 standalone / project single-agent streaming path 显式提供终结 SSE 序列化能力
 - 补 focused contract test，覆盖缺失 stream transport 的失败分支，并跑 single-agent sync/stream API 回归确认行为兼容
+
+### `Add managed single-agent session builders`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `build_managed_single_agent_sync_session_spec(...)` 与 `build_managed_single_agent_stream_session_spec(...)`，把 managed spec 的组装逻辑下沉回 orchestrator
+- standalone / project single-agent sync/stream route 改为通过 managed builders 进入会话栈，不再手工拼 `ManagedSingleAgentSessionSpec`
+- focused tests 改为直接覆盖 managed builders，并继续保留缺失 stream transport 的契约校验

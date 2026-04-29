@@ -1,11 +1,12 @@
 import pytest
 
 from services.single_agent_session_orchestrator import (
+    build_managed_single_agent_stream_session_spec,
+    build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
-    ManagedSingleAgentStreamTransport,
     iter_managed_single_agent_stream_session,
     run_managed_single_agent_sync_session,
     iter_unified_single_agent_stream_session,
@@ -80,14 +81,10 @@ async def test_managed_single_agent_sync_session_delegates_to_unified_sync():
         calls.append(content)
 
     result = await run_managed_single_agent_sync_session(
-        ManagedSingleAgentSessionSpec(
-            session=build_unified_sync_single_agent_session_spec(
-                execute_turn=execute_turn,
-            ),
-            callbacks=ManagedSingleAgentSessionCallbacks(
-                finalize_success=finalize_success,
-                finalize_failure=lambda exc: _async_stream_failure(str(exc)),
-            ),
+        build_managed_single_agent_sync_session_spec(
+            execute_turn=execute_turn,
+            finalize_success=finalize_success,
+            finalize_failure=lambda exc: _async_stream_failure(str(exc)),
         )
     )
 
@@ -109,35 +106,29 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
     outcomes = [
         outcome
         async for outcome in iter_managed_single_agent_stream_session(
-            ManagedSingleAgentSessionSpec(
-                session=build_unified_stream_single_agent_session_spec(
-                    deps=SingleAgentStreamSessionDeps(
-                        llm_client=FakeLLM(),
-                        tools=None,
-                        turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
-                        agent_name="Analyst",
-                        client_turn_id="turn-1",
-                        assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
-                        execute_tool=lambda *args, **kwargs: None,
-                        build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
-                        snapshot_messages=lambda messages: list(messages),
-                        preview_tool_calls=lambda raw_tool_calls: [],
-                        format_prompt_messages=lambda messages: "formatted",
-                        tool_result_success=lambda result: True,
-                        serialize_payload=lambda payload: "{}",
-                        store_runtime_card=store_runtime_card,
-                        public_runtime_card_payload=lambda payload: payload,
-                        chatroom_id=7,
-                        max_turns=1,
-                    ),
+            build_managed_single_agent_stream_session_spec(
+                deps=SingleAgentStreamSessionDeps(
+                    llm_client=FakeLLM(),
+                    tools=None,
+                    turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+                    agent_name="Analyst",
+                    client_turn_id="turn-1",
+                    assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
+                    execute_tool=lambda *args, **kwargs: None,
+                    build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+                    snapshot_messages=lambda messages: list(messages),
+                    preview_tool_calls=lambda raw_tool_calls: [],
+                    format_prompt_messages=lambda messages: "formatted",
+                    tool_result_success=lambda result: True,
+                    serialize_payload=lambda payload: "{}",
+                    store_runtime_card=store_runtime_card,
+                    public_runtime_card_payload=lambda payload: payload,
+                    chatroom_id=7,
+                    max_turns=1,
                 ),
-                callbacks=ManagedSingleAgentSessionCallbacks(
-                    finalize_success=lambda final_content: _async_stream_finalize(final_content),
-                    finalize_failure=lambda exc: _async_stream_failure(str(exc)),
-                ),
-                stream_transport=ManagedSingleAgentStreamTransport(
-                    serialize_payload=lambda payload: '{"type":"done"}',
-                ),
+                finalize_success=lambda final_content: _async_stream_finalize(final_content),
+                finalize_failure=lambda exc: _async_stream_failure(str(exc)),
+                serialize_payload=lambda payload: '{"type":"done"}',
             )
         )
     ]
