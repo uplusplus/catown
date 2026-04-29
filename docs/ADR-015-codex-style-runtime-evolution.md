@@ -5874,6 +5874,29 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync / stream raw execution inputs 之下的字段组织仍未进一步统一
 - 如果继续推进，下一步可以考虑继续压缩 sync/stream execution-specific 字段分组
 
+### 11.138 2026-04-29 新进展：stream failure policy 已成为 raw-runtime 入口公共面
+
+在 11.137 之后，`SingleAgentStreamFailurePolicy` 已经存在，但 stream raw-runtime builder 仍把这组 policy 参数在入口上拆开接收。
+
+也就是说，failure policy 被建模出来了，但还没有真正成为高层 builder 的主输入之一。
+
+本轮继续把这层切换完成：
+
+- stream raw-runtime builder 改为直接接收 `SingleAgentStreamFailurePolicy`
+- standalone / project single-agent stream route 改为显式构造 failure policy，再交给 builder
+
+这一步的意义是：
+
+- single-agent stream 的高层输入面更明确地稳定为三块：raw runtime inputs、raw execution inputs、failure policy
+- route 进一步退出 stream failure-specific 参数的长列表传递
+- 后续如果继续统一 execution-side 字段组织，failure concerns 已经从 builder 参数面中独立出来
+
+边界：
+
+- failure policy 目前仍然只服务 stream path
+- sync / stream 在 execution-specific 字段组织上依旧存在差异
+- 如果继续推进，下一步可以考虑继续压缩 sync/stream execution-specific 字段分组
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
