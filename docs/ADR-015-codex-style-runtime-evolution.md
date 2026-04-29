@@ -5792,6 +5792,34 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - shared raw-runtime bundle 还没有进一步和 execution-specific inputs 合并为单一顶层 request model
 - 如果继续推进，下一步可以考虑进一步统一 sync/stream execution-specific 参数分组
 
+### 11.135 2026-04-29 新进展：shared raw execution input envelope 已落地
+
+在 11.134 之后，single-agent route 已经共享 `SingleAgentRawRuntimeInputs`，但 execution-specific 入参仍保持两套裸列表：
+
+- sync path 仍直接传 `execute_turn/on_empty`
+- stream path 仍直接传 `llm_client/tools/turn_state/...`
+
+这意味着公共 runtime 输入已经统一，但 execution-specific 输入还没有形成对称的高层 contract。
+
+本轮继续把这层提成 shared envelope：
+
+- 新增 `SingleAgentRawExecutionInputs`
+- sync runner 侧新增 raw sync execution input bundle
+- stream runner 侧新增 raw stream execution input bundle
+- sync / stream raw-runtime builder 改为统一接收 `SingleAgentRawExecutionInputs`
+
+这一步的意义是：
+
+- single-agent sync / stream 在 raw-runtime builder 输入层终于都变成 `raw runtime inputs + raw execution inputs`
+- route 继续退出 execution-specific 长参数传递
+- 后续如果继续统一 sync/stream builder，就能直接围绕这两个共享 envelope 推进，而不是围绕两套零散参数
+
+边界：
+
+- `SingleAgentRawExecutionInputs` 当前仍是一个 envelope，内部依赖 sync/stream 各自的 raw execution input 类型
+- execution-specific 参数本身还没有被进一步抽象成更共享的字段层
+- 如果继续推进，下一步可以考虑进一步统一 sync/stream raw execution input 的参数组织方式
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

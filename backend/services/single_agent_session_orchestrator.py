@@ -21,14 +21,20 @@ from services.single_agent_session_contracts import (
 )
 from services.single_agent_session_runner import (
     SingleAgentSyncExecutionContext,
+    SingleAgentSyncRawExecutionInputs,
     build_single_agent_session_runner_deps_from_execution_context,
     build_single_agent_sync_execution_context,
+    build_single_agent_sync_execution_context_from_raw_inputs,
+    build_single_agent_sync_raw_execution_inputs,
     run_single_agent_session,
 )
 from services.single_agent_stream_session import (
     SingleAgentStreamExecutionContext,
+    SingleAgentStreamRawExecutionInputs,
     SingleAgentStreamSessionDeps,
     build_single_agent_stream_execution_context,
+    build_single_agent_stream_execution_context_from_raw_inputs,
+    build_single_agent_stream_raw_execution_inputs,
     build_single_agent_stream_session_deps,
     build_single_agent_stream_session_deps_from_execution_context,
     iter_single_agent_stream_session,
@@ -78,6 +84,11 @@ class SingleAgentRawRuntimeInputs:
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]]
     stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None
     min_response_length: int = 30
+
+
+@dataclass(frozen=True)
+class SingleAgentRawExecutionInputs:
+    execution: SingleAgentSyncRawExecutionInputs | SingleAgentStreamRawExecutionInputs
 
 
 @dataclass(frozen=True)
@@ -353,6 +364,15 @@ def build_single_agent_session_runtime_context_from_raw_inputs(
     )
 
 
+def build_single_agent_raw_execution_inputs(
+    *,
+    execution: SingleAgentSyncRawExecutionInputs | SingleAgentStreamRawExecutionInputs,
+) -> SingleAgentRawExecutionInputs:
+    """Build the shared raw execution input envelope for one single-agent turn."""
+
+    return SingleAgentRawExecutionInputs(execution=execution)
+
+
 def build_single_agent_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
@@ -457,16 +477,14 @@ def build_single_agent_sync_runtime_profile(
 def build_single_agent_sync_runtime_profile_from_runtime(
     *,
     runtime_inputs: SingleAgentRawRuntimeInputs,
-    execute_turn: Callable[[], Awaitable[str | None]],
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+    execution_inputs: SingleAgentRawExecutionInputs,
 ) -> SingleAgentRuntimeProfile:
     """Build the full sync runtime profile directly from raw runtime inputs."""
 
     return build_single_agent_sync_runtime_profile(
         runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
-        execution=build_single_agent_sync_execution_context(
-            execute_turn=execute_turn,
-            on_empty=on_empty,
+        execution=build_single_agent_sync_execution_context_from_raw_inputs(
+            execution_inputs.execution,
         ),
     )
 
@@ -497,47 +515,19 @@ def build_single_agent_stream_runtime_profile(
 def build_single_agent_stream_runtime_profile_from_runtime(
     *,
     runtime_inputs: SingleAgentRawRuntimeInputs,
-    llm_client: Any,
-    tools: list[dict[str, Any]] | None,
-    turn_state: Any,
-    assemble_messages: Callable[[Any], list[dict[str, Any]]],
-    execute_tool: Callable[..., Awaitable[Any]],
-    build_llm_runtime_card: Callable[..., dict[str, Any]],
-    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
-    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
-    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
-    tool_result_success: Callable[[str], bool],
-    serialize_payload: Callable[[Any], str],
-    store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
-    public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
-    max_turns: int,
+    execution_inputs: SingleAgentRawExecutionInputs,
     failure_agent_name: str | None = None,
     failure_agent_id: int | None = None,
     detail_builder: Callable[[], str] | None = None,
     final_message_saved: bool = False,
     empty_response_text: str = "(Agent returned empty response)",
-    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the full stream runtime profile directly from raw runtime inputs."""
 
     return build_single_agent_stream_runtime_profile(
         runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
-        execution=build_single_agent_stream_execution_context(
-            llm_client=llm_client,
-            tools=tools,
-            turn_state=turn_state,
-            assemble_messages=assemble_messages,
-            execute_tool=execute_tool,
-            build_llm_runtime_card=build_llm_runtime_card,
-            snapshot_messages=snapshot_messages,
-            preview_tool_calls=preview_tool_calls,
-            format_prompt_messages=format_prompt_messages,
-            tool_result_success=tool_result_success,
-            serialize_payload=serialize_payload,
-            store_runtime_card=store_runtime_card,
-            public_runtime_card_payload=public_runtime_card_payload,
-            max_turns=max_turns,
-            on_tool_round=on_tool_round,
+        execution=build_single_agent_stream_execution_context_from_raw_inputs(
+            execution_inputs.execution,
         ),
         failure_agent_name=failure_agent_name,
         failure_agent_id=failure_agent_id,

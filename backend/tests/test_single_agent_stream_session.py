@@ -2,6 +2,8 @@ import pytest
 
 from services.single_agent_stream_session import (
     build_single_agent_stream_execution_context,
+    build_single_agent_stream_execution_context_from_raw_inputs,
+    build_single_agent_stream_raw_execution_inputs,
     build_single_agent_stream_session_deps,
     build_single_agent_stream_session_deps_from_execution_context,
     iter_single_agent_stream_session,
@@ -97,3 +99,30 @@ def test_build_single_agent_stream_session_deps_from_execution_context_projects_
     assert deps.client_turn_id == "turn-1"
     assert deps.chatroom_id == 7
     assert deps.max_turns == 1
+
+
+def test_build_single_agent_stream_execution_context_from_raw_inputs_projects_fields():
+    async def store_runtime_card(*args, **kwargs):
+        return None
+
+    execution = build_single_agent_stream_execution_context_from_raw_inputs(
+        build_single_agent_stream_raw_execution_inputs(
+            llm_client=FakeLLMClient(),
+            tools=None,
+            turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+            assemble_messages=lambda turn_state: [{"role": "user", "content": "hello"}],
+            execute_tool=lambda *args, **kwargs: None,
+            build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+            snapshot_messages=lambda messages: list(messages),
+            preview_tool_calls=lambda raw_tool_calls: [],
+            format_prompt_messages=lambda messages: "formatted",
+            tool_result_success=lambda result: True,
+            serialize_payload=lambda payload: "{}",
+            store_runtime_card=store_runtime_card,
+            public_runtime_card_payload=lambda payload: payload,
+            max_turns=1,
+        )
+    )
+
+    assert execution.max_turns == 1
+    assert execution.tools is None

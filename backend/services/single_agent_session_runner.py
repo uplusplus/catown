@@ -22,8 +22,27 @@ class SingleAgentSyncExecutionContext:
 
 
 @dataclass(frozen=True)
+class SingleAgentSyncRawExecutionInputs:
+    execute_turn: Callable[[], Awaitable[str | None]]
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None
+
+
+@dataclass(frozen=True)
 class SingleAgentSessionRunnerResult:
     final_content: str | None = None
+
+
+def build_single_agent_sync_raw_execution_inputs(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> SingleAgentSyncRawExecutionInputs:
+    """Build the raw sync-side execution input bundle for one single-agent turn."""
+
+    return SingleAgentSyncRawExecutionInputs(
+        execute_turn=execute_turn,
+        on_empty=on_empty,
+    )
 
 
 def build_single_agent_sync_execution_context(
@@ -36,6 +55,17 @@ def build_single_agent_sync_execution_context(
     return SingleAgentSyncExecutionContext(
         execute_turn=execute_turn,
         on_empty=on_empty,
+    )
+
+
+def build_single_agent_sync_execution_context_from_raw_inputs(
+    inputs: SingleAgentSyncRawExecutionInputs,
+) -> SingleAgentSyncExecutionContext:
+    """Promote raw sync execution inputs into the sync execution context model."""
+
+    return build_single_agent_sync_execution_context(
+        execute_turn=inputs.execute_turn,
+        on_empty=inputs.on_empty,
     )
 
 

@@ -2191,3 +2191,23 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 sync/stream 双轨的顶层 runtime profile 合并为统一 `SingleAgentRuntimeProfile`
 - 删掉只负责中转的 managed session profile 层，让 runtime profile 直接持有 `ManagedSingleAgentSessionSpec`
 - focused orchestrator / API 回归更新为围绕统一 runtime profile 入口验证行为兼容
+
+### `Extract shared raw execution input envelope`
+
+范围：
+
+- `backend/services/single_agent_session_runner.py`
+- `backend/services/single_agent_stream_session.py`
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_runner.py`
+- `backend/tests/test_single_agent_stream_session.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `SingleAgentRawExecutionInputs` 以及 sync/stream 两侧的 raw execution input bundle，让 sync/stream raw-runtime builder 都通过统一 envelope 接 execution-specific 参数
+- standalone / project single-agent sync/stream route 改为显式构造 shared raw execution input envelope，再交给 raw-runtime builder
+- focused runner/stream/orchestrator/API 回归更新为围绕 shared raw execution input envelope 验证行为兼容
