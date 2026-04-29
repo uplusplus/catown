@@ -12,7 +12,7 @@ from services.single_agent_session_orchestrator import (
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
 )
-from services.single_agent_stream_session import SingleAgentStreamSessionDeps
+from services.single_agent_stream_session import build_single_agent_stream_session_deps
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_unified_single_agent_stream_session_delegates_to_stream_runner():
         item
         async for item in iter_unified_single_agent_stream_session(
             build_unified_stream_single_agent_session_spec(
-                deps=SingleAgentStreamSessionDeps(
+                deps=build_single_agent_stream_session_deps(
                     llm_client=FakeLLM(),
                     tools=None,
                     turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
@@ -109,7 +109,7 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
         outcome
         async for outcome in iter_managed_single_agent_stream_session(
             build_managed_single_agent_stream_session_spec(
-                deps=SingleAgentStreamSessionDeps(
+                deps=build_single_agent_stream_session_deps(
                     llm_client=FakeLLM(),
                     tools=None,
                     turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
@@ -158,7 +158,7 @@ async def test_managed_single_agent_stream_session_requires_transport():
         async for _ in iter_managed_single_agent_stream_session(
             ManagedSingleAgentSessionSpec(
                 session=build_unified_stream_single_agent_session_spec(
-                    deps=SingleAgentStreamSessionDeps(
+                    deps=build_single_agent_stream_session_deps(
                         llm_client=FakeLLM(),
                         tools=None,
                         turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),

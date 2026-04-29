@@ -5366,3 +5366,29 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - orchestrator 仍然是这些 contract 的主要执行入口，本轮只拆了模型定义
 - route 还没有直接消费 `single_agent_session_contracts.py`
 - 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.121 2026-04-29 新进展：single-agent stream runner deps 已改为 builder 入口
+
+在 11.120 之后，streaming single-agent 路径还保留一块明显的底层依赖面：
+
+- route 仍直接构造 `SingleAgentStreamSessionDeps`
+- focused tests 也直接依赖这一低层 dataclass 形状
+- 这和前面已经逐步 builder 化的 unified spec、managed spec、callback profile 边界不一致
+
+本轮把 stream runner deps 也收成 builder 入口：
+
+- `single_agent_stream_session.py` 新增 `build_single_agent_stream_session_deps(...)`
+- standalone / project single-agent streaming route 改为通过 builder 构造底层 deps
+- stream-session / orchestrator focused tests 也切到 builder
+
+这一步的意义是：
+
+- route 进一步退出对 low-level streaming session dataclass shape 的直接依赖
+- single-agent streaming path 的 contract surface 更接近前面已经 builder 化的其它层
+- 后续如果继续把 callback profile 与 stream deps 再合并成更高层 session profile，变更面会更集中
+
+边界：
+
+- builder 当前主要是隐藏 dataclass 装配，本轮没有继续压缩参数数量
+- single-agent sync path 仍没有对应的 low-level deps dataclass，因此这里只有 stream 路径收口
+- 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并

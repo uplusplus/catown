@@ -148,7 +148,7 @@ from services.stream_runtime_persistence import (
     store_runtime_card,
 )
 from services.single_agent_stream_session import (
-    SingleAgentStreamSessionDeps,
+    build_single_agent_stream_session_deps,
 )
 from services.single_agent_session_callbacks import (
     build_single_agent_stream_callbacks,
@@ -905,7 +905,7 @@ async def _stream_standalone_assistant_response(
 
     async for outcome in iter_managed_single_agent_stream_session(
         build_managed_single_agent_stream_session_spec(
-            deps=SingleAgentStreamSessionDeps(
+            deps=build_single_agent_stream_session_deps(
                 llm_client=runtime.llm_client,
                 tools=None,
                 turn_state=runtime.turn_state,
@@ -4095,7 +4095,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             async for outcome in iter_managed_single_agent_stream_session(
                 build_managed_single_agent_stream_session_spec(
-                    deps=SingleAgentStreamSessionDeps(
+                    deps=build_single_agent_stream_session_deps(
                         llm_client=runtime.llm_client,
                         tools=runtime.tool_schemas,
                         turn_state=runtime.turn_state,

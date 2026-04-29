@@ -1,7 +1,7 @@
 import pytest
 
 from services.single_agent_stream_session import (
-    SingleAgentStreamSessionDeps,
+    build_single_agent_stream_session_deps,
     iter_single_agent_stream_session,
 )
 
@@ -24,7 +24,7 @@ async def test_iter_single_agent_stream_session_renders_chunks_and_final_content
     results = [
         item
         async for item in iter_single_agent_stream_session(
-            SingleAgentStreamSessionDeps(
+            build_single_agent_stream_session_deps(
                 llm_client=FakeLLMClient(),
                 tools=None,
                 turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),

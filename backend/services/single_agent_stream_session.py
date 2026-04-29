@@ -38,6 +38,51 @@ class SingleAgentStreamSessionDeps:
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
+def build_single_agent_stream_session_deps(
+    *,
+    llm_client: Any,
+    tools: list[dict[str, Any]] | None,
+    turn_state: Any,
+    agent_name: str,
+    client_turn_id: str | None,
+    assemble_messages: Callable[[Any], list[dict[str, Any]]],
+    execute_tool: Callable[..., Awaitable[Any]],
+    build_llm_runtime_card: Callable[..., dict[str, Any]],
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
+    tool_result_success: Callable[[str], bool],
+    serialize_payload: Callable[[Any], str],
+    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]],
+    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
+    chatroom_id: int,
+    max_turns: int,
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
+) -> SingleAgentStreamSessionDeps:
+    """Build the low-level deps bundle for a single-agent streaming session."""
+
+    return SingleAgentStreamSessionDeps(
+        llm_client=llm_client,
+        tools=tools,
+        turn_state=turn_state,
+        agent_name=agent_name,
+        client_turn_id=client_turn_id,
+        assemble_messages=assemble_messages,
+        execute_tool=execute_tool,
+        build_llm_runtime_card=build_llm_runtime_card,
+        snapshot_messages=snapshot_messages,
+        preview_tool_calls=preview_tool_calls,
+        format_prompt_messages=format_prompt_messages,
+        tool_result_success=tool_result_success,
+        serialize_payload=serialize_payload,
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=public_runtime_card_payload,
+        chatroom_id=chatroom_id,
+        max_turns=max_turns,
+        on_tool_round=on_tool_round,
+    )
+
+
 async def iter_single_agent_stream_session(
     deps: SingleAgentStreamSessionDeps,
 ) -> AsyncIterator[SingleAgentStreamSessionResult]:

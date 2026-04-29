@@ -1949,3 +1949,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 `UnifiedSingleAgentSessionOutcome`、`UnifiedSingleAgentSessionSpec`、`ManagedSingleAgentSessionCallbacks`、`ManagedSingleAgentStreamTransport`、`ManagedSingleAgentSessionSpec` 从 orchestrator 中拆到 shared contract module
 - callback service 改为直接依赖 shared contract，而不再反向引用 orchestrator，从而解除这层耦合
 - 跑 memory/callback/orchestrator/API focused 回归，验证 contract 提取后行为兼容
+
+### `Hide single-agent stream runner deps behind builder`
+
+范围：
+
+- `backend/services/single_agent_stream_session.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_stream_session.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 streaming session service 中新增 `build_single_agent_stream_session_deps(...)`，把底层 stream runner deps dataclass 的装配隐藏到 builder 后面
+- standalone / project single-agent streaming route 改为通过 builder 进入底层 stream session stack，不再直接 new `SingleAgentStreamSessionDeps`
+- focused stream-session / orchestrator / API 回归改为围绕 builder 验证行为兼容
