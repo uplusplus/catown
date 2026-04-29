@@ -590,19 +590,6 @@ def build_single_agent_sync_runtime_profile(
     )
 
 
-def build_single_agent_sync_runtime_profile_from_runtime(
-    *,
-    runtime_inputs: SingleAgentRawRuntimeInputs,
-    execution_inputs: SingleAgentRawExecutionInputs,
-) -> SingleAgentRuntimeProfile:
-    """Build the full sync runtime profile directly from raw runtime inputs."""
-
-    return build_single_agent_runtime_profile_from_raw_inputs(
-        runtime_inputs=runtime_inputs,
-        execution_inputs=execution_inputs,
-    )
-
-
 def build_single_agent_stream_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
@@ -614,21 +601,6 @@ def build_single_agent_stream_runtime_profile(
     return build_single_agent_runtime_profile(
         runtime=runtime,
         execution=execution,
-        stream_failure=stream_failure,
-    )
-
-
-def build_single_agent_stream_runtime_profile_from_runtime(
-    *,
-    runtime_inputs: SingleAgentRawRuntimeInputs,
-    execution_inputs: SingleAgentRawExecutionInputs,
-    stream_failure: SingleAgentStreamFailurePolicy | None = None,
-) -> SingleAgentRuntimeProfile:
-    """Build the full stream runtime profile directly from raw runtime inputs."""
-
-    return build_single_agent_runtime_profile_from_raw_inputs(
-        runtime_inputs=runtime_inputs,
-        execution_inputs=execution_inputs,
         stream_failure=stream_failure,
     )
 
