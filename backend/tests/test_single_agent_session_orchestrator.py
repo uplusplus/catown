@@ -1,7 +1,15 @@
+import asyncio
+
 import pytest
 
+from services.single_agent_session_callbacks import (
+    build_single_agent_stream_callback_profile,
+    build_single_agent_sync_callback_profile,
+)
 from services.single_agent_session_orchestrator import (
+    build_managed_single_agent_stream_session_spec_from_callback_profile,
     build_managed_single_agent_stream_session_spec,
+    build_managed_single_agent_sync_session_spec_from_callback_profile,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
     build_unified_sync_single_agent_session_spec,
@@ -185,6 +193,133 @@ async def test_managed_single_agent_stream_session_requires_transport():
             )
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_managed_single_agent_sync_session_profile_builder_composes_callbacks():
+    calls = []
+
+    async def execute_turn():
+        return "Hello"
+
+    async def save_message(**kwargs):
+        calls.append(("save", kwargs))
+        return type("Saved", (), {"id": 7, "created_at": None})()
+
+    async def publish_message(*args, **kwargs):
+        calls.append(("publish", kwargs))
+
+    def record_turn_completed(*args, **kwargs):
+        calls.append(("complete", kwargs))
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        calls.append(("memory", {"agent_id": agent_id, "content": agent_response}))
+
+    result = await run_managed_single_agent_sync_session(
+        build_managed_single_agent_sync_session_spec_from_callback_profile(
+            execute_turn=execute_turn,
+            callback_profile=build_single_agent_sync_callback_profile(
+                db=object(),
+                task_run=None,
+                chatroom_id=7,
+                client_turn_id="turn-1",
+                agent_id=9,
+                agent_name="Analyst",
+                agent_type="Analyst",
+                user_message="Need help",
+                save_message=save_message,
+                publish_message=publish_message,
+                record_turn_completed=record_turn_completed,
+                message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+                compact_summary=lambda content: content[:5],
+                completion_summary="Analyst completed the turn.",
+                failure_summary=lambda error: f"Agent response failed: {error}",
+                extract_memories=extract_memories,
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert result.final_content == "Hello"
+    assert [name for name, _ in calls] == ["save", "publish", "complete"]
+
+
+@pytest.mark.asyncio
+async def test_managed_single_agent_stream_session_profile_builder_yields_terminal_payload():
+    class FakeLLM:
+        model = "test"
+
+        async def chat_stream(self, messages, tools):
+            yield {"type": "done", "full_content": "Hello", "tool_calls": None}
+
+    async def store_runtime_card(*args, **kwargs):
+        return None
+
+    async def save_message(**kwargs):
+        return type("Saved", (), {"id": 11, "created_at": None})()
+
+    async def publish_message(*args, **kwargs):
+        return None
+
+    def record_turn_completed(*args, **kwargs):
+        return None
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        return None
+
+    outcomes = [
+        outcome
+        async for outcome in iter_managed_single_agent_stream_session(
+            build_managed_single_agent_stream_session_spec_from_callback_profile(
+                deps=build_single_agent_stream_session_deps(
+                    llm_client=FakeLLM(),
+                    tools=None,
+                    turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+                    agent_name="Analyst",
+                    client_turn_id="turn-1",
+                    assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
+                    execute_tool=lambda *args, **kwargs: None,
+                    build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+                    snapshot_messages=lambda messages: list(messages),
+                    preview_tool_calls=lambda raw_tool_calls: [],
+                    format_prompt_messages=lambda messages: "formatted",
+                    tool_result_success=lambda result: True,
+                    serialize_payload=lambda payload: '{"type":"done"}',
+                    store_runtime_card=store_runtime_card,
+                    public_runtime_card_payload=lambda payload: payload,
+                    chatroom_id=7,
+                    max_turns=1,
+                ),
+                callback_profile=build_single_agent_stream_callback_profile(
+                    db=object(),
+                    task_run=None,
+                    chatroom_id=7,
+                    client_turn_id="turn-1",
+                    agent_id=9,
+                    agent_name="Analyst",
+                    agent_type="Analyst",
+                    user_message="Need help",
+                    save_message=save_message,
+                    publish_message=publish_message,
+                    record_turn_completed=record_turn_completed,
+                    message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+                    compact_summary=lambda content: content[:5],
+                    completion_summary="Analyst completed the streaming turn.",
+                    failure_summary=lambda error: f"Streaming execution failed: {error}",
+                    extract_memories=extract_memories,
+                    stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
+                ),
+            )
+        )
+    ]
+
+    assert outcomes[-1].chunk == 'data: {"type":"done"}\n\n'
+    assert outcomes[-1].payload == {
+        "type": "done",
+        "agent_name": "Analyst",
+        "message_id": 11,
+        "client_turn_id": "turn-1",
+    }
 
 
 async def _async_stream_finalize(final_content):

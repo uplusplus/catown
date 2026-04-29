@@ -5,6 +5,12 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from services.single_agent_session_callbacks import (
+    SingleAgentStreamCallbackProfile,
+    SingleAgentSyncCallbackProfile,
+    build_single_agent_stream_callbacks,
+    build_single_agent_sync_callbacks,
+)
 from services.single_agent_session_contracts import (
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
@@ -157,6 +163,21 @@ def build_managed_single_agent_sync_session_spec(
     )
 
 
+def build_managed_single_agent_sync_session_spec_from_callback_profile(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    callback_profile: SingleAgentSyncCallbackProfile,
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> ManagedSingleAgentSessionSpec:
+    """Build the managed sync session spec from a higher-level callback profile."""
+
+    return build_managed_single_agent_sync_session_spec(
+        execute_turn=execute_turn,
+        callbacks=build_single_agent_sync_callbacks(callback_profile),
+        on_empty=on_empty,
+    )
+
+
 def build_managed_single_agent_stream_session_spec(
     *,
     deps: SingleAgentStreamSessionDeps,
@@ -170,6 +191,19 @@ def build_managed_single_agent_stream_session_spec(
         stream_transport=ManagedSingleAgentStreamTransport(
             serialize_payload=deps.serialize_payload,
         ),
+    )
+
+
+def build_managed_single_agent_stream_session_spec_from_callback_profile(
+    *,
+    deps: SingleAgentStreamSessionDeps,
+    callback_profile: SingleAgentStreamCallbackProfile,
+) -> ManagedSingleAgentSessionSpec:
+    """Build the managed stream session spec from a higher-level callback profile."""
+
+    return build_managed_single_agent_stream_session_spec(
+        deps=deps,
+        callbacks=build_single_agent_stream_callbacks(callback_profile),
     )
 
 

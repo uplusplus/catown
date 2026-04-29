@@ -5421,3 +5421,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - builder 仍主要隐藏 dataclass 装配，本轮没有减少 callback profile 所需参数
 - route 仍分别构造 callback profile 与 stream deps，两者尚未合并到统一 session profile
 - 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.123 2026-04-29 新进展：managed session builder 已直接接受 callback profile
+
+在 11.122 之后，route 已经不再直接 new callback profile dataclass，但还保留一段中间组合链：
+
+- route 先 build callback profile
+- 再调用 `build_single_agent_sync_callbacks(...)` / `build_single_agent_stream_callbacks(...)`
+- 再把得到的 callback bundle 传给 managed session builder
+
+这仍然是一层纯 assembly glue，而不是新的运行时语义。
+
+本轮继续把这层 glue 收回 orchestrator：
+
+- orchestrator 新增从 callback profile 直接构造 managed sync session spec 的 helper
+- orchestrator 新增从 callback profile 直接构造 managed stream session spec 的 helper
+- standalone / project single-agent sync/stream route 改为把 callback profile 直接传给 managed session builder
+- focused orchestrator tests 覆盖 callback-profile 到 managed session spec 的组合链
+
+这一步的意义是：
+
+- route 再退出一层 callback assembly glue
+- callback profile 开始真正成为 managed session builder 的上游输入，而不只是 route-local intermediate object
+- 后续若继续把 callback profile 与 stream deps 再合并成更高层 session profile，orchestrator 已具备承接入口
+
+边界：
+
+- route 仍分别构造 callback profile 与 stream deps，两者尚未统一成单一 session profile
+- sync / stream 两条路径仍然存在两套 profile-to-spec helper，而不是一个自动判别入口
+- 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并
