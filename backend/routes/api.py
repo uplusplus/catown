@@ -147,15 +147,10 @@ from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
 )
 from services.single_agent_session_callbacks import (
-    build_single_agent_memory_extraction_callback,
-    build_single_agent_session_failure_callback,
-    build_single_agent_session_success_callback,
-    build_single_agent_stream_persist_failure_callback,
-    build_single_agent_stream_failure_callback,
-    build_single_agent_stream_success_callback,
-    SingleAgentSessionFailureCallbackDeps,
-    SingleAgentSessionSuccessCallbackDeps,
-    SingleAgentStreamFailureCallbackDeps,
+    build_single_agent_stream_callbacks,
+    build_single_agent_sync_callbacks,
+    SingleAgentStreamCallbackProfile,
+    SingleAgentSyncCallbackProfile,
 )
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
@@ -766,33 +761,24 @@ async def _trigger_standalone_assistant_response(
         turn_state=runtime.turn_state,
         on_compaction=compaction_callback,
     )
-    finalize_standalone_success = build_single_agent_session_success_callback(
-        SingleAgentSessionSuccessCallbackDeps(
+    standalone_callbacks = build_single_agent_sync_callbacks(
+        SingleAgentSyncCallbackProfile(
             db=db,
             task_run=task_run,
             chatroom_id=chatroom_id,
             client_turn_id=client_turn_id,
             agent_id=runtime.assistant_id,
             agent_name=runtime.assistant_name,
+            agent_type=runtime.assistant_name,
+            user_message=user_message,
             save_message=chatroom_manager.send_message,
             publish_message=publish_saved_chat_message,
             record_turn_completed=record_agent_turn_completed,
             message_metadata=_message_metadata_with_turn,
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
-            build_memory_extraction=build_single_agent_memory_extraction_callback(
-                extract_memories=_extract_memories,
-                agent_id=runtime.assistant_id,
-                agent_type=runtime.assistant_name,
-                user_message=user_message,
-            ),
-        )
-    )
-    finalize_standalone_failure = build_single_agent_session_failure_callback(
-        SingleAgentSessionFailureCallbackDeps(
-            db=db,
-            task_run=task_run,
             failure_summary=lambda error: f"Agent response failed: {error}",
+            extract_memories=_extract_memories,
         )
     )
 
@@ -800,8 +786,8 @@ async def _trigger_standalone_assistant_response(
         build_managed_single_agent_sync_session_spec(
             execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
             on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
-            finalize_success=finalize_standalone_success,
-            finalize_failure=finalize_standalone_failure,
+            finalize_success=standalone_callbacks.finalize_success,
+            finalize_failure=standalone_callbacks.finalize_failure,
         )
     )
 
@@ -891,43 +877,26 @@ async def _stream_standalone_assistant_response(
             finish_reason=raw_event.get("finish_reason"),
             timings=raw_event.get("timings"),
         )
-    finalize_standalone_stream_success = build_single_agent_stream_success_callback(
-        SingleAgentSessionSuccessCallbackDeps(
+    standalone_stream_callbacks = build_single_agent_stream_callbacks(
+        SingleAgentStreamCallbackProfile(
             db=db,
             task_run=task_run,
             chatroom_id=chatroom_id,
             client_turn_id=client_turn_id,
             agent_id=runtime.assistant_id,
             agent_name=runtime.assistant_name,
+            agent_type=runtime.assistant_name,
+            user_message=user_message,
             save_message=chatroom_manager.send_message,
             publish_message=publish_saved_chat_message,
             record_turn_completed=record_agent_turn_completed,
             message_metadata=_message_metadata_with_turn,
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
-            build_memory_extraction=build_single_agent_memory_extraction_callback(
-                extract_memories=_extract_memories,
-                agent_id=runtime.assistant_id,
-                agent_type=runtime.assistant_name,
-                user_message=user_message,
-                empty_response_text="(Agent returned empty response)",
-            ),
-        )
-    )
-    finalize_standalone_stream_failure = build_single_agent_stream_failure_callback(
-        SingleAgentStreamFailureCallbackDeps(
-            db=db,
-            task_run=task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_name=runtime.assistant_name,
-            agent_id=runtime.assistant_id,
-            final_message_saved=False,
-            persist_failure=build_single_agent_stream_persist_failure_callback(
-                message_metadata=_message_metadata_with_turn,
-                detail_builder=traceback.format_exc,
-            ),
             failure_summary=lambda error: f"Standalone stream failed: {error}",
+            extract_memories=_extract_memories,
+            stream_failure_message_metadata=_message_metadata_with_turn,
+            detail_builder=traceback.format_exc,
         )
     )
 
@@ -952,8 +921,8 @@ async def _stream_standalone_assistant_response(
                 chatroom_id=chatroom_id,
                 max_turns=1,
             ),
-            finalize_success=finalize_standalone_stream_success,
-            finalize_failure=finalize_standalone_stream_failure,
+            finalize_success=standalone_stream_callbacks.finalize_success,
+            finalize_failure=standalone_stream_callbacks.finalize_failure,
         )
     ):
         if outcome.chunk is not None:
@@ -1263,33 +1232,24 @@ async def trigger_agent_response(
                 tool_results=tool_results,
                 summary=f"{runtime.agent_label} completed a tool round.",
             )
-        finalize_project_single_agent_success = build_single_agent_session_success_callback(
-            SingleAgentSessionSuccessCallbackDeps(
+        project_single_agent_callbacks = build_single_agent_sync_callbacks(
+            SingleAgentSyncCallbackProfile(
                 db=db,
                 task_run=task_run,
                 chatroom_id=chatroom_id,
                 client_turn_id=client_turn_id,
                 agent_id=target_agent.id,
                 agent_name=runtime.agent_label,
+                agent_type=_agent_type(target_agent),
+                user_message=user_message,
                 save_message=chatroom_manager.send_message,
                 publish_message=publish_saved_chat_message,
                 record_turn_completed=record_agent_turn_completed,
                 message_metadata=_message_metadata_with_turn,
                 compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                 completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
-                build_memory_extraction=build_single_agent_memory_extraction_callback(
-                    extract_memories=_extract_memories,
-                    agent_id=target_agent.id,
-                    agent_type=_agent_type(target_agent),
-                    user_message=user_message,
-                ),
-            )
-        )
-        finalize_project_single_agent_failure = build_single_agent_session_failure_callback(
-            SingleAgentSessionFailureCallbackDeps(
-                db=db,
-                task_run=task_run,
                 failure_summary=lambda error: f"Agent response failed: {error}",
+                extract_memories=_extract_memories,
             )
         )
 
@@ -1305,8 +1265,8 @@ async def trigger_agent_response(
                     on_tool_round=_on_project_single_agent_tool_round,
                 ),
                 on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
-                finalize_success=finalize_project_single_agent_success,
-                finalize_failure=finalize_project_single_agent_failure,
+                finalize_success=project_single_agent_callbacks.finalize_success,
+                finalize_failure=project_single_agent_callbacks.finalize_failure,
             )
         )
 
@@ -4180,43 +4140,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     finish_reason=raw_event.get("finish_reason"),
                     timings=raw_event.get("timings"),
                 )
-            finalize_project_single_agent_stream_success = build_single_agent_stream_success_callback(
-                SingleAgentSessionSuccessCallbackDeps(
+            project_single_agent_stream_callbacks = build_single_agent_stream_callbacks(
+                SingleAgentStreamCallbackProfile(
                     db=db,
                     task_run=task_run,
                     chatroom_id=chatroom_id,
                     client_turn_id=message.client_turn_id,
                     agent_id=target_agent.id,
                     agent_name=target_agent_label,
+                    agent_type=_agent_type(target_agent),
+                    user_message=message.content,
                     save_message=chatroom_manager.send_message,
                     publish_message=publish_saved_chat_message,
                     record_turn_completed=record_agent_turn_completed,
                     message_metadata=_message_metadata_with_turn,
                     compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                     completion_summary=f"{target_agent_label} completed the streaming turn.",
-                    build_memory_extraction=build_single_agent_memory_extraction_callback(
-                        extract_memories=_extract_memories,
-                        agent_id=target_agent.id,
-                        agent_type=_agent_type(target_agent),
-                        user_message=message.content,
-                        empty_response_text="(Agent returned empty response)",
-                    ),
-                )
-            )
-            finalize_project_single_agent_stream_failure = build_single_agent_stream_failure_callback(
-                SingleAgentStreamFailureCallbackDeps(
-                    db=db,
-                    task_run=task_run,
-                    chatroom_id=chatroom_id,
-                    client_turn_id=message.client_turn_id,
-                    agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
-                    agent_id=active_agent_id,
-                    final_message_saved=False,
-                    persist_failure=build_single_agent_stream_persist_failure_callback(
-                        message_metadata=_message_metadata_with_turn,
-                        detail_builder=traceback.format_exc,
-                    ),
                     failure_summary=lambda error: f"Streaming execution failed: {error}",
+                    extract_memories=_extract_memories,
+                    stream_failure_message_metadata=_message_metadata_with_turn,
+                    failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
+                    failure_agent_id=active_agent_id,
+                    detail_builder=traceback.format_exc,
                 )
             )
 
@@ -4242,8 +4187,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         max_turns=MAX_TOOL_ITERATIONS,
                         on_tool_round=_on_single_agent_stream_tool_round,
                     ),
-                    finalize_success=finalize_project_single_agent_stream_success,
-                    finalize_failure=finalize_project_single_agent_stream_failure,
+                    finalize_success=project_single_agent_stream_callbacks.finalize_success,
+                    finalize_failure=project_single_agent_stream_callbacks.finalize_failure,
                 )
             ):
                 if outcome.chunk is not None:

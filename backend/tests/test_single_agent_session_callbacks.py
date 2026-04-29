@@ -1,15 +1,22 @@
+import asyncio
+
 import pytest
 
 from services.single_agent_session_callbacks import (
     build_single_agent_memory_extraction_callback,
     build_single_agent_session_failure_callback,
     build_single_agent_session_success_callback,
+    build_single_agent_stream_callbacks,
     build_single_agent_stream_persist_failure_callback,
     build_single_agent_stream_failure_callback,
     build_single_agent_stream_success_callback,
+    build_single_agent_sync_callbacks,
+    SingleAgentManagedCallbackSet,
     SingleAgentSessionFailureCallbackDeps,
     SingleAgentSessionSuccessCallbackDeps,
+    SingleAgentStreamCallbackProfile,
     SingleAgentStreamFailureCallbackDeps,
+    SingleAgentSyncCallbackProfile,
 )
 
 
@@ -224,3 +231,117 @@ async def test_build_single_agent_stream_persist_failure_callback_forwards_metad
         "client_turn_id": "turn-1",
         "extra": {"x": 1},
     }
+
+
+@pytest.mark.asyncio
+async def test_build_single_agent_sync_callbacks_returns_managed_callback_set():
+    calls = []
+
+    async def save_message(**kwargs):
+        calls.append(("save", kwargs))
+        return type("Saved", (), {"id": 7, "created_at": None})()
+
+    async def publish_message(*args, **kwargs):
+        calls.append(("publish", kwargs))
+
+    def record_turn_completed(*args, **kwargs):
+        calls.append(("complete", kwargs))
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        calls.append(("memory", {"agent": agent_id, "content": agent_response}))
+
+    callbacks = build_single_agent_sync_callbacks(
+        SingleAgentSyncCallbackProfile(
+            db=object(),
+            task_run=None,
+            chatroom_id=7,
+            client_turn_id="turn-1",
+            agent_id=9,
+            agent_name="Analyst",
+            agent_type="Analyst",
+            user_message="Need help",
+            save_message=save_message,
+            publish_message=publish_message,
+            record_turn_completed=record_turn_completed,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            compact_summary=lambda content: content[:5],
+            completion_summary="Analyst completed the turn.",
+            failure_summary=lambda error: f"Agent response failed: {error}",
+            extract_memories=extract_memories,
+        )
+    )
+
+    assert isinstance(callbacks, SingleAgentManagedCallbackSet)
+    result = await callbacks.finalize_success("Hello world with enough detail for memory extraction.")
+    await asyncio.sleep(0)
+
+    assert result.saved_message.id == 7
+    assert [name for name, _ in calls] == ["save", "publish", "complete", "memory"]
+
+
+@pytest.mark.asyncio
+async def test_build_single_agent_stream_callbacks_uses_failure_agent_overrides():
+    calls = {}
+
+    async def save_message(**kwargs):
+        return type("Saved", (), {"id": 7, "created_at": None})()
+
+    async def publish_message(*args, **kwargs):
+        return None
+
+    def record_turn_completed(*args, **kwargs):
+        return None
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        return None
+
+    async def fake_persist_stream_failure(db, **kwargs):
+        calls["kwargs"] = kwargs
+        return type("Saved", (), {"id": 11})()
+
+    import services.stream_runtime_persistence as persistence_mod
+
+    original = persistence_mod.persist_stream_failure
+    persistence_mod.persist_stream_failure = fake_persist_stream_failure
+    try:
+        callbacks = build_single_agent_stream_callbacks(
+            SingleAgentStreamCallbackProfile(
+                db=object(),
+                task_run=None,
+                chatroom_id=7,
+                client_turn_id="turn-1",
+                agent_id=9,
+                agent_name="Analyst",
+                agent_type="Analyst",
+                user_message="Need help",
+                save_message=save_message,
+                publish_message=publish_message,
+                record_turn_completed=record_turn_completed,
+                message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+                compact_summary=lambda content: content[:5],
+                completion_summary="Analyst completed the streaming turn.",
+                failure_summary=lambda error: f"Streaming execution failed: {error}",
+                extract_memories=extract_memories,
+                stream_failure_message_metadata=lambda client_turn_id, extra=None: {
+                    "client_turn_id": client_turn_id,
+                    "extra": extra,
+                },
+                failure_agent_name="Fallback",
+                failure_agent_id=21,
+                detail_builder=lambda: "traceback",
+            )
+        )
+
+        result = await callbacks.finalize_failure(RuntimeError("boom"))
+    finally:
+        persistence_mod.persist_stream_failure = original
+
+    assert result.payload == {
+        "type": "done",
+        "agent_name": "Fallback",
+        "message_id": 11,
+        "client_turn_id": "turn-1",
+    }
+    assert calls["kwargs"]["agent_name"] == "Fallback"
+    assert calls["kwargs"]["agent_id"] == 21
+    assert calls["kwargs"]["detail"] == "traceback"

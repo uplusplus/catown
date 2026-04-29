@@ -69,6 +69,148 @@ class SingleAgentStreamFailureCallbackDeps:
     failure_summary: str | Callable[[Exception], str]
 
 
+@dataclass(frozen=True)
+class SingleAgentManagedCallbackSet:
+    finalize_success: Callable[[str], Awaitable[Any]]
+    finalize_failure: Callable[[Exception], Awaitable[Any] | Any]
+
+
+@dataclass(frozen=True)
+class SingleAgentSyncCallbackProfile:
+    db: Any
+    task_run: Any
+    chatroom_id: int
+    client_turn_id: str | None
+    agent_id: int | None
+    agent_name: str
+    agent_type: str
+    user_message: str
+    save_message: SaveMessage
+    publish_message: PublishMessage
+    record_turn_completed: RecordTurnCompleted
+    message_metadata: MessageMetadataBuilder
+    compact_summary: CompactSummary
+    completion_summary: str
+    failure_summary: str | Callable[[Exception], str]
+    extract_memories: ExtractMemories
+    min_response_length: int = 30
+
+
+@dataclass(frozen=True)
+class SingleAgentStreamCallbackProfile:
+    db: Any
+    task_run: Any
+    chatroom_id: int
+    client_turn_id: str | None
+    agent_id: int | None
+    agent_name: str
+    agent_type: str
+    user_message: str
+    save_message: SaveMessage
+    publish_message: PublishMessage
+    record_turn_completed: RecordTurnCompleted
+    message_metadata: MessageMetadataBuilder
+    compact_summary: CompactSummary
+    completion_summary: str
+    failure_summary: str | Callable[[Exception], str]
+    extract_memories: ExtractMemories
+    stream_failure_message_metadata: StreamFailureMetadataBuilder
+    failure_agent_name: str | None = None
+    failure_agent_id: int | None = None
+    detail_builder: StreamFailureDetailBuilder | None = None
+    final_message_saved: bool = False
+    empty_response_text: str = "(Agent returned empty response)"
+    min_response_length: int = 30
+
+
+def build_single_agent_sync_callbacks(
+    profile: SingleAgentSyncCallbackProfile,
+) -> SingleAgentManagedCallbackSet:
+    """Build the standard managed callback pair for a sync single-agent turn."""
+
+    return SingleAgentManagedCallbackSet(
+        finalize_success=build_single_agent_session_success_callback(
+            SingleAgentSessionSuccessCallbackDeps(
+                db=profile.db,
+                task_run=profile.task_run,
+                chatroom_id=profile.chatroom_id,
+                client_turn_id=profile.client_turn_id,
+                agent_id=profile.agent_id,
+                agent_name=profile.agent_name,
+                save_message=profile.save_message,
+                publish_message=profile.publish_message,
+                record_turn_completed=profile.record_turn_completed,
+                message_metadata=profile.message_metadata,
+                compact_summary=profile.compact_summary,
+                completion_summary=profile.completion_summary,
+                build_memory_extraction=build_single_agent_memory_extraction_callback(
+                    extract_memories=profile.extract_memories,
+                    agent_id=profile.agent_id,
+                    agent_type=profile.agent_type,
+                    user_message=profile.user_message,
+                    min_response_length=profile.min_response_length,
+                ),
+            )
+        ),
+        finalize_failure=build_single_agent_session_failure_callback(
+            SingleAgentSessionFailureCallbackDeps(
+                db=profile.db,
+                task_run=profile.task_run,
+                failure_summary=profile.failure_summary,
+            )
+        ),
+    )
+
+
+def build_single_agent_stream_callbacks(
+    profile: SingleAgentStreamCallbackProfile,
+) -> SingleAgentManagedCallbackSet:
+    """Build the standard managed callback pair for a streaming single-agent turn."""
+
+    return SingleAgentManagedCallbackSet(
+        finalize_success=build_single_agent_stream_success_callback(
+            SingleAgentSessionSuccessCallbackDeps(
+                db=profile.db,
+                task_run=profile.task_run,
+                chatroom_id=profile.chatroom_id,
+                client_turn_id=profile.client_turn_id,
+                agent_id=profile.agent_id,
+                agent_name=profile.agent_name,
+                save_message=profile.save_message,
+                publish_message=profile.publish_message,
+                record_turn_completed=profile.record_turn_completed,
+                message_metadata=profile.message_metadata,
+                compact_summary=profile.compact_summary,
+                completion_summary=profile.completion_summary,
+                build_memory_extraction=build_single_agent_memory_extraction_callback(
+                    extract_memories=profile.extract_memories,
+                    agent_id=profile.agent_id,
+                    agent_type=profile.agent_type,
+                    user_message=profile.user_message,
+                    empty_response_text=profile.empty_response_text,
+                    min_response_length=profile.min_response_length,
+                ),
+            )
+        ),
+        finalize_failure=build_single_agent_stream_failure_callback(
+            SingleAgentStreamFailureCallbackDeps(
+                db=profile.db,
+                task_run=profile.task_run,
+                chatroom_id=profile.chatroom_id,
+                client_turn_id=profile.client_turn_id,
+                agent_name=profile.failure_agent_name or profile.agent_name,
+                agent_id=profile.failure_agent_id if profile.failure_agent_id is not None else profile.agent_id,
+                final_message_saved=profile.final_message_saved,
+                persist_failure=build_single_agent_stream_persist_failure_callback(
+                    message_metadata=profile.stream_failure_message_metadata,
+                    detail_builder=profile.detail_builder,
+                ),
+                failure_summary=profile.failure_summary,
+            )
+        ),
+    )
+
+
 def build_single_agent_session_success_callback(
     deps: SingleAgentSessionSuccessCallbackDeps,
 ):

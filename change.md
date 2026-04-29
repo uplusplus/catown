@@ -1866,3 +1866,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 callback builder service 中新增 shared memory-extraction policy helper 与 stream-failure persistence helper
 - standalone / project single-agent sync/stream route 改为复用这些 policy helpers，不再重复拼接 `asyncio.create_task(_extract_memories(...))` 和 `persist_stream_failure(...)` 包装器
 - 补 focused helper tests，并跑 callback/orchestrator/API 回归确认行为兼容
+
+### `Bundle single-agent managed callback profiles`
+
+范围：
+
+- `backend/services/single_agent_session_callbacks.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_callbacks.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 callback service 中新增 `SingleAgentSyncCallbackProfile`、`SingleAgentStreamCallbackProfile` 与 `SingleAgentManagedCallbackSet`
+- standalone / project single-agent sync/stream route 改为通过 profile builder 一次性产出 success/failure callback set，不再分别拼 success deps 与 failure deps
+- 补 focused callback-profile tests，并跑 callback/orchestrator/API 回归确认行为兼容

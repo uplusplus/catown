@@ -5217,3 +5217,34 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍要提供 agent identity、user message、traceback builder 这些策略输入
 - `_extract_memories(...)` 本身仍定义在 route 内，尚未下沉为独立 runtime service
 - 如果继续推进，下一步可以考虑把 single-agent memory extraction scheduler 与 stream failure policy deps 再统一成更高层 profile/helper
+
+### 11.116 2026-04-29 新进展：single-agent managed callback profile 已合并为成组 builder
+
+在 11.115 之后，route 虽然已经不再直接拼 memory helper 和 stream-failure persistence helper，但还保留一层成对样板：
+
+- sync path 仍分别构造 success callback deps 和 failure callback deps
+- stream path 仍分别构造 success callback deps 和 failure callback deps
+- standalone / project 两条路径都还在显式维护这两套 deps 组合
+
+这说明 callback builder service 已经吸收了策略细节，但 route 仍在负责“如何把这些策略拼成一对 managed callbacks”。
+
+本轮继续把这层组合责任移出 route：
+
+- 新增 `SingleAgentManagedCallbackSet`
+- 新增 `SingleAgentSyncCallbackProfile`
+- 新增 `SingleAgentStreamCallbackProfile`
+- 新增 `build_single_agent_sync_callbacks(...)`
+- 新增 `build_single_agent_stream_callbacks(...)`
+- standalone / project single-agent sync/stream route 改为通过 profile 一次性产出 managed callback pair
+
+这一步的意义是：
+
+- route 进一步退出 callback composition 细节
+- single-agent callback service 从“零散 helper 集合”演进成更明确的 managed callback assembly layer
+- 后续若继续抽更高层 session profile，已有稳定的 callback-set 抽象可以承接
+
+边界：
+
+- route 仍要提供 runtime-specific profile inputs，例如 agent identity、user message、traceback builder
+- managed session spec builder 仍直接接收 `finalize_success` / `finalize_failure`，尚未直接消费 callback set
+- 如果继续推进，下一步可以考虑让 managed session spec builder 直接接受 callback bundle，进一步压 route 参数面
