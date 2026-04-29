@@ -5649,3 +5649,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync / stream runtime profile 仍是两套类型
 - runtime profile 内部仍要再经过 session-profile/spec 组合链
 - 如果继续推进，下一步可以考虑把 sync/stream runtime profile 再统一成更共享的 single-agent runtime model
+
+### 11.130 2026-04-29 新进展：single-agent runtime profile 已可直接从 raw runtime inputs 构造
+
+在 11.129 之后，route 虽然已经面向 runtime profile runner，但还保留最后一段 profile 前置装配：
+
+- 先 build shared runtime context
+- 再 build sync/stream execution context
+- 再 build sync/stream runtime profile
+- 最后交给 runtime profile runner
+
+这说明 route 虽然已经脱离 session-profile/spec 层，但仍要显式串装 `context -> execution -> runtime profile` 这条链。
+
+本轮继续把这层 builder 链藏到 orchestrator 后面：
+
+- orchestrator 新增从 raw runtime inputs 直接构造 sync runtime profile 的 helper
+- orchestrator 新增从 raw runtime inputs 直接构造 stream runtime profile 的 helper
+- standalone / project single-agent sync/stream route 改为直接把原始 runtime inputs 交给这些 builder
+
+这一步的意义是：
+
+- route 进一步退出 single-agent runtime stack 的中间对象装配
+- single-agent sync/stream 的高层使用面更接近“直接描述本轮运行输入”，而不是拼对象图
+- 后续如果继续统一 sync/stream runtime profile，本轮已经把大部分 route-local assembly 清到了 orchestrator 内部
+
+边界：
+
+- sync / stream runtime profile 仍是两套类型
+- orchestrator 内部仍保留 `runtime context + execution context + runtime profile` 这几个层级
+- 如果继续推进，下一步可以考虑把 sync/stream runtime profile 再统一成更共享的 single-agent runtime model
