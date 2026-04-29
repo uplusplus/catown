@@ -1933,3 +1933,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 `memory_extraction` service 中新增 shared task-scheduling helper，让 memory extraction 的 `asyncio.create_task(...)` 包装不再散落在 callback builder 与 orchestration route lambda 中
 - single-agent callback helper 与 orchestration memory scheduling 改为统一复用该 scheduling helper
 - 补 focused scheduling helper tests，并跑 memory/callback/orchestrator/API 回归确认行为兼容
+
+### `Extract single-agent session contract models`
+
+范围：
+
+- `backend/services/single_agent_session_contracts.py`
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/services/single_agent_session_callbacks.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 将 `UnifiedSingleAgentSessionOutcome`、`UnifiedSingleAgentSessionSpec`、`ManagedSingleAgentSessionCallbacks`、`ManagedSingleAgentStreamTransport`、`ManagedSingleAgentSessionSpec` 从 orchestrator 中拆到 shared contract module
+- callback service 改为直接依赖 shared contract，而不再反向引用 orchestrator，从而解除这层耦合
+- 跑 memory/callback/orchestrator/API focused 回归，验证 contract 提取后行为兼容

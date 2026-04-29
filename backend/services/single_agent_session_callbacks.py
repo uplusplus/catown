@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from services.memory_extraction import schedule_agent_memory_extraction
-from services.single_agent_session_orchestrator import (
+from services.single_agent_session_contracts import (
     ManagedSingleAgentSessionCallbacks,
 )
 from services.single_agent_session_finalizer import (

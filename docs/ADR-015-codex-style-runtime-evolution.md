@@ -5333,3 +5333,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 当前 scheduler 仍是轻量的 task launcher，不包含限流或去重语义
 - orchestration runner 自身的长度阈值判断仍保留在现有上层逻辑
 - 如果继续推进，下一步可以考虑把 single-agent callback profile 与 stream session deps 再往更高层 session profile 合并
+
+### 11.120 2026-04-29 新进展：single-agent session contract model 已从 orchestrator 中拆出
+
+在 11.119 之后，single-agent callback service 与 orchestrator 之间还残留一层结构性耦合：
+
+- callback service 需要返回 orchestrator 使用的 `ManagedSingleAgentSessionCallbacks`
+- 该 contract type 仍定义在 orchestrator 模块内
+- 结果就是 callback service 必须反向 import orchestrator，只为了拿 contract dataclass
+
+这类依赖方向不利于继续把 callback profile / session profile 再往上合并。
+
+本轮先把 contract surface 独立出来：
+
+- 新增 `single_agent_session_contracts.py`
+- 将 `UnifiedSingleAgentSessionOutcome`
+- `UnifiedSingleAgentSessionSpec`
+- `ManagedSingleAgentSessionCallbacks`
+- `ManagedSingleAgentStreamTransport`
+- `ManagedSingleAgentSessionSpec`
+  从 orchestrator 中抽到 shared contract module
+- callback service 改为直接依赖 shared contract，而不再反向依赖 orchestrator
+
+这一步的意义是：
+
+- single-agent session stack 的 contract layer 与 execution layer 开始分离
+- callback service / orchestrator / tests 可以围绕同一份 contract model 组织，而不是把 orchestrator 当成类型宿主
+- 后续如果继续合并 callback profile 与 managed session profile，依赖方向会更干净
+
+边界：
+
+- orchestrator 仍然是这些 contract 的主要执行入口，本轮只拆了模型定义
+- route 还没有直接消费 `single_agent_session_contracts.py`
+- 如果继续推进，下一步可以考虑把 callback profile 与 stream session deps 再往更高层 session profile 合并

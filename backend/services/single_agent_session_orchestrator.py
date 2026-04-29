@@ -3,9 +3,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from services.single_agent_session_contracts import (
+    ManagedSingleAgentSessionCallbacks,
+    ManagedSingleAgentSessionSpec,
+    ManagedSingleAgentStreamTransport,
+    UnifiedSingleAgentSessionOutcome,
+    UnifiedSingleAgentSessionSpec,
+)
 from services.single_agent_session_runner import (
     SingleAgentSessionRunnerDeps,
     SingleAgentSessionRunnerResult,
@@ -15,38 +21,7 @@ from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
     iter_single_agent_stream_session,
 )
-from services.stream_transport import SerializePayload, render_sse_payload
-
-
-@dataclass(frozen=True)
-class UnifiedSingleAgentSessionOutcome:
-    final_content: str | None = None
-    chunk: str | None = None
-    payload: dict[str, Any] | None = None
-    error_text: str | None = None
-
-
-@dataclass(frozen=True)
-class UnifiedSingleAgentSessionSpec:
-    iterate: Callable[[], AsyncIterator[UnifiedSingleAgentSessionOutcome]]
-
-
-@dataclass(frozen=True)
-class ManagedSingleAgentSessionCallbacks:
-    finalize_success: Callable[[str], Awaitable[Any]]
-    finalize_failure: Callable[[Exception], Awaitable[Any] | Any]
-
-
-@dataclass(frozen=True)
-class ManagedSingleAgentStreamTransport:
-    serialize_payload: SerializePayload
-
-
-@dataclass(frozen=True)
-class ManagedSingleAgentSessionSpec:
-    session: UnifiedSingleAgentSessionSpec
-    callbacks: ManagedSingleAgentSessionCallbacks
-    stream_transport: ManagedSingleAgentStreamTransport | None = None
+from services.stream_transport import render_sse_payload
 
 
 async def run_unified_single_agent_sync_session(
