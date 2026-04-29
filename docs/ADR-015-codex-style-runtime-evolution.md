@@ -5735,6 +5735,39 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - unified builder core 之下仍需分别适配 sync execution / stream execution 的差异
 - 如果继续推进，下一步可以考虑进一步统一 sync/stream raw-runtime builder 的参数分组或引入更高层 shared input bundle
 
+### 11.133 2026-04-29 新进展：single-agent raw runtime inputs 已抽成共享 bundle
+
+在 11.132 之后，single-agent 顶层 runtime profile builder core 虽然已经统一，但 sync/stream raw-runtime builder 仍各自接一大串重复参数：
+
+- `db/task_run/chatroom_id/client_turn_id`
+- `agent_id/agent_name/agent_type`
+- `user_message`
+- `save/publish/record`
+- `message_metadata`
+- `compact_summary/completion_summary/failure_summary`
+- `extract_memories`
+
+这些本质上就是更原始的一层 shared runtime input，但此前还没有单独模型承接。
+
+本轮把它再往前提一格：
+
+- 新增 `SingleAgentRawRuntimeInputs`
+- 新增对应 builder
+- sync / stream raw-runtime builder 改为消费这个 shared raw input bundle
+- route 也改为先构造 raw runtime inputs，再交给 sync/stream raw-runtime builder
+
+这一步的意义是：
+
+- single-agent raw-runtime builder 的公共参数面第一次被显式建模
+- route 继续退出大段重复参数传递
+- 后续如果要进一步统一 sync/stream raw-runtime builder，自然的落点已经从“长参数列表”变成了“shared raw input bundle”
+
+边界：
+
+- sync / stream raw-runtime builder 仍分别保留自己的 execution-specific 参数
+- shared raw input bundle 之上还没有进一步形成更统一的 top-level builder 参数对象
+- 如果继续推进，下一步可以考虑进一步统一 sync/stream raw-runtime builder 的 execution-specific 参数分组
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -59,6 +59,28 @@ class SingleAgentSessionRuntimeContext:
 
 
 @dataclass(frozen=True)
+class SingleAgentRawRuntimeInputs:
+    db: Any
+    task_run: Any
+    chatroom_id: int
+    client_turn_id: str | None
+    agent_id: int | None
+    agent_name: str
+    agent_type: str
+    user_message: str
+    save_message: Callable[..., Awaitable[Any]]
+    publish_message: Callable[..., Awaitable[Any]]
+    record_turn_completed: Callable[..., Any]
+    message_metadata: Callable[..., dict[str, Any]]
+    compact_summary: Callable[[Any], str]
+    completion_summary: str
+    failure_summary: str | Callable[[Exception], str]
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]]
+    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None
+    min_response_length: int = 30
+
+
+@dataclass(frozen=True)
 class SingleAgentRuntimeProfile:
     session: ManagedSingleAgentSessionSpec
 
@@ -259,6 +281,78 @@ def build_single_agent_session_runtime_context(
     )
 
 
+def build_single_agent_raw_runtime_inputs(
+    *,
+    db: Any,
+    task_run: Any,
+    chatroom_id: int,
+    client_turn_id: str | None,
+    agent_id: int | None,
+    agent_name: str,
+    agent_type: str,
+    user_message: str,
+    save_message: Callable[..., Awaitable[Any]],
+    publish_message: Callable[..., Awaitable[Any]],
+    record_turn_completed: Callable[..., Any],
+    message_metadata: Callable[..., dict[str, Any]],
+    compact_summary: Callable[[Any], str],
+    completion_summary: str,
+    failure_summary: str | Callable[[Exception], str],
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
+    min_response_length: int = 30,
+) -> SingleAgentRawRuntimeInputs:
+    """Build the shared raw runtime input bundle for one single-agent turn."""
+
+    return SingleAgentRawRuntimeInputs(
+        db=db,
+        task_run=task_run,
+        chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        agent_type=agent_type,
+        user_message=user_message,
+        save_message=save_message,
+        publish_message=publish_message,
+        record_turn_completed=record_turn_completed,
+        message_metadata=message_metadata,
+        compact_summary=compact_summary,
+        completion_summary=completion_summary,
+        failure_summary=failure_summary,
+        extract_memories=extract_memories,
+        stream_failure_message_metadata=stream_failure_message_metadata,
+        min_response_length=min_response_length,
+    )
+
+
+def build_single_agent_session_runtime_context_from_raw_inputs(
+    inputs: SingleAgentRawRuntimeInputs,
+) -> SingleAgentSessionRuntimeContext:
+    """Promote raw runtime inputs into the shared runtime context model."""
+
+    return build_single_agent_session_runtime_context(
+        db=inputs.db,
+        task_run=inputs.task_run,
+        chatroom_id=inputs.chatroom_id,
+        client_turn_id=inputs.client_turn_id,
+        agent_id=inputs.agent_id,
+        agent_name=inputs.agent_name,
+        agent_type=inputs.agent_type,
+        user_message=inputs.user_message,
+        save_message=inputs.save_message,
+        publish_message=inputs.publish_message,
+        record_turn_completed=inputs.record_turn_completed,
+        message_metadata=inputs.message_metadata,
+        compact_summary=inputs.compact_summary,
+        completion_summary=inputs.completion_summary,
+        failure_summary=inputs.failure_summary,
+        extract_memories=inputs.extract_memories,
+        stream_failure_message_metadata=inputs.stream_failure_message_metadata,
+        min_response_length=inputs.min_response_length,
+    )
+
+
 def build_single_agent_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
@@ -362,50 +456,14 @@ def build_single_agent_sync_runtime_profile(
 
 def build_single_agent_sync_runtime_profile_from_runtime(
     *,
-    db: Any,
-    task_run: Any,
-    chatroom_id: int,
-    client_turn_id: str | None,
-    agent_id: int | None,
-    agent_name: str,
-    agent_type: str,
-    user_message: str,
-    save_message: Callable[..., Awaitable[Any]],
-    publish_message: Callable[..., Awaitable[Any]],
-    record_turn_completed: Callable[..., Any],
-    message_metadata: Callable[..., dict[str, Any]],
-    compact_summary: Callable[[Any], str],
-    completion_summary: str,
-    failure_summary: str | Callable[[Exception], str],
-    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    runtime_inputs: SingleAgentRawRuntimeInputs,
     execute_turn: Callable[[], Awaitable[str | None]],
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
-    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
-    min_response_length: int = 30,
 ) -> SingleAgentRuntimeProfile:
     """Build the full sync runtime profile directly from raw runtime inputs."""
 
     return build_single_agent_sync_runtime_profile(
-        runtime=build_single_agent_session_runtime_context(
-            db=db,
-            task_run=task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_id=agent_id,
-            agent_name=agent_name,
-            agent_type=agent_type,
-            user_message=user_message,
-            save_message=save_message,
-            publish_message=publish_message,
-            record_turn_completed=record_turn_completed,
-            message_metadata=message_metadata,
-            compact_summary=compact_summary,
-            completion_summary=completion_summary,
-            failure_summary=failure_summary,
-            extract_memories=extract_memories,
-            stream_failure_message_metadata=stream_failure_message_metadata,
-            min_response_length=min_response_length,
-        ),
+        runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
         execution=build_single_agent_sync_execution_context(
             execute_turn=execute_turn,
             on_empty=on_empty,
@@ -438,22 +496,7 @@ def build_single_agent_stream_runtime_profile(
 
 def build_single_agent_stream_runtime_profile_from_runtime(
     *,
-    db: Any,
-    task_run: Any,
-    chatroom_id: int,
-    client_turn_id: str | None,
-    agent_id: int | None,
-    agent_name: str,
-    agent_type: str,
-    user_message: str,
-    save_message: Callable[..., Awaitable[Any]],
-    publish_message: Callable[..., Awaitable[Any]],
-    record_turn_completed: Callable[..., Any],
-    message_metadata: Callable[..., dict[str, Any]],
-    compact_summary: Callable[[Any], str],
-    completion_summary: str,
-    failure_summary: str | Callable[[Exception], str],
-    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
+    runtime_inputs: SingleAgentRawRuntimeInputs,
     llm_client: Any,
     tools: list[dict[str, Any]] | None,
     turn_state: Any,
@@ -468,38 +511,17 @@ def build_single_agent_stream_runtime_profile_from_runtime(
     store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
     public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
     max_turns: int,
-    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
     failure_agent_name: str | None = None,
     failure_agent_id: int | None = None,
     detail_builder: Callable[[], str] | None = None,
     final_message_saved: bool = False,
     empty_response_text: str = "(Agent returned empty response)",
-    min_response_length: int = 30,
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the full stream runtime profile directly from raw runtime inputs."""
 
     return build_single_agent_stream_runtime_profile(
-        runtime=build_single_agent_session_runtime_context(
-            db=db,
-            task_run=task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_id=agent_id,
-            agent_name=agent_name,
-            agent_type=agent_type,
-            user_message=user_message,
-            save_message=save_message,
-            publish_message=publish_message,
-            record_turn_completed=record_turn_completed,
-            message_metadata=message_metadata,
-            compact_summary=compact_summary,
-            completion_summary=completion_summary,
-            failure_summary=failure_summary,
-            extract_memories=extract_memories,
-            stream_failure_message_metadata=stream_failure_message_metadata,
-            min_response_length=min_response_length,
-        ),
+        runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
         execution=build_single_agent_stream_execution_context(
             llm_client=llm_client,
             tools=tools,
