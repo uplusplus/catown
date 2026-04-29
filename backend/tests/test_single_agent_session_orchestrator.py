@@ -1,11 +1,12 @@
 import pytest
 
 from services.single_agent_session_orchestrator import (
+    build_unified_stream_single_agent_session_spec,
+    build_unified_sync_single_agent_session_spec,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
     iter_managed_single_agent_stream_session,
     run_managed_single_agent_sync_session,
-    UnifiedSingleAgentSessionSpec,
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
 )
@@ -26,9 +27,8 @@ async def test_unified_single_agent_stream_session_delegates_to_stream_runner():
     rendered = [
         item
         async for item in iter_unified_single_agent_stream_session(
-            UnifiedSingleAgentSessionSpec(
-                mode="stream",
-                stream_deps=SingleAgentStreamSessionDeps(
+            build_unified_stream_single_agent_session_spec(
+                deps=SingleAgentStreamSessionDeps(
                     llm_client=FakeLLM(),
                     tools=None,
                     turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
@@ -60,8 +60,7 @@ async def test_unified_single_agent_sync_session_delegates_to_sync_runner():
         return "Hello"
 
     result = await run_unified_single_agent_sync_session(
-        UnifiedSingleAgentSessionSpec(
-            mode="sync",
+        build_unified_sync_single_agent_session_spec(
             execute_turn=execute_turn,
         )
     )
@@ -81,8 +80,7 @@ async def test_managed_single_agent_sync_session_delegates_to_unified_sync():
 
     result = await run_managed_single_agent_sync_session(
         ManagedSingleAgentSessionSpec(
-            session=UnifiedSingleAgentSessionSpec(
-                mode="sync",
+            session=build_unified_sync_single_agent_session_spec(
                 execute_turn=execute_turn,
             ),
             callbacks=ManagedSingleAgentSessionCallbacks(
@@ -112,9 +110,8 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
         outcome
         async for outcome in iter_managed_single_agent_stream_session(
             ManagedSingleAgentSessionSpec(
-                session=UnifiedSingleAgentSessionSpec(
-                    mode="stream",
-                    stream_deps=SingleAgentStreamSessionDeps(
+                session=build_unified_stream_single_agent_session_spec(
+                    deps=SingleAgentStreamSessionDeps(
                         llm_client=FakeLLM(),
                         tools=None,
                         turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),

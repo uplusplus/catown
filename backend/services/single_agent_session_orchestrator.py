@@ -28,10 +28,7 @@ class UnifiedSingleAgentSessionOutcome:
 
 @dataclass(frozen=True)
 class UnifiedSingleAgentSessionSpec:
-    mode: str
-    execute_turn: Callable[[], Awaitable[str | None]] | None = None
-    stream_deps: SingleAgentStreamSessionDeps | None = None
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None
+    iterate: Callable[[], AsyncIterator[UnifiedSingleAgentSessionOutcome]]
 
 
 @dataclass(frozen=True)
@@ -51,25 +48,23 @@ async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the higher-level unified facade."""
-    if spec.mode != "sync" or spec.execute_turn is None:
-        raise ValueError("Unified sync session requires mode='sync' and execute_turn.")
-    final_content = await spec.execute_turn()
-    if not final_content and spec.on_empty is not None:
-        await _maybe_await(spec.on_empty())
-    return UnifiedSingleAgentSessionOutcome(final_content=final_content or None)
+
+    final_content = None
+    async for item in spec.iterate():
+        if item.chunk is not None:
+            raise ValueError("Sync single-agent session emitted stream chunks unexpectedly.")
+        if item.final_content is not None:
+            final_content = item.final_content
+    return UnifiedSingleAgentSessionOutcome(final_content=final_content)
 
 
 async def iter_unified_single_agent_stream_session(
     spec: UnifiedSingleAgentSessionSpec,
 ) -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
     """Run one stream single-agent session through the higher-level unified facade."""
-    if spec.mode != "stream" or spec.stream_deps is None:
-        raise ValueError("Unified stream session requires mode='stream' and stream_deps.")
-    async for item in iter_single_agent_stream_session(spec.stream_deps):
-        yield UnifiedSingleAgentSessionOutcome(
-            final_content=item.final_content,
-            chunk=item.chunk,
-        )
+
+    async for item in spec.iterate():
+        yield item
 
 
 async def run_managed_single_agent_sync_session(
@@ -78,10 +73,9 @@ async def run_managed_single_agent_sync_session(
     """Run one sync single-agent session through the managed stack surface."""
     result = await run_single_agent_session(
         SingleAgentSessionRunnerDeps(
-            execute_turn=spec.session.execute_turn,
+            execute_turn=lambda: _consume_sync_session(spec.session),
             finalize_success=spec.callbacks.finalize_success,
             finalize_failure=spec.callbacks.finalize_failure,
-            on_empty=spec.session.on_empty,
         )
     )
     return UnifiedSingleAgentSessionOutcome(final_content=result.final_content)
@@ -121,3 +115,47 @@ async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+def build_unified_sync_single_agent_session_spec(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+) -> UnifiedSingleAgentSessionSpec:
+    """Build the unified spec for a sync single-agent session."""
+
+    async def _iterate() -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
+        final_content = await execute_turn()
+        if not final_content:
+            if on_empty is not None:
+                await _maybe_await(on_empty())
+            return
+        yield UnifiedSingleAgentSessionOutcome(final_content=final_content)
+
+    return UnifiedSingleAgentSessionSpec(iterate=_iterate)
+
+
+def build_unified_stream_single_agent_session_spec(
+    *,
+    deps: SingleAgentStreamSessionDeps,
+) -> UnifiedSingleAgentSessionSpec:
+    """Build the unified spec for a streaming single-agent session."""
+
+    async def _iterate() -> AsyncIterator[UnifiedSingleAgentSessionOutcome]:
+        async for item in iter_single_agent_stream_session(deps):
+            yield UnifiedSingleAgentSessionOutcome(
+                final_content=item.final_content,
+                chunk=item.chunk,
+            )
+
+    return UnifiedSingleAgentSessionSpec(iterate=_iterate)
+
+
+async def _consume_sync_session(spec: UnifiedSingleAgentSessionSpec) -> str | None:
+    final_content = None
+    async for item in spec.iterate():
+        if item.chunk is not None:
+            raise ValueError("Sync single-agent session emitted stream chunks unexpectedly.")
+        if item.final_content is not None:
+            final_content = item.final_content
+    return final_content

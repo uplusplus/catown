@@ -5020,3 +5020,31 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `UnifiedSingleAgentSessionSpec` 仍有 `mode + execute_turn` / `mode + stream_deps` 的差异
 - route 仍需显式构造这套 unified spec
 - 如果继续推进，下一步就该尝试把 unified sync/stream spec 进一步同构
+
+### 11.109 2026-04-29 新进展：single-agent unified sync/stream spec 已改为 builder 契约
+
+在 11.108 之后，single-agent unified spec 仍保留一个明显结构差异：
+
+- sync 走 `mode=\"sync\" + execute_turn`
+- stream 走 `mode=\"stream\" + stream_deps`
+
+本轮改成 builder 契约：
+
+- `build_unified_sync_single_agent_session_spec(...)`
+- `build_unified_stream_single_agent_session_spec(...)`
+
+`UnifiedSingleAgentSessionSpec` 本身收敛为单一字段：
+
+- `iterate: Callable[[], AsyncIterator[UnifiedSingleAgentSessionOutcome]]`
+
+这一步的意义是：
+
+- single-agent sync/stream 的 unified 层不再靠 `mode` 分支区分结构
+- route 构造 unified spec 的方式开始真正同构
+- orchestrator 内部后续再统一 managed stack 或 result model 时，会有更稳定的公共入口
+
+边界：
+
+- sync/stream 的底层执行方式仍然不同，只是被 builder 隐藏到了统一 spec 背后
+- managed stack 的 callbacks 仍需分别处理 sync 与 stream 的终结差异
+- 如果继续推进，下一步可以继续压缩 managed callbacks 的差异

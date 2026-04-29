@@ -152,6 +152,8 @@ from services.single_agent_session_finalizer import (
     finalize_single_agent_session_success,
 )
 from services.single_agent_session_orchestrator import (
+    build_unified_stream_single_agent_session_spec,
+    build_unified_sync_single_agent_session_spec,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
     iter_managed_single_agent_stream_session,
@@ -765,8 +767,7 @@ async def _trigger_standalone_assistant_response(
 
     await run_managed_single_agent_sync_session(
         ManagedSingleAgentSessionSpec(
-            session=UnifiedSingleAgentSessionSpec(
-                mode="sync",
+            session=build_unified_sync_single_agent_session_spec(
                 execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
                 on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
             ),
@@ -896,9 +897,8 @@ async def _stream_standalone_assistant_response(
 
     async for outcome in iter_managed_single_agent_stream_session(
         ManagedSingleAgentSessionSpec(
-            session=UnifiedSingleAgentSessionSpec(
-                mode="stream",
-                stream_deps=SingleAgentStreamSessionDeps(
+            session=build_unified_stream_single_agent_session_spec(
+                deps=SingleAgentStreamSessionDeps(
                 llm_client=runtime.llm_client,
                 tools=None,
                 turn_state=runtime.turn_state,
@@ -1275,8 +1275,7 @@ async def trigger_agent_response(
 
         finalized = await run_managed_single_agent_sync_session(
             ManagedSingleAgentSessionSpec(
-                session=UnifiedSingleAgentSessionSpec(
-                    mode="sync",
+                session=build_unified_sync_single_agent_session_spec(
                     execute_turn=lambda: execute_non_stream_turn_loop(
                         llm_client=runtime.llm_client,
                         tools=runtime.tool_schemas,
@@ -4198,9 +4197,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             async for outcome in iter_managed_single_agent_stream_session(
                 ManagedSingleAgentSessionSpec(
-                    session=UnifiedSingleAgentSessionSpec(
-                        mode="stream",
-                        stream_deps=SingleAgentStreamSessionDeps(
+                    session=build_unified_stream_single_agent_session_spec(
+                        deps=SingleAgentStreamSessionDeps(
                             llm_client=runtime.llm_client,
                             tools=runtime.tool_schemas,
                             turn_state=runtime.turn_state,
