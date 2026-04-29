@@ -2115,6 +2115,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - standalone / project single-agent sync/stream route 改为直接把原始 runtime inputs 传给 runtime-profile builder，不再手工构造 context / execution objects
 - focused orchestrator / API 回归更新为围绕 raw-runtime builder 入口验证行为兼容
 
+### `Unify single-agent top-level runtime profile`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 将 sync/stream 双轨的顶层 runtime profile 合并为单一 `SingleAgentRuntimeProfile`
+- 移除只负责中转的 managed session profile 层，让顶层 runtime profile 直接持有 `ManagedSingleAgentSessionSpec`
+- focused orchestrator / API 回归更新为围绕统一顶层 runtime profile 验证行为兼容
+
 ### `Unify single-agent runtime profile shape`
 
 范围：

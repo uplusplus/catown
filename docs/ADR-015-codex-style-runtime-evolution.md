@@ -5686,6 +5686,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `SingleAgentSyncRuntimeProfile`
 - `SingleAgentStreamRuntimeProfile`
 
+并且它们都还要再经过一层 managed session profile 中转，才会落到最终 `ManagedSingleAgentSessionSpec`。
+
+这说明 runtime profile 虽然已经抬到最高层入口，但其内部结构仍然留着 sync/stream 双轨。
+
+本轮继续把这层双轨压掉：
+
+- 统一为单一 `SingleAgentRuntimeProfile`
+- 顶层 runtime profile 直接持有 `ManagedSingleAgentSessionSpec`
+- 删除只做中转的 managed session profile 层
+- sync / stream runner helper 继续保留，但现在都消费同一种顶层 runtime profile
+
+这一步的意义是：
+
+- single-agent sync / stream 在最高层 profile shape 上第一次真正统一
+- orchestrator 内部减少了一整层只做组装转发的中间对象
+- 后续如果继续压缩 raw-runtime builder 的参数面，落点会更集中在同一个顶层 runtime profile 上
+
+边界：
+
+- sync / stream 仍然保留各自的 builder 入口和 runner helper
+- unified runtime profile 之下仍然会分别构造 sync execution / stream execution
+- 如果继续推进，下一步可以考虑进一步压缩 raw-runtime builder 共享参数，或者把 sync/stream builder 收成更统一的入口
+
+### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
+
+在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
+
+- `SingleAgentSyncRuntimeProfile`
+- `SingleAgentStreamRuntimeProfile`
+
 并且二者都还要再经过一层 managed session profile 中转，才会落到最终 `ManagedSingleAgentSessionSpec`。
 
 这说明 runtime profile 虽然已经抬到最高层入口，但其内部结构仍然留着 sync/stream 双轨。

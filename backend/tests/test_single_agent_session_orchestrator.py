@@ -3,7 +3,9 @@ import asyncio
 import pytest
 
 from services.single_agent_session_orchestrator import (
+    build_single_agent_runtime_profile,
     build_single_agent_stream_runtime_profile_from_runtime,
+    build_single_agent_session_runtime_context,
     build_managed_single_agent_stream_session_spec,
     build_single_agent_sync_runtime_profile_from_runtime,
     build_managed_single_agent_sync_session_spec,
@@ -318,6 +320,34 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
         "message_id": 11,
         "client_turn_id": "turn-1",
     }
+
+
+def test_build_single_agent_runtime_profile_rejects_unknown_execution_context():
+    runtime = build_single_agent_session_runtime_context(
+        db=object(),
+        task_run=None,
+        chatroom_id=7,
+        client_turn_id="turn-1",
+        agent_id=9,
+        agent_name="Analyst",
+        agent_type="Analyst",
+        user_message="Need help",
+        save_message=lambda **kwargs: None,
+        publish_message=lambda *args, **kwargs: None,
+        record_turn_completed=lambda *args, **kwargs: None,
+        message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
+        compact_summary=lambda content: str(content),
+        completion_summary="done",
+        failure_summary=lambda error: str(error),
+        extract_memories=lambda *args, **kwargs: None,
+        stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
+    )
+
+    with pytest.raises(TypeError, match="Unsupported single-agent execution context."):
+        build_single_agent_runtime_profile(
+            runtime=runtime,
+            execution=object(),
+        )
 
 
 async def _async_stream_finalize(final_content):
