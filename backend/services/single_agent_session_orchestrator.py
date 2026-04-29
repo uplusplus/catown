@@ -96,6 +96,34 @@ class SingleAgentRuntimeProfile:
     session: ManagedSingleAgentSessionSpec
 
 
+@dataclass(frozen=True)
+class SingleAgentStreamFailurePolicy:
+    failure_agent_name: str | None = None
+    failure_agent_id: int | None = None
+    detail_builder: Callable[[], str] | None = None
+    final_message_saved: bool = False
+    empty_response_text: str = "(Agent returned empty response)"
+
+
+def build_single_agent_stream_failure_policy(
+    *,
+    failure_agent_name: str | None = None,
+    failure_agent_id: int | None = None,
+    detail_builder: Callable[[], str] | None = None,
+    final_message_saved: bool = False,
+    empty_response_text: str = "(Agent returned empty response)",
+) -> SingleAgentStreamFailurePolicy:
+    """Build the failure-policy bundle for one single-agent stream run."""
+
+    return SingleAgentStreamFailurePolicy(
+        failure_agent_name=failure_agent_name,
+        failure_agent_id=failure_agent_id,
+        detail_builder=detail_builder,
+        final_message_saved=final_message_saved,
+        empty_response_text=empty_response_text,
+    )
+
+
 async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
@@ -377,11 +405,7 @@ def build_single_agent_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
     execution: SingleAgentSyncExecutionContext | SingleAgentStreamExecutionContext,
-    failure_agent_name: str | None = None,
-    failure_agent_id: int | None = None,
-    detail_builder: Callable[[], str] | None = None,
-    final_message_saved: bool = False,
-    empty_response_text: str = "(Agent returned empty response)",
+    stream_failure: SingleAgentStreamFailurePolicy | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the top-level single-agent runtime profile from shared runtime and execution context."""
 
@@ -414,6 +438,7 @@ def build_single_agent_runtime_profile(
         )
 
     if isinstance(execution, SingleAgentStreamExecutionContext):
+        resolved_stream_failure = stream_failure or SingleAgentStreamFailurePolicy()
         return SingleAgentRuntimeProfile(
             session=build_managed_single_agent_stream_session_spec(
                 deps=build_single_agent_stream_session_deps_from_execution_context(
@@ -444,14 +469,18 @@ def build_single_agent_runtime_profile(
                             runtime.stream_failure_message_metadata or runtime.message_metadata
                         ),
                         failure_agent_name=(
-                            failure_agent_name if failure_agent_name is not None else runtime.agent_name
+                            resolved_stream_failure.failure_agent_name
+                            if resolved_stream_failure.failure_agent_name is not None
+                            else runtime.agent_name
                         ),
                         failure_agent_id=(
-                            failure_agent_id if failure_agent_id is not None else runtime.agent_id
+                            resolved_stream_failure.failure_agent_id
+                            if resolved_stream_failure.failure_agent_id is not None
+                            else runtime.agent_id
                         ),
-                        detail_builder=detail_builder,
-                        final_message_saved=final_message_saved,
-                        empty_response_text=empty_response_text,
+                        detail_builder=resolved_stream_failure.detail_builder,
+                        final_message_saved=resolved_stream_failure.final_message_saved,
+                        empty_response_text=resolved_stream_failure.empty_response_text,
                         min_response_length=runtime.min_response_length,
                     )
                 ),
@@ -465,11 +494,7 @@ def build_single_agent_runtime_profile_from_raw_inputs(
     *,
     runtime_inputs: SingleAgentRawRuntimeInputs,
     execution_inputs: SingleAgentRawExecutionInputs,
-    failure_agent_name: str | None = None,
-    failure_agent_id: int | None = None,
-    detail_builder: Callable[[], str] | None = None,
-    final_message_saved: bool = False,
-    empty_response_text: str = "(Agent returned empty response)",
+    stream_failure: SingleAgentStreamFailurePolicy | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the top-level single-agent runtime profile directly from raw inputs."""
 
@@ -484,11 +509,7 @@ def build_single_agent_runtime_profile_from_raw_inputs(
         return build_single_agent_stream_runtime_profile(
             runtime=build_single_agent_session_runtime_context_from_raw_inputs(runtime_inputs),
             execution=build_single_agent_stream_execution_context_from_raw_inputs(execution),
-            failure_agent_name=failure_agent_name,
-            failure_agent_id=failure_agent_id,
-            detail_builder=detail_builder,
-            final_message_saved=final_message_saved,
-            empty_response_text=empty_response_text,
+            stream_failure=stream_failure,
         )
 
     raise TypeError(
@@ -526,22 +547,14 @@ def build_single_agent_stream_runtime_profile(
     *,
     runtime: SingleAgentSessionRuntimeContext,
     execution: SingleAgentStreamExecutionContext,
-    failure_agent_name: str | None = None,
-    failure_agent_id: int | None = None,
-    detail_builder: Callable[[], str] | None = None,
-    final_message_saved: bool = False,
-    empty_response_text: str = "(Agent returned empty response)",
+    stream_failure: SingleAgentStreamFailurePolicy | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the higher-level stream runtime profile from shared runtime and execution context."""
 
     return build_single_agent_runtime_profile(
         runtime=runtime,
         execution=execution,
-        failure_agent_name=failure_agent_name,
-        failure_agent_id=failure_agent_id,
-        detail_builder=detail_builder,
-        final_message_saved=final_message_saved,
-        empty_response_text=empty_response_text,
+        stream_failure=stream_failure,
     )
 
 
@@ -549,22 +562,14 @@ def build_single_agent_stream_runtime_profile_from_runtime(
     *,
     runtime_inputs: SingleAgentRawRuntimeInputs,
     execution_inputs: SingleAgentRawExecutionInputs,
-    failure_agent_name: str | None = None,
-    failure_agent_id: int | None = None,
-    detail_builder: Callable[[], str] | None = None,
-    final_message_saved: bool = False,
-    empty_response_text: str = "(Agent returned empty response)",
+    stream_failure: SingleAgentStreamFailurePolicy | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build the full stream runtime profile directly from raw runtime inputs."""
 
     return build_single_agent_runtime_profile_from_raw_inputs(
         runtime_inputs=runtime_inputs,
         execution_inputs=execution_inputs,
-        failure_agent_name=failure_agent_name,
-        failure_agent_id=failure_agent_id,
-        detail_builder=detail_builder,
-        final_message_saved=final_message_saved,
-        empty_response_text=empty_response_text,
+        stream_failure=stream_failure,
     )
 
 

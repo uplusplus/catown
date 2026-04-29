@@ -2227,3 +2227,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - sync/stream raw-runtime builder 统一改为消费 `SingleAgentRawExecutionInputs`，不再接受 execution-specific 长参数列表
 - standalone / project single-agent sync/stream route 改为显式构造 shared raw execution envelope，再交给 raw-runtime builder
 - focused orchestrator / API 回归更新为围绕 shared raw execution envelope 入口验证行为兼容
+
+### `Extract single-agent stream failure policy bundle`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `SingleAgentStreamFailurePolicy` 与 builder，把 stream path 最后一组特有参数 `failure_agent_name/failure_agent_id/detail_builder/final_message_saved/empty_response_text` 收成独立 policy bundle
+- standalone / project single-agent stream route 改为显式构造 failure policy，再交给 stream raw-runtime builder
+- focused orchestrator / API 回归更新为围绕 stream failure policy bundle 验证行为兼容

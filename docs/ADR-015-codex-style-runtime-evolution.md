@@ -5844,6 +5844,36 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - execution-side 还没有进一步合并成更共享的字段模型
 - 如果继续推进，下一步可以考虑收 execution envelope 之下的 sync/stream 参数组织方式
 
+### 11.137 2026-04-29 新进展：stream failure-specific 参数已收成独立 policy bundle
+
+在 11.136 之后，single-agent sync / stream 已经都切到 `raw runtime inputs + raw execution inputs`，但 stream 侧还残留最后一组独有参数：
+
+- `failure_agent_name`
+- `failure_agent_id`
+- `detail_builder`
+- `final_message_saved`
+- `empty_response_text`
+
+这些不属于 execution 本体，更像 stream terminalization / failure handling policy。
+
+本轮把它们提成独立层：
+
+- 新增 `SingleAgentStreamFailurePolicy`
+- 新增对应 builder
+- standalone / project single-agent stream route 改为显式构造 failure policy，再交给 stream raw-runtime builder
+
+这一步的意义是：
+
+- stream 路径的剩余特有参数终于不再散落在 builder 参数面里
+- single-agent builder 输入开始更清楚地分成三层：runtime inputs、execution inputs、failure policy
+- 后续如果继续统一 execution-side 参数组织，stream 特有的 failure concerns 已经从 execution 维度中分离出来
+
+边界：
+
+- stream failure policy 仍是 stream 专属，sync 没有对应的 policy bundle
+- sync / stream raw execution inputs 之下的字段组织仍未进一步统一
+- 如果继续推进，下一步可以考虑继续压缩 sync/stream execution-specific 字段分组
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

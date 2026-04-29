@@ -8,6 +8,7 @@ from services.single_agent_session_orchestrator import (
     build_single_agent_raw_execution_inputs,
     build_single_agent_raw_runtime_inputs,
     build_single_agent_session_runtime_context,
+    build_single_agent_stream_failure_policy,
     build_managed_single_agent_stream_session_spec,
     build_managed_single_agent_sync_session_spec,
     build_unified_stream_single_agent_session_spec,
@@ -324,6 +325,7 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
                         max_turns=1,
                     )
                 ),
+                stream_failure=build_single_agent_stream_failure_policy(),
             )
         )
     ]

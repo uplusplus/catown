@@ -154,6 +154,7 @@ from services.single_agent_session_orchestrator import (
     build_single_agent_raw_execution_inputs,
     build_single_agent_raw_runtime_inputs,
     build_single_agent_runtime_profile_from_raw_inputs,
+    build_single_agent_stream_failure_policy,
     iter_managed_single_agent_stream_runtime_profile,
     run_managed_single_agent_sync_runtime_profile,
 )
@@ -920,7 +921,9 @@ async def _stream_standalone_assistant_response(
                     max_turns=1,
                 )
             ),
-            detail_builder=traceback.format_exc,
+            stream_failure=build_single_agent_stream_failure_policy(
+                detail_builder=traceback.format_exc,
+            ),
         )
     ):
         if outcome.chunk is not None:
@@ -4109,9 +4112,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                             on_tool_round=_on_single_agent_stream_tool_round,
                         )
                     ),
-                    failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
-                    failure_agent_id=active_agent_id,
-                    detail_builder=traceback.format_exc,
+                    stream_failure=build_single_agent_stream_failure_policy(
+                        failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
+                        failure_agent_id=active_agent_id,
+                        detail_builder=traceback.format_exc,
+                    ),
                 )
             ):
                 if outcome.chunk is not None:
