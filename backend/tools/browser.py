@@ -7,6 +7,10 @@ from .base import BaseTool
 import json
 import os
 import asyncio
+import time
+import urllib.parse
+
+from monitoring import monitor_network_buffer
 
 # 延迟导入：仅在首次使用时加载 playwright
 _playwright = None
@@ -106,7 +110,15 @@ class BrowserTool(BaseTool):
         """Navigate to a URL"""
         if not url:
             return json.dumps({"success": False, "error": "url is required"})
+        started_at = time.perf_counter()
         resp = await page.goto(url, wait_until=wait_until, timeout=15000)
+        self._record_navigation_event(
+            url=page.url or url,
+            action="navigate",
+            started_at=started_at,
+            status_code=resp.status if resp else None,
+            success=True,
+        )
         return json.dumps({
             "success": True,
             "url": page.url,
@@ -210,12 +222,28 @@ class BrowserTool(BaseTool):
 
     async def _action_back(self, page, **kw) -> str:
         """Go back in browser history"""
-        await page.go_back()
+        started_at = time.perf_counter()
+        resp = await page.go_back()
+        self._record_navigation_event(
+            url=page.url,
+            action="back",
+            started_at=started_at,
+            status_code=resp.status if resp else None,
+            success=True,
+        )
         return json.dumps({"success": True, "url": page.url, "title": await page.title()})
 
     async def _action_forward(self, page, **kw) -> str:
         """Go forward in browser history"""
-        await page.go_forward()
+        started_at = time.perf_counter()
+        resp = await page.go_forward()
+        self._record_navigation_event(
+            url=page.url,
+            action="forward",
+            started_at=started_at,
+            status_code=resp.status if resp else None,
+            success=True,
+        )
         return json.dumps({"success": True, "url": page.url, "title": await page.title()})
 
     async def _action_new_page(self, page, url: str = "", **kw) -> str:
@@ -224,7 +252,15 @@ class BrowserTool(BaseTool):
         global _page_instance
         _page_instance = await browser.new_page()
         if url:
-            await _page_instance.goto(url, wait_until="load", timeout=15000)
+            started_at = time.perf_counter()
+            resp = await _page_instance.goto(url, wait_until="load", timeout=15000)
+            self._record_navigation_event(
+                url=_page_instance.url or url,
+                action="new_page",
+                started_at=started_at,
+                status_code=resp.status if resp else None,
+                success=True,
+            )
         return json.dumps({
             "success": True,
             "action": "new_page",
@@ -306,3 +342,46 @@ class BrowserTool(BaseTool):
             },
             "required": ["action"],
         }
+
+    @staticmethod
+    def _record_navigation_event(
+        *,
+        url: str,
+        action: str,
+        started_at: float,
+        status_code: int | None,
+        success: bool,
+        error: str = "",
+    ) -> None:
+        try:
+            parsed = urllib.parse.urlparse(url or "")
+            monitor_network_buffer.append(
+                {
+                    "category": "backend_other",
+                    "source": "backend",
+                    "protocol": (parsed.scheme or "https").upper(),
+                    "from_entity": "Browser Session",
+                    "to_entity": parsed.netloc or url or "web",
+                    "request_direction": f"Browser Session -> {parsed.netloc or url or 'web'}",
+                    "response_direction": f"{parsed.netloc or url or 'web'} -> Browser Session",
+                    "method": "GET",
+                    "url": url,
+                    "host": parsed.netloc,
+                    "path": parsed.path or "/",
+                    "status_code": status_code,
+                    "success": success,
+                    "request_bytes": 0,
+                    "response_bytes": 0,
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                    "content_type": "",
+                    "preview": action,
+                    "error": error,
+                    "metadata": {
+                        "tool_name": "browser",
+                        "tool_capability": "browser",
+                        "browser_action": action,
+                    },
+                }
+            )
+        except Exception:
+            return

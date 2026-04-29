@@ -60,6 +60,10 @@ class WebSearchTool(BaseTool):
                         "duration_ms": int((time.perf_counter() - started_at) * 1000),
                         "content_type": response.headers.get("Content-Type", ""),
                         "preview": query[:280],
+                        "metadata": {
+                            "tool_name": self.name,
+                            "tool_capability": "search",
+                        },
                     }
                 )
             
@@ -106,6 +110,10 @@ class WebSearchTool(BaseTool):
                     "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
                     "error": str(e),
                     "preview": query[:280],
+                    "metadata": {
+                        "tool_name": self.name,
+                        "tool_capability": "search",
+                    },
                 }
             )
             return f"[Web Search] Error: {str(e)}"

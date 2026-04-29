@@ -126,6 +126,10 @@ async def _api_request(method: str, path: str, data: dict = None, params: dict =
                 "content_type": resp.headers.get("Content-Type", ""),
                 "preview": path[:280],
                 "error": "" if resp.status_code < 400 else resp.text[:280],
+                "metadata": {
+                    "tool_name": "github_manager",
+                    "tool_capability": "toolbox",
+                },
             }
         )
 

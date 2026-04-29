@@ -1798,6 +1798,16 @@ type FlowCapabilitySummary = {
   toolCounts: Map<string, number>;
 };
 
+type FlowExternalCapabilitySummary = {
+  key: FlowCapabilityKey;
+  requests: number;
+  errors: number;
+  bytes: number;
+  durationTotal: number;
+  durationCount: number;
+  lastAt: number;
+};
+
 const FLOW_CAPABILITY_PRESETS: Record<
   FlowCapabilityKey,
   { nodeId: string; title: string; subtitle: string; kind: FlowTopologyNode["kind"]; order: number }
@@ -1929,6 +1939,24 @@ function flowCapabilityKeyForTool(value: string) {
     return "approval" as const;
   }
   return "toolbox" as const;
+}
+
+function flowCapabilityKeyForNetworkEntry(entry: MonitorNetworkEvent) {
+  const metadata = entry.metadata ?? {};
+  const explicitCapability = typeof metadata["tool_capability"] === "string" ? metadata["tool_capability"].trim().toLowerCase() : "";
+  if (explicitCapability === "search") return "search" as const;
+  if (explicitCapability === "browser") return "browser" as const;
+  if (explicitCapability === "exec") return "exec" as const;
+  if (explicitCapability === "memory") return "memory" as const;
+  if (explicitCapability === "approval") return "approval" as const;
+  if (explicitCapability === "subagents") return "subagents" as const;
+  if (explicitCapability === "toolbox") return "toolbox" as const;
+
+  const toolName = typeof metadata["tool_name"] === "string" ? metadata["tool_name"] : "";
+  if (toolName.trim()) {
+    return flowCapabilityKeyForTool(toolName);
+  }
+  return null;
 }
 
 function ensureFlowCapability(map: Map<FlowCapabilityKey, FlowCapabilitySummary>, key: FlowCapabilityKey) {
@@ -2101,6 +2129,7 @@ function buildFlowTopologyGraph({
   let externalDurationCount = 0;
   let externalLastAt = 0;
   const externalHosts = new Map<string, number>();
+  const externalCapabilitySummaries = new Map<FlowCapabilityKey, FlowExternalCapabilitySummary>();
 
   filteredNetworkEntries.forEach((entry) => {
     const lastAt = monitorCreatedAtMs(entry.created_at);
@@ -2140,6 +2169,27 @@ function buildFlowTopologyGraph({
       externalLastAt = Math.max(externalLastAt, lastAt);
       const host = (entry.host || "").trim() || compactMonitorText(entry.url, 48);
       if (host) incrementCounter(externalHosts, host);
+      const capabilityKey = flowCapabilityKeyForNetworkEntry(entry);
+      if (capabilityKey) {
+        const summary = externalCapabilitySummaries.get(capabilityKey) ?? {
+          key: capabilityKey,
+          requests: 0,
+          errors: 0,
+          bytes: 0,
+          durationTotal: 0,
+          durationCount: 0,
+          lastAt: 0,
+        };
+        summary.requests += 1;
+        if (failed) summary.errors += 1;
+        summary.bytes += totalBytes;
+        if (entry.duration_ms > 0) {
+          summary.durationTotal += entry.duration_ms;
+          summary.durationCount += 1;
+        }
+        summary.lastAt = Math.max(summary.lastAt, lastAt);
+        externalCapabilitySummaries.set(capabilityKey, summary);
+      }
     }
   });
 
@@ -2297,7 +2347,7 @@ function buildFlowTopologyGraph({
       lane: 1,
       order: 0,
       kind: "client",
-      title: "Web / TUI",
+      title: "Web Client",
       subtitle: connectionState === "connected" ? "Realtime client transport online" : "Realtime transport needs attention",
       badge: connectionState === "connected" ? "WS live" : "offline",
       status: frontendStatus,
@@ -2479,7 +2529,7 @@ function buildFlowTopologyGraph({
 
     nodes.push({
       id: preset.nodeId,
-      lane: 4,
+      lane: 5,
       order: preset.order,
       kind: preset.kind,
       title: preset.title,
@@ -2539,7 +2589,7 @@ function buildFlowTopologyGraph({
   const externalHostChips = sortedCounterKeys(externalHosts, compact ? 2 : 4);
   nodes.push({
     id: "flow-external",
-    lane: 5,
+    lane: 6,
     order: 0,
     kind: "web",
     minWidthOverride: compact ? 150 : 170,
@@ -2559,19 +2609,40 @@ function buildFlowTopologyGraph({
       : "No recent outbound traffic captured in the current monitor window.",
   });
 
-  edges.push({
-    id: "flow-edge-runtime-external",
-    from: "flow-runtime",
-    to: "flow-external",
-    label: "outbound net",
-    detail: averageDuration(externalDurationTotal, externalDurationCount),
-    volume: Math.max(externalRequestCount, 1),
-    status: externalStatus,
-    active: flowHasRecentActivity(externalLastAt),
-  });
+  const capabilityNodeIds = new Map(selectedCapabilityKeys.map((key) => [key, FLOW_CAPABILITY_PRESETS[key].nodeId]));
+  const externalCapabilityEdges = [...externalCapabilitySummaries.values()]
+    .filter((summary) => capabilityNodeIds.has(summary.key))
+    .sort((left, right) => right.requests - left.requests || right.lastAt - left.lastAt);
+
+  if (externalCapabilityEdges.length > 0) {
+    externalCapabilityEdges.forEach((summary) => {
+      const fromNodeId = capabilityNodeIds.get(summary.key) ?? "flow-runtime";
+      edges.push({
+        id: `flow-edge-${summary.key}-external`,
+        from: fromNodeId,
+        to: "flow-external",
+        label: summary.key === "search" ? "search http" : summary.key === "browser" ? "browser net" : "tool net",
+        detail: averageDuration(summary.durationTotal, summary.durationCount),
+        volume: Math.max(summary.requests, 1),
+        status: flowStatusFromActivity(summary.requests, summary.errors, summary.lastAt),
+        active: flowHasRecentActivity(summary.lastAt),
+      });
+    });
+  } else {
+    edges.push({
+      id: "flow-edge-runtime-external",
+      from: "flow-runtime",
+      to: "flow-external",
+      label: "outbound net",
+      detail: averageDuration(externalDurationTotal, externalDurationCount),
+      volume: Math.max(externalRequestCount, 1),
+      status: externalStatus,
+      active: flowHasRecentActivity(externalLastAt),
+    });
+  }
 
   return {
-    laneLabels: ["Entry", "Client", "Platform", "Runtime", "Capabilities", "Outside"],
+    laneLabels: ["Entry", "Client", "Platform", "Runtime", "LLM", "Capabilities", "Outside"],
     nodes: nodes.map((node) => {
       const layout = estimateFlowNodeLayout(node, compact);
       return {

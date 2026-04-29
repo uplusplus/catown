@@ -67,6 +67,10 @@ class WebFetchTool(BaseTool):
                         "duration_ms": int((time.perf_counter() - started_at) * 1000),
                         "content_type": content_type,
                         "preview": self._extract_text(raw.decode("utf-8", errors="replace"))[:280] if raw else "",
+                        "metadata": {
+                            "tool_name": self.name,
+                            "tool_capability": "search",
+                        },
                     }
                 )
 
@@ -109,6 +113,10 @@ class WebFetchTool(BaseTool):
                     "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
                     "content_type": e.response.headers.get("Content-Type", ""),
                     "error": str(e),
+                    "metadata": {
+                        "tool_name": self.name,
+                        "tool_capability": "search",
+                    },
                 }
             )
             return f"[WebFetch] HTTP {e.response.status_code}: {e.response.reason_phrase} for {url}"
@@ -129,6 +137,10 @@ class WebFetchTool(BaseTool):
                     "success": False,
                     "duration_ms": int((time.perf_counter() - started_at) * 1000) if 'started_at' in locals() else 0,
                     "error": str(e),
+                    "metadata": {
+                        "tool_name": self.name,
+                        "tool_capability": "search",
+                    },
                 }
             )
             return f"[WebFetch] Error fetching {url}: {str(e)}"

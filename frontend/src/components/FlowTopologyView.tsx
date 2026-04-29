@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Boxes, BrainCircuit, Crown, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
+import { Bot, Boxes, BrainCircuit, Cpu, Crown, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export type FlowTopologyStatus = "idle" | "active" | "warning" | "error";
@@ -132,7 +132,7 @@ function kindVisual(kind: FlowTopologyNodeKind): { Icon: LucideIcon; accentClass
     case "gateway":
       return { Icon: Server, accentClass: "flow-node--gateway" };
     case "runtime":
-      return { Icon: BrainCircuit, accentClass: "flow-node--runtime" };
+      return { Icon: Cpu, accentClass: "flow-node--runtime" };
     case "agent":
       return { Icon: Bot, accentClass: "flow-node--agent" };
     case "llm":
@@ -515,8 +515,9 @@ function displayGroupOrder(group: FlowLaneGroup) {
   if (key === "client") return 1;
   if (key === "platform") return 2;
   if (key === "runtime") return 3;
-  if (key === "outside") return 4;
-  if (key === "capabilities") return 5;
+  if (key === "llm") return 4;
+  if (key === "outside") return 5;
+  if (key === "capabilities") return 6;
   return 99;
 }
 
