@@ -1818,3 +1818,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `build_managed_single_agent_sync_session_spec(...)` 与 `build_managed_single_agent_stream_session_spec(...)`，把 managed spec 的组装逻辑下沉回 orchestrator
 - standalone / project single-agent sync/stream route 改为通过 managed builders 进入会话栈，不再手工拼 `ManagedSingleAgentSessionSpec`
 - focused tests 改为直接覆盖 managed builders，并继续保留缺失 stream transport 的契约校验
+
+### `Reuse stream deps serializer for managed terminal transport`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 让 `build_managed_single_agent_stream_session_spec(...)` 直接复用 `SingleAgentStreamSessionDeps.serialize_payload`，不再要求 route/tests 额外传第二份 terminal serializer
+- standalone / project single-agent streaming path 去掉重复的 `serialize_payload` 透传，stream builder 自动从 deps 派生 transport
+- focused tests 改为验证 builder 派生的 serializer 仍能产出正确 terminal SSE，并保留 raw-spec 缺失 transport 的负向契约

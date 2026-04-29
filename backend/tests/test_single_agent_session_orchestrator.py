@@ -120,7 +120,7 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
                     preview_tool_calls=lambda raw_tool_calls: [],
                     format_prompt_messages=lambda messages: "formatted",
                     tool_result_success=lambda result: True,
-                    serialize_payload=lambda payload: "{}",
+                    serialize_payload=lambda payload: '{"type":"done"}',
                     store_runtime_card=store_runtime_card,
                     public_runtime_card_payload=lambda payload: payload,
                     chatroom_id=7,
@@ -128,7 +128,6 @@ async def test_managed_single_agent_stream_session_yields_terminal_payload():
                 ),
                 finalize_success=lambda final_content: _async_stream_finalize(final_content),
                 finalize_failure=lambda exc: _async_stream_failure(str(exc)),
-                serialize_payload=lambda payload: '{"type":"done"}',
             )
         )
     ]

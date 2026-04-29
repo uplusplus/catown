@@ -950,7 +950,6 @@ async def _stream_standalone_assistant_response(
                 ),
                 failure_summary=f"Standalone stream failed: {exc}",
             ),
-            serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
         )
     ):
         if outcome.chunk is not None:
@@ -4242,7 +4241,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         ),
                         failure_summary=f"Streaming execution failed: {e}",
                     ),
-                    serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
                 )
             ):
                 if outcome.chunk is not None:

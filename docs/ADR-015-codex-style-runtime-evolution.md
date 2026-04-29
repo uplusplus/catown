@@ -5129,3 +5129,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍要提供 finalize lambdas 和 stream deps，本轮只收了 spec 装配层
 - managed sync/stream 仍分别走不同 builder，而不是单一自动判别入口
 - 如果继续推进，下一步可以考虑把 finalize / transport 这层 route-local lambda 继续往更高层 helper 收
+
+### 11.113 2026-04-29 新进展：managed stream builder 已直接复用 stream deps serializer
+
+在 11.112 之后，managed stream builder 虽然已经替 route 收了 spec 装配，但还有一处机械重复：
+
+- `SingleAgentStreamSessionDeps` 自己带一份 `serialize_payload`
+- `build_managed_single_agent_stream_session_spec(...)` 又额外要求 route 再传一份 terminal `serialize_payload`
+- standalone / project single-agent stream 因此还在重复透传同一个 serializer
+
+这类重复没有引入额外语义，只是在扩大 route 和 builder 的接口面。
+
+本轮继续把它压掉：
+
+- `build_managed_single_agent_stream_session_spec(...)` 不再接收独立 `serialize_payload`
+- managed stream transport 直接从 `deps.serialize_payload` 派生
+- standalone / project single-agent stream route 去掉重复的 serializer 参数
+- focused test 改为验证 builder 派生的 serializer 仍能正确渲染 terminal SSE
+
+这一步的意义是：
+
+- streaming path 的 serializer threading 更接近单一来源
+- route 继续从纯粹的 transport 透传样板中退出
+- managed stream builder 和底层 stream session deps 的边界更加一致
+
+边界：
+
+- route 仍需要构造 `SingleAgentStreamSessionDeps`
+- raw `ManagedSingleAgentSessionSpec` 仍允许缺失 transport，本轮只收 builder 主路径
+- 如果继续推进，下一步可以考虑把 finalize lambda 与 deps 构造进一步抽成更高层 helper

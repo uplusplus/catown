@@ -191,7 +191,6 @@ def build_managed_single_agent_stream_session_spec(
     deps: SingleAgentStreamSessionDeps,
     finalize_success: Callable[[str], Awaitable[Any]],
     finalize_failure: Callable[[Exception], Awaitable[Any] | Any],
-    serialize_payload: SerializePayload,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a streaming single-agent session."""
 
@@ -202,7 +201,7 @@ def build_managed_single_agent_stream_session_spec(
             finalize_failure=finalize_failure,
         ),
         stream_transport=ManagedSingleAgentStreamTransport(
-            serialize_payload=serialize_payload,
+            serialize_payload=deps.serialize_payload,
         ),
     )
 
