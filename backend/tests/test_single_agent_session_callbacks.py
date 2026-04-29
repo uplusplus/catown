@@ -1,8 +1,10 @@
 import pytest
 
 from services.single_agent_session_callbacks import (
+    build_single_agent_memory_extraction_callback,
     build_single_agent_session_failure_callback,
     build_single_agent_session_success_callback,
+    build_single_agent_stream_persist_failure_callback,
     build_single_agent_stream_failure_callback,
     build_single_agent_stream_success_callback,
     SingleAgentSessionFailureCallbackDeps,
@@ -157,4 +159,68 @@ async def test_build_single_agent_stream_failure_callback_returns_done_payload()
         "agent_name": "Analyst",
         "message_id": 99,
         "client_turn_id": "turn-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_single_agent_memory_extraction_callback_uses_fallback_and_scheduler():
+    recorded = []
+
+    async def extract_memories(agent_id, agent_type, user_message, agent_response):
+        recorded.append((agent_id, agent_type, user_message, agent_response))
+
+    memory_builder = build_single_agent_memory_extraction_callback(
+        extract_memories=extract_memories,
+        agent_id=9,
+        agent_type="Analyst",
+        user_message="Need help",
+        empty_response_text="(Agent returned empty response)",
+    )
+
+    scheduled = memory_builder("")
+    assert scheduled is not None
+
+    task = scheduled()
+    await task
+
+    assert recorded == [
+        (9, "Analyst", "Need help", "(Agent returned empty response)")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_single_agent_stream_persist_failure_callback_forwards_metadata_and_detail(monkeypatch):
+    import services.stream_runtime_persistence as persistence_mod
+
+    recorded = {}
+
+    async def fake_persist_stream_failure(db, **kwargs):
+        recorded["db"] = db
+        recorded["kwargs"] = kwargs
+        return "saved"
+
+    monkeypatch.setattr(persistence_mod, "persist_stream_failure", fake_persist_stream_failure)
+
+    persist_failure = build_single_agent_stream_persist_failure_callback(
+        message_metadata=lambda client_turn_id, extra=None: {
+            "client_turn_id": client_turn_id,
+            "extra": extra,
+        },
+        detail_builder=lambda: "traceback",
+    )
+
+    result = await persist_failure(
+        object(),
+        chatroom_id=7,
+        client_turn_id="turn-1",
+        error_message="boom",
+        agent_name="Analyst",
+        agent_id=9,
+    )
+
+    assert result == "saved"
+    assert recorded["kwargs"]["detail"] == "traceback"
+    assert recorded["kwargs"]["message_metadata"]("turn-1", {"x": 1}) == {
+        "client_turn_id": "turn-1",
+        "extra": {"x": 1},
     }

@@ -5189,3 +5189,31 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 仍要提供 callback deps，尚未把这些 deps 再进一步收成更高层 policy object
 - stream failure 的 `persist_stream_failure(...)` 适配仍由 route 注入
 - 如果继续推进，下一步可以考虑把 success/failure deps 里的 memory extraction 与 stream failure persistence 再抽成共享 policy helper
+
+### 11.115 2026-04-29 新进展：single-agent callback policy helper 已继续从 route 下沉
+
+在 11.114 之后，route 虽然已经不再直接调用 finalizer，但 callback deps 里还残留两类重复策略：
+
+- success path 重复拼 `asyncio.create_task(_extract_memories(...))`
+- stream failure path 重复拼 `persist_stream_failure(...)` 的 message metadata / traceback adapter
+
+这说明 callback builder 虽然已经出现，但 route 仍在承担一部分 callback policy 装配。
+
+本轮继续把这层再收一格：
+
+- `single_agent_session_callbacks.py` 新增 shared memory-extraction helper
+- `single_agent_session_callbacks.py` 新增 shared stream-failure persistence helper
+- standalone / project single-agent sync/stream route 改为复用这些 policy helpers
+- focused tests 覆盖 fallback empty-response memory extraction 与 stream-failure persistence adapter
+
+这一步的意义是：
+
+- single-agent route 进一步退出 callback policy 细节
+- memory extraction 与 stream-failure persistence 开始拥有统一的 policy surface，而不是散落在 route lambda 中
+- callback builder service 更接近真正的 single-agent terminal policy assembly layer
+
+边界：
+
+- route 仍要提供 agent identity、user message、traceback builder 这些策略输入
+- `_extract_memories(...)` 本身仍定义在 route 内，尚未下沉为独立 runtime service
+- 如果继续推进，下一步可以考虑把 single-agent memory extraction scheduler 与 stream failure policy deps 再统一成更高层 profile/helper

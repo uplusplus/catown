@@ -1850,3 +1850,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 shared single-agent callback builder service，把 sync/stream success/failure finalizer 的 route-local lambda 装配下沉为可复用 deps + builder
 - standalone / project single-agent sync/stream path 改为复用 callback builders，而不是在 route 中直接拼接 finalizer 调用细节
 - 新增 focused callback builder tests，并跑 callback/orchestrator/API 回归确认行为兼容
+
+### `Extract single-agent callback policy helpers`
+
+范围：
+
+- `backend/services/single_agent_session_callbacks.py`
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_callbacks.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 callback builder service 中新增 shared memory-extraction policy helper 与 stream-failure persistence helper
+- standalone / project single-agent sync/stream route 改为复用这些 policy helpers，不再重复拼接 `asyncio.create_task(_extract_memories(...))` 和 `persist_stream_failure(...)` 包装器
+- 补 focused helper tests，并跑 callback/orchestrator/API 回归确认行为兼容

@@ -140,7 +140,6 @@ from services.runner_policy import (
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.stream_turn_executor import iter_stream_turn_events
 from services.stream_runtime_persistence import (
-    persist_stream_failure,
     public_runtime_card_payload,
     store_runtime_card,
 )
@@ -148,8 +147,10 @@ from services.single_agent_stream_session import (
     SingleAgentStreamSessionDeps,
 )
 from services.single_agent_session_callbacks import (
+    build_single_agent_memory_extraction_callback,
     build_single_agent_session_failure_callback,
     build_single_agent_session_success_callback,
+    build_single_agent_stream_persist_failure_callback,
     build_single_agent_stream_failure_callback,
     build_single_agent_stream_success_callback,
     SingleAgentSessionFailureCallbackDeps,
@@ -779,17 +780,11 @@ async def _trigger_standalone_assistant_response(
             message_metadata=_message_metadata_with_turn,
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
-            build_memory_extraction=(
-                lambda response_content: (
-                    lambda: asyncio.create_task(_extract_memories(
-                        agent_id=runtime.assistant_id,
-                        agent_type=runtime.assistant_name,
-                        user_message=user_message,
-                        agent_response=response_content,
-                    ))
-                )
-                if runtime.assistant_id and len(response_content) > 30
-                else None
+            build_memory_extraction=build_single_agent_memory_extraction_callback(
+                extract_memories=_extract_memories,
+                agent_id=runtime.assistant_id,
+                agent_type=runtime.assistant_name,
+                user_message=user_message,
             ),
         )
     )
@@ -910,17 +905,12 @@ async def _stream_standalone_assistant_response(
             message_metadata=_message_metadata_with_turn,
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
-            build_memory_extraction=(
-                lambda final_content: (
-                    lambda: asyncio.create_task(_extract_memories(
-                        agent_id=runtime.assistant_id,
-                        agent_type=runtime.assistant_name,
-                        user_message=user_message,
-                        agent_response=final_content or "(Agent returned empty response)",
-                    ))
-                )
-                if runtime.assistant_id and len((final_content or "").strip() or "(Agent returned empty response)") > 30
-                else None
+            build_memory_extraction=build_single_agent_memory_extraction_callback(
+                extract_memories=_extract_memories,
+                agent_id=runtime.assistant_id,
+                agent_type=runtime.assistant_name,
+                user_message=user_message,
+                empty_response_text="(Agent returned empty response)",
             ),
         )
     )
@@ -933,11 +923,9 @@ async def _stream_standalone_assistant_response(
             agent_name=runtime.assistant_name,
             agent_id=runtime.assistant_id,
             final_message_saved=False,
-            persist_failure=lambda current_db, **kwargs: persist_stream_failure(
-                current_db,
+            persist_failure=build_single_agent_stream_persist_failure_callback(
                 message_metadata=_message_metadata_with_turn,
-                detail=traceback.format_exc(),
-                **kwargs,
+                detail_builder=traceback.format_exc,
             ),
             failure_summary=lambda error: f"Standalone stream failed: {error}",
         )
@@ -1289,17 +1277,11 @@ async def trigger_agent_response(
                 message_metadata=_message_metadata_with_turn,
                 compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                 completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
-                build_memory_extraction=(
-                    lambda response_content: (
-                        lambda: asyncio.create_task(_extract_memories(
-                            agent_id=target_agent.id,
-                            agent_type=_agent_type(target_agent),
-                            user_message=user_message,
-                            agent_response=response_content,
-                        ))
-                    )
-                    if len(response_content) > 30
-                    else None
+                build_memory_extraction=build_single_agent_memory_extraction_callback(
+                    extract_memories=_extract_memories,
+                    agent_id=target_agent.id,
+                    agent_type=_agent_type(target_agent),
+                    user_message=user_message,
                 ),
             )
         )
@@ -4212,17 +4194,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     message_metadata=_message_metadata_with_turn,
                     compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                     completion_summary=f"{target_agent_label} completed the streaming turn.",
-                    build_memory_extraction=(
-                        lambda final_content: (
-                            lambda: asyncio.create_task(_extract_memories(
-                                agent_id=target_agent.id,
-                                agent_type=_agent_type(target_agent),
-                                user_message=message.content,
-                                agent_response=final_content or "(Agent returned empty response)",
-                            ))
-                        )
-                        if len((final_content or "").strip() or "(Agent returned empty response)") > 30
-                        else None
+                    build_memory_extraction=build_single_agent_memory_extraction_callback(
+                        extract_memories=_extract_memories,
+                        agent_id=target_agent.id,
+                        agent_type=_agent_type(target_agent),
+                        user_message=message.content,
+                        empty_response_text="(Agent returned empty response)",
                     ),
                 )
             )
@@ -4235,11 +4212,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
                     agent_id=active_agent_id,
                     final_message_saved=False,
-                    persist_failure=lambda current_db, **kwargs: persist_stream_failure(
-                        current_db,
+                    persist_failure=build_single_agent_stream_persist_failure_callback(
                         message_metadata=_message_metadata_with_turn,
-                        detail=traceback.format_exc(),
-                        **kwargs,
+                        detail_builder=traceback.format_exc,
                     ),
                     failure_summary=lambda error: f"Streaming execution failed: {error}",
                 )

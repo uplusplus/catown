@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
@@ -23,6 +24,12 @@ from services.single_agent_stream_finalizer import (
     finalize_single_agent_stream_failure,
     finalize_single_agent_stream_success,
 )
+
+
+ExtractMemories = Callable[[int, str, str, str], Awaitable[Any]]
+ScheduleTask = Callable[[Awaitable[Any]], Any]
+StreamFailureMetadataBuilder = Callable[[str | None, dict[str, Any] | None], dict[str, Any]]
+StreamFailureDetailBuilder = Callable[[], str]
 
 
 @dataclass(frozen=True)
@@ -156,6 +163,58 @@ def build_single_agent_stream_failure_callback(
         )
 
     return _finalize
+
+
+def build_single_agent_memory_extraction_callback(
+    *,
+    extract_memories: ExtractMemories,
+    agent_id: int | None,
+    agent_type: str,
+    user_message: str,
+    empty_response_text: str | None = None,
+    min_response_length: int = 30,
+    schedule_task: ScheduleTask = asyncio.create_task,
+):
+    """Build a response-aware memory extraction policy for single-agent turns."""
+
+    def _build(response_content: str) -> ScheduleMemoryExtraction | None:
+        if agent_id is None:
+            return None
+        resolved_content = str(response_content or "").strip()
+        if not resolved_content and empty_response_text is not None:
+            resolved_content = empty_response_text
+        if len(resolved_content) <= min_response_length:
+            return None
+
+        def _schedule():
+            return schedule_task(
+                extract_memories(agent_id, agent_type, user_message, resolved_content)
+            )
+
+        return _schedule
+
+    return _build
+
+
+def build_single_agent_stream_persist_failure_callback(
+    *,
+    message_metadata: StreamFailureMetadataBuilder,
+    detail_builder: StreamFailureDetailBuilder | None = None,
+) -> PersistFailure:
+    """Build the shared persist-failure adapter for single-agent stream fallbacks."""
+
+    async def _persist(current_db: Any, **kwargs):
+        from services.stream_runtime_persistence import persist_stream_failure
+
+        detail = detail_builder() if detail_builder is not None else None
+        return await persist_stream_failure(
+            current_db,
+            message_metadata=message_metadata,
+            detail=detail,
+            **kwargs,
+        )
+
+    return _persist
 
 
 def _resolve_failure_summary(
