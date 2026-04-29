@@ -38,6 +38,64 @@ class SingleAgentStreamSessionDeps:
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
+@dataclass(frozen=True)
+class SingleAgentStreamExecutionContext:
+    llm_client: Any
+    tools: list[dict[str, Any]] | None
+    turn_state: Any
+    assemble_messages: Callable[[Any], list[dict[str, Any]]]
+    execute_tool: Callable[..., Awaitable[Any]]
+    build_llm_runtime_card: Callable[..., dict[str, Any]]
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]]
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any]
+    tool_result_success: Callable[[str], bool]
+    serialize_payload: Callable[[Any], str]
+    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]]
+    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
+    max_turns: int
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None
+
+
+def build_single_agent_stream_execution_context(
+    *,
+    llm_client: Any,
+    tools: list[dict[str, Any]] | None,
+    turn_state: Any,
+    assemble_messages: Callable[[Any], list[dict[str, Any]]],
+    execute_tool: Callable[..., Awaitable[Any]],
+    build_llm_runtime_card: Callable[..., dict[str, Any]],
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
+    tool_result_success: Callable[[str], bool],
+    serialize_payload: Callable[[Any], str],
+    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]],
+    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
+    max_turns: int,
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
+) -> SingleAgentStreamExecutionContext:
+    """Build the stream-specific execution context for one single-agent stream run."""
+
+    return SingleAgentStreamExecutionContext(
+        llm_client=llm_client,
+        tools=tools,
+        turn_state=turn_state,
+        assemble_messages=assemble_messages,
+        execute_tool=execute_tool,
+        build_llm_runtime_card=build_llm_runtime_card,
+        snapshot_messages=snapshot_messages,
+        preview_tool_calls=preview_tool_calls,
+        format_prompt_messages=format_prompt_messages,
+        tool_result_success=tool_result_success,
+        serialize_payload=serialize_payload,
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=public_runtime_card_payload,
+        max_turns=max_turns,
+        on_tool_round=on_tool_round,
+    )
+
+
 def build_single_agent_stream_session_deps(
     *,
     llm_client: Any,
@@ -80,6 +138,37 @@ def build_single_agent_stream_session_deps(
         chatroom_id=chatroom_id,
         max_turns=max_turns,
         on_tool_round=on_tool_round,
+    )
+
+
+def build_single_agent_stream_session_deps_from_execution_context(
+    *,
+    execution: SingleAgentStreamExecutionContext,
+    agent_name: str,
+    client_turn_id: str | None,
+    chatroom_id: int,
+) -> SingleAgentStreamSessionDeps:
+    """Build the low-level deps bundle from a higher-level execution context."""
+
+    return build_single_agent_stream_session_deps(
+        llm_client=execution.llm_client,
+        tools=execution.tools,
+        turn_state=execution.turn_state,
+        agent_name=agent_name,
+        client_turn_id=client_turn_id,
+        assemble_messages=execution.assemble_messages,
+        execute_tool=execution.execute_tool,
+        build_llm_runtime_card=execution.build_llm_runtime_card,
+        snapshot_messages=execution.snapshot_messages,
+        preview_tool_calls=execution.preview_tool_calls,
+        format_prompt_messages=execution.format_prompt_messages,
+        tool_result_success=execution.tool_result_success,
+        serialize_payload=execution.serialize_payload,
+        store_runtime_card=execution.store_runtime_card,
+        public_runtime_card_payload=execution.public_runtime_card_payload,
+        chatroom_id=chatroom_id,
+        max_turns=execution.max_turns,
+        on_tool_round=execution.on_tool_round,
     )
 
 

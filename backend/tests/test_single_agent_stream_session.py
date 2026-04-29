@@ -1,7 +1,9 @@
 import pytest
 
 from services.single_agent_stream_session import (
+    build_single_agent_stream_execution_context,
     build_single_agent_stream_session_deps,
+    build_single_agent_stream_session_deps_from_execution_context,
     iter_single_agent_stream_session,
 )
 
@@ -61,3 +63,37 @@ async def test_iter_single_agent_stream_session_renders_chunks_and_final_content
             },
         )
     ]
+
+
+def test_build_single_agent_stream_session_deps_from_execution_context_projects_runtime_fields():
+    async def store_runtime_card(*args, **kwargs):
+        return None
+
+    execution = build_single_agent_stream_execution_context(
+        llm_client=FakeLLMClient(),
+        tools=None,
+        turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+        assemble_messages=lambda turn_state: [{"role": "user", "content": "hello"}],
+        execute_tool=lambda *args, **kwargs: None,
+        build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+        snapshot_messages=lambda messages: list(messages),
+        preview_tool_calls=lambda raw_tool_calls: [],
+        format_prompt_messages=lambda messages: "formatted",
+        tool_result_success=lambda result: True,
+        serialize_payload=lambda payload: "{}",
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=lambda payload: payload,
+        max_turns=1,
+    )
+
+    deps = build_single_agent_stream_session_deps_from_execution_context(
+        execution=execution,
+        agent_name="Analyst",
+        client_turn_id="turn-1",
+        chatroom_id=7,
+    )
+
+    assert deps.agent_name == "Analyst"
+    assert deps.client_turn_id == "turn-1"
+    assert deps.chatroom_id == 7
+    assert deps.max_turns == 1

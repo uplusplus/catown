@@ -19,7 +19,10 @@ from services.single_agent_session_orchestrator import (
     iter_unified_single_agent_stream_session,
     run_unified_single_agent_sync_session,
 )
-from services.single_agent_stream_session import build_single_agent_stream_session_deps
+from services.single_agent_stream_session import (
+    build_single_agent_stream_execution_context,
+    build_single_agent_stream_session_deps,
+)
 
 
 @pytest.mark.asyncio
@@ -290,22 +293,22 @@ async def test_managed_single_agent_stream_session_profile_builder_yields_termin
                     extract_memories=extract_memories,
                     stream_failure_message_metadata=lambda client_turn_id, extra=None: {"client_turn_id": client_turn_id, "extra": extra},
                 ),
-                llm_client=FakeLLM(),
-                tools=None,
-                turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
-                agent_name="Analyst",
-                client_turn_id="turn-1",
-                assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
-                execute_tool=lambda *args, **kwargs: None,
-                build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
-                snapshot_messages=lambda messages: list(messages),
-                preview_tool_calls=lambda raw_tool_calls: [],
-                format_prompt_messages=lambda messages: "formatted",
-                tool_result_success=lambda result: True,
-                serialize_payload=lambda payload: '{"type":"done"}',
-                store_runtime_card=store_runtime_card,
-                public_runtime_card_payload=lambda payload: payload,
-                max_turns=1,
+                execution=build_single_agent_stream_execution_context(
+                    llm_client=FakeLLM(),
+                    tools=None,
+                    turn_state=type("TurnState", (), {"protocol_messages": lambda self: []})(),
+                    assemble_messages=lambda turn_state: [{"role": "user", "content": "hi"}],
+                    execute_tool=lambda *args, **kwargs: None,
+                    build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+                    snapshot_messages=lambda messages: list(messages),
+                    preview_tool_calls=lambda raw_tool_calls: [],
+                    format_prompt_messages=lambda messages: "formatted",
+                    tool_result_success=lambda result: True,
+                    serialize_payload=lambda payload: '{"type":"done"}',
+                    store_runtime_card=store_runtime_card,
+                    public_runtime_card_payload=lambda payload: payload,
+                    max_turns=1,
+                ),
             )
         )
     ]

@@ -150,6 +150,9 @@ from services.stream_runtime_persistence import (
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
 )
+from services.single_agent_stream_session import (
+    build_single_agent_stream_execution_context,
+)
 from services.single_agent_session_orchestrator import (
     build_managed_single_agent_stream_session_profile_from_runtime,
     build_single_agent_session_runtime_context,
@@ -890,26 +893,27 @@ async def _stream_standalone_assistant_response(
         extract_memories=extract_agent_memories,
         stream_failure_message_metadata=_message_metadata_with_turn,
     )
+    standalone_stream_execution = build_single_agent_stream_execution_context(
+        llm_client=runtime.llm_client,
+        tools=None,
+        turn_state=runtime.turn_state,
+        assemble_messages=_assemble_standalone_stream_messages,
+        execute_tool=_execute_standalone_stream_tool,
+        build_llm_runtime_card=_build_standalone_stream_llm_card,
+        snapshot_messages=_snapshot_llm_messages,
+        preview_tool_calls=_preview_tool_calls,
+        format_prompt_messages=_format_json_block,
+        tool_result_success=_tool_result_succeeded,
+        serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=public_runtime_card_payload,
+        max_turns=1,
+    )
 
     async for outcome in iter_managed_single_agent_stream_session_profile(
         build_managed_single_agent_stream_session_profile_from_runtime(
             runtime=standalone_stream_runtime_context,
-            llm_client=runtime.llm_client,
-            tools=None,
-            turn_state=runtime.turn_state,
-            agent_name=runtime.assistant_name,
-            client_turn_id=client_turn_id,
-            assemble_messages=_assemble_standalone_stream_messages,
-            execute_tool=_execute_standalone_stream_tool,
-            build_llm_runtime_card=_build_standalone_stream_llm_card,
-            snapshot_messages=_snapshot_llm_messages,
-            preview_tool_calls=_preview_tool_calls,
-            format_prompt_messages=_format_json_block,
-            tool_result_success=_tool_result_succeeded,
-            serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
-            store_runtime_card=store_runtime_card,
-            public_runtime_card_payload=public_runtime_card_payload,
-            max_turns=1,
+            execution=standalone_stream_execution,
             detail_builder=traceback.format_exc,
         )
     ):
@@ -4072,27 +4076,28 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 extract_memories=extract_agent_memories,
                 stream_failure_message_metadata=_message_metadata_with_turn,
             )
+            project_single_agent_stream_execution = build_single_agent_stream_execution_context(
+                llm_client=runtime.llm_client,
+                tools=runtime.tool_schemas,
+                turn_state=runtime.turn_state,
+                assemble_messages=_assemble_single_agent_stream_messages,
+                execute_tool=_execute_single_agent_stream_tool,
+                build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                snapshot_messages=_snapshot_llm_messages,
+                preview_tool_calls=_preview_tool_calls,
+                format_prompt_messages=_format_json_block,
+                tool_result_success=_tool_result_succeeded,
+                serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=store_runtime_card,
+                public_runtime_card_payload=public_runtime_card_payload,
+                max_turns=MAX_TOOL_ITERATIONS,
+                on_tool_round=_on_single_agent_stream_tool_round,
+            )
 
             async for outcome in iter_managed_single_agent_stream_session_profile(
                 build_managed_single_agent_stream_session_profile_from_runtime(
                     runtime=project_single_agent_stream_runtime_context,
-                    llm_client=runtime.llm_client,
-                    tools=runtime.tool_schemas,
-                    turn_state=runtime.turn_state,
-                    agent_name=target_agent_label,
-                    client_turn_id=message.client_turn_id,
-                    assemble_messages=_assemble_single_agent_stream_messages,
-                    execute_tool=_execute_single_agent_stream_tool,
-                    build_llm_runtime_card=_build_single_agent_stream_llm_card,
-                    snapshot_messages=_snapshot_llm_messages,
-                    preview_tool_calls=_preview_tool_calls,
-                    format_prompt_messages=_format_json_block,
-                    tool_result_success=_tool_result_succeeded,
-                    serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
-                    store_runtime_card=store_runtime_card,
-                    public_runtime_card_payload=public_runtime_card_payload,
-                    max_turns=MAX_TOOL_ITERATIONS,
-                    on_tool_round=_on_single_agent_stream_tool_round,
+                    execution=project_single_agent_stream_execution,
                     failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
                     failure_agent_id=active_agent_id,
                     detail_builder=traceback.format_exc,

@@ -5545,3 +5545,44 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - stream builder 仍保留自己特有的一组 execution inputs
 - sync / stream 仍然是两套 runtime-profile builder，而不是完全统一成单一入口
 - 如果继续推进，下一步可以考虑把 stream-specific execution inputs 也抽成更高层 single-agent runtime model
+
+### 11.127 2026-04-29 新进展：single-agent stream execution context 已抽出
+
+在 11.126 之后，sync / stream 共享 runtime context 已经收好，但 stream 路径还保留一条长参数面：
+
+- `llm_client`
+- `tools`
+- `turn_state`
+- `assemble_messages`
+- `execute_tool`
+- `build_llm_runtime_card`
+- `snapshot_messages`
+- `preview_tool_calls`
+- `format_prompt_messages`
+- `tool_result_success`
+- `serialize_payload`
+- `store_runtime_card`
+- `public_runtime_card_payload`
+- `max_turns`
+- `on_tool_round`
+
+这些本质上都是 stream-specific execution inputs，但之前还没有单独模型承接。
+
+本轮把它们提成独立层：
+
+- `single_agent_stream_session.py` 新增 `SingleAgentStreamExecutionContext`
+- 新增 execution context builder
+- orchestrator 的 stream runtime-profile builder 改为消费 `runtime context + execution context`
+- standalone / project single-agent stream route 改为先构造 execution context，再交给 orchestrator
+
+这一步的意义是：
+
+- single-agent stream 入口终于不再直接把一长串 execution 参数传给 orchestrator
+- stream-specific execution inputs 和 shared runtime context 开始形成更清晰的分层
+- 后续如果继续往统一 single-agent runtime profile 演进，现在已经有了 `runtime context + execution context` 两个稳定构件
+
+边界：
+
+- sync 路径还没有对应的 execution context，因为它目前只有 `execute_turn`
+- `runtime context + execution context` 仍然在 orchestrator 内二次组合，尚未进一步合成单一统一 runtime profile model
+- 如果继续推进，下一步可以考虑把 sync/stream 的 runtime context 与 execution context 再往更高层统一 single-agent runtime profile 合并
