@@ -5709,6 +5709,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - unified runtime profile 之下仍然会分别构造 sync execution / stream execution
 - 如果继续推进，下一步可以考虑进一步压缩 raw-runtime builder 共享参数，或者把 sync/stream builder 收成更统一的入口
 
+### 11.132 2026-04-29 新进展：single-agent runtime profile 顶层 builder core 已统一
+
+在 11.131 之后，顶层 profile shape 虽然已经统一成 `SingleAgentRuntimeProfile`，但 orchestrator 内部还残留一块重复：
+
+- sync raw-runtime builder 自己拼一套 runtime-profile 组装逻辑
+- stream raw-runtime builder 也各自拼一套相似的 runtime-profile 组装逻辑
+
+也就是说，profile shape 统一了，但真正的顶层 builder core 仍是双轨。
+
+本轮继续把这层收紧：
+
+- orchestrator 新增统一 `build_single_agent_runtime_profile(...)`
+- sync / stream raw-runtime builder 退化为围绕该核心 builder 的薄包装
+
+这一步的意义是：
+
+- single-agent runtime profile 的最高层 contract 和最高层 builder 都开始统一
+- orchestrator 内部进一步减少 sync/stream 平行实现
+- 后续如果要继续压缩 raw-runtime builder 的共享参数，这个 unified builder core 会是更清晰的落点
+
+边界：
+
+- sync / stream raw-runtime builder 对外仍然保留两套入口
+- unified builder core 之下仍需分别适配 sync execution / stream execution 的差异
+- 如果继续推进，下一步可以考虑进一步统一 sync/stream raw-runtime builder 的参数分组或引入更高层 shared input bundle
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

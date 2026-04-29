@@ -2130,6 +2130,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 移除只负责中转的 managed session profile 层，让顶层 runtime profile 直接持有 `ManagedSingleAgentSessionSpec`
 - focused orchestrator / API 回归更新为围绕统一顶层 runtime profile 验证行为兼容
 
+### `Introduce shared runtime-profile builder core`
+
+范围：
+
+- `backend/services/single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 orchestrator 内新增统一的 `build_single_agent_runtime_profile(...)` 核心 builder，让 sync/stream 两个 raw-runtime builder 退化为薄包装
+- sync/stream 两条 profile builder 继续对外保留，但内部共享同一套顶层 runtime-profile 组装逻辑
+- focused orchestrator / API 回归验证 unified builder core 不改变现有行为
+
 ### `Unify single-agent runtime profile shape`
 
 范围：
