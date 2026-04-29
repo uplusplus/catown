@@ -47,6 +47,28 @@ class ManagedSingleAgentStreamSessionProfile:
     callback_profile: SingleAgentStreamCallbackProfile
 
 
+@dataclass(frozen=True)
+class SingleAgentSessionRuntimeContext:
+    db: Any
+    task_run: Any
+    chatroom_id: int
+    client_turn_id: str | None
+    agent_id: int | None
+    agent_name: str
+    agent_type: str
+    user_message: str
+    save_message: Callable[..., Awaitable[Any]]
+    publish_message: Callable[..., Awaitable[Any]]
+    record_turn_completed: Callable[..., Any]
+    message_metadata: Callable[..., dict[str, Any]]
+    compact_summary: Callable[[Any], str]
+    completion_summary: str
+    failure_summary: str | Callable[[Exception], str]
+    extract_memories: Callable[[int, str, str, str], Awaitable[Any]]
+    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None
+    min_response_length: int = 30
+
+
 async def run_unified_single_agent_sync_session(
     spec: UnifiedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
@@ -195,9 +217,8 @@ def build_managed_single_agent_sync_session_profile(
     )
 
 
-def build_managed_single_agent_sync_session_profile_from_runtime(
+def build_single_agent_session_runtime_context(
     *,
-    execute_turn: Callable[[], Awaitable[str | None]],
     db: Any,
     task_run: Any,
     chatroom_id: int,
@@ -209,36 +230,66 @@ def build_managed_single_agent_sync_session_profile_from_runtime(
     save_message: Callable[..., Awaitable[Any]],
     publish_message: Callable[..., Awaitable[Any]],
     record_turn_completed: Callable[..., Any],
-    message_metadata: Callable[[str | None], dict[str, Any]],
+    message_metadata: Callable[..., dict[str, Any]],
     compact_summary: Callable[[Any], str],
     completion_summary: str,
     failure_summary: str | Callable[[Exception], str],
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
-    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
+    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
     min_response_length: int = 30,
+) -> SingleAgentSessionRuntimeContext:
+    """Build the shared runtime context for one managed single-agent session."""
+
+    return SingleAgentSessionRuntimeContext(
+        db=db,
+        task_run=task_run,
+        chatroom_id=chatroom_id,
+        client_turn_id=client_turn_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        agent_type=agent_type,
+        user_message=user_message,
+        save_message=save_message,
+        publish_message=publish_message,
+        record_turn_completed=record_turn_completed,
+        message_metadata=message_metadata,
+        compact_summary=compact_summary,
+        completion_summary=completion_summary,
+        failure_summary=failure_summary,
+        extract_memories=extract_memories,
+        stream_failure_message_metadata=stream_failure_message_metadata,
+        min_response_length=min_response_length,
+    )
+
+
+def build_managed_single_agent_sync_session_profile_from_runtime(
+    *,
+    execute_turn: Callable[[], Awaitable[str | None]],
+    runtime: SingleAgentSessionRuntimeContext,
+    on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
 ) -> ManagedSingleAgentSyncSessionProfile:
     """Build the higher-level sync session profile directly from runtime inputs."""
 
     return build_managed_single_agent_sync_session_profile(
         execute_turn=execute_turn,
         callback_profile=build_single_agent_sync_callback_profile(
-            db=db,
-            task_run=task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_id=agent_id,
-            agent_name=agent_name,
-            agent_type=agent_type,
-            user_message=user_message,
-            save_message=save_message,
-            publish_message=publish_message,
-            record_turn_completed=record_turn_completed,
-            message_metadata=message_metadata,
-            compact_summary=compact_summary,
-            completion_summary=completion_summary,
-            failure_summary=failure_summary,
-            extract_memories=extract_memories,
-            min_response_length=min_response_length,
+            db=runtime.db,
+            task_run=runtime.task_run,
+            chatroom_id=runtime.chatroom_id,
+            client_turn_id=runtime.client_turn_id,
+            agent_id=runtime.agent_id,
+            agent_name=runtime.agent_name,
+            agent_type=runtime.agent_type,
+            user_message=runtime.user_message,
+            save_message=runtime.save_message,
+            publish_message=runtime.publish_message,
+            record_turn_completed=runtime.record_turn_completed,
+            message_metadata=runtime.message_metadata,
+            compact_summary=runtime.compact_summary,
+            completion_summary=runtime.completion_summary,
+            failure_summary=runtime.failure_summary,
+            extract_memories=runtime.extract_memories,
+            min_response_length=runtime.min_response_length,
         ),
         on_empty=on_empty,
     )
@@ -288,6 +339,7 @@ def build_managed_single_agent_stream_session_profile(
 
 def build_managed_single_agent_stream_session_profile_from_runtime(
     *,
+    runtime: SingleAgentSessionRuntimeContext,
     llm_client: Any,
     tools: list[dict[str, Any]] | None,
     turn_state: Any,
@@ -303,29 +355,12 @@ def build_managed_single_agent_stream_session_profile_from_runtime(
     serialize_payload: Callable[[Any], str],
     store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
     public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
-    chatroom_id: int,
     max_turns: int,
-    db: Any,
-    task_run: Any,
-    session_agent_id: int | None,
-    session_agent_name: str,
-    session_agent_type: str,
-    user_message: str,
-    save_message: Callable[..., Awaitable[Any]],
-    publish_message: Callable[..., Awaitable[Any]],
-    record_turn_completed: Callable[..., Any],
-    message_metadata: Callable[[str | None], dict[str, Any]],
-    compact_summary: Callable[[Any], str],
-    completion_summary: str,
-    failure_summary: str | Callable[[Exception], str],
-    extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
-    stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]],
     failure_agent_name: str | None = None,
     failure_agent_id: int | None = None,
     detail_builder: Callable[[], str] | None = None,
     final_message_saved: bool = False,
     empty_response_text: str = "(Agent returned empty response)",
-    min_response_length: int = 30,
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> ManagedSingleAgentStreamSessionProfile:
     """Build the higher-level stream session profile directly from runtime inputs."""
@@ -347,34 +382,40 @@ def build_managed_single_agent_stream_session_profile_from_runtime(
             serialize_payload=serialize_payload,
             store_runtime_card=store_runtime_card,
             public_runtime_card_payload=public_runtime_card_payload,
-            chatroom_id=chatroom_id,
+            chatroom_id=runtime.chatroom_id,
             max_turns=max_turns,
             on_tool_round=on_tool_round,
         ),
         callback_profile=build_single_agent_stream_callback_profile(
-            db=db,
-            task_run=task_run,
-            chatroom_id=chatroom_id,
-            client_turn_id=client_turn_id,
-            agent_id=session_agent_id,
-            agent_name=session_agent_name,
-            agent_type=session_agent_type,
-            user_message=user_message,
-            save_message=save_message,
-            publish_message=publish_message,
-            record_turn_completed=record_turn_completed,
-            message_metadata=message_metadata,
-            compact_summary=compact_summary,
-            completion_summary=completion_summary,
-            failure_summary=failure_summary,
-            extract_memories=extract_memories,
-            stream_failure_message_metadata=stream_failure_message_metadata,
-            failure_agent_name=failure_agent_name,
-            failure_agent_id=failure_agent_id,
+            db=runtime.db,
+            task_run=runtime.task_run,
+            chatroom_id=runtime.chatroom_id,
+            client_turn_id=runtime.client_turn_id,
+            agent_id=runtime.agent_id,
+            agent_name=runtime.agent_name,
+            agent_type=runtime.agent_type,
+            user_message=runtime.user_message,
+            save_message=runtime.save_message,
+            publish_message=runtime.publish_message,
+            record_turn_completed=runtime.record_turn_completed,
+            message_metadata=runtime.message_metadata,
+            compact_summary=runtime.compact_summary,
+            completion_summary=runtime.completion_summary,
+            failure_summary=runtime.failure_summary,
+            extract_memories=runtime.extract_memories,
+            stream_failure_message_metadata=(
+                runtime.stream_failure_message_metadata or runtime.message_metadata
+            ),
+            failure_agent_name=(
+                failure_agent_name if failure_agent_name is not None else runtime.agent_name
+            ),
+            failure_agent_id=(
+                failure_agent_id if failure_agent_id is not None else runtime.agent_id
+            ),
             detail_builder=detail_builder,
             final_message_saved=final_message_saved,
             empty_response_text=empty_response_text,
-            min_response_length=min_response_length,
+            min_response_length=runtime.min_response_length,
         ),
     )
 

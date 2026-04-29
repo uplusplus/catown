@@ -5509,3 +5509,39 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - runtime-profile builder 目前参数仍然较多，本轮主要解决装配层级，不是参数瘦身
 - sync / stream 仍然各自维护一套 runtime-profile builder，而不是统一单入口
 - 如果继续推进，下一步可以考虑把 sync/stream 共享的 runtime input 再抽成更高层公共 session runtime model
+
+### 11.126 2026-04-29 新进展：single-agent shared runtime context 已抽出
+
+在 11.125 之后，虽然 route 已经不再分别 build callback profile 与 stream deps，但 sync/stream runtime-profile builder 仍各自接一大串相同公共参数：
+
+- `db`
+- `task_run`
+- `chatroom_id`
+- `client_turn_id`
+- `agent_id/agent_name/agent_type`
+- `user_message`
+- `save/publish/record`
+- `message_metadata`
+- `compact_summary/completion_summary/failure_summary`
+- `extract_memories`
+
+这是一块明显的 shared runtime state，但之前还没有统一模型承接。
+
+本轮先把它单独提出来：
+
+- orchestrator 新增 `SingleAgentSessionRuntimeContext`
+- 新增 `build_single_agent_session_runtime_context(...)`
+- sync / stream runtime-profile builder 改为消费 shared runtime context
+- route 改为先构造 runtime context，再交给 sync/stream runtime-profile builder
+
+这一步的意义是：
+
+- sync / stream 的公共 runtime input 第一次拥有明确的共享模型
+- route 不再把同一套公共参数在 sync/stream builder 之间来回重复传递
+- 后续如果继续把 stream-specific inputs 再和 runtime context 组合成更高层统一 runtime profile，会更直接
+
+边界：
+
+- stream builder 仍保留自己特有的一组 execution inputs
+- sync / stream 仍然是两套 runtime-profile builder，而不是完全统一成单一入口
+- 如果继续推进，下一步可以考虑把 stream-specific execution inputs 也抽成更高层 single-agent runtime model
