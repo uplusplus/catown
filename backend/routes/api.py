@@ -138,6 +138,7 @@ from services.runner_policy import (
     find_stage_policy,
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
+from services.memory_extraction import extract_agent_memories
 from services.stream_turn_executor import iter_stream_turn_events
 from services.stream_runtime_persistence import (
     public_runtime_card_payload,
@@ -778,7 +779,7 @@ async def _trigger_standalone_assistant_response(
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
             failure_summary=lambda error: f"Agent response failed: {error}",
-            extract_memories=_extract_memories,
+            extract_memories=extract_agent_memories,
         )
     )
 
@@ -893,7 +894,7 @@ async def _stream_standalone_assistant_response(
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
             completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
             failure_summary=lambda error: f"Standalone stream failed: {error}",
-            extract_memories=_extract_memories,
+            extract_memories=extract_agent_memories,
             stream_failure_message_metadata=_message_metadata_with_turn,
             detail_builder=traceback.format_exc,
         )
@@ -1247,7 +1248,7 @@ async def trigger_agent_response(
                 compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                 completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
                 failure_summary=lambda error: f"Agent response failed: {error}",
-                extract_memories=_extract_memories,
+                extract_memories=extract_agent_memories,
             )
         )
 
@@ -1286,87 +1287,6 @@ async def trigger_agent_response(
             reset_active_workspace(workspace_token)
         db.close()
 
-
-async def _extract_memories(agent_id: int, agent_type: str, user_message: str, agent_response: str):
-    """
-    用 LLM 从对话中提取关键信息，存为 Agent 记忆
-
-    提取内容：事实、决策、用户偏好、重要上下文
-    跳过条件：简单问候、确认类回复
-    """
-    try:
-        from models.database import get_db as _get_db, Memory
-        from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
-
-        llm = get_llm_client_for_agent(normalize_agent_type(agent_type))
-
-        extraction_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a memory extraction system. Analyze the conversation and extract "
-                    "important information worth remembering. Return a JSON array of objects with fields: "
-                    "'content' (the memory text, concise), 'type' (one of: fact, preference, decision, context), "
-                    "'importance' (1-10).\n\n"
-                    "Rules:\n"
-                    "- Extract factual information, user preferences, decisions made, and important context\n"
-                    "- Skip greetings, small talk, simple confirmations, and generic Q&A\n"
-                    "- Each memory should be self-contained and meaningful\n"
-                    "- Max 3 memories per extraction\n"
-                    "- If nothing worth remembering, return an empty array []\n"
-                    "- Return ONLY the JSON array, no explanation"
-                )
-            },
-            {
-                "role": "user",
-                "content": f"User: {user_message[:500]}\n\nAgent {agent_name}: {agent_response[:800]}"
-            }
-        ]
-
-        result = await llm.chat(extraction_messages, temperature=0.3, max_tokens=500)
-
-        if not result:
-            return
-
-        # 解析 JSON
-        import json as _json
-        result = result.strip()
-        # 提取 JSON 数组
-        if result.startswith("```"):
-            result = result.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        memories = _json.loads(result)
-        if not isinstance(memories, list) or not memories:
-            return
-
-        # 保存记忆
-        db = next(_get_db())
-        try:
-            for mem in memories[:3]:  # 最多 3 条
-                content = mem.get("content", "").strip()
-                if not content or len(content) < 10:
-                    continue
-                mem_type = mem.get("type", "context")
-                importance = min(max(int(mem.get("importance", 5)), 1), 10)
-
-                db_memory = Memory(
-                    agent_id=agent_id,
-                    memory_type=mem_type,
-                    content=content,
-                    importance=importance
-                )
-                db.add(db_memory)
-
-            db.commit()
-            logger.info(f"[Memory] Extracted {len(memories)} memories for {agent_type}")
-        except Exception as e:
-            db.rollback()
-            logger.debug(f"[Memory] Save failed: {e}")
-        finally:
-            db.close()
-
-    except Exception as e:
-        logger.debug(f"[Memory] Extraction failed: {e}")
 
 def _compact_runtime_text(value: Any, *, limit: int = 600) -> str:
     return compact_orchestration_text(value, limit=limit)
@@ -1820,7 +1740,7 @@ def _build_orchestration_agent_turn_executor():
         save_message=chatroom_manager.send_message,
         message_metadata=_message_metadata_with_turn,
         schedule_memory_extraction=lambda agent, request, response: asyncio.create_task(
-            _extract_memories(agent.id, _agent_type(agent), request, response)
+            extract_agent_memories(agent.id, _agent_type(agent), request, response)
         ),
         max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
@@ -2174,7 +2094,7 @@ async def _stream_multi_agent_orchestration(
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
         schedule_memory_extraction=lambda current_agent, request, response: asyncio.create_task(
-            _extract_memories(current_agent.id, _agent_type(current_agent), request, response)
+            extract_agent_memories(current_agent.id, _agent_type(current_agent), request, response)
         ),
         build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
         find_stage_policy=find_stage_policy,
@@ -4154,7 +4074,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     compact_summary=lambda content: _compact_runtime_text(content, limit=280),
                     completion_summary=f"{target_agent_label} completed the streaming turn.",
                     failure_summary=lambda error: f"Streaming execution failed: {error}",
-                    extract_memories=_extract_memories,
+                    extract_memories=extract_agent_memories,
                     stream_failure_message_metadata=_message_metadata_with_turn,
                     failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
                     failure_agent_id=active_agent_id,

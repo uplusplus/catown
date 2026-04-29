@@ -5277,3 +5277,32 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - callback profile builder 仍然独立于 managed session builder，本轮没有把二者进一步合并
 - route 仍要构造 stream deps / execute_turn 等 runtime input
 - 如果继续推进，下一步可以考虑把 callback profile 与 managed session spec 再往更高层 session profile 合并
+
+### 11.118 2026-04-29 新进展：memory extraction 已从 route 下沉为 shared service
+
+在 11.117 之后，single-agent callback / session builder 已经基本成层，但还有一块 runtime behavior 仍直接定义在 route：
+
+- `_extract_memories(...)` 本身仍在 `routes/api.py`
+- single-agent callback profile 与 orchestration memory scheduling 都依赖这个 route-local async function
+- 该实现里还存在一个实际 bug：prompt 组装错误引用了未定义的 `agent_name`
+
+这说明 memory extraction 这条 runtime capability 还没有真正进入 service layer。
+
+本轮把它独立出来：
+
+- 新增 `services/memory_extraction.py`
+- 抽出 message builder、response parser、memory persistence helper
+- `extract_agent_memories(...)` 成为 single-agent 与 orchestration 共用的 shared runtime service
+- 修正 extraction prompt 中的未定义变量问题，统一用 `agent_type` 标记 agent reply
+
+这一步的意义是：
+
+- route 进一步退出 runtime capability implementation 细节
+- memory extraction 从“路由内匿名能力”变成可测试、可复用的 shared service
+- single-agent 与 orchestration 的 memory scheduling 终于指向同一个底层实现，而不再依赖 route-local helper
+
+边界：
+
+- memory extraction 仍通过现有 LLM client 和数据库接口直接工作，尚未进一步纳入统一 runtime policy registry
+- save-memory tool 与 auto extraction 还没有进一步收口到统一 memory write policy
+- 如果继续推进，下一步可以考虑把 single-agent callback profile 与 stream session deps 再往更高层 session profile 合并

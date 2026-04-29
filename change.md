@@ -1900,3 +1900,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 让 `build_managed_single_agent_sync_session_spec(...)` 与 `build_managed_single_agent_stream_session_spec(...)` 直接接收 callback bundle，而不是再拆成 `finalize_success` / `finalize_failure`
 - callback profile builder 直接产出 orchestrator 使用的 `ManagedSingleAgentSessionCallbacks`，去掉 callback service 内额外的一层 bundle 结果模型
 - route/tests 改为把 callback bundle 直接传给 managed session builder，并跑 callback/orchestrator/API 回归确认行为兼容
+
+### `Extract memory extraction service from routes`
+
+范围：
+
+- `backend/services/memory_extraction.py`
+- `backend/routes/api.py`
+- `backend/tests/test_memory_extraction.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 将 route 内的 `_extract_memories(...)` 下沉到 shared `memory_extraction` service，并让 single-agent 与 orchestration memory scheduling 统一复用该 service
+- 修正 memory extraction prompt 中错误引用未定义 `agent_name` 的问题，统一使用传入的 `agent_type` 生成 extraction messages
+- 新增 focused memory extraction tests，并跑 memory/callback/orchestrator/API 回归确认行为兼容
