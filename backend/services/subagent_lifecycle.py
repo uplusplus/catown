@@ -224,6 +224,52 @@ def summarize_subagent_runtime_handles(handles: Any) -> str | None:
     return " · ".join(parts)
 
 
+def find_subagent_runtime_handle(handles: Any, step_id: str) -> dict[str, Any] | None:
+    """Return one projected subagent handle by step id."""
+
+    normalized_step_id = str(step_id or "").strip()
+    if not normalized_step_id:
+        return None
+
+    projection = handles if isinstance(handles, dict) else {}
+    entries = projection.get("entries") if isinstance(projection.get("entries"), list) else []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("step_id") or "").strip() == normalized_step_id:
+            return entry
+    return None
+
+
+def find_subagent_lifecycle_entry(lifecycle: Any, step_id: str) -> dict[str, Any] | None:
+    """Return one lifecycle entry by step id."""
+
+    normalized_step_id = str(step_id or "").strip()
+    if not normalized_step_id:
+        return None
+
+    state = lifecycle if isinstance(lifecycle, dict) else {}
+    subagents = state.get("subagents") if isinstance(state.get("subagents"), list) else []
+    for subagent in subagents:
+        if not isinstance(subagent, dict):
+            continue
+        if str(subagent.get("step_id") or "").strip() == normalized_step_id:
+            return subagent
+    return None
+
+
+def cancellable_subagent_handles(handles: Any) -> list[dict[str, Any]]:
+    """Return projected handles that still advertise cancel as an available action."""
+
+    projection = handles if isinstance(handles, dict) else {}
+    entries = projection.get("entries") if isinstance(projection.get("entries"), list) else []
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and bool(entry.get("cancellable"))
+    ]
+
+
 def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]:
     """Return subagents that can still be moved to a cancelled terminal state."""
 
@@ -235,10 +281,10 @@ def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]
         if isinstance(subagent, dict) and str(subagent.get("step_id") or "").strip()
     }
     projection = build_subagent_runtime_handles(lifecycle)
-    entries = projection.get("entries") if isinstance(projection.get("entries"), list) else []
+    entries = cancellable_subagent_handles(projection)
     cancellable: list[dict[str, Any]] = []
     for entry in entries:
-        if not isinstance(entry, dict) or not entry.get("cancellable"):
+        if not isinstance(entry, dict):
             continue
         step_id = str(entry.get("step_id") or "").strip()
         subagent = subagents_by_step_id.get(step_id)

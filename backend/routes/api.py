@@ -171,7 +171,12 @@ from services.stream_transport import (
     render_stream_turn_event,
 )
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
-from services.subagent_lifecycle import cancellable_subagents_from_lifecycle
+from services.subagent_lifecycle import (
+    cancellable_subagent_handles,
+    cancellable_subagents_from_lifecycle,
+    find_subagent_lifecycle_entry,
+    find_subagent_runtime_handle,
+)
 from services.orchestration_events import (
     record_orchestration_started,
     record_scheduler_plan_created,
@@ -2902,6 +2907,28 @@ async def list_task_runs(
     return [serialize_task_run_summary(task_run) for task_run in query.limit(limit).all()]
 
 
+@router.get("/task-runs/{task_run_id}/subagents")
+async def list_task_run_subagents(task_run_id: int, db: Session = Depends(get_db)):
+    """Return the current subagent lifecycle + handle projection for one task run."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    return {
+        "task_run_id": task_run.id,
+        "status": task_run.status,
+        "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
+        "subagent_handles_summary": checkpoint_snapshot.get("subagent_handles_summary"),
+        "subagent_lifecycle": checkpoint_snapshot.get("subagent_lifecycle"),
+        "subagent_handles": checkpoint_snapshot.get("subagent_handles"),
+    }
+
+
 @router.get("/task-runs/{task_run_id}")
 async def get_task_run_detail(task_run_id: int, db: Session = Depends(get_db)):
     """Get a single orchestration/task run with ordered ledger events."""
@@ -2974,6 +3001,107 @@ async def resume_task_run(task_run_id: int, db: Session = Depends(get_db)):
         "status": refreshed.status,
         "task_run_id": refreshed.id,
         "detail": detail,
+    }
+
+
+@router.post("/task-runs/{task_run_id}/subagents/{step_id}/cancel")
+async def cancel_task_run_subagent(
+    task_run_id: int,
+    step_id: str,
+    req: TaskRunCancelRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Cancel one projected subagent handle without immediately cancelling the whole task run."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    if (task_run.status or "").lower() != "running":
+        raise HTTPException(status_code=409, detail="Only running task runs can cancel subagents.")
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    handles = checkpoint_snapshot.get("subagent_handles")
+    lifecycle = checkpoint_snapshot.get("subagent_lifecycle")
+    handle = find_subagent_runtime_handle(handles, step_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Subagent handle not found.")
+    if not handle.get("cancellable"):
+        raise HTTPException(status_code=409, detail="Subagent handle is not cancellable.")
+
+    subagent = find_subagent_lifecycle_entry(lifecycle, step_id)
+    if subagent is None:
+        raise HTTPException(status_code=404, detail="Subagent state not found.")
+
+    cancelled_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
+    note = ((req.note if req else None) or "").strip()
+
+    record_scheduler_step_cancelled(
+        db,
+        task_run,
+        subagent,
+        cancelled_by=cancelled_by,
+        note=note,
+    )
+    db.refresh(task_run)
+
+    updated_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    updated_handles = updated_snapshot.get("subagent_handles")
+    updated_handle = find_subagent_runtime_handle(updated_handles, step_id)
+    remaining_cancellable_handles = cancellable_subagent_handles(updated_handles)
+    task_run_cancelled = len(remaining_cancellable_handles) == 0
+
+    append_task_event(
+        db,
+        task_run,
+        "task_run_subagent_cancelled",
+        summary=note or f"Cancelled subagent {step_id} from the API.",
+        payload={
+            "task_run_id": task_run.id,
+            "step_id": step_id,
+            "cancelled_by": cancelled_by,
+            "note": note or None,
+            "task_run_cancelled": task_run_cancelled,
+            "remaining_cancellable_subagent_count": len(remaining_cancellable_handles),
+            "subagent_handle": updated_handle,
+        },
+    )
+
+    if task_run_cancelled:
+        append_task_event(
+            db,
+            task_run,
+            "task_run_cancelled",
+            summary=note or f"Task run cancelled after subagent {step_id} was cancelled.",
+            payload={
+                "task_run_id": task_run.id,
+                "run_kind": task_run.run_kind,
+                "cancelled_by": cancelled_by,
+                "cancelled_subagent_count": 1,
+                "cancelled_step_ids": [step_id],
+                "note": note or None,
+                "checkpoint_snapshot": updated_snapshot,
+            },
+        )
+        complete_task_run(db, task_run, status="cancelled", summary=note or "Task run cancelled.")
+        db.refresh(task_run)
+
+    return {
+        "message": (
+            "Subagent cancelled and task run terminalized."
+            if task_run_cancelled
+            else "Subagent cancelled."
+        ),
+        "cancelled": True,
+        "task_run_cancelled": task_run_cancelled,
+        "task_run_id": task_run.id,
+        "step_id": step_id,
+        "status": task_run.status,
+        "remaining_cancellable_subagent_count": len(remaining_cancellable_handles),
+        "detail": serialize_task_run_detail(task_run),
     }
 
 

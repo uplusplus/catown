@@ -6084,6 +6084,43 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - handle 仍来自 checkpoint 重建，不是长期存活的 runtime object
 - 但 compared to 之前只有 lifecycle state，现在已经更接近 Codex 风格的 child handle 形状
 
+### 11.145 2026-04-30 新进展：subagent handle 已开始暴露独立控制端点
+
+在 11.144 之后，checkpoint 里已经有了 `subagent handles`，但它仍然只是 detail/monitor 可见数据。
+
+这意味着：
+
+- child handle 的 control contract 已经出现
+- 但外部还不能直接围绕 handle 做控制
+- route 侧仍只有 coarse-grained 的：
+  - `resume task run`
+  - `cancel task run`
+
+这和 Codex 风格的 child-runtime / handle-oriented control 面还有明显差距。
+
+本轮先补一层保守但有用的 API：
+
+- 新增 `GET /api/task-runs/{task_run_id}/subagents`
+  - 直接暴露当前 task run 的 lifecycle + handle projection
+- 新增 `POST /api/task-runs/{task_run_id}/subagents/{step_id}/cancel`
+  - 支持按 handle 粒度取消单个 subagent
+- 语义保持保守：
+  - 单 handle cancel 默认不直接终结整个 task run
+  - 只有当最后一个可取消 handle 被取消时，才级联终结 task run
+
+这一步的意义是：
+
+- subagent handle 首次从“checkpoint 数据结构”变成“独立 control endpoint”
+- child-level cancel 不再必须借道整个 task run 的 coarse cancel
+- route/control 面开始具备更接近 Codex child handle 的操作边界
+
+边界：
+
+- 目前仍只有 `cancel` 动作，没有 `wait` / `close`
+- `wait` 仍只是 handle contract 里的显式 capability，还未成为 API
+- 取消动作底层仍是补 ledger event + 重建 checkpoint，不是真正的 executor-native child cancel primitive
+- 但 compared to 之前只有 task-run 级 cancel，现在已经向 child-handle-oriented control 面前进了一步
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

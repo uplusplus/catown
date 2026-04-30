@@ -2352,3 +2352,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 lifecycle 之上新增 `subagent handles` projection，把 `await_dependency/await_dispatch/await_completion` 控制态与 `wait/cancel` 可用动作显式化
 - checkpoint snapshot / task-run detail 开始携带 `subagent_handles` 与 `subagent_handles_summary`
 - cancel 路径与 focused tests 改为同时验证 handle-level control contract，进一步逼近 runtime-managed child handle 形状
+
+### `Expose subagent handle control endpoints`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/routes/api.py`
+- `backend/tests/test_task_run_cancel.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `GET /api/task-runs/{task_run_id}/subagents`，把 checkpoint 中的 lifecycle + handle projection 作为独立控制面暴露
+- 新增 `POST /api/task-runs/{task_run_id}/subagents/{step_id}/cancel`，允许按 handle 粒度取消单个 subagent
+- 单 handle cancel 默认不终结整个 task run，只有最后一个可取消 handle 被取消时，才会级联终结 task run
