@@ -6160,6 +6160,51 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 也还没有 owner-scoped wait token
 - 但 compared to 之前只有 `cancel` 和只读 projection，现在已经把 child wait contract 也显式固定下来了
 
+### 11.147 2026-04-30 新进展：subagent handle 已开始暴露 close contract
+
+在 11.146 之后，child-handle control 面已经具备：
+
+- `list`
+- `cancel`
+- `wait-observe`
+
+但还有一个明显缺口：
+
+- terminal child handle 仍然只能一直挂在 active handle 集里
+- 外部无法显式表达“这个 child 我已经处理完，不必再作为活跃 control target 展示”
+
+如果没有 `close`，child handle 虽然有 terminal state，但还缺少一个非常典型的 handle lifecycle 末端动作。
+
+本轮先补一个保守版本：
+
+- handle projection 新增：
+  - `closed`
+  - `closed_at`
+  - `closed_by`
+  - `close_note`
+- 新增 `POST /api/task-runs/{task_run_id}/subagents/{step_id}/close`
+- 语义目前刻意收窄：
+  - 只允许 `completed/failed` terminal handle 被 close
+  - `cancelled` handle 仍默认视为已经退出 active set
+    - 不再要求显式 close
+
+这一步的意义是：
+
+- child handle 第一次拥有了显式的 terminal-archive 动作
+- handle lifecycle 开始形成更完整的 control surface：
+  - list
+  - wait
+  - cancel
+  - close
+- monitor / detail / route 后续都可以围绕 “open terminal handle vs closed terminal handle” 做更清晰的展示和过滤
+
+边界：
+
+- `close` 现在仍只是 projection + ledger 事件驱动，不会影响 scheduler 内核
+- 还没有真正的 active/archived handle store
+- `cancelled` handle 暂时不暴露 close，保持旧语义兼容
+- 但 compared to 之前 terminal handle 只能被动悬挂，现在 child-handle lifecycle 已经更接近一个完整的 Codex-style control model
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

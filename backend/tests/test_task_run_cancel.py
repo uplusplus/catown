@@ -476,3 +476,161 @@ def test_wait_task_run_subagent_reports_immediate_when_terminal(client):
     assert wait_result["state_changed"] is True
     assert wait_result["suggested_poll"] == "immediate"
     assert wait_result["last_event_index"] == 2
+
+
+def test_close_terminal_task_run_subagent_handle(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Close Handle Run", "agent_names": ["analyst"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Close terminal handle",
+            user_request="Archive finished child handle.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_plan_created",
+                    payload_json=json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "agent_name": "analyst",
+                                    "agent_type": "analyst",
+                                    "dispatch_kind": "blocking",
+                                }
+                            ]
+                        }
+                    ),
+                ),
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_completed",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "blocking",
+                            "step_state": {
+                                "status": "completed",
+                                "dispatch_count": 1,
+                                "completion_count": 1,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    closed = client.post(
+        f"/api/task-runs/{task_run_id}/subagents/step-1/close",
+        json={"note": "Archive this finished handle.", "cancelled_by": "tester"},
+    )
+    assert closed.status_code == 200
+    payload = closed.json()
+    assert payload["closed"] is True
+    handle = payload["subagent_handle"]
+    assert handle["closed"] is True
+    assert handle["closed_by"] == "tester"
+    assert handle["close_note"] == "Archive this finished handle."
+    assert handle["available_actions"] == []
+    assert payload["detail"]["checkpoint_snapshot"]["subagent_handles"]["entries"][0]["closed_at"] is not None
+    event_types = [event["event_type"] for event in payload["detail"]["events"]]
+    assert event_types[-1] == "subagent_handle_closed"
+
+
+def test_close_task_run_subagent_rejects_non_terminal_handle(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Close Active Handle Run", "agent_names": ["analyst"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Close active handle",
+            user_request="Do not close active child.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_plan_created",
+                    payload_json=json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "agent_name": "analyst",
+                                    "agent_type": "analyst",
+                                    "dispatch_kind": "blocking",
+                                }
+                            ]
+                        }
+                    ),
+                ),
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "blocking",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    closed = client.post(
+        f"/api/task-runs/{task_run_id}/subagents/step-1/close",
+        json={"note": "Should fail."},
+    )
+    assert closed.status_code == 409

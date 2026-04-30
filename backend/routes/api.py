@@ -3150,6 +3150,66 @@ async def cancel_task_run_subagent(
     }
 
 
+@router.post("/task-runs/{task_run_id}/subagents/{step_id}/close")
+async def close_task_run_subagent(
+    task_run_id: int,
+    step_id: str,
+    req: TaskRunCancelRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Close one terminal subagent handle and archive it from the active handle set."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    handles = checkpoint_snapshot.get("subagent_handles")
+    handle = find_subagent_runtime_handle(handles, step_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Subagent handle not found.")
+    if not handle.get("terminal"):
+        raise HTTPException(status_code=409, detail="Only terminal subagent handles can be closed.")
+    if handle.get("closed"):
+        raise HTTPException(status_code=409, detail="Subagent handle is already closed.")
+
+    closed_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
+    note = ((req.note if req else None) or "").strip()
+
+    append_task_event(
+        db,
+        task_run,
+        "subagent_handle_closed",
+        summary=note or f"Closed subagent handle {step_id} from the API.",
+        payload={
+            "task_run_id": task_run.id,
+            "step_id": step_id,
+            "closed_by": closed_by,
+            "note": note or None,
+            "status": handle.get("status"),
+            "control_state": handle.get("control_state"),
+        },
+    )
+    db.refresh(task_run)
+
+    updated_detail = serialize_task_run_detail(task_run)
+    updated_handle = find_subagent_runtime_handle(
+        updated_detail.get("checkpoint_snapshot", {}).get("subagent_handles"),
+        step_id,
+    )
+    return {
+        "message": "Subagent handle closed.",
+        "closed": True,
+        "task_run_id": task_run.id,
+        "step_id": step_id,
+        "subagent_handle": updated_handle,
+        "detail": updated_detail,
+    }
+
+
 @router.post("/task-runs/{task_run_id}/cancel")
 async def cancel_task_run(
     task_run_id: int,

@@ -62,6 +62,7 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
             "scheduler_step_completed",
             "scheduler_step_failed",
             "scheduler_step_cancelled",
+            "subagent_handle_closed",
         }:
             continue
 
@@ -88,6 +89,16 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
                 state["error"] = payload.get("error")
         elif event_type == "scheduler_step_cancelled":
             _transition(state, "cancelled", event=event, reason="cancelled")
+        elif event_type == "subagent_handle_closed":
+            state["handle_closed"] = True
+            state["closed_by"] = payload.get("closed_by")
+            state["close_note"] = payload.get("note")
+            created_at = getattr(event, "created_at", None)
+            state["closed_at"] = created_at.isoformat() if created_at is not None else None
+            state["last_event_index"] = getattr(event, "event_index", None)
+            state["last_event_type"] = getattr(event, "event_type", None)
+            state["last_event_at"] = state["closed_at"]
+            state["transition_reason"] = "closed"
 
         if state.get("status") != previous_status:
             transition_count += 1
@@ -145,7 +156,8 @@ def build_subagent_runtime_handles(lifecycle: Any) -> dict[str, Any]:
         control_state = _control_state_for_subagent(subagent)
         terminal = status in TERMINAL_STATUSES
         awaitable = control_state in {"await_dependency", "await_dispatch", "await_completion"}
-        cancellable = bool(status) and not terminal
+        closed = bool(subagent.get("handle_closed"))
+        cancellable = bool(status) and not terminal and not closed
         dependency_step_id = (
             str(subagent.get("wait_for_step_id") or "").strip()
             or str(subagent.get("attached_to_step_id") or "").strip()
@@ -160,6 +172,7 @@ def build_subagent_runtime_handles(lifecycle: Any) -> dict[str, Any]:
             "scheduler_status": scheduler_status,
             "control_state": control_state,
             "terminal": terminal,
+            "closed": closed,
             "awaitable": awaitable,
             "cancellable": cancellable,
             "dependency_step_id": dependency_step_id,
@@ -171,10 +184,15 @@ def build_subagent_runtime_handles(lifecycle: Any) -> dict[str, Any]:
             "last_event_index": subagent.get("last_event_index"),
             "last_event_type": subagent.get("last_event_type"),
             "last_event_at": subagent.get("last_event_at"),
+            "closed_at": subagent.get("closed_at"),
+            "closed_by": subagent.get("closed_by"),
+            "close_note": subagent.get("close_note"),
             "error": subagent.get("error"),
             "available_actions": _available_actions_for_control_state(
                 control_state=control_state,
                 cancellable=cancellable,
+                terminal=terminal,
+                closed=closed,
             ),
         }
         entries.append(entry)
@@ -391,6 +409,10 @@ def _initial_state(step: dict[str, Any]) -> dict[str, Any]:
         "note": None,
         "error": None,
         "last_event_index": None,
+        "handle_closed": False,
+        "closed_at": None,
+        "closed_by": None,
+        "close_note": None,
     }
     _merge_step_identity(state, step)
     return state
@@ -491,12 +513,20 @@ def _control_state_for_subagent(subagent: dict[str, Any]) -> str:
     return "await_dispatch"
 
 
-def _available_actions_for_control_state(*, control_state: str, cancellable: bool) -> list[str]:
+def _available_actions_for_control_state(
+    *,
+    control_state: str,
+    cancellable: bool,
+    terminal: bool,
+    closed: bool,
+) -> list[str]:
     actions: list[str] = []
     if control_state in {"await_dependency", "await_dispatch", "await_completion"}:
         actions.append("wait")
     if cancellable:
         actions.append("cancel")
+    if control_state in {"completed", "failed"} and terminal and not closed:
+        actions.append("close")
     return actions
 
 
