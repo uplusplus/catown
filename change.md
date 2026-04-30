@@ -2304,3 +2304,18 @@ No failures were observed in the new context builder unit tests or Python syntax
 
 - orchestrator 的 stream raw execution envelope 改为直接消费 `SingleAgentStreamLoopCallbacks + SingleAgentStreamTransportContext`
 - focused orchestrator / stream API 回归更新为围绕子分组化后的 raw execution envelope 验证行为兼容
+
+### `Adopt stream loop/transport subgroup entrypoint in single-agent routes`
+
+范围：
+
+- `backend/routes/api.py`
+- `backend/tests/test_single_agent_session_orchestrator.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- standalone / project single-agent stream route 改为显式构造 `SingleAgentStreamLoopCallbacks + SingleAgentStreamTransportContext`
+- single-agent raw stream execution envelope 在 route 层不再接收扁平展开的 loop/transport 参数
+- focused orchestrator / stream API 回归更新为围绕 route 级子分组入口验证行为兼容

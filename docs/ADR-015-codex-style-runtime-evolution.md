@@ -5973,6 +5973,30 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync/stream execution envelope 的整体 shape 还没有完全统一
 - 如果继续推进，下一步可以考虑是否值得为 sync execution 也抽更细子结构，或者直接统一 envelope 级别的 contract
 
+### 11.142 2026-04-30 新进展：single-agent stream route 已切到 loop/transport 子分组入口
+
+在 11.141 之后，service 与 orchestrator 入口虽然都已经切到 `loop/transport` 子分组，但 route 侧还没有直接采用这组高层 contract。
+
+这意味着 stream execution 的结构边界已经存在，但 single-agent route 仍然在沿用上一层的扁平调用习惯。
+
+本轮把 route 这一层也补齐：
+
+- standalone single-agent stream route 改为显式构造 `SingleAgentStreamLoopCallbacks`
+- project single-agent stream route 也改为显式构造 `SingleAgentStreamTransportContext`
+- focused orchestrator tests 同步改成围绕 route 级子分组入口验证行为兼容
+
+这一步的意义是：
+
+- stream execution 从 route 到 orchestrator 到 service 三层，终于使用同一组结构边界
+- single-agent route 不再把 loop callbacks / transport callbacks 以扁平参数列表展开
+- 后续如果继续统一 sync/stream execution-side contract，stream 这条链路已经具备稳定的 route-level shape
+
+边界：
+
+- sync execution 仍没有对应的子分组入口
+- route 侧虽然已经不再扁平展开 stream loop/transport 参数，但 sync/stream execution envelope 仍是两套模式
+- 如果继续推进，下一步可以开始看 multi-agent runtime 的 subagent lifecycle 是否也值得做类似 contract 收口
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
