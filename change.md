@@ -2400,3 +2400,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - handle projection 新增 `closed/closed_at/closed_by/close_note`，并开始区分“terminal but still open”与“terminal and closed”
 - 新增 `POST /api/task-runs/{task_run_id}/subagents/{step_id}/close`，允许显式归档 `completed/failed` child handle
 - `cancelled` handle 仍默认视为已从 active 集里退出，不暴露 `close`，保持现有 cancel 语义不变
+
+### `Add timeout-aware subagent handle wait polling`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/routes/api.py`
+- `backend/tests/test_task_run_cancel.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- `GET /api/task-runs/{task_run_id}/subagents/{step_id}/wait` 新增 `timeout_ms`，开始支持 bounded long-poll 观察
+- 新增 timeout normalization helper，并把 wait 结果补充 `timed_out`
+- 当前 wait 仍不持有 lease、不做 push，只是在现有 poll-style contract 上增加 bounded blocking 语义

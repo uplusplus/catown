@@ -399,6 +399,7 @@ def test_wait_task_run_subagent_reports_poll_contract(client):
     assert wait_result["suggested_poll"] == "continue"
     assert wait_result["last_event_index"] == 1
     assert wait_result["since_event_index"] == 2
+    assert wait_result["timed_out"] is False
 
 
 def test_wait_task_run_subagent_reports_immediate_when_terminal(client):
@@ -476,6 +477,71 @@ def test_wait_task_run_subagent_reports_immediate_when_terminal(client):
     assert wait_result["state_changed"] is True
     assert wait_result["suggested_poll"] == "immediate"
     assert wait_result["last_event_index"] == 2
+    assert wait_result["timed_out"] is False
+
+
+def test_wait_task_run_subagent_reports_timeout_when_unchanged(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Wait Timeout Run", "agent_names": ["analyst", "developer"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Wait timeout handle",
+            user_request="Observe timeout contract.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_plan_created",
+                    payload_json=json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "agent_name": "analyst",
+                                    "agent_type": "analyst",
+                                    "dispatch_kind": "blocking",
+                                },
+                                {
+                                    "step_id": "step-2",
+                                    "position": 2,
+                                    "agent_name": "developer",
+                                    "agent_type": "developer",
+                                    "dispatch_kind": "blocking",
+                                    "wait_for_step_id": "step-1",
+                                },
+                            ]
+                        }
+                    ),
+                )
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    waiting = client.get(f"/api/task-runs/{task_run_id}/subagents/step-2/wait?since_event_index=1&timeout_ms=120")
+    assert waiting.status_code == 200
+    payload = waiting.json()
+    wait_result = payload["wait_result"]
+    assert wait_result["state_changed"] is False
+    assert wait_result["timed_out"] is True
+    assert wait_result["suggested_poll"] == "timeout"
 
 
 def test_close_terminal_task_run_subagent_handle(client):

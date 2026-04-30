@@ -177,6 +177,7 @@ from services.subagent_lifecycle import (
     cancellable_subagents_from_lifecycle,
     find_subagent_lifecycle_entry,
     find_subagent_runtime_handle,
+    wait_timeout_seconds,
 )
 from services.orchestration_events import (
     record_orchestration_started,
@@ -2935,6 +2936,7 @@ async def wait_task_run_subagent(
     task_run_id: int,
     step_id: str,
     since_event_index: int | None = None,
+    timeout_ms: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Observe one subagent handle and report whether its state changed since an event cursor."""
@@ -2946,25 +2948,62 @@ async def wait_task_run_subagent(
     if not task_run:
         raise HTTPException(status_code=404, detail="Task run not found")
 
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    handles = checkpoint_snapshot.get("subagent_handles")
-    handle = find_subagent_runtime_handle(handles, step_id)
-    if handle is None:
-        raise HTTPException(status_code=404, detail="Subagent handle not found.")
+    timeout_seconds = wait_timeout_seconds(timeout_ms, default_ms=0, max_ms=5000)
+    poll_interval_seconds = 0.1
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    handle = None
+    wait_result = None
 
-    latest_event_index = 0
-    events = list(getattr(task_run, "events", []) or [])
-    if events:
-        try:
-            latest_event_index = max(int(getattr(event, "event_index", 0) or 0) for event in events)
-        except (TypeError, ValueError):
-            latest_event_index = 0
+    while True:
+        db.expire_all()
+        current_task_run = (
+            db.query(TaskRun)
+            .filter(TaskRun.id == task_run_id)
+            .first()
+        )
+        if current_task_run is None:
+            raise HTTPException(status_code=404, detail="Task run not found")
 
-    wait_result = build_subagent_wait_result(
-        handle=handle,
-        current_event_index=latest_event_index,
-        since_event_index=since_event_index,
-    )
+        checkpoint_snapshot = build_task_run_checkpoint_snapshot(current_task_run)
+        handles = checkpoint_snapshot.get("subagent_handles")
+        handle = find_subagent_runtime_handle(handles, step_id)
+        if handle is None:
+            raise HTTPException(status_code=404, detail="Subagent handle not found.")
+
+        latest_event_index = 0
+        events = list(getattr(current_task_run, "events", []) or [])
+        if events:
+            try:
+                latest_event_index = max(int(getattr(event, "event_index", 0) or 0) for event in events)
+            except (TypeError, ValueError):
+                latest_event_index = 0
+
+        wait_result = build_subagent_wait_result(
+            handle=handle,
+            current_event_index=latest_event_index,
+            since_event_index=since_event_index,
+        )
+        if wait_result.get("state_changed"):
+            task_run = current_task_run
+            break
+        if timeout_seconds <= 0:
+            task_run = current_task_run
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            task_run = current_task_run
+            break
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
+
+    if wait_result is None or handle is None:
+        raise HTTPException(status_code=500, detail="Failed to observe subagent handle.")
+
+    wait_result = dict(wait_result)
+    wait_result["timed_out"] = timed_out
+    if timed_out and not wait_result.get("state_changed"):
+        wait_result["suggested_poll"] = "timeout"
     return {
         "task_run_id": task_run.id,
         "status": task_run.status,

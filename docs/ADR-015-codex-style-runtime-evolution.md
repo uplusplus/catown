@@ -6205,6 +6205,47 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - `cancelled` handle 暂时不暴露 close，保持旧语义兼容
 - 但 compared to 之前 terminal handle 只能被动悬挂，现在 child-handle lifecycle 已经更接近一个完整的 Codex-style control model
 
+### 11.148 2026-04-30 新进展：subagent handle wait 已升级到 bounded long-poll contract
+
+在 11.147 之后，child handle control surface 已经有：
+
+- `list`
+- `wait-observe`
+- `cancel`
+- `close`
+
+但 `wait` 还只是一个即时快照接口：
+
+- 只能返回当前状态
+- 调用方必须自己反复 polling
+- route 侧没有任何 bounded blocking 语义
+
+这和 Codex 风格的 handle wait primitive 仍然有明显距离，哪怕还不做真正的 executor-native wait，也至少应该先把 API contract 稳定到“支持有限等待”。
+
+本轮先补最小升级：
+
+- `GET /api/task-runs/{task_run_id}/subagents/{step_id}/wait`
+  开始支持 `timeout_ms`
+- route 会在限定时间内反复重建 checkpoint
+  - 如果 handle 状态变化，立即返回
+  - 如果超时仍未变化，返回 `timed_out=true`
+  - 并把 `suggested_poll` 明确为 `timeout`
+- timeout 统一经过 bounded normalization helper
+  - 当前上限 5s
+
+这一步的意义是：
+
+- `wait` 从“纯快照查询”推进到“bounded long-poll contract”
+- 后续如果继续升级到 lease-based wait / notification push / executor-native wakeup，不需要重做 API shape
+- child handle control 面已经开始具备更接近 runtime primitive 的时间语义
+
+边界：
+
+- 当前实现仍是 route 层轮询 checkpoint，不是 runtime-native wakeup
+- 还没有 wait token / owner / lease
+- 也没有 SSE / websocket push
+- 但 compared to 之前的即时查询，`wait` 已经开始具备真正的阻塞观察语义
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

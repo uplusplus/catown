@@ -329,6 +329,18 @@ def build_subagent_wait_result(
     }
 
 
+def wait_timeout_seconds(timeout_ms: int | None, *, default_ms: int = 0, max_ms: int = 5000) -> float:
+    """Normalize a wait timeout into bounded seconds."""
+
+    timeout_value = default_ms if timeout_ms is None else timeout_ms
+    try:
+        normalized_ms = int(timeout_value)
+    except (TypeError, ValueError):
+        normalized_ms = default_ms
+    normalized_ms = max(0, min(normalized_ms, max_ms))
+    return normalized_ms / 1000.0
+
+
 def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]:
     """Return subagents that can still be moved to a cancelled terminal state."""
 
