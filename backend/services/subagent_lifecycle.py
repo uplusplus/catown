@@ -123,17 +123,126 @@ def summarize_subagent_lifecycle(lifecycle: Any) -> str | None:
     return " · ".join(parts)
 
 
+def build_subagent_runtime_handles(lifecycle: Any) -> dict[str, Any]:
+    """Project lifecycle state into lightweight runtime handles with control-facing flags."""
+
+    state = lifecycle if isinstance(lifecycle, dict) else {}
+    subagents = state.get("subagents") if isinstance(state.get("subagents"), list) else []
+
+    entries: list[dict[str, Any]] = []
+    control_state_counts: dict[str, int] = {}
+    cancellable_count = 0
+
+    for subagent in subagents:
+        if not isinstance(subagent, dict):
+            continue
+        status = str(subagent.get("status") or "").strip().lower()
+        scheduler_status = str(subagent.get("scheduler_status") or "").strip().lower() or None
+        control_state = _control_state_for_subagent(subagent)
+        terminal = status in TERMINAL_STATUSES
+        awaitable = control_state in {"await_dependency", "await_dispatch", "await_completion"}
+        cancellable = bool(status) and not terminal
+        dependency_step_id = (
+            str(subagent.get("wait_for_step_id") or "").strip()
+            or str(subagent.get("attached_to_step_id") or "").strip()
+            or None
+        )
+        entry = {
+            "step_id": subagent.get("step_id"),
+            "agent_name": subagent.get("agent_name"),
+            "agent_type": subagent.get("agent_type"),
+            "dispatch_kind": subagent.get("dispatch_kind"),
+            "status": status or None,
+            "scheduler_status": scheduler_status,
+            "control_state": control_state,
+            "terminal": terminal,
+            "awaitable": awaitable,
+            "cancellable": cancellable,
+            "dependency_step_id": dependency_step_id,
+            "released_by_step_id": subagent.get("released_by_step_id"),
+            "resumed_by_step_id": subagent.get("resumed_by_step_id"),
+            "resumed_by_agent": subagent.get("resumed_by_agent"),
+            "dispatch_count": subagent.get("dispatch_count"),
+            "completion_count": subagent.get("completion_count"),
+            "last_event_type": subagent.get("last_event_type"),
+            "last_event_at": subagent.get("last_event_at"),
+            "error": subagent.get("error"),
+            "available_actions": _available_actions_for_control_state(
+                control_state=control_state,
+                cancellable=cancellable,
+            ),
+        }
+        entries.append(entry)
+        control_state_counts[control_state] = control_state_counts.get(control_state, 0) + 1
+        if cancellable:
+            cancellable_count += 1
+
+    return {
+        "handle_count": len(entries),
+        "cancellable_count": cancellable_count,
+        "control_state_counts": control_state_counts,
+        "entries": entries,
+    }
+
+
+def summarize_subagent_runtime_handles(handles: Any) -> str | None:
+    projection = handles if isinstance(handles, dict) else {}
+    try:
+        total = int(projection.get("handle_count") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        return None
+
+    counts = (
+        projection.get("control_state_counts")
+        if isinstance(projection.get("control_state_counts"), dict)
+        else {}
+    )
+    parts = [f"{total} handle" if total == 1 else f"{total} handles"]
+    for control_state in [
+        "await_dependency",
+        "await_dispatch",
+        "await_completion",
+        "completed",
+        "failed",
+        "cancelled",
+    ]:
+        try:
+            count = int(counts.get(control_state) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count:
+            parts.append(f"{count} {control_state.replace('_', ' ')}")
+
+    try:
+        cancellable_count = int(projection.get("cancellable_count") or 0)
+    except (TypeError, ValueError):
+        cancellable_count = 0
+    if cancellable_count:
+        parts.append(f"{cancellable_count} cancellable")
+    return " · ".join(parts)
+
+
 def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]:
     """Return subagents that can still be moved to a cancelled terminal state."""
 
     state = lifecycle if isinstance(lifecycle, dict) else {}
     subagents = state.get("subagents") if isinstance(state.get("subagents"), list) else []
+    subagents_by_step_id = {
+        str(subagent.get("step_id") or "").strip(): subagent
+        for subagent in subagents
+        if isinstance(subagent, dict) and str(subagent.get("step_id") or "").strip()
+    }
+    projection = build_subagent_runtime_handles(lifecycle)
+    entries = projection.get("entries") if isinstance(projection.get("entries"), list) else []
     cancellable: list[dict[str, Any]] = []
-    for subagent in subagents:
-        if not isinstance(subagent, dict):
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("cancellable"):
             continue
-        status = str(subagent.get("status") or "").strip().lower()
-        if status and status not in TERMINAL_STATUSES:
+        step_id = str(entry.get("step_id") or "").strip()
+        subagent = subagents_by_step_id.get(step_id)
+        if subagent is not None:
             cancellable.append(subagent)
     return cancellable
 
@@ -270,6 +379,37 @@ def _merge_event_context(state: dict[str, Any], step: dict[str, Any]) -> None:
         value = step.get(key)
         if value is not None:
             state[key] = value
+
+
+def _control_state_for_subagent(subagent: dict[str, Any]) -> str:
+    status = str(subagent.get("status") or "").strip().lower()
+    if status in TERMINAL_STATUSES:
+        return status
+    if status == "running":
+        return "await_completion"
+
+    scheduler_status = str(subagent.get("scheduler_status") or "").strip().lower()
+    if scheduler_status == "waiting":
+        return "await_dependency"
+    if scheduler_status == "ready":
+        return "await_dispatch"
+
+    dependency_step_id = (
+        str(subagent.get("wait_for_step_id") or "").strip()
+        or str(subagent.get("attached_to_step_id") or "").strip()
+    )
+    if dependency_step_id and not subagent.get("released_by_step_id"):
+        return "await_dependency"
+    return "await_dispatch"
+
+
+def _available_actions_for_control_state(*, control_state: str, cancellable: bool) -> list[str]:
+    actions: list[str] = []
+    if control_state in {"await_dependency", "await_dispatch", "await_completion"}:
+        actions.append("wait")
+    if cancellable:
+        actions.append("cancel")
+    return actions
 
 
 def _coerce_nonnegative_int(value: Any) -> int | None:

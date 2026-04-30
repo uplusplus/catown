@@ -2,7 +2,12 @@ from datetime import datetime, timedelta
 import json
 from types import SimpleNamespace
 
-from services.subagent_lifecycle import build_subagent_lifecycle_from_events, summarize_subagent_lifecycle
+from services.subagent_lifecycle import (
+    build_subagent_lifecycle_from_events,
+    build_subagent_runtime_handles,
+    summarize_subagent_lifecycle,
+    summarize_subagent_runtime_handles,
+)
 
 
 def _event(event_type, payload, *, created_at=None):
@@ -106,6 +111,17 @@ def test_subagent_lifecycle_projects_scheduler_events():
     assert lifecycle["subagents"][1]["resumed_by_step_id"] == "step-1"
     assert lifecycle["subagents"][1]["resumed_by_agent"] == "analyst"
     assert summarize_subagent_lifecycle(lifecycle) == "2 subagents · 1 spawned · 1 completed"
+    handles = build_subagent_runtime_handles(lifecycle)
+    assert handles["handle_count"] == 2
+    assert handles["cancellable_count"] == 1
+    assert handles["control_state_counts"] == {"completed": 1, "await_dispatch": 1}
+    assert handles["entries"][0]["terminal"] is True
+    assert handles["entries"][0]["available_actions"] == []
+    assert handles["entries"][1]["awaitable"] is True
+    assert handles["entries"][1]["cancellable"] is True
+    assert handles["entries"][1]["dependency_step_id"] == "step-1"
+    assert handles["entries"][1]["available_actions"] == ["wait", "cancel"]
+    assert summarize_subagent_runtime_handles(handles) == "2 handles · 1 await dispatch · 1 completed · 1 cancellable"
 
 
 def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
@@ -180,6 +196,9 @@ def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
         assert snapshot["subagent_lifecycle"]["subagents"][0]["scheduler_status"] == "running"
         assert snapshot["subagent_lifecycle"]["subagents"][0]["dispatch_count"] == 1
         assert snapshot["subagent_lifecycle_summary"] == "1 subagents · 1 running"
+        assert snapshot["subagent_handles"]["control_state_counts"] == {"await_completion": 1}
+        assert snapshot["subagent_handles"]["entries"][0]["available_actions"] == ["wait", "cancel"]
+        assert snapshot["subagent_handles_summary"] == "1 handle · 1 await completion · 1 cancellable"
     finally:
         db.close()
 
@@ -291,3 +310,7 @@ def test_subagent_lifecycle_rebuilds_runtime_state_from_recovery_snapshot():
     assert lifecycle["subagents"][0]["scheduler_status"] == "completed"
     assert lifecycle["subagents"][1]["scheduler_status"] == "ready"
     assert lifecycle["subagents"][1]["released_by_step_id"] == "step-1"
+    handles = build_subagent_runtime_handles(lifecycle)
+    assert handles["control_state_counts"] == {"completed": 1, "await_dispatch": 1}
+    assert handles["entries"][1]["control_state"] == "await_dispatch"
+    assert handles["entries"][1]["available_actions"] == ["wait", "cancel"]

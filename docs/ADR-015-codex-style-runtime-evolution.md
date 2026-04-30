@@ -6038,6 +6038,52 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 还没有真正的 wait/close/cancel primitive，也没有 owner-scoped subagent handle
 - 但 compared to 之前纯事件型投影，checkpoint 里的 subagent lifecycle 已经明显更 runtime-native
 
+### 11.144 2026-04-30 新进展：checkpoint 已开始显式投影 subagent runtime handles
+
+在 11.143 之后，checkpoint 里的 `subagent_lifecycle` 已经明显更 runtime-native，但它本质上仍是一组状态记录。
+
+也就是说：
+
+- 它知道 child step 当前是 `spawned/running/completed/...`
+- 也开始知道 `scheduler_status/released_by_step_id/dispatch_count/...`
+- 但它还没有形成更接近 Codex 的“child handle / control contract”
+  - 当前能不能 `wait`
+  - 当前能不能 `cancel`
+  - 当前是在等依赖、等调度，还是等完成
+
+如果没有这层 contract，后续就算要补 runtime-native `wait/close/cancel` primitive，也还要再从 lifecycle 字段里重新推断一遍控制面语义。
+
+本轮把这层先投影出来：
+
+- 在 lifecycle 之上新增 `subagent handles` projection
+- 每个 handle 现在显式带有：
+  - `control_state`
+    - `await_dependency`
+    - `await_dispatch`
+    - `await_completion`
+    - 以及各类 terminal states
+  - `awaitable`
+  - `cancellable`
+  - `available_actions`
+    - 当前先投影 `wait`
+    - 和 `cancel`
+- task-run checkpoint / detail 开始携带：
+  - `subagent_handles`
+  - `subagent_handles_summary`
+
+这一步的意义是：
+
+- checkpoint 不再只描述 child state，也开始描述 child control surface
+- 后续如果继续补真实 runtime primitive，就有一层稳定的 control-facing contract 可复用
+- cancel endpoint 也开始和这层 handle contract 对齐，而不是继续单独按 lifecycle 状态做过滤
+
+边界：
+
+- `wait` 现在仍只是 control contract 上的显式 capability，不是独立 API
+- `close` primitive 仍不存在
+- handle 仍来自 checkpoint 重建，不是长期存活的 runtime object
+- 但 compared to 之前只有 lifecycle state，现在已经更接近 Codex 风格的 child handle 形状
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -22,7 +22,12 @@ from services.orchestration_inbox import (
     summarize_orchestration_handoff_projection,
 )
 from services.pipeline_inbox import summarize_pipeline_run_inbox
-from services.subagent_lifecycle import build_subagent_lifecycle_from_events, summarize_subagent_lifecycle
+from services.subagent_lifecycle import (
+    build_subagent_lifecycle_from_events,
+    build_subagent_runtime_handles,
+    summarize_subagent_lifecycle,
+    summarize_subagent_runtime_handles,
+)
 
 
 def get_task_run(db: Session, task_run_id: int | None) -> Optional[TaskRun]:
@@ -216,6 +221,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "pipeline_inbox_summary": checkpoint_snapshot.get("pipeline_inbox_summary"),
         "orchestration_handoff_inbox_summary": checkpoint_snapshot.get("orchestration_handoff_inbox_summary"),
         "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
+        "subagent_handles_summary": checkpoint_snapshot.get("subagent_handles_summary"),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
@@ -338,6 +344,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     ]
     orchestration_handoff_inbox = summarize_orchestration_handoff_inbox(task_run)
     subagent_lifecycle = build_subagent_lifecycle_from_events(events)
+    subagent_handles = build_subagent_runtime_handles(subagent_lifecycle)
     pending_tool_queue_item = next(
         (
             item for item in reversed(approval_items)
@@ -400,6 +407,8 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "orchestration_handoff_inbox_summary": summarize_orchestration_handoff_projection(orchestration_handoff_inbox),
         "subagent_lifecycle": subagent_lifecycle,
         "subagent_lifecycle_summary": summarize_subagent_lifecycle(subagent_lifecycle),
+        "subagent_handles": subagent_handles,
+        "subagent_handles_summary": summarize_subagent_runtime_handles(subagent_handles),
         "continuation_cursor": continuation_cursor,
         "turn_local_state": turn_local_state,
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),

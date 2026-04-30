@@ -2335,3 +2335,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - subagent lifecycle projection 开始消费 scheduler `step_state/runtime steps`，补齐 `scheduler_status/released_by_step_id/dispatch_count/completion_count`
 - recovery rebuild 事件现在也能直接重建 checkpoint 中的 subagent runtime state，而不只依赖离散 step 事件
 - cancel 后的 checkpoint lifecycle 现在保留 `previous_status/cancelled_by/note`，便于后续 resume/cancel 诊断
+
+### `Project subagent runtime handles from lifecycle state`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_subagent_lifecycle.py`
+- `backend/tests/test_task_run_cancel.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 lifecycle 之上新增 `subagent handles` projection，把 `await_dependency/await_dispatch/await_completion` 控制态与 `wait/cancel` 可用动作显式化
+- checkpoint snapshot / task-run detail 开始携带 `subagent_handles` 与 `subagent_handles_summary`
+- cancel 路径与 focused tests 改为同时验证 handle-level control contract，进一步逼近 runtime-managed child handle 形状

@@ -92,6 +92,11 @@ def test_cancel_task_run_terminalizes_active_subagents(client):
     assert lifecycle["subagents"][0]["previous_status"] == "running"
     assert lifecycle["subagents"][1]["cancelled_by"] == "tester"
     assert lifecycle["subagents"][1]["previous_status"] == "spawned"
+    handles = payload["detail"]["checkpoint_snapshot"]["subagent_handles"]
+    assert handles["control_state_counts"] == {"cancelled": 2}
+    assert handles["cancellable_count"] == 0
+    assert handles["entries"][0]["available_actions"] == []
+    assert payload["detail"]["subagent_handles_summary"] == "2 handles · 2 cancelled"
 
 
 def test_cancel_task_run_rejects_non_running_runs(client):
