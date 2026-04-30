@@ -2274,3 +2274,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 在 stream session service 中新增 `SingleAgentStreamLoopCallbacks` 与 `SingleAgentStreamTransportContext`，把 stream execution 内部的 loop callbacks 与 transport/persistence callbacks 分成两组
 - 先在 service/test 层建立这两个稳定子分组，为下一轮进一步收 execution-specific 参数面做准备
 - focused stream-session tests 补 coverage，验证子分组投影行为兼容
+
+### `Project raw stream execution through loop/transport subgroups`
+
+范围：
+
+- `backend/services/single_agent_stream_session.py`
+- `backend/services/single_agent_session_orchestrator.py`
+- `backend/tests/test_single_agent_stream_session.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- `SingleAgentStreamRawExecutionInputs` 改为直接持有 `SingleAgentStreamLoopCallbacks + SingleAgentStreamTransportContext`
+- orchestrator 的 stream raw execution envelope 改为先构造这两个子分组，再投影到 raw execution input
+- focused stream-session 回归继续验证子分组化后行为兼容

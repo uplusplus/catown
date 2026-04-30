@@ -81,18 +81,9 @@ class SingleAgentStreamRawExecutionInputs:
     llm_client: Any
     tools: list[dict[str, Any]] | None
     turn_state: Any
-    assemble_messages: Callable[[Any], list[dict[str, Any]]]
-    execute_tool: Callable[..., Awaitable[Any]]
-    build_llm_runtime_card: Callable[..., dict[str, Any]]
-    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
-    preview_tool_calls: Callable[[Any], list[dict[str, Any]]]
-    format_prompt_messages: Callable[[list[dict[str, Any]]], Any]
-    tool_result_success: Callable[[str], bool]
-    serialize_payload: Callable[[Any], str]
-    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]]
-    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
+    loop_callbacks: SingleAgentStreamLoopCallbacks
+    transport: SingleAgentStreamTransportContext
     max_turns: int
-    on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
 def build_single_agent_stream_loop_callbacks(
@@ -140,18 +131,9 @@ def build_single_agent_stream_raw_execution_inputs(
     llm_client: Any,
     tools: list[dict[str, Any]] | None,
     turn_state: Any,
-    assemble_messages: Callable[[Any], list[dict[str, Any]]],
-    execute_tool: Callable[..., Awaitable[Any]],
-    build_llm_runtime_card: Callable[..., dict[str, Any]],
-    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
-    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
-    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
-    tool_result_success: Callable[[str], bool],
-    serialize_payload: Callable[[Any], str],
-    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]],
-    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
+    loop_callbacks: SingleAgentStreamLoopCallbacks,
+    transport: SingleAgentStreamTransportContext,
     max_turns: int,
-    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentStreamRawExecutionInputs:
     """Build the raw stream-side execution input bundle for one single-agent turn."""
 
@@ -159,18 +141,9 @@ def build_single_agent_stream_raw_execution_inputs(
         llm_client=llm_client,
         tools=tools,
         turn_state=turn_state,
-        assemble_messages=assemble_messages,
-        execute_tool=execute_tool,
-        build_llm_runtime_card=build_llm_runtime_card,
-        snapshot_messages=snapshot_messages,
-        preview_tool_calls=preview_tool_calls,
-        format_prompt_messages=format_prompt_messages,
-        tool_result_success=tool_result_success,
-        serialize_payload=serialize_payload,
-        store_runtime_card=store_runtime_card,
-        public_runtime_card_payload=public_runtime_card_payload,
+        loop_callbacks=loop_callbacks,
+        transport=transport,
         max_turns=max_turns,
-        on_tool_round=on_tool_round,
     )
 
 
@@ -222,18 +195,18 @@ def build_single_agent_stream_execution_context_from_raw_inputs(
         llm_client=inputs.llm_client,
         tools=inputs.tools,
         turn_state=inputs.turn_state,
-        assemble_messages=inputs.assemble_messages,
-        execute_tool=inputs.execute_tool,
-        build_llm_runtime_card=inputs.build_llm_runtime_card,
-        snapshot_messages=inputs.snapshot_messages,
-        preview_tool_calls=inputs.preview_tool_calls,
-        format_prompt_messages=inputs.format_prompt_messages,
-        tool_result_success=inputs.tool_result_success,
-        serialize_payload=inputs.serialize_payload,
-        store_runtime_card=inputs.store_runtime_card,
-        public_runtime_card_payload=inputs.public_runtime_card_payload,
+        assemble_messages=inputs.loop_callbacks.assemble_messages,
+        execute_tool=inputs.loop_callbacks.execute_tool,
+        build_llm_runtime_card=inputs.loop_callbacks.build_llm_runtime_card,
+        snapshot_messages=inputs.loop_callbacks.snapshot_messages,
+        preview_tool_calls=inputs.loop_callbacks.preview_tool_calls,
+        format_prompt_messages=inputs.loop_callbacks.format_prompt_messages,
+        tool_result_success=inputs.loop_callbacks.tool_result_success,
+        serialize_payload=inputs.transport.serialize_payload,
+        store_runtime_card=inputs.transport.store_runtime_card,
+        public_runtime_card_payload=inputs.transport.public_runtime_card_payload,
         max_turns=inputs.max_turns,
-        on_tool_round=inputs.on_tool_round,
+        on_tool_round=inputs.loop_callbacks.on_tool_round,
     )
 
 
