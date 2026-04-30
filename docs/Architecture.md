@@ -166,6 +166,151 @@ Important details:
 - Chat turns now also persist a run-level ledger in `task_runs` / `task_run_events` so each sync/SSE execution has ordered mode-selection, turn, tool, handoff, and failure events.
 - `services/monitor_projection.py` converts persisted messages/runtime cards into Monitor-friendly DTOs.
 
+## 4. Semantic-vs-Control Boundary
+
+Catown now needs a clearer vocabulary for separating LLM-driven judgment from software-driven control.
+
+The most useful distinction is not "who is making a decision", because both the LLM side and the software side do make decisions. The useful distinction is:
+
+- whether the decision is semantic and content-shaped
+- or whether it is runtime-shaped, declarative, and recoverable
+
+The current system is best understood through four layers:
+
+### 4.1 Runtime Policy
+
+Owner: local software
+
+Purpose:
+
+- lifecycle legality
+- state transitions
+- approval blocking
+- timeout / lease / recovery
+- child handle wait / cancel / close
+- checkpoint and replay
+
+Representative modules:
+
+- `backend/services/run_ledger.py`
+- `backend/routes/api.py`
+- `backend/services/subagent_lifecycle.py`
+- `backend/services/approval_queue.py`
+- `backend/services/approval_replay.py`
+- orchestration recovery / guards / events / inbox services
+
+Typical questions answered here:
+
+- Can this run resume now?
+- Can this handle be cancelled or closed?
+- Must this stage block on approval?
+- Did recovery ownership expire?
+- Did this wait call time out?
+
+This layer should be deterministic, auditable, and rebuildable from persisted state.
+
+### 4.2 Workflow Spec
+
+Owner: LLM may generate or adapt it; local software executes it
+
+Purpose:
+
+- project-specific workflow shape
+- stage ordering
+- stage ownership
+- gate configuration
+- expected artifacts
+- rollback targets
+- timeout budgets
+
+Representative modules and files:
+
+- `backend/configs/pipelines.json`
+- `backend/pipeline/engine.py`
+- `backend/pipeline/config.py`
+
+The default software-delivery workflow currently defined in the repo is:
+
+1. `analysis` -> `analyst` -> `gate=manual`
+2. `architecture` -> `architect` -> `gate=auto`
+3. `development` -> `developer` -> `gate=auto`
+4. `testing` -> `tester` -> `gate=auto`, may rollback to `development`
+5. `release` -> `release` -> `gate=manual`
+
+This layer is where project-type variation should live. A software project, a UI-design project, or a video-generation project should mainly differ here, not in Runtime Policy.
+
+### 4.3 Evaluation Rubric
+
+Owner: LLM agent, sometimes human-reviewed
+
+Purpose:
+
+- output quality judgment
+- semantic completeness
+- architectural soundness
+- implementation adequacy
+- blocker identification
+- style, taste, and quality interpretation
+
+Representative LLM-driven roles from the current repo:
+
+- `analyst`
+- `architect`
+- `developer`
+- `tester`
+- `release`
+
+Representative config source:
+
+- `backend/configs/agents.json`
+
+Examples:
+
+- whether a PRD is complete enough
+- whether a design is over-engineered
+- whether code follows the spec
+- whether a test finding should count as a blocker
+- whether a release summary is acceptable
+
+This is where ambiguous or taste-heavy judgments belong. Local software may carry the review process, but should not pretend to be the semantic judge.
+
+### 4.4 Final Approval
+
+Owner: human today, future user-twin agent possible
+
+Purpose:
+
+- high-risk approval
+- high-preference judgment
+- explicit authorization boundary
+- final release/go-no-go
+
+Representative examples in the current default pipeline:
+
+- `analysis.gate = manual`
+- `release.gate = manual`
+
+This layer is carried by software, but not owned by software:
+
+- software pauses
+- software records
+- software resumes
+- the approver decides
+
+### 4.5 Current Boundary in Real Modules
+
+The current repo already reflects this split, even if the terminology was not previously explicit:
+
+- `analyst / architect / developer / tester / release`
+  own semantic and quality judgment, and produce artifacts
+- `pipeline engine + orchestration runtime + run ledger + control API`
+  own execution legality, progression, interruption, recovery, and observability
+
+In short:
+
+- Agents decide what the output means and whether it is good
+- Software decides whether the workflow may proceed and how it is controlled
+
 ## 4. Monitor Read Model
 
 Monitor is a read-side projection over existing runtime state. It does not own a separate backend service and does not drive primary execution.

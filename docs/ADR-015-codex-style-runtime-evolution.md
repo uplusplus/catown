@@ -6246,6 +6246,52 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 也没有 SSE / websocket push
 - 但 compared to 之前的即时查询，`wait` 已经开始具备真正的阻塞观察语义
 
+### 11.149 2026-04-30 新进展：已明确 Runtime Policy / Workflow Spec / Evaluation Rubric / Final Approval 的语义边界
+
+随着 child-handle control 面逐步补齐，一个更根本的问题开始变得明显：
+
+- 讨论中经常把行为层语义和实现层术语混在一起
+- 例如：
+  - `root runtime`
+  - `agent session`
+  - `pipeline`
+  - `approval`
+  这些词有时被当成产品行为词，有时又被当成代码实现词
+
+这会导致架构讨论容易跑偏：
+
+- 一旦直接用实现词讨论行为模式
+- 就会把“谁理解内容、谁控制流程、谁做最终裁决”混成一团
+
+本轮先把语义层明确成四块：
+
+1. `Runtime Policy`
+   - 本地软件主导
+   - 负责 lifecycle legality、approval、recovery、handle control
+2. `Workflow Spec`
+   - LLM 可生成/适配，本地软件执行
+   - 负责阶段、角色、gate、artifact、rollback、timeout
+3. `Evaluation Rubric`
+   - LLM 主导，必要时人兜底
+   - 负责内容质量、方案优劣、blocker 判断、风格与品味
+4. `Final Approval`
+   - 人或未来的用户代理主导
+   - 负责高风险、高偏好、最终放行
+
+这一步的意义是：
+
+- 后续再讨论“数字分身”“任务管理者”“阶段 owner”时，不必再直接套实现词
+- 也能更清楚地区分：
+  - Agent 在判断什么
+  - 软件在判断什么
+  - 哪些变化应该落在 workflow spec
+  - 哪些模糊问题应该落在 rubric / approval
+
+边界：
+
+- 这一步主要是架构语义澄清，不是新的 runtime feature
+- 但它会直接影响后续是否要把 stage runtime / twin-agent / owner policy 做成一等实体
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

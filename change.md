@@ -2416,3 +2416,17 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `GET /api/task-runs/{task_run_id}/subagents/{step_id}/wait` 新增 `timeout_ms`，开始支持 bounded long-poll 观察
 - 新增 timeout normalization helper，并把 wait 结果补充 `timed_out`
 - 当前 wait 仍不持有 lease、不做 push，只是在现有 poll-style contract 上增加 bounded blocking 语义
+
+### `Document semantic-vs-control boundary layers`
+
+范围：
+
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 明确 `Runtime Policy / Workflow Spec / Evaluation Rubric / Final Approval` 四层语义边界
+- 用当前真实模块和默认 5 阶段流程，落盘说明哪些判断由 LLM 主导，哪些由本地软件主导
+- 为后续讨论数字分身、任务管理者、stage runtime 提供统一的行为层词汇
