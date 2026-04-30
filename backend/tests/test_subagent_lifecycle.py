@@ -42,17 +42,50 @@ def test_subagent_lifecycle_projects_scheduler_events():
         ),
         _event(
             "scheduler_step_dispatched",
-            {"step_id": "step-1", "position": 1, "agent_name": "analyst", "dispatch_kind": "blocking"},
+            {
+                "step_id": "step-1",
+                "position": 1,
+                "agent_name": "analyst",
+                "dispatch_kind": "blocking",
+                "step_state": {
+                    "status": "running",
+                    "dispatch_count": 1,
+                    "completion_count": 0,
+                },
+            },
             created_at=now + timedelta(seconds=1),
         ),
         _event(
             "scheduler_step_completed",
-            {"step_id": "step-1", "position": 1, "agent_name": "analyst", "dispatch_kind": "blocking"},
+            {
+                "step_id": "step-1",
+                "position": 1,
+                "agent_name": "analyst",
+                "dispatch_kind": "blocking",
+                "step_state": {
+                    "status": "completed",
+                    "dispatch_count": 1,
+                    "completion_count": 1,
+                },
+            },
             created_at=now + timedelta(seconds=2),
         ),
         _event(
             "scheduler_step_resumed",
-            {"step_id": "step-2", "position": 2, "agent_name": "developer", "dispatch_kind": "blocking"},
+            {
+                "step_id": "step-2",
+                "position": 2,
+                "agent_name": "developer",
+                "dispatch_kind": "blocking",
+                "resumed_by_step_id": "step-1",
+                "resumed_by_agent": "analyst",
+                "step_state": {
+                    "status": "ready",
+                    "released_by_step_id": "step-1",
+                    "dispatch_count": 0,
+                    "completion_count": 0,
+                },
+            },
             created_at=now + timedelta(seconds=3),
         ),
     ]
@@ -62,9 +95,16 @@ def test_subagent_lifecycle_projects_scheduler_events():
     assert lifecycle["subagent_count"] == 2
     assert lifecycle["status_counts"] == {"completed": 1, "spawned": 1}
     assert lifecycle["subagents"][0]["status"] == "completed"
+    assert lifecycle["subagents"][0]["scheduler_status"] == "completed"
+    assert lifecycle["subagents"][0]["dispatch_count"] == 1
+    assert lifecycle["subagents"][0]["completion_count"] == 1
     assert lifecycle["subagents"][0]["started_at"] is not None
     assert lifecycle["subagents"][0]["completed_at"] is not None
     assert lifecycle["subagents"][1]["wait_for_step_id"] == "step-1"
+    assert lifecycle["subagents"][1]["scheduler_status"] == "ready"
+    assert lifecycle["subagents"][1]["released_by_step_id"] == "step-1"
+    assert lifecycle["subagents"][1]["resumed_by_step_id"] == "step-1"
+    assert lifecycle["subagents"][1]["resumed_by_agent"] == "analyst"
     assert summarize_subagent_lifecycle(lifecycle) == "2 subagents · 1 spawned · 1 completed"
 
 
@@ -117,7 +157,17 @@ def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
                     event_type="scheduler_step_dispatched",
                     agent_name="analyst",
                     payload_json=json.dumps(
-                        {"step_id": "step-1", "position": 1, "agent_name": "analyst", "dispatch_kind": "blocking"}
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "agent_name": "analyst",
+                            "dispatch_kind": "blocking",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
                     ),
                 ),
             ]
@@ -127,6 +177,8 @@ def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
 
         snapshot = build_task_run_checkpoint_snapshot(task_run)
         assert snapshot["subagent_lifecycle"]["status_counts"] == {"running": 1}
+        assert snapshot["subagent_lifecycle"]["subagents"][0]["scheduler_status"] == "running"
+        assert snapshot["subagent_lifecycle"]["subagents"][0]["dispatch_count"] == 1
         assert snapshot["subagent_lifecycle_summary"] == "1 subagents · 1 running"
     finally:
         db.close()
@@ -162,3 +214,80 @@ def test_subagent_lifecycle_projects_failed_and_cancelled_steps():
     assert lifecycle["status_counts"] == {"failed": 1, "cancelled": 1}
     assert lifecycle["subagents"][0]["error"] == "LLM timeout"
     assert summarize_subagent_lifecycle(lifecycle) == "2 subagents · 1 failed · 1 cancelled"
+
+
+def test_subagent_lifecycle_rebuilds_runtime_state_from_recovery_snapshot():
+    now = datetime.now()
+    events = [
+        _event(
+            "scheduler_recovery_state_rebuilt",
+            {
+                "steps": [
+                    {
+                        "step_id": "step-1",
+                        "position": 1,
+                        "requested_name": "analyst",
+                        "agent_id": 1,
+                        "agent_name": "Analyst",
+                        "agent_type": "analyst",
+                        "dispatch_kind": "blocking",
+                        "source": "user_mentions",
+                    },
+                    {
+                        "step_id": "step-2",
+                        "position": 2,
+                        "requested_name": "developer",
+                        "agent_id": 2,
+                        "agent_name": "Developer",
+                        "agent_type": "developer",
+                        "dispatch_kind": "blocking",
+                        "wait_for_step_id": "step-1",
+                        "source": "user_mentions",
+                    },
+                ],
+                "runtime": {
+                    "steps": [
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "requested_name": "analyst",
+                            "agent_id": 1,
+                            "agent_name": "Analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "blocking",
+                            "source": "user_mentions",
+                            "status": "completed",
+                            "dispatch_count": 1,
+                            "completion_count": 1,
+                        },
+                        {
+                            "step_id": "step-2",
+                            "position": 2,
+                            "requested_name": "developer",
+                            "agent_id": 2,
+                            "agent_name": "Developer",
+                            "agent_type": "developer",
+                            "dispatch_kind": "blocking",
+                            "wait_for_step_id": "step-1",
+                            "source": "user_mentions",
+                            "status": "ready",
+                            "released_by_step_id": "step-1",
+                            "dispatch_count": 0,
+                            "completion_count": 0,
+                        },
+                    ]
+                },
+            },
+            created_at=now,
+        )
+    ]
+
+    lifecycle = build_subagent_lifecycle_from_events(events)
+
+    assert lifecycle["status_counts"] == {"completed": 1, "spawned": 1}
+    assert lifecycle["subagents"][0]["requested_name"] == "analyst"
+    assert lifecycle["subagents"][0]["agent_id"] == 1
+    assert lifecycle["subagents"][0]["source"] == "user_mentions"
+    assert lifecycle["subagents"][0]["scheduler_status"] == "completed"
+    assert lifecycle["subagents"][1]["scheduler_status"] == "ready"
+    assert lifecycle["subagents"][1]["released_by_step_id"] == "step-1"

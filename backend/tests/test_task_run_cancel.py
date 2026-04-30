@@ -88,6 +88,10 @@ def test_cancel_task_run_terminalizes_active_subagents(client):
     assert event_types[-1] == "task_run_cancelled"
     lifecycle = payload["detail"]["checkpoint_snapshot"]["subagent_lifecycle"]
     assert lifecycle["status_counts"] == {"cancelled": 2}
+    assert lifecycle["subagents"][0]["cancelled_by"] == "tester"
+    assert lifecycle["subagents"][0]["previous_status"] == "running"
+    assert lifecycle["subagents"][1]["cancelled_by"] == "tester"
+    assert lifecycle["subagents"][1]["previous_status"] == "spawned"
 
 
 def test_cancel_task_run_rejects_non_running_runs(client):

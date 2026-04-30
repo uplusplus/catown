@@ -8,6 +8,14 @@ from typing import Any
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+RUNTIME_NATIVE_STATUS_MAP = {
+    "ready": "spawned",
+    "waiting": "spawned",
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
 
 
 def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
@@ -19,13 +27,28 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
     for event in events:
         event_type = str(getattr(event, "event_type", "") or "")
         payload = _load_event_payload(event)
-        if event_type == "scheduler_plan_created":
+        if event_type in {"scheduler_plan_created", "scheduler_recovery_state_rebuilt"}:
             for step in _steps_from_plan_payload(payload):
                 step_id = _step_id(step)
                 if not step_id:
                     continue
                 if step_id not in states:
                     states[step_id] = _initial_state(step)
+                    transition_count += 1
+                previous_status = states[step_id].get("status")
+                _merge_step_identity(states[step_id], step)
+                _merge_runtime_state(states[step_id], _runtime_state_payload(step))
+                if states[step_id].get("status") != previous_status:
+                    transition_count += 1
+            for step in _runtime_steps_from_payload(payload):
+                step_id = _step_id(step)
+                if not step_id:
+                    continue
+                state = states.setdefault(step_id, _initial_state(step))
+                previous_status = state.get("status")
+                _merge_step_identity(state, step)
+                _merge_runtime_state(state, step)
+                if state.get("status") != previous_status:
                     transition_count += 1
             continue
 
@@ -44,6 +67,8 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
             continue
         state = states.setdefault(step_id, _initial_state(step))
         _merge_step_identity(state, step)
+        _merge_runtime_state(state, _runtime_state_payload(step))
+        _merge_event_context(state, step)
         previous_status = state.get("status")
 
         if event_type == "scheduler_step_dispatched":
@@ -145,17 +170,30 @@ def _initial_state(step: dict[str, Any]) -> dict[str, Any]:
     state = {
         "step_id": _step_id(step),
         "agent_name": None,
+        "requested_name": None,
+        "agent_id": None,
         "agent_type": None,
         "dispatch_kind": None,
         "position": None,
         "wait_for_step_id": None,
         "attached_to_step_id": None,
+        "source": None,
         "status": "spawned",
+        "scheduler_status": None,
+        "released_by_step_id": None,
+        "dispatch_count": 0,
+        "completion_count": 0,
         "started_at": None,
         "completed_at": None,
         "last_event_type": None,
         "last_event_at": None,
         "transition_reason": "planned",
+        "resumed_by_step_id": None,
+        "resumed_by_agent": None,
+        "previous_status": None,
+        "cancelled_by": None,
+        "note": None,
+        "error": None,
     }
     _merge_step_identity(state, step)
     return state
@@ -164,15 +202,82 @@ def _initial_state(step: dict[str, Any]) -> dict[str, Any]:
 def _merge_step_identity(state: dict[str, Any], step: dict[str, Any]) -> None:
     for key in [
         "agent_name",
+        "requested_name",
+        "agent_id",
         "agent_type",
         "dispatch_kind",
         "position",
         "wait_for_step_id",
         "attached_to_step_id",
+        "source",
     ]:
         value = step.get(key)
         if value is not None:
             state[key] = value
+
+
+def _runtime_steps_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    runtime_steps = runtime.get("steps")
+    if isinstance(runtime_steps, list):
+        return [step for step in runtime_steps if isinstance(step, dict)]
+    return []
+
+
+def _runtime_state_payload(step: dict[str, Any]) -> dict[str, Any]:
+    runtime_state = step.get("step_state")
+    if isinstance(runtime_state, dict):
+        return runtime_state
+    return {}
+
+
+def _merge_runtime_state(state: dict[str, Any], runtime_state: dict[str, Any]) -> None:
+    if not isinstance(runtime_state, dict):
+        return
+
+    scheduler_status = str(runtime_state.get("status") or "").strip().lower()
+    if scheduler_status:
+        state["scheduler_status"] = scheduler_status
+        runtime_native_status = RUNTIME_NATIVE_STATUS_MAP.get(scheduler_status)
+        if runtime_native_status and state.get("status") not in TERMINAL_STATUSES:
+            state["status"] = runtime_native_status
+            if state.get("transition_reason") in {None, "", "planned", "runtime_snapshot"}:
+                state["transition_reason"] = "runtime_snapshot"
+
+    for key in ["released_by_step_id"]:
+        value = runtime_state.get(key)
+        if value is not None:
+            state[key] = value
+
+    dispatch_count = _coerce_nonnegative_int(runtime_state.get("dispatch_count"))
+    if dispatch_count is not None:
+        state["dispatch_count"] = dispatch_count
+
+    completion_count = _coerce_nonnegative_int(runtime_state.get("completion_count"))
+    if completion_count is not None:
+        state["completion_count"] = completion_count
+
+
+def _merge_event_context(state: dict[str, Any], step: dict[str, Any]) -> None:
+    for key in [
+        "resumed_by_step_id",
+        "resumed_by_agent",
+        "previous_status",
+        "cancelled_by",
+        "note",
+        "error",
+    ]:
+        value = step.get(key)
+        if value is not None:
+            state[key] = value
+
+
+def _coerce_nonnegative_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(number, 0)
 
 
 def _transition(state: dict[str, Any], status: str, *, event: Any, reason: str) -> None:

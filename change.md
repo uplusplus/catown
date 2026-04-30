@@ -2319,3 +2319,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - standalone / project single-agent stream route 改为显式构造 `SingleAgentStreamLoopCallbacks + SingleAgentStreamTransportContext`
 - single-agent raw stream execution envelope 在 route 层不再接收扁平展开的 loop/transport 参数
 - focused orchestrator / stream API 回归更新为围绕 route 级子分组入口验证行为兼容
+
+### `Rebuild subagent lifecycle from scheduler runtime state`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/tests/test_subagent_lifecycle.py`
+- `backend/tests/test_task_run_cancel.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- subagent lifecycle projection 开始消费 scheduler `step_state/runtime steps`，补齐 `scheduler_status/released_by_step_id/dispatch_count/completion_count`
+- recovery rebuild 事件现在也能直接重建 checkpoint 中的 subagent runtime state，而不只依赖离散 step 事件
+- cancel 后的 checkpoint lifecycle 现在保留 `previous_status/cancelled_by/note`，便于后续 resume/cancel 诊断

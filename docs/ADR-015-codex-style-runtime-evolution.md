@@ -5997,6 +5997,47 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - route 侧虽然已经不再扁平展开 stream loop/transport 参数，但 sync/stream execution envelope 仍是两套模式
 - 如果继续推进，下一步可以开始看 multi-agent runtime 的 subagent lifecycle 是否也值得做类似 contract 收口
 
+### 11.143 2026-04-30 新进展：subagent lifecycle 已开始消费 scheduler runtime state
+
+在 11.142 之后，single-agent 的 route/runtime 收口已经比较稳定，但和 Codex 的真实差距仍主要落在 multi-agent runtime。
+
+其中最直接的一块问题是：
+
+- `subagent_lifecycle` 还主要是根据事件类型做投影
+- 它虽然能看出 `spawned/running/completed/failed/cancelled`
+- 但还拿不到 scheduler runtime 已经知道的更细状态
+  - `step_state.status`
+  - `released_by_step_id`
+  - `dispatch_count`
+  - `completion_count`
+- recovery rebuild 虽然已有 `scheduler_recovery_state_rebuilt`
+  - 但 lifecycle 还不能直接从其中的 runtime snapshot 重建 child state
+
+这会导致 checkpoint 里的 subagent 视图仍偏“事件汇总”，而不是更接近 runtime-native child state。
+
+本轮把这层先推进一步：
+
+- `subagent_lifecycle` 开始显式消费 scheduler `step_state`
+- 同时消费 scheduler `runtime.steps`
+- recovery rebuild 事件现在能直接重建 subagent runtime state
+- cancel 事件也开始保留：
+  - `previous_status`
+  - `cancelled_by`
+  - `note`
+  这些治理上下文
+
+这一步的意义是：
+
+- checkpoint snapshot 中的 subagent 视图更接近真实 scheduler runtime
+- lifecycle 不再只知道“谁终态了”，也开始知道“它是如何被释放/调度/取消的”
+- 这为后续继续往 Codex 风格 child-runtime 模型推进，补上了更稳定的 runtime-facing contract
+
+边界：
+
+- 这仍然是基于 persisted runtime/event payload 的重建，不是独立的 child runtime object
+- 还没有真正的 wait/close/cancel primitive，也没有 owner-scoped subagent handle
+- 但 compared to 之前纯事件型投影，checkpoint 里的 subagent lifecycle 已经明显更 runtime-native
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
