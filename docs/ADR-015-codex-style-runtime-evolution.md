@@ -5897,6 +5897,33 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - sync / stream 在 execution-specific 字段组织上依旧存在差异
 - 如果继续推进，下一步可以考虑继续压缩 sync/stream execution-specific 字段分组
 
+### 11.139 2026-04-30 新进展：stream execution 已拆出 loop/transport 子分组
+
+在 11.138 之后，stream raw execution envelope 已经形成，但其内部仍是一大块混合字段：
+
+- 一部分描述 turn loop 行为
+- 另一部分描述 transport / runtime-card persistence 行为
+
+这会让后续继续收 execution-specific 字段时，修改面还是偏大。
+
+本轮先在 service 层把它再切一刀：
+
+- 新增 `SingleAgentStreamLoopCallbacks`
+- 新增 `SingleAgentStreamTransportContext`
+- 用 focused tests 覆盖这两个子分组的基本投影行为
+
+这一步的意义是：
+
+- stream execution 内部开始出现更细的结构边界
+- 后续如果要继续把 stream execution envelope 进一步收口，可以直接围绕 loop / transport 两块独立推进
+- 这一步先只落在 service/test 层，风险低
+
+边界：
+
+- route 和 orchestrator 还没有直接消费这两个子分组
+- stream raw execution envelope 本身的对外 shape 暂时未变
+- 如果继续推进，下一步可以考虑让 raw stream execution inputs 直接以内部分组为输入，而不是继续保持扁平参数面
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

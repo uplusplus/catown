@@ -3,9 +3,11 @@ import pytest
 from services.single_agent_stream_session import (
     build_single_agent_stream_execution_context,
     build_single_agent_stream_execution_context_from_raw_inputs,
+    build_single_agent_stream_loop_callbacks,
     build_single_agent_stream_raw_execution_inputs,
     build_single_agent_stream_session_deps,
     build_single_agent_stream_session_deps_from_execution_context,
+    build_single_agent_stream_transport_context,
     iter_single_agent_stream_session,
 )
 
@@ -126,3 +128,32 @@ def test_build_single_agent_stream_execution_context_from_raw_inputs_projects_fi
 
     assert execution.max_turns == 1
     assert execution.tools is None
+
+
+def test_build_single_agent_stream_loop_callbacks_projects_fields():
+    callbacks = build_single_agent_stream_loop_callbacks(
+        assemble_messages=lambda turn_state: [{"role": "user", "content": "hello"}],
+        execute_tool=lambda *args, **kwargs: None,
+        build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+        snapshot_messages=lambda messages: list(messages),
+        preview_tool_calls=lambda raw_tool_calls: [],
+        format_prompt_messages=lambda messages: "formatted",
+        tool_result_success=lambda result: True,
+    )
+
+    assert callbacks.format_prompt_messages([]) == "formatted"
+    assert callbacks.preview_tool_calls([]) == []
+
+
+def test_build_single_agent_stream_transport_context_projects_fields():
+    async def store_runtime_card(*args, **kwargs):
+        return None
+
+    transport = build_single_agent_stream_transport_context(
+        serialize_payload=lambda payload: "{}",
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=lambda payload: payload,
+    )
+
+    assert transport.serialize_payload({}) == "{}"
+    assert transport.public_runtime_card_payload({"type": "x"}) == {"type": "x"}

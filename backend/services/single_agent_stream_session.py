@@ -58,6 +58,25 @@ class SingleAgentStreamExecutionContext:
 
 
 @dataclass(frozen=True)
+class SingleAgentStreamLoopCallbacks:
+    assemble_messages: Callable[[Any], list[dict[str, Any]]]
+    execute_tool: Callable[..., Awaitable[Any]]
+    build_llm_runtime_card: Callable[..., dict[str, Any]]
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]]
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any]
+    tool_result_success: Callable[[str], bool]
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None
+
+
+@dataclass(frozen=True)
+class SingleAgentStreamTransportContext:
+    serialize_payload: Callable[[Any], str]
+    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]]
+    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
+
+
+@dataclass(frozen=True)
 class SingleAgentStreamRawExecutionInputs:
     llm_client: Any
     tools: list[dict[str, Any]] | None
@@ -74,6 +93,46 @@ class SingleAgentStreamRawExecutionInputs:
     public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
     max_turns: int
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
+
+
+def build_single_agent_stream_loop_callbacks(
+    *,
+    assemble_messages: Callable[[Any], list[dict[str, Any]]],
+    execute_tool: Callable[..., Awaitable[Any]],
+    build_llm_runtime_card: Callable[..., dict[str, Any]],
+    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
+    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
+    tool_result_success: Callable[[str], bool],
+    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
+) -> SingleAgentStreamLoopCallbacks:
+    """Build the loop-level callback group for one stream execution."""
+
+    return SingleAgentStreamLoopCallbacks(
+        assemble_messages=assemble_messages,
+        execute_tool=execute_tool,
+        build_llm_runtime_card=build_llm_runtime_card,
+        snapshot_messages=snapshot_messages,
+        preview_tool_calls=preview_tool_calls,
+        format_prompt_messages=format_prompt_messages,
+        tool_result_success=tool_result_success,
+        on_tool_round=on_tool_round,
+    )
+
+
+def build_single_agent_stream_transport_context(
+    *,
+    serialize_payload: Callable[[Any], str],
+    store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]],
+    public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> SingleAgentStreamTransportContext:
+    """Build the transport/persistence callback group for one stream execution."""
+
+    return SingleAgentStreamTransportContext(
+        serialize_payload=serialize_payload,
+        store_runtime_card=store_runtime_card,
+        public_runtime_card_payload=public_runtime_card_payload,
+    )
 
 
 def build_single_agent_stream_raw_execution_inputs(

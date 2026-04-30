@@ -2259,3 +2259,18 @@ No failures were observed in the new context builder unit tests or Python syntax
 - stream generic/raw-runtime builder 统一改为消费 `SingleAgentStreamFailurePolicy`，不再接受 failure-specific 长参数列表
 - standalone / project single-agent stream route 改为显式构造 stream failure policy，再交给 raw-runtime builder
 - focused orchestrator / API 回归更新为围绕 stream failure policy 在 raw-runtime 入口上的行为兼容
+
+### `Split stream execution subgroups`
+
+范围：
+
+- `backend/services/single_agent_stream_session.py`
+- `backend/tests/test_single_agent_stream_session.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 在 stream session service 中新增 `SingleAgentStreamLoopCallbacks` 与 `SingleAgentStreamTransportContext`，把 stream execution 内部的 loop callbacks 与 transport/persistence callbacks 分成两组
+- 先在 service/test 层建立这两个稳定子分组，为下一轮进一步收 execution-specific 参数面做准备
+- focused stream-session tests 补 coverage，验证子分组投影行为兼容
