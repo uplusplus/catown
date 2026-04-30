@@ -5948,6 +5948,31 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - raw stream execution input 对外虽然更结构化，但 sync/stream 执行层仍未统一成同一种字段模型
 - 如果继续推进，下一步可以考虑继续抽 sync execution 的子结构，或者统一 execution envelope 的更高层 contract
 
+### 11.141 2026-04-30 新进展：stream raw execution envelope 已直接接收 loop/transport 子分组
+
+在 11.140 之后，`SingleAgentStreamRawExecutionInputs` 虽然已经内部持有 `loop/transport` 两块，但 orchestrator 对外的 raw execution envelope 入口还维持着扁平参数列表。
+
+这意味着 service 内部结构已经变了，但高层调用面还没有同步收紧。
+
+本轮继续把这层切换完成：
+
+- orchestrator 的 `build_single_agent_stream_raw_execution_envelope(...)`
+  直接接收 `SingleAgentStreamLoopCallbacks`
+  与 `SingleAgentStreamTransportContext`
+- focused stream/orchestrator/API 回归继续验证行为兼容
+
+这一步的意义是：
+
+- stream execution 的高层输入面和底层结构终于真正对齐
+- route 以及后续 builder 不再需要关心 transport/loop 字段如何扁平展开
+- 后续如果继续统一 sync/stream execution envelope，stream 侧已经有更清楚的稳定结构
+
+边界：
+
+- sync execution 仍然没有对应的更细子分组
+- sync/stream execution envelope 的整体 shape 还没有完全统一
+- 如果继续推进，下一步可以考虑是否值得为 sync execution 也抽更细子结构，或者直接统一 envelope 级别的 contract
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

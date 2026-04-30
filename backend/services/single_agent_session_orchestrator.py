@@ -39,6 +39,8 @@ from services.single_agent_stream_session import (
     build_single_agent_stream_session_deps,
     build_single_agent_stream_session_deps_from_execution_context,
     build_single_agent_stream_transport_context,
+    SingleAgentStreamLoopCallbacks,
+    SingleAgentStreamTransportContext,
     iter_single_agent_stream_session,
 )
 from services.stream_transport import render_sse_payload
@@ -426,18 +428,9 @@ def build_single_agent_stream_raw_execution_envelope(
     llm_client: Any,
     tools: list[dict[str, Any]] | None,
     turn_state: Any,
-    assemble_messages: Callable[[Any], list[dict[str, Any]]],
-    execute_tool: Callable[..., Awaitable[Any]],
-    build_llm_runtime_card: Callable[..., dict[str, Any]],
-    snapshot_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
-    preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
-    format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
-    tool_result_success: Callable[[str], bool],
-    serialize_payload: Callable[[Any], str],
-    store_runtime_card: Callable[[int, dict[str, Any]], Awaitable[Any]],
-    public_runtime_card_payload: Callable[[dict[str, Any]], dict[str, Any]],
+    loop_callbacks: SingleAgentStreamLoopCallbacks,
+    transport: SingleAgentStreamTransportContext,
     max_turns: int,
-    on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentRawExecutionInputs:
     """Build the top-level raw execution envelope for one streaming single-agent turn."""
 
@@ -447,21 +440,8 @@ def build_single_agent_stream_raw_execution_envelope(
             llm_client=llm_client,
             tools=tools,
             turn_state=turn_state,
-            loop_callbacks=build_single_agent_stream_loop_callbacks(
-                assemble_messages=assemble_messages,
-                execute_tool=execute_tool,
-                build_llm_runtime_card=build_llm_runtime_card,
-                snapshot_messages=snapshot_messages,
-                preview_tool_calls=preview_tool_calls,
-                format_prompt_messages=format_prompt_messages,
-                tool_result_success=tool_result_success,
-                on_tool_round=on_tool_round,
-            ),
-            transport=build_single_agent_stream_transport_context(
-                serialize_payload=serialize_payload,
-                store_runtime_card=store_runtime_card,
-                public_runtime_card_payload=public_runtime_card_payload,
-            ),
+            loop_callbacks=loop_callbacks,
+            transport=transport,
             max_turns=max_turns,
         ),
     )
