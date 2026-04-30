@@ -2430,3 +2430,17 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 明确 `Runtime Policy / Workflow Spec / Evaluation Rubric / Final Approval` 四层语义边界
 - 用当前真实模块和默认 5 阶段流程，落盘说明哪些判断由 LLM 主导，哪些由本地软件主导
 - 为后续讨论数字分身、任务管理者、stage runtime 提供统一的行为层词汇
+
+### `Document executor-orchestrator-worker contracts`
+
+范围：
+
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 明确 `本地软件执行器 / 编排 Agent / 工作 Agent` 三方的输入输出 contract
+- 把泛化的“脚本”表述收敛为 `bounded spec / artifact / action request`
+- 为后续讨论数字分身、任务管理者和统一 workflow schema 提供更稳定的接口词汇

@@ -6292,6 +6292,52 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 这一步主要是架构语义澄清，不是新的 runtime feature
 - 但它会直接影响后续是否要把 stage runtime / twin-agent / owner policy 做成一等实体
 
+### 11.150 2026-04-30 新进展：已明确软件执行器 / 编排 Agent / 工作 Agent 的输入输出 contract
+
+在 11.149 明确四层语义边界之后，另一个容易混淆的问题也被暴露出来：
+
+- 讨论时很容易把“软件执行器收到脚本”当成统一说法
+- 但这会把：
+  - bounded workflow spec
+  - worker artifact
+  - action request
+  这三类完全不同的输入混成同一种东西
+
+这会让边界再次变模糊：
+
+- 编排 Agent 到底是在给流程定义，还是在直接控制 runtime？
+- 工作 Agent 到底是在产出业务内容，还是在直接推进状态机？
+
+本轮把三方 contract 固定成更精确的语言：
+
+1. `本地软件执行器`
+   - 接收 bounded workflow/control spec
+   - 接收 artifact 与 action request
+   - 负责解释、裁定、推进、落盘
+2. `编排 Agent`
+   - 不直接操作 runtime state
+   - 负责给出 bounded execution spec
+   - 如阶段、角色、路由、rubric 建议
+3. `工作 Agent`
+   - 不直接推进状态机
+   - 负责产出 artifact
+   - 并发出 bounded action request
+
+这一步的意义是：
+
+- 后续讨论“数字分身”和“任务管理者”时，不会再把它们误认为 runtime kernel
+- 也更容易判断某个新能力应落在哪一侧：
+  - spec
+  - artifact
+  - request
+  - state transition
+
+边界：
+
+- 这一步仍是架构语言收敛
+- 还没有把 workflow spec / action request 建成统一 schema
+- 但已经把讨论词汇从“脚本”收敛成更适合长期演进的 contract 语言
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

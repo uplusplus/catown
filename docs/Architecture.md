@@ -311,6 +311,141 @@ In short:
 - Agents decide what the output means and whether it is good
 - Software decides whether the workflow may proceed and how it is controlled
 
+### 4.6 Executor-vs-Orchestrator-vs-Worker Contract
+
+The cleanest current mental model is a three-party contract:
+
+1. local software executor
+2. orchestration agent
+3. worker agent
+
+The key is that these parties do not exchange arbitrary code or unconstrained scripts.
+They exchange bounded specs, artifacts, and action requests.
+
+#### Local Software Executor
+
+Owner: local software
+
+Role:
+
+- interpret bounded workflow/control specs
+- enforce lifecycle legality
+- own runtime state transitions
+- checkpoint, replay, approval, timeout, lease, wait/cancel/close
+- route work to the next agent or stage
+
+Typical inputs:
+
+- workflow spec
+- current runtime state
+- child-handle state
+- human approval results
+- artifacts from worker agents
+- action requests from worker agents
+
+Typical outputs:
+
+- next runnable stage or agent
+- blocked / resumed / cancelled / completed status transitions
+- checkpoint snapshots
+- run ledger events
+- updated handle control state
+
+Representative modules:
+
+- `backend/pipeline/engine.py`
+- `backend/services/run_ledger.py`
+- `backend/routes/api.py`
+- orchestration runtime / recovery services
+
+#### Orchestration Agent
+
+Owner: LLM
+
+Role:
+
+- translate a business goal into executable workflow shape
+- choose or adapt roles, stage flow, handoff structure, and evaluation criteria
+- produce bounded execution specs instead of directly mutating runtime state
+
+Typical inputs:
+
+- user goal
+- project context
+- existing artifacts
+- existing workflow template
+- prior decisions and constraints
+
+Typical outputs:
+
+- workflow spec fragments
+- stage/role plan
+- routing suggestions
+- evaluation rubric suggestions
+- requests for clarification or approval
+
+Important constraint:
+
+- orchestration agents should not directly own checkpoint legality, leases, or lifecycle transitions
+- they propose structure; software executes structure
+
+#### Worker Agent
+
+Owner: LLM
+
+Role:
+
+- perform stage-local semantic work
+- produce artifacts
+- emit bounded requests back to the software executor
+
+Typical inputs:
+
+- stage context
+- prior artifacts
+- role prompt and skills
+- current workflow/rubric constraints
+
+Typical outputs:
+
+- business artifacts
+  - `PRD.md`
+  - `tech-spec.md`
+  - `src/`
+  - `test_report.md`
+  - `CHANGELOG.md`
+- action requests
+  - tool use
+  - ask another role
+  - suggest rollback
+  - report blocker
+  - request approval
+
+Important constraint:
+
+- worker agents do not directly advance the runtime
+- they produce outputs and requests
+- software decides whether those requests actually change control state
+
+#### Contract Summary
+
+```text
+Orchestration Agent
+  -> Local Software Executor: bounded execution specs
+
+Worker Agent
+  -> Local Software Executor: artifacts + action requests
+
+Local Software Executor
+  -> Agents: stage assignments, constraints, runtime context
+  -> External callers: observable status, checkpoints, handles, approvals
+```
+
+This contract matters because it prevents semantic generation from being confused with runtime control:
+
+- LLMs generate meaning, plans, and artifacts
+- software owns legality, persistence, and recoverable execution
+
 ## 4. Monitor Read Model
 
 Monitor is a read-side projection over existing runtime state. It does not own a separate backend service and does not drive primary execution.
