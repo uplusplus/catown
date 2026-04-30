@@ -38,6 +38,8 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
                 previous_status = states[step_id].get("status")
                 _merge_step_identity(states[step_id], step)
                 _merge_runtime_state(states[step_id], _runtime_state_payload(step))
+                if states[step_id].get("last_event_index") is None:
+                    states[step_id]["last_event_index"] = getattr(event, "event_index", None)
                 if states[step_id].get("status") != previous_status:
                     transition_count += 1
             for step in _runtime_steps_from_payload(payload):
@@ -48,6 +50,8 @@ def build_subagent_lifecycle_from_events(events: list[Any]) -> dict[str, Any]:
                 previous_status = state.get("status")
                 _merge_step_identity(state, step)
                 _merge_runtime_state(state, step)
+                if state.get("last_event_index") is None:
+                    state["last_event_index"] = getattr(event, "event_index", None)
                 if state.get("status") != previous_status:
                     transition_count += 1
             continue
@@ -164,6 +168,7 @@ def build_subagent_runtime_handles(lifecycle: Any) -> dict[str, Any]:
             "resumed_by_agent": subagent.get("resumed_by_agent"),
             "dispatch_count": subagent.get("dispatch_count"),
             "completion_count": subagent.get("completion_count"),
+            "last_event_index": subagent.get("last_event_index"),
             "last_event_type": subagent.get("last_event_type"),
             "last_event_at": subagent.get("last_event_at"),
             "error": subagent.get("error"),
@@ -270,6 +275,42 @@ def cancellable_subagent_handles(handles: Any) -> list[dict[str, Any]]:
     ]
 
 
+def build_subagent_wait_result(
+    *,
+    handle: Any,
+    current_event_index: int,
+    since_event_index: int | None = None,
+) -> dict[str, Any]:
+    """Project a non-blocking wait observation for one handle."""
+
+    entry = handle if isinstance(handle, dict) else {}
+    step_id = str(entry.get("step_id") or "").strip() or None
+    control_state = str(entry.get("control_state") or "").strip() or None
+    terminal = bool(entry.get("terminal"))
+    awaitable = bool(entry.get("awaitable"))
+
+    last_event_index = _coerce_nonnegative_int(entry.get("last_event_index"))
+    if last_event_index is None:
+        last_event_index = current_event_index
+
+    observed_since = (
+        since_event_index is not None
+        and last_event_index > max(int(since_event_index), 0)
+    )
+    state_changed = terminal or observed_since
+
+    return {
+        "step_id": step_id,
+        "control_state": control_state,
+        "awaitable": awaitable,
+        "terminal": terminal,
+        "state_changed": state_changed,
+        "last_event_index": last_event_index,
+        "since_event_index": since_event_index,
+        "suggested_poll": "immediate" if state_changed else "continue",
+    }
+
+
 def cancellable_subagents_from_lifecycle(lifecycle: Any) -> list[dict[str, Any]]:
     """Return subagents that can still be moved to a cancelled terminal state."""
 
@@ -349,6 +390,7 @@ def _initial_state(step: dict[str, Any]) -> dict[str, Any]:
         "cancelled_by": None,
         "note": None,
         "error": None,
+        "last_event_index": None,
     }
     _merge_step_identity(state, step)
     return state
@@ -470,6 +512,7 @@ def _transition(state: dict[str, Any], status: str, *, event: Any, reason: str) 
     created_at = getattr(event, "created_at", None)
     created_at_text = created_at.isoformat() if created_at is not None else None
     state["status"] = status
+    state["last_event_index"] = getattr(event, "event_index", None)
     state["last_event_type"] = getattr(event, "event_type", None)
     state["last_event_at"] = created_at_text
     state["transition_reason"] = reason

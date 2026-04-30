@@ -6121,6 +6121,45 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 取消动作底层仍是补 ledger event + 重建 checkpoint，不是真正的 executor-native child cancel primitive
 - 但 compared to 之前只有 task-run 级 cancel，现在已经向 child-handle-oriented control 面前进了一步
 
+### 11.146 2026-04-30 新进展：subagent handle 已开始暴露 wait observation contract
+
+在 11.145 之后，subagent handle 已经有独立 `cancel` endpoint，但 `wait` 还只是 handle contract 中的可用动作标签。
+
+这意味着：
+
+- child-level control 面已经从 coarse task-run control 前进了一步
+- 但对于 “我现在能不能继续等这个 child，还是它已经变化/终结了” 这种最基础的 handle wait 语义，外部仍没有稳定接口
+
+如果直接跳到真正 blocking / long-poll / executor-native wait primitive，改动面会很大，也会把 route / runtime / recovery 一起卷进去。
+
+因此本轮先做保守收口：
+
+- 新增 `GET /api/task-runs/{task_run_id}/subagents/{step_id}/wait`
+- 它不是 blocking primitive
+- 而是一个 poll-style observe contract
+  - 接收 `since_event_index`
+  - 返回 handle 当前状态
+  - 返回自该 cursor 之后是否发生状态变化
+  - 以及建议继续 poll 还是立即处理
+- 同时 handle projection 现在开始显式携带 `last_event_index`
+
+这一步的意义是：
+
+- `wait` 首次从“handle 的文字能力”变成“可调用的 control contract”
+- 后续如果要升级成 long-poll / SSE / executor-native wait，不必重新设计 API shape
+- handle control 面开始具备：
+  - `list`
+  - `cancel`
+  - `wait-observe`
+  这三块最基础的 child-handle primitive
+
+边界：
+
+- 当前 `wait` 仍不阻塞，也不持有 lease
+- 还没有 timeout / wakeup / notification push 语义
+- 也还没有 owner-scoped wait token
+- 但 compared to 之前只有 `cancel` 和只读 projection，现在已经把 child wait contract 也显式固定下来了
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

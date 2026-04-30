@@ -2368,3 +2368,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `GET /api/task-runs/{task_run_id}/subagents`，把 checkpoint 中的 lifecycle + handle projection 作为独立控制面暴露
 - 新增 `POST /api/task-runs/{task_run_id}/subagents/{step_id}/cancel`，允许按 handle 粒度取消单个 subagent
 - 单 handle cancel 默认不终结整个 task run，只有最后一个可取消 handle 被取消时，才会级联终结 task run
+
+### `Add subagent handle wait observation contract`
+
+范围：
+
+- `backend/services/subagent_lifecycle.py`
+- `backend/routes/api.py`
+- `backend/tests/test_task_run_cancel.py`
+- `change.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+
+内容：
+
+- 新增 `GET /api/task-runs/{task_run_id}/subagents/{step_id}/wait`，以非阻塞方式返回 handle 的 wait observation 结果
+- handle projection 开始携带 `last_event_index`，wait contract 可基于 event cursor 判断自某个时刻后是否发生状态变化
+- 当前 wait 语义先保持为 poll-style observe contract，为后续再接 long-poll 或 executor-native wait primitive 预留稳定接口

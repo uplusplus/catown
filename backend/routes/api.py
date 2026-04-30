@@ -172,6 +172,7 @@ from services.stream_transport import (
 )
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.subagent_lifecycle import (
+    build_subagent_wait_result,
     cancellable_subagent_handles,
     cancellable_subagents_from_lifecycle,
     find_subagent_lifecycle_entry,
@@ -2926,6 +2927,50 @@ async def list_task_run_subagents(task_run_id: int, db: Session = Depends(get_db
         "subagent_handles_summary": checkpoint_snapshot.get("subagent_handles_summary"),
         "subagent_lifecycle": checkpoint_snapshot.get("subagent_lifecycle"),
         "subagent_handles": checkpoint_snapshot.get("subagent_handles"),
+    }
+
+
+@router.get("/task-runs/{task_run_id}/subagents/{step_id}/wait")
+async def wait_task_run_subagent(
+    task_run_id: int,
+    step_id: str,
+    since_event_index: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Observe one subagent handle and report whether its state changed since an event cursor."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    handles = checkpoint_snapshot.get("subagent_handles")
+    handle = find_subagent_runtime_handle(handles, step_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Subagent handle not found.")
+
+    latest_event_index = 0
+    events = list(getattr(task_run, "events", []) or [])
+    if events:
+        try:
+            latest_event_index = max(int(getattr(event, "event_index", 0) or 0) for event in events)
+        except (TypeError, ValueError):
+            latest_event_index = 0
+
+    wait_result = build_subagent_wait_result(
+        handle=handle,
+        current_event_index=latest_event_index,
+        since_event_index=since_event_index,
+    )
+    return {
+        "task_run_id": task_run.id,
+        "status": task_run.status,
+        "step_id": step_id,
+        "subagent_handle": handle,
+        "wait_result": wait_result,
     }
 
 

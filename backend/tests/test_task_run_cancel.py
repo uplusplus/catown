@@ -311,3 +311,168 @@ def test_cancel_single_task_run_subagent(client):
     assert cancelled_handle["available_actions"] == []
     assert cancelled_handle["terminal"] is True
     assert detail["subagent_handles_summary"] == "2 handles · 1 await completion · 1 cancelled · 1 cancellable"
+
+
+def test_wait_task_run_subagent_reports_poll_contract(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Wait Handle Run", "agent_names": ["analyst", "developer"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Wait subagent handle",
+            user_request="Observe child wait contract.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_plan_created",
+                    payload_json=json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "agent_name": "analyst",
+                                    "agent_type": "analyst",
+                                    "dispatch_kind": "blocking",
+                                },
+                                {
+                                    "step_id": "step-2",
+                                    "position": 2,
+                                    "agent_name": "developer",
+                                    "agent_type": "developer",
+                                    "dispatch_kind": "blocking",
+                                    "wait_for_step_id": "step-1",
+                                },
+                            ]
+                        }
+                    ),
+                ),
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "blocking",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    waiting = client.get(f"/api/task-runs/{task_run_id}/subagents/step-2/wait?since_event_index=2")
+    assert waiting.status_code == 200
+    payload = waiting.json()
+    assert payload["subagent_handle"]["control_state"] == "await_dependency"
+    wait_result = payload["wait_result"]
+    assert wait_result["awaitable"] is True
+    assert wait_result["terminal"] is False
+    assert wait_result["state_changed"] is False
+    assert wait_result["suggested_poll"] == "continue"
+    assert wait_result["last_event_index"] == 1
+    assert wait_result["since_event_index"] == 2
+
+
+def test_wait_task_run_subagent_reports_immediate_when_terminal(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Wait Terminal Run", "agent_names": ["analyst"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Wait terminal handle",
+            user_request="Observe finished child.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_plan_created",
+                    payload_json=json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "agent_name": "analyst",
+                                    "agent_type": "analyst",
+                                    "dispatch_kind": "blocking",
+                                }
+                            ]
+                        }
+                    ),
+                ),
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_completed",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "step-1",
+                            "position": 1,
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "blocking",
+                            "step_state": {
+                                "status": "completed",
+                                "dispatch_count": 1,
+                                "completion_count": 1,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    waiting = client.get(f"/api/task-runs/{task_run_id}/subagents/step-1/wait?since_event_index=1")
+    assert waiting.status_code == 200
+    payload = waiting.json()
+    wait_result = payload["wait_result"]
+    assert wait_result["terminal"] is True
+    assert wait_result["state_changed"] is True
+    assert wait_result["suggested_poll"] == "immediate"
+    assert wait_result["last_event_index"] == 2
