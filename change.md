@@ -2444,3 +2444,17 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 明确 `本地软件执行器 / 编排 Agent / 工作 Agent` 三方的输入输出 contract
 - 把泛化的“脚本”表述收敛为 `bounded spec / artifact / action request`
 - 为后续讨论数字分身、任务管理者和统一 workflow schema 提供更稳定的接口词汇
+
+### `Document open-semantics and stable-kernel principle`
+
+范围：
+
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 明确“开放语义、收敛协议、稳定内核”的扩展原则
+- 说明为何软件层应解释稳定协议，而不是为每类事务追加一套专用实现
+- 明确后续优先应抽成一等 schema 的对象：`workflow spec / action request / artifact contract`

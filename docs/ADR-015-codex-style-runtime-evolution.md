@@ -6338,6 +6338,50 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 还没有把 workflow spec / action request 建成统一 schema
 - 但已经把讨论词汇从“脚本”收敛成更适合长期演进的 contract 语言
 
+### 11.151 2026-04-30 新进展：已明确“开放语义、收敛协议、稳定内核”的扩展原则
+
+在 11.150 之后，三方 contract 已经比较清楚，但如果继续往下演进，仍有一个高风险点：
+
+- 很容易把 LLM 的开放输出能力，错误地映射成软件层也应无限开放
+- 最终把系统做成“每来一个新事务，就加一套新流程代码”的形态
+
+这会直接走回传统软件的老路：
+
+- 软件项目一套实现
+- 视频项目一套实现
+- UI 项目再一套实现
+- 每一类任务都扩一个新的 state machine 和专用 API
+
+这不是我们要的方向。
+
+本轮把原则进一步收敛为：
+
+- `开放语义`
+  - 留给 LLM
+- `收敛协议`
+  - 压缩成 bounded `workflow spec / action request / artifact contract`
+- `稳定内核`
+  - 留给本地软件执行器
+
+也就是说：
+
+- 软件层不应试图“理解所有事务”
+- 软件层应试图“解释一组稳定协议”
+
+这一步的意义是：
+
+- 为后续跨领域扩展设定清晰方向
+- 避免把 Catown 做成“一事务一实现”的业务拼盘
+- 也为下一步真正该抽的一等 schema 指明了优先级：
+  1. workflow spec schema
+  2. action request schema
+  3. artifact schema
+
+边界：
+
+- 这一步仍是架构原则收敛，不是新的 runtime 代码
+- 但它会直接影响后续内核应该新增什么 primitive，以及什么应该只作为协议扩展解决
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

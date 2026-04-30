@@ -446,6 +446,113 @@ This contract matters because it prevents semantic generation from being confuse
 - LLMs generate meaning, plans, and artifacts
 - software owns legality, persistence, and recoverable execution
 
+### 4.7 Open Semantics, Constrained Protocols, Stable Kernel
+
+The core LLM advantage is openness:
+
+- open-ended input
+- open-ended semantic interpretation
+- open-ended planning
+- open-ended output
+
+The software side should not try to mirror that openness directly.
+If the software layer also becomes open-ended in the same sense, it quickly collapses into case-by-case business logic and "one task type, one implementation".
+
+The right strategy is:
+
+- keep semantics open
+- compress outputs into bounded protocols
+- keep the execution kernel small and stable
+
+In practice this means Catown should avoid treating every new domain as a new software product.
+Instead, the backend should behave like a general execution kernel that interprets a limited set of protocol objects.
+
+#### What Should Stay Stable
+
+The software kernel should stabilize the following primitives:
+
+- run / task / handle / artifact / approval / checkpoint identities
+- state-machine transitions
+  - `start`
+  - `pause`
+  - `resume`
+  - `wait`
+  - `cancel`
+  - `close`
+  - `approve`
+  - `reject`
+  - `rollback`
+- ledger / checkpoint / recovery semantics
+- timeout / lease / sandbox / ownership rules
+- durable request/response boundaries
+
+These are kernel concerns, not domain concerns.
+
+#### What Should Stay Open
+
+The following should vary mainly as data, config, or plugins:
+
+- workflow spec
+- agent roster
+- stage definitions
+- gate rules
+- artifact types
+- evaluation rubrics
+- tool policies
+- domain adapters
+
+This is where software delivery, UI design, video generation, or other future project types should differ.
+
+#### The Three Main Protocol Objects
+
+To avoid one-off implementations, Catown should increasingly converge on three first-class protocol objects:
+
+1. `workflow spec`
+   - how a task is organized
+   - stages, roles, dependencies, gates, rollback, timeout
+2. `action request`
+   - what an agent asks the kernel to do
+   - use a tool, ask another role, request approval, report blocker, suggest rollback
+3. `artifact contract`
+   - what was produced and how it is stored, validated, and handed forward
+
+This is more robust than loosely saying that the software receives a "script".
+The important point is not arbitrary programmability, but bounded interpretability.
+
+#### Architectural Consequence
+
+The backend should increasingly look like:
+
+- a runtime kernel
+- a workflow interpreter
+- an artifact/request router
+
+and less like:
+
+- a pile of domain-specific applications
+
+If a new project type arrives, the goal should be:
+
+- reuse the same kernel
+- change the workflow spec
+- change the rubric
+- change the adapters
+
+not:
+
+- add a new hard-coded execution path
+- add a new task-specific state machine
+- add a new bespoke API set
+
+#### Practical Rule
+
+When adding a new capability, the first design question should be:
+
+- can this be expressed as `workflow spec`, `action request`, or `artifact contract`?
+
+If yes, prefer extending protocols over extending the kernel.
+If no, then and only then consider adding a new runtime primitive.
+
 ## 4. Monitor Read Model
 
 Monitor is a read-side projection over existing runtime state. It does not own a separate backend service and does not drive primary execution.
