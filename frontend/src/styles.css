@@ -462,6 +462,17 @@ a {
   min-width: 0;
 }
 
+.room-entry__eyebrow {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 78%, var(--text) 22%);
+}
+
 .room-entry__project-icon {
   width: 14px;
   height: 14px;

@@ -298,6 +298,7 @@ export function AppSidebar({
                       <span className="room-entry__indicator room-entry__indicator--drag" aria-hidden="true">
                         ⋮⋮
                       </span>
+                      <span className="room-entry__eyebrow">Project #{project.id}</span>
                       <span className="room-entry__title-row">
                         <span className="room-entry__project-icon" aria-hidden="true">
                           <svg viewBox="0 0 16 16" fill="none">
@@ -368,6 +369,7 @@ export function AppSidebar({
                             <div className={`room-item room-entry__main room-entry__main--secondary ${selectedChatId === chat.id ? "is-active" : ""} ${isChildMenuOpen ? "is-menu-open" : ""}`}>
                               <button type="button" className="room-entry__select" onClick={() => onSelectChat(chat.id)}>
                                 <span className="room-entry__indicator room-entry__indicator--subchat" aria-hidden="true" />
+                                <span className="room-entry__eyebrow">Chat #{chat.id}</span>
                                 <span className="room-entry__title-row">
                                   <strong>{chat.title}</strong>
                                 </span>
@@ -443,6 +445,7 @@ export function AppSidebar({
                     } ${isMenuOpen ? "is-menu-open" : ""}`}
                   >
                     <button type="button" className="room-entry__select" onClick={() => onSelectChat(chat.id)}>
+                      <span className="room-entry__eyebrow">Chat #{chat.id}</span>
                       <strong>{chat.title}</strong>
                       <small>{chat.updated_at ? "standalone chat" : "legacy chat"}</small>
                     </button>
