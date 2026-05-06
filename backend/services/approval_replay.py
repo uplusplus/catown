@@ -153,6 +153,54 @@ def build_pipeline_gate_request_payload(
     }
 
 
+def build_pipeline_gate_action_request(
+    *,
+    request_id: str,
+    agent_name: Any,
+    agent_type: Any = None,
+    pipeline_id: Any,
+    pipeline_run_id: Any,
+    pipeline_stage_id: Any,
+    stage_name: Any,
+    display_name: Any,
+    stage_policy: Any = None,
+) -> Dict[str, Any]:
+    """Compile one pipeline-gate payload into action_request schema v1."""
+
+    request = parse_action_request(
+        {
+            "kind": "action_request",
+            "version": 1,
+            "request_id": request_id,
+            "type": "request_approval",
+            "source": {
+                "agent_name": str(agent_name or "").strip() or "agent",
+                "agent_type": (str(agent_type or "").strip() or None),
+                "stage_name": (str(stage_name or "").strip() or None),
+                "pipeline_run_id": pipeline_run_id,
+                "pipeline_stage_id": pipeline_stage_id,
+            },
+            "summary": f"Approval required for pipeline gate {str(display_name or stage_name or 'gate').strip()}",
+            "payload": {
+                "queue_kind": "approval",
+                "target_kind": "pipeline_gate",
+                "target_name": str(stage_name or "").strip() or None,
+                "reason": f"Pipeline gate {str(display_name or stage_name or 'gate').strip()} requires approval.",
+                "resume_supported": True,
+                "request_payload": build_pipeline_gate_request_payload(
+                    pipeline_id=pipeline_id,
+                    pipeline_run_id=pipeline_run_id,
+                    pipeline_stage_id=pipeline_stage_id,
+                    stage_name=stage_name,
+                    display_name=display_name,
+                    stage_policy=stage_policy,
+                ),
+            },
+        }
+    )
+    return dump_action_request(request)
+
+
 def build_pipeline_gate_resolution_payload(
     *,
     pipeline_run_id: Any,

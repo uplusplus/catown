@@ -6,6 +6,7 @@ from services.approval_replay import (
     blocked_tool_queue_kind,
     blocked_tool_queue_title,
     build_blocked_tool_action_request,
+    build_pipeline_gate_action_request,
     blocked_tool_resume_supported,
     build_approval_queue_item_created_event_payload,
     build_approval_queue_item_resolved_event_payload,
@@ -171,6 +172,49 @@ def test_pipeline_gate_payload_helpers_preserve_gate_cursor():
         "pipeline_stage_id": 99,
         "stage_name": "qa_gate",
         "display_name": "QA Gate",
+    }
+    assert build_pipeline_gate_action_request(
+        request_id="req-pipeline-gate-1",
+        agent_name="Release",
+        agent_type="release",
+        pipeline_id=7,
+        pipeline_run_id=42,
+        pipeline_stage_id=99,
+        stage_name="qa_gate",
+        display_name="QA Gate",
+        stage_policy=stage_policy,
+    ) == {
+        "kind": "action_request",
+        "version": 1,
+        "request_id": "req-pipeline-gate-1",
+        "type": "request_approval",
+        "source": {
+            "agent_name": "Release",
+            "agent_type": "release",
+            "stage_name": "qa_gate",
+            "task_run_id": None,
+            "pipeline_run_id": 42,
+            "pipeline_stage_id": 99,
+            "turn_index": None,
+        },
+        "summary": "Approval required for pipeline gate QA Gate",
+        "metadata": {},
+        "payload": {
+            "queue_kind": "approval",
+            "target_kind": "pipeline_gate",
+            "target_name": "qa_gate",
+            "reason": "Pipeline gate QA Gate requires approval.",
+            "resume_supported": True,
+            "request_payload": {
+                "pipeline_id": 7,
+                "pipeline_run_id": 42,
+                "pipeline_stage_id": 99,
+                "stage_name": "qa_gate",
+                "display_name": "QA Gate",
+                "resume_supported": True,
+                "stage_policy": {"stage_name": "qa_gate", "gate": "manual"},
+            },
+        },
     }
 
 

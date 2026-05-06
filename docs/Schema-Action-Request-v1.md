@@ -243,6 +243,12 @@ The first compatibility bridge has also been added for blocked-tool approval pay
   now includes a helper that compiles blocked-tool approval intent into `request_approval`
   action-request form without yet changing queue persistence semantics.
 
+The second compatibility bridge has also been added for pipeline-gate approval payloads:
+
+- `backend/services/approval_replay.py`
+  now includes a helper that compiles pipeline-gate approval intent into the same
+  `request_approval` action-request form, again without yet changing queue persistence semantics.
+
 This schema is **not** yet wired into:
 
 - pipeline engine execution

@@ -6489,6 +6489,38 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - queue item 里保存的 request payload 还没有全面切到 action-request envelope
 - 但这已经是从“有 schema 草案”走向“有协议收敛路径”的第一步
 
+### 11.155 2026-05-06 新进展：已开始把 pipeline-gate implicit payload 映射到 `action_request schema v1`
+
+在 11.154 先打通 blocked-tool -> `request_approval` 兼容桥之后，另一条语义上同样接近的路径也该尽快对齐：
+
+- pipeline gate approval
+
+原因很简单：
+
+- 它本质上也是“请求审批”
+- 只是 target 不再是 tool，而是 `pipeline_gate`
+- 如果这条链继续保留另一套独立 payload 语言，schema 收敛很快又会分叉
+
+本轮继续沿同一策略推进：
+
+- 不直接改 queue item persistence
+- 不改 pipeline engine 的主执行路径
+- 先在 `approval_replay.py` 中补 compatibility helper
+- 把 pipeline-gate approval intent 编译成统一的 `request_approval` action request 形状
+
+这一步的意义是：
+
+- `request_approval` action kind 第一次同时覆盖：
+  - blocked tool
+  - pipeline gate
+- 说明这个 schema 不是单点 patch，而是真开始承接一类 runtime intent
+
+边界：
+
+- 仍然只是 compatibility bridge
+- 现有 queue persistence / replay 主链尚未切到统一 envelope
+- 但 action-request 收敛路径已经从单条样例扩展成两条真实业务路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

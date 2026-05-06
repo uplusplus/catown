@@ -2508,3 +2508,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 为 blocked-tool approval 场景新增 compatibility helper，把现有 implicit payload 编译成 `request_approval` action request
 - focused tests 锁定该桥接输出形状
 - 先建立迁移路径，不直接改 queue item 的持久化格式与 replay 语义
+
+### `Bridge pipeline-gate payloads to action request schema`
+
+范围：
+
+- `backend/services/approval_replay.py`
+- `backend/tests/test_approval_replay.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 为 pipeline-gate approval 场景新增 compatibility helper，把现有 implicit payload 编译成统一的 `request_approval` action request
+- focused tests 锁定 pipeline gate 桥接输出形状
+- 保持 queue persistence 与 engine 主执行路径不变，先继续扩大协议收敛覆盖面
