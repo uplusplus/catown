@@ -553,6 +553,12 @@ When adding a new capability, the first design question should be:
 If yes, prefer extending protocols over extending the kernel.
 If no, then and only then consider adding a new runtime primitive.
 
+The first concrete draft produced from this principle is:
+
+- [Action Request Schema v1](Schema-Action-Request-v1.md)
+
+It defines the bounded agent-to-executor request envelope that sits above the OpenAI-compatible model protocol.
+
 ## 4. Monitor Read Model
 
 Monitor is a read-side projection over existing runtime state. It does not own a separate backend service and does not drive primary execution.

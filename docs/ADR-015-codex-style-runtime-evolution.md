@@ -6382,6 +6382,42 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 这一步仍是架构原则收敛，不是新的 runtime 代码
 - 但它会直接影响后续内核应该新增什么 primitive，以及什么应该只作为协议扩展解决
 
+### 11.152 2026-05-06 新进展：`action_request schema v1` 已完成第一版草案
+
+在 11.151 确立“开放语义、收敛协议、稳定内核”之后，最自然的下一步就是把其中一个高优先级协议真正落成草案。
+
+本轮先选择 `action_request schema`，原因很直接：
+
+- 现有系统里已经有很多“像 request 但还不是统一 schema”的东西
+  - blocked tool request payload
+  - pipeline gate request payload
+  - tool / approval / rollback 相关 event payload
+- 如果不先把 agent -> executor 的请求边界收紧，后续 artifact schema 和 workflow schema 都会继续漂
+
+本轮产出：
+
+- 新增 `docs/Schema-Action-Request-v1.md`
+- 新增 `backend/services/action_request_contracts.py`
+- 定义 v1 支持的 bounded request kinds：
+  - `use_tool`
+  - `ask_agent`
+  - `request_approval`
+  - `report_blocker`
+  - `suggest_rollback`
+  - `publish_artifact`
+
+这一步的意义是：
+
+- 终于把“agent 向软件执行器发的请求”从隐式 payload 收敛成可验证合同
+- 也把“OpenAI 协议”与“Catown 内部运行时协议”之间的边界具体化
+- 后续开始把现有 approval/tool/blocker payload 映射到统一 contract 时，有了明确目标
+
+边界：
+
+- v1 目前还是草案 contract，不代表 runtime 已全量接入
+- 还没有把现有 implicit payload 全部编译/迁移到它上面
+- 但这是把内部协议从概念推进到实现骨架的重要第一步
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -2458,3 +2458,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 明确“开放语义、收敛协议、稳定内核”的扩展原则
 - 说明为何软件层应解释稳定协议，而不是为每类事务追加一套专用实现
 - 明确后续优先应抽成一等 schema 的对象：`workflow spec / action request / artifact contract`
+
+### `Draft action request schema v1`
+
+范围：
+
+- `backend/services/action_request_contracts.py`
+- `backend/tests/test_action_request_contracts.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 起草 `action_request schema v1`，把 agent -> executor 的 bounded request envelope 落成文档和最小 Pydantic 骨架
+- 覆盖首批 request kinds：`use_tool / ask_agent / request_approval / report_blocker / suggest_rollback / publish_artifact`
+- 明确该 schema 位于 OpenAI 协议之上，属于 Catown 内部运行时协议，而非模型通信协议
