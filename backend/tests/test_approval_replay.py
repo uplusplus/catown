@@ -5,6 +5,7 @@ from services.approval_replay import (
     approval_queue_resume_strategy,
     blocked_tool_queue_kind,
     blocked_tool_queue_title,
+    build_blocked_tool_action_request,
     blocked_tool_resume_supported,
     build_approval_queue_item_created_event_payload,
     build_approval_queue_item_resolved_event_payload,
@@ -83,6 +84,60 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
         "pipeline_stage_id": 13,
         "stage_name": "analysis",
         "display_name": "Analysis",
+    }
+
+    assert build_blocked_tool_action_request(
+        request_id="req-blocked-tool-1",
+        agent_name="Analyst",
+        agent_type="analyst",
+        turn=2,
+        blocked_tool=blocked_tool,
+        resume_supported=True,
+        runtime_payload={
+            "task_run_id": 7,
+            "pipeline_id": 11,
+            "pipeline_run_id": 12,
+            "pipeline_stage_id": 13,
+            "stage_name": "analysis",
+            "display_name": "Analysis",
+        },
+    ) == {
+        "kind": "action_request",
+        "version": 1,
+        "request_id": "req-blocked-tool-1",
+        "type": "request_approval",
+        "source": {
+            "agent_name": "Analyst",
+            "agent_type": "analyst",
+            "stage_name": "analysis",
+            "task_run_id": 7,
+            "pipeline_run_id": 12,
+            "pipeline_stage_id": 13,
+            "turn_index": 2,
+        },
+        "summary": "delete_file requires approval",
+        "metadata": {},
+        "payload": {
+            "queue_kind": "approval",
+            "target_kind": "tool",
+            "target_name": "delete_file",
+            "reason": "delete_file requires approval",
+            "resume_supported": True,
+            "request_payload": {
+                "turn": 2,
+                "tool_name": "delete_file",
+                "arguments": '{"path": "tmp.txt"}',
+                "status": "approval_blocked",
+                "blocked_kind": "approval",
+                "blocked_reason": "delete_file requires approval",
+                "resume_supported": True,
+                "pipeline_id": 11,
+                "pipeline_run_id": 12,
+                "pipeline_stage_id": 13,
+                "stage_name": "analysis",
+                "display_name": "Analysis",
+            },
+        },
     }
 
 

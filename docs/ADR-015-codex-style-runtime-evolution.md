@@ -6457,6 +6457,38 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 还没有接 supersession / approval / dependency graph
 - 但这是把 artifact 从隐式文件约定推进到一等协议对象的重要一步
 
+### 11.154 2026-05-06 新进展：已开始把 blocked-tool implicit payload 映射到 `action_request schema v1`
+
+在 11.152 起草 `action_request schema v1` 之后，下一步不应该继续空谈，而应该先选一条现有 implicit payload 最清楚的路径做兼容映射。
+
+本轮选择：
+
+- blocked tool
+- approval queue request payload
+
+原因：
+
+- 这条链已经相对稳定
+- payload 字段集中
+- 与 `request_approval` action kind 的语义最贴近
+
+本轮没有直接改 queue item 持久化格式，而是先补一层兼容桥：
+
+- 在 `approval_replay.py` 中新增 helper
+- 把 blocked-tool approval intent 编译成 `request_approval` action request
+- 用 focused tests 锁定输出形状
+
+这一步的意义是：
+
+- 开始把“隐式 payload”真正往统一协议迁移，而不是只停留在 schema 文档阶段
+- 同时又避免一次性改掉 queue persistence/replay 语义，降低了迁移风险
+
+边界：
+
+- 当前仍只是 compatibility bridge
+- queue item 里保存的 request payload 还没有全面切到 action-request envelope
+- 但这已经是从“有 schema 草案”走向“有协议收敛路径”的第一步
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

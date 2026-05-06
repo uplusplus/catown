@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any, Dict
 
+from services.action_request_contracts import dump_action_request, parse_action_request
 from services.turn_state import build_tool_result_record
 
 
@@ -75,6 +76,57 @@ def build_blocked_tool_request_payload(
         "stage_name": runtime_payload.get("stage_name"),
         "display_name": runtime_payload.get("display_name"),
     }
+
+
+def build_blocked_tool_action_request(
+    *,
+    request_id: str,
+    agent_name: Any,
+    agent_type: Any = None,
+    turn: int,
+    blocked_tool: Dict[str, Any],
+    resume_supported: bool,
+    runtime_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Compile one blocked-tool payload into action_request schema v1."""
+
+    runtime_payload = runtime_payload if isinstance(runtime_payload, dict) else {}
+    request = parse_action_request(
+        {
+            "kind": "action_request",
+            "version": 1,
+            "request_id": request_id,
+            "type": "request_approval",
+            "source": {
+                "agent_name": str(agent_name or "").strip() or "agent",
+                "agent_type": (str(agent_type or "").strip() or None),
+                "stage_name": runtime_payload.get("stage_name"),
+                "task_run_id": runtime_payload.get("task_run_id"),
+                "pipeline_run_id": runtime_payload.get("pipeline_run_id"),
+                "pipeline_stage_id": (
+                    runtime_payload.get("pipeline_stage_id")
+                    if runtime_payload.get("pipeline_stage_id") is not None
+                    else runtime_payload.get("stage_id")
+                ),
+                "turn_index": int(turn),
+            },
+            "summary": str(blocked_tool.get("blocked_reason") or "").strip() or None,
+            "payload": {
+                "queue_kind": blocked_tool_queue_kind(blocked_tool.get("blocked_kind")),
+                "target_kind": "tool",
+                "target_name": blocked_tool.get("tool_name"),
+                "reason": blocked_tool.get("blocked_reason") or "",
+                "resume_supported": bool(resume_supported),
+                "request_payload": build_blocked_tool_request_payload(
+                    turn=turn,
+                    blocked_tool=blocked_tool,
+                    resume_supported=resume_supported,
+                    runtime_payload=runtime_payload,
+                ),
+            },
+        }
+    )
+    return dump_action_request(request)
 
 
 def build_pipeline_gate_request_key(*, pipeline_run_id: Any, stage_name: Any) -> str:
