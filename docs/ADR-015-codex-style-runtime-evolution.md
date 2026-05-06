@@ -6418,6 +6418,45 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 还没有把现有 implicit payload 全部编译/迁移到它上面
 - 但这是把内部协议从概念推进到实现骨架的重要第一步
 
+### 11.153 2026-05-06 新进展：`artifact_contract schema v1` 已完成第一版草案
+
+在 11.152 之后，agent -> executor 的 request 边界已经有了第一版 contract，但另一条同样关键的边界仍然偏弱：
+
+- 当前系统里的“产物”还分散在：
+  - `expected_artifacts`
+  - `StageArtifact`
+  - `Asset`
+- 它们虽然都在表达 artifact，但彼此并没有统一的 typed contract
+
+这会带来两个后果：
+
+- action request 里的 `publish_artifact` 只能先携带一个简化 payload
+- runtime 很难把 pipeline 文件产物和 richer project asset 当成同一种协议对象看待
+
+本轮先补 `artifact_contract schema v1` 草案：
+
+- 新增 `docs/Schema-Artifact-Contract-v1.md`
+- 新增 `backend/services/artifact_contracts.py`
+- 新增四种 bounded artifact modes：
+  - `workspace_file`
+  - `workspace_directory`
+  - `document`
+  - `structured_asset`
+
+这一步的意义是：
+
+- 终于把“产物本身”从文件命名约定推进到 typed contract
+- 也让 action request 与 artifact 之间的关系更清楚：
+  - `publish_artifact` 表达 intent
+  - `artifact_contract` 表达被发布的对象
+- 后续开始把 `StageArtifact` 与 `Asset` 收到统一协议层时，有了明确目标
+
+边界：
+
+- v1 目前仍是草案 contract，不代表现有 artifact 写路径已切换
+- 还没有接 supersession / approval / dependency graph
+- 但这是把 artifact 从隐式文件约定推进到一等协议对象的重要一步
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

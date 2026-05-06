@@ -557,6 +557,10 @@ The first concrete draft produced from this principle is:
 
 - [Action Request Schema v1](Schema-Action-Request-v1.md)
 
+The second concrete draft is:
+
+- [Artifact Contract Schema v1](Schema-Artifact-Contract-v1.md)
+
 It defines the bounded agent-to-executor request envelope that sits above the OpenAI-compatible model protocol.
 
 ## 4. Monitor Read Model

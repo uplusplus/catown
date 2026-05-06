@@ -2475,3 +2475,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 起草 `action_request schema v1`，把 agent -> executor 的 bounded request envelope 落成文档和最小 Pydantic 骨架
 - 覆盖首批 request kinds：`use_tool / ask_agent / request_approval / report_blocker / suggest_rollback / publish_artifact`
 - 明确该 schema 位于 OpenAI 协议之上，属于 Catown 内部运行时协议，而非模型通信协议
+
+### `Draft artifact contract schema v1`
+
+范围：
+
+- `backend/services/artifact_contracts.py`
+- `backend/tests/test_artifact_contracts.py`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 起草 `artifact_contract schema v1`，统一表达当前 pipeline 文件产物与 richer project asset
+- 覆盖首批 artifact modes：`workspace_file / workspace_directory / document / structured_asset`
+- 明确它与 `publish_artifact` action request 的关系：request 表达 intent，artifact contract 表达被发布对象
