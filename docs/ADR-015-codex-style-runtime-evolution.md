@@ -6600,6 +6600,33 @@ v1 当前覆盖：
 - executor 仍然主要消费 `PipelineConfig` / `StageConfig`
 - 但协议层已经开始进入真实加载路径，而不再只是文档和 isolated helper
 
+### 11.158 2026-05-07 新进展：`runner_policy` 已开始直接消费 canonical workflow spec
+
+在 11.157 让 `PipelineConfigManager` 开始导出 canonical `workflow_spec` 之后，下一步更自然的不是立刻硬切 executor 主链，而是先让更靠近执行语义、但仍相对稳定的一层开始直接消费它：
+
+- `runner_policy`
+
+本轮继续推进：
+
+- `compile_workflow_stage_policy(...)`
+- `compile_workflow_run_policy(...)`
+
+让 `RunnerGovernancePolicy` 可以直接从 canonical `workflow_spec` 编译出来，而不再依赖 legacy `StageConfig`。
+
+这一步的意义是：
+
+- canonical workflow spec 不再只是“配置导出物”
+- 它开始进入真正的治理/执行前置层
+- 后续如果要让 executor 主链渐进切换，就可以先复用已经稳定的 runner-policy 编译结果
+
+边界：
+
+- 当前 pipeline engine 主路径仍主要调用 legacy `compile_pipeline_*`
+- 还没有把主执行链全部切到 `compile_workflow_*`
+- 但 canonical workflow spec 已经连续打通了：
+  - config bridge
+  - governance-policy bridge
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

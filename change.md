@@ -2557,3 +2557,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `PipelineConfigManager` 在继续保留 legacy `PipelineConfig/StageConfig` 视图的同时，开始导出 canonical `workflow_spec`
 - 新增 focused tests 锁定 `pipelines.json -> workflow_spec` 的兼容导出形状
 - 为后续 executor 渐进消费 canonical workflow spec 铺桥，而不直接大改主执行路径
+
+### `Compile runner policy from canonical workflow specs`
+
+范围：
+
+- `backend/services/runner_policy.py`
+- `backend/tests/test_runner_policy_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `compile_workflow_stage_policy(...)` 与 `compile_workflow_run_policy(...)`
+- 让 `RunnerGovernancePolicy` 可以直接从 canonical `workflow_spec` 编译出来，不再强依赖 legacy `StageConfig`
+- 为后续 executor 主链渐进切换到 canonical workflow policy 再铺一层桥

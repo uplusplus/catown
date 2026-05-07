@@ -180,6 +180,13 @@ The first runtime-facing export bridge is now present in:
 `PipelineConfigManager` can now load today's `pipelines.json` and export a canonical
 `workflow_spec` view alongside the legacy `PipelineConfig` / `StageConfig` view.
 
+The first governance-policy bridge is now present in:
+
+- `backend/services/runner_policy.py`
+
+`RunnerGovernancePolicy` can now be compiled directly from canonical `workflow_spec`,
+without first requiring legacy `StageConfig` objects.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

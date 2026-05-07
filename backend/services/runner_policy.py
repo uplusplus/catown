@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.workflow_spec_contracts import WorkflowSpec, WorkflowStageSpec
+
 
 @dataclass(frozen=True)
 class ApprovalPolicy:
@@ -143,6 +145,53 @@ def compile_pipeline_stage_policy(
     )
 
 
+def compile_workflow_stage_policy(
+    *,
+    stage_spec: WorkflowStageSpec,
+    stage_order: int,
+    stage_count: int,
+    tool_policy_pack: dict[str, Any] | None = None,
+) -> StageRunnerPolicy:
+    gate = _clean_text(getattr(stage_spec, "gate", None)) or "auto"
+    expected_artifacts = [
+        str(item).strip()
+        for item in list(getattr(getattr(stage_spec, "delivery", None), "expected_artifacts", []) or [])
+        if str(item).strip()
+    ]
+    rollback = getattr(stage_spec, "rollback", None)
+    skills = getattr(stage_spec, "skills", None)
+
+    return StageRunnerPolicy(
+        stage_name=_clean_text(getattr(stage_spec, "stage_id", None)),
+        display_name=_clean_text(getattr(stage_spec, "display_name", None)) or _clean_text(getattr(stage_spec, "stage_id", None)),
+        agent_name=_clean_text(getattr(stage_spec, "agent_type", None)),
+        stage_order=stage_order,
+        stage_count=stage_count,
+        is_terminal_stage=(stage_order == max(stage_count - 1, 0)),
+        timeout_minutes=max(1, int(getattr(stage_spec, "timeout_minutes", 30) or 30)),
+        context_prompt=_clean_text(getattr(stage_spec, "context_prompt", None)),
+        active_skills=[str(item).strip() for item in list(getattr(skills, "active", []) or []) if str(item).strip()],
+        hint_only_skills=[str(item).strip() for item in list(getattr(skills, "hint_only", []) or []) if str(item).strip()],
+        approval=ApprovalPolicy(
+            kind=gate,
+            required=(gate == "manual"),
+        ),
+        delivery=DeliveryContract(
+            expected_artifacts=expected_artifacts,
+            required=bool(getattr(getattr(stage_spec, "delivery", None), "required", False) or expected_artifacts),
+        ),
+        rollback=RollbackPolicy(
+            enabled=bool(getattr(rollback, "enabled", False)),
+            max_attempts=max(0, int(getattr(rollback, "max_attempts", 0) or 0)),
+            target_stage=_clean_text(getattr(rollback, "target_stage_name", None)) or None,
+        ),
+        metadata={
+            **dict(getattr(stage_spec, "metadata", {}) or {}),
+            **_stage_tool_metadata(tool_policy_pack),
+        },
+    )
+
+
 def compile_pipeline_run_policy(
     *,
     pipeline_name: str | None,
@@ -167,6 +216,39 @@ def compile_pipeline_run_policy(
         stage_count=len(stage_policies),
         stages=stage_policies,
         metadata={
+            "stage_tool_packs": {
+                stage_name: _tool_pack_metadata(pack, include_policies=True)
+                for stage_name, pack in sorted((stage_tool_packs or {}).items())
+            },
+        },
+    )
+
+
+def compile_workflow_run_policy(
+    *,
+    workflow_spec: WorkflowSpec,
+    project_id: int | None,
+    stage_tool_packs: dict[str, dict[str, Any]] | None = None,
+) -> RunnerGovernancePolicy:
+    stage_policies = [
+        compile_workflow_stage_policy(
+            stage_spec=stage_spec,
+            stage_order=index,
+            stage_count=len(workflow_spec.stages),
+            tool_policy_pack=(stage_tool_packs or {}).get(_clean_text(getattr(stage_spec, "stage_id", None))),
+        )
+        for index, stage_spec in enumerate(workflow_spec.stages)
+    ]
+    return RunnerGovernancePolicy(
+        mode="pipeline_governance",
+        source="workflow_spec",
+        pipeline_name=_clean_text(workflow_spec.workflow_id) or None,
+        project_id=project_id,
+        stage_count=len(stage_policies),
+        stages=stage_policies,
+        metadata={
+            "workflow_name": _clean_text(getattr(workflow_spec, "name", None)) or None,
+            "workflow_domain": _clean_text(getattr(workflow_spec, "domain", None)) or None,
             "stage_tool_packs": {
                 stage_name: _tool_pack_metadata(pack, include_policies=True)
                 for stage_name, pack in sorted((stage_tool_packs or {}).items())
