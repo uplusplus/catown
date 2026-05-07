@@ -173,6 +173,13 @@ Schema v1 is now documented and represented by a minimal Pydantic contract in:
 
 It also includes a compatibility compiler from today's pipeline-template payload shape.
 
+The first runtime-facing export bridge is now present in:
+
+- `backend/pipeline/config.py`
+
+`PipelineConfigManager` can now load today's `pipelines.json` and export a canonical
+`workflow_spec` view alongside the legacy `PipelineConfig` / `StageConfig` view.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

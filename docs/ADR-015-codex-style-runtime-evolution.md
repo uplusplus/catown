@@ -6567,6 +6567,39 @@ v1 当前覆盖：
 - executor 还没有正式改为消费 canonical workflow spec
 - 但这是把 `pipelines.json` 从配置文件推进到协议层的第一步
 
+### 11.157 2026-05-07 新进展：`PipelineConfigManager` 已开始导出 canonical workflow spec
+
+在 11.156 起草完 `workflow_spec schema v1` 之后，下一步不适合直接大改 executor 主链，而应该先在当前配置加载入口上补一个低风险桥接层。
+
+本轮先推进：
+
+- `PipelineConfigManager`
+
+让它在继续保留：
+
+- `PipelineConfig`
+- `StageConfig`
+
+这套 legacy 视图的同时，也能直接导出：
+
+- canonical `workflow_spec`
+
+也就是说，当前系统第一次在真正的运行时代码入口上，同时拥有：
+
+- legacy config view
+- canonical schema view
+
+这一步的意义是：
+
+- 后续如果要让 engine/runtime 渐进切到 canonical workflow spec，不需要一刀切重写
+- action-request / artifact-contract 后续也有了一个更稳定的 workflow policy 来源
+
+边界：
+
+- 当前还只是读取/导出桥接
+- executor 仍然主要消费 `PipelineConfig` / `StageConfig`
+- 但协议层已经开始进入真实加载路径，而不再只是文档和 isolated helper
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -2541,3 +2541,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 起草 `workflow_spec schema v1`，把当前 `pipelines.json` 的阶段/gate/timeout/rollback/skills 形状推进成版本化协议
 - 提供兼容编译器，把当前 pipeline template payload 编译为 canonical workflow spec
 - 为后续用 workflow policy 去验证 action requests 与 artifact 流转打基础
+
+### `Export canonical workflow specs from pipeline config manager`
+
+范围：
+
+- `backend/pipeline/config.py`
+- `backend/tests/test_pipeline_config_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `PipelineConfigManager` 在继续保留 legacy `PipelineConfig/StageConfig` 视图的同时，开始导出 canonical `workflow_spec`
+- 新增 focused tests 锁定 `pipelines.json -> workflow_spec` 的兼容导出形状
+- 为后续 executor 渐进消费 canonical workflow spec 铺桥，而不直接大改主执行路径

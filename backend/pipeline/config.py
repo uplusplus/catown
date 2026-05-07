@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 
 from config import settings
+from services.workflow_spec_contracts import WorkflowSpec, compile_pipeline_template_to_workflow_spec
 
 
 class StageConfig(BaseModel):
@@ -43,6 +44,7 @@ class PipelineConfigManager:
     def __init__(self, config_file: str = None):
         self.config_file = config_file or settings.PIPELINE_CONFIG_FILE
         self.configs: Dict[str, PipelineConfig] = {}
+        self.workflow_specs: Dict[str, WorkflowSpec] = {}
 
     def load(self) -> Dict[str, PipelineConfig]:
         """加载所有 Pipeline 模板"""
@@ -52,6 +54,8 @@ class PipelineConfigManager:
         with open(self.config_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        self.configs = {}
+        self.workflow_specs = {}
         for name, config_data in data.items():
             stages = [StageConfig(**s) for s in config_data.get("stages", [])]
             self.configs[name] = PipelineConfig(
@@ -59,6 +63,7 @@ class PipelineConfigManager:
                 description=config_data.get("description", ""),
                 stages=stages
             )
+            self.workflow_specs[name] = compile_pipeline_template_to_workflow_spec(name, config_data)
 
         return self.configs
 
@@ -73,6 +78,12 @@ class PipelineConfigManager:
         if not self.configs:
             self.load()
         return list(self.configs.keys())
+
+    def get_workflow_spec(self, name: str) -> Optional[WorkflowSpec]:
+        """获取指定 Pipeline 模板对应的 canonical workflow spec."""
+        if not self.workflow_specs:
+            self.load()
+        return self.workflow_specs.get(name)
 
     def get_stage(self, pipeline_name: str, stage_name: str) -> Optional[StageConfig]:
         """获取指定阶段配置"""
