@@ -6521,6 +6521,52 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 - 现有 queue persistence / replay 主链尚未切到统一 envelope
 - 但 action-request 收敛路径已经从单条样例扩展成两条真实业务路径
 
+### 11.156 2026-05-07 新进展：`workflow_spec schema v1` 已完成第一版草案
+
+在 11.151 里明确“开放语义、收敛协议、稳定内核”之后，三类最优先的一等协议对象里，前两类已经有了第一版：
+
+- `action_request schema v1`
+- `artifact_contract schema v1`
+
+剩下最关键的一块就是：
+
+- `workflow_spec schema`
+
+当前系统里这一层虽然已经有 `pipelines.json`、`PipelineConfig`、`StageConfig`，但它仍然有几个问题：
+
+- 还是 executor 直接消费的当前形状
+- 还没有真正成为独立版本化协议
+- 也还没与 action-request / artifact contract 形成统一的协议层
+
+本轮先补 `workflow_spec schema v1` 草案：
+
+- 新增 `docs/Schema-Workflow-Spec-v1.md`
+- 新增 `backend/services/workflow_spec_contracts.py`
+- 新增兼容编译器，把当前 pipeline template payload 编译成 `workflow_spec`
+
+v1 当前覆盖：
+
+- workflow identity
+- ordered stage list
+- agent ownership
+- gate
+- timeout
+- delivery / expected_artifacts
+- rollback
+- skill injection
+
+这一步的意义是：
+
+- 终于把“当前 pipeline 配置形状”从内部配置模型推进到一等协议对象
+- 后续 action-request 就可以开始基于 workflow policy 做更严格验证
+- 也为将来把软件开发、视频生成、UI 设计等不同领域都收进统一 executor 预留了结构位置
+
+边界：
+
+- v1 仍然是 ordered stage list，不支持更丰富的 DAG / sidecar topology
+- executor 还没有正式改为消费 canonical workflow spec
+- 但这是把 `pipelines.json` 从配置文件推进到协议层的第一步
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

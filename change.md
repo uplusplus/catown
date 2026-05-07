@@ -2524,3 +2524,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 为 pipeline-gate approval 场景新增 compatibility helper，把现有 implicit payload 编译成统一的 `request_approval` action request
 - focused tests 锁定 pipeline gate 桥接输出形状
 - 保持 queue persistence 与 engine 主执行路径不变，先继续扩大协议收敛覆盖面
+
+### `Draft workflow spec schema v1`
+
+范围：
+
+- `backend/services/workflow_spec_contracts.py`
+- `backend/tests/test_workflow_spec_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 起草 `workflow_spec schema v1`，把当前 `pipelines.json` 的阶段/gate/timeout/rollback/skills 形状推进成版本化协议
+- 提供兼容编译器，把当前 pipeline template payload 编译为 canonical workflow spec
+- 为后续用 workflow policy 去验证 action requests 与 artifact 流转打基础

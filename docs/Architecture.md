@@ -561,6 +561,10 @@ The second concrete draft is:
 
 - [Artifact Contract Schema v1](Schema-Artifact-Contract-v1.md)
 
+The third concrete draft is:
+
+- [Workflow Spec Schema v1](Schema-Workflow-Spec-v1.md)
+
 It defines the bounded agent-to-executor request envelope that sits above the OpenAI-compatible model protocol.
 
 ## 4. Monitor Read Model
