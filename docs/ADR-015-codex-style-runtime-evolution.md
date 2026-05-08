@@ -6627,6 +6627,41 @@ v1 当前覆盖：
   - config bridge
   - governance-policy bridge
 
+### 11.159 2026-05-08 新进展：canonical workflow spec 已开始通过 Pipeline API 暴露
+
+在 11.158 打通 config bridge 和 governance-policy bridge 之后，canonical workflow spec 还缺少一个很实际的问题：
+
+- 外部现在还看不到它
+- 只能通过内部 helper / config manager / runner policy 间接接触
+
+这会让它仍然更像“内部迁移对象”，而不是一等协议。
+
+本轮先补一个低风险出口：
+
+- `GET /api/pipelines/templates/{pipeline_name}/workflow-spec`
+
+特点：
+
+- 只读
+- 不改 executor 主链
+- 不依赖当前被并行修改的 `pipeline/engine.py`
+- 直接暴露 canonical workflow spec payload
+
+这一步的意义是：
+
+- canonical workflow spec 第一次有了稳定 API 可见性
+- 后续无论是前端、调试工具、还是新的编排 Agent，都有一个统一读取入口
+- 也使 workflow spec 不再只是“内部迁移桥”，而开始具备真正的协议层身份
+
+边界：
+
+- 当前仍只是 read-side exposure
+- executor 还没有从这个 API/contract 反向驱动
+- 但 canonical workflow spec 已经形成三层落点：
+  - config bridge
+  - runner-policy bridge
+  - API exposure bridge
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

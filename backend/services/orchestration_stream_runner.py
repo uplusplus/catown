@@ -454,6 +454,7 @@ async def iter_stream_orchestration_runtime_events(
 
             saved = None
             step_content = ""
+            awaiting_tool_approval = False
             handoff_state = claim_orchestration_step_handoffs(
                 db,
                 task_run=task_run,
@@ -507,6 +508,10 @@ async def iter_stream_orchestration_runtime_events(
                                 user_message=user_message,
                             )
                         continue
+                    if event["type"] == "approval_pending":
+                        awaiting_tool_approval = True
+                        yield StreamOrchestrationRuntimeEvent(type="sse", payload=event)
+                        continue
 
                     yield StreamOrchestrationRuntimeEvent(type="sse", payload=event)
             except TaskRunCancelledError as exc:
@@ -548,6 +553,9 @@ async def iter_stream_orchestration_runtime_events(
                         "client_turn_id": client_turn_id,
                     },
                 )
+                return
+
+            if awaiting_tool_approval:
                 return
 
             try:

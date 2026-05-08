@@ -29,6 +29,9 @@ def _make_app(tmp_path):
         "routes.websocket",
         "pipeline.engine",
         "routes.pipeline",
+        "services.approval_queue",
+        "services.approval_replay",
+        "services.monitor_projection",
         "services.run_ledger",
         "services.chat_publish",
         "services.chat_runtime",
@@ -50,6 +53,7 @@ def _make_app(tmp_path):
         "services.stream_transport",
         "services.single_agent_stream_session",
         "services.single_agent_stream_finalizer",
+        "services.tool_execution_preferences",
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:

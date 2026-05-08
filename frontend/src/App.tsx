@@ -11,6 +11,7 @@ import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTiming
 import type {
   AppTab,
   AgentInfo,
+  AgentConfigPayload,
   ChatCardItem,
   ChatCardLlmTimings,
   ChatEventItem,
@@ -18,10 +19,13 @@ import type {
   ChatSummary,
   ConfigSection,
   ConfigResponse,
+  GlobalConfigPayload,
   MessageItem,
   MessageStreamStep,
+  PermissionsConfigPayload,
   ProjectSummary,
   TaskRunSummary,
+  ToolAuthorizationRule,
 } from "./types";
 
 const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
@@ -63,6 +67,12 @@ const CONFIG_SECTION_META: Record<
     sidebarDescription: "Long-term memory, retained context, and summaries",
     title: "Memory management",
     subtitle: "Inspect retained memory footprint by agent and understand what long-term context already exists.",
+  },
+  permissions: {
+    sidebarLabel: "Permissions",
+    sidebarDescription: "Approval defaults for low-risk read tools",
+    title: "Permissions",
+    subtitle: "Control whether low-risk read-only tool requests are allowed by default.",
   },
 };
 
@@ -658,6 +668,21 @@ function mergeCards(current: ChatCardItem[], incoming: ChatCardItem[]) {
   return Array.from(merged.values()).sort(
     (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
   );
+}
+
+function mergeTaskRuns(current: TaskRunSummary[], incoming: TaskRunSummary[]) {
+  const merged = new Map<number, TaskRunSummary>();
+  for (const item of current) {
+    merged.set(item.id, item);
+  }
+  for (const item of incoming) {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  }
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
+    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
+    return rightTime - leftTime;
+  });
 }
 
 function buildStreamStep(
@@ -1591,12 +1616,14 @@ function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [authorizationRules, setAuthorizationRules] = useState<ToolAuthorizationRule[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<number | null>(() => readLastChatId());
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [chatCards, setChatCards] = useState<ChatCardItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
+  const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [chatEvents, setChatEvents] = useState<ChatEventItem[]>([]);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">("connecting");
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -1631,6 +1658,11 @@ function App() {
         id: "memory" as const,
         label: CONFIG_SECTION_META.memory.sidebarLabel,
         description: CONFIG_SECTION_META.memory.sidebarDescription,
+      },
+      {
+        id: "permissions" as const,
+        label: CONFIG_SECTION_META.permissions.sidebarLabel,
+        description: CONFIG_SECTION_META.permissions.sidebarDescription,
       },
     ],
     [agents],
@@ -1852,10 +1884,11 @@ function App() {
     try {
       setError("");
       const preferredChatId = readLastChatId();
-      const [agentRows, configData, chatRows] = await Promise.all([
+      const [agentRows, configData, chatRows, ruleRows] = await Promise.all([
         api.getAgents(),
         api.getConfig(),
         api.getChats(),
+        api.getToolAuthorizationRules(),
       ]);
       const selfProject = await api.getOrCreateSelfBootstrapProject();
       const projectRows = await api.getProjects();
@@ -1879,6 +1912,7 @@ function App() {
       commitProjects(projectRows);
       setAgents(agentRows);
       setConfig(configData);
+      setAuthorizationRules(ruleRows);
       applyChatSelection(nextSelectedChatId, nextSelectedProjectId);
       setActiveTab("chat");
     } catch (nextError) {
@@ -1920,6 +1954,7 @@ function App() {
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
       setTaskRuns([]);
+      setLiveTaskRunDetailsById({});
       return;
     }
     if (!activeChat) return;
@@ -1934,6 +1969,7 @@ function App() {
         setMessages([]);
         setChatCards([]);
         setChatEvents([]);
+        setLiveTaskRunDetailsById({});
         const [rows, runtimeRows, taskRunRows] = await Promise.all([
           api.getMessages(activeChatId),
           loadOptionalRuntimeCards(activeChatId),
@@ -1946,6 +1982,7 @@ function App() {
           setMessages(rows);
           setChatCards(nextCards);
           setTaskRuns(taskRunRows);
+          setLiveTaskRunDetailsById({});
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
         }
       } catch (nextError) {
@@ -2103,6 +2140,19 @@ function App() {
                     ),
                   ),
                 );
+              }
+            }
+            return;
+          }
+
+          if (data.type === "task_run_update" && data.payload && typeof data.payload === "object") {
+            const payload = data.payload as Record<string, unknown>;
+            const entry = payload.entry as TaskRunSummary | undefined;
+            const detail = payload.detail as TaskRunDetail | undefined;
+            if (entry && typeof entry.id === "number") {
+              setTaskRuns((current) => mergeTaskRuns(current, [entry]));
+              if (detail && typeof detail.id === "number") {
+                setLiveTaskRunDetailsById((current) => ({ ...current, [detail.id]: detail }));
               }
             }
             return;
@@ -2931,6 +2981,31 @@ function App() {
               pushEvent(`${activeAgentName} finished ${toolName}`, failed ? "error" : "success");
             }
             break;
+          case "approval_pending": {
+            streamCompleted = true;
+            const finalAgentName =
+              typeof data.agent_name === "string" && data.agent_name
+                ? data.agent_name
+                : activeAgentName;
+            const pendingTool =
+              typeof data.tool === "string" && data.tool ? data.tool : "tool";
+            commitOptimisticMessages((current) =>
+              updateMessage(current, readAssistantMessageId(), (message) =>
+                finalizeStreamingTrace(
+                  {
+                    ...message,
+                    agent_name: finalAgentName,
+                    isStreaming: false,
+                  },
+                  "done",
+                  "Waiting for approval",
+                  `${pendingTool} is waiting for approval.`,
+                ),
+              ),
+            );
+            pushEvent(`${finalAgentName} is waiting for approval on ${pendingTool}`, "warning");
+            break;
+          }
           case "done": {
             streamCompleted = true;
             const savedMessageId = typeof data.message_id === "number" ? data.message_id : null;
@@ -3373,16 +3448,14 @@ function App() {
     pushEvent("Opened GitHub import flow", "info");
   }
 
-  async function handleSaveGlobal(payload: {
-    provider: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string }> };
-    default_model: string;
-  }) {
+  async function handleSaveGlobal(payload: GlobalConfigPayload) {
     try {
       setSavingConfig(true);
       setError("");
       await api.saveGlobalConfig(payload);
-      const refreshed = await api.getConfig();
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
       setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
       setNotice("Global config saved.");
       pushEvent("Global config saved", "success");
       window.setTimeout(() => setNotice(""), 3000);
@@ -3398,8 +3471,9 @@ function App() {
       setSavingConfig(true);
       setError("");
       await api.saveOrchestrationConfig(payload);
-      const refreshed = await api.getConfig();
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
       setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
       setNotice("Orchestration config saved.");
       pushEvent("Orchestration config saved", "success");
       window.setTimeout(() => setNotice(""), 3000);
@@ -3410,32 +3484,35 @@ function App() {
     }
   }
 
+  async function handleSavePermissions(payload: PermissionsConfigPayload) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.savePermissionsConfig(payload);
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
+      setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
+      setNotice("Permissions config saved.");
+      pushEvent("Permissions config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save permissions config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveAgent(
     agentName: string,
-    payload: {
-      provider?: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string }> };
-      default_model?: string;
-      role?: {
-        title?: string;
-        responsibilities?: string[];
-        rules?: string[];
-      };
-      soul?: {
-        identity?: string;
-        values?: string[];
-        style?: string;
-        quirks?: string;
-      };
-      tools?: string[];
-      skills?: string[];
-    },
+    payload: AgentConfigPayload,
   ) {
     try {
       setSavingConfig(true);
       setError("");
       await api.saveAgentConfig(agentName, payload);
-      const refreshed = await api.getConfig();
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
       setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
       setNotice(`${agentName} config saved.`);
       pushEvent(`${agentName} config saved`, "success");
       window.setTimeout(() => setNotice(""), 3000);
@@ -3451,13 +3528,31 @@ function App() {
       setSavingConfig(true);
       setError("");
       await api.reloadConfig();
-      const refreshed = await api.getConfig();
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
       setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
       setNotice("Config reloaded.");
       pushEvent("Configuration reloaded", "success");
       window.setTimeout(() => setNotice(""), 3000);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to reload config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
+  async function handleRevokeAuthorizationRule(ruleId: number) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.revokeToolAuthorizationRule(ruleId);
+      const refreshedRules = await api.getToolAuthorizationRules();
+      setAuthorizationRules(refreshedRules);
+      setNotice("Authorization rule revoked.");
+      pushEvent("Authorization rule revoked", "warning");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to revoke authorization rule");
     } finally {
       setSavingConfig(false);
     }
@@ -3645,6 +3740,7 @@ function App() {
             connectionState={connectionState}
             cards={chatCards}
             taskRuns={taskRuns}
+            liveTaskRunDetailsById={liveTaskRunDetailsById}
             events={chatEvents}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}
@@ -3692,6 +3788,9 @@ function App() {
             onBackToChat={() => setActiveTab("chat")}
             onSaveGlobal={handleSaveGlobal}
             onSaveOrchestration={handleSaveOrchestration}
+            onSavePermissions={handleSavePermissions}
+            authorizationRules={authorizationRules}
+            onRevokeAuthorizationRule={handleRevokeAuthorizationRule}
             onSaveAgent={handleSaveAgent}
             onReload={handleReloadConfig}
             onTestAgentConfig={handleTestAgentConfig}

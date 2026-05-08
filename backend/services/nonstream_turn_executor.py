@@ -16,8 +16,16 @@ class NonStreamTurnFrame:
     response: dict[str, Any] = field(default_factory=dict)
     content: str = ""
     normalized_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    executed_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: Any = None
     state: Any = None
+    blocked_tool_result: ToolResultRecord | None = None
+
+
+@dataclass(frozen=True)
+class NonStreamTurnLoopResult:
+    final_content: str = ""
+    awaiting_tool_approval: bool = False
 
 
 async def execute_non_stream_turn_loop(
@@ -34,7 +42,7 @@ async def execute_non_stream_turn_loop(
     on_llm_error: Callable[[NonStreamTurnFrame, Exception, TurnContextState], Awaitable[None] | None] | None = None,
     before_tool_call: Callable[[NonStreamTurnFrame, dict[str, Any], TurnContextState], Awaitable[None] | None] | None = None,
     on_tool_round: Callable[[NonStreamTurnFrame, list[ToolResultRecord], TurnContextState], Awaitable[None] | None] | None = None,
-) -> str:
+) -> NonStreamTurnLoopResult:
     final_content = ""
 
     for turn_index in range(max_turns):
@@ -65,30 +73,42 @@ async def execute_non_stream_turn_loop(
         if on_llm_response is not None:
             await _maybe_await(on_llm_response(frame, turn_state))
 
-        if frame.content:
-            final_content = frame.content
-
         if frame.normalized_tool_calls:
             tool_results: list[ToolResultRecord] = []
+            executed_tool_calls: list[dict[str, Any]] = []
+            blocked_tool_result: ToolResultRecord | None = None
             for tool_call in frame.normalized_tool_calls:
                 if before_tool_call is not None:
                     await _maybe_await(before_tool_call(frame, tool_call, turn_state))
-                tool_results.append(await execute_tool_call(frame, tool_call))
+                result = await execute_tool_call(frame, tool_call)
+                if getattr(result, "blocked", False):
+                    blocked_tool_result = result
+                    break
+                executed_tool_calls.append(tool_call)
+                tool_results.append(result)
 
-            turn_state.record_tool_round(
-                assistant_content=frame.content,
-                tool_calls=frame.normalized_tool_calls,
-                tool_results=tool_results,
-            )
-            if on_tool_round is not None:
+            frame.executed_tool_calls = executed_tool_calls
+            frame.blocked_tool_result = blocked_tool_result
+
+            if tool_results:
+                turn_state.record_tool_round(
+                    assistant_content=frame.content,
+                    tool_calls=executed_tool_calls,
+                    tool_results=tool_results,
+                )
+
+            if on_tool_round is not None and (tool_results or blocked_tool_result is not None):
                 await _maybe_await(on_tool_round(frame, tool_results, turn_state))
+            if blocked_tool_result is not None:
+                return NonStreamTurnLoopResult(awaiting_tool_approval=True)
             continue
 
         if not frame.content:
             break
+        final_content = frame.content
         break
 
-    return final_content
+    return NonStreamTurnLoopResult(final_content=final_content)
 
 
 async def _maybe_await(value: Any) -> Any:

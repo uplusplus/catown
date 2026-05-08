@@ -139,34 +139,42 @@ async def run_orchestration_agent_turn(
                 **tool_args,
                 **runtime.runtime_kwargs,
             )
-            result_str = str(tool_result) if tool_result else "(no output)"
-            tool_success = True
+            tool_success = bool(tool_result.get("success")) if isinstance(tool_result, dict) and tool_result.get("__catown_tool_result__") is True else True
         except Exception as te:
-            result_str = f"Error: {te}"
+            tool_result = f"Error: {te}"
             tool_success = False
         return build_tool_result_record(
             tool_call_id=tool_call.get("id"),
             tool_name=tool_name,
             arguments=tool_args_str,
-            result=result_str,
+            result=tool_result,
             success=tool_success,
         )
 
     async def _on_orchestration_tool_round(frame: Any, tool_results: list[Any], current_turn_state: TurnContextState):
+        blocked_tool_result = getattr(frame, "blocked_tool_result", None)
         record_runner_tool_round(
             db,
             task_run,
             agent_name=runtime.agent_label,
             turn=frame.turn_index + 1,
-            tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+            tool_names=[
+                tool_call["function"]["name"]
+                for tool_call in (
+                    (frame.executed_tool_calls or frame.normalized_tool_calls)
+                    + ([{"function": {"name": blocked_tool_result.tool_name}}] if blocked_tool_result is not None else [])
+                )
+            ],
             tool_results=tool_results,
+            blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
             summary=f"{runtime.agent_label} completed a tool round.",
+            assistant_content=frame.content,
         )
 
     async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
         raise_if_task_run_cancelled(db, task_run, context=f"agent turn {runtime.agent_label}")
 
-    response_content = await execute_non_stream_turn_loop(
+    loop_result = await execute_non_stream_turn_loop(
         llm_client=runtime.llm_client,
         tools=runtime.tool_schemas,
         turn_state=runtime.turn_state,
@@ -177,6 +185,9 @@ async def run_orchestration_agent_turn(
         before_tool_call=_check_cancel,
         on_tool_round=_on_orchestration_tool_round,
     )
+    if loop_result.awaiting_tool_approval:
+        return None, None
+    response_content = loop_result.final_content
 
     if not response_content:
         return None, None
@@ -272,14 +283,23 @@ async def iter_stream_orchestration_agent_turn_events(
         return await tool_registry.execute(tool_name, **tool_args, **runtime.runtime_kwargs)
 
     async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
+        blocked_tool_result = getattr(frame, "blocked_tool_result", None)
         record_runner_tool_round(
             db,
             task_run,
             agent_name=runtime.agent_label,
             turn=frame.turn_index,
-            tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
+            tool_names=[
+                tool_call["function"]["name"]
+                for tool_call in (
+                    normalized_tool_calls
+                    + ([{"function": {"name": blocked_tool_result.tool_name}}] if blocked_tool_result is not None else [])
+                )
+            ],
             tool_results=tool_results,
+            blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
             summary=f"{runtime.agent_label} completed a streaming tool round.",
+            assistant_content=frame.llm_content,
         )
 
     async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:

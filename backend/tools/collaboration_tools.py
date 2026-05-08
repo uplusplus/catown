@@ -11,8 +11,12 @@ Tools that enable agents to collaborate with each other:
 from .base import BaseTool
 from typing import Optional, Dict, Any, List
 import json
+import asyncio
 
 from agents.identity import agent_name_of, normalize_agent_type
+from chatrooms.manager import chatroom_manager
+from services.chat_publish import publish_saved_chat_message
+from services.stream_runtime_persistence import store_runtime_card
 
 
 class DelegateTaskTool(BaseTool):
@@ -122,8 +126,138 @@ class DelegateTaskTool(BaseTool):
             
             # Route message
             await self.coordinator.route_message(message)
+
+            delegated_turn_id = f"delegate-{task.id}"
+            task_metadata = {
+                "task_id": task.id,
+                "task_title": task_title,
+                "task_description": task_description,
+                "context": context,
+                "delegator": current_agent_name,
+                "target_agent_name": target_agent_type,
+            }
+            await self._publish_delegate_task_card(
+                chatroom_id=chatroom_id,
+                from_agent=current_agent_name,
+                to_agent=target_agent_type,
+                content=self._delegate_task_card_content(task_title, task_description, context, task.id),
+                client_turn_id=delegated_turn_id,
+            )
+            asyncio.create_task(
+                self._run_delegated_task_in_chat(
+                    task=task,
+                    target_agent_type=target_agent_type,
+                    task_description=task_description,
+                    context=context,
+                    current_agent_name=current_agent_name,
+                    client_turn_id=delegated_turn_id,
+                    task_metadata=task_metadata,
+                )
+            )
         
         return f"[Delegate Task] Task '{task_title}' delegated to {target_agent_type}. Task ID: {task.id}"
+
+    async def _publish_delegate_task_card(
+        self,
+        *,
+        chatroom_id: int,
+        from_agent: str,
+        to_agent: str,
+        content: str,
+        client_turn_id: str,
+    ) -> None:
+        try:
+            await store_runtime_card(
+                chatroom_id,
+                {
+                    "type": "agent_message",
+                    "source": "chatroom",
+                    "from_agent": from_agent,
+                    "to_agent": to_agent,
+                    "content": content,
+                    "client_turn_id": client_turn_id,
+                },
+            )
+        except Exception:
+            # Delegated execution should still proceed even if the trace card fails.
+            pass
+
+    async def _run_delegated_task_in_chat(
+        self,
+        *,
+        task,
+        target_agent_type: str,
+        task_description: str,
+        context: str,
+        current_agent_name: str,
+        client_turn_id: str,
+        task_metadata: Dict[str, Any],
+    ) -> None:
+        from agents.collaboration import TaskStatus
+        from models.database import SessionLocal
+        from routes.api import trigger_agent_response
+
+        db = SessionLocal()
+        try:
+            task.status = TaskStatus.IN_PROGRESS
+            self.coordinator.task_registry[task.id] = task
+
+            instruction = (
+                f"@{target_agent_type} [Delegated task from {current_agent_name}] {task_description.strip()}\n\n"
+                f"Delegation context:\n{context.strip() or '(none)'}"
+            )
+            delegated_msg = await chatroom_manager.send_message(
+                chatroom_id=task.chatroom_id,
+                agent_id=task.created_by_agent_id if getattr(task, "created_by_agent_id", 0) and getattr(task, "created_by_agent_id", 0) > 0 else None,
+                content=instruction,
+                message_type="text",
+                metadata={
+                    "client_turn_id": client_turn_id,
+                    "delegated_task": task_metadata,
+                },
+                agent_name=current_agent_name,
+            )
+            await publish_saved_chat_message(
+                db,
+                task.chatroom_id,
+                message_id=delegated_msg.id,
+                content=delegated_msg.content,
+                agent_name=delegated_msg.agent_name,
+                message_type=delegated_msg.message_type,
+                created_at=delegated_msg.created_at,
+                metadata={
+                    "client_turn_id": client_turn_id,
+                    "delegated_task": task_metadata,
+                },
+            )
+
+            await trigger_agent_response(
+                task.chatroom_id,
+                instruction,
+                client_turn_id=client_turn_id,
+                extra_context=f"Delegated by {current_agent_name}. {context}".strip(),
+            )
+            task.status = TaskStatus.COMPLETED
+            task.result = "Completed in chat window. See delegated turn output."
+        except Exception as exc:
+            task.status = TaskStatus.FAILED
+            task.result = f"Delegated execution failed: {exc}"
+        finally:
+            task.completed_at = getattr(task, "completed_at", None) if task.status != "completed" else task.completed_at
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED} and task.completed_at is None:
+                from datetime import datetime
+
+                task.completed_at = datetime.now()
+            self.coordinator.task_registry[task.id] = task
+            db.close()
+
+    @staticmethod
+    def _delegate_task_card_content(task_title: str, task_description: str, context: str, task_id: str) -> str:
+        parts = [f"**Task: {task_title}**", task_description.strip()]
+        if context.strip():
+            parts.append(f"Context: {context.strip()}")
+        parts.append(f"Task ID: {task_id}")
+        return "\n\n".join(parts)
     
     def _get_parameters_schema(self) -> dict:
         return {

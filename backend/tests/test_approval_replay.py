@@ -29,6 +29,7 @@ from services.approval_replay import (
     load_approval_queue_request_payload,
     parse_replay_arguments,
     replay_result_is_actionable,
+    resolve_replay_tool_call_id,
     replay_tool_call_id,
     resolve_pipeline_replay_run_id,
     resolve_pipeline_replay_stage_id,
@@ -50,9 +51,11 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
     assert blocked_tool_queue_kind("sandbox") == "escalation"
     assert blocked_tool_queue_title("delete_file", queue_kind="approval") == "Approval needed for delete_file"
     assert blocked_tool_queue_title("delete_file", queue_kind="escalation") == "Escalation needed for delete_file"
+    assert blocked_tool_queue_title("run_shell", queue_kind="approval", blocked_kind="timeout") == "Continue waiting for run_shell"
     assert blocked_tool_resume_supported(blocked_kind="approval", blocked_reason="delete_file requires approval") is True
     assert blocked_tool_resume_supported(blocked_kind="sandbox", blocked_reason="sandbox blocked") is False
     assert blocked_tool_resume_supported(blocked_kind="approval", blocked_reason="unauthorized tool") is False
+    assert blocked_tool_resume_supported(blocked_kind="timeout", blocked_reason="timed out") is True
 
     request_key = build_blocked_tool_request_key(
         task_run_id=7,
@@ -275,11 +278,11 @@ def test_replay_request_helpers_normalize_payload_and_cursor_fields():
     assert resolve_pipeline_replay_run_id(item, payload) == 9
     assert resolve_pipeline_replay_stage_id(item, payload) == 10
     assert approval_queue_item_has_pipeline_cursor(item, payload) is True
-    assert approval_queue_resume_strategy(item, payload) == "resume_pipeline_stage_after_replay"
+    assert approval_queue_resume_strategy(item, payload) == "resume_pipeline_stage"
 
     chat_item = SimpleNamespace(id=78, target_name="read_file", pipeline_run_id=None, pipeline_stage_id=None)
     assert approval_queue_item_has_pipeline_cursor(chat_item, {}) is False
-    assert approval_queue_resume_strategy(chat_item, {}) == "replay_tool_then_continue_turn"
+    assert approval_queue_resume_strategy(chat_item, {}) == "resume_original_tool_call"
 
 
 def test_pending_approval_continuation_cursor_uses_request_and_pipeline_cursor():
@@ -301,7 +304,7 @@ def test_pending_approval_continuation_cursor_uses_request_and_pipeline_cursor()
 
     assert cursor == {
         "next_action": "await_approval",
-        "resume_strategy": "resume_pipeline_stage_after_replay",
+        "resume_strategy": "resume_pipeline_stage",
         "source_event_type": "tool_call_blocked",
         "source_event_at": "2026-04-27T12:00:00",
         "turn": 3,
@@ -367,6 +370,28 @@ def test_replay_tool_result_record_uses_queue_item_call_id():
     assert result.arguments == '{"path": "README.md"}'
     assert result.result == "content"
     assert result.success is True
+
+
+def test_replay_tool_result_record_prefers_original_tool_call_id():
+    item = SimpleNamespace(id=77, target_name="read_file")
+
+    result = build_replay_tool_result_record(
+        item,
+        tool_name="read_file",
+        arguments='{"path": "README.md"}',
+        result="content",
+        success=True,
+        request_payload={"tool_call_id": "call_original_1"},
+    )
+
+    assert result.tool_call_id == "call_original_1"
+
+
+def test_resolve_replay_tool_call_id_falls_back_to_queue_replay_id():
+    item = SimpleNamespace(id=77, target_name="read_file")
+
+    assert resolve_replay_tool_call_id(item, {"tool_call_id": "call_original_1"}) == "call_original_1"
+    assert resolve_replay_tool_call_id(item, {}) == "queue-replay-77"
 
 
 def test_parse_replay_arguments_requires_json_object():

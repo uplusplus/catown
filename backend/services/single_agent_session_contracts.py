@@ -15,6 +15,7 @@ class UnifiedSingleAgentSessionOutcome:
     chunk: str | None = None
     payload: dict[str, Any] | None = None
     error_text: str | None = None
+    awaiting_tool_approval: bool = False
 
 
 @dataclass(frozen=True)

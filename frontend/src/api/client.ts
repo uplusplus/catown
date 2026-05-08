@@ -11,11 +11,13 @@ import type {
   MonitorApprovalQueueResponse,
   ApprovalQueueItem,
   MonitorRuntimeDetail,
+  MonitorTaskRunStepsResponse,
   MonitorTaskRunsResponse,
   MessageItem,
   MonitorOverview,
   MonitorUsageResponse,
   OrchestrationConfigPayload,
+  PermissionsConfigPayload,
   ProjectCreatePayload,
   ProjectFromChatPayload,
   ProjectSyncResponse,
@@ -25,6 +27,7 @@ import type {
   TaskRunDetail,
   TaskRunResumeResponse,
   TaskRunSummary,
+  ToolAuthorizationRule,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
 import { DEFAULT_AGENT_TYPE } from "../utils/agents";
@@ -177,6 +180,23 @@ export const api = {
   getTaskRunDetail(taskRunId: number) {
     return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
   },
+  getApprovalQueue(params?: {
+    status?: string;
+    queue_kind?: string;
+    chatroom_id?: number;
+    project_id?: number;
+    task_run_id?: number;
+    limit?: number;
+  }) {
+    const search = new URLSearchParams();
+    if (params?.status?.trim()) search.set("status", params.status.trim());
+    if (params?.queue_kind?.trim()) search.set("queue_kind", params.queue_kind.trim());
+    if (typeof params?.chatroom_id === "number") search.set("chatroom_id", String(params.chatroom_id));
+    if (typeof params?.project_id === "number") search.set("project_id", String(params.project_id));
+    if (typeof params?.task_run_id === "number") search.set("task_run_id", String(params.task_run_id));
+    search.set("limit", String(params?.limit ?? 50));
+    return request<ApprovalQueueItem[]>(`/api/approval-queue?${search.toString()}`);
+  },
   resumeTaskRun(taskRunId: number) {
     return request<TaskRunResumeResponse>(`/api/task-runs/${taskRunId}/resume`, {
       method: "POST",
@@ -199,6 +219,25 @@ export const api = {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/reject`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
+    });
+  },
+  getToolAuthorizationRules(params?: {
+    project_id?: number;
+    chatroom_id?: number;
+    tool_name?: string;
+    include_revoked?: boolean;
+  }) {
+    const search = new URLSearchParams();
+    if (typeof params?.project_id === "number") search.set("project_id", String(params.project_id));
+    if (typeof params?.chatroom_id === "number") search.set("chatroom_id", String(params.chatroom_id));
+    if (params?.tool_name?.trim()) search.set("tool_name", params.tool_name.trim());
+    if (params?.include_revoked) search.set("include_revoked", "true");
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<ToolAuthorizationRule[]>(`/api/tool-authorization-rules${suffix}`);
+  },
+  revokeToolAuthorizationRule(ruleId: number) {
+    return request<{ message: string; rule: ToolAuthorizationRule }>(`/api/tool-authorization-rules/${ruleId}`, {
+      method: "DELETE",
     });
   },
   sendMessage(chatroomId: number, content: string, clientTurnId?: string) {
@@ -263,6 +302,9 @@ export const api = {
     });
     return request<MonitorTaskRunsResponse>(`/api/monitor/task-runs?${params.toString()}`);
   },
+  getMonitorTaskRunSteps(taskRunId: number) {
+    return request<MonitorTaskRunStepsResponse>(`/api/monitor/task-runs/${taskRunId}/steps`);
+  },
   getMonitorUsage(range = "24h") {
     return request<MonitorUsageResponse>(`/api/monitor/usage?range=${encodeURIComponent(range)}`);
   },
@@ -274,6 +316,12 @@ export const api = {
   },
   saveOrchestrationConfig(payload: OrchestrationConfigPayload) {
     return request<{ message: string }>("/api/config/orchestration", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  savePermissionsConfig(payload: PermissionsConfigPayload) {
+    return request<{ message: string }>("/api/config/permissions", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

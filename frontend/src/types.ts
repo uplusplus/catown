@@ -1,5 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "memory";
+export type ConfigSection = "agents" | "skills" | "memory" | "permissions";
 
 export type AgentSoul = {
   identity?: string;
@@ -246,6 +246,27 @@ export type ApprovalQueueItem = {
   resolved_at?: string | null;
 };
 
+export type ToolAuthorizationRule = {
+  id: number;
+  project_id?: number | null;
+  chatroom_id?: number | null;
+  agent_name?: string | null;
+  tool_name: string;
+  scope: string;
+  matcher_type: string;
+  matcher_value?: string | null;
+  decision_kind: string;
+  preference_key?: string | null;
+  preference_kind?: string | null;
+  preference_value?: string | null;
+  constraints?: Record<string, unknown>;
+  command_preview?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type MonitorApprovalQueueEntry = ApprovalQueueItem & {
   chat_title?: string | null;
   project_name?: string | null;
@@ -403,6 +424,10 @@ export type ChatCardItem = {
   tool?: string;
   arguments?: string;
   success?: boolean;
+  status?: string;
+  blocked?: boolean;
+  blocked_kind?: string | null;
+  blocked_reason?: string | null;
   result?: string;
   error?: string;
   tool_call_index?: number;
@@ -423,7 +448,7 @@ export type ConfigAgentDefinition = {
   provider?: {
     baseUrl?: string;
     apiKey?: string;
-    models?: Array<{ id: string; name?: string }>;
+    models?: Array<{ id: string; name?: string; contextWindow?: number }>;
   };
   default_model?: string;
   role?: {
@@ -440,16 +465,21 @@ export type ConfigOrchestrationDefinition = {
   sidecar_agent_types?: string[];
 };
 
+export type ConfigPermissionsDefinition = {
+  allow_read_only_tools_without_approval?: boolean;
+};
+
 export type ConfigResponse = {
   global_llm?: {
     provider?: {
       baseUrl?: string;
       apiKey?: string;
-      models?: Array<{ id: string; name?: string }>;
+      models?: Array<{ id: string; name?: string; contextWindow?: number }>;
     };
     default_model?: string;
   };
   orchestration?: ConfigOrchestrationDefinition;
+  permissions?: ConfigPermissionsDefinition;
   agents?: Record<string, ConfigAgentDefinition>;
   agent_llm_configs?: Record<
     string,
@@ -530,7 +560,7 @@ export type GlobalConfigPayload = {
   provider: {
     baseUrl: string;
     apiKey: string;
-    models: Array<{ id: string; name: string }>;
+    models: Array<{ id: string; name: string; contextWindow?: number }>;
   };
   default_model: string;
 };
@@ -539,7 +569,7 @@ export type AgentConfigPayload = {
   provider?: {
     baseUrl: string;
     apiKey: string;
-    models: Array<{ id: string; name: string }>;
+    models: Array<{ id: string; name: string; contextWindow?: number }>;
   };
   default_model?: string;
   role?: {
@@ -554,6 +584,10 @@ export type AgentConfigPayload = {
 
 export type OrchestrationConfigPayload = {
   sidecar_agent_types: string[];
+};
+
+export type PermissionsConfigPayload = {
+  allow_read_only_tools_without_approval: boolean;
 };
 
 export type MonitorToolSummary = {
@@ -635,6 +669,57 @@ export type MonitorTaskRunsResponse = {
   captured_at: string;
   range: "1h" | "6h" | "24h" | "7d" | "30d";
   entries: MonitorTaskRunSummary[];
+};
+
+export type MonitorTaskRunStep = {
+  id: string;
+  sequence: number;
+  source: string;
+  step_kind: "llm" | "tool" | "event";
+  title: string;
+  preview?: string | null;
+  created_at?: string | null;
+  agent_name?: string | null;
+  turn?: number | null;
+  model?: string | null;
+  tool_name?: string | null;
+  success?: boolean | null;
+  status?: string | null;
+  blocked?: boolean | null;
+  blocked_kind?: string | null;
+  duration_ms?: number | null;
+  tokens_in?: number;
+  tokens_out?: number;
+  event_type?: string | null;
+  message_id?: number | null;
+  pipeline_run_id?: number | null;
+  pipeline_stage_id?: number | null;
+  arguments?: string | null;
+  result?: string | null;
+  prompt_preview?: string | null;
+  response_preview?: string | null;
+  planned_tools?: string[];
+  payload?: Record<string, unknown> | null;
+};
+
+export type MonitorTaskRunStepsResponse = {
+  task_run_id: number;
+  chatroom_id: number;
+  project_id?: number | null;
+  client_turn_id?: string | null;
+  captured_at: string;
+  counts: {
+    total: number;
+    llm: number;
+    tool: number;
+    event: number;
+    tool_errors: number;
+    tool_blocked: number;
+    tokens_in: number;
+    tokens_out: number;
+  };
+  runtime_message_ids: number[];
+  steps: MonitorTaskRunStep[];
 };
 
 export type MonitorUsageBucket = {

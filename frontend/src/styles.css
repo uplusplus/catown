@@ -4469,6 +4469,11 @@ a {
   background: color-mix(in srgb, var(--accent-subtle) 70%, var(--bg-elevated) 30%);
 }
 
+.task-run-card.has-pending-approval {
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--border) 66%);
+  background: color-mix(in srgb, var(--warn) 7%, var(--bg-elevated) 93%);
+}
+
 .task-run-card__meta,
 .task-run-card__footer,
 .task-run-detail__meta,
@@ -4518,6 +4523,19 @@ a {
   white-space: nowrap;
 }
 
+.task-run-card__approval-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warn) 24%, transparent);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .task-run-card__status {
   display: inline-flex;
   align-items: center;
@@ -4546,6 +4564,11 @@ a {
 .task-run-card__status--info {
   border-color: color-mix(in srgb, var(--accent) 24%, transparent);
   color: var(--accent);
+}
+
+.task-run-card__status--warning {
+  border-color: color-mix(in srgb, var(--warn) 24%, transparent);
+  color: var(--warn);
 }
 
 .task-run-card__status--neutral {
@@ -4585,6 +4608,110 @@ a {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.task-run-approval-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-run-approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-run-approval-card {
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-run-approval-card--success {
+  border-color: color-mix(in srgb, var(--ok) 24%, transparent);
+}
+
+.task-run-approval-card--warning {
+  border-color: color-mix(in srgb, var(--warn) 24%, transparent);
+}
+
+.task-run-approval-card--error {
+  border-color: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+.task-run-approval-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-run-approval-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-tool-card--task-run {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border) 80%);
+}
+
+.chat-tool-card--task-run.has-pending-approval {
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--border) 66%);
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg-elevated) 94%);
+}
+
+.task-run-inline-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-run-inline-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 78%, var(--card) 22%);
+}
+
+.task-run-inline-status strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.task-run-inline-status span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.task-run-inline-status--warning {
+  border-color: color-mix(in srgb, var(--warn) 28%, transparent);
+}
+
+.task-run-inline-status--success {
+  border-color: color-mix(in srgb, var(--ok) 24%, transparent);
+}
+
+.task-run-inline-status--error {
+  border-color: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+.task-run-inline-status--info {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.task-run-inline-approval {
+  border-top: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+  padding-top: 8px;
 }
 
 .task-run-event {

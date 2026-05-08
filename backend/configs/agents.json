@@ -6,7 +6,8 @@
       "models": [
         {
           "id": "gpt-5.4-mini",
-          "name": "gpt-5.4-mini"
+          "name": "gpt-5.4-mini",
+          "contextWindow": 400000
         }
       ]
     },
@@ -80,7 +81,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }
@@ -149,7 +151,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }
@@ -221,7 +224,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }
@@ -288,7 +292,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }
@@ -356,7 +361,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }
@@ -426,7 +432,8 @@
         "models": [
           {
             "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini"
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
           }
         ]
       }

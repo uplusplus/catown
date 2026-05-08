@@ -371,7 +371,9 @@ class TestConfigAPIEndpoints:
         modules_to_clear = [
             'main', 'config', 'models.database', 'agents.registry',
             'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
-            'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline'
+            'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
+            'services.approval_queue', 'services.approval_replay', 'services.monitor_projection',
+            'services.tool_execution_preferences',
         ]
         for mod_name in modules_to_clear:
             if mod_name in sys.modules:

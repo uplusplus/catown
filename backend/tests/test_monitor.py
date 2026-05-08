@@ -36,6 +36,10 @@ def _make_app(tmp_path):
         "routes.websocket",
         "pipeline.engine",
         "routes.pipeline",
+        "services.approval_queue",
+        "services.approval_replay",
+        "services.monitor_projection",
+        "services.tool_execution_preferences",
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:
@@ -798,13 +802,13 @@ class TestMonitorOverview:
         entry = next(item for item in data["entries"] if item["id"] == task_run_id)
         cursor = entry["checkpoint_snapshot"]["continuation_cursor"]
         assert cursor["next_action"] == "await_approval"
-        assert cursor["resume_strategy"] == "replay_tool_then_continue_turn"
+        assert cursor["resume_strategy"] == "resume_original_tool_call"
         assert cursor["tool_name"] == "delete_file"
         assert cursor["turn"] == 3
         assert entry["continuation_cursor"]["next_action"] == "await_approval"
-        assert entry["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"
+        assert entry["continuation_cursor_summary"] == "await approval · via resume_original_tool_call · tool delete_file · turn 3"
         assert entry["continuation_state"]["consumed"] is True
-        assert entry["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
+        assert entry["continuation_state_summary"] == "await approval · via resume_original_tool_call · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
         assert entry["latest_scheduler_runtime"]["completed_step_count"] == 1
         assert entry["latest_scheduler_runtime"]["ready_step_count"] == 2
         assert entry["scheduler_runtime_summary"] == "1 completed · 2 ready · 1 running · 0 waiting · 4 total"
@@ -814,8 +818,8 @@ class TestMonitorOverview:
         assert continuation_state["protocol_tail_message_count"] == 4
         assert continuation_state["prior_round_summary_count"] == 1
         assert "protocol_tail" in continuation_state["consumed_layers"]
-        assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] == "await approval · via replay_tool_then_continue_turn · tool delete_file · turn 3"
-        assert entry["checkpoint_snapshot"]["continuation_state_summary"] == "await approval · via replay_tool_then_continue_turn · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
+        assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] == "await approval · via resume_original_tool_call · tool delete_file · turn 3"
+        assert entry["checkpoint_snapshot"]["continuation_state_summary"] == "await approval · via resume_original_tool_call · 4 tail messages · 1 prior summaries · protocol_tail, prior_round_summaries"
         turn_local_state = entry["checkpoint_snapshot"]["turn_local_state"]
         assert turn_local_state["turn"] == 3
         assert turn_local_state["tool_names"] == ["delete_file"]
@@ -824,6 +828,152 @@ class TestMonitorOverview:
         assert len(turn_local_state["protocol_tail_messages"]) == 4
         assert len(turn_local_state["prior_round_summaries"]) == 1
         assert turn_local_state["prior_round_summaries"][0]["tool_names"] == ["list_files"]
+
+    def test_monitor_task_run_steps_merges_runtime_cards_and_events(self, client):
+        from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Task Steps Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Task Steps Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                client_turn_id="turn-task-steps",
+                run_kind="project_single_agent",
+                status="completed",
+                title="Inspect runtime steps",
+                user_request="Inspect runtime steps",
+                initiator="user",
+                target_agent_name="Analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                Message(
+                    chatroom_id=chatroom.id,
+                    agent_id=None,
+                    content="llm_call",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "turn-task-steps",
+                            "card": {
+                                "type": "llm_call",
+                                "agent": "Analyst",
+                                "model": "gpt-4.1-mini",
+                                "turn": 1,
+                                "tokens_in": 111,
+                                "tokens_out": 37,
+                                "duration_ms": 620,
+                                "prompt_messages": json.dumps(
+                                    [{"role": "user", "content": "Inspect runtime steps"}],
+                                    ensure_ascii=False,
+                                ),
+                                "response": "Need to inspect README first.",
+                                "tool_calls": [
+                                    {
+                                        "id": "tool-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": "{\"file_path\": \"README.md\"}",
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                Message(
+                    chatroom_id=chatroom.id,
+                    agent_id=None,
+                    content="tool_call",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "turn-task-steps",
+                            "card": {
+                                "type": "tool_call",
+                                "agent": "Analyst",
+                                "tool": "read_file",
+                                "arguments": "{\"file_path\": \"README.md\"}",
+                                "success": True,
+                                "status": "succeeded",
+                                "result": "README contents",
+                                "duration_ms": 91,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add_all(
+                [
+                    TaskRunEvent(
+                        task_run_id=task_run.id,
+                        event_index=1,
+                        event_type="agent_turn_started",
+                        agent_name="Analyst",
+                        summary="Analyst started.",
+                        payload_json=json.dumps({"client_turn_id": "turn-task-steps"}, ensure_ascii=False),
+                    ),
+                    TaskRunEvent(
+                        task_run_id=task_run.id,
+                        event_index=2,
+                        event_type="agent_turn_completed",
+                        agent_name="Analyst",
+                        summary="Analyst completed.",
+                        payload_json=json.dumps({"response_preview": "Finished inspection."}, ensure_ascii=False),
+                    ),
+                ]
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        response = client.get(f"/api/monitor/task-runs/{task_run_id}/steps")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["task_run_id"] == task_run_id
+        assert data["counts"]["llm"] >= 1
+        assert data["counts"]["tool"] >= 1
+        assert data["counts"]["event"] >= 1
+        assert data["counts"]["tokens_in"] >= 111
+        assert data["counts"]["tokens_out"] >= 37
+
+        llm_step = next(item for item in data["steps"] if item["step_kind"] == "llm")
+        assert llm_step["agent_name"] == "Analyst"
+        assert llm_step["model"] == "gpt-4.1-mini"
+        assert llm_step["planned_tools"] == ["read_file"]
+        assert "Inspect runtime steps" in (llm_step["prompt_preview"] or "")
+
+        tool_step = next(item for item in data["steps"] if item["step_kind"] == "tool")
+        assert tool_step["tool_name"] == "read_file"
+        assert tool_step["success"] is True
+        assert "README.md" in (tool_step["arguments"] or "")
+
+        event_step = next(item for item in data["steps"] if item["step_kind"] == "event")
+        assert event_step["event_type"] == "agent_turn_started"
 
     def test_monitor_checkpoint_snapshot_scopes_turn_state_to_latest_turn(self, client):
         from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent

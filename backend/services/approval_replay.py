@@ -14,14 +14,18 @@ def blocked_tool_queue_kind(blocked_kind: Any) -> str:
     return "escalation" if str(blocked_kind or "").strip().lower() == "sandbox" else "approval"
 
 
-def blocked_tool_queue_title(tool_name: Any, *, queue_kind: str) -> str:
+def blocked_tool_queue_title(tool_name: Any, *, queue_kind: str, blocked_kind: Any = None) -> str:
     normalized_tool_name = str(tool_name or "tool").strip() or "tool"
+    if str(blocked_kind or "").strip().lower() == "timeout":
+        return f"Continue waiting for {normalized_tool_name}"
     if queue_kind == "escalation":
         return f"Escalation needed for {normalized_tool_name}"
     return f"Approval needed for {normalized_tool_name}"
 
 
 def blocked_tool_resume_supported(*, blocked_kind: Any, blocked_reason: Any) -> bool:
+    if str(blocked_kind or "").strip().lower() == "timeout":
+        return True
     if str(blocked_kind or "").strip().lower() != "approval":
         return False
     reason = str(blocked_reason or "").strip().lower()
@@ -58,7 +62,7 @@ def build_blocked_tool_request_payload(
     runtime_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     runtime_payload = runtime_payload if isinstance(runtime_payload, dict) else {}
-    return {
+    payload = {
         "turn": int(turn),
         "tool_name": blocked_tool.get("tool_name"),
         "arguments": blocked_tool.get("arguments"),
@@ -76,6 +80,10 @@ def build_blocked_tool_request_payload(
         "stage_name": runtime_payload.get("stage_name"),
         "display_name": runtime_payload.get("display_name"),
     }
+    tool_call_id = blocked_tool.get("tool_call_id")
+    if tool_call_id is not None:
+        payload["tool_call_id"] = tool_call_id
+    return payload
 
 
 def build_blocked_tool_action_request(
@@ -248,6 +256,14 @@ def replay_tool_call_id(item: Any, tool_name: Any = None) -> str:
     return f"queue-replay-{getattr(item, 'id', fallback or 'tool')}"
 
 
+def resolve_replay_tool_call_id(item: Any, request_payload: Dict[str, Any] | None = None, tool_name: Any = None) -> str:
+    request_payload = request_payload if isinstance(request_payload, dict) else {}
+    original_tool_call_id = str(request_payload.get("tool_call_id") or "").strip()
+    if original_tool_call_id:
+        return original_tool_call_id
+    return replay_tool_call_id(item, tool_name)
+
+
 def build_replay_tool_result_record(
     item: Any,
     *,
@@ -255,9 +271,10 @@ def build_replay_tool_result_record(
     arguments: Any,
     result: Any,
     success: bool,
+    request_payload: Dict[str, Any] | None = None,
 ) -> Any:
     return build_tool_result_record(
-        tool_call_id=replay_tool_call_id(item, tool_name),
+        tool_call_id=resolve_replay_tool_call_id(item, request_payload, tool_name),
         tool_name=str(tool_name or getattr(item, "target_name", None) or "tool"),
         arguments=arguments,
         result=result,
@@ -298,8 +315,8 @@ def approval_queue_item_has_pipeline_cursor(item: Any, request_payload: Dict[str
 
 def approval_queue_resume_strategy(item: Any, request_payload: Dict[str, Any] | None = None) -> str:
     if approval_queue_item_has_pipeline_cursor(item, request_payload):
-        return "resume_pipeline_stage_after_replay"
-    return "replay_tool_then_continue_turn"
+        return "resume_pipeline_stage"
+    return "resume_original_tool_call"
 
 
 def build_pending_approval_continuation_cursor(
@@ -461,7 +478,7 @@ def build_tool_replay_followup_context(item: Any, replay_result: Any, *, result_
     )
     result_preview = _compact_text(getattr(replay_result, "result", ""), limit=result_preview_limit)
     return (
-        "Approved tool replay completed.\n"
+        "Approved tool continuation completed.\n"
         f"- Tool: {tool_name}\n"
         f"- Status: {getattr(replay_result, 'status', 'unknown')}\n"
         f"- Result: {result_preview}\n"

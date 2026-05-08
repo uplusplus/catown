@@ -4,11 +4,20 @@ Tool Base Classes and Registry
 """
 import copy
 import inspect
+import json
+import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 from abc import ABC, abstractmethod
 
-from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
+from services.tool_governance import build_blocked_tool_result, build_structured_tool_result, classify_tool_result, tool_manual_approval_reason
+from services.tool_execution_preferences import (
+    AUTH_DECISION_ALLOW,
+    AUTH_DECISION_DENY,
+    authorization_matchers_for_tool,
+    resolve_authorization_rule,
+)
 
 
 class ToolSchema(BaseModel):
@@ -104,9 +113,11 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
     "run_shell": {
         "risk_level": "high",
         "approval": {
-            "kind": "manual",
-            "required": True,
-            "notes": ["Shell commands can mutate the workspace or external systems and must be explicitly approved."],
+            "kind": "conditional",
+            "required": False,
+            "notes": [
+                "Read-only shell inspection commands can run automatically. Commands that mutate the workspace, change git state, install packages, or touch external systems still require explicit approval.",
+            ],
         },
         "sandbox": {
             "mode": "workspace_shell",
@@ -271,6 +282,36 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
+def _load_permissions_override() -> Dict[str, Any]:
+    config_file = Path(os.getenv("CATOWN_CONFIG_DIR", str(Path.home() / ".catown" / "config"))) / "agents.json"
+    if not config_file.exists():
+        return {}
+    try:
+        with config_file.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        permissions = payload.get("permissions")
+        return permissions if isinstance(permissions, dict) else {}
+    except Exception:
+        return {}
+
+
+def _dynamic_policy_override(name: str) -> Dict[str, Any]:
+    permissions = _load_permissions_override()
+    allow_read_only = bool(permissions.get("allow_read_only_tools_without_approval", True))
+    if not allow_read_only:
+        return {}
+
+    if name in {"read_file", "list_files", "search_files", "list_directory", "retrieve_memory"}:
+        return {
+            "approval": {
+                "kind": "auto",
+                "required": False,
+                "notes": [],
+            }
+        }
+    return {}
+
+
 def build_tool_policy_payload(
     name: str,
     *,
@@ -278,6 +319,9 @@ def build_tool_policy_payload(
     override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     policy = _deep_merge(_DEFAULT_TOOL_POLICY_TEMPLATE, _DEFAULT_TOOL_POLICY_CATALOG.get(name, {}))
+    dynamic_override = _dynamic_policy_override(name)
+    if dynamic_override:
+        policy = _deep_merge(policy, dynamic_override)
     if override:
         policy = _deep_merge(policy, override)
     policy["name"] = str(name or "").strip()
@@ -443,11 +487,62 @@ class ToolRegistry:
         if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
         approval_granted = bool(kwargs.pop("__catown_approval_granted", False))
+        project_id = kwargs.get("project_id")
+        chatroom_id = kwargs.get("chatroom_id")
+        agent_name = kwargs.get("agent_name")
+
+        from models.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            authorization_rule = resolve_authorization_rule(
+                db,
+                tool_name=tool_name,
+                matcher_pairs=authorization_matchers_for_tool(tool_name, kwargs),
+                project_id=project_id if isinstance(project_id, int) else None,
+                chatroom_id=chatroom_id if isinstance(chatroom_id, int) else None,
+                agent_name=str(agent_name or "").strip() or None,
+                decision_kinds=[AUTH_DECISION_ALLOW, AUTH_DECISION_DENY],
+            )
+        finally:
+            db.close()
+
+        if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_DENY:
+            result_text = build_blocked_tool_result(
+                "approval_blocked",
+                tool_name,
+                f"Saved authorization rule denies this {tool_name} invocation.",
+            )
+            return build_structured_tool_result(
+                tool_name=tool_name,
+                result_text=result_text,
+                success=False,
+                status="approval_blocked",
+                blocked=True,
+                blocked_kind="approval",
+                blocked_reason=result_text,
+            )
+        if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_ALLOW:
+            approval_granted = True
+
         tool_policy = tool.get_policy_payload()
-        if tool_requires_manual_approval(tool_policy) and not approval_granted:
-            approval_notes = list((tool_policy.get("approval") or {}).get("notes") or [])
-            reason = approval_notes[0] if approval_notes else "This tool requires manual approval before execution."
-            return build_blocked_tool_result("approval_blocked", tool_name, reason)
+        approval_reason = tool_manual_approval_reason(
+            tool_policy,
+            tool_name=tool_name,
+            arguments=kwargs,
+        )
+        if approval_reason and not approval_granted:
+            reason = approval_reason
+            result_text = build_blocked_tool_result("approval_blocked", tool_name, reason)
+            return build_structured_tool_result(
+                tool_name=tool_name,
+                result_text=result_text,
+                success=False,
+                status="approval_blocked",
+                blocked=True,
+                blocked_kind="approval",
+                blocked_reason=result_text,
+            )
         execute_fn = tool.execute
         parameters = inspect.signature(execute_fn).parameters.values()
         if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
@@ -457,4 +552,16 @@ class ToolRegistry:
             filtered_kwargs = {
                 key: value for key, value in kwargs.items() if key in allowed_names
             }
-        return await execute_fn(**filtered_kwargs)
+        result = await execute_fn(**filtered_kwargs)
+        if isinstance(result, dict) and result.get("__catown_tool_result__") is True:
+            return result
+        classification = classify_tool_result(tool_name, result)
+        return build_structured_tool_result(
+            tool_name=tool_name,
+            result_text=result,
+            success=bool(classification.get("success")),
+            status=str(classification.get("status") or "succeeded"),
+            blocked=bool(classification.get("blocked")),
+            blocked_kind=classification.get("blocked_kind"),
+            blocked_reason=classification.get("blocked_reason"),
+        )

@@ -3,9 +3,13 @@ LLM 客户端扩展测试
 
 覆盖 chat / chat_with_tools / chat_stream / get_llm_client / set_llm_client
 """
+import gzip
+import httpx
+import os
 import pytest
 import sys
-import os
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -163,6 +167,126 @@ class TestLLMClientChatStream:
         assert done_events[0]["timings"]["first_content_ms"] >= 0
 
     @pytest.mark.asyncio
+    async def test_stream_requests_usage_and_emits_done_usage(self):
+        from llm.client import LLMClient
+
+        content_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="OK", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        usage_chunk = SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=4, total_tokens=16),
+        )
+
+        async def mock_stream():
+            yield content_chunk
+            yield usage_chunk
+
+        client = LLMClient()
+        mock_create = AsyncMock(return_value=mock_stream())
+        client.client.chat.completions.create = mock_create
+
+        events = []
+        async for event in client.chat_stream([{"role": "user", "content": "hi"}]):
+            events.append(event)
+
+        assert mock_create.call_args[1]["stream_options"] == {"include_usage": True}
+        done_event = next(event for event in events if event["type"] == "done")
+        assert done_event["usage"] == {
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "total_tokens": 16,
+        }
+        assert client._stream_usage_supported is True
+
+    @pytest.mark.asyncio
+    async def test_stream_retries_without_usage_when_provider_rejects_stream_options(self):
+        from llm.client import LLMClient
+
+        chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="fallback", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        create_calls = []
+
+        async def mock_stream():
+            yield chunk
+
+        async def mock_create_impl(**kwargs):
+            create_calls.append(dict(kwargs))
+            if kwargs.get("stream_options") == {"include_usage": True}:
+                raise Exception("400 unsupported parameter: stream_options.include_usage")
+            return mock_stream()
+
+        client = LLMClient()
+        client.client.chat.completions.create = AsyncMock(side_effect=mock_create_impl)
+
+        events = []
+        async for event in client.chat_stream([{"role": "user", "content": "hi"}]):
+            events.append(event)
+
+        assert len(create_calls) == 2
+        assert create_calls[0]["stream_options"] == {"include_usage": True}
+        assert "stream_options" not in create_calls[1]
+        assert client._stream_usage_supported is False
+        done_event = next(event for event in events if event["type"] == "done")
+        assert done_event["full_content"] == "fallback"
+
+        async for _ in client.chat_stream([{"role": "user", "content": "retry"}]):
+            pass
+
+        assert len(create_calls) == 3
+        assert "stream_options" not in create_calls[2]
+
+    @pytest.mark.asyncio
+    async def test_stream_reads_terminal_usage_chunk_after_finish_reason(self):
+        from llm.client import LLMClient
+
+        content_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="terminal", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        usage_chunk = SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=20, completion_tokens=7, total_tokens=27),
+        )
+
+        async def mock_stream():
+            yield content_chunk
+            yield usage_chunk
+
+        client = LLMClient()
+        client.client.chat.completions.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream([{"role": "user", "content": "hi"}]):
+            events.append(event)
+
+        done_event = next(event for event in events if event["type"] == "done")
+        assert done_event["full_content"] == "terminal"
+        assert done_event["usage"] == {
+            "prompt_tokens": 20,
+            "completion_tokens": 7,
+            "total_tokens": 27,
+        }
+
+    @pytest.mark.asyncio
     async def test_stream_with_tool_calls(self):
         from llm.client import LLMClient
 
@@ -249,6 +373,62 @@ class TestLLMClientChatStream:
 
         content = [e for e in events if e["type"] == "content"]
         assert len(content) == 1
+
+
+class TestLLMClientNetworkCapture:
+    @pytest.mark.asyncio
+    async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
+        from llm.client import LLMClient
+
+        payload = b'{"id":"resp_123","choices":[{"message":{"content":"ok"}}]}'
+        compressed = gzip.compress(payload)
+
+        class StaticStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield compressed
+
+            async def aclose(self) -> None:
+                return None
+
+        client = LLMClient(base_url="https://example.com/v1", api_key="test", model="test-model", agent_name="valet")
+        events = []
+        client._append_network_event = lambda event: events.append(event)
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        request.extensions["catown_raw_capture"] = {
+            "flow_id": "llm-http-test",
+            "flow_kind": "llm_http",
+            "flow_seq": 1,
+            "started_at": time.perf_counter(),
+            "protocol": "HTTPS",
+            "host": "example.com",
+            "path": "/v1/chat/completions",
+            "url": "https://example.com/v1/chat/completions",
+        }
+        response = httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json; charset=utf-8",
+                "content-encoding": "gzip",
+            },
+            request=request,
+            stream=StaticStream(),
+        )
+
+        await client._capture_http_response(response)
+
+        streamed = bytearray()
+        async for chunk in response.stream:
+            streamed.extend(chunk)
+        await response.stream.aclose()
+
+        assert bytes(streamed) == compressed
+        assert len(events) == 2
+        assert events[0]["metadata"]["frame_type"] == "response_start"
+        assert events[1]["metadata"]["frame_type"] == "response_chunk"
+        assert events[1]["response_bytes"] == len(compressed)
+        assert events[1]["raw_response"] == payload.decode("utf-8")
+        assert '"id":"resp_123"' in events[1]["preview"]
 
 
 class TestLLMClientSingleton:

@@ -1,0 +1,109 @@
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _make_app(tmp_path):
+    os.environ["LLM_API_KEY"] = "test-key"
+    os.environ["LLM_BASE_URL"] = "http://localhost:9999/v1"
+    os.environ["LLM_MODEL"] = "test-model"
+    os.environ["LOG_LEVEL"] = "WARNING"
+    os.environ["DATABASE_URL"] = str(tmp_path / "test.db")
+    os.environ["PIPELINE_CONFIG_FILE"] = str(tmp_path / "pipelines.json")
+
+    with open(tmp_path / "pipelines.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "default": {
+                    "name": "标准软件开发流水线",
+                    "description": "需求分析 -> 架构设计 -> 开发",
+                    "stages": [
+                        {
+                            "name": "analysis",
+                            "display_name": "需求分析",
+                            "agent": "analyst",
+                            "gate": "manual",
+                            "timeout_minutes": 30,
+                            "expected_artifacts": ["PRD.md"],
+                            "context_prompt": "Write a PRD.",
+                            "active_skills": ["document-analysis"],
+                            "hint_only_skills": [],
+                        }
+                    ],
+                }
+            },
+            f,
+            ensure_ascii=False,
+        )
+
+    modules_to_clear = [
+        "main",
+        "config",
+        "models.database",
+        "models.audit",
+        "agents.registry",
+        "agents.collaboration",
+        "tools",
+        "llm.client",
+        "chatrooms.manager",
+        "routes.api",
+        "routes.audit",
+        "routes.monitor",
+        "routes.websocket",
+        "pipeline.engine",
+        "pipeline.config",
+        "routes.pipeline",
+    ]
+    for mod_name in modules_to_clear:
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
+
+    import llm.client as llm_mod
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_llm = MagicMock()
+    mock_llm.base_url = "http://localhost:9999/v1"
+    mock_llm.model = "test-model"
+    mock_llm.chat = AsyncMock(return_value="Mocked response.")
+    mock_llm.chat_with_tools = AsyncMock(return_value={"content": "Mocked agent response.", "tool_calls": None})
+
+    async def mock_stream(messages, tools=None):
+        yield {"type": "content", "delta": "Hello!"}
+        yield {"type": "done", "full_content": "Hello!", "tool_calls": None}
+
+    mock_llm.chat_stream = mock_stream
+    llm_mod._llm_client = mock_llm
+
+    import main as main_mod
+
+    async def passthrough(self, request, call_next):
+        return await call_next(request)
+
+    main_mod.RateLimitMiddleware.dispatch = passthrough
+    main_mod.RequestLoggingMiddleware.dispatch = passthrough
+    return main_mod.app
+
+
+@pytest.fixture
+def client(tmp_path):
+    from fastapi.testclient import TestClient
+
+    return TestClient(_make_app(tmp_path), base_url="http://testserver", headers={"X-Catown-Client": "test"})
+
+
+def test_pipeline_template_workflow_spec_endpoint_exposes_canonical_schema(client):
+    response = client.get("/api/pipelines/templates/default/workflow-spec")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workflow_id"] == "default"
+    assert payload["name"] == "标准软件开发流水线"
+    assert payload["domain"] == "software_delivery"
+    assert payload["stage_count"] == 1
+    assert payload["payload"]["kind"] == "workflow_spec"
+    assert payload["payload"]["version"] == 1
+    assert payload["payload"]["stages"][0]["stage_id"] == "analysis"
+    assert payload["payload"]["stages"][0]["delivery"]["expected_artifacts"] == ["PRD.md"]

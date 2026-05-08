@@ -22,6 +22,8 @@ class StreamTurnFrame:
     system_prompt: str
     llm_started_at: float
     llm_content: str = ""
+    executed_tool_calls: list[dict[str, Any]] | None = None
+    blocked_tool_result: Any = None
 
 
 async def iter_stream_turn_events(
@@ -127,6 +129,7 @@ async def iter_stream_turn_events(
             if event_type == "done":
                 raw_tool_calls = event.get("tool_calls")
                 full_content = event.get("full_content")
+                blocked_tool_result = None
                 if full_content is None:
                     full_content = frame.llm_content
                 llm_tool_calls = preview_tool_calls(raw_tool_calls)
@@ -135,6 +138,7 @@ async def iter_stream_turn_events(
                 if normalized_tool_calls:
                     tool_calls_found = True
                     tool_results = []
+                    executed_tool_calls: list[dict[str, Any]] = []
                     for tool_index, tool_call in enumerate(normalized_tool_calls):
                         if before_tool_call is not None:
                             await _maybe_await(before_tool_call(frame, tool_call, turn_state))
@@ -152,6 +156,7 @@ async def iter_stream_turn_events(
                         }
 
                         tool_started_at = time.time()
+                        raw_result: Any = "(no output)"
                         try:
                             tool_args = json.loads(tool_args_str or "{}")
                         except json.JSONDecodeError:
@@ -180,20 +185,18 @@ async def iter_stream_turn_events(
                                     }
                                     continue
                                 raw_result = tool_event["result"]
-                                result_text = str(raw_result) if raw_result is not None else "(no output)"
                                 break
                         except Exception as exc:
-                            result_text = f"Error: {exc}"
+                            raw_result = f"Error: {exc}"
 
-                        success = tool_result_success(result_text)
+                        success = tool_result_success(raw_result)
                         tool_result_record = build_tool_result_record(
                             tool_call_id=tool_call_id,
                             tool_name=tool_name,
                             arguments=tool_args_str,
-                            result=result_text,
+                            result=raw_result,
                             success=success,
                         )
-                        tool_results.append(tool_result_record)
                         tool_duration_ms = int((time.time() - tool_started_at) * 1000)
 
                         yield {
@@ -227,14 +230,23 @@ async def iter_stream_turn_events(
                                 "tool_call_id": tool_call_id,
                             },
                         }
+                        if tool_result_record.blocked:
+                            blocked_tool_result = tool_result_record
+                            break
+                        executed_tool_calls.append(tool_call)
+                        tool_results.append(tool_result_record)
 
-                    turn_state.record_tool_round(
-                        assistant_content=full_content or frame.llm_content,
-                        tool_calls=normalized_tool_calls,
-                        tool_results=tool_results,
-                    )
-                    if on_tool_round is not None:
-                        await _maybe_await(on_tool_round(frame, normalized_tool_calls, tool_results, turn_state))
+                    frame.executed_tool_calls = executed_tool_calls
+                    frame.blocked_tool_result = blocked_tool_result
+
+                    if tool_results:
+                        turn_state.record_tool_round(
+                            assistant_content=full_content or frame.llm_content,
+                            tool_calls=executed_tool_calls,
+                            tool_results=tool_results,
+                        )
+                    if on_tool_round is not None and (tool_results or blocked_tool_result is not None):
+                        await _maybe_await(on_tool_round(frame, executed_tool_calls, tool_results, turn_state))
                 else:
                     final_content = full_content or frame.llm_content
 
@@ -249,6 +261,17 @@ async def iter_stream_turn_events(
                         event,
                     ),
                 }
+                if blocked_tool_result is not None:
+                    yield {
+                        "type": "approval_pending",
+                        "agent_name": agent_name,
+                        "client_turn_id": client_turn_id,
+                        "turn": frame.turn_index,
+                        "tool": blocked_tool_result.tool_name,
+                        "blocked_kind": blocked_tool_result.blocked_kind,
+                        "blocked_reason": blocked_tool_result.blocked_reason,
+                    }
+                    return
                 continue
 
             if event_type == "error":

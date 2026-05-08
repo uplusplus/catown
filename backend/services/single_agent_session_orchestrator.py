@@ -178,6 +178,10 @@ async def iter_managed_single_agent_stream_session(
     final_content = ""
     try:
         async for item in iter_unified_single_agent_stream_session(spec.session):
+            if item.awaiting_tool_approval:
+                if item.chunk is not None:
+                    yield item
+                return
             if item.final_content is not None:
                 final_content = item.final_content
                 continue
@@ -243,6 +247,7 @@ def build_unified_stream_single_agent_session_spec(
             yield UnifiedSingleAgentSessionOutcome(
                 final_content=item.final_content,
                 chunk=item.chunk,
+                awaiting_tool_approval=item.awaiting_tool_approval,
             )
 
     return UnifiedSingleAgentSessionSpec(iterate=_iterate)

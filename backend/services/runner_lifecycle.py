@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,9 @@ from services.approval_replay import (
     build_blocked_tool_request_key,
     build_blocked_tool_request_payload,
 )
+
+
+logger = logging.getLogger("catown.runner_lifecycle")
 from services.run_ledger import append_task_event, update_task_run
 
 
@@ -52,11 +56,14 @@ def record_tool_round(
     turn: int,
     tool_names: Iterable[str],
     tool_results: Iterable[Any] | None = None,
+    blocked_tool_results: Iterable[Any] | None = None,
     summary: str,
+    assistant_content: str | None = None,
     payload: Any = None,
 ):
     normalized_tool_names = [str(name or "").strip() for name in tool_names if str(name or "").strip()]
     normalized_tool_results = list(tool_results or [])
+    normalized_blocked_tool_results = list(blocked_tool_results or [])
     payload_dict = payload if isinstance(payload, dict) else None
     pipeline_run_id = payload_dict.get("pipeline_run_id") if payload_dict else None
     pipeline_stage_id = (
@@ -89,6 +96,7 @@ def record_tool_round(
         if bool(getattr(result, "blocked", False)):
             blocked_tools.append(
                 {
+                    "tool_call_id": str(getattr(result, "tool_call_id", "") or ""),
                     "tool_name": str(getattr(result, "tool_name", "") or "tool"),
                     "arguments": str(getattr(result, "arguments", "") or "{}"),
                     "status": status,
@@ -96,6 +104,22 @@ def record_tool_round(
                     "blocked_reason": compact_runtime_text(getattr(result, "blocked_reason", "") or getattr(result, "result", ""), limit=220),
                 }
             )
+    for result in normalized_blocked_tool_results:
+        status = str(getattr(result, "status", "") or ("succeeded" if getattr(result, "success", True) else "failed"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        blocked_tools.append(
+            {
+                "tool_call_id": str(getattr(result, "tool_call_id", "") or ""),
+                "tool_name": str(getattr(result, "tool_name", "") or "tool"),
+                "arguments": str(getattr(result, "arguments", "") or "{}"),
+                "status": status,
+                "blocked_kind": getattr(result, "blocked_kind", None),
+                "blocked_reason": compact_runtime_text(
+                    getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
+                    limit=220,
+                ),
+            }
+        )
     merged_payload = {
         "turn": int(turn),
         "tool_names": normalized_tool_names,
@@ -106,13 +130,14 @@ def record_tool_round(
     if blocked_tools:
         merged_payload["blocked_tools"] = blocked_tools
     if serialized_tool_results:
+        assistant_message_content = compact_runtime_text(assistant_content or summary, limit=280)
         merged_payload["turn_local_state"] = {
-            "assistant_content": compact_runtime_text(summary, limit=280),
+            "assistant_content": assistant_message_content,
             "tool_results": serialized_tool_results,
             "protocol_messages": [
                 {
                     "role": "assistant",
-                    "content": compact_runtime_text(summary, limit=280),
+                    "content": assistant_message_content,
                     "tool_calls": [
                         {
                             "id": result_payload["tool_call_id"],
@@ -168,7 +193,11 @@ def record_tool_round(
                 project_id=getattr(task_run, "project_id", None),
                 queue_kind=queue_kind,
                 source="tool_call_blocked",
-                title=blocked_tool_queue_title(blocked_tool["tool_name"], queue_kind=queue_kind),
+                title=blocked_tool_queue_title(
+                    blocked_tool["tool_name"],
+                    queue_kind=queue_kind,
+                    blocked_kind=blocked_tool.get("blocked_kind"),
+                ),
                 summary=blocked_tool["blocked_reason"],
                 agent_name=agent_name,
                 target_kind="tool",
@@ -182,6 +211,16 @@ def record_tool_round(
                 ),
                 pipeline_run_id=pipeline_run_id,
                 pipeline_stage_id=pipeline_stage_id,
+            )
+            logger.info(
+                "[ApprovalFlow] queue-created task_run_id=%s queue_item_id=%s queue_kind=%s tool=%s blocked_kind=%s resume_supported=%s turn=%s",
+                getattr(task_run, "id", None),
+                getattr(queue_item, "id", None),
+                queue_kind,
+                blocked_tool.get("tool_name"),
+                blocked_tool.get("blocked_kind"),
+                resume_supported,
+                turn,
             )
             append_task_event(
                 db,
@@ -199,12 +238,21 @@ def record_tool_round(
             summary=f"{blocked_tool['tool_name']} was blocked ({blocked_tool['status']}).",
             payload={
                 "turn": int(turn),
+                "tool_call_id": blocked_tool.get("tool_call_id"),
                 "tool_name": blocked_tool["tool_name"],
                 "status": blocked_tool["status"],
                 "blocked_kind": blocked_tool["blocked_kind"],
                 "blocked_reason": blocked_tool["blocked_reason"],
                 "queue_item_id": getattr(queue_item, "id", None),
             },
+        )
+        logger.info(
+            "[ApprovalFlow] tool-blocked task_run_id=%s queue_item_id=%s tool=%s status=%s blocked_kind=%s",
+            getattr(task_run, "id", None) if task_run is not None else None,
+            getattr(queue_item, "id", None),
+            blocked_tool.get("tool_name"),
+            blocked_tool.get("status"),
+            blocked_tool.get("blocked_kind"),
         )
     return event
 

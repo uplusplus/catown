@@ -21,6 +21,7 @@ import {
   rememberChatProjectSuggestion,
 } from "../utils/projectFormSuggestions";
 import type {
+  ApprovalQueueItem,
   AgentInfo,
   ChatCardItem,
   ChatEventItem,
@@ -245,6 +246,7 @@ type ChatTabProps = {
   optimisticMessages: MessageItem[];
   cards: ChatCardItem[];
   taskRuns: TaskRunSummary[];
+  liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   loading: boolean;
   sending: boolean;
   refreshing: boolean;
@@ -305,6 +307,13 @@ type ThreadItem =
       sortKey: string;
       kind: "message";
       message: MessageItem;
+    }
+  | {
+      id: string;
+      sortKey: string;
+      kind: "task_run";
+      taskRun: TaskRunSummary;
+      detail: TaskRunDetail | null;
     }
   | {
       id: string;
@@ -400,6 +409,128 @@ function formatTaskRunEventType(value: string | undefined) {
     .join(" ");
 }
 
+function compareTaskRunsForSidebarSelection(left: TaskRunSummary, right: TaskRunSummary) {
+  const leftPending = Number(left.pending_approval_count || 0);
+  const rightPending = Number(right.pending_approval_count || 0);
+  if (leftPending !== rightPending) return rightPending - leftPending;
+
+  const leftRunning = (left.status || "").toLowerCase() === "running" ? 1 : 0;
+  const rightRunning = (right.status || "").toLowerCase() === "running" ? 1 : 0;
+  if (leftRunning !== rightRunning) return rightRunning - leftRunning;
+
+  const leftUpdated = new Date(left.updated_at || left.created_at || 0).getTime();
+  const rightUpdated = new Date(right.updated_at || right.created_at || 0).getTime();
+  return rightUpdated - leftUpdated;
+}
+
+function shouldRenderInlineTaskRun(taskRun: TaskRunSummary) {
+  const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
+  if (pendingApprovalCount > 0) return true;
+
+  const clientTurnId = (taskRun.client_turn_id || "").trim().toLowerCase();
+  if (clientTurnId.startsWith("delegate-")) return true;
+
+  const runKind = (taskRun.run_kind || "").trim().toLowerCase();
+  return runKind.includes("pipeline") || runKind.includes("orchestration");
+}
+
+function formatApprovalQueueStatus(value: string | undefined) {
+  if (!value) return "Unknown";
+  return value[0]?.toUpperCase() + value.slice(1);
+}
+
+function approvalQueueStatusTone(status: string | undefined) {
+  const normalized = (status || "").toLowerCase();
+  if (normalized === "approved") return "success";
+  if (normalized === "rejected") return "error";
+  if (normalized === "pending") return "warning";
+  return "neutral";
+}
+
+function isTimeoutWaitQueueItem(item: ApprovalQueueItem) {
+  return String(item.request_payload?.blocked_kind || "").toLowerCase() === "timeout";
+}
+
+function approvalQueueActionLabels(item: ApprovalQueueItem) {
+  if (isTimeoutWaitQueueItem(item)) {
+    return {
+      approve: "Continue waiting",
+      reject: "Stop waiting",
+      busy: "Working...",
+    };
+  }
+  return {
+    approve: "Approve",
+    reject: "Reject",
+    busy: "Working...",
+  };
+}
+
+function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
+  const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
+  const blockedToolName =
+    typeof detail?.checkpoint_snapshot?.turn_local_state?.blocked_tool?.["tool_name"] === "string"
+      ? String(detail?.checkpoint_snapshot?.turn_local_state?.blocked_tool?.["tool_name"])
+      : null;
+  const latestEventType =
+    detail?.checkpoint_snapshot?.latest_event_type ||
+    taskRun.latest_continuation_event_type ||
+    null;
+  const latestEventSummary =
+    taskRun.latest_continuation_event_summary ||
+    detail?.continuation_state_summary ||
+    detail?.continuation_cursor_summary ||
+    taskRun.continuation_state_summary ||
+    taskRun.continuation_cursor_summary ||
+    null;
+
+  if (pendingApprovalCount > 0) {
+    return {
+      tone: "warning" as const,
+      label: blockedToolName ? `Waiting for approval · ${blockedToolName}` : "Waiting for approval",
+      detail:
+        latestEventSummary ||
+        `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
+    };
+  }
+
+  const normalizedStatus = (taskRun.status || "").toLowerCase();
+  if (normalizedStatus === "running") {
+    return {
+      tone: "info" as const,
+      label: "Running",
+      detail:
+        latestEventSummary ||
+        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task is executing in the background."),
+    };
+  }
+  if (normalizedStatus === "completed") {
+    return {
+      tone: "success" as const,
+      label: "Completed",
+      detail:
+        latestEventSummary ||
+        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task finished."),
+    };
+  }
+  if (normalizedStatus === "failed") {
+    return {
+      tone: "error" as const,
+      label: "Failed",
+      detail:
+        latestEventSummary ||
+        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task failed."),
+    };
+  }
+  return {
+    tone: "neutral" as const,
+    label: formatTaskRunStatus(taskRun.status),
+    detail:
+      latestEventSummary ||
+      (latestEventType ? formatTaskRunEventType(latestEventType) : "Background task update."),
+  };
+}
+
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
   if (!payload || Object.keys(payload).length === 0) return "";
   try {
@@ -407,6 +538,120 @@ function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
   } catch {
     return "";
   }
+}
+
+function resolveTaskRunActorName(taskRun: TaskRunSummary, agents: AgentInfo[]) {
+  const target = (taskRun.target_agent_name || "").trim();
+  if (!target) return "Agent";
+  const normalizedTarget = target.toLowerCase();
+  const matched = agents.find((agent) => {
+    const normalizedType = (agent.type || "").trim().toLowerCase();
+    const normalizedName = (agent.name || "").trim().toLowerCase();
+    const normalizedAgentType = getAgentType(agent).trim().toLowerCase();
+    return (
+      normalizedTarget === normalizedType
+      || normalizedTarget === normalizedName
+      || normalizedTarget === normalizedAgentType
+    );
+  });
+  return matched ? getAgentDisplayName(matched) : target;
+}
+
+function buildTaskRunTraceDetailContent(event: TaskRunEvent) {
+  const sections = [markdownSection("Event", formatTaskRunEventType(event.event_type), { asMarkdown: true })];
+  if (event.summary?.trim()) {
+    sections.push(markdownSection("Summary", event.summary, { asMarkdown: true }));
+  }
+  if (event.continuation_state_summary?.trim()) {
+    sections.push(markdownSection("Continuation", event.continuation_state_summary, { asMarkdown: true }));
+  }
+  const payloadPreview = taskRunPayloadPreview(event.payload);
+  if (payloadPreview) {
+    sections.push(markdownSection("Payload", payloadPreview, { language: "json" }));
+  }
+  return sections.join("\n\n");
+}
+
+function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail | null): MessageStreamStep[] {
+  const events = detail?.events ?? [];
+  const recentEvents = events.slice(-6);
+  const isRunning = (taskRun.status || "").toLowerCase() === "running";
+
+  return recentEvents.map((event, index) => {
+    const isLatest = index === recentEvents.length - 1;
+    const tone = taskRunEventTone(event.event_type);
+    const state: MessageStreamStep["state"] =
+      isLatest && isRunning
+        ? "live"
+        : tone === "error"
+          ? "error"
+          : "done";
+    const detailBits = [
+      event.agent_name || null,
+      event.created_at ? formatTime(event.created_at) : null,
+    ].filter(Boolean);
+
+    return {
+      id: `task-run-${taskRun.id}-event-${event.id}`,
+      label: oneLinePreview(
+        event.summary || formatTaskRunEventType(event.event_type),
+        formatTaskRunEventType(event.event_type),
+        104,
+      ),
+      detail: detailBits.join(" · ") || formatTaskRunEventType(event.event_type),
+      detailContent: buildTaskRunTraceDetailContent(event),
+      state,
+      agent: event.agent_name || taskRun.target_agent_name || undefined,
+    };
+  });
+}
+
+function renderTaskRunTrace(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  expandedStepId: string | null,
+  onToggleStep: (taskRunId: number, stepId: string) => void,
+) {
+  const traceSteps = buildTaskRunTraceSteps(taskRun, detail);
+  if (traceSteps.length === 0) return null;
+
+  return (
+    <div className="message-stream-trace message-stream-trace--task-run">
+      {traceSteps.map((step) => (
+        <details
+          key={step.id}
+          className={`message-stream-step message-stream-step--${step.state}`}
+          open={expandedStepId === step.id}
+        >
+          <summary
+            className="message-stream-step__summary"
+            onClick={(event) => {
+              event.preventDefault();
+              onToggleStep(taskRun.id, step.id);
+            }}
+          >
+            <span className="message-stream-step__state" aria-hidden="true">
+              {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
+            </span>
+            <span className="message-stream-step__copy">
+              <strong>{step.label}</strong>
+              {step.detail ? <small>{step.detail}</small> : null}
+            </span>
+            <span className="message-stream-step__toggle" aria-hidden="true">
+              ▸
+            </span>
+          </summary>
+          {expandedStepId === step.id && (step.detailContent || step.detail) ? (
+            <div className="message-stream-step__detail">
+              {renderMarkdownContent(step.detailContent || step.detail || "", "message-stream-step__detail-content", {
+                highlight: false,
+              })}
+            </div>
+          ) : null}
+        </details>
+      ))}
+    </div>
+  );
 }
 
 function prettyJson(value: string | undefined) {
@@ -542,18 +787,34 @@ function threadItemClientTurnId(item: Extract<ThreadItem, { kind: "message" | "c
 }
 
 function compareThreadTimelineItems(
-  left: Extract<ThreadItem, { kind: "message" | "card" }>,
-  right: Extract<ThreadItem, { kind: "message" | "card" }>,
+  left: Extract<ThreadItem, { kind: "message" | "card" | "task_run" }>,
+  right: Extract<ThreadItem, { kind: "message" | "card" | "task_run" }>,
 ) {
-  const leftTurnId = threadItemClientTurnId(left);
-  const rightTurnId = threadItemClientTurnId(right);
-  if (leftTurnId && rightTurnId && leftTurnId === rightTurnId) {
-    const weightDiff = threadItemSortWeight(left) - threadItemSortWeight(right);
-    if (weightDiff !== 0) return weightDiff;
+  if (left.kind !== "task_run" && right.kind !== "task_run") {
+    const leftTurnId = threadItemClientTurnId(left);
+    const rightTurnId = threadItemClientTurnId(right);
+    if (leftTurnId && rightTurnId && leftTurnId === rightTurnId) {
+      const weightDiff = threadItemSortWeight(left) - threadItemSortWeight(right);
+      if (weightDiff !== 0) return weightDiff;
+    }
+  } else if (left.kind === "task_run" && right.kind !== "task_run") {
+    const rightTurnId = threadItemClientTurnId(right);
+    if (left.taskRun.client_turn_id && rightTurnId && left.taskRun.client_turn_id === rightTurnId) {
+      return 1;
+    }
+  } else if (left.kind !== "task_run" && right.kind === "task_run") {
+    const leftTurnId = threadItemClientTurnId(left);
+    if (right.taskRun.client_turn_id && leftTurnId && right.taskRun.client_turn_id === leftTurnId) {
+      return -1;
+    }
   }
 
   const timeDiff = new Date(left.sortKey).getTime() - new Date(right.sortKey).getTime();
   if (timeDiff !== 0) return timeDiff;
+  if (left.kind === "task_run" || right.kind === "task_run") {
+    if (left.kind === right.kind) return 0;
+    return left.kind === "task_run" ? 1 : -1;
+  }
   return threadItemSortWeight(left) - threadItemSortWeight(right);
 }
 
@@ -1719,6 +1980,11 @@ function renderCardBody(card: ThreadCard) {
             open: card.success === false,
             copyLabel: `Copy ${card.tool || "tool"} output`,
           })}
+          {card.blocked_kind === "approval" ? (
+            <div className="chat-card-summary">
+              Approval pending. Open Activity to approve or reject this blocked tool request.
+            </div>
+          ) : null}
         </>
       );
     case "agent_error":
@@ -2427,6 +2693,115 @@ function renderMessage(
   );
 }
 
+function renderTaskRunInlineCard(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  agents: AgentInfo[],
+  approvalItems: ApprovalQueueItem[],
+  approvalQueueLoaded: boolean,
+  approvalActionItemId: number | null,
+  expandedStepId: string | null,
+  onToggleStep: (taskRunId: number, stepId: string) => void,
+  onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject") => Promise<void>,
+) {
+  const pendingItems = approvalItems.filter((item) => (item.status || "").toLowerCase() === "pending");
+  const hasPendingApprovals = Number(taskRun.pending_approval_count || 0) > 0;
+  const summary = taskRun.summary || taskRun.user_request || "Background task update.";
+  const inlineStatus = summarizeTaskRunInlineStatus(taskRun, detail);
+  const actorName = resolveTaskRunActorName(taskRun, agents);
+  const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep);
+
+  return (
+    <div className="chat-card-row" key={`task-run-inline-${taskRun.id}`}>
+      <div className="chat-avatar assistant">{initials(actorName)}</div>
+      <div className="chat-group-messages chat-card-stack">
+        <article className={`chat-tool-card chat-tool-card--task-run ${pendingItems.length > 0 ? "has-pending-approval" : ""}`}>
+          <div className="chat-tool-card__header">
+            <div>
+              <div className="chat-tool-card__title">
+                <span className="chat-json-badge">TASK</span>
+                <span>{actorName}</span>
+              </div>
+              <div className="chat-tool-card__detail">
+                {taskRun.title}
+              </div>
+            </div>
+            <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
+          </div>
+
+          <div className={`task-run-inline-status task-run-inline-status--${inlineStatus.tone}`}>
+            <strong>{inlineStatus.label}</strong>
+            <span>{inlineStatus.detail}</span>
+          </div>
+
+          {trace ? trace : (taskRun.status || "").toLowerCase() === "running" ? (
+            <div className="task-run-inline-approvals">
+              <div className="task-run-inline-approval">
+                <div className="task-run-detail__summary">Loading live activity…</div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="chat-card-summary">{summary}</div>
+
+          <div className="task-run-card__footer">
+            <span>{taskRun.event_count} events</span>
+            {pendingItems.length > 0 ? (
+              <span className="task-run-card__approval-pill">
+                {pendingItems.length} pending approval{pendingItems.length === 1 ? "" : "s"}
+              </span>
+            ) : hasPendingApprovals && !approvalQueueLoaded ? (
+              <span className="task-run-card__approval-pill">loading approvals…</span>
+            ) : null}
+          </div>
+
+          {pendingItems.length > 0 ? (
+            <div className="task-run-inline-approvals">
+              {pendingItems.map((item) => {
+                const isBusy = approvalActionItemId === item.id;
+                const labels = approvalQueueActionLabels(item);
+                return (
+                  <div key={item.id} className="task-run-inline-approval">
+                    <div className="task-run-detail__summary">
+                      {item.summary || item.title || item.target_name || "Approval request"}
+                    </div>
+                    <div className="task-run-approval-card__actions">
+                      <button
+                        type="button"
+                        className="chat-card-action-btn chat-card-action-btn--approve"
+                        disabled={isBusy}
+                        onClick={() => void onResolveApprovalQueueItem(item, "approve")}
+                      >
+                        {isBusy ? labels.busy : labels.approve}
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-card-action-btn chat-card-action-btn--reject"
+                        disabled={isBusy}
+                        onClick={() => void onResolveApprovalQueueItem(item, "reject")}
+                      >
+                        {labels.reject}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : hasPendingApprovals && !approvalQueueLoaded ? (
+            <div className="task-run-inline-approvals">
+              <div className="task-run-inline-approval">
+                <div className="task-run-detail__summary">
+                  Preparing inline approval controls…
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </article>
+      </div>
+    </div>
+  );
+}
+
 type MessageRowProps = {
   message: MessageItem;
   copiedMessageId: number | null;
@@ -2467,6 +2842,7 @@ export function ChatTab({
   optimisticMessages,
   cards,
   taskRuns,
+  liveTaskRunDetailsById,
   loading,
   sending,
   refreshing,
@@ -2493,6 +2869,7 @@ export function ChatTab({
   const [gateActionPipelineId, setGateActionPipelineId] = useState<number | null>(null);
   const [localOverlayMessages, setLocalOverlayMessages] = useState<MessageItem[]>([]);
   const [expandedMessageSteps, setExpandedMessageSteps] = useState<Record<number, string | null>>({});
+  const [expandedTaskRunSteps, setExpandedTaskRunSteps] = useState<Record<number, string | null>>({});
   const [expandedProgressCards, setExpandedProgressCards] = useState<Record<string, string | null>>({});
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
@@ -2500,8 +2877,16 @@ export function ChatTab({
   const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
+  const [approvalActionItemId, setApprovalActionItemId] = useState<number | null>(null);
+  const [approvalActionError, setApprovalActionError] = useState("");
+  const [approvalActionMessage, setApprovalActionMessage] = useState("");
+  const [pendingApprovalItems, setPendingApprovalItems] = useState<ApprovalQueueItem[]>([]);
+  const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const draftHistoryByChatRef = useRef<Record<string, string[]>>({});
+  const draftHistoryIndexRef = useRef<number | null>(null);
+  const draftHistoryPendingDraftRef = useRef("");
   const isComposingRef = useRef(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -2518,6 +2903,7 @@ export function ChatTab({
     () => findAgentByType(activeAgents, DEFAULT_AGENT_TYPE) ?? activeAgents[0] ?? null,
     [activeAgents],
   );
+  const draftHistoryKey = useMemo(() => `chat:${chat?.id ?? "global"}`, [chat?.id]);
   const defaultAgentNames = useMemo(() => {
     if (primaryAgent) {
       return [getAgentType(primaryAgent)];
@@ -2545,18 +2931,46 @@ export function ChatTab({
   const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
-    return taskRuns.find((run) => run.id === selectedTaskRunId) ?? taskRuns[0] ?? null;
+    const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
+    return taskRuns.find((run) => run.id === selectedTaskRunId) ?? preferredRuns[0] ?? null;
   }, [selectedTaskRunId, taskRuns]);
   const selectedTaskRunDetail = selectedTaskRunSummary
-    ? taskRunDetailsById[selectedTaskRunSummary.id] ?? null
+    ? liveTaskRunDetailsById[selectedTaskRunSummary.id] ?? taskRunDetailsById[selectedTaskRunSummary.id] ?? null
     : null;
+  const pendingApprovalItemsByTaskRunId = useMemo(() => {
+    const grouped: Record<number, ApprovalQueueItem[]> = {};
+    pendingApprovalItems.forEach((item) => {
+      const runId = item.task_run_id;
+      if (typeof runId !== "number") return;
+      grouped[runId] = [...(grouped[runId] ?? []), item];
+    });
+    return grouped;
+  }, [pendingApprovalItems]);
+  const selectedApprovalItems = useMemo(
+    () => (selectedTaskRunSummary?.id ? pendingApprovalItemsByTaskRunId[selectedTaskRunSummary.id] ?? [] : []),
+    [pendingApprovalItemsByTaskRunId, selectedTaskRunSummary?.id],
+  );
 
   useEffect(() => {
     setTaskRunDetailError("");
     setLoadingTaskRunId(null);
     setTaskRunDetailsById({});
     setSelectedTaskRunId(null);
+    setExpandedTaskRunSteps({});
+    setApprovalActionItemId(null);
+    setApprovalActionError("");
+    setApprovalActionMessage("");
+    setPendingApprovalItems([]);
+    setApprovalQueueLoaded(false);
+    draftHistoryIndexRef.current = null;
+    draftHistoryPendingDraftRef.current = "";
   }, [chat?.id]);
+
+  useEffect(() => {
+    if (draftHistoryIndexRef.current === null) {
+      draftHistoryPendingDraftRef.current = draft;
+    }
+  }, [draft]);
 
   useEffect(() => {
     if (taskRuns.length === 0) {
@@ -2566,7 +2980,8 @@ export function ChatTab({
       return;
     }
     if (selectedTaskRunId === null || !taskRuns.some((run) => run.id === selectedTaskRunId)) {
-      setSelectedTaskRunId(taskRuns[0]?.id ?? null);
+      const preferredRun = [...taskRuns].sort(compareTaskRunsForSidebarSelection)[0] ?? null;
+      setSelectedTaskRunId(preferredRun?.id ?? null);
     }
   }, [selectedTaskRunId, taskRuns]);
 
@@ -2597,7 +3012,128 @@ export function ChatTab({
     return () => {
       cancelled = true;
     };
-  }, [loadingTaskRunId, selectedTaskRunSummary, taskRunDetailsById]);
+  }, [liveTaskRunDetailsById, loadingTaskRunId, selectedTaskRunSummary, taskRunDetailsById]);
+
+  useEffect(() => {
+    const candidateRuns = taskRuns.filter((run) => shouldRenderInlineTaskRun(run));
+    const missingRunIds = candidateRuns
+      .map((run) => run.id)
+      .filter((runId) => !liveTaskRunDetailsById[runId] && !taskRunDetailsById[runId]);
+    if (missingRunIds.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      missingRunIds.map(async (runId) => {
+        try {
+          const detail = await api.getTaskRunDetail(runId);
+          if (cancelled) return;
+          setTaskRunDetailsById((current) => ({ ...current, [runId]: detail }));
+        } catch {
+          // Best-effort prefetch; selected-run loader already surfaces errors.
+        }
+      }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [liveTaskRunDetailsById, taskRunDetailsById, taskRuns]);
+
+  useEffect(() => {
+    if (!chat?.id) return;
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const items = await api.getApprovalQueue({
+          chatroom_id: chat.id,
+          status: "pending",
+          limit: 100,
+        });
+        if (cancelled) return;
+        setPendingApprovalItems(items);
+        setApprovalQueueLoaded(true);
+      } catch {
+        if (cancelled) return;
+        setApprovalQueueLoaded(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [chat?.id, taskRuns]);
+
+  useEffect(() => {
+    if (!chat?.id) return;
+    const hasActiveBackgroundWork =
+      taskRuns.some((run) => (run.status || "").toLowerCase() === "running")
+      || pendingApprovalItems.length > 0;
+    if (!hasActiveBackgroundWork) return;
+
+    let cancelled = false;
+    const intervalId = window.setInterval(() => {
+      if (cancelled) return;
+      void onRefresh();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [chat?.id, onRefresh, pendingApprovalItems.length, taskRuns]);
+
+  const invalidateTaskRunDetail = useCallback((taskRunId: number | null) => {
+    if (!taskRunId) return;
+    setTaskRunDetailsById((current) => {
+      if (!(taskRunId in current)) return current;
+      const next = { ...current };
+      delete next[taskRunId];
+      return next;
+    });
+  }, []);
+
+  const handleResolveApprovalQueueItem = useCallback(
+    async (item: ApprovalQueueItem, action: "approve" | "reject") => {
+      if (approvalActionItemId === item.id) return;
+      setApprovalActionItemId(item.id);
+      setApprovalActionError("");
+      setApprovalActionMessage("");
+      try {
+        let updated: ApprovalQueueItem;
+        if (action === "approve") {
+          updated = await api.approveApprovalQueueItem(item.id, { resolved_by: "home" });
+        } else {
+          updated = await api.rejectApprovalQueueItem(item.id, { resolved_by: "home" });
+        }
+        if (chat?.id) {
+          const nextPending = await api.getApprovalQueue({
+            chatroom_id: chat.id,
+            status: "pending",
+            limit: 100,
+          });
+          setPendingApprovalItems(nextPending);
+          setApprovalQueueLoaded(true);
+        }
+        invalidateTaskRunDetail(item.task_run_id ?? selectedTaskRunSummary?.id ?? null);
+        await onRefresh();
+        setApprovalActionMessage(
+          action === "approve"
+            ? updated.status === "approved"
+              ? `Approved ${item.target_name || item.target_kind || "request"}.`
+              : "Approval updated."
+            : updated.status === "rejected"
+              ? `Rejected ${item.target_name || item.target_kind || "request"}.`
+              : "Approval updated.",
+        );
+      } catch (error) {
+        setApprovalActionError(error instanceof Error ? error.message : `Failed to ${action} request`);
+      } finally {
+        setApprovalActionItemId((current) => (current === item.id ? null : current));
+      }
+    },
+    [approvalActionItemId, chat?.id, invalidateTaskRunDetail, onRefresh, selectedTaskRunSummary?.id],
+  );
 
   const fallbackStepCardsByMessageId = useMemo(() => {
     const mapped = new Map<number, ThreadCard[]>();
@@ -2709,6 +3245,15 @@ export function ChatTab({
         kind: "message" as const,
         message,
       })),
+      ...taskRuns
+        .filter((run) => shouldRenderInlineTaskRun(run))
+        .map((run) => ({
+          id: `task-run-${run.id}`,
+          sortKey: run.updated_at || run.created_at || new Date().toISOString(),
+          kind: "task_run" as const,
+          taskRun: run,
+          detail: liveTaskRunDetailsById[run.id] ?? taskRunDetailsById[run.id] ?? null,
+        })),
       ...cardsWithPromptPresentation
         .filter(
           (card) =>
@@ -2821,7 +3366,7 @@ export function ChatTab({
 
     flushActivityBatch();
     return batchedItems;
-  }, [cardsWithPromptPresentation, consumedFallbackCardIds, visibleMessages]);
+  }, [cardsWithPromptPresentation, consumedFallbackCardIds, liveTaskRunDetailsById, taskRunDetailsById, taskRuns, visibleMessages]);
 
   const currentActivityAgentName = useMemo(() => {
     const streamingAgent =
@@ -3153,6 +3698,11 @@ export function ChatTab({
   function submitDraft() {
     const next = draft.trim();
     if (!next || sending) return;
+    const history = draftHistoryByChatRef.current[draftHistoryKey] ?? [];
+    draftHistoryByChatRef.current[draftHistoryKey] =
+      history[history.length - 1] === next ? history : [...history, next].slice(-50);
+    draftHistoryIndexRef.current = null;
+    draftHistoryPendingDraftRef.current = "";
     shouldStickThreadToBottomRef.current = true;
     setShowMentionPicker(false);
     setDraft("");
@@ -3245,6 +3795,13 @@ export function ChatTab({
     }));
   }, []);
 
+  const toggleTaskRunStep = useCallback((taskRunId: number, stepId: string) => {
+    setExpandedTaskRunSteps((current) => ({
+      ...current,
+      [taskRunId]: current[taskRunId] === stepId ? null : stepId,
+    }));
+  }, []);
+
   function insertMention(agentType: string) {
     setDraft((current) => {
       if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) {
@@ -3269,6 +3826,35 @@ export function ChatTab({
     setShowMentionPicker(true);
     setSelectedMentionIndex(0);
     window.requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
+  function navigateDraftHistory(direction: -1 | 1) {
+    const history = draftHistoryByChatRef.current[draftHistoryKey] ?? [];
+    if (history.length === 0) return;
+
+    const currentIndex = draftHistoryIndexRef.current;
+    if (currentIndex === null) {
+      if (direction !== -1) return;
+      draftHistoryPendingDraftRef.current = draft;
+      draftHistoryIndexRef.current = history.length - 1;
+      setDraft(history[history.length - 1] ?? "");
+      return;
+    }
+
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0) {
+      draftHistoryIndexRef.current = 0;
+      setDraft(history[0] ?? "");
+      return;
+    }
+    if (nextIndex >= history.length) {
+      draftHistoryIndexRef.current = null;
+      setDraft(draftHistoryPendingDraftRef.current);
+      return;
+    }
+
+    draftHistoryIndexRef.current = nextIndex;
+    setDraft(history[nextIndex] ?? "");
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -3304,6 +3890,24 @@ export function ChatTab({
     if (isEscapeKey && showMentionPicker) {
       event.preventDefault();
       setShowMentionPicker(false);
+      return;
+    }
+
+    const selectionStart = event.currentTarget.selectionStart ?? 0;
+    const selectionEnd = event.currentTarget.selectionEnd ?? 0;
+    const hasSelection = selectionStart !== selectionEnd;
+    const caretAtStart = selectionStart === 0 && selectionEnd === 0;
+    const caretAtEnd = selectionStart === draft.length && selectionEnd === draft.length;
+
+    if (!showMentionPicker && !hasSelection && isArrowUpKey && (draft.length === 0 || caretAtStart)) {
+      event.preventDefault();
+      navigateDraftHistory(-1);
+      return;
+    }
+
+    if (!showMentionPicker && !hasSelection && isArrowDownKey && draftHistoryIndexRef.current !== null && caretAtEnd) {
+      event.preventDefault();
+      navigateDraftHistory(1);
       return;
     }
 
@@ -3414,19 +4018,31 @@ export function ChatTab({
                     fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
                   />
                 )
-              : item.kind === "activity_batch"
-                ? renderActivityBatch(
-                    item.id,
+                : item.kind === "activity_batch"
+                  ? renderActivityBatch(
+                      item.id,
                     item.cards,
                     item.id === latestActivityBatchId,
                     item.id === latestActivityBatchId ? currentActivityAgentName : null,
                     expandedProgressCards,
                     toggleProgressCard,
                     gateActionPipelineId,
-                    handleApproveGate,
-                    handleRejectGate,
-                  )
-                : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
+                      handleApproveGate,
+                      handleRejectGate,
+                    )
+                  : item.kind === "task_run"
+                    ? renderTaskRunInlineCard(
+                        item.taskRun,
+                        item.detail,
+                        agents,
+                        pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],
+                        approvalQueueLoaded,
+                        approvalActionItemId,
+                        expandedTaskRunSteps[item.taskRun.id] ?? null,
+                        toggleTaskRunStep,
+                        handleResolveApprovalQueueItem,
+                      )
+                    : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
           )}
         </>
       );
@@ -3773,6 +4389,8 @@ export function ChatTab({
                     className="agent-chat__input-btn"
                     disabled={sending}
                     onClick={() => {
+                      draftHistoryIndexRef.current = null;
+                      draftHistoryPendingDraftRef.current = "";
                       setDraft("");
                       setShowMentionPicker(false);
                     }}
@@ -3842,11 +4460,12 @@ export function ChatTab({
                       {taskRuns.slice(0, 6).map((run) => {
                         const isSelected = run.id === selectedTaskRunSummary?.id;
                         const tone = taskRunStatusTone(run.status);
+                        const pendingApprovals = Number(run.pending_approval_count || 0);
                         return (
                           <button
                             key={run.id}
                             type="button"
-                            className={`task-run-card ${isSelected ? "is-selected" : ""}`}
+                            className={`task-run-card ${isSelected ? "is-selected" : ""} ${pendingApprovals > 0 ? "has-pending-approval" : ""}`}
                             onClick={() => {
                               setTaskRunDetailError("");
                               setSelectedTaskRunId(run.id);
@@ -3866,6 +4485,11 @@ export function ChatTab({
                             <p>{run.summary || run.user_request || "No summary yet."}</p>
                             <div className="task-run-card__footer">
                               <span>{run.event_count} events</span>
+                              {pendingApprovals > 0 ? (
+                                <span className="task-run-card__approval-pill">
+                                  {pendingApprovals} pending approval{pendingApprovals === 1 ? "" : "s"}
+                                </span>
+                              ) : null}
                               {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
                             </div>
                           </button>
@@ -3908,39 +4532,134 @@ export function ChatTab({
                           <div className="empty-card empty-card--danger">{taskRunDetailError}</div>
                         ) : null}
 
+                        {approvalActionError ? (
+                          <div className="empty-card empty-card--danger">{approvalActionError}</div>
+                        ) : null}
+                        {approvalActionMessage ? (
+                          <div className="empty-card">{approvalActionMessage}</div>
+                        ) : null}
+
                         {loadingTaskRunId === selectedTaskRunSummary.id && !selectedTaskRunDetail ? (
                           <div className="empty-card">Loading event detail…</div>
                         ) : selectedTaskRunDetail ? (
-                          <div className="task-run-event-list">
-                            {selectedTaskRunDetail.events.map((event) => {
-                              const payloadPreview = taskRunPayloadPreview(event.payload);
-                              return (
-                                <div
-                                  key={event.id}
-                                  className={`task-run-event task-run-event--${taskRunEventTone(event.event_type)}`}
-                                >
-                                  <div className="task-run-event__meta">
-                                    <span>
-                                      #{event.event_index} · {formatTaskRunEventType(event.event_type)}
-                                    </span>
-                                    <span>{event.created_at ? formatTime(event.created_at) : "--"}</span>
-                                  </div>
-                                  <div className="task-run-event__summary">
-                                    {event.summary || "No summary."}
-                                  </div>
-                                  {event.agent_name ? (
-                                    <div className="task-run-event__agent">{event.agent_name}</div>
-                                  ) : null}
-                                  {payloadPreview ? (
-                                    <details className="task-run-event__payload">
-                                      <summary>Payload</summary>
-                                      <pre>{payloadPreview}</pre>
-                                    </details>
-                                  ) : null}
+                          <>
+                            <div className="task-run-approval-section">
+                              <div className="activity-section__header">
+                                <h3>Approvals</h3>
+                                <span className="soft-pill">{selectedApprovalItems.length}</span>
+                              </div>
+                              {selectedApprovalItems.length === 0 ? (
+                                <div className="empty-card">No approval requests for this run.</div>
+                              ) : (
+                                <div className="task-run-approval-list">
+                                  {selectedApprovalItems.map((item) => {
+                                    const itemStatusTone = approvalQueueStatusTone(item.status);
+                                    const requestPayloadPreview = taskRunPayloadPreview(item.request_payload);
+                                    const resolutionPayloadPreview = taskRunPayloadPreview(item.resolution_payload);
+                                    const isPending = (item.status || "").toLowerCase() === "pending";
+                                    const isBusy = approvalActionItemId === item.id;
+                                    const labels = approvalQueueActionLabels(item);
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        className={`task-run-approval-card task-run-approval-card--${itemStatusTone}`}
+                                      >
+                                        <div className="task-run-approval-card__header">
+                                          <div>
+                                            <strong>{item.title || item.target_name || "Approval request"}</strong>
+                                            <div className="task-run-card__subtitle">
+                                              {item.agent_name ? `${item.agent_name} · ` : ""}
+                                              {item.target_kind}
+                                              {item.target_name ? ` · ${item.target_name}` : ""}
+                                            </div>
+                                          </div>
+                                          <span className={`task-run-card__status task-run-card__status--${itemStatusTone}`}>
+                                            {formatApprovalQueueStatus(item.status)}
+                                          </span>
+                                        </div>
+
+                                        {item.summary ? (
+                                          <div className="task-run-detail__summary">{item.summary}</div>
+                                        ) : null}
+
+                                        <div className="task-run-card__footer">
+                                          <span>#{item.id}</span>
+                                          <span>{item.created_at ? formatTime(item.created_at) : "--"}</span>
+                                          {item.queue_kind ? <span>{item.queue_kind}</span> : null}
+                                        </div>
+
+                                        {requestPayloadPreview ? (
+                                          <details className="task-run-event__payload">
+                                            <summary>Request payload</summary>
+                                            <pre>{requestPayloadPreview}</pre>
+                                          </details>
+                                        ) : null}
+
+                                        {resolutionPayloadPreview ? (
+                                          <details className="task-run-event__payload">
+                                            <summary>Resolution payload</summary>
+                                            <pre>{resolutionPayloadPreview}</pre>
+                                          </details>
+                                        ) : null}
+
+                                        {isPending ? (
+                                          <div className="task-run-approval-card__actions">
+                                            <button
+                                              type="button"
+                                              className="chat-card-action-btn chat-card-action-btn--approve"
+                                              disabled={isBusy}
+                                              onClick={() => void handleResolveApprovalQueueItem(item, "approve")}
+                                            >
+                                              {isBusy ? labels.busy : labels.approve}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="chat-card-action-btn chat-card-action-btn--reject"
+                                              disabled={isBusy}
+                                              onClick={() => void handleResolveApprovalQueueItem(item, "reject")}
+                                            >
+                                              {labels.reject}
+                                            </button>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })}
-                          </div>
+                              )}
+                            </div>
+
+                            <div className="task-run-event-list">
+                              {selectedTaskRunDetail.events.map((event) => {
+                                const payloadPreview = taskRunPayloadPreview(event.payload);
+                                return (
+                                  <div
+                                    key={event.id}
+                                    className={`task-run-event task-run-event--${taskRunEventTone(event.event_type)}`}
+                                  >
+                                    <div className="task-run-event__meta">
+                                      <span>
+                                        #{event.event_index} · {formatTaskRunEventType(event.event_type)}
+                                      </span>
+                                      <span>{event.created_at ? formatTime(event.created_at) : "--"}</span>
+                                    </div>
+                                    <div className="task-run-event__summary">
+                                      {event.summary || "No summary."}
+                                    </div>
+                                    {event.agent_name ? (
+                                      <div className="task-run-event__agent">{event.agent_name}</div>
+                                    ) : null}
+                                    {payloadPreview ? (
+                                      <details className="task-run-event__payload">
+                                        <summary>Payload</summary>
+                                        <pre>{payloadPreview}</pre>
+                                      </details>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </>
                         ) : (
                           <div className="empty-card">No event detail loaded.</div>
                         )}

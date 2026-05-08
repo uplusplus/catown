@@ -127,6 +127,34 @@ def test_start_pipeline_creates_task_run_ledger_bridge(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_allows_read_only_run_shell_without_manual_approval(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    run = MagicMock(id=1, workspace_path=str(workspace))
+    original_allowed_tools = engine_mod.AGENT_TOOLS.get("developer")
+    engine_mod.AGENT_TOOLS["developer"] = ["run_shell"]
+
+    try:
+        result = await engine_mod._execute_tool(
+            "developer",
+            run,
+            "run_shell",
+            {"command": "pwd && printf ok"},
+        )
+    finally:
+        if original_allowed_tools is None:
+            engine_mod.AGENT_TOOLS.pop("developer", None)
+        else:
+            engine_mod.AGENT_TOOLS["developer"] = original_allowed_tools
+
+    assert result["success"] is True
+    assert result["status"] == "succeeded"
+    assert "ok" in result["result"]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_stage_rebuilds_messages_from_turn_state(fresh_db, tmp_path):
     engine_mod = _reload_pipeline_engine()
     from pipeline.config import StageConfig
@@ -466,8 +494,8 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
             context="Pipeline context for blocked tool classification.",
         )
 
-        assert summary == "The tool call was blocked by policy."
-        assert len(seen_messages) == 2
+        assert summary == ""
+        assert len(seen_messages) == 1
 
         task_events = (
             db.query(fresh_db.TaskRunEvent)
@@ -481,7 +509,6 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
             "tool_round_recorded",
             "approval_queue_item_created",
             "tool_call_blocked",
-            "agent_turn_completed",
         ]
 
         round_payload = json.loads(task_events[1].payload_json)
@@ -891,7 +918,6 @@ async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path)
             "tool_round_recorded",
             "approval_queue_item_created",
             "tool_call_blocked",
-            "agent_turn_completed",
             "pipeline_stage_blocked",
         ]
         started_payload = json.loads(events[0].payload_json)

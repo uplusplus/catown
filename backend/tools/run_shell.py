@@ -11,6 +11,11 @@ import subprocess
 
 from .base import BaseTool
 from .file_operations import get_active_workspace
+from services.tool_execution_preferences import (
+    build_run_shell_timeout_preference_key,
+    prefers_wait_forever,
+)
+from services.tool_governance import build_structured_tool_result
 
 
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -36,11 +41,27 @@ class RunShellTool(BaseTool):
         command: str,
         cwd: str = ".",
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        project_id: int | None = None,
+        chatroom_id: int | None = None,
         **kwargs,
     ) -> str:
-        return await asyncio.to_thread(self._execute_sync, command, cwd, timeout_seconds)
+        return await asyncio.to_thread(
+            self._execute_sync,
+            command,
+            cwd,
+            timeout_seconds,
+            project_id,
+            chatroom_id,
+        )
 
-    def _execute_sync(self, command: str, cwd: str, timeout_seconds: int) -> str:
+    def _execute_sync(
+        self,
+        command: str,
+        cwd: str,
+        timeout_seconds: int,
+        project_id: int | None = None,
+        chatroom_id: int | None = None,
+    ) -> str | dict[str, object]:
         normalized_command = str(command or "").strip()
         if not normalized_command:
             return "[Run Shell] Error: command is required."
@@ -54,17 +75,49 @@ class RunShellTool(BaseTool):
         if not shell_cmd:
             return "[Run Shell] Error: No supported shell found on this system."
 
+        preference_key = build_run_shell_timeout_preference_key(normalized_command, cwd)
+        wait_forever = False
+        from models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            wait_forever = prefers_wait_forever(
+                db,
+                tool_name=self.name,
+                preference_key=preference_key,
+                project_id=project_id,
+                chatroom_id=chatroom_id,
+            )
+        finally:
+            db.close()
+
+        run_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "cwd": working_dir,
+            "env": {**os.environ, "TERM": "dumb"},
+        }
+        if not wait_forever:
+            run_kwargs["timeout"] = timeout
+
         try:
             result = subprocess.run(
                 shell_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=working_dir,
-                env={**os.environ, "TERM": "dumb"},
+                **run_kwargs,
             )
         except subprocess.TimeoutExpired:
-            return f"[Run Shell] Error: Execution timed out ({timeout}s limit)"
+            result_text = (
+                f"[Run Shell] Timed out after {timeout}s. "
+                "Waiting for user confirmation to continue without a timeout."
+            )
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=result_text,
+                success=False,
+                status="timeout_waiting",
+                blocked=True,
+                blocked_kind="timeout",
+                blocked_reason=result_text,
+            )
         except Exception as exc:
             return f"[Run Shell] Error: {exc}"
 

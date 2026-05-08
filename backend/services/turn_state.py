@@ -218,19 +218,34 @@ def build_tool_result_record(
     success: bool = True,
     max_result_chars: int = 2000,
 ) -> ToolResultRecord:
-    result_text = str(result or "(no output)")
-    if max_result_chars > 0 and len(result_text) > max_result_chars:
-        result_text = result_text[:max_result_chars]
-
     arguments_text = arguments if isinstance(arguments, str) else _safe_json(arguments)
-    classification = classify_tool_result(
-        str(tool_name or "tool"),
-        result_text,
-        success=success,
-    )
+
+    if isinstance(result, Mapping) and result.get("__catown_tool_result__") is True:
+        result_text = str(result.get("result") or "(no output)")
+        if max_result_chars > 0 and len(result_text) > max_result_chars:
+            result_text = result_text[:max_result_chars]
+        classification = {
+            "status": str(result.get("status") or ("succeeded" if result.get("success") else "failed")),
+            "success": bool(result.get("success")),
+            "blocked": bool(result.get("blocked")),
+            "blocked_kind": result.get("blocked_kind"),
+            "blocked_reason": result.get("blocked_reason"),
+        }
+        resolved_tool_name = str(result.get("tool_name") or tool_name or "tool")
+    else:
+        result_text = str(result or "(no output)")
+        if max_result_chars > 0 and len(result_text) > max_result_chars:
+            result_text = result_text[:max_result_chars]
+        classification = classify_tool_result(
+            str(tool_name or "tool"),
+            result_text,
+            success=success,
+        )
+        resolved_tool_name = str(tool_name or "tool")
+
     return ToolResultRecord(
         tool_call_id=str(tool_call_id or ""),
-        tool_name=str(tool_name or "tool"),
+        tool_name=resolved_tool_name,
         arguments=arguments_text,
         result=result_text,
         success=bool(classification.get("success")),

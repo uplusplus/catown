@@ -117,6 +117,15 @@ class ArtifactOut(BaseModel):
         from_attributes = True
 
 
+class WorkflowSpecOut(BaseModel):
+    workflow_id: str
+    name: str
+    description: str
+    domain: str
+    stage_count: int
+    payload: dict
+
+
 # ==================== Pipeline CRUD ====================
 
 @router.post("", response_model=PipelineOut)
@@ -133,6 +142,23 @@ async def create_pipeline(req: CreatePipelineRequest, db: Session = Depends(get_
 async def list_pipelines(db: Session = Depends(get_db)):
     """列出所有 Pipeline"""
     return db.query(Pipeline).order_by(Pipeline.created_at.desc()).all()
+
+
+@router.get("/templates/{pipeline_name}/workflow-spec", response_model=WorkflowSpecOut)
+async def get_pipeline_template_workflow_spec(pipeline_name: str):
+    """Return the canonical workflow-spec projection for one pipeline template."""
+    workflow_spec = pipeline_config_manager.get_workflow_spec(pipeline_name)
+    if workflow_spec is None:
+        raise HTTPException(status_code=404, detail="Pipeline template not found")
+    payload = workflow_spec.model_dump(mode="json")
+    return WorkflowSpecOut(
+        workflow_id=workflow_spec.workflow_id,
+        name=workflow_spec.name,
+        description=workflow_spec.description,
+        domain=workflow_spec.domain,
+        stage_count=len(workflow_spec.stages),
+        payload=payload,
+    )
 
 
 @router.get("/{pipeline_id}", response_model=PipelineDetailOut)

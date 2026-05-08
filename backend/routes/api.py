@@ -7,6 +7,7 @@ import re
 import json
 import os
 import asyncio
+import threading
 import socket
 import shutil
 import subprocess
@@ -45,6 +46,7 @@ from models.database import (
     TaskRunEvent,
     OrchestrationHandoffDelivery,
     ApprovalQueueItem,
+    ToolExecutionPreference,
     SessionLocal,
     Base,
 )
@@ -169,6 +171,26 @@ from services.stream_transport import (
     render_sse_payload,
     render_chatroom_runtime_card_sse,
     render_stream_turn_event,
+)
+from services.tool_execution_preferences import (
+    AUTH_DECISION_ALLOW,
+    AUTH_DECISION_DENY,
+    AUTH_DECISION_ALLOW_NO_TIMEOUT,
+    AUTH_MATCHER_COMMAND_FINGERPRINT,
+    AUTH_MATCHER_TOOL_TARGET,
+    AUTH_PREFERENCE_KIND,
+    AUTH_SCOPE_CHATROOM,
+    AUTH_SCOPE_GLOBAL,
+    AUTH_SCOPE_PROJECT,
+    authorization_matchers_for_tool,
+    build_run_shell_timeout_preference_key,
+    build_tool_target_matcher_value,
+    list_authorization_rules,
+    normalize_authorization_scope,
+    revoke_authorization_rule,
+    save_wait_forever_preference,
+    serialize_authorization_rule,
+    upsert_authorization_rule,
 )
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.subagent_lifecycle import (
@@ -344,6 +366,12 @@ class OrchestrationConfigModel(BaseModel):
         return normalized
 
 
+class PermissionsConfigModel(BaseModel):
+    """Runtime permission policy config validation model."""
+
+    allow_read_only_tools_without_approval: bool = True
+
+
 router = APIRouter()
 
 
@@ -465,8 +493,8 @@ def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def _tool_result_succeeded(result_text: str) -> bool:
-    return shared_tool_result_succeeded(result_text)
+def _tool_result_succeeded(result: Any) -> bool:
+    return shared_tool_result_succeeded(result)
 
 
 def _build_context_compaction_callback(
@@ -568,6 +596,18 @@ def _effective_orchestration_config(config_data: Optional[Dict[str, Any]] = None
     else:
         sidecar_agent_types = sorted(DEFAULT_SIDECAR_AGENT_TYPES)
     return {"sidecar_agent_types": sidecar_agent_types}
+
+
+def _effective_permissions_config(config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = config_data if config_data is not None else _load_agent_config_data()
+    permissions_data = payload.get("permissions") if isinstance(payload, dict) else None
+    if not isinstance(permissions_data, dict):
+        permissions_data = {}
+    return {
+        "allow_read_only_tools_without_approval": bool(
+            permissions_data.get("allow_read_only_tools_without_approval", True)
+        ),
+    }
 
 
 def _configured_sidecar_agent_types(config_data: Optional[Dict[str, Any]] = None) -> set[str] | None:
@@ -1209,18 +1249,17 @@ async def trigger_agent_response(
                     **tool_args,
                     **runtime.runtime_kwargs,
                 )
-                result_str = str(tool_result) if tool_result is not None else "(no output)"
-                tool_success = True
-                logger.debug(f"[Tool] Result: {result_str[:150]}...")
+                tool_success = _tool_result_succeeded(tool_result)
+                logger.debug(f"[Tool] Result: {_tool_result_text(tool_result)[:150]}...")
             except Exception as te:
-                result_str = f"Error executing {tool_name}: {str(te)}"
+                tool_result = f"Error executing {tool_name}: {str(te)}"
                 tool_success = False
                 logger.debug(f"[Tool] Error: {te}")
             return build_tool_result_record(
                 tool_call_id=tool_call.get("id"),
                 tool_name=tool_name,
                 arguments=tool_args_str,
-                result=result_str,
+                result=tool_result,
                 success=tool_success,
             )
 
@@ -1230,15 +1269,43 @@ async def trigger_agent_response(
                 f"[LLM] Response received: {frame.content[:100] if frame.content else 'None'}..."
             )
             logger.info(f"[LLM] Tool calls: {frame.normalized_tool_calls}")
+            recorded_tool_calls = frame.executed_tool_calls or frame.normalized_tool_calls
+            blocked_tool_result = getattr(frame, "blocked_tool_result", None)
             record_runner_tool_round(
                 db,
                 task_run,
                 agent_name=runtime.agent_label,
                 turn=frame.turn_index + 1,
-                tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+                tool_names=[
+                    tool_call["function"]["name"]
+                    for tool_call in (
+                        recorded_tool_calls
+                        + ([{
+                            "function": {"name": blocked_tool_result.tool_name},
+                        }] if blocked_tool_result is not None else [])
+                    )
+                ],
                 tool_results=tool_results,
+                blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
                 summary=f"{runtime.agent_label} completed a tool round.",
+                assistant_content=frame.content,
             )
+        awaiting_tool_approval = False
+
+        async def _execute_project_single_agent_turn():
+            nonlocal awaiting_tool_approval
+            loop_result = await execute_non_stream_turn_loop(
+                llm_client=runtime.llm_client,
+                tools=runtime.tool_schemas,
+                turn_state=runtime.turn_state,
+                assemble_messages=_assemble_project_single_agent_messages,
+                execute_tool_call=_execute_project_single_agent_tool,
+                max_turns=MAX_TOOL_ITERATIONS,
+                on_tool_round=_on_project_single_agent_tool_round,
+            )
+            awaiting_tool_approval = loop_result.awaiting_tool_approval
+            return loop_result.final_content or None
+
         project_single_agent_runtime_inputs = build_single_agent_raw_runtime_inputs(
             db=db,
             task_run=task_run,
@@ -1263,16 +1330,8 @@ async def trigger_agent_response(
             build_single_agent_runtime_profile_from_raw_inputs(
                 runtime_inputs=project_single_agent_runtime_inputs,
                 execution_inputs=build_single_agent_sync_raw_execution_envelope(
-                    execute_turn=lambda: execute_non_stream_turn_loop(
-                        llm_client=runtime.llm_client,
-                        tools=runtime.tool_schemas,
-                        turn_state=runtime.turn_state,
-                        assemble_messages=_assemble_project_single_agent_messages,
-                        execute_tool_call=_execute_project_single_agent_tool,
-                        max_turns=MAX_TOOL_ITERATIONS,
-                        on_tool_round=_on_project_single_agent_tool_round,
-                    ),
-                    on_empty=lambda: logger.error(f"[ LLM returned empty response after all tool iterations"),
+                    execute_turn=_execute_project_single_agent_turn,
+                    on_empty=lambda: None if awaiting_tool_approval else logger.error(f"[ LLM returned empty response after all tool iterations"),
                 ),
             )
         )
@@ -1299,6 +1358,24 @@ async def trigger_agent_response(
 
 def _compact_runtime_text(value: Any, *, limit: int = 600) -> str:
     return compact_orchestration_text(value, limit=limit)
+
+
+def _tool_result_text(value: Any) -> str:
+    if isinstance(value, dict) and value.get("__catown_tool_result__") is True:
+        return str(value.get("result") or "(no output)")
+    return str(value) if value is not None else "(no output)"
+
+
+def _load_jsonish_payload(raw_value: Any) -> Dict[str, Any]:
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    if not raw_value:
+        return {}
+    try:
+        loaded = json.loads(str(raw_value))
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _build_orchestration_previous_work(turns: List[Dict[str, str]]) -> str:
@@ -2281,6 +2358,19 @@ class ApprovalQueueDecisionRequest(BaseModel):
     note: Optional[str] = None
     rollback_to: Optional[str] = None
     resolved_by: Optional[str] = "user"
+    remember_scope: Optional[str] = None
+
+    @field_validator("remember_scope")
+    @classmethod
+    def _validate_remember_scope(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return None
+        if normalized not in {AUTH_SCOPE_PROJECT, AUTH_SCOPE_CHATROOM, AUTH_SCOPE_GLOBAL}:
+            raise ValueError("remember_scope must be one of: project, chatroom, global")
+        return normalized
 
 
 class TaskRunCancelRequest(BaseModel):
@@ -3319,6 +3409,7 @@ async def _replay_runtime_blocked_tool_queue_item(
     request_payload: Dict[str, Any],
 ):
     from tools import tool_registry
+    from tools.file_operations import reset_active_workspace, set_active_workspace
 
     tool_name = resolve_replay_tool_name(item, request_payload)
     arguments_text = resolve_replay_arguments_text(request_payload)
@@ -3329,6 +3420,7 @@ async def _replay_runtime_blocked_tool_queue_item(
             arguments=arguments_text,
             result="Error executing blocked tool replay: missing tool_name.",
             success=False,
+            request_payload=request_payload,
         )
 
     loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
@@ -3339,6 +3431,7 @@ async def _replay_runtime_blocked_tool_queue_item(
             arguments=arguments_text,
             result=f"Error executing blocked tool replay: invalid arguments ({arguments_error}).",
             success=False,
+            request_payload=request_payload,
         )
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == getattr(item, "chatroom_id", None)).first()
@@ -3349,12 +3442,23 @@ async def _replay_runtime_blocked_tool_queue_item(
             arguments=arguments_text,
             result="Error executing blocked tool replay: chatroom no longer exists.",
             success=False,
+            request_payload=request_payload,
         )
 
     project = _resolve_chatroom_project(db, chatroom)
     agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
     agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
     runtime_kwargs = build_tool_runtime_kwargs(agent, chatroom.id, project)
+    workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
+    logger.info(
+        "[ApprovalFlow] replay-runtime-start queue_item_id=%s task_run_id=%s tool=%s chatroom_id=%s project_id=%s workspace=%s",
+        getattr(item, "id", None),
+        getattr(item, "task_run_id", None),
+        tool_name,
+        getattr(item, "chatroom_id", None),
+        getattr(item, "project_id", None),
+        project.workspace_path if project and getattr(project, "workspace_path", None) else None,
+    )
 
     try:
         tool_result = await tool_registry.execute(
@@ -3363,18 +3467,27 @@ async def _replay_runtime_blocked_tool_queue_item(
             **runtime_kwargs,
             __catown_approval_granted=True,
         )
-        tool_result_text = str(tool_result) if tool_result is not None else "(no output)"
-        tool_success = True
+        tool_success = _tool_result_succeeded(tool_result)
     except Exception as exc:
-        tool_result_text = f"Error executing {tool_name}: {exc}"
+        tool_result = f"Error executing {tool_name}: {exc}"
         tool_success = False
+    finally:
+        reset_active_workspace(workspace_token)
+    logger.info(
+        "[ApprovalFlow] replay-runtime-finished queue_item_id=%s tool=%s success=%s result_preview=%s",
+        getattr(item, "id", None),
+        tool_name,
+        tool_success,
+        _compact_runtime_text(_tool_result_text(tool_result), limit=200),
+    )
 
     return build_replay_tool_result_record(
         item,
         tool_name=tool_name,
         arguments=arguments_text,
-        result=tool_result_text,
+        result=tool_result,
         success=tool_success,
+        request_payload=request_payload,
     )
 
 
@@ -3405,46 +3518,161 @@ def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> O
     return task_run
 
 
-async def _publish_replayed_tool_result_message(
+def _finalize_noncontinuable_approval_task_run(
     db: Session,
+    task_run: Optional[TaskRun],
+    *,
     item: Any,
     replay_result: Any,
+    resolution_payload: Dict[str, Any],
+) -> None:
+    if task_run is None:
+        return
+
+    followup_status = str(resolution_payload.get("followup_status") or "").strip().lower()
+    if followup_status == "continued":
+        return
+
+    tool_name = str(
+        getattr(replay_result, "tool_name", None)
+        or getattr(item, "target_name", None)
+        or "tool"
+    ).strip() or "tool"
+    if bool(getattr(replay_result, "blocked", False)) and str(getattr(replay_result, "blocked_kind", "")).strip().lower() == "timeout":
+        return
+
+    if followup_status == "skipped":
+        followup_reason = str(resolution_payload.get("followup_reason") or "").strip() or "follow_up_skipped"
+        if followup_reason == "replay_not_actionable":
+            replay_status = str(
+                resolution_payload.get("replay_status")
+                or getattr(replay_result, "status", None)
+                or "failed"
+            ).strip() or "failed"
+            replay_preview = _compact_runtime_text(
+                str(
+                    resolution_payload.get("replay_result_preview")
+                    or getattr(replay_result, "result", "")
+                    or ""
+                ),
+                limit=220,
+            )
+            summary = (
+                f"{tool_name} continuation {replay_status}: {replay_preview}"
+                if replay_preview
+                else f"{tool_name} continuation {replay_status}."
+            )
+        else:
+            summary = f"{tool_name} continuation could not continue: {followup_reason}."
+    elif followup_status == "failed":
+        followup_error = _compact_runtime_text(
+            str(resolution_payload.get("followup_error") or "follow-up failed"),
+            limit=220,
+        )
+        summary = f"{tool_name} continuation follow-up failed: {followup_error}"
+    else:
+        summary = f"{tool_name} continuation did not continue."
+
+    complete_task_run(
+        db,
+        task_run,
+        status="failed",
+        summary=summary,
+    )
+
+
+def _persist_timeout_wait_preference_for_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+) -> None:
+    if str(request_payload.get("blocked_kind") or "").strip().lower() != "timeout":
+        return
+    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
+    if tool_name != "run_shell":
+        return
+
+    arguments_text = resolve_replay_arguments_text(request_payload)
+    loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
+    if arguments_error is not None or loaded_arguments is None:
+        return
+
+    command = str(loaded_arguments.get("command") or "").strip()
+    if not command:
+        return
+    cwd = str(loaded_arguments.get("cwd") or ".").strip() or "."
+    preference_key = build_run_shell_timeout_preference_key(command, cwd)
+    save_wait_forever_preference(
+        db,
+        tool_name="run_shell",
+        preference_key=preference_key,
+        command_preview=f"{command} @ {cwd}",
+        project_id=getattr(item, "project_id", None),
+        chatroom_id=getattr(item, "chatroom_id", None),
+    )
+
+
+def _parse_authorization_rule_arguments(request_payload: Dict[str, Any]) -> dict[str, Any]:
+    arguments_text = resolve_replay_arguments_text(request_payload)
+    loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
+    if arguments_error is not None or loaded_arguments is None:
+        return {}
+    return loaded_arguments
+
+
+def _build_authorization_rule_preview(tool_name: str, request_payload: Dict[str, Any]) -> str:
+    arguments = _parse_authorization_rule_arguments(request_payload)
+    if tool_name == "run_shell":
+        command = str(arguments.get("command") or "").strip()
+        cwd = str(arguments.get("cwd") or ".").strip() or "."
+        if command:
+            return f"{command} @ {cwd}"
+    return str(request_payload.get("tool_name") or tool_name or "tool").strip() or "tool"
+
+
+def _persist_authorization_rule_for_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
     *,
-    client_turn_id: Optional[str],
-):
-    chatroom_id = getattr(item, "chatroom_id", None)
-    if chatroom_id is None:
+    decision_kind: str,
+    requested_scope: str | None,
+) -> dict[str, Any] | None:
+    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
+    if not tool_name:
         return None
 
-    metadata = _message_metadata_with_turn(
-        client_turn_id,
-        {
-            "tool_call_id": getattr(replay_result, "tool_call_id", None),
-            "queue_item_id": getattr(item, "id", None),
-            "tool_name": getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None),
-            "replayed": True,
-            "approval_queue_replay": True,
-        },
+    scope = normalize_authorization_scope(
+        requested_scope,
+        project_id=getattr(item, "project_id", None),
+        chatroom_id=getattr(item, "chatroom_id", None),
     )
-    saved = await chatroom_manager.send_message(
-        chatroom_id=chatroom_id,
-        agent_id=None,
-        content=getattr(replay_result, "result", "") or "(no output)",
-        message_type="tool_result",
-        metadata=metadata,
-        agent_name=getattr(item, "agent_name", None),
+    matcher_pairs = authorization_matchers_for_tool(
+        tool_name,
+        _parse_authorization_rule_arguments(request_payload),
     )
-    await publish_saved_chat_message(
+    if not matcher_pairs:
+        matcher_pairs = [(AUTH_MATCHER_TOOL_TARGET, build_tool_target_matcher_value(tool_name))]
+
+    matcher_type, matcher_value = matcher_pairs[0]
+    constraints: dict[str, Any] = {}
+    if decision_kind == AUTH_DECISION_ALLOW_NO_TIMEOUT:
+        constraints["allow_timeout_bypass"] = True
+    rule = upsert_authorization_rule(
         db,
-        chatroom_id,
-        message_id=saved.id,
-        content=saved.content,
-        agent_name=saved.agent_name,
-        message_type=saved.message_type,
-        created_at=saved.created_at,
-        metadata=metadata,
+        tool_name=tool_name,
+        scope=scope,
+        matcher_type=matcher_type,
+        matcher_value=matcher_value,
+        decision_kind=decision_kind,
+        project_id=getattr(item, "project_id", None),
+        chatroom_id=getattr(item, "chatroom_id", None),
+        preference_kind=AUTH_PREFERENCE_KIND,
+        preference_value="denied" if decision_kind == AUTH_DECISION_DENY else "granted",
+        constraints=constraints,
+        command_preview=_build_authorization_rule_preview(tool_name, request_payload),
     )
-    return saved
+    return serialize_authorization_rule(rule)
 
 
 async def _continue_runtime_after_approved_tool_replay(
@@ -3461,28 +3689,33 @@ async def _continue_runtime_after_approved_tool_replay(
     if approval_queue_item_has_pipeline_cursor(item, request_payload):
         return build_followup_skipped_payload("pipeline_queue_item")
     if not replay_result_is_actionable(replay_result):
+        logger.info(
+            "[ApprovalFlow] runtime-followup-skipped queue_item_id=%s tool=%s reason=replay_not_actionable replay_status=%s replay_blocked=%s",
+            getattr(item, "id", None),
+            getattr(replay_result, "tool_name", None),
+            getattr(replay_result, "status", None),
+            getattr(replay_result, "blocked", None),
+        )
         return build_followup_skipped_payload("replay_not_actionable")
 
     followup_context = build_tool_replay_followup_context(item, replay_result)
-    saved = await _publish_replayed_tool_result_message(
-        db,
-        item,
-        replay_result,
-        client_turn_id=getattr(task_run, "client_turn_id", None),
-    )
     _reopen_task_run_for_followup(db, task_run)
     append_task_event(
         db,
         task_run,
         "approval_queue_item_followup_triggered",
         agent_name=item.agent_name,
-        message_id=getattr(saved, "id", None),
-        summary=f"Continuing agent turn after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+        summary=f"Continuing agent turn after approved continuation of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
         payload=build_followup_triggered_event_payload(
             item,
             replay_result,
-            message_id=getattr(saved, "id", None),
         ),
+    )
+    logger.info(
+        "[ApprovalFlow] runtime-followup-triggered queue_item_id=%s task_run_id=%s tool=%s",
+        getattr(item, "id", None),
+        getattr(task_run, "id", None),
+        getattr(replay_result, "tool_name", None),
     )
     followup_snapshot = build_task_run_checkpoint_snapshot(task_run)
     try:
@@ -3495,17 +3728,24 @@ async def _continue_runtime_after_approved_tool_replay(
             checkpoint_snapshot=followup_snapshot,
         )
     except Exception as exc:
+        logger.exception(
+            "[ApprovalFlow] runtime-followup-failed queue_item_id=%s task_run_id=%s tool=%s error=%s",
+            getattr(item, "id", None),
+            getattr(task_run, "id", None),
+            getattr(replay_result, "tool_name", None),
+            exc,
+        )
         append_task_event(
             db,
             task_run,
             "approval_queue_item_followup_failed",
             agent_name=item.agent_name,
-            summary=f"Approved replay follow-up failed for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+            summary=f"Approved continuation follow-up failed for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
             payload=build_followup_failed_event_payload(item, replay_result, exc),
         )
-        return build_followup_failed_payload(exc, followup_message_id=getattr(saved, "id", None))
+        return build_followup_failed_payload(exc)
 
-    return build_followup_continued_payload(followup_message_id=getattr(saved, "id", None))
+    return build_followup_continued_payload()
 
 
 async def _continue_pipeline_after_approved_tool_replay(
@@ -3556,12 +3796,17 @@ async def _continue_pipeline_after_approved_tool_replay(
         if (pipeline.status or "").lower() == "paused":
             await pipeline_engine.resume(db, pipeline.id)
     except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        item_agent_name = getattr(item, "agent_name", None)
         append_task_event(
             db,
             task_run,
             "approval_queue_item_followup_failed",
-            agent_name=item.agent_name,
-            summary=f"Approved replay follow-up failed for pipeline tool {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+            agent_name=item_agent_name,
+            summary=f"Approved continuation follow-up failed for pipeline tool {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
             payload=build_followup_failed_event_payload(
                 item,
                 replay_result,
@@ -3573,6 +3818,126 @@ async def _continue_pipeline_after_approved_tool_replay(
         return build_followup_failed_payload(exc)
 
     return build_followup_continued_payload(followup_reason="pipeline_resumed")
+
+
+async def _finalize_approved_queue_item_followup_async(
+    item_id: int,
+    *,
+    request_payload: Dict[str, Any],
+    resolved_by: str,
+    resolution_note: str,
+) -> None:
+    db = SessionLocal()
+    try:
+        item = get_approval_queue_item(db, item_id)
+        if item is None:
+            return
+        if (item.status or "").lower() != "approved":
+            return
+        if (item.target_kind or "") != "tool" or not bool(request_payload.get("resume_supported")):
+            return
+
+        replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
+        task_run = get_task_run(db, item.task_run_id)
+        try:
+            replay_turn = max(1, int(request_payload.get("turn") or 1))
+        except (TypeError, ValueError):
+            replay_turn = 1
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=(item.agent_name or "").strip() or "agent",
+            turn=replay_turn,
+            tool_names=[replay_result.tool_name],
+            tool_results=[replay_result],
+            summary=f"Continued blocked tool {replay_result.tool_name} after approval.",
+            payload=build_approval_queue_replay_round_payload(item, request_payload),
+        )
+        resolution_payload = build_queue_replay_resolution_payload(
+            request_payload=request_payload,
+            replay_result=replay_result,
+            action_taken="tool_replayed",
+        )
+        if approval_queue_item_has_pipeline_cursor(item, request_payload):
+            resolution_payload.update(
+                await _continue_pipeline_after_approved_tool_replay(
+                    db,
+                    item,
+                    request_payload,
+                    replay_result,
+                )
+            )
+        else:
+            resolution_payload.update(
+                await _continue_runtime_after_approved_tool_replay(
+                    db,
+                    item,
+                    request_payload,
+                    replay_result,
+                )
+            )
+
+        item.resolution_payload_json = json.dumps(resolution_payload, ensure_ascii=False)
+        item.resolution_note = resolution_note or item.resolution_note
+        item.resolved_by = resolved_by or item.resolved_by
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+
+        task_run = get_task_run(db, item.task_run_id)
+        append_task_event(
+            db,
+            task_run,
+            "approval_queue_item_resolved",
+            agent_name=item.agent_name,
+            summary=f"Approved queue item continuation updated for {item.target_name or item.target_kind}.",
+            payload=build_approval_queue_item_resolved_event_payload(
+                item,
+                status="approved",
+                resolved_by=resolved_by,
+                request_payload=request_payload,
+                resolution_payload=resolution_payload,
+            ),
+        )
+        _finalize_noncontinuable_approval_task_run(
+            db,
+            task_run,
+            item=item,
+            replay_result=replay_result,
+            resolution_payload=resolution_payload,
+        )
+    except Exception as exc:
+        logger.exception("Approval queue async follow-up failed for item %s: %s", item_id, exc)
+    finally:
+        db.close()
+
+
+def _spawn_approval_followup_worker(
+    item_id: int,
+    *,
+    request_payload: Dict[str, Any],
+    resolved_by: str,
+    resolution_note: str,
+) -> None:
+    def _runner() -> None:
+        try:
+            asyncio.run(
+                _finalize_approved_queue_item_followup_async(
+                    item_id,
+                    request_payload=request_payload,
+                    resolved_by=resolved_by,
+                    resolution_note=resolution_note,
+                )
+            )
+        except Exception as exc:
+            logger.exception("Approval follow-up worker crashed for item %s: %s", item_id, exc)
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"approval-followup-{item_id}",
+        daemon=True,
+    )
+    thread.start()
 
 
 @router.get("/approval-queue")
@@ -3620,6 +3985,15 @@ async def approve_approval_queue_item(
     request_payload = load_approval_queue_request_payload(item.request_payload_json)
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
+    logger.info(
+        "[ApprovalFlow] approve-request queue_item_id=%s task_run_id=%s target=%s status=%s resolved_by=%s resume_supported=%s",
+        item_id,
+        getattr(item, "task_run_id", None),
+        getattr(item, "target_name", None),
+        getattr(item, "status", None),
+        resolved_by,
+        bool(request_payload.get("resume_supported")),
+    )
     if not claim_approval_queue_resolution_lease(
         db,
         item,
@@ -3645,46 +4019,19 @@ async def approve_approval_queue_item(
         request_payload=request_payload,
         action_taken="queue_resolved_only",
     )
-    if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")):
-        replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
-        task_run = get_task_run(db, item.task_run_id)
-        try:
-            replay_turn = max(1, int(request_payload.get("turn") or 1))
-        except (TypeError, ValueError):
-            replay_turn = 1
-        record_runner_tool_round(
+    remembered_rule = None
+    if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
+        _persist_timeout_wait_preference_for_queue_item(db, item, request_payload)
+    elif req is not None and req.remember_scope:
+        remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
-            task_run,
-            agent_name=(item.agent_name or "").strip() or "agent",
-            turn=replay_turn,
-            tool_names=[replay_result.tool_name],
-            tool_results=[replay_result],
-            summary=f"Replayed blocked tool {replay_result.tool_name} after approval.",
-            payload=build_approval_queue_replay_round_payload(item, request_payload),
+            item,
+            request_payload,
+            decision_kind=AUTH_DECISION_ALLOW,
+            requested_scope=req.remember_scope,
         )
-        resolution_payload = build_queue_replay_resolution_payload(
-            request_payload=request_payload,
-            replay_result=replay_result,
-            action_taken="tool_replayed",
-        )
-        if approval_queue_item_has_pipeline_cursor(item, request_payload):
-            resolution_payload.update(
-                await _continue_pipeline_after_approved_tool_replay(
-                    db,
-                    item,
-                    request_payload,
-                    replay_result,
-                )
-            )
-        else:
-            resolution_payload.update(
-                await _continue_runtime_after_approved_tool_replay(
-                    db,
-                    item,
-                    request_payload,
-                    replay_result,
-                )
-            )
+        if remembered_rule is not None:
+            resolution_payload["remembered_rule"] = remembered_rule
 
     resolved = resolve_approval_queue_item(
         db,
@@ -3709,6 +4056,26 @@ async def approve_approval_queue_item(
             resolution_payload=resolution_payload,
         ),
     )
+    logger.info(
+        "[ApprovalFlow] approve-resolved queue_item_id=%s task_run_id=%s target=%s immediate_action=%s",
+        item_id,
+        getattr(item, "task_run_id", None),
+        getattr(item, "target_name", None),
+        resolution_payload.get("action_taken"),
+    )
+    if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")):
+        _spawn_approval_followup_worker(
+            item.id,
+            request_payload=request_payload,
+            resolved_by=resolved_by,
+            resolution_note=resolution_note or f"Approved {item.target_kind or 'action'} from the API.",
+        )
+        logger.info(
+            "[ApprovalFlow] approve-followup-dispatched queue_item_id=%s task_run_id=%s target=%s",
+            item_id,
+            getattr(item, "task_run_id", None),
+            getattr(item, "target_name", None),
+        )
     return serialize_approval_queue_item(resolved or item)
 
 
@@ -3759,6 +4126,25 @@ async def reject_approval_queue_item(
             rollback_to=req.rollback_to if req else None,
         ),
     )
+    if req is not None and req.remember_scope:
+        remembered_rule = _persist_authorization_rule_for_queue_item(
+            db,
+            item,
+            request_payload,
+            decision_kind=AUTH_DECISION_DENY,
+            requested_scope=req.remember_scope,
+        )
+        if remembered_rule is not None:
+            resolved.resolution_payload_json = json.dumps(
+                {
+                    **(_load_jsonish_payload(resolved.resolution_payload_json)),
+                    "remembered_rule": remembered_rule,
+                },
+                ensure_ascii=False,
+            )
+            db.add(resolved)
+            db.commit()
+            db.refresh(resolved)
     task_run = get_task_run(db, item.task_run_id)
     append_task_event(
         db,
@@ -3773,7 +4159,45 @@ async def reject_approval_queue_item(
             request_payload=request_payload,
         ),
     )
+    if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
+        tool_name = str(request_payload.get("tool_name") or item.target_name or "tool").strip() or "tool"
+        complete_task_run(
+            db,
+            task_run,
+            status="failed",
+            summary=f"{tool_name} timed out and user chose not to continue waiting.",
+    )
     return serialize_approval_queue_item(resolved or item)
+
+
+@router.get("/tool-authorization-rules")
+async def get_tool_authorization_rules(
+    project_id: Optional[int] = None,
+    chatroom_id: Optional[int] = None,
+    tool_name: Optional[str] = None,
+    include_revoked: bool = False,
+    db: Session = Depends(get_db),
+):
+    rules = list_authorization_rules(
+        db,
+        project_id=project_id,
+        chatroom_id=chatroom_id,
+        tool_name=(tool_name or "").strip() or None,
+        include_revoked=include_revoked,
+    )
+    return [serialize_authorization_rule(rule) for rule in rules]
+
+
+@router.delete("/tool-authorization-rules/{rule_id}")
+async def delete_tool_authorization_rule(rule_id: int, db: Session = Depends(get_db)):
+    rule = db.query(ToolExecutionPreference).filter(ToolExecutionPreference.id == rule_id).first()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Authorization rule not found")
+    revoked = revoke_authorization_rule(db, rule)
+    return {
+        "message": "Authorization rule revoked",
+        "rule": serialize_authorization_rule(revoked or rule),
+    }
 
 
 @router.get("/chatrooms/{chatroom_id}/visibility")
@@ -4314,14 +4738,25 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 )
 
             async def _on_single_agent_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
+                blocked_tool_result = getattr(frame, "blocked_tool_result", None)
                 record_runner_tool_round(
                     db,
                     task_run,
                     agent_name=target_agent_label,
                     turn=frame.turn_index,
-                    tool_names=[tool_call["function"]["name"] for tool_call in normalized_tool_calls],
+                    tool_names=[
+                        tool_call["function"]["name"]
+                        for tool_call in (
+                            normalized_tool_calls
+                            + ([{
+                                "function": {"name": blocked_tool_result.tool_name},
+                            }] if blocked_tool_result is not None else [])
+                        )
+                    ],
                     tool_results=tool_results,
+                    blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
                     summary=f"{target_agent_label} completed a streaming tool round.",
+                    assistant_content=frame.llm_content,
                 )
 
             def _build_single_agent_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
@@ -4534,6 +4969,7 @@ async def get_config():
             "memory_enabled": True
         },
         "orchestration": _effective_orchestration_config(),
+        "permissions": _effective_permissions_config(),
         "agents": {},
         "agent_llm_configs": {}
     }
@@ -4548,6 +4984,7 @@ async def get_config():
             # 全局 LLM 配置
             config["global_llm"] = agents_config.get("global_llm", {})
             config["orchestration"] = _effective_orchestration_config(agents_config)
+            config["permissions"] = _effective_permissions_config(agents_config)
 
             agents_data = dict(agents_config.get("agents", {}))
             if "assistant" in agents_data and DEFAULT_AGENT_TYPE not in agents_data:
@@ -4686,6 +5123,37 @@ async def update_orchestration_config(config: OrchestrationConfigModel):
         return {"message": "Orchestration config updated", "orchestration": data["orchestration"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update orchestration config: {e}")
+
+
+@router.put("/config/permissions")
+async def update_permissions_config(config: PermissionsConfigModel):
+    """
+    Update runtime permission policy config stored in agents.json.
+
+    Request body:
+    {
+        "allow_read_only_tools_without_approval": true
+    }
+    """
+    from pathlib import Path
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["permissions"] = config.model_dump()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return {"message": "Permissions config updated", "permissions": data["permissions"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update permissions config: {e}")
 
 
 @router.put("/config/agent/{agent_name}")

@@ -4,12 +4,15 @@ API 路由测试
 使用 FastAPI TestClient 测试 REST 端点（mock LLM）
 """
 import pytest
+import asyncio
 import sys
 import os
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 from unittest.mock import AsyncMock, MagicMock
+import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -29,6 +32,9 @@ def _make_app(tmp_path):
         'main', 'config', 'models.database', 'agents.registry',
         'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
         'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
+        'services.approval_queue',
+        'services.approval_replay',
+        'services.monitor_projection',
         'services.run_ledger',
         'services.chat_publish',
         'services.chat_runtime',
@@ -50,6 +56,7 @@ def _make_app(tmp_path):
         'services.stream_transport',
         'services.single_agent_stream_session',
         'services.single_agent_stream_finalizer',
+        'services.tool_execution_preferences',
     ]
     for mod_name in modules_to_clear:
         if mod_name in sys.modules:
@@ -142,6 +149,30 @@ def _approval_queue_item_exists(item_id: int) -> bool:
         )
     finally:
         db.close()
+
+
+def _wait_for(predicate, timeout_seconds: float = 3.0, interval_seconds: float = 0.05):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval_seconds)
+    return None
+
+
+def _wait_for_task_run_event(client, task_run_id: int, event_type: str, *, payload_predicate=None, timeout_seconds: float = 3.0):
+    def _poll():
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        for event in detail.get("events", []):
+            if event.get("event_type") != event_type:
+                continue
+            if payload_predicate and not payload_predicate(event.get("payload") or {}):
+                continue
+            return detail
+        return None
+
+    return _wait_for(_poll, timeout_seconds=timeout_seconds)
 
 
 # ==================== 健康检查 ====================
@@ -306,6 +337,125 @@ class TestConfigEndpoint:
                 os.environ.pop("AGENT_CONFIG_FILE", None)
             else:
                 os.environ["AGENT_CONFIG_FILE"] = previous_config_file
+
+    def test_tool_authorization_rules_can_be_listed_and_revoked(self, client):
+        import models.database as db_mod
+        from services.tool_execution_preferences import (
+            AUTH_DECISION_ALLOW,
+            AUTH_MATCHER_COMMAND_FINGERPRINT,
+            AUTH_PREFERENCE_KIND,
+            build_run_shell_command_matcher_value,
+            upsert_authorization_rule,
+        )
+
+        project = client.post("/api/projects", json={"name": "Rule API Project", "agent_names": ["analyst"]}).json()
+
+        db = db_mod.SessionLocal()
+        try:
+            rule = upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="project",
+                matcher_type=AUTH_MATCHER_COMMAND_FINGERPRINT,
+                matcher_value=build_run_shell_command_matcher_value("touch created.txt", "."),
+                decision_kind=AUTH_DECISION_ALLOW,
+                project_id=project["id"],
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="granted",
+                command_preview="touch created.txt @ .",
+            )
+            rule_id = rule.id
+        finally:
+            db.close()
+
+        listed = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
+        assert any(item["id"] == rule_id and item["decision_kind"] == "allow" for item in listed)
+
+        revoked = client.delete(f"/api/tool-authorization-rules/{rule_id}").json()
+        assert revoked["message"] == "Authorization rule revoked"
+        assert revoked["rule"]["revoked_at"] is not None
+
+        listed_after = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
+        assert all(item["id"] != rule_id for item in listed_after)
+
+    def test_approval_decision_can_remember_project_level_allow_and_deny_rules(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Remember Rule Project", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            allow_item = db_mod.ApprovalQueueItem(
+                task_run_id=None,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "touch created.txt", "cwd": "."}, ensure_ascii=False),
+                        "blocked_kind": "approval",
+                        "resume_supported": True,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            deny_item = db_mod.ApprovalQueueItem(
+                task_run_id=None,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Deny run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "pwd", "cwd": "."}, ensure_ascii=False),
+                        "blocked_kind": "approval",
+                        "resume_supported": True,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add_all([allow_item, deny_item])
+            db.commit()
+            db.refresh(allow_item)
+            db.refresh(deny_item)
+            allow_item_id = allow_item.id
+            deny_item_id = deny_item.id
+        finally:
+            db.close()
+
+        approved = client.post(
+            f"/api/approval-queue/{allow_item_id}/approve",
+            json={"remember_scope": "project"},
+        ).json()
+        rejected = client.post(
+            f"/api/approval-queue/{deny_item_id}/reject",
+            json={"remember_scope": "project"},
+        ).json()
+
+        assert approved["status"] == "approved"
+        assert rejected["status"] == "rejected"
+
+        rules = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
+        assert any(rule["decision_kind"] == "allow" and rule["command_preview"] == "touch created.txt @ ." for rule in rules)
+        assert any(rule["decision_kind"] == "deny" and rule["command_preview"] == "pwd @ ." for rule in rules)
 
     def test_update_agent_full_config(self, tmp_path):
         from fastapi.testclient import TestClient
@@ -1980,16 +2130,24 @@ class TestSSEStreaming:
             f"/api/chatrooms/{cid}/task-runs",
             params={"client_turn_id": turn_id},
         ).json()
+        assert runs[0]["updated_at"] != runs[0]["created_at"]
         detail = client.get(f"/api/task-runs/{runs[0]['id']}").json()
         round_event = next(event for event in detail["events"] if event["event_type"] == "tool_round_recorded")
         blocked_event = next(event for event in detail["events"] if event["event_type"] == "tool_call_blocked")
         assert round_event["payload"]["tool_status_counts"]["approval_blocked"] == 1
         assert round_event["payload"]["blocked_tool_count"] == 1
-        assert round_event["payload"]["turn_local_state"]["protocol_messages"][0]["role"] == "assistant"
-        assert round_event["payload"]["turn_local_state"]["tool_results"][0]["tool_name"] == "delete_file"
+        assert not round_event["payload"].get("turn_local_state", {}).get("tool_results")
         assert blocked_event["payload"]["tool_name"] == "delete_file"
         assert blocked_event["payload"]["blocked_kind"] == "approval"
         assert blocked_event["payload"]["status"] == "approval_blocked"
+        assert mock_llm.chat_with_tools.await_count == 0
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+        assert not any(
+            message.get("agent_name") == "analyst"
+            and message.get("message_type") == "text"
+            and message.get("client_turn_id") == turn_id
+            for message in messages
+        )
         queue_items = client.get(
             "/api/approval-queue",
             params={"task_run_id": runs[0]["id"], "status": "pending"},
@@ -2015,14 +2173,70 @@ class TestSSEStreaming:
         )
         assert resolved_detail["approval_queue_items"][0]["status"] == "approved"
 
-    def test_approve_tool_queue_item_replays_blocked_tool(self, client):
+    def test_blocked_tool_stops_before_following_tool_calls(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
 
-        delete_target = Path.cwd() / f"queue-replay-delete-{os.getpid()}.txt"
-        if delete_target.exists():
-            delete_target.unlink()
-        delete_target.write_text("delete me", encoding="utf-8")
+        async def mock_multi_tool_stream(messages, tools=None):
+            yield {
+                "type": "done",
+                "full_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_delete_file_blocked",
+                        "function": {
+                            "name": "delete_file",
+                            "arguments": "{\"file_path\": \"danger.txt\"}",
+                        },
+                    },
+                    {
+                        "id": "call_read_file_never_run",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"file_path\": \"README.md\"}",
+                        },
+                    },
+                ],
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = mock_multi_tool_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        project = client.post("/api/projects", json={"name": "Blocked Tool Prefix Stop", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+        turn_id = "turn-blocked-tool-prefix-stop"
+
+        stream = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={"content": "run two tools", "client_turn_id": turn_id},
+        )
+
+        assert stream.status_code == 200
+        assert '"type": "approval_pending"' in stream.text or '"type":"approval_pending"' in stream.text
+
+        cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        tool_cards = [card for card in cards if card.get("type") == "tool_call" and card.get("client_turn_id") == turn_id]
+        assert len(tool_cards) == 1
+        assert tool_cards[0]["tool"] == "delete_file"
+
+        runs = client.get(
+            f"/api/chatrooms/{cid}/task-runs",
+            params={"client_turn_id": turn_id},
+        ).json()
+        queue_items = client.get(
+            "/api/approval-queue",
+            params={"task_run_id": runs[0]["id"], "status": "pending"},
+        ).json()
+        assert len(queue_items) == 1
+        assert queue_items[0]["target_name"] == "delete_file"
+
+    def test_approve_tool_queue_item_replays_blocked_tool(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
 
         async def mock_blocked_tool_stream(messages, tools=None):
             yield {
@@ -2060,6 +2274,10 @@ class TestSSEStreaming:
 
         try:
             project = client.post("/api/projects", json={"name": "Tool Replay Approval", "agent_names": ["analyst"]}).json()
+            delete_target = Path(project["workspace_path"]) / f"queue-replay-delete-{os.getpid()}.txt"
+            if delete_target.exists():
+                delete_target.unlink()
+            delete_target.write_text("delete me", encoding="utf-8")
             cid = project["chatroom_id"]
             turn_id = "turn-tool-replay-approval-1"
             stream = client.post(
@@ -2085,14 +2303,17 @@ class TestSSEStreaming:
                 json={"note": "Replay the approved delete."},
             ).json()
             assert approved["status"] == "approved"
-            assert approved["resolution_payload"]["action_taken"] == "tool_replayed"
-            assert approved["resolution_payload"]["replay_success"] is True
-            assert approved["resolution_payload"]["replay_status"] == "succeeded"
-            assert approved["resolution_payload"]["followup_attempted"] is True
-            assert approved["resolution_payload"]["followup_status"] == "continued"
-            assert delete_target.exists() is False
+            assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
 
-            resolved_detail = client.get(f"/api/task-runs/{runs[0]['id']}").json()
+            resolved_detail = _wait_for_task_run_event(
+                client,
+                runs[0]["id"],
+                "approval_queue_item_resolved",
+                payload_predicate=lambda payload: payload.get("action_taken") == "tool_replayed",
+                timeout_seconds=3.0,
+            )
+            assert resolved_detail is not None
+            assert delete_target.exists() is False
             replay_round = next(
                 event
                 for event in resolved_detail["events"]
@@ -2105,6 +2326,7 @@ class TestSSEStreaming:
                 event
                 for event in resolved_detail["events"]
                 if event["event_type"] == "approval_queue_item_resolved"
+                and event["payload"].get("action_taken") == "tool_replayed"
             )
             assert resolved_event["payload"]["action_taken"] == "tool_replayed"
             assert resolved_event["payload"]["replay_status"] == "succeeded"
@@ -2114,10 +2336,10 @@ class TestSSEStreaming:
                 if event["event_type"] == "approval_queue_item_followup_triggered"
             )
             assert followup_event["payload"]["queue_item_id"] == queue_items[0]["id"]
+            assert followup_event["payload"]["tool_call_id"] == "call_delete_file_replay"
+            assert "message_id" not in followup_event["payload"]
 
             messages = client.get(f"/api/chatrooms/{cid}/messages").json()
-            tool_result_message = next(message for message in messages if message["message_type"] == "tool_result")
-            assert "deleted" in tool_result_message["content"].lower()
             followup_call = mock_llm.chat_with_tools.await_args_list[-1]
             followup_messages = followup_call.args[0]
             assert any(
@@ -2125,10 +2347,18 @@ class TestSSEStreaming:
                 and isinstance(message.get("tool_calls"), list)
                 and any(
                     tool_call.get("function", {}).get("name") == "delete_file"
+                    and tool_call.get("id") == "call_delete_file_replay"
                     for tool_call in message.get("tool_calls", [])
                 )
                 for message in followup_messages
             )
+            assert any(
+                message.get("role") == "tool"
+                and message.get("tool_call_id") == "call_delete_file_replay"
+                and "deleted" in str(message.get("content", "")).lower()
+                for message in followup_messages
+            )
+            assert not any(message["message_type"] == "tool_result" for message in messages)
             assert any(
                 message["message_type"] == "text"
                 and message["agent_name"] == "analyst"
@@ -2138,6 +2368,344 @@ class TestSSEStreaming:
         finally:
             if delete_target.exists():
                 delete_target.unlink()
+
+    def test_timeout_queue_item_can_continue_waiting_and_remembers_preference(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+        import models.database as db_mod
+        from services.tool_execution_preferences import (
+            TIMEOUT_BEHAVIOR_KIND,
+            TIMEOUT_BEHAVIOR_WAIT_FOREVER,
+            build_run_shell_timeout_preference_key,
+        )
+
+        async def mock_timeout_then_followup_stream(messages, tools=None):
+            yield {
+                "type": "done",
+                "full_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_run_shell_timeout_then_wait",
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": json.dumps(
+                                {
+                                    "command": 'python -c "import time; time.sleep(2); print(\'done\')"',
+                                    "cwd": ".",
+                                    "timeout_seconds": 1,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ],
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = mock_timeout_then_followup_stream
+        mock_llm.chat_with_tools = AsyncMock(
+            return_value={
+                "content": "Finished after waiting.",
+                "tool_calls": None,
+            }
+        )
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
+            thread = threading.Thread(
+                target=lambda: asyncio.run(
+                    api_routes._finalize_approved_queue_item_followup_async(
+                        item_id,
+                        request_payload=request_payload,
+                        resolved_by=resolved_by,
+                        resolution_note=resolution_note,
+                    )
+                )
+            )
+            thread.start()
+            thread.join()
+
+        with patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now):
+            project = client.post(
+                "/api/projects",
+                json={"name": "Timeout Continue Waiting", "agent_names": ["analyst"]},
+            ).json()
+            cid = project["chatroom_id"]
+            turn_id = "turn-timeout-continue-waiting"
+
+            stream = client.post(
+                f"/api/chatrooms/{cid}/messages/stream",
+                json={"content": "run the long test command", "client_turn_id": turn_id},
+            )
+
+            assert stream.status_code == 200
+
+            runs = client.get(
+                f"/api/chatrooms/{cid}/task-runs",
+                params={"client_turn_id": turn_id},
+            ).json()
+            assert len(runs) == 1
+            task_run_id = runs[0]["id"]
+
+            first_queue_items = client.get(
+                "/api/approval-queue",
+                params={"task_run_id": task_run_id, "status": "pending"},
+            ).json()
+            assert len(first_queue_items) == 1
+            assert first_queue_items[0]["target_name"] == "run_shell"
+            assert first_queue_items[0]["request_payload"]["blocked_kind"] == "approval"
+
+            approved_first = client.post(
+                f"/api/approval-queue/{first_queue_items[0]['id']}/approve",
+                json={"note": "Allow the command first."},
+            ).json()
+            assert approved_first["status"] == "approved"
+
+            timeout_queue_items = client.get(
+                "/api/approval-queue",
+                params={"task_run_id": task_run_id, "status": "pending"},
+            ).json()
+            assert len(timeout_queue_items) == 1
+            assert timeout_queue_items[0]["request_payload"]["blocked_kind"] == "timeout"
+
+            approved_timeout = client.post(
+                f"/api/approval-queue/{timeout_queue_items[0]['id']}/approve",
+                json={"note": "Continue waiting and remember this command."},
+            ).json()
+            assert approved_timeout["status"] == "approved"
+
+            completed_detail = _wait_for_task_run_event(
+                client,
+                task_run_id,
+                "approval_queue_item_resolved",
+                payload_predicate=lambda payload: (
+                    payload.get("queue_item_id") == timeout_queue_items[0]["id"]
+                    and payload.get("action_taken") == "tool_replayed"
+                ),
+                timeout_seconds=20.0,
+            )
+        assert completed_detail is not None
+
+        pending_after_continue = client.get(
+            "/api/approval-queue",
+            params={"task_run_id": task_run_id, "status": "pending"},
+        ).json()
+        assert pending_after_continue == []
+
+        db = db_mod.SessionLocal()
+        try:
+            preference_key = build_run_shell_timeout_preference_key(
+                'python -c "import time; time.sleep(2); print(\'done\')"',
+                ".",
+            )
+            row = (
+                db.query(db_mod.ToolExecutionPreference)
+                .filter(db_mod.ToolExecutionPreference.project_id == project["id"])
+                .filter(db_mod.ToolExecutionPreference.tool_name == "run_shell")
+                .filter(db_mod.ToolExecutionPreference.preference_kind == TIMEOUT_BEHAVIOR_KIND)
+                .filter(db_mod.ToolExecutionPreference.preference_key == preference_key)
+                .first()
+            )
+            assert row is not None
+            assert row.preference_value == TIMEOUT_BEHAVIOR_WAIT_FOREVER
+        finally:
+            db.close()
+
+    def test_approve_run_shell_queue_item_replay_restores_project_workspace(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Replay Workspace Project", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            project_row = db.query(db_mod.Project).filter(db_mod.Project.id == project["id"]).first()
+            task_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Replay run_shell within project workspace",
+                user_request="Replay run_shell within project workspace",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            queue_item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps(
+                            {
+                                "command": "pwd",
+                                "cwd": project_row.workspace_path,
+                                "timeout_seconds": 10,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "resume_supported": True,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+            queue_item_id = queue_item.id
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        approved = client.post(
+            f"/api/approval-queue/{queue_item_id}/approve",
+            json={"note": "Replay in project workspace."},
+        ).json()
+
+        assert approved["status"] == "approved"
+        assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
+
+        resolved_detail = _wait_for_task_run_event(
+            client,
+            task_run_id,
+            "approval_queue_item_resolved",
+            payload_predicate=lambda payload: payload.get("action_taken") == "tool_replayed",
+            timeout_seconds=3.0,
+        )
+        assert resolved_detail is not None
+        resolved_event = next(
+            event
+            for event in resolved_detail["events"]
+            if event["event_type"] == "approval_queue_item_resolved"
+            and event["payload"].get("action_taken") == "tool_replayed"
+        )
+        assert resolved_event["payload"]["replay_success"] is True
+        assert resolved_event["payload"]["replay_status"] == "succeeded"
+        assert "working directory outside workspace" not in (
+            resolved_event["payload"].get("replay_result_preview", "").lower()
+        )
+
+    def test_approve_run_shell_timeout_creates_continue_wait_queue(self, client):
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
+            thread = threading.Thread(
+                target=lambda: asyncio.run(
+                    api_routes._finalize_approved_queue_item_followup_async(
+                        item_id,
+                        request_payload=request_payload,
+                        resolved_by=resolved_by,
+                        resolution_note=resolution_note,
+                    )
+                )
+            )
+            thread.start()
+            thread.join()
+
+        project = client.post("/api/projects", json={"name": "Replay Timeout Project", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            project_row = db.query(db_mod.Project).filter(db_mod.Project.id == project["id"]).first()
+            task_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Replay timeout run_shell within project workspace",
+                user_request="Replay timeout run_shell within project workspace",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+            original_updated_at = task_run.updated_at
+
+            queue_item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve timeout run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps(
+                            {
+                                "command": "python -c \"import time; time.sleep(2)\"",
+                                "cwd": project_row.workspace_path,
+                                "timeout_seconds": 1,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "resume_supported": True,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+            queue_item_id = queue_item.id
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        with patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now):
+            approved = client.post(
+                f"/api/approval-queue/{queue_item_id}/approve",
+                json={"note": "Replay timeout in project workspace."},
+            ).json()
+
+        assert approved["status"] == "approved"
+        assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
+
+        resolved_detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert resolved_detail is not None
+        assert resolved_detail["status"] == "running"
+        assert resolved_detail["completed_at"] is None
+        assert resolved_detail["updated_at"] != original_updated_at
+        timeout_queue_items = client.get(
+            "/api/approval-queue",
+            params={"task_run_id": task_run_id, "status": "pending"},
+        ).json()
+        assert len(timeout_queue_items) == 1
+        assert timeout_queue_items[0]["request_payload"]["blocked_kind"] == "timeout"
+        resolved_event = next(
+            event
+            for event in resolved_detail["events"]
+            if event["event_type"] == "approval_queue_item_resolved"
+            and event["payload"].get("action_taken") == "tool_replayed"
+        )
+        assert resolved_event["payload"]["replay_status"] == "timeout_waiting"
+        assert resolved_event["payload"]["replay_success"] is False
 
     def test_approve_pipeline_tool_queue_item_replays_and_resumes_pipeline(self, client):
         import models.database as db_mod
@@ -2272,17 +2840,21 @@ class TestSSEStreaming:
             ).json()
 
         assert approved["status"] == "approved"
-        assert approved["resolution_payload"]["action_taken"] == "tool_replayed"
-        assert approved["resolution_payload"]["replay_success"] is True
-        assert approved["resolution_payload"]["followup_attempted"] is True
-        assert approved["resolution_payload"]["followup_status"] == "continued"
-        assert approved["resolution_payload"]["followup_reason"] == "pipeline_resumed"
+        assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
+
+        resolved_detail = _wait_for_task_run_event(
+            client,
+            task_run_id,
+            "approval_queue_item_resolved",
+            payload_predicate=lambda payload: payload.get("action_taken") == "tool_replayed",
+            timeout_seconds=3.0,
+        )
+        assert resolved_detail is not None
         instruct_mock.assert_awaited_once()
         resume_mock.assert_awaited_once()
         assert instruct_mock.await_args.args[1] == pipeline_id
         assert resume_mock.await_args.args[1] == pipeline_id
 
-        resolved_detail = client.get(f"/api/task-runs/{task_run_id}").json()
         followup_event = next(
             event
             for event in resolved_detail["events"]
@@ -2294,6 +2866,7 @@ class TestSSEStreaming:
             event
             for event in resolved_detail["events"]
             if event["event_type"] == "approval_queue_item_resolved"
+            and event["payload"].get("action_taken") == "tool_replayed"
         )
         assert resolved_event["payload"]["action_taken"] == "tool_replayed"
 

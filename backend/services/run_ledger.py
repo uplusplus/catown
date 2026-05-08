@@ -173,6 +173,8 @@ def append_task_event(
         summary=(summary or "").strip() or None,
         payload_json=_dump_payload(payload),
     )
+    task_run.updated_at = datetime.now()
+    db.add(task_run)
     db.add(event)
     db.commit()
     db.refresh(event)
@@ -914,3 +916,22 @@ async def _broadcast_monitor_task_run_payload(payload: dict[str, Any]) -> None:
         },
         "monitor",
     )
+    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else None
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else None
+    chatroom_id = entry.get("chatroom_id") if isinstance(entry, dict) else None
+    if isinstance(chatroom_id, int):
+        await websocket_manager.broadcast_to_room(
+            {
+                "type": "task_run_update",
+                "payload": {
+                    "change_type": payload.get("change_type"),
+                    "change_reason": payload.get("change_reason"),
+                    "task_event_type": payload.get("task_event_type"),
+                    "captured_at": payload.get("captured_at"),
+                    "entry": entry,
+                    "detail": detail,
+                },
+                "chatroom_id": chatroom_id,
+            },
+            chatroom_id,
+        )

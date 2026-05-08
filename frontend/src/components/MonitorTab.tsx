@@ -13,6 +13,8 @@ import type {
   AgentInfo,
   ConfigResponse,
   MonitorTaskRunSummary,
+  MonitorTaskRunStep,
+  MonitorTaskRunStepsResponse,
   MonitorTaskRunsResponse,
   MonitorApprovalQueueEntry,
   MonitorApprovalQueueResponse,
@@ -55,6 +57,7 @@ const MORE_PAGES = [
   { id: "models", label: "Models" },
   { id: "context", label: "Context" },
   { id: "subagents", label: "Subagents" },
+  { id: "tasks", label: "Tasks" },
   { id: "history", label: "History" },
   { id: "limits", label: "Limits" },
   { id: "approvals", label: "Approvals" },
@@ -123,6 +126,30 @@ type ClusterItem = {
   latestAt: string | null;
   agents: string[];
 };
+
+function resolveConfiguredContextWindow(config: ConfigResponse | null, modelId: string | undefined) {
+  const normalizedModelId = (modelId || "").trim();
+  if (!config) return DEFAULT_CONTEXT_WINDOW;
+
+  const candidateProviders = [
+    config.global_llm?.provider,
+    ...Object.values(config.agents ?? {}).map((agent) => agent.provider),
+  ];
+
+  for (const provider of candidateProviders) {
+    const models = provider?.models ?? [];
+    const matchedModel = normalizedModelId
+      ? models.find((model) => model.id === normalizedModelId)
+      : undefined;
+    const fallbackModel = matchedModel ?? models[0];
+    const contextWindow = fallbackModel?.contextWindow;
+    if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+      return contextWindow;
+    }
+  }
+
+  return DEFAULT_CONTEXT_WINDOW;
+}
 
 type SkillRow = {
   name: string;
@@ -342,9 +369,25 @@ function taskRunEventTone(eventType: string | null | undefined) {
   return "neutral";
 }
 
+function taskRunStepTone(step: MonitorTaskRunStep | null | undefined) {
+  if (!step) return "neutral";
+  if (step.step_kind === "tool") {
+    if (step.blocked) return "warning";
+    if (step.success === false) return "error";
+    return "success";
+  }
+  if (step.step_kind === "llm") {
+    return step.success === false ? "error" : "neutral";
+  }
+  return taskRunEventTone(step.event_type);
+}
+
 function titleCaseLabel(value: string | null | undefined) {
   if (!value) return "unknown";
-  return value
+  const normalized = value
+    .replace(/^replay_tool_then_continue_turn$/, "resume_original_tool_call")
+    .replace(/^resume_pipeline_stage_after_replay$/, "resume_pipeline_stage");
+  return normalized
     .split("_")
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -732,20 +775,61 @@ function renderHttpHeaders(headers: Record<string, string> | undefined, host?: s
   return lines;
 }
 
+function httpHeaderValue(headers: Record<string, string> | undefined, name: string) {
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (key.toLowerCase() === target) return value;
+  }
+  return "";
+}
+
+function httpContentEncoding(headers: Record<string, string> | undefined) {
+  const value = httpHeaderValue(headers, "content-encoding").trim().toLowerCase();
+  if (!value || value === "identity") return "";
+  return value;
+}
+
+function looksLikeBinaryMonitorText(value: string) {
+  return /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value) || value.includes("\uFFFD");
+}
+
+function formatEncodedMonitorBody(
+  raw: string | undefined,
+  headers: Record<string, string> | undefined,
+  byteCount: number | undefined,
+  scope: "request" | "response",
+) {
+  const text = raw || "";
+  if (!text) return text;
+  const encoding = httpContentEncoding(headers);
+  if (!encoding) return text;
+  const normalized = text.trimStart().toLowerCase();
+  if (normalized.startsWith("[") && normalized.includes("-compressed")) {
+    return text;
+  }
+  if (!looksLikeBinaryMonitorText(text)) {
+    return text;
+  }
+  const label = scope === "request" ? "request body" : "response body";
+  return `[${encoding}-compressed ${label} captured by an older monitor build; ${formatBytes(byteCount)}]`;
+}
+
 function buildHttpWireDump(entry: MonitorNetworkEvent) {
   const method = entry.method || "GET";
   const path = entry.path || "/";
   const version = httpVersion(entry);
   const statusCode = entry.status_code ?? 200;
   const frameType = String(entry.metadata?.frame_type || "").toLowerCase();
+  const requestBody = formatEncodedMonitorBody(entry.raw_request, entry.request_headers, entry.request_bytes, "request");
+  const responseBody = formatEncodedMonitorBody(entry.raw_response, entry.response_headers, entry.response_bytes, "response");
   const lines: string[] = [];
 
   if (entry.raw_request || frameType === "request") {
     lines.push(`${method} ${path} ${version}`);
     lines.push(...renderHttpHeaders(entry.request_headers, entry.host));
     lines.push("");
-    if (entry.raw_request) {
-      lines.push(entry.raw_request);
+    if (requestBody) {
+      lines.push(requestBody);
     }
     return lines.join("\n").trimEnd();
   }
@@ -753,8 +837,8 @@ function buildHttpWireDump(entry: MonitorNetworkEvent) {
   lines.push(`${version} ${statusCode}`);
   lines.push(...renderHttpHeaders(entry.response_headers));
   lines.push("");
-  if (entry.raw_response) {
-    lines.push(entry.raw_response);
+  if (responseBody) {
+    lines.push(responseBody);
   }
   return lines.join("\n").trimEnd();
 }
@@ -1696,6 +1780,25 @@ function renderMonitorMarkdown(content: string, className: string) {
   );
 }
 
+function renderTaskStepBody(step: MonitorTaskRunStep) {
+  const sections: Array<{ label: string; content: string; markdown?: boolean }> = [];
+  if (step.prompt_preview) {
+    sections.push({ label: "Prompt", content: step.prompt_preview });
+  }
+  if (step.arguments) {
+    sections.push({ label: "Arguments", content: step.arguments });
+  }
+  if (step.result) {
+    sections.push({ label: "Result", content: step.result, markdown: true });
+  } else if (step.response_preview && step.response_preview !== step.preview) {
+    sections.push({ label: "Response", content: step.response_preview, markdown: true });
+  }
+  if (step.payload && Object.keys(step.payload).length > 0) {
+    sections.push({ label: "Payload", content: formatRawMonitorValue(step.payload) });
+  }
+  return sections;
+}
+
 function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <>
@@ -2621,7 +2724,14 @@ function buildFlowTopologyGraph({
         id: `flow-edge-${summary.key}-external`,
         from: fromNodeId,
         to: "flow-external",
-        label: summary.key === "search" ? "search http" : summary.key === "browser" ? "browser net" : "tool net",
+        label:
+          summary.key === "search"
+            ? "search http"
+            : summary.key === "browser"
+              ? "browser nav"
+              : summary.key === "exec"
+                ? "shell egress"
+                : "tool net",
         detail: averageDuration(summary.durationTotal, summary.durationCount),
         volume: Math.max(summary.requests, 1),
         status: flowStatusFromActivity(summary.requests, summary.errors, summary.lastAt),
@@ -3330,8 +3440,11 @@ export function MonitorTab() {
   const [brainRuntimeDetailLoading, setBrainRuntimeDetailLoading] = useState<Record<number, boolean>>({});
   const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
   const [taskRunDetails, setTaskRunDetails] = useState<Record<number, TaskRunDetail>>({});
+  const [taskRunSteps, setTaskRunSteps] = useState<Record<number, MonitorTaskRunStepsResponse>>({});
   const [taskRunDetailErrors, setTaskRunDetailErrors] = useState<Record<number, string>>({});
   const [taskRunDetailLoading, setTaskRunDetailLoading] = useState<Record<number, boolean>>({});
+  const [taskRunStepErrors, setTaskRunStepErrors] = useState<Record<number, string>>({});
+  const [taskRunStepLoading, setTaskRunStepLoading] = useState<Record<number, boolean>>({});
   const [taskRunResumeLoading, setTaskRunResumeLoading] = useState<Record<number, boolean>>({});
   const [taskRunResumeErrors, setTaskRunResumeErrors] = useState<Record<number, string>>({});
   const [taskRunResumeMessages, setTaskRunResumeMessages] = useState<Record<number, string>>({});
@@ -3900,6 +4013,7 @@ export function MonitorTab() {
     [selectedTaskRunId, visibleTaskRuns],
   );
   const selectedTaskRunDetail = selectedTaskRunSummary ? taskRunDetails[selectedTaskRunSummary.id] ?? null : null;
+  const selectedTaskRunSteps = selectedTaskRunSummary ? taskRunSteps[selectedTaskRunSummary.id] ?? null : null;
   const selectedTaskRunRecoveryState = selectedTaskRunDetail ?? selectedTaskRunSummary;
   const selectedTaskRunSchedulePlan = useMemo(
     () => extractRunSchedulePlan(selectedTaskRunDetail),
@@ -3948,6 +4062,30 @@ export function MonitorTab() {
       }
     },
     [taskRunDetailLoading, taskRunDetails],
+  );
+
+  const loadTaskRunSteps = useCallback(
+    async (taskRunId: number) => {
+      if (taskRunSteps[taskRunId] || taskRunStepLoading[taskRunId]) return;
+      setTaskRunStepLoading((current) => ({ ...current, [taskRunId]: true }));
+      setTaskRunStepErrors((current) => {
+        const next = { ...current };
+        delete next[taskRunId];
+        return next;
+      });
+      try {
+        const detail = await api.getMonitorTaskRunSteps(taskRunId);
+        setTaskRunSteps((current) => ({ ...current, [taskRunId]: detail }));
+      } catch (nextError) {
+        setTaskRunStepErrors((current) => ({
+          ...current,
+          [taskRunId]: nextError instanceof Error ? nextError.message : "Failed to load task run steps",
+        }));
+      } finally {
+        setTaskRunStepLoading((current) => ({ ...current, [taskRunId]: false }));
+      }
+    },
+    [taskRunStepLoading, taskRunSteps],
   );
 
   const selectedTaskRunCanResume = useMemo(() => {
@@ -4004,6 +4142,12 @@ export function MonitorTab() {
     if (taskRunDetails[selectedTaskRunSummary.id] || taskRunDetailLoading[selectedTaskRunSummary.id]) return;
     void loadTaskRunDetail(selectedTaskRunSummary.id);
   }, [loadTaskRunDetail, selectedTaskRunSummary, taskRunDetailLoading, taskRunDetails]);
+
+  useEffect(() => {
+    if (!selectedTaskRunSummary) return;
+    if (taskRunSteps[selectedTaskRunSummary.id] || taskRunStepLoading[selectedTaskRunSummary.id]) return;
+    void loadTaskRunSteps(selectedTaskRunSummary.id);
+  }, [loadTaskRunSteps, selectedTaskRunSummary, taskRunStepLoading, taskRunSteps]);
 
   const historyBuckets = useMemo(() => buildHourlyBuckets(brainEvents, historyRange), [brainEvents, historyRange]);
   const brainTimelineBuckets = useMemo(
@@ -4066,7 +4210,7 @@ export function MonitorTab() {
         100,
       )
     : 0;
-  const contextWindow = config?.global_llm?.default_model?.includes("128") ? 128000 : DEFAULT_CONTEXT_WINDOW;
+  const contextWindow = resolveConfiguredContextWindow(config, modelRows[0]?.name ?? config?.global_llm?.default_model);
   const contextUsage = overview ? clamp((overview.usage_window.total_tokens / contextWindow) * 100, 0, 100) : 0;
   const pendingApprovalCount = approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending ?? 0;
   const approvalQueueTotal = approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total ?? 0;
@@ -5722,6 +5866,230 @@ export function MonitorTab() {
         </div>
       </section>
 
+      <section className={pageClass("tasks", "page--dashboard-wide")} id="page-tasks">
+        <div className="refresh-bar" style={{ marginBottom: 12, alignItems: "flex-start" }}>
+          <div>
+            <div className="section-title">Background Tasks</div>
+            <div className="section-subtitle">
+              独立查看后台任务列表，以及每个任务的 LLM 通信、Tool 调用和账本事件。
+            </div>
+          </div>
+          <div className="inline-actions">
+            {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
+              <button
+                key={range}
+                type="button"
+                className={`time-btn ${historyRange === range ? "active" : ""}`}
+                onClick={() => setHistoryRange(range)}
+              >
+                {range}
+              </button>
+            ))}
+            {(["all", "running", "completed", "failed"] as const).map((status) => (
+              <button
+                key={status}
+                type="button"
+                className={`time-btn ${taskRunStatusFilter === status ? "active" : ""}`}
+                onClick={() => setTaskRunStatusFilter(status)}
+              >
+                {status === "all" ? "all" : titleCaseLabel(status)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="split-panels">
+          <div className="card">
+            <div className="refresh-bar" style={{ marginBottom: 12, alignItems: "flex-start" }}>
+              <div>
+                <div className="section-title">Task List</div>
+                <div className="small-note">
+                  {historyRange} 内 {taskRunCounts.total} 个任务，当前筛选后 {visibleTaskRuns.length} 个。
+                </div>
+              </div>
+              <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+            {visibleTaskRuns.length > 0 ? (
+              <div className="run-history-list">
+                {visibleTaskRuns.map((run) => (
+                  <button
+                    key={run.id}
+                    type="button"
+                    className={`run-history-item ${selectedTaskRunSummary?.id === run.id ? "is-active" : ""}`}
+                    onClick={() => setSelectedTaskRunId(run.id)}
+                  >
+                    <div className="run-history-item__head">
+                      <strong>{run.title}</strong>
+                      <div className="run-history-item__badges">
+                        <span className={`feed-badge feed-badge--${taskRunStatusTone(run.status)}`}>
+                          {titleCaseLabel(run.status)}
+                        </span>
+                        <span className="feed-badge">{titleCaseLabel(run.run_kind)}</span>
+                      </div>
+                    </div>
+                    <div className="feed-meta">
+                      <span>{run.chat_title}</span>
+                      {run.project_name ? <span>{run.project_name}</span> : null}
+                      {run.target_agent_name ? <span>{run.target_agent_name}</span> : null}
+                      <span>{formatTimeAgo(run.created_at)}</span>
+                    </div>
+                    <div className="feed-preview">
+                      {run.summary || run.user_request || "No summary recorded for this run."}
+                    </div>
+                    <div className="run-history-item__foot">
+                      <span>{run.event_count} events</span>
+                      {run.pending_approval_count ? <span>{run.pending_approval_count} approvals</span> : null}
+                      {run.continuation_cursor_summary ? <span>{run.continuation_cursor_summary}</span> : null}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">No task runs captured for the current range and filter.</div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="section-title">Task Detail</div>
+            {!selectedTaskRunSummary ? (
+              <div className="muted-block">Pick a task run to inspect backend execution.</div>
+            ) : (
+              <>
+                <div className="run-detail-hero">
+                  <div>
+                    <strong>{selectedTaskRunSummary.title}</strong>
+                    <div className="feed-meta" style={{ marginTop: 6 }}>
+                      <span>{selectedTaskRunSummary.chat_title}</span>
+                      {selectedTaskRunSummary.project_name ? <span>{selectedTaskRunSummary.project_name}</span> : null}
+                      {selectedTaskRunSummary.target_agent_name ? <span>{selectedTaskRunSummary.target_agent_name}</span> : null}
+                      <span>{shortDate(selectedTaskRunSummary.created_at)}</span>
+                    </div>
+                  </div>
+                  <div className="run-detail-hero__badges">
+                    <span className={`feed-badge feed-badge--${taskRunStatusTone(selectedTaskRunSummary.status)}`}>
+                      {titleCaseLabel(selectedTaskRunSummary.status)}
+                    </span>
+                    <span className="feed-badge">{titleCaseLabel(selectedTaskRunSummary.run_kind)}</span>
+                  </div>
+                </div>
+
+                <div className="simple-list" style={{ marginTop: 12 }}>
+                  <div className="simple-row">
+                    <strong>User Request</strong>
+                    <div className="small-note">{selectedTaskRunSummary.user_request || "No user request recorded."}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Summary</strong>
+                    <div className="small-note">{selectedTaskRunSummary.summary || "No summary recorded."}</div>
+                  </div>
+                </div>
+
+                {taskRunStepLoading[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>Loading task steps…</div>
+                ) : null}
+                {taskRunStepErrors[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunStepErrors[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
+
+                {selectedTaskRunSteps ? (
+                  <>
+                    <div className="run-detail-section">
+                      <div className="run-detail-section__head">
+                        <div>
+                          <strong>Execution Summary</strong>
+                          <div className="small-note">按任务聚合的 LLM / Tool / 事件步骤。</div>
+                        </div>
+                        <div className="run-detail-hero__badges">
+                          <span className="feed-badge">{selectedTaskRunSteps.counts.total} steps</span>
+                          <span className="feed-badge">{selectedTaskRunSteps.counts.llm} LLM</span>
+                          <span className="feed-badge">{selectedTaskRunSteps.counts.tool} Tools</span>
+                          <span className="feed-badge">{selectedTaskRunSteps.counts.event} Events</span>
+                        </div>
+                      </div>
+                      <div className="task-step-metrics">
+                        <div className="task-step-metric">
+                          <strong>{formatNumber(selectedTaskRunSteps.counts.tokens_in)}</strong>
+                          <span>input tok</span>
+                        </div>
+                        <div className="task-step-metric">
+                          <strong>{formatNumber(selectedTaskRunSteps.counts.tokens_out)}</strong>
+                          <span>output tok</span>
+                        </div>
+                        <div className="task-step-metric">
+                          <strong>{formatNumber(selectedTaskRunSteps.counts.tool_errors)}</strong>
+                          <span>tool errors</span>
+                        </div>
+                        <div className="task-step-metric">
+                          <strong>{formatNumber(selectedTaskRunSteps.counts.tool_blocked)}</strong>
+                          <span>blocked tools</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="task-step-list">
+                      {selectedTaskRunSteps.steps.map((step) => {
+                        const sections = renderTaskStepBody(step);
+                        return (
+                          <div key={step.id} className={`task-step-card task-step-card--${taskRunStepTone(step)}`}>
+                            <div className="task-step-card__head">
+                              <div className="task-step-card__title">
+                                <span className="task-step-card__index">#{step.sequence}</span>
+                                <strong>{step.title}</strong>
+                              </div>
+                              <span className="small-note">{shortDate(step.created_at)}</span>
+                            </div>
+                            <div className="feed-meta" style={{ marginTop: 8 }}>
+                              <span>{titleCaseLabel(step.step_kind)}</span>
+                              {step.agent_name ? <span>{step.agent_name}</span> : null}
+                              {step.turn !== null && step.turn !== undefined ? <span>turn {step.turn}</span> : null}
+                              {step.model ? <span>{step.model}</span> : null}
+                              {step.tool_name ? <span>{step.tool_name}</span> : null}
+                              {step.duration_ms ? <span>{formatDuration(step.duration_ms)}</span> : null}
+                              {step.tokens_in || step.tokens_out ? <span>{formatNumber(step.tokens_in)} / {formatNumber(step.tokens_out)} tok</span> : null}
+                              {step.status ? <span>{step.status}</span> : null}
+                              {step.blocked_kind ? <span>{step.blocked_kind}</span> : null}
+                              <span>{step.source}</span>
+                            </div>
+                            {step.preview ? (
+                              <div className="feed-preview" style={{ marginTop: 8 }}>
+                                {step.preview}
+                              </div>
+                            ) : null}
+                            {step.planned_tools && step.planned_tools.length > 0 ? (
+                              <div className="task-step-card__tags">
+                                {step.planned_tools.map((tool) => (
+                                  <span key={`${step.id}-${tool}`} className="tag">{tool}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                            {sections.length > 0 ? (
+                              <div className="task-step-card__sections">
+                                {sections.map((section) => (
+                                  <details key={`${step.id}-${section.label}`} className="run-event-row__payload">
+                                    <summary>{section.label}</summary>
+                                    {section.markdown
+                                      ? renderMonitorMarkdown(section.content, "monitor-markdown")
+                                      : <pre>{section.content}</pre>}
+                                  </details>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section className={pageClass("history", "page--viz-readable")} id="page-history">
         <div className="refresh-bar">
           <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>History</h2>
@@ -6391,7 +6759,7 @@ export function MonitorTab() {
                         {item.action_taken ? <span className="tag">{item.action_taken}</span> : null}
                         {item.replay_status ? (
                           <span className={`feed-badge feed-badge--${runtimeTone(item.replay_status, item.replay_success ?? undefined)}`}>
-                            replay {item.replay_status}
+                            continuation {item.replay_status}
                           </span>
                         ) : null}
                         {item.followup_status ? (

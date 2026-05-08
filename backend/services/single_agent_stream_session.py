@@ -14,6 +14,7 @@ from services.stream_turn_executor import iter_stream_turn_events
 class SingleAgentStreamSessionResult:
     chunk: str | None = None
     final_content: str | None = None
+    awaiting_tool_approval: bool = False
 
 
 @dataclass(frozen=True)
@@ -314,6 +315,12 @@ async def iter_single_agent_stream_session(
         store_runtime_card=deps.store_runtime_card,
         public_runtime_card_payload=deps.public_runtime_card_payload,
     ):
+        if rendered.awaiting_tool_approval:
+            yield SingleAgentStreamSessionResult(
+                chunk=rendered.chunk,
+                awaiting_tool_approval=True,
+            )
+            continue
         if rendered.turn_complete_content is not None:
             yield SingleAgentStreamSessionResult(final_content=rendered.turn_complete_content)
             continue

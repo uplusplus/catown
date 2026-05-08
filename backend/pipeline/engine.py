@@ -89,7 +89,7 @@ from services.runner_lifecycle import (
     start_agent_turn as record_agent_turn_started,
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
-from services.tool_governance import build_blocked_tool_result, tool_requires_manual_approval
+from services.tool_governance import build_blocked_tool_result, build_structured_tool_result, classify_tool_result, tool_manual_approval_reason, tool_result_succeeded
 from services.pipeline_inbox import (
     consume_legacy_instruction_texts_for_agent,
     enqueue_message_delivery,
@@ -637,7 +637,7 @@ def _build_tools_for_agent(agent_name: str) -> List[Dict]:
     return tools
 
 
-async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str], db=None, stage_id: int = None) -> str:
+async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, arguments: Dict[str, str], db=None, stage_id: int = None) -> Any:
     """执行单个工具调用"""
 
     # === 白名单校验：Agent 仅能调用 agents.json 中声明的工具 ===
@@ -648,10 +648,19 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
         allowed_tools = AGENT_TOOLS[agent_name]
         if tool_name not in allowed_tools:
             logger.warning(f"Agent '{agent_name}' attempted unauthorized tool: '{tool_name}' (allowed: {allowed_tools})")
-            return build_blocked_tool_result(
+            result_text = build_blocked_tool_result(
                 "approval_blocked",
                 tool_name,
                 f"Agent '{agent_name}' is not authorized to use tool '{tool_name}'. Allowed tools: {allowed_tools}",
+            )
+            return build_structured_tool_result(
+                tool_name=tool_name,
+                result_text=result_text,
+                success=False,
+                status="approval_blocked",
+                blocked=True,
+                blocked_kind="approval",
+                blocked_reason=result_text,
             )
 
     # send_message 需要特殊处理（需要 db 访问）
@@ -662,15 +671,45 @@ async def _execute_tool(agent_name: str, run: PipelineRun, tool_name: str, argum
     if not info:
         return f"Error: unknown tool: {tool_name}"
     tool_policy = build_tool_policy_payload(tool_name, description=str(info.get("desc") or ""))
-    if tool_requires_manual_approval(tool_policy):
-        approval_notes = list((tool_policy.get("approval") or {}).get("notes") or [])
-        reason = approval_notes[0] if approval_notes else "This tool requires manual approval before execution."
-        return build_blocked_tool_result("approval_blocked", tool_name, reason)
+    approval_reason = tool_manual_approval_reason(
+        tool_policy,
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+    if approval_reason:
+        reason = approval_reason
+        result_text = build_blocked_tool_result("approval_blocked", tool_name, reason)
+        return build_structured_tool_result(
+            tool_name=tool_name,
+            result_text=result_text,
+            success=False,
+            status="approval_blocked",
+            blocked=True,
+            blocked_kind="approval",
+            blocked_reason=result_text,
+        )
     workspace = _get_workspace(run)
     try:
-        return info["fn"](workspace, **arguments)
+        result = info["fn"](workspace, **arguments)
+        if isinstance(result, dict) and result.get("__catown_tool_result__") is True:
+            return result
+        classification = classify_tool_result(tool_name, result)
+        return build_structured_tool_result(
+            tool_name=tool_name,
+            result_text=result,
+            success=bool(classification.get("success")),
+            status=str(classification.get("status") or "succeeded"),
+            blocked=bool(classification.get("blocked")),
+            blocked_kind=classification.get("blocked_kind"),
+            blocked_reason=classification.get("blocked_reason"),
+        )
     except Exception as e:
-        return f"Tool error ({tool_name}): {e}"
+        return build_structured_tool_result(
+            tool_name=tool_name,
+            result_text=f"Tool error ({tool_name}): {e}",
+            success=False,
+            status="failed",
+        )
 
 
 async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
@@ -686,6 +725,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing tool_name.",
             success=False,
+            request_payload=request_payload,
         )
 
     run_id = resolve_pipeline_replay_run_id(queue_item, request_payload)
@@ -696,6 +736,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
             arguments=arguments_text,
             result="Error: blocked pipeline tool replay is missing pipeline_run_id.",
             success=False,
+            request_payload=request_payload,
         )
 
     run = db.query(PipelineRun).filter(PipelineRun.id == int(run_id)).first()
@@ -706,6 +747,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
             arguments=arguments_text,
             result=f"Error: pipeline run not found for blocked tool replay ({run_id}).",
             success=False,
+            request_payload=request_payload,
         )
 
     loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
@@ -716,6 +758,7 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
             arguments=arguments_text,
             result=f"Error: invalid blocked pipeline tool replay arguments: {arguments_error}",
             success=False,
+            request_payload=request_payload,
         )
 
     tool_result = await _execute_tool(
@@ -726,13 +769,13 @@ async def replay_blocked_tool_queue_item(db: Session, queue_item: Any):
         db=db,
         stage_id=resolve_pipeline_replay_stage_id(queue_item, request_payload),
     )
-    tool_result_text = str(tool_result or "(no output)")
     return build_replay_tool_result_record(
         queue_item,
         tool_name=tool_name,
         arguments=arguments_text,
-        result=tool_result_text,
-        success=not tool_result_text.startswith("Error:"),
+        result=tool_result,
+        success=tool_result_succeeded(tool_result),
+        request_payload=request_payload,
     )
 
 
@@ -789,6 +832,10 @@ def _pop_messages_for_agent(db: Session, run_id: int, agent_name: str) -> List[D
 
 def _pop_instructions_for_agent(db: Session, run_id: int, agent_name: str) -> List[str]:
     return pop_instruction_texts_for_agent(db, run_id=run_id, agent_name=agent_name)
+
+
+def _enqueue_message_delivery(db: Session, msg: PipelineMessage) -> None:
+    enqueue_message_delivery(db, msg)
 
 
 # ==================== 事件回调 ====================
@@ -2181,14 +2228,18 @@ class PipelineEngine:
             tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
             tool_duration = int((time.time() - tool_start) * 1000)
 
-            tool_result_text = str(tool_result or "(no output)")
-            success = not tool_result_text.startswith("Error:")
+            tool_result_text = str(
+                tool_result.get("result")
+                if isinstance(tool_result, dict) and tool_result.get("__catown_tool_result__") is True
+                else (tool_result or "(no output)")
+            )
+            success = tool_result_succeeded(tool_result)
             result_len = len(tool_result_text)
             tool_result_record = build_tool_result_record(
                 tool_call_id=tool_call.get("id", ""),
                 tool_name=fn_name,
                 arguments=tool_call["function"].get("arguments", "{}"),
-                result=tool_result_text,
+                result=tool_result,
                 success=success,
             )
             success = tool_result_record.success
@@ -2247,6 +2298,8 @@ class PipelineEngine:
 
         async def _on_pipeline_tool_round(frame, tool_results, current_turn_state):
             blocked_result = next((result for result in tool_results if getattr(result, "blocked", False)), None)
+            if blocked_result is None:
+                blocked_result = getattr(frame, "blocked_tool_result", None)
             if blocked_result is not None:
                 stage._catown_blocked_tool = {
                     "tool_name": blocked_result.tool_name,
@@ -2260,9 +2313,17 @@ class PipelineEngine:
                 linked_task_run,
                 agent_name=stage_cfg.agent,
                 turn=frame.turn_index + 1,
-                tool_names=[tool_call["function"]["name"] for tool_call in frame.normalized_tool_calls],
+                tool_names=[
+                    tool_call["function"]["name"]
+                    for tool_call in (
+                        (frame.executed_tool_calls or frame.normalized_tool_calls)
+                        + ([{"function": {"name": blocked_result.tool_name}}] if blocked_result is not None else [])
+                    )
+                ],
                 tool_results=tool_results,
+                blocked_tool_results=[blocked_result] if blocked_result is not None else None,
                 summary=f"{stage_cfg.agent} completed a pipeline tool round.",
+                assistant_content=frame.content,
                 payload={
                     "pipeline_id": pipeline.id,
                     "pipeline_run_id": run.id,
@@ -2272,7 +2333,7 @@ class PipelineEngine:
                 },
             )
 
-        final_content = await execute_non_stream_turn_loop(
+        loop_result = await execute_non_stream_turn_loop(
             llm_client=llm_client,
             tools=tools,
             turn_state=turn_state,
@@ -2285,6 +2346,9 @@ class PipelineEngine:
             on_llm_error=_on_pipeline_llm_error,
             on_tool_round=_on_pipeline_tool_round,
         )
+        if loop_result.awaiting_tool_approval:
+            return ""
+        final_content = loop_result.final_content
 
         record_agent_turn_completed(
             db,

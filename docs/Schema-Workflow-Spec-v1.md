@@ -187,6 +187,13 @@ The first governance-policy bridge is now present in:
 `RunnerGovernancePolicy` can now be compiled directly from canonical `workflow_spec`,
 without first requiring legacy `StageConfig` objects.
 
+The first API exposure bridge is now present in:
+
+- `GET /api/pipelines/templates/{pipeline_name}/workflow-spec`
+
+This makes canonical workflow specs visible from a stable read-side API without yet forcing the
+pipeline executor to consume them as its primary execution input.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

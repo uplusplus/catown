@@ -14,6 +14,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from agents.collaboration import collaboration_coordinator
+from models.audit import LLMCall, ToolCall
 from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_queue import list_approval_queue_items
@@ -272,6 +273,330 @@ def _serialize_runtime_card_detail(message: Message, chatroom: Chatroom, project
         "project_name": project.name if project else None,
         "card": card,
     }
+
+
+def _task_run_step_sort_key(step: dict[str, Any]) -> tuple[str, int]:
+    created_at = step.get("created_at")
+    step_id = step.get("sequence") or 0
+    return (str(created_at or ""), int(step_id))
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _runtime_card_matches_task_run(
+    *,
+    task_run: TaskRun,
+    metadata: dict[str, Any],
+    card: dict[str, Any],
+) -> bool:
+    task_run_id = (
+        _coerce_int(metadata.get("task_run_id"))
+        or _coerce_int(card.get("task_run_id"))
+    )
+    if task_run_id is not None:
+        return task_run_id == task_run.id
+
+    task_turn_id = (task_run.client_turn_id or "").strip()
+    if not task_turn_id:
+        return False
+    return _metadata_client_turn_id(metadata) == task_turn_id
+
+
+def _serialize_runtime_step(
+    *,
+    message: Message,
+    card: dict[str, Any],
+) -> dict[str, Any]:
+    card_type = str(card.get("type") or "runtime")
+    step_kind = "event"
+    if card_type == "llm_call":
+        step_kind = "llm"
+    elif card_type == "tool_call":
+        step_kind = "tool"
+
+    tool_calls = card.get("tool_calls")
+    planned_tools: list[str] = []
+    if isinstance(tool_calls, list):
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function") if isinstance(item.get("function"), dict) else {}
+            tool_name = function.get("name") or item.get("name")
+            if isinstance(tool_name, str) and tool_name.strip():
+                planned_tools.append(tool_name.strip())
+
+    return {
+        "id": f"runtime-{message.id}",
+        "source": "runtime_card",
+        "step_kind": step_kind,
+        "title": _build_runtime_title(card),
+        "preview": _build_runtime_preview(card),
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "agent_name": card.get("agent") or card.get("from_agent"),
+        "turn": _coerce_int(card.get("turn")),
+        "model": card.get("model"),
+        "tool_name": card.get("tool"),
+        "success": card.get("success"),
+        "status": card.get("status"),
+        "blocked": card.get("blocked"),
+        "blocked_kind": card.get("blocked_kind"),
+        "duration_ms": _coerce_int(card.get("duration_ms")),
+        "tokens_in": _coerce_int(card.get("tokens_in")) or 0,
+        "tokens_out": _coerce_int(card.get("tokens_out")) or 0,
+        "event_type": card_type,
+        "message_id": message.id,
+        "pipeline_run_id": _coerce_int(card.get("pipeline_run_id")),
+        "pipeline_stage_id": _coerce_int(card.get("pipeline_stage_id")),
+        "arguments": card.get("arguments") if isinstance(card.get("arguments"), str) else None,
+        "result": card.get("result") if isinstance(card.get("result"), str) else None,
+        "prompt_preview": _extract_prompt_preview(card),
+        "response_preview": _compact_preview(card.get("response") or card.get("result")),
+        "planned_tools": planned_tools,
+        "payload": card,
+    }
+
+
+def _serialize_synthetic_tool_steps(event: TaskRunEvent, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    turn_local_state = payload.get("turn_local_state")
+    if not isinstance(turn_local_state, dict):
+        return []
+
+    tool_results = turn_local_state.get("tool_results")
+    if not isinstance(tool_results, list):
+        return []
+
+    turn = _coerce_int(payload.get("turn"))
+    created_at = event.created_at.isoformat() if event.created_at else None
+    agent_name = event.agent_name
+    steps: list[dict[str, Any]] = []
+    for index, result in enumerate(tool_results, start=1):
+        if not isinstance(result, dict):
+            continue
+        tool_name = str(result.get("tool_name") or "tool")
+        status = str(result.get("status") or ("succeeded" if result.get("success") else "failed"))
+        preview = _compact_preview(result.get("result") or result.get("blocked_reason"))
+        steps.append(
+            {
+                "id": f"event-tool-{event.id}-{index}",
+                "source": "task_event",
+                "step_kind": "tool",
+                "title": f"{agent_name or 'agent'} used {tool_name}",
+                "preview": preview,
+                "created_at": created_at,
+                "agent_name": agent_name,
+                "turn": turn,
+                "model": None,
+                "tool_name": tool_name,
+                "success": bool(result.get("success", False)),
+                "status": status,
+                "blocked": bool(result.get("blocked", False)),
+                "blocked_kind": result.get("blocked_kind"),
+                "duration_ms": None,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "event_type": event.event_type,
+                "message_id": event.message_id,
+                "pipeline_run_id": _coerce_int(payload.get("pipeline_run_id")),
+                "pipeline_stage_id": _coerce_int(payload.get("pipeline_stage_id") or payload.get("stage_id")),
+                "arguments": result.get("arguments") if isinstance(result.get("arguments"), str) else None,
+                "result": result.get("result") if isinstance(result.get("result"), str) else None,
+                "prompt_preview": None,
+                "response_preview": preview,
+                "planned_tools": [],
+                "payload": result,
+            }
+        )
+    return steps
+
+
+def _serialize_synthetic_llm_step(event: TaskRunEvent, payload: dict[str, Any]) -> dict[str, Any]:
+    preview = _compact_preview(payload.get("response_preview") or event.summary)
+    return {
+        "id": f"event-llm-{event.id}",
+        "source": "task_event",
+        "step_kind": "llm",
+        "title": f"{event.agent_name or 'agent'} completed an LLM turn",
+        "preview": preview,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "agent_name": event.agent_name,
+        "turn": _coerce_int(payload.get("turn")),
+        "model": payload.get("model"),
+        "tool_name": None,
+        "success": True,
+        "status": "completed",
+        "blocked": False,
+        "blocked_kind": None,
+        "duration_ms": _coerce_int(payload.get("duration_ms")),
+        "tokens_in": _coerce_int(payload.get("tokens_in")) or 0,
+        "tokens_out": _coerce_int(payload.get("tokens_out")) or 0,
+        "event_type": event.event_type,
+        "message_id": event.message_id,
+        "pipeline_run_id": _coerce_int(payload.get("pipeline_run_id")),
+        "pipeline_stage_id": _coerce_int(payload.get("pipeline_stage_id") or payload.get("stage_id")),
+        "arguments": None,
+        "result": payload.get("response_preview") if isinstance(payload.get("response_preview"), str) else None,
+        "prompt_preview": None,
+        "response_preview": preview,
+        "planned_tools": [],
+        "payload": payload,
+    }
+
+
+def _serialize_task_event_step(event: TaskRunEvent, payload: dict[str, Any]) -> dict[str, Any]:
+    preview = _compact_preview(
+        event.summary
+        or payload.get("response_preview")
+        or payload.get("blocked_reason")
+        or payload.get("details")
+        or payload
+    )
+    return {
+        "id": f"event-{event.id}",
+        "source": "task_event",
+        "step_kind": "event",
+        "title": title_case_event_label(event.event_type),
+        "preview": preview,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "agent_name": event.agent_name,
+        "turn": _coerce_int(payload.get("turn")),
+        "model": payload.get("model"),
+        "tool_name": payload.get("tool_name"),
+        "success": payload.get("success"),
+        "status": payload.get("status"),
+        "blocked": payload.get("blocked"),
+        "blocked_kind": payload.get("blocked_kind"),
+        "duration_ms": _coerce_int(payload.get("duration_ms")),
+        "tokens_in": _coerce_int(payload.get("tokens_in")) or 0,
+        "tokens_out": _coerce_int(payload.get("tokens_out")) or 0,
+        "event_type": event.event_type,
+        "message_id": event.message_id,
+        "pipeline_run_id": _coerce_int(payload.get("pipeline_run_id")),
+        "pipeline_stage_id": _coerce_int(payload.get("pipeline_stage_id") or payload.get("stage_id")),
+        "arguments": payload.get("arguments") if isinstance(payload.get("arguments"), str) else None,
+        "result": payload.get("result") if isinstance(payload.get("result"), str) else None,
+        "prompt_preview": None,
+        "response_preview": _compact_preview(payload.get("response_preview")),
+        "planned_tools": [],
+        "payload": payload,
+    }
+
+
+def _serialize_pipeline_llm_step(call: LLMCall) -> dict[str, Any]:
+    prompt_preview = ""
+    planned_tools: list[str] = []
+    if call.messages:
+        try:
+            messages = json.loads(call.messages)
+        except json.JSONDecodeError:
+            messages = call.messages
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    prompt_preview = _compact_preview(content)
+                    break
+    if call.response_tool_calls:
+        try:
+            tool_calls = json.loads(call.response_tool_calls)
+        except json.JSONDecodeError:
+            tool_calls = None
+        if isinstance(tool_calls, list):
+            for item in tool_calls:
+                if not isinstance(item, dict):
+                    continue
+                function = item.get("function") if isinstance(item.get("function"), dict) else {}
+                tool_name = function.get("name")
+                if isinstance(tool_name, str) and tool_name.strip():
+                    planned_tools.append(tool_name.strip())
+
+    return {
+        "id": f"pipeline-llm-{call.id}",
+        "source": "pipeline_audit_llm",
+        "step_kind": "llm",
+        "title": f"{call.agent_name} -> LLM",
+        "preview": _compact_preview(call.response_content or call.error),
+        "created_at": call.created_at.isoformat() if call.created_at else None,
+        "agent_name": call.agent_name,
+        "turn": _coerce_int(call.turn_index),
+        "model": call.model,
+        "tool_name": None,
+        "success": not bool(call.error),
+        "status": "failed" if call.error else "completed",
+        "blocked": False,
+        "blocked_kind": None,
+        "duration_ms": _coerce_int(call.duration_ms),
+        "tokens_in": _coerce_int(call.token_input) or 0,
+        "tokens_out": _coerce_int(call.token_output) or 0,
+        "event_type": "llm_call",
+        "message_id": None,
+        "pipeline_run_id": _coerce_int(call.run_id),
+        "pipeline_stage_id": _coerce_int(call.stage_id),
+        "arguments": None,
+        "result": call.response_content,
+        "prompt_preview": prompt_preview,
+        "response_preview": _compact_preview(call.response_content or call.error),
+        "planned_tools": planned_tools,
+        "payload": {
+            "error": call.error,
+            "response_tool_calls": call.response_tool_calls,
+        },
+    }
+
+
+def _serialize_pipeline_tool_step(call: ToolCall) -> dict[str, Any]:
+    return {
+        "id": f"pipeline-tool-{call.id}",
+        "source": "pipeline_audit_tool",
+        "step_kind": "tool",
+        "title": f"{call.agent_name} used {call.tool_name}",
+        "preview": _compact_preview(call.result_summary),
+        "created_at": call.created_at.isoformat() if call.created_at else None,
+        "agent_name": call.agent_name,
+        "turn": None,
+        "model": None,
+        "tool_name": call.tool_name,
+        "success": bool(call.success),
+        "status": "succeeded" if call.success else "failed",
+        "blocked": False,
+        "blocked_kind": None,
+        "duration_ms": _coerce_int(call.duration_ms),
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "event_type": "tool_call",
+        "message_id": None,
+        "pipeline_run_id": _coerce_int(call.run_id),
+        "pipeline_stage_id": _coerce_int(call.stage_id),
+        "arguments": call.arguments,
+        "result": call.result_summary,
+        "prompt_preview": None,
+        "response_preview": _compact_preview(call.result_summary),
+        "planned_tools": [],
+        "payload": {
+            "result_length": call.result_length,
+        },
+    }
+
+
+def title_case_event_label(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Event"
+    return " ".join(part.capitalize() for part in text.split("_") if part)
 
 
 @router.get("/logs")
@@ -570,6 +895,117 @@ async def get_monitor_task_runs(
         "captured_at": datetime.now().isoformat(),
         "range": range_value,
         "entries": entries,
+    }
+
+
+@router.get("/task-runs/{task_run_id}/steps")
+async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get_db)):
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    runtime_rows = (
+        db.query(Message)
+        .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+    runtime_steps: list[dict[str, Any]] = []
+    runtime_message_ids: list[int] = []
+    for message in runtime_rows:
+        metadata = _parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card:
+            continue
+        if not _runtime_card_matches_task_run(task_run=task_run, metadata=metadata, card=card):
+            continue
+        runtime_steps.append(_serialize_runtime_step(message=message, card=card))
+        runtime_message_ids.append(message.id)
+
+    pipeline_run_ids = [
+        run.id
+        for run in list(getattr(task_run, "pipeline_runs", []) or [])
+        if getattr(run, "id", None) is not None
+    ]
+    pipeline_llm_steps: list[dict[str, Any]] = []
+    pipeline_tool_steps: list[dict[str, Any]] = []
+    if pipeline_run_ids:
+        llm_calls = (
+            db.query(LLMCall)
+            .filter(LLMCall.run_id.in_(pipeline_run_ids))
+            .order_by(LLMCall.created_at.asc(), LLMCall.id.asc())
+            .all()
+        )
+        pipeline_llm_steps = [_serialize_pipeline_llm_step(call) for call in llm_calls]
+
+        tool_calls = (
+            db.query(ToolCall)
+            .filter(ToolCall.run_id.in_(pipeline_run_ids))
+            .order_by(ToolCall.created_at.asc(), ToolCall.id.asc())
+            .all()
+        )
+        pipeline_tool_steps = [_serialize_pipeline_tool_step(call) for call in tool_calls]
+
+    runtime_coverage = {
+        "llm_turns": {(step.get("agent_name"), step.get("turn")) for step in runtime_steps if step.get("step_kind") == "llm"},
+        "tool_turns": {(step.get("agent_name"), step.get("turn")) for step in runtime_steps if step.get("step_kind") == "tool"},
+    }
+
+    event_steps: list[dict[str, Any]] = []
+    for event in list(getattr(task_run, "events", []) or []):
+        payload = _parse_metadata(event.payload_json)
+        event_type = str(event.event_type or "")
+        turn = _coerce_int(payload.get("turn"))
+        if event_type == "tool_round_recorded":
+            if (event.agent_name, turn) not in runtime_coverage["tool_turns"]:
+                event_steps.extend(_serialize_synthetic_tool_steps(event, payload))
+            continue
+        if event_type == "agent_turn_completed":
+            if (event.agent_name, turn) not in runtime_coverage["llm_turns"]:
+                event_steps.append(_serialize_synthetic_llm_step(event, payload))
+            continue
+        event_steps.append(_serialize_task_event_step(event, payload))
+
+    merged_steps = sorted(
+        [*runtime_steps, *pipeline_llm_steps, *pipeline_tool_steps, *event_steps],
+        key=_task_run_step_sort_key,
+    )
+    for index, step in enumerate(merged_steps, start=1):
+        step["sequence"] = index
+
+    counts = {
+        "total": len(merged_steps),
+        "llm": sum(1 for step in merged_steps if step.get("step_kind") == "llm"),
+        "tool": sum(1 for step in merged_steps if step.get("step_kind") == "tool"),
+        "event": sum(1 for step in merged_steps if step.get("step_kind") == "event"),
+        "tool_errors": sum(
+            1
+            for step in merged_steps
+            if step.get("step_kind") == "tool" and step.get("success") is False
+        ),
+        "tool_blocked": sum(
+            1
+            for step in merged_steps
+            if step.get("step_kind") == "tool" and bool(step.get("blocked"))
+        ),
+        "tokens_in": sum(int(step.get("tokens_in") or 0) for step in merged_steps),
+        "tokens_out": sum(int(step.get("tokens_out") or 0) for step in merged_steps),
+    }
+
+    return {
+        "task_run_id": task_run.id,
+        "chatroom_id": task_run.chatroom_id,
+        "project_id": task_run.project_id,
+        "client_turn_id": task_run.client_turn_id,
+        "captured_at": datetime.now().isoformat(),
+        "counts": counts,
+        "runtime_message_ids": runtime_message_ids,
+        "steps": merged_steps,
     }
 
 

@@ -335,6 +335,34 @@ class ApprovalQueueItem(Base):
     pipeline_stage = relationship("PipelineStage")
 
 
+class ToolExecutionPreference(Base):
+    """Persistent authorization/preference rules for specific tool invocations."""
+
+    __tablename__ = "tool_execution_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=True, index=True)
+    agent_name = Column(String, nullable=True, index=True)
+    tool_name = Column(String, nullable=False, index=True)
+    scope = Column(String, nullable=False, default="project", index=True)
+    matcher_type = Column(String, nullable=False, default="opaque", index=True)
+    matcher_value = Column(Text, nullable=True)
+    decision_kind = Column(String, nullable=False, default="allow", index=True)
+    preference_key = Column(String, nullable=False, index=True)
+    preference_kind = Column(String, nullable=False, default="timeout_behavior", index=True)
+    preference_value = Column(String, nullable=False, default="default")
+    constraints_json = Column(Text, default="{}")
+    expires_at = Column(DateTime, nullable=True, index=True)
+    revoked_at = Column(DateTime, nullable=True, index=True)
+    command_preview = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    project = relationship("Project")
+    chatroom = relationship("Chatroom")
+
+
 class Memory(Base):
     """Agent memory model."""
 
@@ -783,6 +811,123 @@ def init_database():
                 "WHERE status IS NULL OR status != 'running'"
             )
         )
+
+        existing_tool_execution_preference_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(tool_execution_preferences)")).fetchall()
+        }
+        if existing_tool_execution_preference_columns:
+            if "agent_name" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN agent_name VARCHAR"))
+            if "scope" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN scope VARCHAR DEFAULT 'project'"))
+            if "matcher_type" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN matcher_type VARCHAR DEFAULT 'opaque'"))
+            if "matcher_value" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN matcher_value TEXT"))
+            if "decision_kind" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN decision_kind VARCHAR DEFAULT 'allow'"))
+            if "constraints_json" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN constraints_json TEXT DEFAULT '{}'"))
+            if "expires_at" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN expires_at DATETIME"))
+            if "revoked_at" not in existing_tool_execution_preference_columns:
+                connection.execute(text("ALTER TABLE tool_execution_preferences ADD COLUMN revoked_at DATETIME"))
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_lookup "
+                    "ON tool_execution_preferences (tool_name, preference_key, preference_kind)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_project "
+                    "ON tool_execution_preferences (project_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_chatroom "
+                    "ON tool_execution_preferences (chatroom_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_scope "
+                    "ON tool_execution_preferences (scope)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_matcher "
+                    "ON tool_execution_preferences (tool_name, matcher_type)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_decision "
+                    "ON tool_execution_preferences (decision_kind)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_agent_name "
+                    "ON tool_execution_preferences (agent_name)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_expires_at "
+                    "ON tool_execution_preferences (expires_at)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tool_execution_preferences_revoked_at "
+                    "ON tool_execution_preferences (revoked_at)"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tool_execution_preferences "
+                    "SET scope = CASE "
+                    "WHEN project_id IS NOT NULL THEN 'project' "
+                    "WHEN chatroom_id IS NOT NULL THEN 'chatroom' "
+                    "ELSE 'global' END "
+                    "WHERE scope IS NULL OR scope = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tool_execution_preferences "
+                    "SET matcher_type = CASE "
+                    "WHEN tool_name = 'run_shell' THEN 'command_fingerprint' "
+                    "ELSE 'tool_target' END "
+                    "WHERE matcher_type IS NULL OR matcher_type = '' OR matcher_type = 'opaque'"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tool_execution_preferences "
+                    "SET matcher_value = preference_key "
+                    "WHERE (matcher_value IS NULL OR matcher_value = '') AND preference_key IS NOT NULL AND preference_key != ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tool_execution_preferences "
+                    "SET decision_kind = CASE "
+                    "WHEN preference_kind = 'timeout_behavior' AND preference_value = 'wait_forever' THEN 'allow_no_timeout' "
+                    "ELSE 'allow' END "
+                    "WHERE decision_kind IS NULL OR decision_kind = ''"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tool_execution_preferences "
+                    "SET constraints_json = '{}' "
+                    "WHERE constraints_json IS NULL OR constraints_json = ''"
+                )
+            )
 
         existing_pipeline_run_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(pipeline_runs)")).fetchall()

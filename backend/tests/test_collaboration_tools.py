@@ -6,6 +6,9 @@
 import pytest
 import sys
 import os
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -76,6 +79,88 @@ class TestDelegateTask:
         assert len(coordinator.task_registry) == 1
         task = list(coordinator.task_registry.values())[0]
         assert task.title == "Build feature"
+
+    @pytest.mark.asyncio
+    async def test_delegate_triggers_chat_visible_execution(self, coordinator, monkeypatch):
+        from tools.collaboration_tools import DelegateTaskTool
+        from agents.collaboration import TaskStatus
+
+        tool = DelegateTaskTool(collaboration_coordinator=coordinator)
+
+        published_cards = []
+        saved_messages = []
+        published_messages = []
+        triggered_runs = []
+        spawned_coroutines = []
+
+        async def fake_store_runtime_card(chatroom_id, payload):
+            published_cards.append((chatroom_id, payload))
+            return None
+
+        async def fake_send_message(chatroom_id, agent_id, content, message_type="text", metadata=None, agent_name=None):
+            saved_messages.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "agent_id": agent_id,
+                    "content": content,
+                    "message_type": message_type,
+                    "metadata": metadata,
+                    "agent_name": agent_name,
+                }
+            )
+            return SimpleNamespace(
+                id=99,
+                content=content,
+                message_type=message_type,
+                agent_name=agent_name,
+                created_at=datetime.now(),
+            )
+
+        async def fake_publish_saved_chat_message(db, chatroom_id, **kwargs):
+            published_messages.append((chatroom_id, kwargs))
+
+        async def fake_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, extra_context="", **kwargs):
+            triggered_runs.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "extra_context": extra_context,
+                }
+            )
+
+        monkeypatch.setattr("tools.collaboration_tools.chatroom_manager.send_message", fake_send_message, raising=False)
+        monkeypatch.setattr("tools.collaboration_tools.publish_saved_chat_message", fake_publish_saved_chat_message, raising=False)
+        monkeypatch.setattr("tools.collaboration_tools.store_runtime_card", fake_store_runtime_card, raising=False)
+        monkeypatch.setattr("routes.api.trigger_agent_response", fake_trigger_agent_response, raising=False)
+        monkeypatch.setattr("asyncio.create_task", lambda coro: spawned_coroutines.append(coro) or coro)
+
+        result = await tool.execute(
+            target_agent_name="coder",
+            task_title="Write a function",
+            task_description="Implement fibonacci",
+            context="Need chat-visible execution.",
+            agent_id=1,
+            agent_name="assistant",
+            chatroom_id=100,
+        )
+        for coroutine in spawned_coroutines:
+            await coroutine
+
+        assert "delegated" in result.lower()
+        task = list(coordinator.task_registry.values())[0]
+        assert task.status == TaskStatus.COMPLETED
+        assert published_cards[0][1]["type"] == "agent_message"
+        assert published_cards[0][1]["from_agent"] == "assistant"
+        assert published_cards[0][1]["to_agent"] == "coder"
+        assert len(saved_messages) == 1
+        assert "@coder" in saved_messages[0]["content"]
+        assert saved_messages[0]["metadata"]["delegated_task"]["task_id"] == task.id
+        assert len(published_messages) == 1
+        assert len(triggered_runs) == 1
+        assert triggered_runs[0]["chatroom_id"] == 100
+        assert triggered_runs[0]["client_turn_id"] == f"delegate-{task.id}"
+        assert "@coder" in triggered_runs[0]["user_message"]
 
     def test_schema(self):
         from tools.collaboration_tools import DelegateTaskTool
@@ -162,7 +247,7 @@ class TestListCollaborators:
         from tools.collaboration_tools import ListCollaboratorsTool
         # chatroom 999 没有注册的协作者，应 fallback 到 DB
         db = fresh_db.SessionLocal()
-        db.add(fresh_db.Agent(name="db_agent", role="r", system_prompt="s"))
+        db.add(fresh_db.Agent(name="db_agent", role="r", soul="{}", config="{}"))
         db.commit()
 
         tool = ListCollaboratorsTool(collaboration_coordinator=coordinator)

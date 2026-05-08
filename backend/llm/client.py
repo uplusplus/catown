@@ -15,6 +15,7 @@ import logging
 import time
 import traceback
 import uuid
+import zlib
 from urllib.parse import urlparse
 
 from agents.identity import DEFAULT_AGENT_TYPE, normalize_agent_type
@@ -22,6 +23,32 @@ from config import settings
 from monitoring import monitor_network_buffer
 
 logger = logging.getLogger("catown.llm")
+
+try:
+    import brotli
+except Exception:  # pragma: no cover - optional dependency
+    brotli = None
+
+
+def _supports_stream_usage_fallback(error: Exception) -> bool:
+    message = str(error or "").lower()
+    if not message:
+        return False
+    if "stream_options" not in message and "include_usage" not in message:
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "unsupported",
+            "unknown",
+            "unrecognized",
+            "invalid",
+            "not permitted",
+            "not allowed",
+            "extra inputs",
+            "additional properties",
+        )
+    )
 
 
 def _compact_text(value: Any, limit: int = 280) -> str:
@@ -59,6 +86,63 @@ def _safe_text_bytes(value: bytes | str | None, limit: int | None = None) -> str
         return value if limit is None else value[:limit]
     text = value.decode("utf-8", errors="replace")
     return text if limit is None else text[:limit]
+
+
+def _http_header_value(headers: dict[str, str] | None, name: str) -> str:
+    if not headers:
+        return ""
+    for key, value in headers.items():
+        if str(key).lower() == name.lower():
+            return str(value)
+    return ""
+
+
+def _normalized_content_encoding(headers: dict[str, str] | None) -> str:
+    raw = _http_header_value(headers, "content-encoding").strip().lower()
+    if not raw or raw == "identity":
+        return ""
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(parts) == 1:
+        return parts[0]
+    return ",".join(parts)
+
+
+def _compressed_payload_placeholder(content_encoding: str, byte_count: int) -> str:
+    label = content_encoding or "compressed"
+    return f"[{label}-compressed body, {byte_count} B]"
+
+
+class _MonitorContentDecoder:
+    def __init__(self, content_encoding: str) -> None:
+        self.content_encoding = content_encoding
+        self._decoder = self._build_decoder(content_encoding)
+
+    def decode_chunk(self, chunk: bytes) -> str | None:
+        if not chunk:
+            return ""
+        if not self.content_encoding:
+            return _safe_text_bytes(chunk)
+        if self._decoder is None:
+            return None
+        try:
+            if self.content_encoding == "br":
+                decoded = self._decoder.process(chunk)
+            else:
+                decoded = self._decoder.decompress(chunk)
+        except Exception:
+            self._decoder = None
+            return None
+        return _safe_text_bytes(decoded)
+
+    @staticmethod
+    def _build_decoder(content_encoding: str):
+        if content_encoding == "gzip":
+            return zlib.decompressobj(16 + zlib.MAX_WBITS)
+        if content_encoding == "deflate":
+            return zlib.decompressobj()
+        if content_encoding == "br" and brotli is not None:
+            return brotli.Decompressor()
+        return None
 
 
 def _sanitize_http_headers(headers: Any) -> dict[str, str]:
@@ -123,6 +207,7 @@ class LLMClient:
         self.base_url = base_url
         self.agent_name = agent_name or "agent"
         self.model = model
+        self._stream_usage_supported: Optional[bool] = None
         self._http_client = DefaultAsyncHttpxClient(
             event_hooks={
                 "request": [self._capture_http_request],
@@ -227,8 +312,8 @@ class LLMClient:
             return
 
         response_headers = _sanitize_http_headers(response.headers)
-        raw_chunks: List[bytes] = []
         closed = False
+        body_decoder = _MonitorContentDecoder(_normalized_content_encoding(response_headers))
 
         self._append_network_event(
             {
@@ -258,9 +343,13 @@ class LLMClient:
         context["flow_seq"] += 1
 
         async def on_chunk(chunk: bytes) -> None:
-            raw_chunks.append(chunk)
             context["flow_seq"] += 1
             elapsed_ms = int((time.perf_counter() - context["started_at"]) * 1000)
+            decoded_chunk = body_decoder.decode_chunk(chunk)
+            if decoded_chunk is None:
+                display_chunk = _compressed_payload_placeholder(body_decoder.content_encoding, len(chunk))
+            else:
+                display_chunk = decoded_chunk
             self._append_network_event(
                 {
                     "protocol": context["protocol"],
@@ -274,9 +363,9 @@ class LLMClient:
                     "response_bytes": len(chunk),
                     "duration_ms": elapsed_ms,
                     "content_type": response.headers.get("content-type", ""),
-                    "preview": _compact_text(_safe_text_bytes(chunk)),
+                    "preview": _compact_text(display_chunk) if display_chunk else "",
                     "raw_request": "",
-                    "raw_response": _safe_text_bytes(chunk),
+                    "raw_response": display_chunk or "",
                     "request_headers": {},
                     "response_headers": response_headers,
                     "flow_id": context["flow_id"],
@@ -436,17 +525,37 @@ class LLMClient:
             }
             if tools:
                 kwargs["tools"] = tools
+            request_stream_usage = self._stream_usage_supported is not False
+            if request_stream_usage:
+                kwargs["stream_options"] = {"include_usage": True}
 
             request_dispatched_at = time.perf_counter()
             timings["request_sent_ms"] = int((request_dispatched_at - request_started_at) * 1000)
             yield {"type": "request_sent", "elapsed_ms": timings["request_sent_ms"]}
-            stream = await self.client.chat.completions.create(**kwargs)
+            try:
+                stream = await self.client.chat.completions.create(**kwargs)
+                if request_stream_usage:
+                    self._stream_usage_supported = True
+            except Exception as create_error:
+                if request_stream_usage and _supports_stream_usage_fallback(create_error):
+                    logger.warning(
+                        "Model '%s' rejected stream_options.include_usage; retrying stream without usage collection. error=%s",
+                        self.model,
+                        create_error,
+                    )
+                    self._stream_usage_supported = False
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs.pop("stream_options", None)
+                    stream = await self.client.chat.completions.create(**fallback_kwargs)
+                else:
+                    raise
 
             full_content = ""
             accumulated_tool_calls = []
             usage = None
             finish_reason = None
             first_chunk_seen = False
+            tool_call_ready_emitted = False
 
             async for chunk in stream:
                 elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
@@ -508,14 +617,15 @@ class LLMClient:
 
                 if choice.finish_reason in ("stop", "tool_calls", "length"):
                     finish_reason = choice.finish_reason
-                    if finish_reason == "tool_calls":
+                    if finish_reason == "tool_calls" and not tool_call_ready_emitted:
+                        tool_call_ready_emitted = True
                         timings["tool_call_ready_ms"] = elapsed_ms
                         yield {
                             "type": "tool_call_ready",
                             "elapsed_ms": elapsed_ms,
                             "tool_calls": deepcopy(accumulated_tool_calls),
                         }
-                    break
+                    continue
 
             timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
             yield {

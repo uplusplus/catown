@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
-import type { ConfigAgentDefinition, ConfigResponse, ConfigSection, SkillMarketplace } from "../types";
+import type { ConfigAgentDefinition, ConfigResponse, ConfigSection, PermissionsConfigPayload, SkillMarketplace, ToolAuthorizationRule } from "../types";
 import { DEFAULT_AGENT_TYPE, defaultAgentName } from "../utils/agents";
 
 type ConfigTabProps = {
@@ -11,13 +11,13 @@ type ConfigTabProps = {
   saving: boolean;
   onBackToChat: () => void;
   onSaveGlobal: (payload: {
-    provider: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string }> };
+    provider: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string; contextWindow?: number }> };
     default_model: string;
   }) => Promise<void>;
   onSaveAgent: (
     agentName: string,
     payload: {
-      provider?: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string }> };
+      provider?: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string; contextWindow?: number }> };
       default_model?: string;
       role?: {
         title?: string;
@@ -35,6 +35,9 @@ type ConfigTabProps = {
     },
   ) => Promise<void>;
   onSaveOrchestration: (payload: { sidecar_agent_types: string[] }) => Promise<void>;
+  onSavePermissions: (payload: PermissionsConfigPayload) => Promise<void>;
+  authorizationRules: ToolAuthorizationRule[];
+  onRevokeAuthorizationRule: (ruleId: number) => Promise<void>;
   onReload: () => Promise<void>;
   onTestAgentConfig: (agentName: string) => Promise<void>;
 };
@@ -43,16 +46,22 @@ type GlobalDraft = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindow: string;
 };
 
 type OrchestrationDraft = {
   sidecarAgentTypes: string;
 };
 
+type PermissionsDraft = {
+  allowReadOnlyToolsWithoutApproval: boolean;
+};
+
 type AgentDraft = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindow: string;
   roleTitle: string;
   responsibilities: string;
   rules: string;
@@ -66,10 +75,16 @@ type AgentDraft = {
 
 function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
   const provider = config?.global_llm?.provider;
+  const defaultModel = config?.global_llm?.default_model ?? provider?.models?.[0]?.id ?? "";
+  const modelConfig = provider?.models?.find((model) => model.id === defaultModel) ?? provider?.models?.[0];
   return {
     baseUrl: provider?.baseUrl ?? "",
     apiKey: provider?.apiKey ?? "",
-    model: config?.global_llm?.default_model ?? provider?.models?.[0]?.id ?? "",
+    model: defaultModel,
+    contextWindow:
+      typeof modelConfig?.contextWindow === "number" && Number.isFinite(modelConfig.contextWindow) && modelConfig.contextWindow > 0
+        ? String(Math.trunc(modelConfig.contextWindow))
+        : "",
   };
 }
 
@@ -79,14 +94,27 @@ function buildOrchestrationDraft(config: ConfigResponse | null): OrchestrationDr
   };
 }
 
+function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft {
+  return {
+    allowReadOnlyToolsWithoutApproval: config?.permissions?.allow_read_only_tools_without_approval ?? true,
+  };
+}
+
 function buildAgentDraft(
   agentConfig: ConfigAgentDefinition | undefined,
   effective: ConfigResponse["agent_llm_configs"][string] | undefined,
 ): AgentDraft {
+  const providerModel =
+    agentConfig?.provider?.models?.find((model) => model.id === agentConfig?.default_model)
+      ?? agentConfig?.provider?.models?.[0];
   return {
     baseUrl: agentConfig?.provider?.baseUrl ?? "",
     apiKey: agentConfig?.provider?.apiKey ?? "",
     model: agentConfig?.default_model ?? effective?.model ?? "",
+    contextWindow:
+      typeof providerModel?.contextWindow === "number" && Number.isFinite(providerModel.contextWindow) && providerModel.contextWindow > 0
+        ? String(Math.trunc(providerModel.contextWindow))
+        : "",
     roleTitle: agentConfig?.role?.title ?? "",
     responsibilities: (agentConfig?.role?.responsibilities ?? []).join("\n"),
     rules: (agentConfig?.role?.rules ?? []).join("\n"),
@@ -106,6 +134,13 @@ function readMultilineList(value: string) {
     .filter(Boolean);
 }
 
+function readPositiveInteger(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function previewText(value: string | undefined | null, fallback = "Not configured") {
   const normalized = (value ?? "").trim();
   return normalized || fallback;
@@ -123,6 +158,11 @@ function previewSecret(value: string | undefined | null, fallback = "Not configu
   if (!normalized) return fallback;
   if (normalized.length <= 8) return "Configured";
   return `Configured · ${normalized.slice(0, 3)}...${normalized.slice(-4)}`;
+}
+
+function previewContextWindow(value: number | undefined | null, fallback = "Not configured") {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  return value.toLocaleString("en-US");
 }
 
 function PreviewCard({
@@ -182,6 +222,7 @@ function AgentGalleryCard({
   agentType,
   sourceLabel,
   modelLabel,
+  contextWindowLabel,
   roleTitle,
   identity,
   style,
@@ -197,6 +238,7 @@ function AgentGalleryCard({
   agentType: string;
   sourceLabel: string;
   modelLabel: string;
+  contextWindowLabel: string;
   roleTitle: string;
   identity: string;
   style: string;
@@ -235,6 +277,10 @@ function AgentGalleryCard({
         <div className="config-agent-overview__meta-item">
           <span>Style</span>
           <strong>{style}</strong>
+        </div>
+        <div className="config-agent-overview__meta-item">
+          <span>Ctx Window</span>
+          <strong>{contextWindowLabel}</strong>
         </div>
         <div className="config-agent-overview__meta-item">
           <span>Rules</span>
@@ -290,6 +336,9 @@ export function ConfigTab({
   onBackToChat,
   onSaveGlobal,
   onSaveOrchestration,
+  onSavePermissions,
+  authorizationRules,
+  onRevokeAuthorizationRule,
   onSaveAgent,
   onReload,
   onTestAgentConfig,
@@ -297,7 +346,9 @@ export function ConfigTab({
   const [globalBaseUrl, setGlobalBaseUrl] = useState("");
   const [globalApiKey, setGlobalApiKey] = useState("");
   const [globalModel, setGlobalModel] = useState("");
+  const [globalContextWindow, setGlobalContextWindow] = useState("");
   const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
+  const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
   const [editingGlobal, setEditingGlobal] = useState(false);
@@ -340,10 +391,15 @@ export function ConfigTab({
     setGlobalBaseUrl(draft.baseUrl);
     setGlobalApiKey(draft.apiKey);
     setGlobalModel(draft.model);
+    setGlobalContextWindow(draft.contextWindow);
   }, [config]);
 
   useEffect(() => {
     setOrchestrationDraft(buildOrchestrationDraft(config));
+  }, [config]);
+
+  useEffect(() => {
+    setPermissionsDraft(buildPermissionsDraft(config));
   }, [config]);
 
   useEffect(() => {
@@ -379,6 +435,7 @@ export function ConfigTab({
     setGlobalBaseUrl(draft.baseUrl);
     setGlobalApiKey(draft.apiKey);
     setGlobalModel(draft.model);
+    setGlobalContextWindow(draft.contextWindow);
   }
 
   function startEditingGlobal() {
@@ -397,7 +454,11 @@ export function ConfigTab({
       provider: {
         baseUrl: globalBaseUrl.trim(),
         apiKey: globalApiKey.trim(),
-        models: [{ id: globalModel.trim(), name: globalModel.trim() }],
+        models: [{
+          id: globalModel.trim(),
+          name: globalModel.trim(),
+          contextWindow: readPositiveInteger(globalContextWindow),
+        }],
       },
       default_model: globalModel.trim(),
     };
@@ -469,7 +530,11 @@ export function ConfigTab({
       provider: {
         baseUrl: draft.baseUrl.trim(),
         apiKey: draft.apiKey.trim(),
-        models: [{ id: draft.model.trim(), name: draft.model.trim() }],
+        models: [{
+          id: draft.model.trim(),
+          name: draft.model.trim(),
+          contextWindow: readPositiveInteger(draft.contextWindow),
+        }],
       },
       default_model: draft.model.trim(),
       role: {
@@ -520,6 +585,14 @@ export function ConfigTab({
     () => [
       { label: "Base URL", value: previewText(config?.global_llm?.provider?.baseUrl, "Not set") },
       { label: "Model", value: previewText(config?.global_llm?.default_model, "Not set") },
+      {
+        label: "Context Window",
+        value: previewContextWindow(
+          config?.global_llm?.provider?.models?.find((model) => model.id === config?.global_llm?.default_model)?.contextWindow
+            ?? config?.global_llm?.provider?.models?.[0]?.contextWindow,
+          "Not set",
+        ),
+      },
       { label: "API Key", value: previewSecret(config?.global_llm?.provider?.apiKey, "Not set") },
       { label: "Sync Policy", value: syncToAllAgents ? "Save global + fan out to agents" : "Save global only" },
     ],
@@ -544,6 +617,23 @@ export function ConfigTab({
       },
     ],
     [config],
+  );
+  const permissionsPreviewItems = useMemo(
+    () => [
+      {
+        label: "Read-only defaults",
+        value: permissionsDraft.allowReadOnlyToolsWithoutApproval ? "Auto allow" : "Approval required",
+      },
+      {
+        label: "Covered tools",
+        value: "read_file · list_files · search_files · list_directory · retrieve_memory",
+      },
+      {
+        label: "Scope",
+        value: "Global runtime policy",
+      },
+    ],
+    [permissionsDraft.allowReadOnlyToolsWithoutApproval],
   );
 
   if (activeSection === "skills") {
@@ -680,6 +770,118 @@ export function ConfigTab({
     );
   }
 
+  if (activeSection === "permissions") {
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className="panel-card panel-card--full">
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Permission Defaults</p>
+              <h2>Permissions</h2>
+            </div>
+          </div>
+
+          <form
+            className="project-form project-form--compact config-form settings-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSavePermissions({
+                allow_read_only_tools_without_approval: permissionsDraft.allowReadOnlyToolsWithoutApproval,
+              });
+            }}
+          >
+            <label className="config-toggle-row">
+              <input
+                type="checkbox"
+                checked={permissionsDraft.allowReadOnlyToolsWithoutApproval}
+                onChange={(event) =>
+                  setPermissionsDraft({
+                    allowReadOnlyToolsWithoutApproval: event.target.checked,
+                  })
+                }
+              />
+              <span>Allow low-risk read-only tools without approval</span>
+            </label>
+            <p className="small-note">
+              Applies globally to: <code>read_file</code>, <code>list_files</code>, <code>search_files</code>, <code>list_directory</code>, <code>retrieve_memory</code>.
+            </p>
+            <div className="config-actions-row">
+              <button type="submit" className="primary-button compact-button" disabled={saving}>
+                {saving ? "Saving..." : "Save"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={saving}
+                onClick={() => setPermissionsDraft(buildPermissionsDraft(config))}
+              >
+                Reset
+              </button>
+            </div>
+          </form>
+
+          <div style={{ marginTop: 16 }}>
+            <PreviewCard
+              title="Permission policy"
+              subtitle="Global default approval rule for low-risk read-only tool calls"
+              items={permissionsPreviewItems}
+              onActivate={() => undefined}
+            />
+          </div>
+
+          <div style={{ marginTop: 20 }}>
+            <div className="panel-card-header">
+              <div>
+                <p className="eyebrow">Saved Rules</p>
+                <h3>Long-Term Authorization Rules</h3>
+              </div>
+              <span className="soft-pill">{authorizationRules.length}</span>
+            </div>
+            {authorizationRules.length === 0 ? (
+              <div className="empty-card">No saved authorization rules.</div>
+            ) : (
+              <div className="task-run-approval-list">
+                {authorizationRules.map((rule) => (
+                  <div key={rule.id} className="task-run-approval-card task-run-approval-card--neutral">
+                    <div className="task-run-approval-card__header">
+                      <div>
+                        <strong>{rule.tool_name}</strong>
+                        <div className="task-run-card__subtitle">
+                          {rule.scope} · {rule.decision_kind} · {rule.matcher_type}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="task-run-detail__summary">
+                      {rule.command_preview || rule.matcher_value || "No matcher preview"}
+                    </div>
+                    <div className="task-run-card__footer">
+                      {rule.project_id ? <span>project #{rule.project_id}</span> : null}
+                      {!rule.project_id && rule.chatroom_id ? <span>chat #{rule.chatroom_id}</span> : null}
+                      {rule.agent_name ? <span>{rule.agent_name}</span> : null}
+                      {rule.updated_at ? <span>{new Date(rule.updated_at).toLocaleString()}</span> : null}
+                    </div>
+                    <div className="task-run-approval-card__actions">
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        disabled={saving}
+                        onClick={() => {
+                          void onRevokeAuthorizationRule(rule.id);
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="panel-grid panel-grid--config panel-grid--config-fluid">
       <div className="config-top-row">
@@ -734,6 +936,10 @@ export function ConfigTab({
                 <label className="config-inline-field settings-form__field">
                   <span>Model</span>
                   <input value={globalModel} onChange={(event) => setGlobalModel(event.target.value)} placeholder="gpt-4.1" />
+                </label>
+                <label className="config-inline-field settings-form__field">
+                  <span>Context Window</span>
+                  <input value={globalContextWindow} onChange={(event) => setGlobalContextWindow(event.target.value)} inputMode="numeric" placeholder="400000" />
                 </label>
                 <label className="config-inline-field settings-form__field">
                   <span>API Key</span>
@@ -882,6 +1088,9 @@ export function ConfigTab({
             const draft = agentDrafts[agentType] ?? buildAgentDraft(agentConfig, effective);
             const displayName = agentConfig.name?.trim() || defaultAgentName(agentType);
             const isEditing = Boolean(editingAgents[agentType]);
+            const configuredContextWindow =
+              agentConfig.provider?.models?.find((model) => model.id === agentConfig.default_model)?.contextWindow
+              ?? agentConfig.provider?.models?.[0]?.contextWindow;
 
             return (
               isEditing ? (
@@ -918,6 +1127,10 @@ export function ConfigTab({
                     <label>
                       <span>Model</span>
                       <input value={draft.model} onChange={(event) => updateAgentDraft(agentType, { model: event.target.value })} placeholder="(inherits global)" />
+                    </label>
+                    <label>
+                      <span>Context Window</span>
+                      <input value={draft.contextWindow} onChange={(event) => updateAgentDraft(agentType, { contextWindow: event.target.value })} inputMode="numeric" placeholder="400000" />
                     </label>
                     <label className="config-agent-card__key">
                       <span>API Key</span>
@@ -968,6 +1181,7 @@ export function ConfigTab({
                   agentType={agentType}
                   sourceLabel={effective?.source || "global"}
                   modelLabel={previewText(agentConfig.default_model || effective?.model, "Inherit global")}
+                  contextWindowLabel={previewContextWindow(configuredContextWindow, effective?.source === "global" ? "Inherit global" : "Not set")}
                   roleTitle={previewText(agentConfig.role?.title, "Not configured")}
                   identity={previewText(agentConfig.soul?.identity, "Not configured")}
                   style={previewText(agentConfig.soul?.style, "Not configured")}
