@@ -8,7 +8,13 @@ from typing import Any
 
 from services.evaluation_result_contracts import (
     EvaluationRubricResult,
+    dump_evaluation_result,
     parse_evaluation_result,
+)
+from services.policy_decision_contracts import (
+    build_policy_decision_event_payload,
+    dump_policy_decision,
+    project_policy_decision,
 )
 from services.runner_policy import RunnerGovernancePolicy, find_stage_policy
 
@@ -44,6 +50,23 @@ class EvaluationResultPolicyDecision:
             "stage_name": self.stage_name,
             "violations": [violation.to_payload() for violation in self.violations],
             "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class EvaluationResultPolicyResult:
+    result: EvaluationRubricResult
+    decision: EvaluationResultPolicyDecision
+
+    def to_payload(self) -> dict[str, Any]:
+        policy_decision = project_policy_decision(self.decision)
+        return {
+            "result": dump_evaluation_result(self.result),
+            "decision": self.decision.to_payload(),
+            "policy_decision": dump_policy_decision(policy_decision),
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                policy_decision
+            ),
         }
 
 
@@ -86,6 +109,21 @@ def validate_evaluation_result_for_policy(
             "stage_count": policy.stage_count,
         },
     )
+
+
+def validate_and_project_evaluation_result_for_policy(
+    *,
+    result: EvaluationRubricResult | dict[str, Any],
+    policy: RunnerGovernancePolicy,
+) -> EvaluationResultPolicyResult:
+    """Validate an evaluation result and project the policy decision."""
+
+    parsed_result = parse_evaluation_result(result) if isinstance(result, dict) else result
+    decision = validate_evaluation_result_for_policy(
+        result=parsed_result,
+        policy=policy,
+    )
+    return EvaluationResultPolicyResult(result=parsed_result, decision=decision)
 
 
 def _validate_stage_evaluation_policy(

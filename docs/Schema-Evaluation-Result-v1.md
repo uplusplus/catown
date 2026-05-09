@@ -153,6 +153,8 @@ The first runner-policy validator is now present in:
 
 It validates that an evaluation result's rubric is allowed for the target workflow stage according
 to compiled runner governance policy.
+The projected result helper in the same module also returns canonical `policy_decision`
+and ledger-ready policy-decision event payloads for that validation.
 
 This schema is **not** yet wired into:
 

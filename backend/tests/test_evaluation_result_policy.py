@@ -1,4 +1,7 @@
-from services.evaluation_result_policy import validate_evaluation_result_for_policy
+from services.evaluation_result_policy import (
+    validate_and_project_evaluation_result_for_policy,
+    validate_evaluation_result_for_policy,
+)
 from services.runner_policy import compile_workflow_run_policy
 from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
 
@@ -99,3 +102,20 @@ def test_evaluation_result_policy_accepts_stage_without_rubric_policy():
 
     assert decision.accepted is True
     assert decision.stage_name == "release"
+
+
+def test_evaluation_result_policy_result_projects_policy_decision():
+    result = validate_and_project_evaluation_result_for_policy(
+        result=_result(rubric_id="rubric-release"),
+        policy=_policy(),
+    )
+
+    payload = result.to_payload()
+    assert payload["result"]["result_id"] == "eval-test-1"
+    assert payload["decision"]["accepted"] is False
+    assert payload["policy_decision"]["subject"] == {
+        "kind": "evaluation_result",
+        "id": "eval-test-1",
+        "type": None,
+    }
+    assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"

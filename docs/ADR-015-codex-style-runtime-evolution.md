@@ -7459,6 +7459,35 @@ action_request -> artifact_contract -> artifact policy decision
 - 当前不写 run ledger
 - 当前不改变 action_request policy checker 行为
 
+### 11.184 2026-05-09 新进展：evaluation result policy result 已携带 policy_decision 投影
+
+11.174 已经让 evaluation result 可以按 runner policy 裁定 rubric 适用性。
+但这个裁定结果仍只返回 `EvaluationResultPolicyDecision`，没有统一的 policy_decision 投影。
+
+本轮扩展 `backend/services/evaluation_result_policy.py`：
+
+- 新增 `EvaluationResultPolicyResult`
+- 新增 `validate_and_project_evaluation_result_for_policy(...)`
+
+`to_payload()` 输出：
+
+- original evaluation result
+- original evaluation-result policy decision
+- canonical `policy_decision`
+- `policy_decision_event_payload`
+
+这一步的意义是：
+
+- evaluation result 本身的策略裁定也能进入统一 ledger/read-model 形态
+- evaluation result -> policy decision 与 evaluation result -> rollback action -> policy decision 两条链路分清
+- 软件仍只裁定 rubric/stage policy，不执行业务动作
+
+边界：
+
+- 当前不写 run ledger
+- 当前不接 stage gate
+- 当前不改变 evaluation-result policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

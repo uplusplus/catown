@@ -3004,3 +3004,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - failed evaluation result -> suggest_rollback action request -> action-request policy decision 后，现在可输出 canonical `policy_decision`
 - 同时输出 `policy_decision_event_payload`
 - 暂不执行 rollback，也不写 run ledger
+
+### `Project evaluation result policy decisions`
+
+范围：
+
+- `backend/services/evaluation_result_policy.py`
+- `backend/tests/test_evaluation_result_policy.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `EvaluationResultPolicyResult`
+- 新增 `validate_and_project_evaluation_result_for_policy(...)`
+- evaluation result 按 runner policy 校验后，现在可输出 canonical `policy_decision`
+- 同时输出 `policy_decision_event_payload`
+- 暂不接 stage gate，也不写 run ledger

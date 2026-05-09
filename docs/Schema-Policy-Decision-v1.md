@@ -174,6 +174,10 @@ request is compiled and validated.
 `policy_decision` and ledger-ready event payload after a failed evaluation result
 is converted into a rollback action request and validated.
 
+`EvaluationResultPolicyResult.to_payload()` includes the projected `policy_decision`
+and ledger-ready event payload after an evaluation result itself is validated
+against runner policy.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence
