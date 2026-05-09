@@ -17,9 +17,11 @@ from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
     record_tool_round as record_runner_tool_round,
+    start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
 from services.runtime_event_helpers import build_runtime_event_payload
+from services.stream_runtime_persistence import store_runtime_card
 from services.stream_turn_executor import iter_stream_turn_events
 from services.task_run_control import raise_if_task_run_cancelled
 from services.turn_state import TurnContextState, build_tool_result_record
@@ -130,6 +132,35 @@ async def run_orchestration_agent_turn(
     async def _execute_orchestration_tool(frame: Any, tool_call: dict[str, Any]):
         tool_name = tool_call["function"]["name"]
         tool_args_str = tool_call["function"].get("arguments", "{}")
+        record_tool_call_started(
+            db,
+            task_run,
+            agent_name=runtime.agent_label,
+            turn=frame.turn_index + 1,
+            tool_name=tool_name,
+            arguments=tool_args_str,
+        )
+        async def emit_tool_progress(progress: dict[str, Any]) -> None:
+            await store_runtime_card(
+                chatroom_id,
+                {
+                    "type": "tool_call",
+                    "source": "chatroom",
+                    "agent": runtime.agent_label,
+                    "tool": tool_name,
+                    "arguments": tool_args_str,
+                    "success": None,
+                    "status": "running",
+                    "blocked": False,
+                    "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                    "duration_ms": progress.get("duration_ms"),
+                    "pid": progress.get("pid"),
+                    "tool_call_id": tool_call.get("id"),
+                    "client_turn_id": client_turn_id,
+                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                    "turn": frame.turn_index + 1,
+                },
+            )
         try:
             tool_args = json.loads(tool_args_str or "{}")
             from tools import tool_registry
@@ -138,6 +169,7 @@ async def run_orchestration_agent_turn(
                 tool_name,
                 **tool_args,
                 **runtime.runtime_kwargs,
+                progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
             )
             tool_success = bool(tool_result.get("success")) if isinstance(tool_result, dict) and tool_result.get("__catown_tool_result__") is True else True
         except Exception as te:

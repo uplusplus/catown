@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.single_agent_session_terminal import (
+    PostPublishSuccess,
     SingleAgentSessionTerminalResult as SingleAgentSessionFinalizeResult,
     persist_single_agent_session_success,
     terminalize_single_agent_session_failure,
@@ -28,6 +29,7 @@ async def finalize_single_agent_session_success(
     compact_summary: CompactSummary,
     completion_summary: str,
     schedule_memory_extraction: ScheduleMemoryExtraction | None = None,
+    post_publish_success: PostPublishSuccess | None = None,
 ) -> SingleAgentSessionFinalizeResult:
     """Persist a completed non-stream single-agent turn."""
 
@@ -46,6 +48,7 @@ async def finalize_single_agent_session_success(
         compact_summary=compact_summary,
         completion_summary=completion_summary,
         schedule_memory_extraction=schedule_memory_extraction,
+        post_publish_success=post_publish_success,
     )
 
 

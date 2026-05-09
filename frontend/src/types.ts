@@ -1,5 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "memory" | "permissions";
+export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions";
 
 export type AgentSoul = {
   identity?: string;
@@ -481,6 +481,40 @@ export type ConfigResponse = {
   };
   orchestration?: ConfigOrchestrationDefinition;
   permissions?: ConfigPermissionsDefinition;
+  tools?: {
+    tool_names?: string[];
+    tool_policies?: Array<{
+      name: string;
+      description?: string;
+      risk_level?: string;
+      approval?: {
+        kind?: string;
+        required?: boolean;
+      };
+      sandbox?: {
+        mode?: string;
+        workspace_scope?: string;
+        network_access?: string;
+      };
+      side_effect_scope?: string;
+      requires_credentials?: boolean;
+    }>;
+    tool_policy_summary?: Record<string, unknown>;
+  };
+  skills_catalog?: Record<
+    string,
+    {
+      name?: string;
+      description?: string;
+      required_tools?: string[];
+      category?: string;
+      levels?: {
+        hint?: string;
+        guide?: string;
+        full?: string;
+      };
+    }
+  >;
   agents?: Record<string, ConfigAgentDefinition>;
   agent_llm_configs?: Record<
     string,

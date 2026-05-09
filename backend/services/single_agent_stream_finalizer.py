@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict
 
 from services.single_agent_session_terminal import (
+    PostPublishSuccess,
     SingleAgentSessionTerminalResult as SingleAgentStreamFinalizeResult,
     persist_single_agent_session_success,
     terminalize_single_agent_session_failure,
@@ -31,6 +32,7 @@ async def finalize_single_agent_stream_success(
     compact_summary: CompactSummary,
     completion_summary: str,
     schedule_memory_extraction: ScheduleMemoryExtraction | None = None,
+    post_publish_success: PostPublishSuccess | None = None,
 ) -> SingleAgentStreamFinalizeResult:
     """Persist the final stream response and return the terminal done payload."""
 
@@ -49,6 +51,7 @@ async def finalize_single_agent_stream_success(
         compact_summary=compact_summary,
         completion_summary=completion_summary,
         schedule_memory_extraction=schedule_memory_extraction,
+        post_publish_success=post_publish_success,
         build_payload=lambda saved_message, resolved_content: {
             "type": "done",
             "agent_name": agent_name,

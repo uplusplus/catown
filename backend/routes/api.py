@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from typing import Callable, List, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any, Awaitable
 from pydantic import BaseModel, Field, field_validator
 
 from agents.identity import (
@@ -61,6 +61,7 @@ from skills import import_skill_from_marketplace, list_marketplaces, load_skill_
 from services.monitor_projection import (
     resolve_chatroom_project as monitor_resolve_chatroom_project,
 )
+from services.assistant_handoff import maybe_schedule_assistant_handoff
 from services.chat_publish import publish_saved_chat_message
 from services.context_builder import (
     ContextSelector,
@@ -104,6 +105,7 @@ from services.run_ledger import (
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
     record_tool_round as record_runner_tool_round,
+    start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
 from services.approval_queue import (
@@ -270,6 +272,12 @@ RECOVERABLE_ORCHESTRATION_RUN_KINDS = {
     "multi_agent_orchestration",
     "multi_agent_orchestration_stream",
 }
+INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS = {
+    "project_single_agent",
+    "project_single_agent_stream",
+    "standalone_assistant",
+    "standalone_assistant_stream",
+}
 RECOVERY_LEASE_SECONDS = max(60, int(os.getenv("CATOWN_RECOVERY_LEASE_SECONDS", "900")))
 RECOVERY_INSTANCE_ID = (
     os.getenv("CATOWN_INSTANCE_ID")
@@ -304,6 +312,7 @@ class PreparedStandaloneTurnRuntime:
     assistant_label: str
     assistant_id: Optional[int]
     recent_messages: List[Any]
+    tool_policy_pack: Dict[str, Any]
     turn_state: TurnContextState
 
 class LLMConfigModel(BaseModel):
@@ -802,6 +811,7 @@ async def _trigger_standalone_assistant_response(
         agents=[],
         recent_messages=runtime.recent_messages,
         user_message=user_message,
+        tool_policy_pack=runtime.tool_policy_pack,
         history_limit=10,
         standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
         extra_context=extra_context,
@@ -826,6 +836,7 @@ async def _trigger_standalone_assistant_response(
         failure_summary=lambda error: f"Agent response failed: {error}",
         extract_memories=extract_agent_memories,
         stream_failure_message_metadata=_message_metadata_with_turn,
+        post_publish_success=_build_assistant_auto_handoff_callback(chatroom_id=chatroom_id, source_agent_name=runtime.assistant_name),
     )
 
     await run_managed_single_agent_sync_runtime_profile(
@@ -900,6 +911,7 @@ async def _stream_standalone_assistant_response(
             agents=[],
             recent_messages=runtime.recent_messages,
             user_message=user_message,
+            tool_policy_pack=runtime.tool_policy_pack,
             history_limit=10,
             standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
             turn_state=current_turn_state,
@@ -942,6 +954,7 @@ async def _stream_standalone_assistant_response(
         failure_summary=lambda error: f"Standalone stream failed: {error}",
         extract_memories=extract_agent_memories,
         stream_failure_message_metadata=_message_metadata_with_turn,
+        post_publish_success=_build_assistant_auto_handoff_callback(chatroom_id=chatroom_id, source_agent_name=runtime.assistant_name),
     )
 
     async for outcome in iter_managed_single_agent_stream_runtime_profile(
@@ -1000,7 +1013,7 @@ async def trigger_agent_response(
         chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
         if not chatroom:
             logger.debug(f"[ No chatroom found")
-            return
+            return {"completed": False, "awaiting_tool_approval": False, "task_run_id": None}
 
         project = _resolve_chatroom_project(db, chatroom)
         task_run = get_task_run(db, task_run_id) if task_run_id else None
@@ -1048,7 +1061,7 @@ async def trigger_agent_response(
                     extra_context=extra_context,
                     prepared_runtime=prepared_orchestration,
                 )
-                return
+                return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
             standalone_target = _resolve_standalone_target_agent(db, user_message)
             standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
             standalone_policy = _build_single_agent_runner_policy(
@@ -1077,7 +1090,7 @@ async def trigger_agent_response(
                 extra_context=extra_context,
                 checkpoint_snapshot=checkpoint_snapshot,
             )
-            return
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
         
         logger.debug(f"[ Found project: {project.name}")
 
@@ -1126,7 +1139,7 @@ async def trigger_agent_response(
                 extra_context=extra_context,
                 prepared_runtime=prepared_orchestration,
             )
-            return
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
 
         target_agent_name = mentioned_names[0] if mentioned_names else None
         logger.debug(f"[ Target agent name: {target_agent_name}")
@@ -1142,7 +1155,7 @@ async def trigger_agent_response(
         if not target_agent:
             logger.debug(f"[ No target agent found")
             complete_task_run(db, task_run, status="failed", summary="No target agent resolved.")
-            return
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
 
         logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
         available_tools = tool_registry.list_tools()
@@ -1222,6 +1235,7 @@ async def trigger_agent_response(
                 recent_messages=runtime.recent_messages,
                 user_message=user_message,
                 available_tools=runtime.available_tools,
+                tool_policy_pack=runtime.tool_policy_pack,
                 history_limit=10,
                 history_visibility="all" if visibility == "all" else "target",
                 target_agent_name=runtime.agent_label,
@@ -1243,11 +1257,41 @@ async def trigger_agent_response(
             tool_args_str = tool_call["function"].get("arguments", "{}")
             tool_args = json.loads(tool_args_str or "{}")
             logger.debug(f"[Tool] Executing: {tool_name} with args: {tool_args}")
+            record_tool_call_started(
+                db,
+                task_run,
+                agent_name=runtime.agent_label,
+                turn=frame.turn_index + 1,
+                tool_name=tool_name,
+                arguments=tool_args_str,
+            )
+            async def emit_tool_progress(progress: dict[str, Any]) -> None:
+                await store_runtime_card(
+                    chatroom.id,
+                    {
+                        "type": "tool_call",
+                        "source": "chatroom",
+                        "agent": runtime.agent_label,
+                        "tool": tool_name,
+                        "arguments": tool_args_str,
+                        "success": None,
+                        "status": "running",
+                        "blocked": False,
+                        "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                        "duration_ms": progress.get("duration_ms"),
+                        "pid": progress.get("pid"),
+                        "tool_call_id": tool_call.get("id"),
+                        "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                        "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                        "turn": frame.turn_index + 1,
+                    },
+                )
             try:
                 tool_result = await tool_registry.execute(
                     tool_name,
                     **tool_args,
                     **runtime.runtime_kwargs,
+                    progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
                 )
                 tool_success = _tool_result_succeeded(tool_result)
                 logger.debug(f"[Tool] Result: {_tool_result_text(tool_result)[:150]}...")
@@ -1324,6 +1368,7 @@ async def trigger_agent_response(
             failure_summary=lambda error: f"Agent response failed: {error}",
             extract_memories=extract_agent_memories,
             stream_failure_message_metadata=_message_metadata_with_turn,
+            post_publish_success=_build_assistant_auto_handoff_callback(chatroom_id=chatroom_id, source_agent_name=runtime.agent_label),
         )
 
         finalized = await run_managed_single_agent_sync_runtime_profile(
@@ -1339,6 +1384,13 @@ async def trigger_agent_response(
         if finalized.final_content:
             logger.debug(f"[ Agent response saved: id=completed")
             logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
+
+        return {
+            "completed": False,
+            "awaiting_tool_approval": awaiting_tool_approval,
+            "task_run_id": getattr(task_run, "id", None),
+        }
 
     except Exception as e:
         logger.error(f"[ Agent response failed: {str(e)}")
@@ -1350,6 +1402,7 @@ async def trigger_agent_response(
         )
         import traceback
         traceback.print_exc()
+        return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
     finally:
         if workspace_token is not None:
             reset_active_workspace(workspace_token)
@@ -1564,6 +1617,8 @@ async def _prepare_standalone_turn_runtime(
     previous_agent_work: str = "",
     recent_message_limit: int = 20,
 ) -> PreparedStandaloneTurnRuntime:
+    from tools import tool_registry as runtime_tool_registry
+
     assistant = _resolve_standalone_target_agent(db, user_message)
     if assistant:
         llm_client = get_llm_client_for_agent(_agent_type(assistant))
@@ -1587,6 +1642,7 @@ async def _prepare_standalone_turn_runtime(
         assistant_label=assistant_label,
         assistant_id=assistant_id,
         recent_messages=recent_messages,
+        tool_policy_pack=runtime_tool_registry.get_policy_pack([]),
         turn_state=turn_state,
     )
 
@@ -1645,6 +1701,51 @@ def _renew_task_run_recovery_lease(db: Session, task_run_id: int) -> Optional[da
         )
     except RecoveryLeaseLostError:
         return None
+
+
+def _terminalize_interrupted_single_agent_task_run(
+    db: Session,
+    task_run: TaskRun,
+    *,
+    trigger: str,
+) -> bool:
+    run_kind = str(task_run.run_kind or "").strip()
+    if run_kind not in INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS:
+        return False
+    if str(task_run.status or "").strip().lower() != "running":
+        return False
+    pending_approvals = [
+        item
+        for item in list(getattr(task_run, "approval_queue_items", []) or [])
+        if str(getattr(item, "status", "") or "").strip().lower() == "pending"
+    ]
+    if pending_approvals:
+        return False
+
+    latest_event = (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.task_run_id == task_run.id)
+        .order_by(TaskRunEvent.event_index.desc(), TaskRunEvent.id.desc())
+        .first()
+    )
+    summary = "Task run was interrupted by a backend restart before it could finish."
+    append_task_event(
+        db,
+        task_run,
+        "task_run_interrupted",
+        agent_name=task_run.target_agent_name,
+        summary=summary,
+        payload={
+            "task_run_id": task_run.id,
+            "run_kind": run_kind,
+            "trigger": trigger,
+            "latest_event_type": latest_event.event_type if latest_event is not None else None,
+            "latest_event_index": latest_event.event_index if latest_event is not None else None,
+            "latest_event_at": latest_event.created_at.isoformat() if latest_event is not None and latest_event.created_at else None,
+        },
+    )
+    complete_task_run(db, task_run, status="failed", summary=summary)
+    return True
 
 
 def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
@@ -2117,35 +2218,58 @@ async def _resume_interrupted_orchestration_task_run(
 async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
     db = SessionLocal()
     try:
+        recoverable_run_kinds = RECOVERABLE_ORCHESTRATION_RUN_KINDS | INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS
         pending_runs = (
             db.query(TaskRun)
             .filter(
                 TaskRun.status == "running",
-                TaskRun.run_kind.in_(sorted(RECOVERABLE_ORCHESTRATION_RUN_KINDS)),
+                TaskRun.run_kind.in_(sorted(recoverable_run_kinds)),
             )
             .order_by(TaskRun.created_at.asc(), TaskRun.id.asc())
             .limit(max(1, limit))
             .all()
         )
-        run_ids = [run.id for run in pending_runs]
+        run_refs = [(run.id, str(run.run_kind or "").strip()) for run in pending_runs]
     finally:
         db.close()
 
     recovered = 0
     failed = 0
     skipped = 0
-    for run_id in run_ids:
+    interrupted = 0
+    for run_id, run_kind in run_refs:
         try:
-            result = await _resume_interrupted_orchestration_task_run(run_id, trigger="startup")
-            if result.resumed:
-                recovered += 1
-            elif result.reason in {"leased", "not_running", "not_recoverable", "not_found"}:
-                skipped += 1
+            if run_kind in RECOVERABLE_ORCHESTRATION_RUN_KINDS:
+                result = await _resume_interrupted_orchestration_task_run(run_id, trigger="startup")
+                if result.resumed:
+                    recovered += 1
+                elif result.reason in {"leased", "not_running", "not_recoverable", "not_found"}:
+                    skipped += 1
+                else:
+                    failed += 1
+            elif run_kind in INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS:
+                db = SessionLocal()
+                try:
+                    task_run = db.query(TaskRun).filter(TaskRun.id == run_id).first()
+                    if task_run is None or str(task_run.status or "").strip().lower() != "running":
+                        skipped += 1
+                    elif _terminalize_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
+                        interrupted += 1
+                    else:
+                        skipped += 1
+                finally:
+                    db.close()
             else:
-                failed += 1
+                skipped += 1
         except Exception:
             failed += 1
-    return {"detected": len(run_ids), "recovered": recovered, "failed": failed, "skipped": skipped}
+    return {
+        "detected": len(run_refs),
+        "recovered": recovered,
+        "failed": failed,
+        "skipped": skipped,
+        "interrupted": interrupted,
+    }
 
 
 async def _stream_multi_agent_orchestration(
@@ -2383,6 +2507,48 @@ def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[D
     if client_turn_id:
         metadata["client_turn_id"] = client_turn_id
     return metadata
+
+
+async def _publish_agent_handoff_card(
+    *,
+    chatroom_id: int,
+    from_agent: str,
+    to_agent: str,
+    content: str,
+    client_turn_id: str,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    await store_runtime_card(
+        chatroom_id,
+        {
+            "type": "agent_message",
+            "source": "chatroom",
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "content": content,
+            "client_turn_id": client_turn_id,
+            **(extra_metadata or {}),
+        },
+    )
+
+
+def _build_assistant_auto_handoff_callback(
+    *,
+    chatroom_id: int,
+    source_agent_name: str,
+) -> Callable[[Any, str, Dict[str, Any]], Awaitable[Any]]:
+    async def _callback(saved_message: Any, resolved_content: str, metadata: Dict[str, Any]) -> Any:
+        return await maybe_schedule_assistant_handoff(
+            chatroom_id=chatroom_id,
+            content=resolved_content,
+            agent_name=source_agent_name,
+            metadata=metadata,
+            saved_message_id=getattr(saved_message, "id", None),
+            publish_agent_message_card=_publish_agent_handoff_card,
+            trigger_agent_response=trigger_agent_response,
+        )
+
+    return _callback
 
 
 def _serialize_project_agents(db: Session, project_id: int) -> List[Agent]:
@@ -3460,12 +3626,39 @@ async def _replay_runtime_blocked_tool_queue_item(
         project.workspace_path if project and getattr(project, "workspace_path", None) else None,
     )
 
+    async def emit_tool_progress(progress: dict[str, Any]) -> None:
+        chatroom_id = getattr(item, "chatroom_id", None)
+        if not isinstance(chatroom_id, int):
+            return
+        task_run = get_task_run(db, getattr(item, "task_run_id", None))
+        await store_runtime_card(
+            chatroom_id,
+            {
+                "type": "tool_call",
+                "source": "approval_replay",
+                "agent": (getattr(item, "agent_name", None) or "").strip() or "agent",
+                "tool": tool_name,
+                "arguments": arguments_text,
+                "success": None,
+                "status": "running",
+                "blocked": False,
+                "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                "duration_ms": progress.get("duration_ms"),
+                "pid": progress.get("pid"),
+                "tool_call_id": request_payload.get("tool_call_id"),
+                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                "turn": request_payload.get("turn"),
+            },
+        )
+
     try:
         tool_result = await tool_registry.execute(
             tool_name,
             **loaded_arguments,
             **runtime_kwargs,
             __catown_approval_granted=True,
+            progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
         )
         tool_success = _tool_result_succeeded(tool_result)
     except Exception as exc:
@@ -3843,14 +4036,51 @@ async def _finalize_approved_queue_item_followup_async(
             replay_turn = max(1, int(request_payload.get("turn") or 1))
         except (TypeError, ValueError):
             replay_turn = 1
+        tool_name = str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip() or "tool"
+        tool_arguments = resolve_replay_arguments_text(request_payload)
+        record_tool_call_started(
+            db,
+            task_run,
+            agent_name=(item.agent_name or "").strip() or "agent",
+            turn=replay_turn,
+            tool_name=tool_name,
+            arguments=tool_arguments,
+            payload={
+                "tool_call_id": getattr(replay_result, "tool_call_id", None),
+                "replay": True,
+                "replay_of_queue_item_id": getattr(item, "id", None),
+                "resumed_after_approval": True,
+            },
+        )
+        chatroom_id = getattr(item, "chatroom_id", None)
+        if isinstance(chatroom_id, int):
+            await store_runtime_card(
+                chatroom_id,
+                {
+                    "type": "tool_call",
+                    "source": "approval_replay",
+                    "agent": (item.agent_name or "").strip() or "agent",
+                    "tool": tool_name,
+                    "arguments": tool_arguments,
+                    "success": None,
+                    "status": "running",
+                    "blocked": False,
+                    "result": "Resumed after approval. Tool is running.",
+                    "pid": getattr(replay_result, "pid", None),
+                    "tool_call_id": getattr(replay_result, "tool_call_id", None),
+                    "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                    "turn": replay_turn,
+                },
+            )
         record_runner_tool_round(
             db,
             task_run,
             agent_name=(item.agent_name or "").strip() or "agent",
             turn=replay_turn,
-            tool_names=[replay_result.tool_name],
+            tool_names=[tool_name],
             tool_results=[replay_result],
-            summary=f"Continued blocked tool {replay_result.tool_name} after approval.",
+            summary=f"Continued blocked tool {tool_name} after approval.",
             payload=build_approval_queue_replay_round_payload(item, request_payload),
         )
         resolution_payload = build_queue_replay_resolution_payload(
@@ -4723,6 +4953,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     recent_messages=runtime.recent_messages,
                     user_message=message.content,
                     available_tools=runtime.available_tools,
+                    tool_policy_pack=runtime.tool_policy_pack,
                     history_limit=6,
                     turn_state=current_turn_state,
                     on_compaction=compaction_callback,
@@ -4792,6 +5023,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 failure_summary=lambda error: f"Streaming execution failed: {error}",
                 extract_memories=extract_agent_memories,
                 stream_failure_message_metadata=_message_metadata_with_turn,
+                post_publish_success=_build_assistant_auto_handoff_callback(chatroom_id=chatroom_id, source_agent_name=target_agent_label),
             )
 
             async for outcome in iter_managed_single_agent_stream_runtime_profile(
@@ -4950,6 +5182,7 @@ async def get_config():
     - features: 功能开关
     """
     from pathlib import Path
+    from tools import tool_registry
 
     config = {
         "server": {
@@ -4970,6 +5203,12 @@ async def get_config():
         },
         "orchestration": _effective_orchestration_config(),
         "permissions": _effective_permissions_config(),
+        "tools": {
+            "tool_names": [],
+            "tool_policies": [],
+            "tool_policy_summary": {},
+        },
+        "skills_catalog": {},
         "agents": {},
         "agent_llm_configs": {}
     }
@@ -5028,6 +5267,22 @@ async def get_config():
                     "models": [m["id"] for m in models] if has_own_provider else [m["id"] for m in global_provider.get("models", [])],
                     "source": "agent" if has_own_provider else "global"
                 }
+
+            available_tools = tool_registry.list_tools()
+            description_map = {
+                tool_name: (tool_registry.get(tool_name).description if tool_registry.get(tool_name) else "")
+                for tool_name in available_tools
+            }
+            config["tools"] = tool_registry.get_policy_pack(available_tools)
+            for policy in config["tools"].get("tool_policies", []):
+                if not policy.get("description"):
+                    policy["description"] = description_map.get(policy.get("name", ""), "")
+
+            skills_config_file = Path(settings.SKILLS_CONFIG_FILE)
+            if skills_config_file.exists():
+                with open(skills_config_file, "r", encoding="utf-8") as f:
+                    skills_config = json.load(f)
+                config["skills_catalog"] = skills_config if isinstance(skills_config, dict) else {}
         except Exception as e:
             logger.warning(f"Failed to load agents.json: {e}")
 
@@ -5371,7 +5626,7 @@ async def get_collaboration_status():
     return {
         "active_collaborators": len(collaboration_coordinator.collaborators),
         "chatrooms": len(collaboration_coordinator.chatroom_agents),
-        "pending_tasks": len(collaboration_coordinator.task_registry),
+        "pending_tasks": collaboration_coordinator.pending_task_count(),
         "status": "active"
     }
 
@@ -5388,11 +5643,22 @@ async def get_chatroom_collaboration_status(chatroom_id: int):
 @router.get("/collaboration/tasks/{task_id}")
 async def get_task_status(task_id: str):
     """获取任务状态"""
-    from agents.collaboration import collaboration_coordinator
-    
-    task = collaboration_coordinator.get_task_status(task_id)
+    from agents.collaboration import (
+        collaboration_coordinator,
+        enrich_collaboration_task_result_details,
+        normalize_delegated_task_id,
+        rebuild_collaboration_task_from_runtime,
+        refresh_collaboration_task_from_runtime,
+    )
+
+    normalized_task_id = normalize_delegated_task_id(task_id)
+    task = collaboration_coordinator.get_task_status(normalized_task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        task = rebuild_collaboration_task_from_runtime(normalized_task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+    task = refresh_collaboration_task_from_runtime(task) or task
+    collaboration_coordinator.task_registry[task.id] = task
     
     return {
         "id": task.id,
@@ -5400,6 +5666,7 @@ async def get_task_status(task_id: str):
         "status": task.status,
         "assigned_to": task.assigned_to_agent_id,
         "result": task.result,
+        "result_details": enrich_collaboration_task_result_details(task),
         "created_at": task.created_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None
     }
@@ -5446,9 +5713,15 @@ async def delegate_task_to_agent(
 @router.get("/collaboration/tasks")
 async def list_collaboration_tasks(chatroom_id: Optional[int] = None):
     """列出协作任务"""
-    from agents.collaboration import collaboration_coordinator
+    from agents.collaboration import collaboration_coordinator, refresh_collaboration_task_from_runtime, enrich_collaboration_task_result_details
     
     tasks = list(collaboration_coordinator.task_registry.values())
+    refreshed_tasks = []
+    for task in tasks:
+        refreshed = refresh_collaboration_task_from_runtime(task) or task
+        collaboration_coordinator.task_registry[refreshed.id] = refreshed
+        refreshed_tasks.append(refreshed)
+    tasks = refreshed_tasks
     
     if chatroom_id:
         tasks = [t for t in tasks if t.chatroom_id == chatroom_id]
@@ -5460,7 +5733,10 @@ async def list_collaboration_tasks(chatroom_id: Optional[int] = None):
                 "title": t.title,
                 "status": t.status,
                 "assigned_to": t.assigned_to_agent_id,
-                "created_at": t.created_at.isoformat()
+                "result": t.result,
+                "result_details": enrich_collaboration_task_result_details(t),
+                "created_at": t.created_at.isoformat(),
+                "completed_at": t.completed_at.isoformat() if t.completed_at else None,
             }
             for t in tasks
         ],

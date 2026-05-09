@@ -6,6 +6,8 @@ import asyncio
 import subprocess
 import sys
 import os
+import threading
+import time
 from unittest.mock import patch
 
 # 添加 backend 目录到 path
@@ -278,6 +280,86 @@ class TestToolRegistry:
         assert result["success"] is True
         assert result["status"] == "succeeded"
         assert "ok" in result["result"]
+
+    @pytest.mark.asyncio
+    async def test_run_shell_wait_forever_emits_progress(self, fresh_db, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(title="Progress chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            chatroom_id = chatroom.id
+            preference_key = build_run_shell_timeout_preference_key("long-job", ".")
+            save_wait_forever_preference(
+                db,
+                tool_name="run_shell",
+                preference_key=preference_key,
+                command_preview="long-job @ .",
+                chatroom_id=chatroom_id,
+            )
+        finally:
+            db.close()
+
+        class FakeStdout:
+            def __init__(self):
+                self._lines = ["line 1\n", "line 2\n", ""]
+                self._index = 0
+
+            def readline(self):
+                if self._index < 2:
+                    time.sleep(0.05)
+                value = self._lines[self._index]
+                self._index += 1
+                return value
+
+        class FakePopen:
+            def __init__(self, *args, **kwargs):
+                self.stdout = FakeStdout()
+                self.returncode = None
+                self._done = False
+                self._lock = threading.Lock()
+                self._thread = threading.Thread(target=self._finish, daemon=True)
+                self._thread.start()
+
+            def _finish(self):
+                time.sleep(2.3)
+                with self._lock:
+                    self.returncode = 0
+                    self._done = True
+
+            def poll(self):
+                with self._lock:
+                    return self.returncode if self._done else None
+
+            def kill(self):
+                with self._lock:
+                    self.returncode = -9
+                    self._done = True
+
+        progress_updates = []
+
+        async def progress_callback(payload):
+            progress_updates.append(payload)
+
+        with patch("tools.run_shell.subprocess.Popen", side_effect=FakePopen):
+            result = await registry.execute(
+                "run_shell",
+                command="long-job",
+                timeout_seconds=1,
+                chatroom_id=chatroom_id,
+                __catown_approval_granted=True,
+                progress_callback=progress_callback,
+            )
+
+        assert result["success"] is True
+        assert result["status"] == "succeeded"
+        assert "line 1" in result["result"]
+        assert progress_updates
+        assert any("line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
     async def test_saved_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):

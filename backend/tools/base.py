@@ -68,6 +68,10 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "sandbox": {"mode": "workspace_guarded", "workspace_scope": "workspace_read"},
         "side_effect_scope": "read_only",
     },
+    "list_agents": {
+        "sandbox": {"mode": "workspace_guarded", "workspace_scope": "workspace_read"},
+        "side_effect_scope": "read_only",
+    },
     "write_file": {
         "risk_level": "medium",
         "approval": {
@@ -301,7 +305,7 @@ def _dynamic_policy_override(name: str) -> Dict[str, Any]:
     if not allow_read_only:
         return {}
 
-    if name in {"read_file", "list_files", "search_files", "list_directory", "retrieve_memory"}:
+    if name in {"read_file", "list_files", "search_files", "list_directory", "list_agents", "retrieve_memory"}:
         return {
             "approval": {
                 "kind": "auto",

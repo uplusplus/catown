@@ -1960,6 +1960,106 @@ class TestSSEStreaming:
             for message in first_call_messages
         )
 
+    def test_stream_assistant_multi_agent_mentions_schedule_multiple_handoffs(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        async def scripted_stream(messages, tools=None):
+            yield {"type": "content", "delta": "@tester @developer please inspect the backend"}
+            yield {
+                "type": "done",
+                "full_content": "@tester @developer please inspect the backend",
+                "tool_calls": None,
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = scripted_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        original_trigger_agent_response = api_routes.trigger_agent_response
+        handoff_calls = []
+        helper_calls = []
+        published_handoffs = []
+
+        async def patched_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+            if client_turn_id and str(client_turn_id).startswith("handoff-"):
+                handoff_calls.append({
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "extra_context": extra_context,
+                })
+                return {"completed": True, "awaiting_tool_approval": False, "task_run_id": None}
+            return await original_trigger_agent_response(
+                chatroom_id,
+                user_message,
+                client_turn_id=client_turn_id,
+                task_run_id=task_run_id,
+                extra_context=extra_context,
+                checkpoint_snapshot=checkpoint_snapshot,
+            )
+
+        async def fake_maybe_schedule_assistant_handoff(**kwargs):
+            helper_calls.append(kwargs)
+            await kwargs["publish_agent_message_card"](
+                chatroom_id=kwargs["chatroom_id"],
+                from_agent="analyst",
+                to_agent="tester",
+                content=kwargs["content"],
+                client_turn_id="handoff-test-1",
+                extra_metadata={"handoff_depth": 1},
+            )
+            await kwargs["publish_agent_message_card"](
+                chatroom_id=kwargs["chatroom_id"],
+                from_agent="analyst",
+                to_agent="developer",
+                content=kwargs["content"],
+                client_turn_id="handoff-test-2",
+                extra_metadata={"handoff_depth": 1},
+            )
+            await patched_trigger_agent_response(
+                kwargs["chatroom_id"],
+                "@tester please inspect the backend",
+                client_turn_id="handoff-test-1",
+                extra_context="Automatic handoff from analyst to tester.",
+            )
+            await patched_trigger_agent_response(
+                kwargs["chatroom_id"],
+                "@developer please inspect the backend",
+                client_turn_id="handoff-test-2",
+                extra_context="Automatic handoff from analyst to developer.",
+            )
+            return "tester"
+
+        with patch.object(api_routes, "trigger_agent_response", side_effect=patched_trigger_agent_response), \
+             patch("routes.api.maybe_schedule_assistant_handoff", side_effect=fake_maybe_schedule_assistant_handoff):
+            r = client.post("/api/projects", json={"name": "Auto Handoff Project", "agent_names": ["analyst", "tester", "developer"]})
+            cid = r.json()["chatroom_id"]
+
+            stream = client.post(
+                f"/api/chatrooms/{cid}/messages/stream",
+                json={"content": "@analyst coordinate this", "client_turn_id": "turn-auto-handoff-1"},
+            )
+
+        assert stream.status_code == 200
+        assert len(helper_calls) == 1
+        assert helper_calls[0]["content"] == "@tester @developer please inspect the backend"
+        runtime_cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        handoff_cards = [
+            card for card in runtime_cards
+            if card.get("type") == "agent_message" and card.get("content") == "@tester @developer please inspect the backend"
+        ]
+        assert len(handoff_cards) >= 2
+        handoff_targets = {card.get("to_agent") for card in handoff_cards}
+        assert {"tester", "developer"}.issubset(handoff_targets)
+        assert len(handoff_calls) == 2
+        handoff_messages = {call["user_message"] for call in handoff_calls}
+        assert "@tester please inspect the backend" in handoff_messages
+        assert "@developer please inspect the backend" in handoff_messages
+
     def test_stream_persists_final_done_content_without_delta(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
@@ -2831,7 +2931,22 @@ class TestSSEStreaming:
         instruct_mock = AsyncMock(return_value=None)
         resume_mock = AsyncMock(return_value=None)
 
+        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
+            thread = threading.Thread(
+                target=lambda: asyncio.run(
+                    api_routes._finalize_approved_queue_item_followup_async(
+                        item_id,
+                        request_payload=request_payload,
+                        resolved_by=resolved_by,
+                        resolution_note=resolution_note,
+                    )
+                )
+            )
+            thread.start()
+            thread.join()
+
         with patch.object(api_routes, "_replay_blocked_tool_queue_item", side_effect=fake_replay), \
+             patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now), \
              patch.object(api_routes.pipeline_engine, "instruct", instruct_mock), \
              patch.object(api_routes.pipeline_engine, "resume", resume_mock):
             approved = client.post(
@@ -3034,6 +3149,275 @@ class TestCollaborationEndpoints:
     def test_get_task_not_found(self, client):
         r = client.get("/api/collaboration/tasks/nonexistent")
         assert r.status_code == 404
+
+    def test_collaboration_status_counts_only_active_tasks(self, client):
+        from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus
+        import uuid
+
+        collaboration_coordinator.task_registry.clear()
+        for status in [TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.DELEGATED, TaskStatus.COMPLETED]:
+            task_id = str(uuid.uuid4())
+            collaboration_coordinator.task_registry[task_id] = CollaborationTask(
+                id=task_id,
+                title=status.value,
+                description=status.value,
+                status=status,
+                created_by_agent_id=1,
+                assigned_to_agent_id=2,
+                chatroom_id=1,
+            )
+
+        r = client.get("/api/collaboration/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["pending_tasks"] == 3
+
+    def test_collaboration_task_endpoint_backfills_runtime_result(self, client):
+        from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus
+        from models.database import SessionLocal, Message, TaskRun
+        import uuid
+        import json
+
+        task_id = str(uuid.uuid4())
+        task = CollaborationTask(
+            id=task_id,
+            title="Run tests",
+            description="Run project tests and report back",
+            status=TaskStatus.DELEGATED,
+            created_by_agent_id=1,
+            assigned_to_agent_id=2,
+            chatroom_id=1,
+            result="Completed in chat window. See delegated turn output.",
+        )
+        collaboration_coordinator.task_registry[task_id] = task
+
+        db = SessionLocal()
+        try:
+            db.add(Message(
+                chatroom_id=1,
+                agent_id=2,
+                content="pytest finished: 12 passed, 1 failed in test_x.",
+                message_type="text",
+                metadata_json=json.dumps({"client_turn_id": f"delegate-{task_id}"}),
+            ))
+            db.add(TaskRun(
+                chatroom_id=1,
+                project_id=None,
+                client_turn_id=f"delegate-{task_id}",
+                run_kind="project_single_agent",
+                status="completed",
+                title="Run tests",
+                user_request="Run tests",
+                initiator="user",
+                target_agent_name="tester",
+                summary="pytest finished: 12 passed, 1 failed in test_x.",
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get(f"/api/collaboration/tasks/{task_id}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "completed"
+        assert "12 passed, 1 failed" in data["result"]
+        assert data["result_details"]["ran_tests"] is True
+        assert data["result_details"]["passed_count"] == 12
+        assert data["result_details"]["failed_count"] == 1
+        assert data["result_details"]["next_step"] == "Inspect failed tests and logs."
+
+    def test_collaboration_task_endpoint_rebuilds_from_runtime_when_registry_is_empty(self, client):
+        from agents.collaboration import collaboration_coordinator
+        from models.database import SessionLocal, TaskRun
+        import uuid
+
+        task_id = str(uuid.uuid4())
+        collaboration_coordinator.task_registry.clear()
+
+        db = SessionLocal()
+        try:
+            db.add(TaskRun(
+                chatroom_id=1,
+                project_id=None,
+                client_turn_id=f"delegate-{task_id}",
+                run_kind="project_single_agent",
+                status="running",
+                title="Run tests",
+                user_request="Run tests",
+                initiator="user",
+                target_agent_name="tester",
+                summary="Pytest finished; waiting for delegated finalization.",
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get(f"/api/collaboration/tasks/{task_id}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["id"] == task_id
+        assert data["status"] == "in_progress"
+        assert "waiting for delegated finalization" in data["result"].lower()
+
+    def test_collaboration_task_endpoint_shows_running_followup_activity_after_approval(self, client):
+        from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus
+        from models.database import SessionLocal, TaskRun, TaskRunEvent, ApprovalQueueItem
+        import uuid
+        import json
+
+        task_id = str(uuid.uuid4())
+        collaboration_coordinator.task_registry[task_id] = CollaborationTask(
+            id=task_id,
+            title="Run tests",
+            description="Run project tests and report back",
+            status=TaskStatus.IN_PROGRESS,
+            created_by_agent_id=1,
+            assigned_to_agent_id=2,
+            chatroom_id=1,
+            result="Waiting for approval.",
+        )
+
+        db = SessionLocal()
+        try:
+            run = TaskRun(
+                chatroom_id=1,
+                project_id=None,
+                client_turn_id=f"delegate-{task_id}",
+                run_kind="project_single_agent",
+                status="running",
+                title="Run tests",
+                user_request="Run tests",
+                initiator="user",
+                target_agent_name="tester",
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+
+            queue_item = ApprovalQueueItem(
+                task_run_id=run.id,
+                chatroom_id=1,
+                project_id=None,
+                queue_kind="approval",
+                source="tool_call_blocked",
+                title="Approval needed for run_shell",
+                summary="Need approval",
+                agent_name="Tester",
+                target_kind="tool",
+                target_name="run_shell",
+                status="approved",
+                request_key=str(uuid.uuid4()),
+                request_payload_json=json.dumps({
+                    "tool_name": "run_shell",
+                    "arguments": json.dumps({
+                        "command": "python -m pytest backend/tests -q --tb=short --disable-warnings",
+                        "cwd": "/mnt/c/Users/sun/AI/catown",
+                    }),
+                }),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+
+            db.add(TaskRunEvent(
+                task_run_id=run.id,
+                event_index=1,
+                event_type="approval_queue_item_resolved",
+                agent_name="Tester",
+                summary="Approved queue item for run_shell.",
+                payload_json=json.dumps({
+                    "queue_item_id": queue_item.id,
+                    "target_name": "run_shell",
+                    "status": "approved",
+                    "action_taken": "queue_resolved_only",
+                }),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get(f"/api/collaboration/tasks/{task_id}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "in_progress"
+        assert "python -m pytest backend/tests -q --tb=short --disable-warnings" in data["result"]
+
+    def test_collaboration_task_endpoint_marks_stalled_when_no_live_process_or_recent_activity(self, client):
+        from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus
+        from models.database import SessionLocal, TaskRun, Message
+        from datetime import datetime, timedelta
+        import uuid
+        import json
+
+        task_id = str(uuid.uuid4())
+        collaboration_coordinator.task_registry[task_id] = CollaborationTask(
+            id=task_id,
+            title="Run tests",
+            description="Run project tests and report back",
+            status=TaskStatus.IN_PROGRESS,
+            created_by_agent_id=1,
+            assigned_to_agent_id=2,
+            chatroom_id=1,
+            result="Task is running.",
+            metadata={},
+        )
+
+        stale_time = datetime.now() - timedelta(seconds=240)
+
+        db = SessionLocal()
+        try:
+            run = TaskRun(
+                chatroom_id=1,
+                project_id=None,
+                client_turn_id=f"delegate-{task_id}",
+                run_kind="project_single_agent",
+                status="running",
+                title="Run tests",
+                user_request="Run tests",
+                initiator="user",
+                target_agent_name="tester",
+                created_at=stale_time,
+                updated_at=stale_time,
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+
+            db.add(Message(
+                chatroom_id=1,
+                agent_id=None,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "agent": "Tester",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({
+                            "command": "python -m pytest backend/tests -q --tb=short --disable-warnings",
+                            "cwd": "/mnt/c/Users/sun/AI/catown",
+                        }),
+                        "status": "running",
+                        "result": "....FF....",
+                        "duration_ms": 84018,
+                        "pid": 99999999,
+                        "client_turn_id": f"delegate-{task_id}",
+                        "run_id": run.id,
+                    }
+                }),
+                created_at=stale_time,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        r = client.get(f"/api/collaboration/tasks/{task_id}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "stalled"
+        assert data["result"].lower().startswith("stalled:")
+        assert data["result_details"]["phase"] == "stalled"
+        assert data["result_details"]["idle_seconds"] >= 120
 
 
 # ==================== 多 Agent 流水线 ====================

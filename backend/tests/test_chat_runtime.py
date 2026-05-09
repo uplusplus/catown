@@ -18,11 +18,21 @@ def test_assemble_runtime_chat_messages_adds_tool_guidance(monkeypatch):
         db=object(),
         agent=None,
         agent_name="Developer",
+        user_message="Please use skill_manager to install a skill and maybe run pytest from the shell",
         available_tools=["skill_manager", "read_file"],
+        tool_policy_pack={
+            "tool_policies": [
+                {"name": "skill_manager", "description": "Install or manage skills.", "risk_level": "high", "approval": {"kind": "conditional"}},
+                {"name": "read_file", "description": "Read file contents.", "risk_level": "low", "approval": {"kind": "auto"}},
+            ]
+        },
     )
 
     assert result == [{"role": "system", "content": "ok"}]
     assert "skill_manager" in captured["tool_guidance"]
+    assert "## Tool Hints" in captured["tool_guidance"]
+    assert "## Active Tool Guides" in captured["tool_guidance"]
+    assert "## Relevant Tool Details" in captured["tool_guidance"]
     assert "When you need to use a tool" in captured["tool_guidance"]
 
 
@@ -40,6 +50,7 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
 
     monkeypatch.setattr(tool_registry, "list_tools", lambda: ["read_file"])
     monkeypatch.setattr(tool_registry, "get_schemas", lambda: [{"name": "read_file"}])
+    monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": [{"name": "read_file", "description": "Read file contents."}]})
 
     agent = SimpleNamespace(id=7, name="Developer", agent_type="developer")
     project = SimpleNamespace(id=3)
@@ -57,6 +68,7 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
     assert runtime.agent_label == "Developer"
     assert runtime.available_tools == ["read_file"]
     assert runtime.tool_schemas == [{"name": "read_file"}]
+    assert runtime.tool_policy_pack["tool_names"] == ["read_file"]
     assert runtime.runtime_kwargs == {
         "chatroom_id": 11,
         "agent_id": 7,

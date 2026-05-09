@@ -16,6 +16,7 @@ ScheduleMemoryExtraction = Callable[[], Any]
 MessageMetadataBuilder = Callable[[str | None], Dict[str, Any]]
 CompactSummary = Callable[[Any], str]
 BuildPayload = Callable[[Any, str], Dict[str, Any]]
+PostPublishSuccess = Callable[[Any, str, Dict[str, Any]], Awaitable[Any] | Any]
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ async def persist_single_agent_session_success(
     completion_summary: str,
     schedule_memory_extraction: ScheduleMemoryExtraction | None = None,
     build_payload: BuildPayload | None = None,
+    post_publish_success: PostPublishSuccess | None = None,
 ) -> SingleAgentSessionTerminalResult:
     """Persist a completed single-agent session and return a unified terminal result."""
 
@@ -66,6 +68,8 @@ async def persist_single_agent_session_success(
         created_at=saved_message.created_at,
         metadata=metadata,
     )
+    if post_publish_success is not None:
+        await _maybe_await(post_publish_success(saved_message, resolved_content, metadata))
     record_turn_completed(
         db,
         task_run,
@@ -105,3 +109,9 @@ def terminalize_single_agent_session_failure(
     )
     complete_task_run(db, task_run, status="failed", summary=error_text)
     return SingleAgentSessionTerminalResult(error_text=error_text)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if hasattr(value, "__await__"):
+        return await value
+    return value

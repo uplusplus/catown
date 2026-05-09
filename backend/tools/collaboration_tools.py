@@ -12,18 +12,65 @@ from .base import BaseTool
 from typing import Optional, Dict, Any, List
 import json
 import asyncio
+import logging
+from datetime import datetime
 
 from agents.identity import agent_name_of, normalize_agent_type
 from chatrooms.manager import chatroom_manager
 from services.chat_publish import publish_saved_chat_message
 from services.stream_runtime_persistence import store_runtime_card
 
+logger = logging.getLogger("catown.collaboration_tools")
+
+
+def _mark_delegated_task_run_interrupted(
+    *,
+    client_turn_id: str,
+    agent_name: str,
+    summary: str,
+) -> None:
+    try:
+        from models.database import SessionLocal, TaskRun
+        from services.run_ledger import append_task_event, complete_task_run
+    except Exception:
+        return
+
+    db = SessionLocal()
+    try:
+        task_run = (
+            db.query(TaskRun)
+            .filter(TaskRun.client_turn_id == client_turn_id)
+            .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
+            .first()
+        )
+        if task_run is None or (task_run.status or "").strip().lower() != "running":
+            return
+        append_task_event(
+            db,
+            task_run,
+            "task_run_failed",
+            agent_name=agent_name,
+            summary=summary,
+            payload={
+                "reason": "delegated_task_interrupted",
+                "client_turn_id": client_turn_id,
+            },
+        )
+        complete_task_run(db, task_run, status="failed", summary=summary)
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
 
 class DelegateTaskTool(BaseTool):
     """Tool for delegating tasks to other agents"""
     
     name = "delegate_task"
-    description = "Delegate a task to another agent for collaboration. Use this when you need another agent's specialized skills."
+    description = (
+        "Delegate a tracked async task to another agent. "
+        "Use this for real work that may take time, needs progress tracking, approvals, runtime cards, or later status checks."
+    )
     
     def __init__(self, collaboration_coordinator=None):
         self.coordinator = collaboration_coordinator
@@ -194,7 +241,7 @@ class DelegateTaskTool(BaseTool):
         task_metadata: Dict[str, Any],
     ) -> None:
         from agents.collaboration import TaskStatus
-        from models.database import SessionLocal
+        from models.database import SessionLocal, Message
         from routes.api import trigger_agent_response
 
         db = SessionLocal()
@@ -231,22 +278,70 @@ class DelegateTaskTool(BaseTool):
                 },
             )
 
-            await trigger_agent_response(
+            trigger_result = await trigger_agent_response(
                 task.chatroom_id,
                 instruction,
                 client_turn_id=client_turn_id,
                 extra_context=f"Delegated by {current_agent_name}. {context}".strip(),
             )
+            completed = True
+            awaiting_tool_approval = False
+            if isinstance(trigger_result, dict):
+                completed = bool(trigger_result.get("completed"))
+                awaiting_tool_approval = bool(trigger_result.get("awaiting_tool_approval"))
+            if not completed:
+                task.status = TaskStatus.IN_PROGRESS
+                if awaiting_tool_approval:
+                    task.result = "Waiting for approval."
+                self.coordinator.task_registry[task.id] = task
+                return
+
             task.status = TaskStatus.COMPLETED
-            task.result = "Completed in chat window. See delegated turn output."
+            delegated_result = None
+            try:
+                final_messages = (
+                    db.query(Message)
+                    .filter(Message.chatroom_id == task.chatroom_id)
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .all()
+                )
+                for message in final_messages:
+                    try:
+                        metadata = json.loads(getattr(message, "metadata_json", "") or "{}")
+                    except json.JSONDecodeError:
+                        metadata = {}
+                    if (metadata.get("client_turn_id") or "") != client_turn_id:
+                        continue
+                    if getattr(message, "message_type", "") == "text" and getattr(message, "agent_id", None):
+                        delegated_result = (getattr(message, "content", "") or "").strip()
+                        if delegated_result:
+                            break
+            except Exception:
+                delegated_result = None
+            task.result = delegated_result or "Completed in chat window. See delegated turn output."
+        except asyncio.CancelledError:
+            interruption_summary = "Delegated execution interrupted during server reload or shutdown."
+            logger.warning(
+                "Delegated task cancelled before finalization: task_id=%s target=%s client_turn_id=%s",
+                task.id,
+                target_agent_type,
+                client_turn_id,
+            )
+            _mark_delegated_task_run_interrupted(
+                client_turn_id=client_turn_id,
+                agent_name=target_agent_type,
+                summary=interruption_summary,
+            )
+            task.status = TaskStatus.FAILED
+            task.result = interruption_summary
+            task.completed_at = datetime.now()
         except Exception as exc:
+            logger.exception("Delegated task failed: task_id=%s target=%s error=%s", task.id, target_agent_type, exc)
             task.status = TaskStatus.FAILED
             task.result = f"Delegated execution failed: {exc}"
         finally:
             task.completed_at = getattr(task, "completed_at", None) if task.status != "completed" else task.completed_at
             if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED} and task.completed_at is None:
-                from datetime import datetime
-
                 task.completed_at = datetime.now()
             self.coordinator.task_registry[task.id] = task
             db.close()
@@ -367,7 +462,20 @@ class CheckTaskStatusTool(BaseTool):
         if not self.coordinator:
             return "[Check Task] Error: Collaboration coordinator not available"
         
-        task = self.coordinator.get_task_status(task_id)
+        from agents.collaboration import (
+            enrich_collaboration_task_result_details,
+            normalize_delegated_task_id,
+            rebuild_collaboration_task_from_runtime,
+            refresh_collaboration_task_from_runtime,
+        )
+
+        normalized_task_id = normalize_delegated_task_id(task_id)
+        task = self.coordinator.get_task_status(normalized_task_id)
+        if task is None:
+            task = rebuild_collaboration_task_from_runtime(normalized_task_id)
+        task = refresh_collaboration_task_from_runtime(task) or task
+        if task is not None:
+            self.coordinator.task_registry[task.id] = task
         
         if not task:
             return f"[Check Task] Error: Task '{task_id}' not found"
@@ -375,6 +483,7 @@ class CheckTaskStatusTool(BaseTool):
         status_emoji = {
             "pending": "⏳",
             "in_progress": "🔄",
+            "stalled": "⛔",
             "completed": "✅",
             "failed": "❌",
             "delegated": "📤"
@@ -386,6 +495,25 @@ class CheckTaskStatusTool(BaseTool):
         
         if task.result:
             result += f"Result: {task.result[:500]}...\n" if len(task.result) > 500 else f"Result: {task.result}\n"
+
+        details = enrich_collaboration_task_result_details(task)
+        if details.get("command"):
+            result += f"Command: {details['command']}\n"
+        if details.get("phase"):
+            result += f"Phase: {details['phase']}\n"
+        if details.get("duration_ms") is not None:
+            result += f"Duration: {details['duration_ms']}ms\n"
+        if details.get("tail_output"):
+            tail = str(details["tail_output"])
+            result += f"Tail output: {tail[:800]}...\n" if len(tail) > 800 else f"Tail output: {tail}\n"
+        if details.get("blocked") is True:
+            result += f"Blocked: {details.get('blocked_reason') or 'approval required'}\n"
+        if details.get("passed_count") is not None or details.get("failed_count") is not None:
+            passed = details.get("passed_count")
+            failed = details.get("failed_count")
+            result += f"Test summary: {passed if passed is not None else '?'} passed / {failed if failed is not None else '?'} failed\n"
+        if details.get("next_step"):
+            result += f"Next step: {details['next_step']}\n"
         
         if task.completed_at:
             result += f"Completed at: {task.completed_at}\n"
@@ -409,7 +537,10 @@ class ListCollaboratorsTool(BaseTool):
     """Tool for listing available collaborators"""
     
     name = "list_collaborators"
-    description = "List all available agents for collaboration in the current chatroom. Use this to see who you can delegate tasks to."
+    description = (
+        "List all available agents for collaboration in the current chatroom, plus guidance on when to use "
+        "delegate_task, query_agent, send_direct_message, or @mentions."
+    )
     
     def __init__(self, collaboration_coordinator=None):
         self.coordinator = collaboration_coordinator
@@ -451,7 +582,13 @@ class ListCollaboratorsTool(BaseTool):
                         for a in room_agents:
                             tools = a.tools if isinstance(a.tools, str) else str(a.tools)
                             result += f"  - **{a.name}** (role: {a.role}, tools: {tools})\n"
-                        result += "\nTip: Use @agent_name to directly invoke an agent, or delegate_task to assign work."
+                        result += (
+                            "\nSelection guide:\n"
+                            "- Use delegate_task for tracked async work.\n"
+                            "- Use query_agent for an immediate expert answer.\n"
+                            "- Use send_direct_message for notification-only delivery.\n"
+                            "- Use @agent_name in normal chat when you want a lightweight live handoff."
+                        )
                         return result
                 finally:
                     db.close()
@@ -468,6 +605,13 @@ class ListCollaboratorsTool(BaseTool):
                 pending = len(collab.assigned_tasks)
                 result += f"  - **{collab.agent_name}** (ID: {aid}): {status}, {pending} pending tasks\n"
 
+        result += (
+            "\nSelection guide:\n"
+            "- Use delegate_task for tracked async work.\n"
+            "- Use query_agent for an immediate expert answer.\n"
+            "- Use send_direct_message for notification-only delivery.\n"
+            "- Use @agent_name in normal chat when you want a lightweight live handoff."
+        )
         return result
     
     def _get_parameters_schema(self) -> dict:
@@ -482,7 +626,10 @@ class SendDirectMessageTool(BaseTool):
     """Tool for sending direct messages to specific agents"""
     
     name = "send_direct_message"
-    description = "Send a private message to a specific agent. Use for direct communication without task delegation."
+    description = (
+        "Send a one-way direct message to a specific agent without creating a tracked task. "
+        "Use this for notifications or context sharing when you do not need an immediate response."
+    )
     
     def __init__(self, collaboration_coordinator=None):
         self.coordinator = collaboration_coordinator
@@ -551,13 +698,13 @@ class SendDirectMessageTool(BaseTool):
         }
 
 
-class ListDirectoryTool(BaseTool):
-    """Tool for listing agents in the system directory that are NOT in the current room"""
+class ListAgentsTool(BaseTool):
+    """Tool for listing agents that are NOT in the current room"""
 
-    name = "list_directory"
+    name = "list_agents"
     description = (
-        "List agents in the system directory that are NOT in the current room. "
-        "Use this to find agents you can invite to join the current project."
+        "List agents that are NOT currently in this room. "
+        "Use this to find agents you can invite into the current project."
     )
 
     async def execute(self, **kwargs) -> str:

@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
+from services.single_agent_session_terminal import PostPublishSuccess
+
 from services.single_agent_session_callbacks import (
     build_single_agent_stream_callback_profile,
     build_single_agent_stream_callbacks,
@@ -65,6 +67,7 @@ class SingleAgentSessionRuntimeContext:
     failure_summary: str | Callable[[Exception], str]
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]]
     stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None
+    post_publish_success: PostPublishSuccess | None = None
     min_response_length: int = 30
 
 
@@ -87,6 +90,7 @@ class SingleAgentRawRuntimeInputs:
     failure_summary: str | Callable[[Exception], str]
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]]
     stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None
+    post_publish_success: PostPublishSuccess | None = None
     min_response_length: int = 30
 
 
@@ -304,6 +308,7 @@ def build_single_agent_session_runtime_context(
     failure_summary: str | Callable[[Exception], str],
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
     stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
+    post_publish_success: PostPublishSuccess | None = None,
     min_response_length: int = 30,
 ) -> SingleAgentSessionRuntimeContext:
     """Build the shared runtime context for one managed single-agent session."""
@@ -326,6 +331,7 @@ def build_single_agent_session_runtime_context(
         failure_summary=failure_summary,
         extract_memories=extract_memories,
         stream_failure_message_metadata=stream_failure_message_metadata,
+        post_publish_success=post_publish_success,
         min_response_length=min_response_length,
     )
 
@@ -349,6 +355,7 @@ def build_single_agent_raw_runtime_inputs(
     failure_summary: str | Callable[[Exception], str],
     extract_memories: Callable[[int, str, str, str], Awaitable[Any]],
     stream_failure_message_metadata: Callable[[str | None, dict[str, Any] | None], dict[str, Any]] | None = None,
+    post_publish_success: PostPublishSuccess | None = None,
     min_response_length: int = 30,
 ) -> SingleAgentRawRuntimeInputs:
     """Build the shared raw runtime input bundle for one single-agent turn."""
@@ -371,6 +378,7 @@ def build_single_agent_raw_runtime_inputs(
         failure_summary=failure_summary,
         extract_memories=extract_memories,
         stream_failure_message_metadata=stream_failure_message_metadata,
+        post_publish_success=post_publish_success,
         min_response_length=min_response_length,
     )
 
@@ -398,6 +406,7 @@ def build_single_agent_session_runtime_context_from_raw_inputs(
         failure_summary=inputs.failure_summary,
         extract_memories=inputs.extract_memories,
         stream_failure_message_metadata=inputs.stream_failure_message_metadata,
+        post_publish_success=inputs.post_publish_success,
         min_response_length=inputs.min_response_length,
     )
 
@@ -482,6 +491,7 @@ def build_single_agent_runtime_profile(
                         completion_summary=runtime.completion_summary,
                         failure_summary=runtime.failure_summary,
                         extract_memories=runtime.extract_memories,
+                        post_publish_success=runtime.post_publish_success,
                         min_response_length=runtime.min_response_length,
                     )
                 ),
@@ -516,6 +526,7 @@ def build_single_agent_runtime_profile(
                         completion_summary=runtime.completion_summary,
                         failure_summary=runtime.failure_summary,
                         extract_memories=runtime.extract_memories,
+                        post_publish_success=runtime.post_publish_success,
                         stream_failure_message_metadata=(
                             runtime.stream_failure_message_metadata or runtime.message_metadata
                         ),

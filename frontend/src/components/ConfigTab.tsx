@@ -73,6 +73,17 @@ type AgentDraft = {
   skills: string;
 };
 
+const COLLABORATION_TOOL_NAMES = [
+  "delegate_task",
+  "broadcast_message",
+  "check_task_status",
+  "list_collaborators",
+  "send_direct_message",
+  "query_agent",
+  "list_agents",
+  "invite_agent",
+] as const;
+
 function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
   const provider = config?.global_llm?.provider;
   const defaultModel = config?.global_llm?.default_model ?? provider?.models?.[0]?.id ?? "";
@@ -195,7 +206,7 @@ function PreviewCard({
   );
 }
 
-function SkillGalleryCard({ name, agents }: { name: string; agents: string[] }) {
+function SkillGalleryCard({ name, agents, prompt }: { name: string; agents: string[]; prompt?: string }) {
   return (
     <div className="config-skill-card">
       <div className="config-skill-card__header">
@@ -212,7 +223,57 @@ function SkillGalleryCard({ name, agents }: { name: string; agents: string[] }) 
           </span>
         ))}
       </div>
-      <div className="config-skill-card__footer">Edit an agent card in Settings to change this skill binding.</div>
+      <div className="config-skill-card__footer">{prompt?.trim() || "Edit an agent card in Settings to change this skill binding."}</div>
+    </div>
+  );
+}
+
+function ToolGalleryCard({
+  name,
+  agents,
+  approvals,
+  description,
+  riskLevel,
+  approvalKind,
+}: {
+  name: string;
+  agents: string[];
+  approvals: number;
+  description?: string;
+  riskLevel?: string;
+  approvalKind?: string;
+}) {
+  const isBound = agents.length > 0;
+  return (
+    <div className="config-skill-card">
+      <div className="config-skill-card__header">
+        <div>
+          <h3>{name}</h3>
+          <p>{isBound ? `${agents.length} agent bindings` : "Registered, not assigned"}</p>
+        </div>
+        <span className={`soft-pill ${isBound ? "" : "soft-pill--accent"}`}>{isBound ? agents.length : "0"}</span>
+      </div>
+      <div className="config-skill-card__agents">
+        {agents.length > 0 ? (
+          agents.map((agent) => (
+            <span key={`${name}-${agent}`} className="soft-pill">
+              {agent}
+            </span>
+          ))
+        ) : (
+          <span className="soft-pill soft-pill--accent">System tool only</span>
+        )}
+        {approvals > 0 ? <span className="soft-pill soft-pill--accent">{approvals} saved rules</span> : null}
+        {riskLevel ? <span className="soft-pill">{riskLevel}</span> : null}
+        {approvalKind ? <span className="soft-pill">{approvalKind}</span> : null}
+      </div>
+      <div className="config-skill-card__footer">
+        {description?.trim()
+          ? description
+          : isBound
+            ? "Use Agent Settings to edit bindings. Use Permissions to change approval defaults and revoke saved rules."
+            : "This tool is registered in the system but is not currently assigned to any agent."}
+      </div>
     </div>
   );
 }
@@ -361,6 +422,7 @@ export function ConfigTab({
   const agentEntries = useMemo(() => Object.entries(config?.agents ?? {}), [config]);
   const agentConfigs = config?.agent_llm_configs ?? {};
   const skillRows = useMemo(() => {
+    const catalog = config?.skills_catalog ?? {};
     const rows = new Map<string, string[]>();
     for (const [agentName, agentConfig] of agentEntries) {
       for (const skill of agentConfig.skills ?? []) {
@@ -370,9 +432,52 @@ export function ConfigTab({
       }
     }
     return Array.from(rows.entries())
-      .map(([name, agents]) => ({ name, agents }))
+      .map(([name, agents]) => {
+        const entry = catalog[name] ?? {};
+        return {
+          name,
+          agents,
+          prompt: entry.levels?.full || entry.levels?.guide || entry.levels?.hint || entry.description || "",
+        };
+      })
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [agentEntries]);
+  }, [agentEntries, config?.skills_catalog]);
+  const toolRows = useMemo(() => {
+    const policyByName = new Map((config?.tools?.tool_policies ?? []).map((policy) => [policy.name, policy]));
+    const rows = new Map<string, string[]>();
+    for (const [agentName, agentConfig] of agentEntries) {
+      for (const tool of agentConfig.tools ?? []) {
+        const normalized = tool.trim();
+        if (!normalized) continue;
+        rows.set(normalized, [...(rows.get(normalized) ?? []), agentConfig.name?.trim() || defaultAgentName(agentName)]);
+      }
+    }
+    const namedRows = Array.from(rows.entries())
+      .map(([name, agents]) => {
+        const policy = policyByName.get(name);
+        return {
+          name,
+          agents,
+          approvals: authorizationRules.filter((rule) => rule.tool_name === name).length,
+          description: policy?.description,
+          riskLevel: policy?.risk_level,
+          approvalKind: policy?.approval?.kind,
+        };
+      });
+    for (const policy of config?.tools?.tool_policies ?? []) {
+      if (rows.has(policy.name)) continue;
+      namedRows.push({
+        name: policy.name,
+        agents: [],
+        approvals: authorizationRules.filter((rule) => rule.tool_name === policy.name).length,
+        description: policy.description,
+        riskLevel: policy.risk_level,
+        approvalKind: policy.approval?.kind,
+      });
+    }
+    return namedRows
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [agentEntries, authorizationRules, config?.tools?.tool_policies]);
   const memoryRows = useMemo(
     () =>
       agentEntries.map(([agentName, agentConfig]) => ({
@@ -626,7 +731,7 @@ export function ConfigTab({
       },
       {
         label: "Covered tools",
-        value: "read_file · list_files · search_files · list_directory · retrieve_memory",
+        value: "read_file · list_files · search_files · list_agents · retrieve_memory",
       },
       {
         label: "Scope",
@@ -722,10 +827,107 @@ export function ConfigTab({
               <div className="empty-card">No skills configured yet.</div>
             ) : (
               skillRows.map((skill) => (
-                <SkillGalleryCard key={skill.name} name={skill.name} agents={skill.agents} />
+                <SkillGalleryCard key={skill.name} name={skill.name} agents={skill.agents} prompt={skill.prompt} />
               ))
             )}
           </AdaptiveCardDeck>
+        </div>
+      </section>
+    );
+  }
+
+  if (activeSection === "tools") {
+    const totalBindings = toolRows.reduce((total, tool) => total + tool.agents.length, 0);
+    const collaborationToolRows = COLLABORATION_TOOL_NAMES.map((name) => (
+      toolRows.find((tool) => tool.name === name) ?? { name, agents: [], approvals: 0 }
+    ));
+    const otherToolRows = toolRows.filter((tool) => !COLLABORATION_TOOL_NAMES.includes(tool.name as (typeof COLLABORATION_TOOL_NAMES)[number]));
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className="panel-card panel-card--full">
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Tool Registry</p>
+              <h2>Tool Management</h2>
+            </div>
+            <span className="soft-pill">{toolRows.length} tools</span>
+          </div>
+
+          <div className="config-system-grid" style={{ marginBottom: 20 }}>
+            <div className="config-system-row">
+              <span>Unique tools</span>
+              <strong>{toolRows.length}</strong>
+            </div>
+            <div className="config-system-row">
+              <span>Total bindings</span>
+              <strong>{totalBindings}</strong>
+            </div>
+            <div className="config-system-row">
+              <span>Saved approval rules</span>
+              <strong>{authorizationRules.length}</strong>
+            </div>
+            <div className="config-system-row">
+              <span>Collaboration tools</span>
+              <strong>{COLLABORATION_TOOL_NAMES.length}</strong>
+            </div>
+            <div className="config-system-row">
+              <span>Read-only default</span>
+              <strong>{permissionsDraft.allowReadOnlyToolsWithoutApproval ? "Auto allow" : "Approval required"}</strong>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div className="panel-card-header" style={{ marginBottom: 12 }}>
+              <div>
+                <p className="eyebrow">Internal Collaboration</p>
+                <h3>Agent-to-Agent Tools</h3>
+              </div>
+              <span className="soft-pill">{collaborationToolRows.length}</span>
+            </div>
+            <div className="sidebar-note" style={{ marginBottom: 12 }}>
+              Internal collaboration tools can appear here even when no agent currently binds them. That means the tool is registered in the system but not assigned in agent settings.
+            </div>
+            <AdaptiveCardDeck className="config-skill-deck" itemCount={collaborationToolRows.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={6}>
+              {collaborationToolRows.map((tool) => (
+                <ToolGalleryCard
+                  key={tool.name}
+                  name={tool.name}
+                  agents={tool.agents}
+                  approvals={tool.approvals}
+                  description={tool.description}
+                  riskLevel={tool.riskLevel}
+                  approvalKind={tool.approvalKind}
+                />
+              ))}
+            </AdaptiveCardDeck>
+          </div>
+
+          <div>
+            <div className="panel-card-header" style={{ marginBottom: 12 }}>
+              <div>
+                <p className="eyebrow">Execution & Data</p>
+                <h3>All Other Tools</h3>
+              </div>
+              <span className="soft-pill">{otherToolRows.length}</span>
+            </div>
+            <AdaptiveCardDeck className="config-skill-deck" itemCount={otherToolRows.length} minCardWidth={280} idealCardWidth={340} maxCardWidth={420} maxColumns={6}>
+              {otherToolRows.length === 0 ? (
+                <div className="empty-card">No other tools configured yet.</div>
+              ) : (
+                otherToolRows.map((tool) => (
+                  <ToolGalleryCard
+                    key={tool.name}
+                    name={tool.name}
+                    agents={tool.agents}
+                    approvals={tool.approvals}
+                    description={tool.description}
+                    riskLevel={tool.riskLevel}
+                    approvalKind={tool.approvalKind}
+                  />
+                ))
+              )}
+            </AdaptiveCardDeck>
+          </div>
         </div>
       </section>
     );
@@ -803,7 +1005,7 @@ export function ConfigTab({
               <span>Allow low-risk read-only tools without approval</span>
             </label>
             <p className="small-note">
-              Applies globally to: <code>read_file</code>, <code>list_files</code>, <code>search_files</code>, <code>list_directory</code>, <code>retrieve_memory</code>.
+              Applies globally to: <code>read_file</code>, <code>list_files</code>, <code>search_files</code>, <code>list_agents</code>, <code>retrieve_memory</code>.
             </p>
             <div className="config-actions-row">
               <button type="submit" className="primary-button compact-button" disabled={saving}>

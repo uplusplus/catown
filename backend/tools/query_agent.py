@@ -70,7 +70,7 @@ class QueryAgentTool(BaseTool):
     name = "query_agent"
     description = (
         "Ask another agent a question and get an immediate answer. "
-        "Use this when you need another agent's expertise to continue your work. "
+        "Use this when you need another agent's expertise right now and want a synchronous reply instead of a tracked delegated task. "
         "The target agent will answer based on their role, structured context, and shared room state. "
         "Available agents and their roles are shown when you use list_collaborators."
     )

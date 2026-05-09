@@ -62,6 +62,12 @@ const CONFIG_SECTION_META: Record<
     title: "Skill management",
     subtitle: "Review discovered skills, which agents use them, and how they are distributed today.",
   },
+  tools: {
+    sidebarLabel: "Tools",
+    sidebarDescription: "Tool coverage, bindings, and approval surface",
+    title: "Tool management",
+    subtitle: "Inspect which tools exist, which agents can use them, and how approval policy applies today.",
+  },
   memory: {
     sidebarLabel: "Memory",
     sidebarDescription: "Long-term memory, retained context, and summaries",
@@ -1658,6 +1664,12 @@ function App() {
         label: CONFIG_SECTION_META.skills.sidebarLabel,
         description: CONFIG_SECTION_META.skills.sidebarDescription,
         badge: `${new Set(agents.flatMap((agent) => agent.skills ?? [])).size}`,
+      },
+      {
+        id: "tools" as const,
+        label: CONFIG_SECTION_META.tools.sidebarLabel,
+        description: CONFIG_SECTION_META.tools.sidebarDescription,
+        badge: `${new Set(agents.flatMap((agent) => agent.tools ?? [])).size}`,
       },
       {
         id: "memory" as const,

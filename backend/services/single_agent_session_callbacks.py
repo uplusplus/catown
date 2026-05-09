@@ -18,6 +18,7 @@ from services.single_agent_session_finalizer import (
 from services.single_agent_session_terminal import (
     CompactSummary,
     MessageMetadataBuilder,
+    PostPublishSuccess,
     PublishMessage,
     RecordTurnCompleted,
     SaveMessage,
@@ -51,6 +52,7 @@ class SingleAgentSessionSuccessCallbackDeps:
     compact_summary: CompactSummary
     completion_summary: str
     build_memory_extraction: Callable[[str], ScheduleMemoryExtraction | None] | None = None
+    post_publish_success: PostPublishSuccess | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class SingleAgentSyncCallbackProfile:
     completion_summary: str
     failure_summary: str | Callable[[Exception], str]
     extract_memories: ExtractMemories
+    post_publish_success: PostPublishSuccess | None = None
     min_response_length: int = 30
 
 
@@ -112,6 +115,7 @@ def build_single_agent_sync_callback_profile(
     completion_summary: str,
     failure_summary: str | Callable[[Exception], str],
     extract_memories: ExtractMemories,
+    post_publish_success: PostPublishSuccess | None = None,
     min_response_length: int = 30,
 ) -> SingleAgentSyncCallbackProfile:
     """Build the standard callback profile for one sync single-agent turn."""
@@ -133,6 +137,7 @@ def build_single_agent_sync_callback_profile(
         completion_summary=completion_summary,
         failure_summary=failure_summary,
         extract_memories=extract_memories,
+        post_publish_success=post_publish_success,
         min_response_length=min_response_length,
     )
 
@@ -156,6 +161,7 @@ class SingleAgentStreamCallbackProfile:
     failure_summary: str | Callable[[Exception], str]
     extract_memories: ExtractMemories
     stream_failure_message_metadata: StreamFailureMetadataBuilder
+    post_publish_success: PostPublishSuccess | None = None
     failure_agent_name: str | None = None
     failure_agent_id: int | None = None
     detail_builder: StreamFailureDetailBuilder | None = None
@@ -182,6 +188,7 @@ def build_single_agent_stream_callback_profile(
     completion_summary: str,
     failure_summary: str | Callable[[Exception], str],
     extract_memories: ExtractMemories,
+    post_publish_success: PostPublishSuccess | None = None,
     stream_failure_message_metadata: StreamFailureMetadataBuilder,
     failure_agent_name: str | None = None,
     failure_agent_id: int | None = None,
@@ -209,6 +216,7 @@ def build_single_agent_stream_callback_profile(
         completion_summary=completion_summary,
         failure_summary=failure_summary,
         extract_memories=extract_memories,
+        post_publish_success=post_publish_success,
         stream_failure_message_metadata=stream_failure_message_metadata,
         failure_agent_name=failure_agent_name,
         failure_agent_id=failure_agent_id,
@@ -246,6 +254,7 @@ def build_single_agent_sync_callbacks(
                     user_message=profile.user_message,
                     min_response_length=profile.min_response_length,
                 ),
+                post_publish_success=profile.post_publish_success,
             )
         ),
         finalize_failure=build_single_agent_session_failure_callback(
@@ -286,6 +295,7 @@ def build_single_agent_stream_callbacks(
                     empty_response_text=profile.empty_response_text,
                     min_response_length=profile.min_response_length,
                 ),
+                post_publish_success=profile.post_publish_success,
             )
         ),
         finalize_failure=build_single_agent_stream_failure_callback(
@@ -331,6 +341,7 @@ def build_single_agent_session_success_callback(
             compact_summary=deps.compact_summary,
             completion_summary=deps.completion_summary,
             schedule_memory_extraction=schedule_memory_extraction,
+            post_publish_success=deps.post_publish_success,
         )
 
     return _finalize
@@ -360,6 +371,7 @@ def build_single_agent_stream_success_callback(
             compact_summary=deps.compact_summary,
             completion_summary=deps.completion_summary,
             schedule_memory_extraction=schedule_memory_extraction,
+            post_publish_success=deps.post_publish_success,
         )
 
     return _finalize
