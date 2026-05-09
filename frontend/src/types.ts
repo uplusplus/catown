@@ -410,6 +410,7 @@ export type ChatCardItem = {
   context_window?: number;
   context_usage_ratio?: number;
   duration_ms?: number;
+  pid?: number;
   system_prompt?: string;
   prompt_messages?: string;
   response?: string;

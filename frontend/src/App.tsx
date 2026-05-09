@@ -535,8 +535,13 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         tool: typeof payload.tool === "string" ? payload.tool : undefined,
         arguments: typeof payload.arguments === "string" ? payload.arguments : undefined,
         success: typeof payload.success === "boolean" ? payload.success : undefined,
+        status: typeof payload.status === "string" ? payload.status : undefined,
+        blocked: typeof payload.blocked === "boolean" ? payload.blocked : undefined,
+        blocked_kind: typeof payload.blocked_kind === "string" ? payload.blocked_kind : null,
+        blocked_reason: typeof payload.blocked_reason === "string" ? payload.blocked_reason : null,
         result: typeof payload.result === "string" ? payload.result : undefined,
         duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : undefined,
+        pid: typeof payload.pid === "number" ? payload.pid : undefined,
         tool_call_index: typeof payload.tool_call_index === "number" ? payload.tool_call_index : undefined,
         tool_call_id: typeof payload.tool_call_id === "string" ? payload.tool_call_id : null,
       };

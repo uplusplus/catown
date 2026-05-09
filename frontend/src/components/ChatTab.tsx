@@ -43,6 +43,8 @@ const OVERLAY_MAX_CONTENT_CHARS = 1200;
 const OVERLAY_MAX_STEP_COUNT = 1;
 const OVERLAY_MAX_STEP_LABEL_CHARS = 120;
 const OVERLAY_MAX_STEP_DETAIL_CHARS = 180;
+const TASK_RUN_SHELL_TAIL_MAX_CHARS = 5000;
+const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -314,6 +316,7 @@ type ThreadItem =
       kind: "task_run";
       taskRun: TaskRunSummary;
       detail: TaskRunDetail | null;
+      cards: ThreadCard[];
     }
   | {
       id: string;
@@ -466,16 +469,70 @@ function approvalQueueActionLabels(item: ApprovalQueueItem) {
   };
 }
 
+function rememberedApprovalScope(item: ApprovalQueueItem) {
+  return typeof item.project_id === "number" ? "project" : "chatroom";
+}
+
 function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
-  const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
+  const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
+  const pendingApprovalCount = detail ? pendingApprovalItems.length : Number(taskRun.pending_approval_count || 0);
+  const pendingTimeoutItem = pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null;
+  const pendingTimeoutCommand =
+    pendingTimeoutItem && typeof pendingTimeoutItem.request_payload?.arguments === "string"
+      ? (() => {
+          try {
+            const parsed = JSON.parse(pendingTimeoutItem.request_payload.arguments);
+            return typeof parsed?.command === "string" ? parsed.command : null;
+          } catch {
+            return null;
+          }
+        })()
+      : null;
   const blockedToolName =
     typeof detail?.checkpoint_snapshot?.turn_local_state?.blocked_tool?.["tool_name"] === "string"
       ? String(detail?.checkpoint_snapshot?.turn_local_state?.blocked_tool?.["tool_name"])
       : null;
+  const events = detail?.events ?? [];
+  const latestEvent = events[events.length - 1] ?? null;
+  const latestPayload = latestEvent?.payload && typeof latestEvent.payload === "object"
+    ? latestEvent.payload as Record<string, unknown>
+    : null;
+  const latestToolRoundPayload =
+    latestEvent?.event_type === "tool_round_recorded" && latestPayload
+      ? latestPayload
+      : (() => {
+          const roundEvent = [...events].reverse().find((event) => event.event_type === "tool_round_recorded");
+          return roundEvent?.payload && typeof roundEvent.payload === "object"
+            ? roundEvent.payload as Record<string, unknown>
+            : null;
+        })();
+  const latestToolResult =
+    Array.isArray(latestToolRoundPayload?.turn_local_state?.tool_results)
+      ? latestToolRoundPayload?.turn_local_state?.tool_results?.[
+          (latestToolRoundPayload.turn_local_state.tool_results as unknown[]).length - 1
+        ] as Record<string, unknown> | undefined
+      : undefined;
   const latestEventType =
     detail?.checkpoint_snapshot?.latest_event_type ||
     taskRun.latest_continuation_event_type ||
     null;
+  const latestToolName =
+    (latestToolResult && typeof latestToolResult.tool_name === "string" ? latestToolResult.tool_name : null)
+    || (typeof latestPayload?.tool_name === "string" ? latestPayload.tool_name : null)
+    || blockedToolName;
+  const latestStartedToolName =
+    (latestEventType || "").toLowerCase() === "tool_call_started"
+      ? (typeof latestPayload?.tool_name === "string" ? latestPayload.tool_name : null)
+      : null;
+  const latestEventTypeValue = String(latestEvent?.event_type || latestEventType || "").toLowerCase();
+  const latestEventSummaryText = typeof latestEvent?.summary === "string" ? latestEvent.summary : null;
+  const latestResolutionAction = typeof latestPayload?.action_taken === "string"
+    ? latestPayload.action_taken.toLowerCase()
+    : "";
+  const latestReplayStatus = typeof latestPayload?.replay_status === "string"
+    ? latestPayload.replay_status.toLowerCase()
+    : "";
+  const latestResumeSupported = latestPayload?.resume_supported === true;
   const latestEventSummary =
     taskRun.latest_continuation_event_summary ||
     detail?.continuation_state_summary ||
@@ -485,6 +542,16 @@ function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDe
     null;
 
   if (pendingApprovalCount > 0) {
+    if (pendingTimeoutItem) {
+      return {
+        tone: "info" as const,
+        label: blockedToolName ? `Running · ${blockedToolName}` : "Running command",
+        detail:
+          pendingTimeoutCommand
+            ? oneLinePreview(pendingTimeoutCommand, "Command still running.", 132)
+            : latestEventSummary || "Command is still running.",
+      };
+    }
     return {
       tone: "warning" as const,
       label: blockedToolName ? `Waiting for approval · ${blockedToolName}` : "Waiting for approval",
@@ -496,9 +563,72 @@ function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDe
 
   const normalizedStatus = (taskRun.status || "").toLowerCase();
   if (normalizedStatus === "running") {
+    if (latestEventTypeValue === "approval_queue_item_resolved") {
+      if (latestResolutionAction === "tool_replayed") {
+        return {
+          tone: "info" as const,
+          label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
+          detail:
+            latestReplayStatus === "failed"
+              ? "Tool replay failed. Finalizing task state."
+              : latestResumeSupported
+                ? "Tool replay completed. Continuing the agent turn."
+                : "Tool replay completed. Updating task state.",
+        };
+      }
+      return {
+        tone: "info" as const,
+        label: latestToolName ? `Resuming · ${latestToolName}` : "Resuming",
+        detail: latestResumeSupported
+          ? "Scheduling continuation."
+          : "Refreshing task state.",
+      };
+    }
+    if (latestStartedToolName) {
+      const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
+      return {
+        tone: "info" as const,
+        label: `Running · ${latestStartedToolName}`,
+        detail: latestStartedArguments
+          ? oneLinePreview(latestStartedArguments, "Tool has started executing.", 132)
+          : "Tool has started executing.",
+      };
+    }
+    if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
+      return {
+        tone: "info" as const,
+        label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
+        detail: "Handing the latest tool result back to the agent.",
+      };
+    }
+    if (latestToolResult) {
+      const latestResultStatus = String(latestToolResult.status || "").toLowerCase();
+      const latestResultText = typeof latestToolResult.result === "string" ? latestToolResult.result : "";
+      if (latestResultStatus === "succeeded" && latestToolName) {
+        return {
+          tone: "info" as const,
+          label: `Running · ${latestToolName}`,
+          detail: oneLinePreview(latestResultText, "Tool finished, continuing the task.", 132),
+        };
+      }
+      if (latestResultStatus === "failed" && latestToolName) {
+        return {
+          tone: "info" as const,
+          label: `Running · ${latestToolName}`,
+          detail: oneLinePreview(latestResultText, "Tool returned an error; task is still proceeding.", 132),
+        };
+      }
+    }
+    if ((latestEventType || "").toLowerCase() === "agent_turn_started") {
+      return {
+        tone: "info" as const,
+        label: "Running LLM query",
+        detail: latestEventSummary || "Preparing the next model response.",
+      };
+    }
     return {
       tone: "info" as const,
-      label: "Running",
+      label: latestToolName ? `Running · ${latestToolName}` : "Running",
       detail:
         latestEventSummary ||
         (latestEventType ? formatTaskRunEventType(latestEventType) : "Task is executing in the background."),
@@ -529,6 +659,317 @@ function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDe
       latestEventSummary ||
       (latestEventType ? formatTaskRunEventType(latestEventType) : "Background task update."),
   };
+}
+
+function buildTaskRunCardSummary(taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
+  const events = detail?.events ?? [];
+  const latestEvent = events[events.length - 1] ?? null;
+  const latestPayload = (latestEvent?.payload && typeof latestEvent.payload === "object")
+    ? latestEvent.payload as Record<string, unknown>
+    : null;
+  const latestEventTypeValue = String(latestEvent?.event_type || "").toLowerCase();
+  const latestEventSummaryText = typeof latestEvent?.summary === "string" ? latestEvent.summary : null;
+  const latestResolutionAction = typeof latestPayload?.action_taken === "string"
+    ? latestPayload.action_taken.toLowerCase()
+    : "";
+  const latestReplayStatus = typeof latestPayload?.replay_status === "string"
+    ? latestPayload.replay_status.toLowerCase()
+    : "";
+  const latestResumeSupported = latestPayload?.resume_supported === true;
+  const latestToolName = typeof latestPayload?.tool_name === "string" ? latestPayload.tool_name : null;
+  const latestResponsePreview = typeof latestPayload?.response_preview === "string" ? latestPayload.response_preview : null;
+  const blockedTool = detail?.checkpoint_snapshot?.turn_local_state?.blocked_tool;
+  const blockedToolName =
+    blockedTool && typeof blockedTool["tool_name"] === "string"
+      ? String(blockedTool["tool_name"])
+      : null;
+
+  const normalizedStatus = (taskRun.status || "").toLowerCase();
+  if (normalizedStatus === "running") {
+    const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
+    const pendingApprovalCount = detail ? pendingApprovalItems.length : Number(taskRun.pending_approval_count || 0);
+    const pendingTimeoutItem = pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null;
+    if (pendingApprovalCount > 0 && blockedToolName && !pendingTimeoutItem) {
+      return `Waiting on approval for ${blockedToolName}.`;
+    }
+    if (pendingTimeoutItem) {
+      const pendingTimeoutCommand =
+        typeof pendingTimeoutItem.request_payload?.arguments === "string"
+          ? (() => {
+              try {
+                const parsed = JSON.parse(pendingTimeoutItem.request_payload.arguments);
+                return typeof parsed?.command === "string" ? parsed.command : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+      return pendingTimeoutCommand
+        ? `Still running ${oneLinePreview(pendingTimeoutCommand, "command", 120)}.`
+        : `Still running ${blockedToolName || "command"}.`;
+    }
+    if (latestEventTypeValue === "approval_queue_item_resolved") {
+      if (latestResolutionAction === "tool_replayed") {
+        if (latestReplayStatus === "failed") {
+          return latestToolName
+            ? `${latestToolName} replay failed. Finalizing task state.`
+            : "Tool replay failed. Finalizing task state.";
+        }
+        return latestToolName
+          ? latestResumeSupported
+            ? `Continuing the agent turn with ${latestToolName}.`
+            : `${latestToolName} replay completed. Updating task state.`
+          : latestResumeSupported
+            ? "Continuing the agent turn."
+            : "Tool replay completed. Updating task state.";
+      }
+      return latestToolName
+        ? latestResumeSupported
+          ? `Scheduling continuation for ${latestToolName}.`
+          : `Refreshing task state for ${latestToolName}.`
+        : latestResumeSupported
+          ? "Scheduling continuation."
+          : "Refreshing task state.";
+    }
+    if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
+      return latestToolName
+        ? `Continuing the agent turn with ${latestToolName}.`
+        : "Continuing the agent turn.";
+    }
+    if ((latestEvent?.event_type || "").includes("tool")) {
+      if ((latestEvent?.event_type || "").toLowerCase() === "tool_call_started") {
+        const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
+        return latestToolName
+          ? `Executing ${latestToolName}: ${oneLinePreview(latestStartedArguments, "tool call started", 120)}`
+          : "Executing tool call.";
+      }
+      return latestToolName
+        ? `Executing ${latestToolName}.`
+        : latestEvent?.summary || "Executing tool work.";
+    }
+    if ((latestEvent?.event_type || "").includes("agent_turn")) {
+      return latestResponsePreview
+        ? oneLinePreview(latestResponsePreview, "Running LLM turn.", 140)
+        : "Running LLM turn.";
+    }
+    return latestEvent?.summary || "Background task is running.";
+  }
+
+  if (normalizedStatus === "completed") {
+    return oneLinePreview(
+      taskRun.summary || latestResponsePreview || taskRun.user_request || "Background task completed.",
+      "Background task completed.",
+      160,
+    );
+  }
+
+  if (normalizedStatus === "failed") {
+    return oneLinePreview(
+      taskRun.summary || latestEvent?.summary || "Background task failed.",
+      "Background task failed.",
+      160,
+    );
+  }
+
+  return oneLinePreview(
+    latestEvent?.summary || taskRun.summary || taskRun.user_request || "Background task update.",
+    "Background task update.",
+    160,
+  );
+}
+
+function summarizeTaskRunRuntimeCards(cards: ThreadCard[]) {
+  if (cards.length === 0) return null;
+  const latestCard = cards[cards.length - 1];
+  const latestActor = cardActorName(latestCard);
+  const state = compactCardState(latestCard, true);
+  const detail = compactCardSummary(latestCard);
+  return {
+    actor: latestActor,
+    title: cardTitle(latestCard),
+    detail,
+    state,
+  };
+}
+
+function isRunShellRuntimeCard(card: ThreadCard): card is DecoratedChatCardItem {
+  return card.kind === "tool_call" && (card.tool || "").toLowerCase() === "run_shell";
+}
+
+function readShellCommandPreview(argumentsText: string | undefined) {
+  const raw = argumentsText?.trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const command = typeof parsed.command === "string" ? parsed.command.trim() : "";
+    const cwd = typeof parsed.cwd === "string" && parsed.cwd.trim() !== "." ? parsed.cwd.trim() : "";
+    if (command && cwd) return `${oneLinePreview(command, "", 160)} · cwd ${oneLinePreview(cwd, "", 60)}`;
+    if (command) return oneLinePreview(command, "", 180);
+  } catch {
+    return oneLinePreview(raw, "", 180);
+  }
+
+  return oneLinePreview(raw, "", 180);
+}
+
+function trimShellOutputTail(output: string | undefined) {
+  const normalized = output?.replace(/\r\n/g, "\n").trimEnd() ?? "";
+  if (!normalized) return "";
+
+  const charClipped =
+    normalized.length > TASK_RUN_SHELL_TAIL_MAX_CHARS
+      ? normalized.slice(-TASK_RUN_SHELL_TAIL_MAX_CHARS)
+      : normalized;
+  const lines = charClipped.split("\n");
+  const lineClipped = lines.length > TASK_RUN_SHELL_TAIL_MAX_LINES;
+  const tail = lineClipped ? lines.slice(-TASK_RUN_SHELL_TAIL_MAX_LINES).join("\n") : charClipped;
+  const clipped = normalized.length > charClipped.length || lineClipped;
+  return clipped ? `... showing latest shell output\n${tail}` : tail;
+}
+
+function formatTaskRunShellDuration(durationMs: number | undefined) {
+  if (typeof durationMs !== "number") return "";
+  if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)}s`;
+  return `${durationMs}ms`;
+}
+
+function renderTaskRunShellOutput(taskRun: TaskRunSummary, cards: ThreadCard[]) {
+  const shellCards = cards.filter(isRunShellRuntimeCard);
+  const latestCard = shellCards[shellCards.length - 1] ?? null;
+  if (!latestCard) return null;
+
+  const output = trimShellOutputTail(latestCard.result);
+  if (!output) return null;
+
+  const taskStatus = (taskRun.status || "").toLowerCase();
+  const isRunning = latestCard.status === "running" && taskStatus === "running";
+  const isError = latestCard.success === false || taskStatus === "failed";
+  const commandPreview = readShellCommandPreview(latestCard.arguments);
+  const meta = [
+    isRunning ? "running" : isError ? "failed" : taskStatus || "captured",
+    typeof latestCard.pid === "number" ? `pid ${latestCard.pid}` : "",
+    formatTaskRunShellDuration(latestCard.duration_ms),
+    shellCards.length > 1 ? `${shellCards.length} updates` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <section className={`task-run-shell-output ${isRunning ? "is-live" : ""} ${isError ? "is-error" : ""}`}>
+      <div className="task-run-shell-output__header">
+        <div className="task-run-shell-output__title">
+          <span className="chat-json-badge">SHELL</span>
+          <span>Live run_shell output</span>
+        </div>
+        <span className="task-run-shell-output__meta">{meta}</span>
+      </div>
+      {commandPreview ? <div className="task-run-shell-output__command">{commandPreview}</div> : null}
+      <pre className="task-run-shell-output__body">{output}</pre>
+    </section>
+  );
+}
+
+function renderTaskRunActivity(
+  taskRun: TaskRunSummary,
+  cards: ThreadCard[],
+  expandedProgressCards: Record<string, string | null>,
+  onToggleProgressCard: (groupKey: string, cardId: string) => void,
+  gateActionPipelineId: number | null,
+  onApproveGate: (pipelineId: number) => Promise<void>,
+  onRejectGate: (pipelineId: number) => Promise<void>,
+) {
+  if (cards.length === 0) return null;
+
+  const groups = new Map<
+    string,
+    {
+      name: string;
+      cards: ThreadCard[];
+      latestAt: string;
+    }
+  >();
+
+  for (const card of cards) {
+    const actor = cardActorName(card);
+    const existing = groups.get(actor);
+    if (existing) {
+      existing.cards.push(card);
+      existing.latestAt = card.created_at;
+      continue;
+    }
+    groups.set(actor, {
+      name: actor,
+      cards: [card],
+      latestAt: card.created_at,
+    });
+  }
+
+  const orderedGroups = Array.from(groups.values());
+  const currentGroup = orderedGroups[orderedGroups.length - 1] ?? null;
+
+  return (
+    <section className="chat-activity-batch" style={{ marginTop: 12 }}>
+      <div className="chat-activity-batch__header">
+        <div>
+          <div className="chat-tool-card__title">
+            <span className="chat-json-badge">LIVE</span>
+            <span>Task activity</span>
+          </div>
+          <div className="chat-tool-card__detail">
+            {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} · {cards.length} action
+            {cards.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        <div className="chat-tool-card__detail">live</div>
+      </div>
+
+      <div className="chat-activity-batch__groups">
+        {orderedGroups.map((group) => {
+          const isActiveGroup = group.name === currentGroup?.name;
+          const groupKey = `task-run-live:${taskRun.id}:${group.name}`;
+          const expandedCardId = expandedProgressCards[groupKey] ?? null;
+          return (
+            <section
+              key={`${taskRun.id}-${group.name}`}
+              className={`chat-agent-activity ${isActiveGroup ? "is-active" : ""}`}
+            >
+              <div className="chat-agent-activity__summary">
+                <span className={`chat-agent-activity__status ${isActiveGroup ? "is-live" : ""}`} />
+                <span className="chat-agent-activity__avatar">{initials(group.name)}</span>
+                <span className="chat-agent-activity__copy">
+                  <strong>{group.name}</strong>
+                  <small>
+                    {group.cards.length} step{group.cards.length === 1 ? "" : "s"} · {formatTime(group.latestAt)}
+                  </small>
+                </span>
+                <span className={`chat-agent-activity__pill ${isActiveGroup ? "is-live" : ""}`}>
+                  {isActiveGroup ? "active" : "summary"}
+                </span>
+              </div>
+
+              <div className="chat-agent-activity__body">
+                {group.cards.map((card, index) =>
+                  renderCompactCard(
+                    card,
+                    groupKey,
+                    index,
+                    card.id === group.cards[group.cards.length - 1]?.id,
+                    card.id === group.cards[group.cards.length - 1]?.id,
+                    expandedCardId === card.id,
+                    onToggleProgressCard,
+                    gateActionPipelineId,
+                    onApproveGate,
+                    onRejectGate,
+                  ),
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -829,6 +1270,18 @@ function appendMappedCards(target: Map<number, ThreadCard[]>, messageId: number,
   const existing = target.get(messageId) ?? [];
   const merged = [...existing, ...cards].sort(compareThreadCards);
   target.set(messageId, merged);
+}
+
+function normalizeClientTurnId(value: string | null | undefined) {
+  const normalized = (value || "").trim();
+  return normalized ? normalized : null;
+}
+
+function sameClientTurn(left?: string | null, right?: string | null) {
+  const normalizedLeft = normalizeClientTurnId(left);
+  const normalizedRight = normalizeClientTurnId(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  return normalizedLeft === normalizedRight;
 }
 
 function visibleMessageKey(message: MessageItem) {
@@ -2299,6 +2752,7 @@ function compactCardDefaultOpen(card: ThreadCard, isLive: boolean) {
 
 function compactCardState(card: ThreadCard, isLive: boolean) {
   if (isLive) return "live";
+  if ("status" in card && card.status === "running") return "live";
   if (card.kind === "gate_blocked") return "blocked";
   if (card.kind === "agent_error") return "error";
   if ("success" in card && card.success === false) return "error";
@@ -2322,6 +2776,9 @@ function compactCardStateLabel(card: ThreadCard, isLive: boolean) {
 function compactCardSummary(card: ThreadCard) {
   switch (card.kind) {
     case "tool_call":
+      if (card.status === "running") {
+        return oneLinePreview(card.result, `${card.tool || "Tool"} is running.`);
+      }
       return oneLinePreview(card.result, `${card.tool || "Tool"} finished.`);
     case "agent_error":
       return oneLinePreview(card.error || card.summary || card.content, "Agent flow failed.");
@@ -2696,20 +3153,51 @@ function renderMessage(
 function renderTaskRunInlineCard(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  cards: ThreadCard[],
   agents: AgentInfo[],
   approvalItems: ApprovalQueueItem[],
   approvalQueueLoaded: boolean,
   approvalActionItemId: number | null,
   expandedStepId: string | null,
   onToggleStep: (taskRunId: number, stepId: string) => void,
-  onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject") => Promise<void>,
+  expandedProgressCards: Record<string, string | null>,
+  onToggleProgressCard: (groupKey: string, cardId: string) => void,
+  gateActionPipelineId: number | null,
+  onApproveGate: (pipelineId: number) => Promise<void>,
+  onRejectGate: (pipelineId: number) => Promise<void>,
+  onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject", remember?: boolean) => Promise<void>,
 ) {
   const pendingItems = approvalItems.filter((item) => (item.status || "").toLowerCase() === "pending");
   const hasPendingApprovals = Number(taskRun.pending_approval_count || 0) > 0;
-  const summary = taskRun.summary || taskRun.user_request || "Background task update.";
-  const inlineStatus = summarizeTaskRunInlineStatus(taskRun, detail);
+  const liveActivity = summarizeTaskRunRuntimeCards(cards);
+  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail);
+  const inlineStatus = liveActivity
+    ? {
+        tone:
+          liveActivity.state === "error"
+            ? ("error" as const)
+            : liveActivity.state === "blocked"
+              ? ("warning" as const)
+              : ("info" as const),
+        label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
+        detail: liveActivity.detail,
+      }
+    : summarizeTaskRunInlineStatus(taskRun, detail);
   const actorName = resolveTaskRunActorName(taskRun, agents);
   const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep);
+  const shellOutput = renderTaskRunShellOutput(taskRun, cards);
+  const activity = renderTaskRunActivity(
+    taskRun,
+    cards,
+    expandedProgressCards,
+    onToggleProgressCard,
+    gateActionPipelineId,
+    onApproveGate,
+    onRejectGate,
+  );
+  const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
+    ? (taskRun.client_turn_id || "").trim().slice("delegate-".length)
+    : null;
 
   return (
     <div className="chat-card-row" key={`task-run-inline-${taskRun.id}`}>
@@ -2720,10 +3208,10 @@ function renderTaskRunInlineCard(
             <div>
               <div className="chat-tool-card__title">
                 <span className="chat-json-badge">TASK</span>
-                <span>{actorName}</span>
+                <span>{taskIdLabel ? `TASK ${taskIdLabel}` : actorName}</span>
               </div>
               <div className="chat-tool-card__detail">
-                {taskRun.title}
+                {taskIdLabel ? `${actorName} · ${taskRun.title}` : taskRun.title}
               </div>
             </div>
             <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
@@ -2734,7 +3222,9 @@ function renderTaskRunInlineCard(
             <span>{inlineStatus.detail}</span>
           </div>
 
-          {trace ? trace : (taskRun.status || "").toLowerCase() === "running" ? (
+          {shellOutput}
+
+          {activity ? activity : trace ? trace : (taskRun.status || "").toLowerCase() === "running" ? (
             <div className="task-run-inline-approvals">
               <div className="task-run-inline-approval">
                 <div className="task-run-detail__summary">Loading live activity…</div>
@@ -2774,6 +3264,16 @@ function renderTaskRunInlineCard(
                       >
                         {isBusy ? labels.busy : labels.approve}
                       </button>
+                      {!isTimeoutWaitQueueItem(item) ? (
+                        <button
+                          type="button"
+                          className="chat-card-action-btn"
+                          disabled={isBusy}
+                          onClick={() => void onResolveApprovalQueueItem(item, "approve", true)}
+                        >
+                          Approve + Remember
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="chat-card-action-btn chat-card-action-btn--reject"
@@ -2782,6 +3282,16 @@ function renderTaskRunInlineCard(
                       >
                         {labels.reject}
                       </button>
+                      {!isTimeoutWaitQueueItem(item) ? (
+                        <button
+                          type="button"
+                          className="chat-card-action-btn"
+                          disabled={isBusy}
+                          onClick={() => void onResolveApprovalQueueItem(item, "reject", true)}
+                        >
+                          Reject + Remember
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -3094,7 +3604,7 @@ export function ChatTab({
   }, []);
 
   const handleResolveApprovalQueueItem = useCallback(
-    async (item: ApprovalQueueItem, action: "approve" | "reject") => {
+    async (item: ApprovalQueueItem, action: "approve" | "reject", remember = false) => {
       if (approvalActionItemId === item.id) return;
       setApprovalActionItemId(item.id);
       setApprovalActionError("");
@@ -3102,9 +3612,15 @@ export function ChatTab({
       try {
         let updated: ApprovalQueueItem;
         if (action === "approve") {
-          updated = await api.approveApprovalQueueItem(item.id, { resolved_by: "home" });
+          updated = await api.approveApprovalQueueItem(item.id, {
+            resolved_by: "home",
+            remember_scope: remember ? rememberedApprovalScope(item) : undefined,
+          });
         } else {
-          updated = await api.rejectApprovalQueueItem(item.id, { resolved_by: "home" });
+          updated = await api.rejectApprovalQueueItem(item.id, {
+            resolved_by: "home",
+            remember_scope: remember ? rememberedApprovalScope(item) : undefined,
+          });
         }
         if (chat?.id) {
           const nextPending = await api.getApprovalQueue({
@@ -3120,10 +3636,10 @@ export function ChatTab({
         setApprovalActionMessage(
           action === "approve"
             ? updated.status === "approved"
-              ? `Approved ${item.target_name || item.target_kind || "request"}.`
+              ? `${remember ? "Approved and remembered" : "Approved"} ${item.target_name || item.target_kind || "request"}.`
               : "Approval updated."
             : updated.status === "rejected"
-              ? `Rejected ${item.target_name || item.target_kind || "request"}.`
+              ? `${remember ? "Rejected and remembered" : "Rejected"} ${item.target_name || item.target_kind || "request"}.`
               : "Approval updated.",
         );
       } catch (error) {
@@ -3238,6 +3754,39 @@ export function ChatTab({
         .filter((message) => Boolean(message.agent_name) && Boolean(message.client_turn_id))
         .map((message) => message.client_turn_id as string),
     );
+    const taskRunCardsById = new Map<number, ThreadCard[]>();
+    const claimedTaskCardIds = new Set<string>();
+
+    const taskRunsByPriority = [...taskRuns]
+      .filter((run) => shouldRenderInlineTaskRun(run))
+      .sort(compareTaskRunsForSidebarSelection);
+
+    const attachCardToTaskRun = (runId: number, card: ThreadCard) => {
+      taskRunCardsById.set(runId, [...(taskRunCardsById.get(runId) ?? []), card].sort(compareThreadCards));
+      claimedTaskCardIds.add(card.id);
+    };
+
+    for (const card of cardsWithPromptPresentation) {
+      if (consumedFallbackCardIds.has(card.id)) continue;
+
+      const matchedByRunId =
+        typeof card.run_id === "number"
+          ? taskRunsByPriority.find((run) => run.id === card.run_id) ?? null
+          : null;
+      if (matchedByRunId) {
+        attachCardToTaskRun(matchedByRunId.id, card);
+        continue;
+      }
+
+      const matchedByTurn =
+        normalizeClientTurnId(card.client_turn_id)
+          ? taskRunsByPriority.find((run) => sameClientTurn(run.client_turn_id, card.client_turn_id)) ?? null
+          : null;
+      if (matchedByTurn) {
+        attachCardToTaskRun(matchedByTurn.id, card);
+      }
+    }
+
     const orderedItems: ThreadItem[] = [
       ...visibleMessages.map((message) => ({
         id: `message-${message.id}`,
@@ -3253,11 +3802,13 @@ export function ChatTab({
           kind: "task_run" as const,
           taskRun: run,
           detail: liveTaskRunDetailsById[run.id] ?? taskRunDetailsById[run.id] ?? null,
+          cards: taskRunCardsById.get(run.id) ?? EMPTY_THREAD_CARDS,
         })),
       ...cardsWithPromptPresentation
         .filter(
           (card) =>
             !consumedFallbackCardIds.has(card.id) &&
+            !claimedTaskCardIds.has(card.id) &&
             !(card.client_turn_id && anchoredAssistantTurnIds.has(card.client_turn_id)),
         )
         .map((card) => ({
@@ -4034,12 +4585,18 @@ export function ChatTab({
                     ? renderTaskRunInlineCard(
                         item.taskRun,
                         item.detail,
+                        item.cards,
                         agents,
                         pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],
                         approvalQueueLoaded,
                         approvalActionItemId,
                         expandedTaskRunSteps[item.taskRun.id] ?? null,
                         toggleTaskRunStep,
+                        expandedProgressCards,
+                        toggleProgressCard,
+                        gateActionPipelineId,
+                        handleApproveGate,
+                        handleRejectGate,
                         handleResolveApprovalQueueItem,
                       )
                     : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
@@ -4612,6 +5169,16 @@ export function ChatTab({
                                             >
                                               {isBusy ? labels.busy : labels.approve}
                                             </button>
+                                            {!isTimeoutWaitQueueItem(item) ? (
+                                              <button
+                                                type="button"
+                                                className="chat-card-action-btn"
+                                                disabled={isBusy}
+                                                onClick={() => void handleResolveApprovalQueueItem(item, "approve", true)}
+                                              >
+                                                Approve + Remember
+                                              </button>
+                                            ) : null}
                                             <button
                                               type="button"
                                               className="chat-card-action-btn chat-card-action-btn--reject"
@@ -4620,6 +5187,16 @@ export function ChatTab({
                                             >
                                               {labels.reject}
                                             </button>
+                                            {!isTimeoutWaitQueueItem(item) ? (
+                                              <button
+                                                type="button"
+                                                className="chat-card-action-btn"
+                                                disabled={isBusy}
+                                                onClick={() => void handleResolveApprovalQueueItem(item, "reject", true)}
+                                              >
+                                                Reject + Remember
+                                              </button>
+                                            ) : null}
                                           </div>
                                         ) : null}
                                       </div>

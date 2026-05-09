@@ -209,13 +209,13 @@ export const api = {
     });
     return request<MonitorApprovalQueueResponse>(`/api/monitor/approval-queue?${params.toString()}`);
   },
-  approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string }) {
+  approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string; remember_scope?: string }) {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/approve`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
   },
-  rejectApprovalQueueItem(itemId: number, payload?: { note?: string; rollback_to?: string | null; resolved_by?: string }) {
+  rejectApprovalQueueItem(itemId: number, payload?: { note?: string; rollback_to?: string | null; resolved_by?: string; remember_scope?: string }) {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/reject`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),

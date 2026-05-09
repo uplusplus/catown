@@ -4709,6 +4709,77 @@ a {
   border-color: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
+.task-run-shell-output {
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--card) 88%, transparent), color-mix(in srgb, var(--bg-elevated) 92%, transparent)),
+    var(--card);
+  overflow: hidden;
+}
+
+.task-run-shell-output.is-live {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.task-run-shell-output.is-error {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border) 70%);
+}
+
+.task-run-shell-output__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-hover) 55%, transparent);
+}
+
+.task-run-shell-output__title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
+.task-run-shell-output__meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.task-run-shell-output__command {
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-run-shell-output__body {
+  margin: 0;
+  padding: 10px 12px 12px;
+  max-height: 320px;
+  overflow: auto;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, black 10%, transparent);
+}
+
 .task-run-inline-approval {
   border-top: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
   padding-top: 8px;
