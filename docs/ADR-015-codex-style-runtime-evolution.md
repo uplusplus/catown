@@ -6850,6 +6850,39 @@ v1 当前覆盖：
 - 不阻断 pipeline start
 - 不把 diagnostics 写入数据库
 
+### 11.166 2026-05-09 新进展：submitted workflow spec 已可通过 API 做软件裁定
+
+11.165 暴露的是已加载 pipeline template 的 diagnostics。
+但如果未来由编排 Agent 或 LLM 生成 workflow spec，还需要一个入口让软件先裁定：
+
+- spec 是否能 parse
+- 是否满足 execution-readiness policy
+- 失败原因是什么
+
+本轮新增：
+
+- `POST /api/pipelines/workflow-spec/validate`
+
+请求体是 canonical `workflow_spec`。
+响应复用 execution-readiness report：
+
+- `workflow_id`
+- `executable`
+- `diagnostic_count`
+- diagnostics payload
+
+这一步的意义是：
+
+- LLM 生成 workflow spec 后，终于有了进入持久化/执行之前的软件裁定入口
+- workflow spec 开始具备“开放生成、受限验证”的协议形态
+- API 层仍然不创建 pipeline、不写数据库、不启动执行器
+
+边界：
+
+- 当前只是 validation endpoint
+- 没有 workflow draft/template persistence
+- 没有 executor enforcement
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

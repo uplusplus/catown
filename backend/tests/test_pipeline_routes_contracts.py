@@ -117,3 +117,67 @@ def test_pipeline_template_workflow_spec_report_endpoint_exposes_diagnostics(cli
     assert payload["executable"] is True
     assert payload["diagnostic_count"] == 0
     assert payload["payload"]["metadata"]["stage_count"] == 1
+
+
+def test_workflow_spec_validate_endpoint_accepts_executable_spec(client):
+    response = client.post(
+        "/api/pipelines/workflow-spec/validate",
+        json={
+            "kind": "workflow_spec",
+            "version": 1,
+            "workflow_id": "generated",
+            "name": "Generated workflow",
+            "stages": [
+                {
+                    "stage_id": "analysis",
+                    "display_name": "Analysis",
+                    "agent_type": "analyst",
+                    "gate": "manual",
+                    "timeout_minutes": 30,
+                    "delivery": {
+                        "expected_artifacts": ["PRD.md"],
+                        "required": True,
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workflow_id"] == "generated"
+    assert payload["executable"] is True
+    assert payload["diagnostic_count"] == 0
+
+
+def test_workflow_spec_validate_endpoint_reports_policy_errors(client):
+    response = client.post(
+        "/api/pipelines/workflow-spec/validate",
+        json={
+            "kind": "workflow_spec",
+            "version": 1,
+            "workflow_id": "broken",
+            "name": "Broken workflow",
+            "stages": [
+                {
+                    "stage_id": "testing",
+                    "display_name": "Testing",
+                    "agent_type": "tester",
+                    "gate": "auto",
+                    "timeout_minutes": 30,
+                    "rollback": {
+                        "enabled": True,
+                        "max_attempts": 2,
+                        "target_stage_name": "missing",
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workflow_id"] == "broken"
+    assert payload["executable"] is False
+    assert payload["diagnostic_count"] == 1
+    assert payload["payload"]["diagnostics"][0]["code"] == "rollback_target_unknown"

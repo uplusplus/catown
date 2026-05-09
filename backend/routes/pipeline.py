@@ -18,6 +18,8 @@ from models.database import (
 )
 from pipeline.engine import pipeline_engine, event_bus
 from pipeline.config import pipeline_config_manager
+from services.workflow_spec_contracts import WorkflowSpec
+from services.workflow_spec_policy import validate_workflow_spec_for_execution
 
 logger = logging.getLogger("catown.pipeline.api")
 
@@ -174,6 +176,19 @@ async def get_pipeline_template_workflow_spec_report(pipeline_name: str):
     report = pipeline_config_manager.get_workflow_spec_report(pipeline_name)
     if report is None:
         raise HTTPException(status_code=404, detail="Pipeline template not found")
+    payload = report.to_payload()
+    return WorkflowSpecReportOut(
+        workflow_id=report.workflow_id,
+        executable=report.executable,
+        diagnostic_count=len(report.diagnostics),
+        payload=payload,
+    )
+
+
+@router.post("/workflow-spec/validate", response_model=WorkflowSpecReportOut)
+async def validate_submitted_workflow_spec(workflow_spec: WorkflowSpec):
+    """Validate a submitted canonical workflow spec without executing it."""
+    report = validate_workflow_spec_for_execution(workflow_spec)
     payload = report.to_payload()
     return WorkflowSpecReportOut(
         workflow_id=report.workflow_id,

@@ -230,6 +230,13 @@ The first diagnostics API bridge is now present in:
 
 It exposes the cached execution-readiness report through a stable read-side endpoint.
 
+The first submitted-spec validation API is now present in:
+
+- `POST /api/pipelines/workflow-spec/validate`
+
+It accepts an arbitrary canonical workflow spec and returns the same execution-readiness report
+without creating a pipeline or starting execution.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path
@@ -243,7 +250,7 @@ It is currently a draft contract intended to guide the next refactor.
 
 The next likely follow-ups are:
 
-1. connect workflow spec execution-readiness validation to selected config/runtime load paths
+1. connect submitted workflow specs to a durable draft/template persistence path
 2. connect action-request policy validation to selected runtime request paths
 3. define v2 for richer branching / sidecar topology
 4. connect workflow versioning and compatibility rules into the executor

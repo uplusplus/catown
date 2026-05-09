@@ -2687,3 +2687,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `GET /api/pipelines/templates/{pipeline_name}/workflow-spec/report`
 - 暴露 `PipelineConfigManager` 缓存的 execution-readiness report
 - 保持 workflow spec 只读 API 与 pipeline executor 主路径分离
+
+### `Validate submitted workflow specs via Pipeline API`
+
+范围：
+
+- `backend/routes/pipeline.py`
+- `backend/tests/test_pipeline_routes_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `POST /api/pipelines/workflow-spec/validate`
+- 接收任意 canonical `workflow_spec`，返回 execution-readiness report
+- 支持编排 Agent/LLM 生成流程后先让本地软件裁定，再决定是否进入持久化或执行路径
