@@ -7366,6 +7366,41 @@ publish_artifact action_request
 - 当前不写 run ledger
 - 当前不改变 policy checker 行为
 
+### 11.181 2026-05-09 新进展：policy decision 已有标准 ledger event payload
+
+11.180 提供了 policy decision summary，但真正接 run ledger 时还需要一层固定事件 payload：
+
+- event kind
+- summary
+- accepted
+- decision type
+- subject identity
+- optional full contract
+
+如果各调用方直接手写这些 payload，ledger 里会再次出现多种形态。
+
+本轮在 `backend/services/policy_decision_contracts.py` 增加：
+
+- `build_policy_decision_event_payload(...)`
+
+它生成 `policy_decision_recorded` 事件 payload，默认包含：
+
+- `policy_decision_summary`
+- `policy_decision`
+- accepted / decision_type / subject_kind / subject_id / stage_name 的扁平投影
+
+这一步的意义是：
+
+- run ledger 接 policy decision 前已有稳定 payload contract
+- Monitor 可以优先读 summary，也可以按需展开完整 contract
+- 后续 action/artifact/evaluation policy checker 接 ledger 时不需要重复定义事件形态
+
+边界：
+
+- 当前不调用 `append_task_event`
+- 当前不改 run ledger 主路径
+- 当前不改变 policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

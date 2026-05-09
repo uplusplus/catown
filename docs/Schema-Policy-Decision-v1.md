@@ -159,6 +159,13 @@ A stable read-model summary helper is also present:
 It returns decision id, decision type, subject identity, accepted status, stage/policy
 context, and violation counts without exposing the full payload.
 
+A run-ledger payload helper is also present:
+
+- `build_policy_decision_event_payload(...)`
+
+It returns a `policy_decision_recorded` event payload containing the summary and,
+optionally, the full canonical policy decision contract.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

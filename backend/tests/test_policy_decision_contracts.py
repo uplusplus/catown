@@ -4,6 +4,7 @@ from services.action_request_policy import validate_action_request_for_workflow
 from services.artifact_contract_policy import validate_artifact_contract_for_workflow
 from services.evaluation_result_policy import validate_evaluation_result_for_policy
 from services.policy_decision_contracts import (
+    build_policy_decision_event_payload,
     dump_policy_decision,
     parse_policy_decision,
     project_policy_decision,
@@ -214,3 +215,50 @@ def test_summarize_policy_decision_returns_read_model_counts():
         "warning_count": 1,
         "info_count": 0,
     }
+
+
+def test_build_policy_decision_event_payload_includes_summary_and_contract():
+    decision = parse_policy_decision(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-action-1",
+            "decision_type": "action_request_policy",
+            "subject": {
+                "kind": "action_request",
+                "id": "req-1",
+                "type": "publish_artifact",
+            },
+            "accepted": True,
+            "stage_name": "testing",
+        }
+    )
+
+    payload = build_policy_decision_event_payload(decision)
+    assert payload["event_kind"] == "policy_decision_recorded"
+    assert payload["accepted"] is True
+    assert payload["decision_type"] == "action_request_policy"
+    assert payload["subject_kind"] == "action_request"
+    assert payload["subject_id"] == "req-1"
+    assert payload["policy_decision_summary"]["stage_name"] == "testing"
+    assert payload["policy_decision"]["decision_id"] == "policy-decision-action-1"
+
+
+def test_build_policy_decision_event_payload_can_omit_full_contract():
+    payload = build_policy_decision_event_payload(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-action-2",
+            "decision_type": "action_request_policy",
+            "subject": {
+                "kind": "action_request",
+                "id": "req-2",
+            },
+            "accepted": True,
+        },
+        include_contract=False,
+    )
+
+    assert "policy_decision" not in payload
+    assert payload["policy_decision_summary"]["decision_id"] == "policy-decision-action-2"

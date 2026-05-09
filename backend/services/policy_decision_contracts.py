@@ -94,6 +94,29 @@ def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any])
     }
 
 
+def build_policy_decision_event_payload(
+    decision: PolicyDecisionContract | dict[str, Any],
+    *,
+    include_contract: bool = True,
+) -> dict[str, Any]:
+    """Build a run-ledger-friendly event payload for one policy decision."""
+
+    parsed_decision = parse_policy_decision(decision) if isinstance(decision, dict) else decision
+    summary = summarize_policy_decision(parsed_decision)
+    payload: dict[str, Any] = {
+        "event_kind": "policy_decision_recorded",
+        "policy_decision_summary": summary,
+        "accepted": summary["accepted"],
+        "decision_type": summary["decision_type"],
+        "subject_kind": summary["subject_kind"],
+        "subject_id": summary["subject_id"],
+        "stage_name": summary["stage_name"],
+    }
+    if include_contract:
+        payload["policy_decision"] = dump_policy_decision(parsed_decision)
+    return payload
+
+
 def project_policy_decision(
     decision: Any,
     *,
