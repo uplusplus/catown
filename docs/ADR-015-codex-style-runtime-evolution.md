@@ -6883,6 +6883,45 @@ v1 当前覆盖：
 - 没有 workflow draft/template persistence
 - 没有 executor enforcement
 
+### 11.167 2026-05-09 新进展：evaluation rubric 已成为第四类协议对象
+
+此前的 schema 收敛主要覆盖三类对象：
+
+- `workflow_spec`
+- `action_request`
+- `artifact_contract`
+
+但这三类对象还不能很好表达“怎么判断好坏”。
+如果把 UI 品味、PRD 完整性、架构合理性、测试 blocker 标准都硬塞进 workflow 或 runtime policy，会把语义判断和执行控制重新混在一起。
+
+本轮新增：
+
+- `backend/services/evaluation_rubric_contracts.py`
+- `docs/Schema-Evaluation-Rubric-v1.md`
+
+v1 覆盖：
+
+- rubric identity
+- workflow/stage/agent/artifact applicability
+- criteria
+- scale
+- evaluator owner
+- required / weight
+- acceptance threshold
+- guidance
+
+这一步的意义是：
+
+- 模糊质量和品味判断有了独立协议对象
+- 软件可以校验 rubric 结构，但不假装自己是语义裁判
+- LLM / 人可以基于 rubric 做 judgment，再通过 action request 向 runtime 提出后续动作
+
+边界：
+
+- 当前没有 rubric result schema
+- 未接入 workflow stage gates
+- 未接入 artifact acceptance 或 review persistence
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

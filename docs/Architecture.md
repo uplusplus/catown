@@ -264,6 +264,10 @@ Representative config source:
 
 - `backend/configs/agents.json`
 
+Representative contract:
+
+- [Evaluation Rubric Schema v1](Schema-Evaluation-Rubric-v1.md)
+
 Examples:
 
 - whether a PRD is complete enough
@@ -503,9 +507,9 @@ The following should vary mainly as data, config, or plugins:
 
 This is where software delivery, UI design, video generation, or other future project types should differ.
 
-#### The Three Main Protocol Objects
+#### The Four Main Protocol Objects
 
-To avoid one-off implementations, Catown should increasingly converge on three first-class protocol objects:
+To avoid one-off implementations, Catown should increasingly converge on four first-class protocol objects:
 
 1. `workflow spec`
    - how a task is organized
@@ -515,6 +519,9 @@ To avoid one-off implementations, Catown should increasingly converge on three f
    - use a tool, ask another role, request approval, report blocker, suggest rollback
 3. `artifact contract`
    - what was produced and how it is stored, validated, and handed forward
+4. `evaluation rubric`
+   - how quality, completeness, taste, and semantic adequacy should be judged
+   - criteria, scale, evaluator owner, threshold, guidance
 
 This is more robust than loosely saying that the software receives a "script".
 The important point is not arbitrary programmability, but bounded interpretability.
@@ -548,7 +555,7 @@ not:
 
 When adding a new capability, the first design question should be:
 
-- can this be expressed as `workflow spec`, `action request`, or `artifact contract`?
+- can this be expressed as `workflow spec`, `action request`, `artifact contract`, or `evaluation rubric`?
 
 If yes, prefer extending protocols over extending the kernel.
 If no, then and only then consider adding a new runtime primitive.
@@ -565,7 +572,11 @@ The third concrete draft is:
 
 - [Workflow Spec Schema v1](Schema-Workflow-Spec-v1.md)
 
-It defines the bounded agent-to-executor request envelope that sits above the OpenAI-compatible model protocol.
+The fourth concrete draft is:
+
+- [Evaluation Rubric Schema v1](Schema-Evaluation-Rubric-v1.md)
+
+These schemas keep workflow structure, runtime intent, produced objects, and semantic judgment as separate protocol objects.
 
 ## 4. Monitor Read Model
 

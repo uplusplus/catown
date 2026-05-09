@@ -2703,3 +2703,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `POST /api/pipelines/workflow-spec/validate`
 - 接收任意 canonical `workflow_spec`，返回 execution-readiness report
 - 支持编排 Agent/LLM 生成流程后先让本地软件裁定，再决定是否进入持久化或执行路径
+
+### `Draft evaluation rubric schema v1`
+
+范围：
+
+- `backend/services/evaluation_rubric_contracts.py`
+- `backend/tests/test_evaluation_rubric_contracts.py`
+- `docs/Schema-Evaluation-Rubric-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `evaluation_rubric schema v1`
+- 覆盖 applies-to、criteria、scale、evaluator owner、required、weight、threshold、guidance
+- 将协议对象从 workflow/action/artifact 扩展为 workflow/action/artifact/rubric 四类，承载模糊质量和品味判断
