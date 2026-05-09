@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun, TaskRunEvent
 from services.approval_queue import serialize_approval_queue_item
+from services.policy_decision_contracts import summarize_policy_decision
 
 
 INPUT_PRICE_PER_1K = 0.03
@@ -321,4 +322,49 @@ def serialize_monitor_compaction_item(
         "developer": diagnostics.get("developer") if isinstance(diagnostics.get("developer"), dict) else {},
         "user": diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {},
         "payload": payload,
+    }
+
+
+def serialize_monitor_policy_decision_item(
+    event: TaskRunEvent,
+    *,
+    task_run: TaskRun | None = None,
+    chat_title: str | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    payload = parse_metadata(event.payload_json)
+    contract = payload.get("policy_decision")
+    summary_payload = payload.get("policy_decision_summary")
+    if isinstance(contract, dict) and contract.get("kind") == "policy_decision":
+        decision_summary = summarize_policy_decision(contract)
+        decision_payload = contract
+    elif isinstance(summary_payload, dict):
+        decision_summary = summarize_policy_decision(summary_payload)
+        decision_payload = None
+    else:
+        decision_summary = {}
+        decision_payload = None
+
+    return {
+        "id": event.id,
+        "task_run_id": event.task_run_id,
+        "chatroom_id": task_run.chatroom_id if task_run else None,
+        "project_id": task_run.project_id if task_run else None,
+        "chat_title": chat_title,
+        "project_name": project_name,
+        "run_kind": task_run.run_kind if task_run else None,
+        "task_run_title": task_run.title if task_run else None,
+        "task_run_status": task_run.status if task_run else None,
+        "agent_name": event.agent_name,
+        "event_index": event.event_index,
+        "event_type": event.event_type,
+        "event_summary": event.summary,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "accepted": decision_summary.get("accepted"),
+        "decision_type": decision_summary.get("decision_type"),
+        "subject_kind": decision_summary.get("subject_kind"),
+        "subject_id": decision_summary.get("subject_id"),
+        "stage_name": decision_summary.get("stage_name"),
+        "policy_decision_summary": decision_summary,
+        "policy_decision": decision_payload,
     }

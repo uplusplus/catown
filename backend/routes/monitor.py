@@ -18,7 +18,11 @@ from models.audit import LLMCall, ToolCall
 from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_queue import list_approval_queue_items
-from services.monitor_projection import serialize_monitor_approval_queue_item, serialize_monitor_compaction_item
+from services.monitor_projection import (
+    serialize_monitor_approval_queue_item,
+    serialize_monitor_compaction_item,
+    serialize_monitor_policy_decision_item,
+)
 from services.run_ledger import serialize_monitor_task_run_summary
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
@@ -1168,6 +1172,7 @@ async def get_monitor_overview(
     approval_queue_total = db.query(ApprovalQueueItem).count()
     approval_queue_pending = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count()
     context_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
+    policy_decision_event_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "policy_decision_recorded").count()
 
     summary_rows = (
         db.query(Message, Chatroom, Project)
@@ -1345,6 +1350,25 @@ async def get_monitor_overview(
         )
         for event, task_run, chatroom, project in recent_compaction_rows
     ]
+    recent_policy_decision_rows = (
+        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
+        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRunEvent.event_type == "policy_decision_recorded")
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(16)
+        .all()
+    )
+    recent_policy_decisions = [
+        serialize_monitor_policy_decision_item(
+            event,
+            task_run=task_run,
+            chat_title=chatroom.title,
+            project_name=project.name if project else None,
+        )
+        for event, task_run, chatroom, project in recent_policy_decision_rows
+    ]
 
     return {
         "captured_at": datetime.now().isoformat(),
@@ -1362,6 +1386,7 @@ async def get_monitor_overview(
                 "approval_queue_total": approval_queue_total,
                 "approval_queue_pending": approval_queue_pending,
                 "context_compactions": context_compaction_count,
+                "policy_decision_events": policy_decision_event_count,
             },
             "features": {
                 "llm_enabled": True,
@@ -1396,4 +1421,5 @@ async def get_monitor_overview(
         "recent_runtime": recent_runtime,
         "recent_messages": recent_messages,
         "recent_compactions": recent_compactions,
+        "recent_policy_decisions": recent_policy_decisions,
     }

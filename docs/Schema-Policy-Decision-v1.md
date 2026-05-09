@@ -199,6 +199,14 @@ summary and the canonical decision payload when it is available. Summary-only
 events produced with `include_contract=false` are still counted and listed, but
 their detail entry has no full `policy_decision` contract.
 
+Monitor overview API also exposes policy decision read models:
+
+- `system.stats.policy_decision_events`
+- `recent_policy_decisions`
+
+The overview entries reuse the same canonical `policy_decision_summary` and include
+task-run, chat, project, event, and subject metadata for API consumers.
+
 A run-ledger append helper is now present:
 
 - `append_policy_decision_event(...)`
@@ -221,7 +229,7 @@ This schema is **not** yet wired into:
 - pipeline stage completion
 - artifact acceptance
 - approval queue resolution
-- Monitor API read models
+- Monitor frontend visualization
 
 ## 8. Expected Next Steps
 

@@ -92,6 +92,7 @@ class TestMonitorOverview:
         assert "recent_runtime" in data
         assert "recent_messages" in data
         assert "recent_compactions" in data
+        assert "recent_policy_decisions" in data
 
     def test_overview_aggregates_runtime_cards(self, client):
         from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name
@@ -307,6 +308,85 @@ class TestMonitorOverview:
         assert entry["dropped_count"] == 2
         assert entry["truncated_count"] == 1
         assert entry["max_tokens"] == 3200
+
+    def test_overview_returns_recent_policy_decisions(self, client):
+        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+        from services.policy_decision_contracts import build_policy_decision_event_payload
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Policy Decision Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Policy Decision Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="chat_turn",
+                status="running",
+                title="Policy decision run",
+                user_request="Check policy decision monitor projection",
+                initiator="user",
+                target_agent_name="tester",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            payload = build_policy_decision_event_payload(
+                {
+                    "kind": "policy_decision",
+                    "version": 1,
+                    "decision_id": "policy-decision-monitor-1",
+                    "decision_type": "action_request_policy",
+                    "subject": {
+                        "kind": "action_request",
+                        "id": "req-monitor-1",
+                    },
+                    "accepted": False,
+                    "stage_name": "testing",
+                }
+            )
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="policy_decision_recorded",
+                    agent_name="tester",
+                    summary="Policy decision rejected for action_request req-monitor-1.",
+                    payload_json=json.dumps(payload),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/overview")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["system"]["stats"]["policy_decision_events"] >= 1
+
+        entry = next(
+            item
+            for item in data["recent_policy_decisions"]
+            if item["policy_decision_summary"]["decision_id"] == "policy-decision-monitor-1"
+        )
+        assert entry["chat_title"] == "Policy Decision Chat"
+        assert entry["project_name"] == "Policy Decision Project"
+        assert entry["accepted"] is False
+        assert entry["decision_type"] == "action_request_policy"
+        assert entry["subject_id"] == "req-monitor-1"
 
     def test_monitor_task_runs_returns_global_run_history(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent

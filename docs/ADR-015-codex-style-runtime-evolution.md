@@ -7736,6 +7736,30 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不改变 tool governance 的 blocked result
 - 当前不改变 ledger event schema
 
+### 11.194 2026-05-09 新进展：Monitor overview API 已暴露 policy decision read model
+
+11.188 到 11.192 让 task-run summary/detail 能读取 policy decision events。
+但 Monitor overview 仍没有任何 policy decision 入口，控制面 verdict 只能通过 task run detail 间接查看。
+
+本轮更新：
+
+- `backend/services/monitor_projection.py` 新增 `serialize_monitor_policy_decision_item(...)`
+- `backend/routes/monitor.py` 的 overview 统计新增 `policy_decision_events`
+- `backend/routes/monitor.py` 的 overview 响应新增 `recent_policy_decisions`
+- `backend/tests/test_monitor.py` 覆盖 overview policy decision projection
+
+这一步的意义是：
+
+- policy decision 已从 run ledger detail 进入 Monitor API 顶层 read model
+- Monitor API 复用 canonical `policy_decision_summary`，不重新解释 contract
+- 前端后续可以直接展示最近 verdict，而不用扫描 task-run events
+
+边界：
+
+- 当前不改前端 UI
+- 当前不改变 ledger 写入路径
+- 当前不主动接 executor 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

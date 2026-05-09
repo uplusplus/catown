@@ -3186,3 +3186,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - rejected full-contract decision 优先使用 violation message 作为 block reason
 - summary-only decision 也能生成 gate result，但不会伪造完整 contract
 - 暂不接 executor 主路径，也不改变已有 tool governance blocked 结果
+
+### `Expose policy decisions in monitor overview API`
+
+范围：
+
+- `backend/services/monitor_projection.py`
+- `backend/routes/monitor.py`
+- `backend/tests/test_monitor.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- Monitor overview 系统统计新增 `policy_decision_events`
+- Monitor overview 响应新增 `recent_policy_decisions`
+- 新增 `serialize_monitor_policy_decision_item(...)`
+- overview 最近 policy decision 条目复用 canonical `policy_decision_summary`
+- 暂不改前端展示，也不改变 run ledger 写入路径
