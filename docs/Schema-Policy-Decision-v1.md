@@ -195,7 +195,9 @@ workflow/runner policy.
 The task-run read model now recognizes `policy_decision_recorded` event payloads
 and exposes aggregate policy decision summary in checkpoint and task-run summaries.
 Task-run detail serialization also exposes a `policy_decisions` list with per-event
-summary and the canonical decision payload.
+summary and the canonical decision payload when it is available. Summary-only
+events produced with `include_contract=false` are still counted and listed, but
+their detail entry has no full `policy_decision` contract.
 
 A run-ledger append helper is now present:
 

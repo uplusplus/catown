@@ -93,6 +93,72 @@ def test_task_run_checkpoint_summarizes_policy_decision_events(fresh_db):
         db.close()
 
 
+def test_task_run_read_models_accept_summary_only_policy_decision_events(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Policy Decision Summary Chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="chat_turn",
+            status="running",
+            title="Policy decision summary run",
+            user_request="Check summary-only policy decisions.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        payload = build_policy_decision_event_payload(
+            {
+                "kind": "policy_decision",
+                "version": 1,
+                "decision_id": "policy-decision-summary-only-1",
+                "decision_type": "action_request_policy",
+                "subject": {
+                    "kind": "action_request",
+                    "id": "req-summary-only-1",
+                },
+                "accepted": False,
+                "violations": [
+                    {
+                        "code": "approval_required",
+                        "message": "Approval is required.",
+                        "severity": "warning",
+                    }
+                ],
+            },
+            include_contract=False,
+        )
+        db.add(
+            fresh_db.TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=1,
+                event_type="policy_decision_recorded",
+                summary="Policy decision recorded.",
+                payload_json=json.dumps(payload),
+            )
+        )
+        db.commit()
+        db.refresh(task_run)
+
+        snapshot = build_task_run_checkpoint_snapshot(task_run)
+        detail = serialize_task_run_detail(task_run)
+
+        assert snapshot["policy_decision_summary"]["decision_count"] == 1
+        assert snapshot["policy_decision_summary"]["rejected_count"] == 1
+        assert snapshot["policy_decision_summary"]["warning_count"] == 1
+        assert detail["policy_decisions"][0]["policy_decision"] is None
+        assert detail["policy_decisions"][0]["policy_decision_summary"]["decision_id"] == "policy-decision-summary-only-1"
+    finally:
+        db.close()
+
+
 def test_append_policy_decision_event_writes_standard_payload(fresh_db):
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
 

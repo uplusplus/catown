@@ -3149,3 +3149,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 将 policy decision 的默认 event summary 生成逻辑从 run ledger 私有 helper 上移到 contract service
 - `append_policy_decision_event(...)` 复用同一 summary formatter
 - 暂不改变 ledger event payload、read model shape 或 executor 写入路径
+
+### `Read summary-only policy decision ledger events`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `backend/tests/test_run_ledger_policy_decisions.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `summarize_policy_decision(...)` 和 `summarize_policy_decision_set(...)` 现在可消费已生成的单条 summary
+- run ledger checkpoint summary 现在能识别只有 `policy_decision_summary`、没有完整 `policy_decision` contract 的事件
+- task-run detail 仍列出 summary-only policy decision entry，并将缺失的 full contract 标记为 `None`
+- 暂不改变 `policy_decision_recorded` event schema，也不改变默认 append helper 的 full-contract 写入行为

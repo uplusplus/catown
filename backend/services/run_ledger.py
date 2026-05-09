@@ -381,7 +381,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     orchestration_handoff_inbox = summarize_orchestration_handoff_inbox(task_run)
     subagent_lifecycle = build_subagent_lifecycle_from_events(events)
     subagent_handles = build_subagent_runtime_handles(subagent_lifecycle)
-    policy_decisions = _extract_policy_decision_contracts(
+    policy_decisions = _extract_policy_decision_payloads(
         events=events,
         payload_by_event_id=payload_by_event_id,
     )
@@ -463,12 +463,12 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     return snapshot
 
 
-def _extract_policy_decision_contracts(
+def _extract_policy_decision_payloads(
     *,
     events: list[TaskRunEvent],
     payload_by_event_id: dict[int, Any],
 ) -> list[dict[str, Any]]:
-    contracts: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
     for event in events:
         payload = payload_by_event_id.get(event.id)
         if not isinstance(payload, dict):
@@ -480,8 +480,12 @@ def _extract_policy_decision_contracts(
             continue
         contract = payload.get("policy_decision")
         if isinstance(contract, dict) and contract.get("kind") == "policy_decision":
-            contracts.append(contract)
-    return contracts
+            decisions.append(contract)
+            continue
+        summary = payload.get("policy_decision_summary")
+        if isinstance(summary, dict):
+            decisions.append(summary)
+    return decisions
 
 
 def _serialize_task_run_policy_decision_entries(events: list[TaskRunEvent]) -> list[dict[str, Any]]:
@@ -496,7 +500,14 @@ def _serialize_task_run_policy_decision_entries(events: list[TaskRunEvent]) -> l
         ):
             continue
         contract = payload.get("policy_decision")
-        if not isinstance(contract, dict) or contract.get("kind") != "policy_decision":
+        summary = payload.get("policy_decision_summary")
+        if isinstance(contract, dict) and contract.get("kind") == "policy_decision":
+            decision_summary = summarize_policy_decision(contract)
+            decision_payload = contract
+        elif isinstance(summary, dict):
+            decision_summary = summarize_policy_decision(summary)
+            decision_payload = None
+        else:
             continue
         entries.append(
             {
@@ -504,8 +515,8 @@ def _serialize_task_run_policy_decision_entries(events: list[TaskRunEvent]) -> l
                 "event_index": event.event_index,
                 "event_type": event.event_type,
                 "event_summary": event.summary,
-                "policy_decision_summary": summarize_policy_decision(contract),
-                "policy_decision": contract,
+                "policy_decision_summary": decision_summary,
+                "policy_decision": decision_payload,
                 "created_at": event.created_at.isoformat() if event.created_at else None,
             }
         )

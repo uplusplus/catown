@@ -350,3 +350,36 @@ def test_summarize_policy_decision_set_returns_aggregate_counts():
             },
         },
     }
+
+
+def test_summarize_policy_decision_set_accepts_read_model_summaries():
+    summary = summarize_policy_decision_set(
+        [
+            {
+                "decision_id": "policy-decision-action-1",
+                "decision_type": "action_request_policy",
+                "subject_kind": "action_request",
+                "subject_id": "req-1",
+                "accepted": False,
+                "error_count": 2,
+                "warning_count": 1,
+                "info_count": 0,
+            }
+        ]
+    )
+
+    assert summary == {
+        "decision_count": 1,
+        "accepted_count": 0,
+        "rejected_count": 1,
+        "error_count": 2,
+        "warning_count": 1,
+        "info_count": 0,
+        "by_decision_type": {
+            "action_request_policy": {
+                "count": 1,
+                "accepted": 0,
+                "rejected": 1,
+            }
+        },
+    }

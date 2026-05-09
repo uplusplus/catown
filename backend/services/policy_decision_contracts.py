@@ -72,6 +72,23 @@ def dump_policy_decision(decision: PolicyDecisionContract) -> dict[str, Any]:
 def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any]) -> dict[str, Any]:
     """Return a stable read-model summary for one policy decision."""
 
+    if isinstance(decision, dict) and "subject_kind" in decision:
+        return {
+            "decision_id": str(decision.get("decision_id") or ""),
+            "decision_type": str(decision.get("decision_type") or ""),
+            "subject_kind": str(decision.get("subject_kind") or ""),
+            "subject_id": str(decision.get("subject_id") or ""),
+            "subject_type": decision.get("subject_type"),
+            "accepted": bool(decision.get("accepted", False)),
+            "stage_name": decision.get("stage_name"),
+            "policy_source": decision.get("policy_source"),
+            "pipeline_name": decision.get("pipeline_name"),
+            "violation_count": _safe_int(decision.get("violation_count")),
+            "error_count": _safe_int(decision.get("error_count")),
+            "warning_count": _safe_int(decision.get("warning_count")),
+            "info_count": _safe_int(decision.get("info_count")),
+        }
+
     parsed_decision = parse_policy_decision(decision) if isinstance(decision, dict) else decision
     violation_counts = {"info": 0, "warning": 0, "error": 0}
     for violation in parsed_decision.violations:
@@ -97,10 +114,7 @@ def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any])
 def format_policy_decision_summary(decision: PolicyDecisionContract | dict[str, Any]) -> str:
     """Return a compact human-readable summary for one policy decision or summary."""
 
-    if isinstance(decision, dict) and "subject_kind" in decision:
-        summary = decision
-    else:
-        summary = summarize_policy_decision(decision)
+    summary = summarize_policy_decision(decision)
     subject_kind = str(summary.get("subject_kind") or "subject").strip()
     subject_id = str(summary.get("subject_id") or "").strip()
     verdict = "accepted" if bool(summary.get("accepted", False)) else "rejected"
@@ -113,34 +127,43 @@ def summarize_policy_decision_set(
 ) -> dict[str, Any]:
     """Return aggregate read-model counters for policy decisions."""
 
-    parsed_decisions = [
-        parse_policy_decision(decision) if isinstance(decision, dict) else decision
+    decision_summaries = [
+        summarize_policy_decision(decision)
         for decision in list(decisions or [])
     ]
     by_decision_type: dict[str, dict[str, int]] = {}
     severity_counts = {"info": 0, "warning": 0, "error": 0}
-    for decision in parsed_decisions:
+    for summary in decision_summaries:
+        decision_type = str(summary.get("decision_type") or "")
         bucket = by_decision_type.setdefault(
-            decision.decision_type,
+            decision_type,
             {"count": 0, "accepted": 0, "rejected": 0},
         )
         bucket["count"] += 1
-        if decision.accepted:
+        if bool(summary.get("accepted", False)):
             bucket["accepted"] += 1
         else:
             bucket["rejected"] += 1
-        for violation in decision.violations:
-            severity_counts[violation.severity] = severity_counts.get(violation.severity, 0) + 1
+        severity_counts["error"] += _safe_int(summary.get("error_count"))
+        severity_counts["warning"] += _safe_int(summary.get("warning_count"))
+        severity_counts["info"] += _safe_int(summary.get("info_count"))
 
     return {
-        "decision_count": len(parsed_decisions),
-        "accepted_count": sum(1 for decision in parsed_decisions if decision.accepted),
-        "rejected_count": sum(1 for decision in parsed_decisions if not decision.accepted),
+        "decision_count": len(decision_summaries),
+        "accepted_count": sum(1 for summary in decision_summaries if bool(summary.get("accepted", False))),
+        "rejected_count": sum(1 for summary in decision_summaries if not bool(summary.get("accepted", False))),
         "error_count": severity_counts["error"],
         "warning_count": severity_counts["warning"],
         "info_count": severity_counts["info"],
         "by_decision_type": by_decision_type,
     }
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_policy_decision_event_payload(

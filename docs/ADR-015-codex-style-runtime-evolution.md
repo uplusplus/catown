@@ -7679,6 +7679,30 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不改变 task-run read model shape
 - 当前不主动接 executor 主路径
 
+### 11.192 2026-05-09 新进展：run ledger read-side 已兼容 summary-only policy decision events
+
+`build_policy_decision_event_payload(...)` 从一开始支持 `include_contract=false`，但 run ledger read-side 只读取完整 `policy_decision` contract。
+这会导致轻量级事件虽然带有 `policy_decision_summary`，却不会被 checkpoint summary 或 detail read model 统计。
+
+本轮更新：
+
+- `summarize_policy_decision(...)` 可消费完整 contract 或已生成的单条 summary
+- `summarize_policy_decision_set(...)` 可混合聚合完整 contract 和 summary-only 条目
+- `build_task_run_checkpoint_snapshot(...)` 识别 summary-only `policy_decision_recorded` 事件
+- `serialize_task_run_detail(...)` 对 summary-only 事件仍输出 detail entry，full contract 缺失时为 `None`
+
+这一步的意义是：
+
+- run ledger read-side 与 policy decision event payload helper 的可选 full-contract 语义一致
+- 未来如果某些 adapter 为了降低 ledger payload 体积只写 summary，Monitor/API 仍能展示控制面 verdict
+- policy decision read model 更接近 Codex-style 的“宽输入、稳定投影”边界
+
+边界：
+
+- 默认 `append_policy_decision_event(...)` 仍写完整 contract
+- 当前不新增数据库表
+- 当前不主动接 executor 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
