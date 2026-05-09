@@ -2756,3 +2756,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - failed / needs_review result 可生成 `report_blocker`
 - failed result 可生成 `suggest_rollback`
 - 保持 evaluation result 只是评审记录，后续 runtime effect 仍由 action request policy / runtime policy 裁定
+
+### `Validate evaluation rollback action requests`
+
+范围：
+
+- `backend/services/evaluation_action_requests.py`
+- `backend/tests/test_evaluation_action_requests.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 evaluation result -> rollback action request -> workflow policy validation 的组合 helper
+- failed evaluation result 生成 `suggest_rollback` 后，可立即按 canonical workflow policy 校验 target 是否允许
+- 仍不执行 rollback，只返回 action request 与 policy decision

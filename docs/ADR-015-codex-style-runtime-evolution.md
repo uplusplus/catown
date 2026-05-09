@@ -6995,6 +6995,33 @@ v1 覆盖：
 - 未持久化 evaluation result
 - 未自动执行生成的 action request
 
+### 11.170 2026-05-09 新进展：evaluation rollback intent 已能按 workflow policy 裁定
+
+11.169 已经能从 failed evaluation result 生成 `suggest_rollback` action request。
+但这仍然只是 intent，如果没有继续进入 workflow-aware policy validator，就还不能判断：
+
+- 目标 stage 是否存在
+- 目标 stage 是否符合当前 source stage 的 rollback policy
+- source stage / agent ownership 是否一致
+
+本轮在 `backend/services/evaluation_action_requests.py` 增加组合 helper：
+
+- 先从 failed evaluation result 构造 `suggest_rollback`
+- 再调用 `validate_action_request_for_workflow(...)`
+- 返回 action request + policy decision
+
+这一步的意义是：
+
+- `evaluation_result -> action_request -> workflow policy decision` 形成了第一条可测试闭环
+- 评审结论可以提出 rollback，但能否 rollback 仍由软件策略裁定
+- 这强化了“LLM/人做语义判断，软件做运行时合法性裁定”的边界
+
+边界：
+
+- 当前仍不自动执行 rollback
+- 未持久化 decision
+- 未接入 pipeline engine 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

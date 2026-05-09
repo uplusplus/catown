@@ -270,6 +270,12 @@ The first evaluation-result bridge is now present in:
 It compiles failed or needs-review evaluation results into bounded follow-up action requests without
 directly mutating runtime state.
 
+That bridge now also supports build-and-validate for failed evaluation rollback suggestions:
+
+- build `suggest_rollback`
+- validate it against canonical workflow policy
+- return the policy decision without executing the request
+
 This schema is **not** yet wired into:
 
 - pipeline engine execution

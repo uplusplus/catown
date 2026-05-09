@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from services.action_request_policy import ActionRequestPolicyDecision
+from services.action_request_policy import validate_action_request_for_workflow
 from services.action_request_contracts import dump_action_request, parse_action_request
 from services.evaluation_result_contracts import (
     EvaluationRubricResult,
     parse_evaluation_result,
 )
+from services.workflow_spec_contracts import WorkflowSpec
 
 
 def build_report_blocker_request_from_evaluation_result(
@@ -81,6 +84,33 @@ def build_suggest_rollback_request_from_evaluation_result(
         }
     )
     return dump_action_request(request)
+
+
+def build_and_validate_rollback_request_from_evaluation_result(
+    *,
+    result: EvaluationRubricResult | dict[str, Any],
+    request_id: str,
+    agent_name: str,
+    target_stage_name: str,
+    workflow_spec: WorkflowSpec,
+    agent_type: str | None = None,
+    project_id: int | None = None,
+) -> tuple[dict[str, Any], ActionRequestPolicyDecision]:
+    """Build rollback intent from evaluation result and validate it against workflow policy."""
+
+    request = build_suggest_rollback_request_from_evaluation_result(
+        result=result,
+        request_id=request_id,
+        agent_name=agent_name,
+        agent_type=agent_type,
+        target_stage_name=target_stage_name,
+    )
+    decision = validate_action_request_for_workflow(
+        request=request,
+        workflow_spec=workflow_spec,
+        project_id=project_id,
+    )
+    return request, decision
 
 
 def _ensure_result(result: EvaluationRubricResult | dict[str, Any]) -> EvaluationRubricResult:

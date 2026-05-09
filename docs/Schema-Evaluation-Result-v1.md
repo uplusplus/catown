@@ -129,6 +129,13 @@ The first action-request bridge is now present in:
 It can compile failed or needs-review evaluation results into bounded `report_blocker` requests,
 and failed evaluation results into bounded `suggest_rollback` requests.
 
+The first build-and-validate bridge is also present in:
+
+- `backend/services/evaluation_action_requests.py`
+
+It can build a rollback request from a failed evaluation result and immediately validate that request
+against canonical workflow policy, without executing the rollback.
+
 This schema is **not** yet wired into:
 
 - artifact review persistence

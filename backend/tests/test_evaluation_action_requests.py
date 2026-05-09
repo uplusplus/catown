@@ -1,9 +1,11 @@
 import pytest
 
 from services.evaluation_action_requests import (
+    build_and_validate_rollback_request_from_evaluation_result,
     build_report_blocker_request_from_evaluation_result,
     build_suggest_rollback_request_from_evaluation_result,
 )
+from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
 
 
 def _failed_result():
@@ -49,6 +51,32 @@ def _needs_review_result():
     return result
 
 
+def _workflow_spec():
+    return compile_pipeline_template_to_workflow_spec(
+        "default",
+        {
+            "name": "Default workflow",
+            "stages": [
+                {
+                    "name": "development",
+                    "display_name": "Development",
+                    "agent": "developer",
+                    "gate": "auto",
+                },
+                {
+                    "name": "testing",
+                    "display_name": "Testing",
+                    "agent": "tester",
+                    "gate": "auto",
+                    "rollback_on_blocker": True,
+                    "max_rollback_count": 3,
+                    "rollback_target": "development",
+                },
+            ],
+        },
+    )
+
+
 def test_failed_evaluation_result_builds_report_blocker_request():
     request = build_report_blocker_request_from_evaluation_result(
         result=_failed_result(),
@@ -91,6 +119,37 @@ def test_failed_evaluation_result_builds_suggest_rollback_request():
     assert request["payload"]["target_stage_name"] == "development"
     assert request["payload"]["blocker_code"] == "eval-test-1"
     assert request["source"]["pipeline_stage_id"] == 9
+
+
+def test_failed_evaluation_result_rollback_request_can_be_validated_against_workflow():
+    request, decision = build_and_validate_rollback_request_from_evaluation_result(
+        result=_failed_result(),
+        request_id="req-rollback-validated-1",
+        agent_name="Tester",
+        target_stage_name="development",
+        workflow_spec=_workflow_spec(),
+    )
+
+    assert request["type"] == "suggest_rollback"
+    assert decision.accepted is True
+    assert decision.stage_name == "testing"
+    assert decision.violations == []
+
+
+def test_evaluation_rollback_request_policy_rejects_wrong_target():
+    request, decision = build_and_validate_rollback_request_from_evaluation_result(
+        result=_failed_result(),
+        request_id="req-rollback-validated-2",
+        agent_name="Tester",
+        target_stage_name="analysis",
+        workflow_spec=_workflow_spec(),
+    )
+
+    assert request["type"] == "suggest_rollback"
+    assert decision.accepted is False
+    assert [violation.code for violation in decision.violations] == [
+        "unknown_rollback_target"
+    ]
 
 
 def test_passed_evaluation_result_does_not_build_blocker_request():
