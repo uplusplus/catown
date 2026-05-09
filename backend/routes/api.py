@@ -379,6 +379,7 @@ class PermissionsConfigModel(BaseModel):
     """Runtime permission policy config validation model."""
 
     allow_read_only_tools_without_approval: bool = True
+    auto_approve_all: bool = False
 
 
 router = APIRouter()
@@ -616,6 +617,7 @@ def _effective_permissions_config(config_data: Optional[Dict[str, Any]] = None) 
         "allow_read_only_tools_without_approval": bool(
             permissions_data.get("allow_read_only_tools_without_approval", True)
         ),
+        "auto_approve_all": bool(permissions_data.get("auto_approve_all", False)),
     }
 
 
@@ -5387,7 +5389,8 @@ async def update_permissions_config(config: PermissionsConfigModel):
 
     Request body:
     {
-        "allow_read_only_tools_without_approval": true
+        "allow_read_only_tools_without_approval": true,
+        "auto_approve_all": false
     }
     """
     from pathlib import Path

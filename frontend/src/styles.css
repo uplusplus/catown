@@ -3377,9 +3377,9 @@ a {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   margin-top: auto;
-  padding: 12px 4px 4px;
+  padding: 10px 4px 4px;
   background: linear-gradient(to bottom, transparent, var(--bg) 20%);
   z-index: 10;
 }
@@ -4345,31 +4345,107 @@ a {
 
 .agent-strip {
   display: flex;
-  gap: 10px;
-  padding: 0 18px 14px;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 18px;
+  overflow: visible;
 }
 
 .agent-strip__chip {
-  min-width: 170px;
+  position: relative;
+  min-width: 0;
+  max-width: 220px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--bg-elevated);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) ease,
+    background var(--duration-fast) ease,
+    transform var(--duration-fast) ease;
+}
+
+.agent-strip__chip:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border) 72%);
+  background: color-mix(in srgb, var(--accent-subtle) 45%, var(--bg-elevated) 55%);
+}
+
+.agent-strip__chip:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.agent-strip__chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.agent-strip__chip.is-working {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border) 55%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ok) 18%, transparent),
+    0 0 18px color-mix(in srgb, var(--ok) 10%, transparent);
+  animation: agent-chip-working-breathe 1.8s ease-in-out infinite;
+}
+
+.agent-strip__chip .agent-dot {
+  width: 6px;
+  height: 6px;
+  margin-right: 0;
+}
+
+.agent-strip__chip .agent-dot.is-working {
+  background: var(--ok);
+  opacity: 1;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 72%, transparent);
+}
+
+.agent-strip__chip > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .agent-strip__chip strong {
-  display: block;
-  font-size: 13px;
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1.2;
   color: var(--text-strong);
+  white-space: nowrap;
 }
 
 .agent-strip__chip small {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.agent-strip__chip small:last-child {
+  display: none;
+}
+
+@keyframes agent-chip-working-breathe {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--ok) 36%, var(--border) 64%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ok) 12%, transparent),
+      0 0 10px color-mix(in srgb, var(--ok) 7%, transparent);
+  }
+
+  50% {
+    border-color: color-mix(in srgb, var(--ok) 72%, var(--border) 28%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--ok) 30%, transparent),
+      0 0 18px color-mix(in srgb, var(--ok) 20%, transparent);
+  }
 }
 
 .compose-status {

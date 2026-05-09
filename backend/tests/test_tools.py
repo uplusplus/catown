@@ -3,6 +3,7 @@
 """
 import pytest
 import asyncio
+import json
 import subprocess
 import sys
 import os
@@ -222,6 +223,34 @@ class TestToolRegistry:
         assert result["blocked"] is True
         assert result["blocked_kind"] == "approval"
         assert "requires approval" in result["result"]
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_all_bypasses_run_shell_mutation_approval(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "allow_read_only_tools_without_approval": True,
+                        "auto_approve_all": True,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_CONFIG_FILE", str(config_path))
+
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        result = await registry.execute(
+            "run_shell",
+            command="touch created.txt",
+        )
+
+        assert result["success"] is True
+        assert result["status"] == "succeeded"
+        assert (tmp_path / "created.txt").exists()
 
     @pytest.mark.asyncio
     async def test_run_shell_timeout_requests_continue_waiting(self, tmp_path):

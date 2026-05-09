@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from skills import load_skill_registry, write_workspace_skill_packages
-from tools.base import build_tool_policy_pack, build_tool_policy_payload
+from tools.base import build_tool_policy_pack, build_tool_policy_payload, permissions_auto_approve_all_enabled
 from models.database import (
     SessionLocal, ApprovalQueueItem, Chatroom, Pipeline, PipelineRun, PipelineStage,
     StageArtifact, PipelineMessage, Project,
@@ -1771,7 +1771,52 @@ class PipelineEngine:
                 })
 
                 # 检查 gate
-                if stage_policy.approval.required:
+                if stage_policy.approval.required and permissions_auto_approve_all_enabled():
+                    logger.info(
+                        "Stage '%s' manual gate auto-approved by permissions.auto_approve_all",
+                        stage_policy.stage_name,
+                    )
+                    db.add(Event(
+                        run_id=run.id,
+                        event_type="gate_auto_approved",
+                        agent_name=stage_policy.agent_name,
+                        stage_name=stage_policy.stage_name,
+                        summary=f"Gate: {stage_policy.display_name} auto-approved by permission policy",
+                        payload=json.dumps({
+                            "gate_type": stage_policy.approval.kind,
+                            "stage": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "stage_policy": stage_policy.to_payload(),
+                            "auto_approve_all": True,
+                        }, ensure_ascii=False),
+                    ))
+                    db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_gate_auto_approved",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Auto-approved pipeline gate at {stage_policy.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "gate_type": stage_policy.approval.kind,
+                            "stage_policy": stage_policy.to_payload(),
+                            "auto_approve_all": True,
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=f"Auto-approved gate at {stage_policy.display_name}.",
+                    )
+                    await event_bus.emit("gate_auto_approved", {
+                        "pipeline_id": pipeline.id,
+                        "run_id": run.id,
+                        "stage": stage_policy.stage_name,
+                        "display_name": stage_policy.display_name,
+                        "stage_policy": stage_policy.to_payload(),
+                    })
+                elif stage_policy.approval.required:
                     stage.status = "blocked"
                     db.commit()
                     logger.info(f"Stage '{stage_policy.stage_name}' completed, blocked at manual gate")

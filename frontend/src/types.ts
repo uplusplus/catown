@@ -468,6 +468,7 @@ export type ConfigOrchestrationDefinition = {
 
 export type ConfigPermissionsDefinition = {
   allow_read_only_tools_without_approval?: boolean;
+  auto_approve_all?: boolean;
 };
 
 export type ConfigResponse = {
@@ -623,6 +624,7 @@ export type OrchestrationConfigPayload = {
 
 export type PermissionsConfigPayload = {
   allow_read_only_tools_without_approval: boolean;
+  auto_approve_all: boolean;
 };
 
 export type MonitorToolSummary = {

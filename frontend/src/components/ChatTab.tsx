@@ -469,14 +469,52 @@ function approvalQueueActionLabels(item: ApprovalQueueItem) {
   };
 }
 
+function taskRunDetailPendingApprovalCount(detail: TaskRunDetail | null) {
+  if (!detail) return null;
+  if (Array.isArray(detail.approval_queue_items)) {
+    return detail.approval_queue_items.filter((item) => (item.status || "").toLowerCase() === "pending").length;
+  }
+  if (typeof detail.pending_approval_count === "number") return detail.pending_approval_count;
+  if (typeof detail.checkpoint_snapshot?.pending_approval_count === "number") {
+    return detail.checkpoint_snapshot.pending_approval_count;
+  }
+  return null;
+}
+
+function isTaskRunDetailFresh(summary: TaskRunSummary, detail: TaskRunDetail | null | undefined) {
+  if (!detail || detail.id !== summary.id) return false;
+  if ((detail.status || "").toLowerCase() !== (summary.status || "").toLowerCase()) return false;
+  if (typeof detail.event_count === "number" && detail.event_count < summary.event_count) return false;
+
+  const detailPendingApprovalCount = taskRunDetailPendingApprovalCount(detail);
+  if (detailPendingApprovalCount !== null && detailPendingApprovalCount !== Number(summary.pending_approval_count || 0)) {
+    return false;
+  }
+  return true;
+}
+
+function resolveFreshTaskRunDetail(summary: TaskRunSummary, ...details: Array<TaskRunDetail | null | undefined>) {
+  return details.find((detail) => isTaskRunDetailFresh(summary, detail)) ?? null;
+}
+
 function rememberedApprovalScope(item: ApprovalQueueItem) {
   return typeof item.project_id === "number" ? "project" : "chatroom";
 }
 
-function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
+function summarizeTaskRunInlineStatus(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  pendingApprovalOverride?: number,
+) {
   const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
-  const pendingApprovalCount = detail ? pendingApprovalItems.length : Number(taskRun.pending_approval_count || 0);
-  const pendingTimeoutItem = pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null;
+  const pendingApprovalCount =
+    typeof pendingApprovalOverride === "number"
+      ? pendingApprovalOverride
+      : detail
+        ? pendingApprovalItems.length
+        : Number(taskRun.pending_approval_count || 0);
+  const pendingTimeoutItem =
+    pendingApprovalCount > 0 ? pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null : null;
   const pendingTimeoutCommand =
     pendingTimeoutItem && typeof pendingTimeoutItem.request_payload?.arguments === "string"
       ? (() => {
@@ -578,10 +616,10 @@ function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDe
       }
       return {
         tone: "info" as const,
-        label: latestToolName ? `Resuming · ${latestToolName}` : "Resuming",
+        label: latestToolName ? `Running · ${latestToolName}` : "Running",
         detail: latestResumeSupported
-          ? "Scheduling continuation."
-          : "Refreshing task state.",
+          ? "Continuing execution."
+          : "Updating task state.",
       };
     }
     if (latestStartedToolName) {
@@ -661,7 +699,11 @@ function summarizeTaskRunInlineStatus(taskRun: TaskRunSummary, detail: TaskRunDe
   };
 }
 
-function buildTaskRunCardSummary(taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
+function buildTaskRunCardSummary(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  pendingApprovalOverride?: number,
+) {
   const events = detail?.events ?? [];
   const latestEvent = events[events.length - 1] ?? null;
   const latestPayload = (latestEvent?.payload && typeof latestEvent.payload === "object")
@@ -687,8 +729,14 @@ function buildTaskRunCardSummary(taskRun: TaskRunSummary, detail: TaskRunDetail 
   const normalizedStatus = (taskRun.status || "").toLowerCase();
   if (normalizedStatus === "running") {
     const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
-    const pendingApprovalCount = detail ? pendingApprovalItems.length : Number(taskRun.pending_approval_count || 0);
-    const pendingTimeoutItem = pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null;
+    const pendingApprovalCount =
+      typeof pendingApprovalOverride === "number"
+        ? pendingApprovalOverride
+        : detail
+          ? pendingApprovalItems.length
+          : Number(taskRun.pending_approval_count || 0);
+    const pendingTimeoutItem =
+      pendingApprovalCount > 0 ? pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null : null;
     if (pendingApprovalCount > 0 && blockedToolName && !pendingTimeoutItem) {
       return `Waiting on approval for ${blockedToolName}.`;
     }
@@ -725,11 +773,11 @@ function buildTaskRunCardSummary(taskRun: TaskRunSummary, detail: TaskRunDetail 
       }
       return latestToolName
         ? latestResumeSupported
-          ? `Scheduling continuation for ${latestToolName}.`
-          : `Refreshing task state for ${latestToolName}.`
+          ? `Running ${latestToolName}.`
+          : `Updating task state for ${latestToolName}.`
         : latestResumeSupported
-          ? "Scheduling continuation."
-          : "Refreshing task state.";
+          ? "Running."
+          : "Updating task state.";
     }
     if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
       return latestToolName
@@ -780,7 +828,8 @@ function buildTaskRunCardSummary(taskRun: TaskRunSummary, detail: TaskRunDetail 
 
 function summarizeTaskRunRuntimeCards(cards: ThreadCard[]) {
   if (cards.length === 0) return null;
-  const latestCard = cards[cards.length - 1];
+  const shellCards = cards.filter(isRunShellRuntimeCard);
+  const latestCard = shellCards[shellCards.length - 1] ?? cards[cards.length - 1];
   const latestActor = cardActorName(latestCard);
   const state = compactCardState(latestCard, true);
   const detail = compactCardSummary(latestCard);
@@ -870,106 +919,23 @@ function renderTaskRunShellOutput(taskRun: TaskRunSummary, cards: ThreadCard[]) 
   );
 }
 
-function renderTaskRunActivity(
-  taskRun: TaskRunSummary,
-  cards: ThreadCard[],
-  expandedProgressCards: Record<string, string | null>,
-  onToggleProgressCard: (groupKey: string, cardId: string) => void,
-  gateActionPipelineId: number | null,
-  onApproveGate: (pipelineId: number) => Promise<void>,
-  onRejectGate: (pipelineId: number) => Promise<void>,
-) {
-  if (cards.length === 0) return null;
+function summarizeTaskRunShellStatus(cards: ThreadCard[]) {
+  const shellCards = cards.filter(isRunShellRuntimeCard);
+  const latestCard = shellCards[shellCards.length - 1] ?? null;
+  if (!latestCard) return null;
 
-  const groups = new Map<
-    string,
-    {
-      name: string;
-      cards: ThreadCard[];
-      latestAt: string;
-    }
-  >();
+  const output = trimShellOutputTail(latestCard.result);
+  const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+  const latestLine = lines[lines.length - 1] ?? "";
+  const detail = oneLinePreview(latestLine || latestCard.result, `${latestCard.tool || "run_shell"} is running.`, 160);
+  const state = compactCardState(latestCard, true);
 
-  for (const card of cards) {
-    const actor = cardActorName(card);
-    const existing = groups.get(actor);
-    if (existing) {
-      existing.cards.push(card);
-      existing.latestAt = card.created_at;
-      continue;
-    }
-    groups.set(actor, {
-      name: actor,
-      cards: [card],
-      latestAt: card.created_at,
-    });
-  }
-
-  const orderedGroups = Array.from(groups.values());
-  const currentGroup = orderedGroups[orderedGroups.length - 1] ?? null;
-
-  return (
-    <section className="chat-activity-batch" style={{ marginTop: 12 }}>
-      <div className="chat-activity-batch__header">
-        <div>
-          <div className="chat-tool-card__title">
-            <span className="chat-json-badge">LIVE</span>
-            <span>Task activity</span>
-          </div>
-          <div className="chat-tool-card__detail">
-            {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} · {cards.length} action
-            {cards.length === 1 ? "" : "s"}
-          </div>
-        </div>
-        <div className="chat-tool-card__detail">live</div>
-      </div>
-
-      <div className="chat-activity-batch__groups">
-        {orderedGroups.map((group) => {
-          const isActiveGroup = group.name === currentGroup?.name;
-          const groupKey = `task-run-live:${taskRun.id}:${group.name}`;
-          const expandedCardId = expandedProgressCards[groupKey] ?? null;
-          return (
-            <section
-              key={`${taskRun.id}-${group.name}`}
-              className={`chat-agent-activity ${isActiveGroup ? "is-active" : ""}`}
-            >
-              <div className="chat-agent-activity__summary">
-                <span className={`chat-agent-activity__status ${isActiveGroup ? "is-live" : ""}`} />
-                <span className="chat-agent-activity__avatar">{initials(group.name)}</span>
-                <span className="chat-agent-activity__copy">
-                  <strong>{group.name}</strong>
-                  <small>
-                    {group.cards.length} step{group.cards.length === 1 ? "" : "s"} · {formatTime(group.latestAt)}
-                  </small>
-                </span>
-                <span className={`chat-agent-activity__pill ${isActiveGroup ? "is-live" : ""}`}>
-                  {isActiveGroup ? "active" : "summary"}
-                </span>
-              </div>
-
-              <div className="chat-agent-activity__body">
-                {group.cards.map((card, index) =>
-                  renderCompactCard(
-                    card,
-                    groupKey,
-                    index,
-                    card.id === group.cards[group.cards.length - 1]?.id,
-                    card.id === group.cards[group.cards.length - 1]?.id,
-                    expandedCardId === card.id,
-                    onToggleProgressCard,
-                    gateActionPipelineId,
-                    onApproveGate,
-                    onRejectGate,
-                  ),
-                )}
-              </div>
-            </section>
-          );
-        })}
-      </div>
-    </section>
-  );
+  return {
+    actor: cardActorName(latestCard),
+    title: cardTitle(latestCard),
+    detail,
+    state,
+  };
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -3160,17 +3126,17 @@ function renderTaskRunInlineCard(
   approvalActionItemId: number | null,
   expandedStepId: string | null,
   onToggleStep: (taskRunId: number, stepId: string) => void,
-  expandedProgressCards: Record<string, string | null>,
-  onToggleProgressCard: (groupKey: string, cardId: string) => void,
-  gateActionPipelineId: number | null,
-  onApproveGate: (pipelineId: number) => Promise<void>,
-  onRejectGate: (pipelineId: number) => Promise<void>,
   onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject", remember?: boolean) => Promise<void>,
 ) {
   const pendingItems = approvalItems.filter((item) => (item.status || "").toLowerCase() === "pending");
-  const hasPendingApprovals = Number(taskRun.pending_approval_count || 0) > 0;
-  const liveActivity = summarizeTaskRunRuntimeCards(cards);
-  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail);
+  const pendingApprovalOverride = approvalQueueLoaded ? pendingItems.length : undefined;
+  const hasPendingApprovals =
+    pendingItems.length > 0 || (!approvalQueueLoaded && Number(taskRun.pending_approval_count || 0) > 0);
+  const normalizedTaskRunStatus = (taskRun.status || "").toLowerCase();
+  const shouldUseLiveActivity = normalizedTaskRunStatus === "running";
+  const shellStatus = shouldUseLiveActivity ? summarizeTaskRunShellStatus(cards) : null;
+  const liveActivity = shouldUseLiveActivity ? shellStatus ?? summarizeTaskRunRuntimeCards(cards) : null;
+  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, pendingApprovalOverride);
   const inlineStatus = liveActivity
     ? {
         tone:
@@ -3182,22 +3148,15 @@ function renderTaskRunInlineCard(
         label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
-    : summarizeTaskRunInlineStatus(taskRun, detail);
+    : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride);
   const actorName = resolveTaskRunActorName(taskRun, agents);
   const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
-  const activity = renderTaskRunActivity(
-    taskRun,
-    cards,
-    expandedProgressCards,
-    onToggleProgressCard,
-    gateActionPipelineId,
-    onApproveGate,
-    onRejectGate,
-  );
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
     ? (taskRun.client_turn_id || "").trim().slice("delegate-".length)
     : null;
+  const shouldHideSummary = Boolean(liveActivity?.detail && summary === liveActivity.detail);
+  const shouldShowInlineStatus = !(shellOutput && shellStatus);
 
   return (
     <div className="chat-card-row" key={`task-run-inline-${taskRun.id}`}>
@@ -3209,6 +3168,7 @@ function renderTaskRunInlineCard(
               <div className="chat-tool-card__title">
                 <span className="chat-json-badge">TASK</span>
                 <span>{taskIdLabel ? `TASK ${taskIdLabel}` : actorName}</span>
+                <span className="soft-pill">run #{taskRun.id}</span>
               </div>
               <div className="chat-tool-card__detail">
                 {taskIdLabel ? `${actorName} · ${taskRun.title}` : taskRun.title}
@@ -3217,14 +3177,16 @@ function renderTaskRunInlineCard(
             <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
           </div>
 
-          <div className={`task-run-inline-status task-run-inline-status--${inlineStatus.tone}`}>
-            <strong>{inlineStatus.label}</strong>
-            <span>{inlineStatus.detail}</span>
-          </div>
+          {shouldShowInlineStatus ? (
+            <div className={`task-run-inline-status task-run-inline-status--${inlineStatus.tone}`}>
+              <strong>{inlineStatus.label}</strong>
+              <span>{inlineStatus.detail}</span>
+            </div>
+          ) : null}
 
           {shellOutput}
 
-          {activity ? activity : trace ? trace : (taskRun.status || "").toLowerCase() === "running" ? (
+          {trace ? trace : (taskRun.status || "").toLowerCase() === "running" && !shellOutput ? (
             <div className="task-run-inline-approvals">
               <div className="task-run-inline-approval">
                 <div className="task-run-detail__summary">Loading live activity…</div>
@@ -3232,7 +3194,7 @@ function renderTaskRunInlineCard(
             </div>
           ) : null}
 
-          <div className="chat-card-summary">{summary}</div>
+          {!shouldHideSummary ? <div className="chat-card-summary">{summary}</div> : null}
 
           <div className="task-run-card__footer">
             <span>{taskRun.event_count} events</span>
@@ -3404,6 +3366,45 @@ export function ChatTab({
   const shouldStickThreadToBottomRef = useRef(true);
   const lastAutoScrolledChatIdRef = useRef<number | null>(chat?.id ?? null);
   const activeAgents = useMemo(() => agents.filter((agent) => agent.is_active), [agents]);
+  const agentRunState = useMemo(() => {
+    const state = new Map<string, { isWorking: boolean; runningCount: number }>();
+    for (const agent of activeAgents) {
+      const keys = [
+        getAgentType(agent).trim().toLowerCase(),
+        agent.name.trim().toLowerCase(),
+        getAgentDisplayName(agent).trim().toLowerCase(),
+      ].filter(Boolean);
+      for (const key of keys) {
+        state.set(key, { isWorking: false, runningCount: 0 });
+      }
+    }
+
+    for (const run of taskRuns) {
+      if ((run.status || "").toLowerCase() !== "running") continue;
+      const target = (run.target_agent_name || "").trim().toLowerCase();
+      if (!target) continue;
+      const current = state.get(target) ?? { isWorking: false, runningCount: 0 };
+      state.set(target, { isWorking: true, runningCount: current.runningCount + 1 });
+    }
+
+    return state;
+  }, [activeAgents, taskRuns]);
+  const orderedActiveAgents = useMemo(() => {
+    return [...activeAgents].sort((left, right) => {
+      const leftState =
+        agentRunState.get(getAgentType(left).trim().toLowerCase()) ??
+        agentRunState.get(left.name.trim().toLowerCase()) ??
+        agentRunState.get(getAgentDisplayName(left).trim().toLowerCase());
+      const rightState =
+        agentRunState.get(getAgentType(right).trim().toLowerCase()) ??
+        agentRunState.get(right.name.trim().toLowerCase()) ??
+        agentRunState.get(getAgentDisplayName(right).trim().toLowerCase());
+      const leftWorking = leftState?.isWorking ? 1 : 0;
+      const rightWorking = rightState?.isWorking ? 1 : 0;
+      if (leftWorking !== rightWorking) return rightWorking - leftWorking;
+      return getAgentDisplayName(left).localeCompare(getAgentDisplayName(right));
+    });
+  }, [activeAgents, agentRunState]);
   const mentionableAgents = useMemo(
     () => [...agents].sort((left, right) => left.name.localeCompare(right.name)),
     [agents],
@@ -3445,7 +3446,11 @@ export function ChatTab({
     return taskRuns.find((run) => run.id === selectedTaskRunId) ?? preferredRuns[0] ?? null;
   }, [selectedTaskRunId, taskRuns]);
   const selectedTaskRunDetail = selectedTaskRunSummary
-    ? liveTaskRunDetailsById[selectedTaskRunSummary.id] ?? taskRunDetailsById[selectedTaskRunSummary.id] ?? null
+    ? resolveFreshTaskRunDetail(
+        selectedTaskRunSummary,
+        liveTaskRunDetailsById[selectedTaskRunSummary.id],
+        taskRunDetailsById[selectedTaskRunSummary.id],
+      )
     : null;
   const pendingApprovalItemsByTaskRunId = useMemo(() => {
     const grouped: Record<number, ApprovalQueueItem[]> = {};
@@ -3497,7 +3502,7 @@ export function ChatTab({
 
   useEffect(() => {
     const runId = selectedTaskRunSummary?.id;
-    if (!runId || taskRunDetailsById[runId] || loadingTaskRunId === runId) {
+    if (!runId || selectedTaskRunDetail || loadingTaskRunId === runId) {
       return;
     }
 
@@ -3522,13 +3527,13 @@ export function ChatTab({
     return () => {
       cancelled = true;
     };
-  }, [liveTaskRunDetailsById, loadingTaskRunId, selectedTaskRunSummary, taskRunDetailsById]);
+  }, [loadingTaskRunId, selectedTaskRunDetail, selectedTaskRunSummary]);
 
   useEffect(() => {
     const candidateRuns = taskRuns.filter((run) => shouldRenderInlineTaskRun(run));
     const missingRunIds = candidateRuns
-      .map((run) => run.id)
-      .filter((runId) => !liveTaskRunDetailsById[runId] && !taskRunDetailsById[runId]);
+      .filter((run) => !resolveFreshTaskRunDetail(run, liveTaskRunDetailsById[run.id], taskRunDetailsById[run.id]))
+      .map((run) => run.id);
     if (missingRunIds.length === 0) return;
 
     let cancelled = false;
@@ -3656,6 +3661,12 @@ export function ChatTab({
     const orderedCards = [...cardsWithPromptPresentation].sort(compareThreadCards);
     const assistantAnchorByTurnId = new Map<string, MessageItem>();
     const unassignedCards: ThreadCard[] = [];
+    const taskRunTurnIds = new Set(
+      taskRuns
+        .filter((run) => shouldRenderInlineTaskRun(run))
+        .map((run) => run.client_turn_id)
+        .filter((value): value is string => Boolean(value && value.trim())),
+    );
 
     // Prefer the frontend-generated client_turn_id as the single card lineage key.
     for (const message of visibleMessages) {
@@ -3665,6 +3676,10 @@ export function ChatTab({
 
     for (const card of orderedCards) {
       const turnId = card.client_turn_id;
+      if (turnId && taskRunTurnIds.has(turnId)) {
+        unassignedCards.push(card);
+        continue;
+      }
       const anchor = turnId ? assistantAnchorByTurnId.get(turnId) : null;
       if (!anchor) {
         unassignedCards.push(card);
@@ -3741,7 +3756,7 @@ export function ChatTab({
     }
 
     return mapped;
-  }, [cardsWithPromptPresentation, visibleMessages]);
+  }, [cardsWithPromptPresentation, taskRuns, visibleMessages]);
   const consumedFallbackCardIds = useMemo(
     () => new Set(Array.from(fallbackStepCardsByMessageId.values()).flatMap((group) => group.map((card) => card.id))),
     [fallbackStepCardsByMessageId],
@@ -3801,7 +3816,7 @@ export function ChatTab({
           sortKey: run.updated_at || run.created_at || new Date().toISOString(),
           kind: "task_run" as const,
           taskRun: run,
-          detail: liveTaskRunDetailsById[run.id] ?? taskRunDetailsById[run.id] ?? null,
+          detail: resolveFreshTaskRunDetail(run, liveTaskRunDetailsById[run.id], taskRunDetailsById[run.id]),
           cards: taskRunCardsById.get(run.id) ?? EMPTY_THREAD_CARDS,
         })),
       ...cardsWithPromptPresentation
@@ -4592,11 +4607,6 @@ export function ChatTab({
                         approvalActionItemId,
                         expandedTaskRunSteps[item.taskRun.id] ?? null,
                         toggleTaskRunStep,
-                        expandedProgressCards,
-                        toggleProgressCard,
-                        gateActionPipelineId,
-                        handleApproveGate,
-                        handleRejectGate,
                         handleResolveApprovalQueueItem,
                       )
                     : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
@@ -4754,21 +4764,6 @@ export function ChatTab({
         </div>
       </header>
 
-      {activeAgents.length > 0 ? (
-        <div className="agent-strip">
-          {activeAgents.map((agent) => (
-            <div key={agent.id} className="agent-strip__chip">
-              <span className="agent-dot is-active" />
-              <div>
-                <strong>{getAgentDisplayName(agent)}</strong>
-                <small>@{getAgentType(agent)}</small>
-                <small>{agent.role}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
       <div className="chat-split-container">
         <div className="chat-main">
           <div
@@ -4877,6 +4872,39 @@ export function ChatTab({
           </div>
 
           <form className="chat-compose" onSubmit={handleSubmit}>
+            {orderedActiveAgents.length > 0 ? (
+              <div className="agent-strip">
+                {orderedActiveAgents.map((agent) => {
+                  const state =
+                    agentRunState.get(getAgentType(agent).trim().toLowerCase()) ??
+                    agentRunState.get(agent.name.trim().toLowerCase()) ??
+                    agentRunState.get(getAgentDisplayName(agent).trim().toLowerCase());
+                  const isWorking = Boolean(state?.isWorking);
+                  const statusLabel = isWorking
+                    ? state && state.runningCount > 1
+                      ? `working x${state.runningCount}`
+                      : "working"
+                    : "online";
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      className={`agent-strip__chip ${isWorking ? "is-working" : ""}`}
+                      disabled={sending}
+                      onClick={() => insertMention(getAgentType(agent))}
+                      title={`Mention ${getAgentDisplayName(agent)} (@${getAgentType(agent)})`}
+                    >
+                      <span className={`agent-dot ${isWorking ? "is-working" : "is-active"}`} />
+                      <div>
+                        <strong>{getAgentDisplayName(agent)}</strong>
+                        <small>{statusLabel}</small>
+                        <small>@{getAgentType(agent)}</small>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
             <div ref={composerRef} className="agent-chat__input">
               {showMentionPicker ? (
                 <div className="agent-chat__mention-menu" role="listbox" aria-label="Select an agent to mention">

@@ -286,8 +286,15 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
+def _agent_config_file_path() -> Path:
+    configured_file = os.getenv("AGENT_CONFIG_FILE")
+    if configured_file:
+        return Path(configured_file)
+    return Path(os.getenv("CATOWN_CONFIG_DIR", str(Path.home() / ".catown" / "config"))) / "agents.json"
+
+
 def _load_permissions_override() -> Dict[str, Any]:
-    config_file = Path(os.getenv("CATOWN_CONFIG_DIR", str(Path.home() / ".catown" / "config"))) / "agents.json"
+    config_file = _agent_config_file_path()
     if not config_file.exists():
         return {}
     try:
@@ -299,8 +306,22 @@ def _load_permissions_override() -> Dict[str, Any]:
         return {}
 
 
+def permissions_auto_approve_all_enabled() -> bool:
+    permissions = _load_permissions_override()
+    return bool(permissions.get("auto_approve_all", False))
+
+
 def _dynamic_policy_override(name: str) -> Dict[str, Any]:
     permissions = _load_permissions_override()
+    if bool(permissions.get("auto_approve_all", False)):
+        return {
+            "approval": {
+                "kind": "auto",
+                "required": False,
+                "notes": ["Auto-approve all approvals is enabled in runtime permissions."],
+            }
+        }
+
     allow_read_only = bool(permissions.get("allow_read_only_tools_without_approval", True))
     if not allow_read_only:
         return {}

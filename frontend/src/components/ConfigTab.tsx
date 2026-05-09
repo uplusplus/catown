@@ -55,6 +55,7 @@ type OrchestrationDraft = {
 
 type PermissionsDraft = {
   allowReadOnlyToolsWithoutApproval: boolean;
+  autoApproveAll: boolean;
 };
 
 type AgentDraft = {
@@ -108,6 +109,7 @@ function buildOrchestrationDraft(config: ConfigResponse | null): OrchestrationDr
 function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft {
   return {
     allowReadOnlyToolsWithoutApproval: config?.permissions?.allow_read_only_tools_without_approval ?? true,
+    autoApproveAll: config?.permissions?.auto_approve_all ?? false,
   };
 }
 
@@ -730,6 +732,10 @@ export function ConfigTab({
         value: permissionsDraft.allowReadOnlyToolsWithoutApproval ? "Auto allow" : "Approval required",
       },
       {
+        label: "All approvals",
+        value: permissionsDraft.autoApproveAll ? "Auto approve" : "Manual when required",
+      },
+      {
         label: "Covered tools",
         value: "read_file · list_files · search_files · list_agents · retrieve_memory",
       },
@@ -738,7 +744,7 @@ export function ConfigTab({
         value: "Global runtime policy",
       },
     ],
-    [permissionsDraft.allowReadOnlyToolsWithoutApproval],
+    [permissionsDraft.allowReadOnlyToolsWithoutApproval, permissionsDraft.autoApproveAll],
   );
 
   if (activeSection === "skills") {
@@ -981,34 +987,13 @@ export function ConfigTab({
               <p className="eyebrow">Permission Defaults</p>
               <h2>Permissions</h2>
             </div>
-          </div>
-
-          <form
-            className="project-form project-form--compact config-form settings-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void onSavePermissions({
-                allow_read_only_tools_without_approval: permissionsDraft.allowReadOnlyToolsWithoutApproval,
-              });
-            }}
-          >
-            <label className="config-toggle-row">
-              <input
-                type="checkbox"
-                checked={permissionsDraft.allowReadOnlyToolsWithoutApproval}
-                onChange={(event) =>
-                  setPermissionsDraft({
-                    allowReadOnlyToolsWithoutApproval: event.target.checked,
-                  })
-                }
-              />
-              <span>Allow low-risk read-only tools without approval</span>
-            </label>
-            <p className="small-note">
-              Applies globally to: <code>read_file</code>, <code>list_files</code>, <code>search_files</code>, <code>list_agents</code>, <code>retrieve_memory</code>.
-            </p>
-            <div className="config-actions-row">
-              <button type="submit" className="primary-button compact-button" disabled={saving}>
+            <div className="config-actions-row config-actions-row--header">
+              <button
+                type="submit"
+                form="permissions-config-form"
+                className="primary-button compact-button"
+                disabled={saving}
+              >
                 {saving ? "Saving..." : "Save"}
               </button>
               <button
@@ -1020,6 +1005,51 @@ export function ConfigTab({
                 Reset
               </button>
             </div>
+          </div>
+
+          <form
+            id="permissions-config-form"
+            className="project-form project-form--compact config-form settings-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSavePermissions({
+                allow_read_only_tools_without_approval: permissionsDraft.allowReadOnlyToolsWithoutApproval,
+                auto_approve_all: permissionsDraft.autoApproveAll,
+              });
+            }}
+          >
+            <label className="config-toggle-row">
+              <input
+                type="checkbox"
+                checked={permissionsDraft.allowReadOnlyToolsWithoutApproval}
+                onChange={(event) =>
+                  setPermissionsDraft((current) => ({
+                    ...current,
+                    allowReadOnlyToolsWithoutApproval: event.target.checked,
+                  }))
+                }
+              />
+              <span>Allow low-risk read-only tools without approval</span>
+            </label>
+            <p className="small-note">
+              Applies globally to: <code>read_file</code>, <code>list_files</code>, <code>search_files</code>, <code>list_agents</code>, <code>retrieve_memory</code>.
+            </p>
+            <label className="config-toggle-row">
+              <input
+                type="checkbox"
+                checked={permissionsDraft.autoApproveAll}
+                onChange={(event) =>
+                  setPermissionsDraft((current) => ({
+                    ...current,
+                    autoApproveAll: event.target.checked,
+                  }))
+                }
+              />
+              <span>Auto-approve all approval requests</span>
+            </label>
+            <p className="small-note">
+              Applies to tool approval blocks and pipeline manual gates. Saved deny rules still block matching tool calls.
+            </p>
           </form>
 
           <div style={{ marginTop: 16 }}>

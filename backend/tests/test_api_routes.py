@@ -257,6 +257,38 @@ class TestConfigEndpoint:
         assert "llm" in data
         assert "server" in data
 
+    def test_update_permissions_config_includes_auto_approve_all(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(json.dumps({"agents": {}}, ensure_ascii=False), encoding="utf-8")
+        previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        try:
+            os.environ["AGENT_CONFIG_FILE"] = str(config_path)
+            client = TestClient(
+                _make_app(tmp_path),
+                base_url="http://testserver",
+                headers={"X-Catown-Client": "test"},
+            )
+
+            response = client.put(
+                "/api/config/permissions",
+                json={
+                    "allow_read_only_tools_without_approval": False,
+                    "auto_approve_all": True,
+                },
+            )
+
+            assert response.status_code == 200
+            refreshed = client.get("/api/config").json()
+            assert refreshed["permissions"]["allow_read_only_tools_without_approval"] is False
+            assert refreshed["permissions"]["auto_approve_all"] is True
+        finally:
+            if previous_config_file is None:
+                os.environ.pop("AGENT_CONFIG_FILE", None)
+            else:
+                os.environ["AGENT_CONFIG_FILE"] = previous_config_file
+
     def test_llm_card_payload_includes_usage_context(self, tmp_path):
         config_path = tmp_path / "agents.json"
         config_path.write_text(
