@@ -70,6 +70,7 @@ def build_blocked_tool_request_payload(
         "blocked_kind": blocked_tool.get("blocked_kind"),
         "blocked_reason": blocked_tool.get("blocked_reason"),
         "resume_supported": bool(resume_supported),
+        "metadata": blocked_tool.get("metadata") if isinstance(blocked_tool.get("metadata"), dict) else {},
         "pipeline_run_id": runtime_payload.get("pipeline_run_id"),
         "pipeline_stage_id": (
             runtime_payload.get("pipeline_stage_id")

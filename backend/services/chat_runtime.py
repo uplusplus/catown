@@ -155,13 +155,24 @@ def assemble_runtime_chat_messages(
     )
 
 
-def build_tool_runtime_kwargs(agent: Any, chatroom_id: int, project: Any) -> Dict[str, Any]:
+def build_tool_runtime_kwargs(
+    agent: Any,
+    chatroom_id: int,
+    project: Any,
+    *,
+    task_run_id: int | None = None,
+    client_turn_id: str | None = None,
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"chatroom_id": chatroom_id}
     if agent is not None and getattr(agent, "id", None) is not None:
         payload["agent_id"] = agent.id
         payload["agent_name"] = agent_name_of(agent)
     if project is not None and getattr(project, "id", None) is not None:
         payload["project_id"] = project.id
+    if task_run_id is not None:
+        payload["task_run_id"] = task_run_id
+    if client_turn_id:
+        payload["client_turn_id"] = client_turn_id
     return payload
 
 

@@ -8,12 +8,16 @@ import asyncio
 import os
 import shutil
 import subprocess
-import threading
-import time
 from typing import Any, Awaitable, Callable
 
 from .base import BaseTool
 from .file_operations import get_active_workspace
+from services.run_shell_processes import (
+    build_tracked_run_shell_result,
+    create_tracked_run_shell_handle,
+    launch_tracked_run_shell,
+    wait_for_tracked_run_shell,
+)
 from services.tool_execution_preferences import (
     build_run_shell_timeout_preference_key,
     prefers_wait_forever,
@@ -49,6 +53,11 @@ class RunShellTool(BaseTool):
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         project_id: int | None = None,
         chatroom_id: int | None = None,
+        task_run_id: int | None = None,
+        client_turn_id: str | None = None,
+        tool_call_id: str | None = None,
+        turn: int | None = None,
+        agent_name: str | None = None,
         progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         **kwargs,
     ) -> str:
@@ -59,15 +68,24 @@ class RunShellTool(BaseTool):
                 timeout_seconds,
                 project_id=project_id,
                 chatroom_id=chatroom_id,
+                task_run_id=task_run_id,
+                client_turn_id=client_turn_id,
+                tool_call_id=tool_call_id,
+                turn=turn,
+                agent_name=agent_name,
                 progress_callback=progress_callback,
             )
-        return await asyncio.to_thread(
-            self._execute_sync,
+        return await self._execute_sync(
             command,
             cwd,
             timeout_seconds,
             project_id,
             chatroom_id,
+            task_run_id,
+            client_turn_id,
+            tool_call_id,
+            turn,
+            agent_name,
         )
 
     async def _execute_with_progress(
@@ -78,6 +96,11 @@ class RunShellTool(BaseTool):
         *,
         project_id: int | None = None,
         chatroom_id: int | None = None,
+        task_run_id: int | None = None,
+        client_turn_id: str | None = None,
+        tool_call_id: str | None = None,
+        turn: int | None = None,
+        agent_name: str | None = None,
         progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> str | dict[str, object]:
         normalized_command = str(command or "").strip()
@@ -108,191 +131,77 @@ class RunShellTool(BaseTool):
         finally:
             db.close()
 
-        process = subprocess.Popen(
-            shell_cmd,
-            cwd=working_dir,
-            env={**os.environ, "TERM": "dumb"},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        loop = asyncio.get_running_loop()
-        collected_lines: list[str] = []
-        recent_lines: list[str] = []
-        recent_changed = False
-        recent_lock = threading.Lock()
-        stop_reader = False
-
-        def reader() -> None:
-            nonlocal recent_changed
-            stream = process.stdout
-            if stream is None:
-                return
-            while not stop_reader:
-                line = stream.readline()
-                if line == "":
-                    break
-                with recent_lock:
-                    collected_lines.append(line)
-                    recent_lines.append(line)
-                    while sum(len(part) for part in recent_lines) > TAIL_PROGRESS_MAX_CHARS and recent_lines:
-                        recent_lines.pop(0)
-                    recent_changed = True
-
-        reader_thread = threading.Thread(target=reader, name="run-shell-progress-reader", daemon=True)
-        reader_thread.start()
-        start_time = time.monotonic()
-        last_emitted_snapshot = ""
-
-        async def maybe_emit_progress(force: bool = False) -> None:
-            nonlocal recent_changed, last_emitted_snapshot
-            if progress_callback is None:
-                return
-            with recent_lock:
-                if not force and not recent_changed:
-                    return
-                snapshot = "".join(recent_lines).strip()
-                recent_changed = False
-            if not snapshot or snapshot == last_emitted_snapshot:
-                return
-            last_emitted_snapshot = snapshot
-            await progress_callback({
-                "tail_output": snapshot[-TAIL_PROGRESS_MAX_CHARS:],
-                "duration_ms": int((time.monotonic() - start_time) * 1000),
-                "pid": process.pid,
-            })
-
-        try:
-            if wait_forever:
-                while process.poll() is None:
-                    await asyncio.sleep(TAIL_PROGRESS_INTERVAL_SECONDS)
-                    await maybe_emit_progress()
-            else:
-                deadline = start_time + timeout
-                while process.poll() is None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        process.kill()
-                        await asyncio.to_thread(reader_thread.join, 1.0)
-                        await maybe_emit_progress(force=True)
-                        result_text = (
-                            f"[Run Shell] Timed out after {timeout}s. "
-                            "Waiting for user confirmation to continue without a timeout."
-                        )
-                        return build_structured_tool_result(
-                            tool_name=self.name,
-                            result_text=result_text,
-                            success=False,
-                            status="timeout_waiting",
-                            blocked=True,
-                            blocked_kind="timeout",
-                            blocked_reason=result_text,
-                        )
-                    await asyncio.sleep(min(TAIL_PROGRESS_INTERVAL_SECONDS, max(0.1, remaining)))
-                    await maybe_emit_progress()
-        finally:
-            stop_reader = True
-
-        await asyncio.sleep(TAIL_PROGRESS_IDLE_FINAL_WAIT_SECONDS)
-        await asyncio.to_thread(reader_thread.join, 1.0)
-        await maybe_emit_progress(force=True)
-
-        combined = "".join(collected_lines).strip()[:MAX_OUTPUT_CHARS]
-        returncode = process.returncode if process.returncode is not None else 1
-
-        if returncode == 0:
-            return (
-                f"[Run Shell] Success:\n{combined}"
-                if combined
-                else "[Run Shell] Success (no output)"
+        if not wait_forever:
+            handle = create_tracked_run_shell_handle(
+                command=normalized_command,
+                cwd=working_dir,
+                timeout_seconds=timeout,
+                chatroom_id=chatroom_id,
+                project_id=project_id,
+                task_run_id=task_run_id,
+                client_turn_id=client_turn_id,
+                tool_call_id=tool_call_id,
+                turn=turn,
+                agent_name=agent_name,
+            )
+            launch_tracked_run_shell(handle)
+            return await wait_for_tracked_run_shell(
+                handle,
+                progress_callback=progress_callback,
+                timeout_seconds=timeout,
+                progress_interval_seconds=TAIL_PROGRESS_INTERVAL_SECONDS,
+                tail_chars=TAIL_PROGRESS_MAX_CHARS,
+                result_chars=MAX_OUTPUT_CHARS,
             )
 
-        if not combined:
-            combined = f"Command exited with status {returncode}."
-        return f"[Run Shell] Error (exit {returncode}):\n{combined}"
+        handle = create_tracked_run_shell_handle(
+            command=normalized_command,
+            cwd=working_dir,
+            timeout_seconds=timeout,
+            chatroom_id=chatroom_id,
+            project_id=project_id,
+            task_run_id=task_run_id,
+            client_turn_id=client_turn_id,
+            tool_call_id=tool_call_id,
+            turn=turn,
+            agent_name=agent_name,
+        )
+        launch_tracked_run_shell(handle)
+        return await wait_for_tracked_run_shell(
+            handle,
+            progress_callback=progress_callback,
+            timeout_seconds=None,
+            progress_interval_seconds=TAIL_PROGRESS_INTERVAL_SECONDS,
+            tail_chars=TAIL_PROGRESS_MAX_CHARS,
+            result_chars=MAX_OUTPUT_CHARS,
+        )
 
-    def _execute_sync(
+    async def _execute_sync(
         self,
         command: str,
         cwd: str,
         timeout_seconds: int,
         project_id: int | None = None,
         chatroom_id: int | None = None,
+        task_run_id: int | None = None,
+        client_turn_id: str | None = None,
+        tool_call_id: str | None = None,
+        turn: int | None = None,
+        agent_name: str | None = None,
     ) -> str | dict[str, object]:
-        normalized_command = str(command or "").strip()
-        if not normalized_command:
-            return "[Run Shell] Error: command is required."
-
-        working_dir = self._resolve_working_directory(cwd)
-        if not self._is_safe_path(working_dir):
-            return f"[Run Shell] Error: Access denied. Working directory outside workspace: '{cwd}'"
-
-        timeout = max(1, min(int(timeout_seconds or DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS))
-        shell_cmd = self._shell_invocation(normalized_command)
-        if not shell_cmd:
-            return "[Run Shell] Error: No supported shell found on this system."
-
-        preference_key = build_run_shell_timeout_preference_key(normalized_command, cwd)
-        wait_forever = False
-        from models.database import SessionLocal
-        db = SessionLocal()
-        try:
-            wait_forever = prefers_wait_forever(
-                db,
-                tool_name=self.name,
-                preference_key=preference_key,
-                project_id=project_id,
-                chatroom_id=chatroom_id,
-            )
-        finally:
-            db.close()
-
-        run_kwargs = {
-            "capture_output": True,
-            "text": True,
-            "cwd": working_dir,
-            "env": {**os.environ, "TERM": "dumb"},
-        }
-        if not wait_forever:
-            run_kwargs["timeout"] = timeout
-
-        try:
-            result = subprocess.run(
-                shell_cmd,
-                **run_kwargs,
-            )
-        except subprocess.TimeoutExpired:
-            result_text = (
-                f"[Run Shell] Timed out after {timeout}s. "
-                "Waiting for user confirmation to continue without a timeout."
-            )
-            return build_structured_tool_result(
-                tool_name=self.name,
-                result_text=result_text,
-                success=False,
-                status="timeout_waiting",
-                blocked=True,
-                blocked_kind="timeout",
-                blocked_reason=result_text,
-            )
-        except Exception as exc:
-            return f"[Run Shell] Error: {exc}"
-
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        combined = "\n".join(part for part in [stdout, stderr] if part).strip()[:MAX_OUTPUT_CHARS]
-
-        if result.returncode == 0:
-            return (
-                f"[Run Shell] Success:\n{combined}"
-                if combined
-                else "[Run Shell] Success (no output)"
-            )
-
-        if not combined:
-            combined = f"Command exited with status {result.returncode}."
-        return f"[Run Shell] Error (exit {result.returncode}):\n{combined}"
+        return await self._execute_with_progress(
+            command,
+            cwd,
+            timeout_seconds,
+            project_id=project_id,
+            chatroom_id=chatroom_id,
+            task_run_id=task_run_id,
+            client_turn_id=client_turn_id,
+            tool_call_id=tool_call_id,
+            turn=turn,
+            agent_name=agent_name,
+            progress_callback=None,
+        )
 
     def _resolve_working_directory(self, cwd: str) -> str:
         base_workspace = os.path.realpath(get_active_workspace() or self.workspace)

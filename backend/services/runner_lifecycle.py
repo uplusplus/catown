@@ -91,6 +91,7 @@ def record_tool_round(
                     getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
                     limit=220,
                 ),
+                "metadata": dict(getattr(result, "metadata", {}) or {}),
             }
         )
         if bool(getattr(result, "blocked", False)):
@@ -102,6 +103,7 @@ def record_tool_round(
                     "status": status,
                     "blocked_kind": getattr(result, "blocked_kind", None),
                     "blocked_reason": compact_runtime_text(getattr(result, "blocked_reason", "") or getattr(result, "result", ""), limit=220),
+                    "metadata": dict(getattr(result, "metadata", {}) or {}),
                 }
             )
     for result in normalized_blocked_tool_results:
@@ -118,6 +120,7 @@ def record_tool_round(
                     getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
                     limit=220,
                 ),
+                "metadata": dict(getattr(result, "metadata", {}) or {}),
             }
         )
     merged_payload = {

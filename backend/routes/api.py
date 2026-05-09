@@ -84,6 +84,13 @@ from services.chat_runtime import (
     build_tool_runtime_kwargs,
     prepare_chat_turn_runtime,
 )
+from services.run_shell_processes import (
+    build_tracked_run_shell_result,
+    load_tracked_run_shell_handle,
+    read_tracked_run_shell_tail,
+    terminate_tracked_run_shell,
+    wait_for_tracked_run_shell,
+)
 from services.orchestration_scheduler import (
     DEFAULT_SIDECAR_AGENT_TYPES,
     OrchestrationRuntimeQueue,
@@ -1282,6 +1289,7 @@ async def trigger_agent_response(
                         "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
                         "duration_ms": progress.get("duration_ms"),
                         "pid": progress.get("pid"),
+                        "tracked_process": progress.get("tracked_process"),
                         "tool_call_id": tool_call.get("id"),
                         "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
                         "run_id": getattr(task_run, "id", None) if task_run is not None else None,
@@ -1293,6 +1301,10 @@ async def trigger_agent_response(
                     tool_name,
                     **tool_args,
                     **runtime.runtime_kwargs,
+                    task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
+                    client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                    tool_call_id=tool_call.get("id"),
+                    turn=frame.turn_index + 1,
                     progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
                 )
                 tool_success = _tool_result_succeeded(tool_result)
@@ -1747,6 +1759,133 @@ def _terminalize_interrupted_single_agent_task_run(
         },
     )
     complete_task_run(db, task_run, status="failed", summary=summary)
+    return True
+
+
+async def _recover_tracked_single_agent_run_shell_task_run(
+    db: Session,
+    task_run: TaskRun,
+    *,
+    trigger: str,
+) -> bool:
+    if str(task_run.status or "").strip().lower() != "running":
+        return False
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    approval_items = [
+        item
+        for item in list(getattr(task_run, "approval_queue_items", []) or [])
+        if str(getattr(item, "status", "") or "").strip().lower() == "pending"
+    ]
+    pending_timeout_item = next(
+        (
+            item for item in reversed(approval_items)
+            if str(getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
+            and str(load_approval_queue_request_payload(getattr(item, "request_payload_json", None)).get("blocked_kind") or "").strip().lower() == "timeout"
+        ),
+        None,
+    )
+    if pending_timeout_item is None:
+        return False
+
+    request_payload = load_approval_queue_request_payload(getattr(pending_timeout_item, "request_payload_json", None))
+    metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
+    tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else {}
+    tracked_handle = load_tracked_run_shell_handle(tracked_process)
+    if tracked_handle is None:
+        return False
+
+    append_task_event(
+        db,
+        task_run,
+        "task_run_recovery_started",
+        agent_name=task_run.target_agent_name,
+        summary="Reattached to tracked run_shell process after backend restart.",
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery_kind": "run_shell_tracked_process",
+            "tracked_process": tracked_process,
+            "checkpoint_snapshot": checkpoint_snapshot,
+        },
+    )
+
+    if tracked_handle.get("finished_at"):
+        result = build_tracked_run_shell_result(tracked_handle, max_chars=50000)
+    else:
+        result = await wait_for_tracked_run_shell(
+            tracked_handle,
+            timeout_seconds=None,
+            progress_interval_seconds=2.0,
+            tail_chars=4000,
+            result_chars=50000,
+        )
+
+    tool_result = build_tool_result_record(
+        tool_call_id=request_payload.get("tool_call_id"),
+        tool_name="run_shell",
+        arguments=resolve_replay_arguments_text(request_payload),
+        result=result,
+        success=bool(result.get("success")) if isinstance(result, dict) and result.get("__catown_tool_result__") is True else False,
+    )
+    record_runner_tool_round(
+        db,
+        task_run,
+        agent_name=(task_run.target_agent_name or "").strip() or "agent",
+        turn=max(1, int(request_payload.get("turn") or 1)),
+        tool_names=["run_shell"],
+        tool_results=[tool_result],
+        summary="Recovered tracked run_shell result after backend restart.",
+        payload={
+            "recovery": True,
+            "recovery_kind": "run_shell_tracked_process",
+            "tracked_process": tracked_process,
+        },
+    )
+
+    if tool_result.success:
+        complete_task_run(
+            db,
+            task_run,
+            status="completed",
+            summary=str(tool_result.result or "").strip() or "Recovered run_shell completed after backend restart.",
+        )
+        append_task_event(
+            db,
+            task_run,
+            "task_run_recovery_completed",
+            agent_name=task_run.target_agent_name,
+            summary="Recovered tracked run_shell result after backend restart.",
+            payload={
+                "task_run_id": task_run.id,
+                "trigger": trigger,
+                "recovery_kind": "run_shell_tracked_process",
+                "tracked_process": tracked_process,
+            },
+        )
+        return True
+
+    if tool_result.blocked:
+        return True
+
+    complete_task_run(
+        db,
+        task_run,
+        status="failed",
+        summary=str(tool_result.result or "").strip() or "Recovered run_shell failed after backend restart.",
+    )
+    append_task_event(
+        db,
+        task_run,
+        "task_run_recovery_completed",
+        agent_name=task_run.target_agent_name,
+        summary="Recovered tracked run_shell termination after backend restart.",
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery_kind": "run_shell_tracked_process",
+            "tracked_process": tracked_process,
+        },
+    )
     return True
 
 
@@ -2255,6 +2394,8 @@ async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
                     task_run = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                     if task_run is None or str(task_run.status or "").strip().lower() != "running":
                         skipped += 1
+                    elif await _recover_tracked_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
+                        recovered += 1
                     elif _terminalize_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
                         interrupted += 1
                     else:
@@ -3616,7 +3757,14 @@ async def _replay_runtime_blocked_tool_queue_item(
     project = _resolve_chatroom_project(db, chatroom)
     agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
     agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
-    runtime_kwargs = build_tool_runtime_kwargs(agent, chatroom.id, project)
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    runtime_kwargs = build_tool_runtime_kwargs(
+        agent,
+        chatroom.id,
+        project,
+        task_run_id=getattr(item, "task_run_id", None),
+        client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+    )
     workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
     logger.info(
         "[ApprovalFlow] replay-runtime-start queue_item_id=%s task_run_id=%s tool=%s chatroom_id=%s project_id=%s workspace=%s",
@@ -3647,6 +3795,7 @@ async def _replay_runtime_blocked_tool_queue_item(
                 "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
                 "duration_ms": progress.get("duration_ms"),
                 "pid": progress.get("pid"),
+                "tracked_process": progress.get("tracked_process"),
                 "tool_call_id": request_payload.get("tool_call_id"),
                 "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
                 "run_id": getattr(task_run, "id", None) if task_run is not None else None,
@@ -3660,6 +3809,8 @@ async def _replay_runtime_blocked_tool_queue_item(
             **loaded_arguments,
             **runtime_kwargs,
             __catown_approval_granted=True,
+            tool_call_id=request_payload.get("tool_call_id"),
+            turn=request_payload.get("turn"),
             progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
         )
         tool_success = _tool_result_succeeded(tool_result)
@@ -3804,6 +3955,110 @@ def _persist_timeout_wait_preference_for_queue_item(
         command_preview=f"{command} @ {cwd}",
         project_id=getattr(item, "project_id", None),
         chatroom_id=getattr(item, "chatroom_id", None),
+    )
+
+
+async def _continue_waiting_for_timeout_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+):
+    metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
+    tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else {}
+    handle = load_tracked_run_shell_handle(tracked_process)
+    if handle is None:
+        return build_replay_tool_result_record(
+            item,
+            tool_name=request_payload.get("tool_name") or getattr(item, "target_name", None) or "run_shell",
+            arguments=resolve_replay_arguments_text(request_payload),
+            result="[Run Shell] Error: tracked timeout process is missing.",
+            success=False,
+            request_payload=request_payload,
+        )
+
+    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", None) or "run_shell").strip() or "run_shell"
+    tool_arguments = resolve_replay_arguments_text(request_payload)
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    replay_turn = max(1, int(request_payload.get("turn") or 1))
+    record_tool_call_started(
+        db,
+        task_run,
+        agent_name=(item.agent_name or "").strip() or "agent",
+        turn=replay_turn,
+        tool_name=tool_name,
+        arguments=tool_arguments,
+        payload={
+            "tool_call_id": request_payload.get("tool_call_id"),
+            "replay": False,
+            "approval_continue_waiting": True,
+            "queue_item_id": getattr(item, "id", None),
+            "tracked_process": tracked_process,
+        },
+    )
+
+    chatroom_id = getattr(item, "chatroom_id", None)
+
+    async def emit_tool_progress(progress: dict[str, Any]) -> None:
+        if not isinstance(chatroom_id, int):
+            return
+        await store_runtime_card(
+            chatroom_id,
+            {
+                "type": "tool_call",
+                "source": "approval_replay",
+                "agent": (item.agent_name or "").strip() or "agent",
+                "tool": tool_name,
+                "arguments": tool_arguments,
+                "success": None,
+                "status": "running",
+                "blocked": False,
+                "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                "duration_ms": progress.get("duration_ms"),
+                "pid": progress.get("pid"),
+                "tool_call_id": request_payload.get("tool_call_id"),
+                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                "turn": replay_turn,
+            },
+        )
+
+    if isinstance(chatroom_id, int):
+        tail = read_tracked_run_shell_tail(handle, max_chars=4000)
+        await store_runtime_card(
+            chatroom_id,
+            {
+                "type": "tool_call",
+                "source": "approval_replay",
+                "agent": (item.agent_name or "").strip() or "agent",
+                "tool": tool_name,
+                "arguments": tool_arguments,
+                "success": None,
+                "status": "running",
+                "blocked": False,
+                "result": tail or "Approved. Continuing to wait for the existing process.",
+                "pid": handle.get("pid"),
+                "tool_call_id": request_payload.get("tool_call_id"),
+                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                "turn": replay_turn,
+            },
+        )
+
+    result = await wait_for_tracked_run_shell(
+        handle,
+        progress_callback=emit_tool_progress,
+        timeout_seconds=None,
+        progress_interval_seconds=2.0,
+        tail_chars=4000,
+        result_chars=50000,
+    )
+    return build_replay_tool_result_record(
+        item,
+        tool_name=tool_name,
+        arguments=tool_arguments,
+        result=result,
+        success=bool(result.get("success")) if isinstance(result, dict) and result.get("__catown_tool_result__") is True else False,
+        request_payload=request_payload,
     )
 
 
@@ -4032,7 +4287,13 @@ async def _finalize_approved_queue_item_followup_async(
         if (item.target_kind or "") != "tool" or not bool(request_payload.get("resume_supported")):
             return
 
-        replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
+        if (
+            str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout"
+            and str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
+        ):
+            replay_result = await _continue_waiting_for_timeout_queue_item(db, item, request_payload)
+        else:
+            replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
         task_run = get_task_run(db, item.task_run_id)
         try:
             replay_turn = max(1, int(request_payload.get("turn") or 1))
@@ -4392,6 +4653,10 @@ async def reject_approval_queue_item(
         ),
     )
     if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
+        metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
+        tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else None
+        if tracked_process:
+            terminate_tracked_run_shell(tracked_process)
         tool_name = str(request_payload.get("tool_name") or item.target_name or "tool").strip() or "tool"
         complete_task_run(
             db,

@@ -21,6 +21,7 @@ class ToolResultRecord:
     blocked: bool = False
     blocked_kind: str | None = None
     blocked_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_message(self) -> dict[str, str]:
         return {
@@ -231,6 +232,7 @@ def build_tool_result_record(
             "blocked_kind": result.get("blocked_kind"),
             "blocked_reason": result.get("blocked_reason"),
         }
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), Mapping) else {}
         resolved_tool_name = str(result.get("tool_name") or tool_name or "tool")
     else:
         result_text = str(result or "(no output)")
@@ -241,6 +243,7 @@ def build_tool_result_record(
             result_text,
             success=success,
         )
+        metadata = {}
         resolved_tool_name = str(tool_name or "tool")
 
     return ToolResultRecord(
@@ -253,6 +256,7 @@ def build_tool_result_record(
         blocked=bool(classification.get("blocked")),
         blocked_kind=classification.get("blocked_kind"),
         blocked_reason=classification.get("blocked_reason"),
+        metadata=dict(metadata),
     )
 
 

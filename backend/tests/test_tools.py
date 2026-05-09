@@ -391,6 +391,24 @@ class TestToolRegistry:
         assert any("line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
+    async def test_run_shell_timeout_waiting_returns_tracked_process_metadata(self, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        result = await registry.execute(
+            "run_shell",
+            command='python -c "import time; time.sleep(2); print(\'done\')"',
+            timeout_seconds=1,
+            __catown_approval_granted=True,
+        )
+
+        assert result["success"] is False
+        assert result["status"] == "timeout_waiting"
+        tracked_process = result.get("metadata", {}).get("tracked_process")
+        assert isinstance(tracked_process, dict)
+        assert tracked_process.get("token")
+
+    @pytest.mark.asyncio
     async def test_saved_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))

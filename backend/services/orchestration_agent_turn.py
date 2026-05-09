@@ -155,6 +155,7 @@ async def run_orchestration_agent_turn(
                     "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
                     "duration_ms": progress.get("duration_ms"),
                     "pid": progress.get("pid"),
+                    "tracked_process": progress.get("tracked_process"),
                     "tool_call_id": tool_call.get("id"),
                     "client_turn_id": client_turn_id,
                     "run_id": getattr(task_run, "id", None) if task_run is not None else None,
@@ -169,6 +170,10 @@ async def run_orchestration_agent_turn(
                 tool_name,
                 **tool_args,
                 **runtime.runtime_kwargs,
+                task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
+                client_turn_id=client_turn_id,
+                tool_call_id=tool_call.get("id"),
+                turn=frame.turn_index + 1,
                 progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
             )
             tool_success = bool(tool_result.get("success")) if isinstance(tool_result, dict) and tool_result.get("__catown_tool_result__") is True else True

@@ -2839,6 +2839,107 @@ class TestSSEStreaming:
         assert resolved_event["payload"]["replay_status"] == "timeout_waiting"
         assert resolved_event["payload"]["replay_success"] is False
 
+    def test_startup_recovery_completes_tracked_run_shell_task_run(self, tmp_path):
+        app = _make_app(tmp_path)
+
+        from fastapi.testclient import TestClient
+        import models.database as db_mod
+        import routes.api as api_routes
+        from services.run_shell_processes import create_tracked_run_shell_handle, launch_tracked_run_shell
+
+        with TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"}) as client:
+            db = db_mod.SessionLocal()
+            try:
+                project = db_mod.Project(name="Tracked Recovery Project", status="active")
+                db.add(project)
+                db.commit()
+                db.refresh(project)
+
+                chatroom = db_mod.Chatroom(
+                    project_id=project.id,
+                    title="Tracked Recovery Chat",
+                    session_type="project-bound",
+                    is_visible_in_chat_list=True,
+                )
+                db.add(chatroom)
+                db.commit()
+                db.refresh(chatroom)
+
+                task_run = db_mod.TaskRun(
+                    chatroom_id=chatroom.id,
+                    project_id=project.id,
+                    client_turn_id="delegate-tracked-recovery",
+                    run_kind="project_single_agent",
+                    status="running",
+                    title="Tracked run_shell recovery",
+                    user_request="Run tests",
+                    initiator="user",
+                    target_agent_name="tester",
+                )
+                db.add(task_run)
+                db.commit()
+                db.refresh(task_run)
+
+                handle = create_tracked_run_shell_handle(
+                    command='python -c "import time; time.sleep(1); print(\'recovered done\')"',
+                    cwd=str(tmp_path),
+                    timeout_seconds=1,
+                    chatroom_id=chatroom.id,
+                    project_id=project.id,
+                    task_run_id=task_run.id,
+                    client_turn_id=task_run.client_turn_id,
+                    tool_call_id="call_recover",
+                    turn=1,
+                    agent_name="tester",
+                )
+                launch_tracked_run_shell(handle)
+
+                queue_item = db_mod.ApprovalQueueItem(
+                    task_run_id=task_run.id,
+                    chatroom_id=chatroom.id,
+                    project_id=project.id,
+                    queue_kind="approval",
+                    status="pending",
+                    source="tool_call_blocked",
+                    title="Continue waiting for run_shell",
+                    summary="run_shell timed out",
+                    agent_name="tester",
+                    target_kind="tool",
+                    target_name="run_shell",
+                    request_payload_json=json.dumps(
+                        {
+                            "tool_name": "run_shell",
+                            "arguments": json.dumps(
+                                {
+                                    "command": 'python -c "import time; time.sleep(1); print(\'recovered done\')"',
+                                    "cwd": str(tmp_path),
+                                    "timeout_seconds": 1,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            "resume_supported": True,
+                            "turn": 1,
+                            "blocked_kind": "timeout",
+                            "tool_call_id": "call_recover",
+                            "metadata": {"tracked_process": handle},
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                db.add(queue_item)
+                db.commit()
+                task_run_id = task_run.id
+            finally:
+                db.close()
+
+            summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+            assert summary["detected"] == 1
+            assert summary["recovered"] == 1
+
+            detail = client.get(f"/api/task-runs/{task_run_id}").json()
+            assert detail["status"] == "completed"
+            assert "recovered done" in (detail.get("summary") or "").lower()
+
     def test_approve_pipeline_tool_queue_item_replays_and_resumes_pipeline(self, client):
         import models.database as db_mod
         import routes.api as api_routes

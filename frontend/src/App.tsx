@@ -24,6 +24,7 @@ import type {
   MessageStreamStep,
   PermissionsConfigPayload,
   ProjectSummary,
+  TaskRunDetail,
   TaskRunSummary,
   ToolAuthorizationRule,
 } from "./types";
@@ -1514,6 +1515,48 @@ function findMatchingServerAssistantMessage(rows: MessageItem[], optimisticMessa
   }) ?? null;
 }
 
+function findMatchingTaskRun(taskRuns: TaskRunSummary[], optimisticMessage: MessageItem) {
+  if (!optimisticMessage.client_turn_id) return null;
+  return taskRuns.find((run) => sameClientTurn(run.client_turn_id ?? undefined, optimisticMessage.client_turn_id)) ?? null;
+}
+
+function taskRunTerminalState(taskRun: TaskRunSummary) {
+  const status = (taskRun.status || "").toLowerCase();
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function messageLooksApprovalHold(message: MessageItem) {
+  return (message.streamSteps ?? []).some((step) => {
+    const label = (step.label || "").toLowerCase();
+    const detail = (step.detail || "").toLowerCase();
+    return label.includes("waiting for approval") || detail.includes("waiting for approval");
+  });
+}
+
+function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRunSummary) {
+  const status = (taskRun.status || "").toLowerCase();
+  const isFailed = status === "failed" || status === "cancelled";
+  const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Approval resolved";
+  const detail =
+    taskRun.summary ||
+    taskRun.continuation_state_summary ||
+    taskRun.continuation_cursor_summary ||
+    (isFailed ? "Task run stopped before a final reply was saved." : "Task run state recovered from the run ledger.");
+
+  return finalizeStreamingTrace(
+    {
+      ...message,
+      content: message.content || detail,
+      agent_name: taskRun.target_agent_name || message.agent_name,
+      client_turn_id: taskRun.client_turn_id || message.client_turn_id,
+      isStreaming: false,
+    },
+    isFailed ? "error" : "done",
+    label,
+    detail,
+  );
+}
+
 function replayRuntimeCardsForTurn(message: MessageItem, cards: ChatCardItem[]) {
   if (cards.length === 0) return message;
   let nextMessage = message;
@@ -1558,6 +1601,7 @@ function reconcileOptimisticMessagesWithServer(
   current: MessageItem[],
   rows: MessageItem[],
   cards: ChatCardItem[],
+  taskRuns: TaskRunSummary[] = [],
 ) {
   return current.reduce<MessageItem[]>((next, item) => {
     if (item.optimisticKind === "user") {
@@ -1577,6 +1621,15 @@ function reconcileOptimisticMessagesWithServer(
       if (savedReply) {
         next.push(finalizeRecoveredPlaceholder(replayed, savedReply));
         return next;
+      }
+
+      const matchingTaskRun = findMatchingTaskRun(taskRuns, item);
+      if (matchingTaskRun) {
+        const pendingApprovalCount = Number(matchingTaskRun.pending_approval_count || 0);
+        if (taskRunTerminalState(matchingTaskRun) || (pendingApprovalCount === 0 && messageLooksApprovalHold(item))) {
+          next.push(finalizeRecoveredTaskRunPlaceholder(replayed, matchingTaskRun));
+          return next;
+        }
       }
 
       next.push(
@@ -2000,7 +2053,7 @@ function App() {
           setChatCards(nextCards);
           setTaskRuns(taskRunRows);
           setLiveTaskRunDetailsById({});
-          commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
+          commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
         }
       } catch (nextError) {
         if (!cancelled) {
@@ -2170,7 +2223,15 @@ function App() {
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
               if (detail && typeof detail.id === "number") {
                 setLiveTaskRunDetailsById((current) => ({ ...current, [detail.id]: detail }));
+              } else if (taskRunTerminalState(entry) || Number(entry.pending_approval_count || 0) === 0) {
+                setLiveTaskRunDetailsById((current) => {
+                  if (!(entry.id in current)) return current;
+                  const next = { ...current };
+                  delete next[entry.id];
+                  return next;
+                });
               }
+              commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, [], [], [entry]));
             }
             return;
           }
@@ -2364,9 +2425,10 @@ function App() {
         .map((payload) => buildCard(payload))
         .filter((card): card is ChatCardItem => card !== null);
       setMessages(rows);
-      commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards));
+      commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
       setChatCards(nextCards);
       setTaskRuns(taskRunRows);
+      setLiveTaskRunDetailsById({});
       if (showSpinner) {
         pushEvent("Conversation refreshed", "info");
       }

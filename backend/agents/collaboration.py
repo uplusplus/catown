@@ -962,6 +962,19 @@ def _delegated_task_stalled_snapshot(db: Session, task_run: Any) -> dict[str, An
         pid = latest_runtime_card["card"].get("pid")
         if _process_is_alive(pid):
             return None
+        tracked_process = latest_runtime_card["card"].get("tracked_process")
+        if isinstance(tracked_process, dict):
+            try:
+                from services.run_shell_processes import (
+                    load_tracked_run_shell_handle,
+                    tracked_run_shell_is_active,
+                )
+
+                tracked_handle = load_tracked_run_shell_handle(tracked_process)
+                if tracked_handle is not None and tracked_run_shell_is_active(tracked_handle):
+                    return None
+            except Exception:
+                pass
 
     last_activity_at = None
     if latest_runtime_card is not None:

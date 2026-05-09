@@ -123,6 +123,7 @@ def build_structured_tool_result(
     blocked: bool = False,
     blocked_kind: str | None = None,
     blocked_reason: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "__catown_tool_result__": True,
@@ -133,6 +134,7 @@ def build_structured_tool_result(
         "blocked": bool(blocked),
         "blocked_kind": blocked_kind,
         "blocked_reason": blocked_reason,
+        "metadata": dict(metadata or {}),
     }
 
 
