@@ -1493,7 +1493,8 @@ async def test_execute_stage_records_missing_expected_artifact_policy_decision(f
 
         assert success is True
         db.refresh(stage)
-        assert stage.status == "completed"
+        assert stage.status == "blocked"
+        assert "not found" in (stage.output_summary or "")
 
         events = (
             db.query(fresh_db.TaskRunEvent)
@@ -1504,13 +1505,16 @@ async def test_execute_stage_records_missing_expected_artifact_policy_decision(f
         assert [event.event_type for event in events] == [
             "pipeline_stage_started",
             "policy_decision_recorded",
-            "pipeline_stage_completed",
+            "pipeline_stage_blocked",
         ]
         policy_payload = json.loads(events[1].payload_json)
+        blocked_payload = json.loads(events[2].payload_json)
         assert policy_payload["policy_decision"]["decision_type"] == "artifact_contract_policy"
         assert policy_payload["policy_decision"]["accepted"] is False
         assert policy_payload["policy_decision"]["violations"][0]["code"] == "artifact_missing"
         assert policy_payload["policy_decision"]["subject"]["type"] == "workspace.file"
+        assert blocked_payload["blocked_kind"] == "policy_decision"
+        assert blocked_payload["policy_decision_summary"]["decision_type"] == "artifact_contract_policy"
 
         artifacts = db.query(fresh_db.StageArtifact).filter(fresh_db.StageArtifact.stage_id == stage.id).all()
         assert artifacts == []

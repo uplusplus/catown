@@ -3313,3 +3313,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - missing artifact verdict 使用 `artifact_missing` violation
 - result payload 仍通过 `append_policy_decision_event_from_result_payload(...)` 写入 task-run ledger
 - 当前只记录缺失 verdict，不改变 stage completion 行为
+
+### `Block pipeline stages on rejected artifact policy decisions`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- stage artifact policy checks 现在返回 `policy_decision_gate_result`
+- rejected artifact gate result 会阻止 stage 标记为 completed
+- pipeline 写入 `pipeline_stage_blocked`，payload 包含 `policy_decision_summary`
+- 当前先覆盖 missing expected artifact 场景，不改变已 accepted artifact 的完成路径

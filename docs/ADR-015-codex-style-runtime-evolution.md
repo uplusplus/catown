@@ -7921,6 +7921,31 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不自动创建 StageArtifact row
 - 当前不改变 manual gate / auto gate 流程
 
+### 11.201 2026-05-09 新进展：rejected artifact policy decision 已能阻塞 pipeline stage
+
+11.200 已经能为 missing expected artifact 写 rejected `artifact_contract_policy`，但 stage 仍会继续标记 completed。
+这使 policy decision 仍停留在审计层，没有真正进入控制面。
+
+本轮继续更新 `backend/pipeline/engine.py`：
+
+- artifact policy write path 返回 `policy_decision_gate_result`
+- `_execute_stage(...)` 在 stage completed 之前检查 rejected artifact gate result
+- 如果 gate result blocked，则 stage status 设为 `blocked`
+- task-run ledger 写入 `pipeline_stage_blocked`
+- blocked payload 携带 `policy_decision_summary`
+
+这一步的意义是：
+
+- `policy_decision_gate_result` 首次在真实 pipeline executor path 中被消费
+- missing expected artifact 不再被误标为 completed stage
+- run ledger 中同时有 policy verdict 和 stage blocked event，便于恢复/审批/Monitor 展示
+
+边界：
+
+- 当前先覆盖 artifact policy rejection，尤其是 missing expected artifact
+- 当前不自动创建 approval queue item
+- 当前不改变 accepted artifact 的完成路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -69,7 +69,11 @@ from services.artifact_contract_policy import (
 )
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
-from services.policy_decision_contracts import dump_policy_decision, project_policy_decision
+from services.policy_decision_contracts import (
+    build_policy_decision_gate_result,
+    dump_policy_decision,
+    project_policy_decision,
+)
 from services.turn_state import (
     TurnContextState,
     build_tool_result_record,
@@ -360,10 +364,11 @@ def _record_stage_artifact_policy_decisions(
     stage_policy: Any,
     runner_policy: Any,
     artifacts: list[StageArtifact],
-) -> None:
+) -> list[dict[str, Any]]:
     task_run = _pipeline_task_run(db, run)
     if task_run is None:
-        return
+        return []
+    gate_results: list[dict[str, Any]] = []
     for artifact in artifacts:
         contract = _stage_artifact_contract(
             artifact=artifact,
@@ -377,20 +382,25 @@ def _record_stage_artifact_policy_decisions(
             stage_name=getattr(stage_policy, "stage_name", None),
         )
         result = ArtifactPublicationPolicyResult(contract=contract, decision=decision)
+        result_payload = result.to_payload()
         append_policy_decision_event_from_result_payload(
             db,
             task_run,
-            result.to_payload(),
+            result_payload,
             agent_name=getattr(stage_policy, "agent_name", None),
         )
-    _record_missing_stage_artifact_policy_decisions(
+        gate_result = result_payload.get("policy_decision_gate_result")
+        if isinstance(gate_result, dict):
+            gate_results.append(gate_result)
+    gate_results.extend(_record_missing_stage_artifact_policy_decisions(
         db,
         task_run=task_run,
         stage_policy=stage_policy,
         runner_policy=runner_policy,
         expected_artifacts=list(getattr(getattr(stage_policy, "delivery", None), "expected_artifacts", []) or []),
         recorded_artifacts=artifacts,
-    )
+    ))
+    return gate_results
 
 
 def _record_missing_stage_artifact_policy_decisions(
@@ -401,7 +411,8 @@ def _record_missing_stage_artifact_policy_decisions(
     runner_policy: Any,
     expected_artifacts: list[str],
     recorded_artifacts: list[StageArtifact],
-) -> None:
+) -> list[dict[str, Any]]:
+    gate_results: list[dict[str, Any]] = []
     recorded_paths = {
         _normalize_artifact_path(getattr(artifact, "file_path", None))
         for artifact in recorded_artifacts
@@ -434,12 +445,18 @@ def _record_missing_stage_artifact_policy_decisions(
             },
         )
         policy_decision = project_policy_decision(decision)
+        gate_result = build_policy_decision_gate_result(policy_decision)
         append_policy_decision_event_from_result_payload(
             db,
             task_run,
-            {"policy_decision": dump_policy_decision(policy_decision)},
+            {
+                "policy_decision": dump_policy_decision(policy_decision),
+                "policy_decision_gate_result": gate_result,
+            },
             agent_name=getattr(stage_policy, "agent_name", None),
         )
+        gate_results.append(gate_result)
+    return gate_results
 
 
 def _normalize_artifact_path(value: Any) -> str:
@@ -1896,7 +1913,7 @@ class PipelineEngine:
                 # 记录产出物
                 workspace = _get_workspace(run)
                 artifacts = self._record_artifacts(db, stage, workspace, stage_policy.delivery.expected_artifacts)
-                _record_stage_artifact_policy_decisions(
+                artifact_gate_results = _record_stage_artifact_policy_decisions(
                     db,
                     run=run,
                     stage=stage,
@@ -1904,6 +1921,52 @@ class PipelineEngine:
                     runner_policy=runner_policy,
                     artifacts=artifacts,
                 )
+                blocked_artifact_gate = next(
+                    (
+                        gate_result
+                        for gate_result in artifact_gate_results
+                        if bool(gate_result.get("blocked"))
+                    ),
+                    None,
+                )
+                if blocked_artifact_gate is not None:
+                    blocked_reason = str(blocked_artifact_gate.get("blocked_reason") or "").strip()
+                    stage.status = "blocked"
+                    stage.output_summary = blocked_reason or "Stage blocked by artifact policy."
+                    stage.completed_at = None
+                    db.commit()
+                    _append_pipeline_task_event(
+                        db,
+                        run,
+                        "pipeline_stage_blocked",
+                        agent_name=stage_policy.agent_name,
+                        summary=f"Pipeline stage blocked by artifact policy: {stage_policy.display_name}.",
+                        payload={
+                            "pipeline_id": pipeline.id,
+                            "pipeline_run_id": run.id,
+                            "pipeline_stage_id": stage.id,
+                            "stage_name": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "blocked_kind": blocked_artifact_gate.get("blocked_kind"),
+                            "blocked_reason": blocked_artifact_gate.get("blocked_reason"),
+                            "policy_decision_summary": blocked_artifact_gate.get("policy_decision_summary"),
+                            "stage_policy": stage_policy.to_payload(),
+                        },
+                        target_agent_name=stage_policy.agent_name,
+                        run_summary=stage.output_summary[:280] if stage.output_summary else None,
+                    )
+                    await event_bus.emit(
+                        "stage_blocked",
+                        {
+                            "pipeline_id": pipeline.id,
+                            "run_id": run.id,
+                            "stage": stage_policy.stage_name,
+                            "display_name": stage_policy.display_name,
+                            "blocked_kind": blocked_artifact_gate.get("blocked_kind"),
+                            "blocked_reason": blocked_artifact_gate.get("blocked_reason"),
+                        },
+                    )
+                    return True
 
                 stage.status = "completed"
                 stage.output_summary = summary[:2000] if summary else "(no output)"

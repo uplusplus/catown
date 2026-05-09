@@ -244,10 +244,10 @@ template's execution-readiness check when a task-run ledger exists. This is an
 audit event only; it does not yet block pipeline startup.
 
 Pipeline stage completion now records `artifact_contract_policy` decisions for
-expected artifacts that are found and recorded as `StageArtifact` rows. This is
-also an audit event only; it does not yet block stage completion or gate flow.
-Missing expected artifacts also produce rejected `artifact_contract_policy`
-decisions with an `artifact_missing` violation.
+expected artifacts that are found and recorded as `StageArtifact` rows. Missing
+expected artifacts also produce rejected `artifact_contract_policy`
+decisions with an `artifact_missing` violation. Rejected artifact policy decisions
+now block the pipeline stage before it is marked completed.
 
 ## 8. Expected Next Steps
 
