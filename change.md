@@ -3097,3 +3097,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 提取其中 canonical `policy_decision` 并使用 `summarize_policy_decision_set(...)` 聚合
 - `serialize_task_run_summary(...)` 暴露 `policy_decision_summary`
 - 暂不写 policy decision 事件，不改 Monitor UI，也不改变执行路径
+
+### `List policy decisions in task run detail`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_ledger_policy_decisions.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `serialize_task_run_detail(...)` 新增 `policy_decisions`
+- 从已有 `policy_decision_recorded` 事件中提取 canonical policy decision
+- 每条明细包含 event metadata、policy decision summary 和完整 payload
+- 暂不写 policy decision 事件，不改 Monitor UI

@@ -22,7 +22,10 @@ from services.orchestration_inbox import (
     summarize_orchestration_handoff_projection,
 )
 from services.pipeline_inbox import summarize_pipeline_run_inbox
-from services.policy_decision_contracts import summarize_policy_decision_set
+from services.policy_decision_contracts import (
+    summarize_policy_decision,
+    summarize_policy_decision_set,
+)
 from services.subagent_lifecycle import (
     build_subagent_lifecycle_from_events,
     build_subagent_runtime_handles,
@@ -242,6 +245,9 @@ def serialize_task_run_detail(task_run: TaskRun) -> dict[str, Any]:
         _serialize_task_run_event(event)
         for event in task_run.events
     ]
+    payload["policy_decisions"] = _serialize_task_run_policy_decision_entries(
+        list(task_run.events or [])
+    )
     payload["approval_queue_items"] = [
         serialize_approval_queue_item(item)
         for item in list(getattr(task_run, "approval_queue_items", []) or [])
@@ -450,6 +456,34 @@ def _extract_policy_decision_contracts(
         if isinstance(contract, dict) and contract.get("kind") == "policy_decision":
             contracts.append(contract)
     return contracts
+
+
+def _serialize_task_run_policy_decision_entries(events: list[TaskRunEvent]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for event in events:
+        payload = _load_payload(event.payload_json)
+        if not isinstance(payload, dict):
+            continue
+        if (
+            event.event_type != "policy_decision_recorded"
+            and payload.get("event_kind") != "policy_decision_recorded"
+        ):
+            continue
+        contract = payload.get("policy_decision")
+        if not isinstance(contract, dict) or contract.get("kind") != "policy_decision":
+            continue
+        entries.append(
+            {
+                "event_id": event.id,
+                "event_index": event.event_index,
+                "event_type": event.event_type,
+                "event_summary": event.summary,
+                "policy_decision_summary": summarize_policy_decision(contract),
+                "policy_decision": contract,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+            }
+        )
+    return entries
 
 
 def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str, Any]:

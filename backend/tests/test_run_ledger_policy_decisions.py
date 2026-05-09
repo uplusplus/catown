@@ -1,7 +1,11 @@
 import json
 
 from services.policy_decision_contracts import build_policy_decision_event_payload
-from services.run_ledger import build_task_run_checkpoint_snapshot, serialize_task_run_summary
+from services.run_ledger import (
+    build_task_run_checkpoint_snapshot,
+    serialize_task_run_detail,
+    serialize_task_run_summary,
+)
 
 
 def test_task_run_checkpoint_summarizes_policy_decision_events(fresh_db):
@@ -61,6 +65,7 @@ def test_task_run_checkpoint_summarizes_policy_decision_events(fresh_db):
 
         snapshot = build_task_run_checkpoint_snapshot(task_run)
         summary = serialize_task_run_summary(task_run)
+        detail = serialize_task_run_detail(task_run)
 
         assert snapshot["policy_decision_summary"] == {
             "decision_count": 1,
@@ -78,5 +83,10 @@ def test_task_run_checkpoint_summarizes_policy_decision_events(fresh_db):
             },
         }
         assert summary["policy_decision_summary"] == snapshot["policy_decision_summary"]
+        assert len(detail["policy_decisions"]) == 1
+        policy_decision_entry = detail["policy_decisions"][0]
+        assert policy_decision_entry["event_index"] == 1
+        assert policy_decision_entry["policy_decision_summary"]["decision_id"] == "policy-decision-action-1"
+        assert policy_decision_entry["policy_decision"]["subject"]["id"] == "req-1"
     finally:
         db.close()
