@@ -2966,3 +2966,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 输出 `policy_decision_recorded` 事件 payload
 - payload 包含 summary、accepted、decision type、subject identity、stage，以及可选完整 policy_decision contract
 - 暂不调用 `append_task_event`，不改 run ledger 主路径
+
+### `Project artifact publication policy decisions`
+
+范围：
+
+- `backend/services/artifact_publication.py`
+- `backend/tests/test_artifact_publication.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `ArtifactPublicationPolicyResult.to_payload()` 新增 canonical `policy_decision`
+- 同时输出 `policy_decision_event_payload`
+- artifact publication 组合结果现在包含 contract、原始 decision、统一 policy_decision、ledger-ready payload
+- 暂不写 run ledger，也不持久化 artifact_contract

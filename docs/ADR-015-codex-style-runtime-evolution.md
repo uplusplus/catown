@@ -7401,6 +7401,35 @@ publish_artifact action_request
 - 当前不改 run ledger 主路径
 - 当前不改变 policy checker 行为
 
+### 11.182 2026-05-09 新进展：artifact publication result 已携带 policy_decision 投影
+
+11.178 已经让 `publish_artifact` 形成：
+
+```text
+action_request -> artifact_contract -> artifact policy decision
+```
+
+11.179 到 11.181 又补齐了 policy decision contract、summary 和 ledger event payload。
+
+本轮把两条线接起来，扩展 `ArtifactPublicationPolicyResult.to_payload()`：
+
+- 保留原始 `contract`
+- 保留原始 artifact policy `decision`
+- 新增 canonical `policy_decision`
+- 新增 `policy_decision_event_payload`
+
+这一步的意义是：
+
+- artifact publication 调用方不需要再手工投影 policy decision
+- 后续 runtime 持久化 artifact 前，可以同时拿到 contract、decision、ledger payload
+- `publish_artifact` 的接入面进一步靠近 executor 可消费的统一形态
+
+边界：
+
+- 当前不写 run ledger
+- 当前不持久化 artifact_contract
+- 当前不改变 artifact acceptance 语义
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

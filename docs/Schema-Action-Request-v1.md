@@ -269,6 +269,9 @@ That bridge now also supports compile-and-validate for artifact publication:
 - validate it against workflow/runner delivery policy
 - return the artifact policy decision without persisting or accepting the artifact
 
+The compile-and-validate result now also projects the artifact policy decision into
+canonical `policy_decision` form and includes a ledger-ready policy-decision event payload.
+
 The first evaluation-result bridge is now present in:
 
 - `backend/services/evaluation_action_requests.py`

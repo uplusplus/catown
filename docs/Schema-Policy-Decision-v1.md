@@ -166,6 +166,10 @@ A run-ledger payload helper is also present:
 It returns a `policy_decision_recorded` event payload containing the summary and,
 optionally, the full canonical policy decision contract.
 
+`ArtifactPublicationPolicyResult.to_payload()` already includes both the projected
+`policy_decision` and this ledger-ready event payload after a `publish_artifact`
+request is compiled and validated.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

@@ -152,6 +152,9 @@ def test_compile_and_validate_publish_artifact_request_accepts_expected_artifact
     assert result.decision.accepted is True
     assert payload["contract"]["artifact_id"] == "artifact-req-artifact-1"
     assert payload["decision"]["accepted"] is True
+    assert payload["policy_decision"]["subject"]["kind"] == "artifact_contract"
+    assert payload["policy_decision"]["subject"]["id"] == "artifact-req-artifact-1"
+    assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
 
 
 def test_compile_and_validate_publish_artifact_request_rejects_unexpected_artifact():
@@ -169,3 +172,6 @@ def test_compile_and_validate_publish_artifact_request_rejects_unexpected_artifa
 
     assert result.decision.accepted is False
     assert [violation.code for violation in result.decision.violations] == ["artifact_not_expected"]
+    payload = result.to_payload()
+    assert payload["policy_decision"]["accepted"] is False
+    assert payload["policy_decision_event_payload"]["accepted"] is False

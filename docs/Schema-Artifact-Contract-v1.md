@@ -205,6 +205,8 @@ It compiles `publish_artifact` action requests into canonical `artifact_contract
 document, workspace-file, workspace-directory, and structured-asset artifacts.
 It also provides compile-and-validate helpers that immediately check the produced
 artifact contract against workflow/runner delivery policy without persisting it.
+Those helpers now include the canonical `policy_decision` projection and a
+ledger-ready policy-decision event payload in their result payload.
 
 The first pipeline artifact normalization bridge is now present in:
 

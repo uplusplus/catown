@@ -17,6 +17,11 @@ from services.artifact_contracts import (
     dump_artifact_contract,
     parse_artifact_contract,
 )
+from services.policy_decision_contracts import (
+    build_policy_decision_event_payload,
+    dump_policy_decision,
+    project_policy_decision,
+)
 from services.runner_policy import RunnerGovernancePolicy
 from services.workflow_spec_contracts import WorkflowSpec
 
@@ -34,9 +39,14 @@ class ArtifactPublicationPolicyResult:
     decision: ArtifactContractPolicyDecision
 
     def to_payload(self) -> dict[str, Any]:
+        policy_decision = project_policy_decision(self.decision)
         return {
             "contract": dump_artifact_contract(self.contract),
             "decision": self.decision.to_payload(),
+            "policy_decision": dump_policy_decision(policy_decision),
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                policy_decision
+            ),
         }
 
 
