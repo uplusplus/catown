@@ -10,7 +10,11 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 
 from config import settings
-from services.workflow_spec_contracts import WorkflowSpec, compile_pipeline_template_to_workflow_spec
+from services.workflow_spec_contracts import WorkflowSpec
+from services.workflow_spec_policy import (
+    WorkflowSpecPolicyReport,
+    compile_pipeline_template_with_policy_report,
+)
 
 
 class StageConfig(BaseModel):
@@ -45,6 +49,7 @@ class PipelineConfigManager:
         self.config_file = config_file or settings.PIPELINE_CONFIG_FILE
         self.configs: Dict[str, PipelineConfig] = {}
         self.workflow_specs: Dict[str, WorkflowSpec] = {}
+        self.workflow_spec_reports: Dict[str, WorkflowSpecPolicyReport] = {}
 
     def load(self) -> Dict[str, PipelineConfig]:
         """加载所有 Pipeline 模板"""
@@ -56,6 +61,7 @@ class PipelineConfigManager:
 
         self.configs = {}
         self.workflow_specs = {}
+        self.workflow_spec_reports = {}
         for name, config_data in data.items():
             stages = [StageConfig(**s) for s in config_data.get("stages", [])]
             self.configs[name] = PipelineConfig(
@@ -63,7 +69,9 @@ class PipelineConfigManager:
                 description=config_data.get("description", ""),
                 stages=stages
             )
-            self.workflow_specs[name] = compile_pipeline_template_to_workflow_spec(name, config_data)
+            workflow_result = compile_pipeline_template_with_policy_report(name, config_data)
+            self.workflow_specs[name] = workflow_result.workflow_spec
+            self.workflow_spec_reports[name] = workflow_result.policy_report
 
         return self.configs
 
@@ -84,6 +92,12 @@ class PipelineConfigManager:
         if not self.workflow_specs:
             self.load()
         return self.workflow_specs.get(name)
+
+    def get_workflow_spec_report(self, name: str) -> Optional[WorkflowSpecPolicyReport]:
+        """获取指定 Pipeline 模板对应的 workflow spec execution-readiness report."""
+        if not self.workflow_spec_reports:
+            self.load()
+        return self.workflow_spec_reports.get(name)
 
     def get_stage(self, pipeline_name: str, stage_name: str) -> Optional[StageConfig]:
         """获取指定阶段配置"""

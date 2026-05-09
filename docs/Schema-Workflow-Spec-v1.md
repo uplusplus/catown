@@ -217,6 +217,13 @@ The first compile-with-diagnostics helper is also present in:
 It compiles today's pipeline template payload into canonical `workflow_spec` and returns the
 execution-readiness report in the same result object.
 
+The first config-load read-side bridge is now present in:
+
+- `backend/pipeline/config.py`
+
+`PipelineConfigManager` now caches both canonical workflow specs and their execution-readiness
+reports while preserving the legacy `PipelineConfig` view.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

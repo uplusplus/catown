@@ -6793,6 +6793,35 @@ v1 当前覆盖：
 - 还没有在 API 层对 submitted workflow spec 做 enforcement
 - 仍然只是 service-level contract
 
+### 11.164 2026-05-09 新进展：pipeline config manager 已缓存 workflow diagnostics
+
+11.163 已经提供了 compile-with-diagnostics helper，但真实配置加载路径仍然只缓存：
+
+- legacy `PipelineConfig`
+- canonical `workflow_spec`
+
+如果 diagnostics 不进入 config manager，那么它仍然更像独立工具，而不是配置读取面的稳定 contract。
+
+本轮更新 `backend/pipeline/config.py`：
+
+- `PipelineConfigManager.load()` 继续保留 legacy config 行为
+- 同时调用 `compile_pipeline_template_with_policy_report(...)`
+- 缓存 canonical workflow spec
+- 缓存 execution-readiness report
+- 新增 `get_workflow_spec_report(...)`
+
+这一步的意义是：
+
+- 当前 `pipelines.json` 加载后，已经能同时获得 legacy view、canonical spec、diagnostics
+- 后续 API 或 monitor 可以读取 diagnostics，而不需要重复编译
+- 这仍然是 read-side contract，不会突然改变生产执行行为
+
+边界：
+
+- diagnostics 目前不阻断 config load
+- pipeline executor start path 仍未 enforce diagnostics
+- API 暂未暴露 diagnostics
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

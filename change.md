@@ -2655,3 +2655,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `compile_pipeline_template_with_policy_report(...)`
 - 把现有 pipeline template payload 编译成 canonical `workflow_spec` 后，立即附带 execution-readiness report
 - 仍不改 `PipelineConfigManager` 和 engine 主路径，先提供可复用的编译裁定入口
+
+### `Cache workflow diagnostics in pipeline config manager`
+
+范围：
+
+- `backend/pipeline/config.py`
+- `backend/tests/test_pipeline_config_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `PipelineConfigManager` 在加载 legacy pipeline config 时同步缓存 canonical `workflow_spec` 与 execution-readiness report
+- 新增 `get_workflow_spec_report(...)`
+- 不阻断现有 config load / engine 主路径，先把 diagnostics 做成稳定 read-side contract
