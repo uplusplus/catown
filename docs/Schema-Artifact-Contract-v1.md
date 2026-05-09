@@ -212,10 +212,15 @@ It compiles current `StageArtifact`-like ORM rows or dict payloads into canonica
 workspace-file or workspace-directory artifact contracts. The bridge preserves source
 row identity, producer stage/run context, summary, and original artifact type in metadata.
 
+The same normalization module also compiles current `Asset`-like ORM rows or dict payloads.
+It maps document-like assets into `document` contracts, structured JSON assets into
+`structured_asset` contracts, and workspace-prefixed assets into workspace file/directory
+contracts when `storage_path` is present.
+
 This schema is **not** yet wired into:
 
 - native artifact_contract persistence for pipeline stage artifact recording
-- project asset persistence
+- native artifact_contract persistence for project assets
 - publish_artifact runtime persistence flow
 - artifact approval and supersession logic
 
@@ -225,7 +230,7 @@ It is currently a draft contract intended to guide the next refactor.
 
 The next likely follow-ups are:
 
-1. connect current `StageArtifact` read/write paths to artifact_contract normalization
-2. map current `Asset` writes into `artifact_contract` normalization
+1. connect current `StageArtifact` and `Asset` read/write paths to artifact_contract normalization
+2. persist canonical artifact_contract payloads alongside legacy records
 3. connect `publish_artifact` contract compilation to selected runtime persistence paths
 4. define artifact approval/supersession policy on top of this schema

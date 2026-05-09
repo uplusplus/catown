@@ -2857,3 +2857,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `file` 映射为 `workspace_file`，`directory` 映射为 `workspace_directory`
 - 保留 source row id、stage id、created_at、producer stage/run context 与原始 artifact type metadata
 - 仍不改 pipeline engine 写入流程，也不新增 artifact_contract 持久化 schema
+
+### `Normalize project assets into artifact contracts`
+
+范围：
+
+- `backend/services/artifact_normalization.py`
+- `backend/tests/test_artifact_normalization.py`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `compile_asset_to_contract(...)`
+- 支持把 Asset-like ORM row 或 dict payload 归一化为 canonical `artifact_contract`
+- document-like asset 映射为 `document`，structured JSON asset 映射为 `structured_asset`
+- `workspace.file*` / `workspace.directory*` asset 在有 `storage_path` 时映射为 workspace artifact
+- 校验 `content_json` 与 `source_input_refs_json`，并保留 project/status/version/supersession/approval metadata
+- 仍不改 `assets` 表结构，也不接入 Asset 写入或审批主路径

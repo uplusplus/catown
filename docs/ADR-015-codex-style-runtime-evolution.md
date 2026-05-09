@@ -7183,6 +7183,40 @@ v1 覆盖：
 - 当前不新增 artifact_contract 持久化字段或表
 - 当前不处理 project `Asset` 归一化
 
+### 11.176 2026-05-09 新进展：Asset 已能归一化为 artifact_contract
+
+11.175 把 pipeline `StageArtifact` 收进 artifact_contract 投影，但项目侧还有另一条 artifact 形态：
+
+- `Asset.asset_type`
+- `Asset.title`
+- `Asset.content_json`
+- `Asset.content_markdown`
+- `Asset.storage_path`
+- `Asset.source_input_refs_json`
+
+如果只处理 StageArtifact，artifact_contract 仍无法覆盖项目资产、设计资产、结构化资产和文档资产。
+
+本轮扩展 `backend/services/artifact_normalization.py`：
+
+- 新增 `compile_asset_to_contract(...)`
+- document-like asset 转为 `document`
+- structured JSON asset 转为 `structured_asset`
+- `workspace.file*` / `workspace.directory*` asset 在有 `storage_path` 时转为 workspace artifact
+- 解析并校验 `content_json` 与 `source_input_refs_json`
+- 保留 project id、version、status、is_current、supersession、approval decision 和 timestamps 到 metadata
+
+这一步的意义是：
+
+- artifact_contract 现在同时覆盖 pipeline `StageArtifact` 和 project `Asset`
+- 项目资产可以先通过 read-side contract 投影统一进入 API/Monitor/后续 evaluator
+- 后续无需一次性迁移数据库，也能逐步把 artifact read/write path 收到同一种协议对象
+
+边界：
+
+- 当前不改 `assets` 表结构
+- 当前不改 Asset 创建或审批流程
+- 当前不持久化 canonical artifact_contract payload
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
