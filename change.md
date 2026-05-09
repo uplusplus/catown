@@ -3262,3 +3262,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 记录 contract/read-model/payload 层已完成的能力
 - 明确剩余缺口集中在 executor 主路径接线、Monitor 前端展示和 ledger retention 策略
 - 暂不改代码，避免触碰当前已脏或已 staged 的并行文件
+
+### `Record workflow policy decisions on pipeline start`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- pipeline start 创建 task-run ledger 后，自动校验当前 template 的 workflow spec readiness
+- 使用 `append_policy_decision_event_from_result_payload(...)` 写入 `policy_decision_recorded`
+- policy decision 类型为 `workflow_spec_policy`
+- 当前只记录 accepted/rejected verdict，不改变 pipeline start 行为

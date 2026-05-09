@@ -233,11 +233,15 @@ fall back to the compact policy decision summary text.
 
 This schema is **not** yet wired into:
 
-- automatic run ledger persistence from executor paths
+- automatic run ledger persistence from most executor paths
 - pipeline stage completion
 - artifact acceptance
 - approval queue resolution
 - Monitor frontend visualization
+
+Pipeline start now records a `workflow_spec_policy` decision for the selected
+template's execution-readiness check when a task-run ledger exists. This is an
+audit event only; it does not yet block pipeline startup.
 
 ## 8. Expected Next Steps
 

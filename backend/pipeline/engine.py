@@ -69,6 +69,7 @@ from services.turn_state import (
     normalize_tool_call,
 )
 from services.run_ledger import (
+    append_policy_decision_event_from_result_payload,
     append_task_event,
     build_task_run_checkpoint_snapshot,
     describe_checkpoint_continuation_state,
@@ -91,6 +92,8 @@ from services.runner_lifecycle import (
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
 from services.tool_governance import build_blocked_tool_result, build_structured_tool_result, classify_tool_result, tool_manual_approval_reason, tool_result_succeeded
+from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
+from services.workflow_spec_policy import validate_and_project_workflow_spec_for_execution
 from services.pipeline_inbox import (
     consume_legacy_instruction_texts_for_agent,
     enqueue_message_delivery,
@@ -274,6 +277,22 @@ def _pipeline_runner_policy(
         stages=stages,
         stage_tool_packs=stage_tool_packs,
     )
+
+
+def _pipeline_workflow_policy_result(pipeline: Pipeline, template: Any | None) -> Any | None:
+    if template is None:
+        return None
+    if hasattr(template, "model_dump"):
+        template_payload = template.model_dump(mode="json")
+    elif isinstance(template, dict):
+        template_payload = dict(template)
+    else:
+        return None
+    workflow_spec = compile_pipeline_template_to_workflow_spec(
+        getattr(pipeline, "pipeline_name", None) or "default",
+        template_payload,
+    )
+    return validate_and_project_workflow_spec_for_execution(workflow_spec)
 
 
 def _queue_pipeline_gate_approval(
@@ -989,6 +1008,14 @@ class PipelineEngine:
                 },
                 target_agent_name=initial_agent_name,
             )
+            workflow_policy_result = _pipeline_workflow_policy_result(pipeline, template)
+            if workflow_policy_result is not None:
+                append_policy_decision_event_from_result_payload(
+                    db,
+                    task_run,
+                    workflow_policy_result.to_payload(),
+                    agent_name=initial_agent_name,
+                )
 
         # 初始化 Git
         self._git_init(run)

@@ -121,9 +121,13 @@ def test_start_pipeline_creates_task_run_ledger_bridge(fresh_db):
             .all()
         )
 
-        assert [event.event_type for event in events] == ["pipeline_run_started"]
+        assert [event.event_type for event in events] == [
+            "pipeline_run_started",
+            "policy_decision_recorded",
+        ]
 
         payload = json.loads(events[0].payload_json)
+        policy_payload = json.loads(events[1].payload_json)
         assert payload["pipeline_id"] == pipeline.id
         assert payload["pipeline_run_id"] == run.id
         assert payload["stage_count"] == 1
@@ -135,6 +139,9 @@ def test_start_pipeline_creates_task_run_ledger_bridge(fresh_db):
         assert payload["runner_policy"]["stages"][0]["approval"]["required"] is False
         assert payload["runner_policy"]["stages"][0]["metadata"]["tool_policy_summary"]["tool_count"] >= 1
         assert payload["runner_policy"]["metadata"]["stage_tool_packs"]["analysis"]["tool_policy_summary"]["tool_count"] >= 1
+        assert policy_payload["event_kind"] == "policy_decision_recorded"
+        assert policy_payload["policy_decision"]["decision_type"] == "workflow_spec_policy"
+        assert policy_payload["policy_decision"]["accepted"] is True
     finally:
         db.close()
 
@@ -1038,6 +1045,7 @@ async def test_instruct_appends_pipeline_task_run_event(fresh_db):
 
         assert [event.event_type for event in events] == [
             "pipeline_run_started",
+            "policy_decision_recorded",
             "pipeline_boss_instruction",
         ]
 

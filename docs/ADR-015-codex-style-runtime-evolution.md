@@ -7847,6 +7847,30 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 
 下一阶段应优先接 executor 主路径，但要避开当前并行修改中的 `backend/pipeline/engine.py`、`backend/routes/api.py`、`backend/services/tool_governance.py` 等脏文件，避免覆盖其他线程的改动。
 
+### 11.198 2026-05-09 新进展：pipeline start 已记录 workflow_spec_policy decision
+
+11.195 已提供 `append_policy_decision_event_from_result_payload(...)`，但还没有任何真实 executor path 使用它。
+本轮选择最低风险的 pipeline start path 先接一处：只记录 workflow spec readiness verdict，不改变启动行为。
+
+本轮更新 `backend/pipeline/engine.py`：
+
+- pipeline start 创建 task-run ledger 后，从当前 pipeline template 编译 workflow spec
+- 调用 `validate_and_project_workflow_spec_for_execution(...)`
+- 将 result payload 交给 `append_policy_decision_event_from_result_payload(...)`
+- 写入 `policy_decision_recorded` event，decision type 为 `workflow_spec_policy`
+
+这一步的意义是：
+
+- policy decision 首次从纯 helper/read model 接入真实 pipeline executor path
+- pipeline start 的 workflow readiness verdict 可在 run ledger 和 Monitor API 中看到
+- 仍保持行为安全：当前只记录，不阻止 pipeline 启动
+
+边界：
+
+- 当前不改变 pipeline start allow/block 行为
+- 当前不接 stage completion / artifact acceptance
+- 当前不接 approval queue resolution
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
