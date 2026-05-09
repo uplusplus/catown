@@ -157,9 +157,13 @@ A stable read-model summary helper is also present:
 
 - `summarize_policy_decision(...)`
 - `summarize_policy_decision_set(...)`
+- `format_policy_decision_summary(...)`
 
 It returns decision id, decision type, subject identity, accepted status, stage/policy
 context, violation counts, and aggregate counts without exposing the full payload.
+The formatter returns the compact human-readable text used by ledger events, so
+writers do not need private summary rendering logic. It accepts either a full
+contract or an already-built single-decision summary.
 
 A run-ledger payload helper is also present:
 

@@ -7656,6 +7656,29 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不新增数据库表
 - 当前不改变 policy checker 行为
 
+### 11.191 2026-05-09 新进展：policy decision event summary formatter 已上移到 contract service
+
+11.190 增加了 `append_policy_decision_event(...)`，但默认 summary 文本仍由 run ledger 私有 helper 生成。
+这会让后续如果 Monitor、executor 或其他 read/write adapter 也需要同样的人类可读描述，容易再次分叉。
+
+本轮更新：
+
+- `backend/services/policy_decision_contracts.py` 新增 `format_policy_decision_summary(...)`
+- `backend/services/run_ledger.py` 的 `append_policy_decision_event(...)` 改为复用该 formatter
+- 删除 run ledger 内部私有 summary formatter
+
+这一步的意义是：
+
+- policy decision 的机器 payload、read summary 和 human-readable event summary 都集中在 contract service
+- run ledger 只负责写事件，不再持有 policy decision 的展示规则
+- 后续 Monitor/API 如果需要相同文本，可直接复用 contract service
+
+边界：
+
+- 当前不改变 `policy_decision_recorded` payload shape
+- 当前不改变 task-run read model shape
+- 当前不主动接 executor 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

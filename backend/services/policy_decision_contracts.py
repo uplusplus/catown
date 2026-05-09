@@ -94,6 +94,20 @@ def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any])
     }
 
 
+def format_policy_decision_summary(decision: PolicyDecisionContract | dict[str, Any]) -> str:
+    """Return a compact human-readable summary for one policy decision or summary."""
+
+    if isinstance(decision, dict) and "subject_kind" in decision:
+        summary = decision
+    else:
+        summary = summarize_policy_decision(decision)
+    subject_kind = str(summary.get("subject_kind") or "subject").strip()
+    subject_id = str(summary.get("subject_id") or "").strip()
+    verdict = "accepted" if bool(summary.get("accepted", False)) else "rejected"
+    target = f"{subject_kind} {subject_id}".strip()
+    return f"Policy decision {verdict} for {target}.".strip()
+
+
 def summarize_policy_decision_set(
     decisions: list[PolicyDecisionContract | dict[str, Any]],
 ) -> dict[str, Any]:

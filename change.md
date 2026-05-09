@@ -3131,3 +3131,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 使用标准 `policy_decision_recorded` event type 和 `build_policy_decision_event_payload(...)`
 - 自动生成默认 summary 并委托现有 `append_task_event`
 - 暂不接具体 executor 主路径，也不改变 policy checker 行为
+
+### `Share policy decision summary formatting`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/services/run_ledger.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `format_policy_decision_summary(...)`
+- 将 policy decision 的默认 event summary 生成逻辑从 run ledger 私有 helper 上移到 contract service
+- `append_policy_decision_event(...)` 复用同一 summary formatter
+- 暂不改变 ledger event payload、read model shape 或 executor 写入路径

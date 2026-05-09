@@ -6,6 +6,7 @@ from services.evaluation_result_policy import validate_evaluation_result_for_pol
 from services.policy_decision_contracts import (
     build_policy_decision_event_payload,
     dump_policy_decision,
+    format_policy_decision_summary,
     parse_policy_decision,
     project_policy_decision,
     summarize_policy_decision,
@@ -216,6 +217,36 @@ def test_summarize_policy_decision_returns_read_model_counts():
         "warning_count": 1,
         "info_count": 0,
     }
+
+
+def test_format_policy_decision_summary_returns_compact_text():
+    decision = parse_policy_decision(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-action-1",
+            "decision_type": "action_request_policy",
+            "subject": {
+                "kind": "action_request",
+                "id": "req-1",
+            },
+            "accepted": False,
+        }
+    )
+
+    assert format_policy_decision_summary(decision) == "Policy decision rejected for action_request req-1."
+
+
+def test_format_policy_decision_summary_accepts_read_model_summary():
+    summary = {
+        "decision_id": "policy-decision-artifact-1",
+        "decision_type": "artifact_contract_policy",
+        "subject_kind": "artifact_contract",
+        "subject_id": "artifact-1",
+        "accepted": True,
+    }
+
+    assert format_policy_decision_summary(summary) == "Policy decision accepted for artifact_contract artifact-1."
 
 
 def test_build_policy_decision_event_payload_includes_summary_and_contract():

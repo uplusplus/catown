@@ -24,6 +24,7 @@ from services.orchestration_inbox import (
 from services.pipeline_inbox import summarize_pipeline_run_inbox
 from services.policy_decision_contracts import (
     build_policy_decision_event_payload,
+    format_policy_decision_summary,
     summarize_policy_decision,
     summarize_policy_decision_set,
 )
@@ -211,7 +212,7 @@ def append_policy_decision_event(
         "policy_decision_recorded",
         agent_name=agent_name,
         message_id=message_id,
-        summary=summary or _default_policy_decision_event_summary(decision_summary),
+        summary=summary or format_policy_decision_summary(decision_summary),
         payload=payload,
     )
 
@@ -323,16 +324,6 @@ def _default_title(user_request: str) -> str:
     if not text:
         return "Task run"
     return text[:77] + "..." if len(text) > 80 else text
-
-
-def _default_policy_decision_event_summary(summary: Any) -> str:
-    payload = summary if isinstance(summary, dict) else {}
-    subject_kind = str(payload.get("subject_kind") or "subject").strip()
-    subject_id = str(payload.get("subject_id") or "").strip()
-    accepted = bool(payload.get("accepted", False))
-    verdict = "accepted" if accepted else "rejected"
-    target = f"{subject_kind} {subject_id}".strip()
-    return f"Policy decision {verdict} for {target}.".strip()
 
 
 def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, Any]:
