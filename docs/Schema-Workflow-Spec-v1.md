@@ -224,6 +224,12 @@ The first config-load read-side bridge is now present in:
 `PipelineConfigManager` now caches both canonical workflow specs and their execution-readiness
 reports while preserving the legacy `PipelineConfig` view.
 
+The first diagnostics API bridge is now present in:
+
+- `GET /api/pipelines/templates/{pipeline_name}/workflow-spec/report`
+
+It exposes the cached execution-readiness report through a stable read-side endpoint.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

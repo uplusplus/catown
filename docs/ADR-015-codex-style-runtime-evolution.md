@@ -6822,6 +6822,34 @@ v1 当前覆盖：
 - pipeline executor start path 仍未 enforce diagnostics
 - API 暂未暴露 diagnostics
 
+### 11.165 2026-05-09 新进展：workflow diagnostics 已通过 Pipeline API 暴露
+
+11.164 之后，`PipelineConfigManager` 已经缓存了 execution-readiness report，但外部仍然只能看到 canonical workflow spec 本体。
+这会让前端、调试工具和未来编排 Agent 无法读取软件裁定结果。
+
+本轮新增只读接口：
+
+- `GET /api/pipelines/templates/{pipeline_name}/workflow-spec/report`
+
+返回：
+
+- `workflow_id`
+- `executable`
+- `diagnostic_count`
+- full diagnostics payload
+
+这一步的意义是：
+
+- workflow spec 的软件裁定结果第一次具备稳定 API 可见性
+- 编排 Agent 可以读取“为什么这个 workflow 不能执行”，而不是只能看到原始 spec
+- 这仍然保持 read-side，不进入 executor enforcement
+
+边界：
+
+- 不改变 `/workflow-spec` 原有响应
+- 不阻断 pipeline start
+- 不把 diagnostics 写入数据库
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

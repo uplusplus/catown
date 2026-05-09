@@ -126,6 +126,13 @@ class WorkflowSpecOut(BaseModel):
     payload: dict
 
 
+class WorkflowSpecReportOut(BaseModel):
+    workflow_id: str
+    executable: bool
+    diagnostic_count: int
+    payload: dict
+
+
 # ==================== Pipeline CRUD ====================
 
 @router.post("", response_model=PipelineOut)
@@ -157,6 +164,21 @@ async def get_pipeline_template_workflow_spec(pipeline_name: str):
         description=workflow_spec.description,
         domain=workflow_spec.domain,
         stage_count=len(workflow_spec.stages),
+        payload=payload,
+    )
+
+
+@router.get("/templates/{pipeline_name}/workflow-spec/report", response_model=WorkflowSpecReportOut)
+async def get_pipeline_template_workflow_spec_report(pipeline_name: str):
+    """Return execution-readiness diagnostics for one pipeline template."""
+    report = pipeline_config_manager.get_workflow_spec_report(pipeline_name)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Pipeline template not found")
+    payload = report.to_payload()
+    return WorkflowSpecReportOut(
+        workflow_id=report.workflow_id,
+        executable=report.executable,
+        diagnostic_count=len(report.diagnostics),
         payload=payload,
     )
 

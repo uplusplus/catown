@@ -107,3 +107,13 @@ def test_pipeline_template_workflow_spec_endpoint_exposes_canonical_schema(clien
     assert payload["payload"]["version"] == 1
     assert payload["payload"]["stages"][0]["stage_id"] == "analysis"
     assert payload["payload"]["stages"][0]["delivery"]["expected_artifacts"] == ["PRD.md"]
+
+
+def test_pipeline_template_workflow_spec_report_endpoint_exposes_diagnostics(client):
+    response = client.get("/api/pipelines/templates/default/workflow-spec/report")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workflow_id"] == "default"
+    assert payload["executable"] is True
+    assert payload["diagnostic_count"] == 0
+    assert payload["payload"]["metadata"]["stage_count"] == 1

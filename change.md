@@ -2671,3 +2671,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `PipelineConfigManager` 在加载 legacy pipeline config 时同步缓存 canonical `workflow_spec` 与 execution-readiness report
 - 新增 `get_workflow_spec_report(...)`
 - 不阻断现有 config load / engine 主路径，先把 diagnostics 做成稳定 read-side contract
+
+### `Expose workflow diagnostics via Pipeline API`
+
+范围：
+
+- `backend/routes/pipeline.py`
+- `backend/tests/test_pipeline_routes_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `GET /api/pipelines/templates/{pipeline_name}/workflow-spec/report`
+- 暴露 `PipelineConfigManager` 缓存的 execution-readiness report
+- 保持 workflow spec 只读 API 与 pipeline executor 主路径分离
