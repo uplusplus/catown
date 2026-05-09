@@ -7547,6 +7547,41 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不改 approval queue 主路径
 - 当前不改变 action-request policy checker 行为
 
+### 11.187 2026-05-09 新进展：policy decision 已有集合级 read-model summary
+
+前面几轮补齐了单条 policy decision 的 contract、summary 和 event payload。
+但 Monitor/run detail 通常需要回答集合问题：
+
+- 本 run 产生了多少 policy decision
+- accepted / rejected 各多少
+- error / warning 各多少
+- 每类 decision type 的分布是什么
+
+如果这些统计由 UI 或 API 各自计算，read model 会再次分叉。
+
+本轮在 `backend/services/policy_decision_contracts.py` 增加：
+
+- `summarize_policy_decision_set(...)`
+
+输出：
+
+- decision_count
+- accepted_count / rejected_count
+- error_count / warning_count / info_count
+- by_decision_type counters
+
+这一步的意义是：
+
+- policy decision 已具备单条和集合两级 read model
+- 后续 run ledger / Monitor 可以复用同一个聚合逻辑
+- 控制面 verdict 的可视化不需要解析完整 contract 列表
+
+边界：
+
+- 当前不接 Monitor endpoint
+- 当前不扫描 run ledger events
+- 当前不改变 policy decision contract
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

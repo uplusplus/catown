@@ -9,6 +9,7 @@ from services.policy_decision_contracts import (
     parse_policy_decision,
     project_policy_decision,
     summarize_policy_decision,
+    summarize_policy_decision_set,
 )
 from services.runner_policy import compile_workflow_run_policy
 from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
@@ -262,3 +263,59 @@ def test_build_policy_decision_event_payload_can_omit_full_contract():
 
     assert "policy_decision" not in payload
     assert payload["policy_decision_summary"]["decision_id"] == "policy-decision-action-2"
+
+
+def test_summarize_policy_decision_set_returns_aggregate_counts():
+    summary = summarize_policy_decision_set(
+        [
+            {
+                "kind": "policy_decision",
+                "version": 1,
+                "decision_id": "policy-decision-action-1",
+                "decision_type": "action_request_policy",
+                "subject": {"kind": "action_request", "id": "req-1"},
+                "accepted": True,
+            },
+            {
+                "kind": "policy_decision",
+                "version": 1,
+                "decision_id": "policy-decision-artifact-1",
+                "decision_type": "artifact_contract_policy",
+                "subject": {"kind": "artifact_contract", "id": "artifact-1"},
+                "accepted": False,
+                "violations": [
+                    {
+                        "code": "artifact_not_expected",
+                        "message": "Unexpected artifact.",
+                        "severity": "error",
+                    },
+                    {
+                        "code": "artifact_summary_missing",
+                        "message": "Summary missing.",
+                        "severity": "warning",
+                    },
+                ],
+            },
+        ]
+    )
+
+    assert summary == {
+        "decision_count": 2,
+        "accepted_count": 1,
+        "rejected_count": 1,
+        "error_count": 1,
+        "warning_count": 1,
+        "info_count": 0,
+        "by_decision_type": {
+            "action_request_policy": {
+                "count": 1,
+                "accepted": 1,
+                "rejected": 0,
+            },
+            "artifact_contract_policy": {
+                "count": 1,
+                "accepted": 0,
+                "rejected": 1,
+            },
+        },
+    }

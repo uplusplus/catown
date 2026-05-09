@@ -94,6 +94,41 @@ def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any])
     }
 
 
+def summarize_policy_decision_set(
+    decisions: list[PolicyDecisionContract | dict[str, Any]],
+) -> dict[str, Any]:
+    """Return aggregate read-model counters for policy decisions."""
+
+    parsed_decisions = [
+        parse_policy_decision(decision) if isinstance(decision, dict) else decision
+        for decision in list(decisions or [])
+    ]
+    by_decision_type: dict[str, dict[str, int]] = {}
+    severity_counts = {"info": 0, "warning": 0, "error": 0}
+    for decision in parsed_decisions:
+        bucket = by_decision_type.setdefault(
+            decision.decision_type,
+            {"count": 0, "accepted": 0, "rejected": 0},
+        )
+        bucket["count"] += 1
+        if decision.accepted:
+            bucket["accepted"] += 1
+        else:
+            bucket["rejected"] += 1
+        for violation in decision.violations:
+            severity_counts[violation.severity] = severity_counts.get(violation.severity, 0) + 1
+
+    return {
+        "decision_count": len(parsed_decisions),
+        "accepted_count": sum(1 for decision in parsed_decisions if decision.accepted),
+        "rejected_count": sum(1 for decision in parsed_decisions if not decision.accepted),
+        "error_count": severity_counts["error"],
+        "warning_count": severity_counts["warning"],
+        "info_count": severity_counts["info"],
+        "by_decision_type": by_decision_type,
+    }
+
+
 def build_policy_decision_event_payload(
     decision: PolicyDecisionContract | dict[str, Any],
     *,

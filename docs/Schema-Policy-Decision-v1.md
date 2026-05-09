@@ -156,9 +156,10 @@ into canonical `policy_decision` payloads.
 A stable read-model summary helper is also present:
 
 - `summarize_policy_decision(...)`
+- `summarize_policy_decision_set(...)`
 
 It returns decision id, decision type, subject identity, accepted status, stage/policy
-context, and violation counts without exposing the full payload.
+context, violation counts, and aggregate counts without exposing the full payload.
 
 A run-ledger payload helper is also present:
 

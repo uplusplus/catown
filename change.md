@@ -3063,3 +3063,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 任意 action request policy check 现在可输出 canonical `policy_decision`
 - 同时输出 `policy_decision_event_payload`
 - 暂不接 approval queue、tool request 或 run ledger 主路径
+
+### `Summarize policy decision sets`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `summarize_policy_decision_set(...)`
+- 输出 decision_count、accepted/rejected counts、severity counts 和 by_decision_type counters
+- 为后续 run ledger / Monitor 集合级 read model 提供统一聚合逻辑
+- 暂不接 Monitor endpoint，也不扫描 run ledger events
