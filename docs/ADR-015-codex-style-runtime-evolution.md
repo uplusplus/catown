@@ -7703,6 +7703,39 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不新增数据库表
 - 当前不主动接 executor 主路径
 
+### 11.193 2026-05-09 新进展：policy decision 已能投影为 executor gate result
+
+policy decision 已有 contract、ledger event payload 和 read model，但 executor 如果要消费 verdict，仍缺一个统一的 gate projection。
+如果每条 executor path 都自己判断 `accepted`、拼 blocked reason，会很快回到一事务一判断的传统软件分叉。
+
+本轮在 `backend/services/policy_decision_contracts.py` 增加：
+
+- `build_policy_decision_gate_result(...)`
+
+它输出：
+
+- `status`: `accepted` 或 `rejected`
+- `allowed`
+- `blocked`
+- `blocked_kind`
+- `blocked_reason`
+- `policy_decision_summary`
+- `policy_decision`
+- `violations`
+
+这一步的意义是：
+
+- policy decision 的 verdict 现在有了执行侧可直接消费的稳定 projection
+- full-contract rejection 会优先用 violation message 作为 block reason
+- summary-only decision 也能被投影成 blocked result，但不会伪造完整 contract
+- 这为后续 action/artifact/evaluation/workflow executor gate 接入提供同一入口
+
+边界：
+
+- 当前不接 executor 主路径
+- 当前不改变 tool governance 的 blocked result
+- 当前不改变 ledger event schema
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

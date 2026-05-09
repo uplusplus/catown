@@ -206,6 +206,15 @@ A run-ledger append helper is now present:
 It writes a standard `policy_decision_recorded` event payload via the existing task-run
 ledger API when a caller explicitly invokes it.
 
+A gate projection helper is also present:
+
+- `build_policy_decision_gate_result(...)`
+
+It converts accepted/rejected policy decisions into an executor-friendly
+`allowed`/`blocked` result with `blocked_kind` and `blocked_reason`. Full-contract
+rejections use violation messages as the block reason; summary-only rejections
+fall back to the compact policy decision summary text.
+
 This schema is **not** yet wired into:
 
 - automatic run ledger persistence from executor paths

@@ -5,6 +5,7 @@ from services.artifact_contract_policy import validate_artifact_contract_for_wor
 from services.evaluation_result_policy import validate_evaluation_result_for_policy
 from services.policy_decision_contracts import (
     build_policy_decision_event_payload,
+    build_policy_decision_gate_result,
     dump_policy_decision,
     format_policy_decision_summary,
     parse_policy_decision,
@@ -294,6 +295,69 @@ def test_build_policy_decision_event_payload_can_omit_full_contract():
 
     assert "policy_decision" not in payload
     assert payload["policy_decision_summary"]["decision_id"] == "policy-decision-action-2"
+
+
+def test_build_policy_decision_gate_result_allows_accepted_decision():
+    result = build_policy_decision_gate_result(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-action-1",
+            "decision_type": "action_request_policy",
+            "subject": {"kind": "action_request", "id": "req-1"},
+            "accepted": True,
+        }
+    )
+
+    assert result["status"] == "accepted"
+    assert result["allowed"] is True
+    assert result["blocked"] is False
+    assert result["blocked_kind"] is None
+    assert result["blocked_reason"] is None
+    assert result["policy_decision"]["decision_id"] == "policy-decision-action-1"
+
+
+def test_build_policy_decision_gate_result_blocks_rejected_decision_with_reason():
+    result = build_policy_decision_gate_result(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-artifact-1",
+            "decision_type": "artifact_contract_policy",
+            "subject": {"kind": "artifact_contract", "id": "artifact-1"},
+            "accepted": False,
+            "violations": [
+                {
+                    "code": "artifact_not_expected",
+                    "message": "Artifact is not expected for this stage.",
+                    "severity": "error",
+                }
+            ],
+        }
+    )
+
+    assert result["status"] == "rejected"
+    assert result["allowed"] is False
+    assert result["blocked"] is True
+    assert result["blocked_kind"] == "policy_decision"
+    assert result["blocked_reason"] == "Artifact is not expected for this stage."
+    assert result["violations"][0]["code"] == "artifact_not_expected"
+
+
+def test_build_policy_decision_gate_result_accepts_summary_only_decision():
+    result = build_policy_decision_gate_result(
+        {
+            "decision_id": "policy-decision-summary-only-1",
+            "decision_type": "action_request_policy",
+            "subject_kind": "action_request",
+            "subject_id": "req-summary-only-1",
+            "accepted": False,
+        }
+    )
+
+    assert result["blocked"] is True
+    assert result["blocked_reason"] == "Policy decision rejected for action_request req-summary-only-1."
+    assert result["policy_decision"] is None
 
 
 def test_summarize_policy_decision_set_returns_aggregate_counts():

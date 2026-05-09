@@ -189,6 +189,24 @@ def build_policy_decision_event_payload(
     return payload
 
 
+def build_policy_decision_gate_result(decision: PolicyDecisionContract | dict[str, Any]) -> dict[str, Any]:
+    """Project one policy decision into an executor-friendly gate result."""
+
+    summary = summarize_policy_decision(decision)
+    accepted = bool(summary.get("accepted", False))
+    violations = _policy_decision_violation_payloads(decision)
+    return {
+        "status": "accepted" if accepted else "rejected",
+        "allowed": accepted,
+        "blocked": not accepted,
+        "blocked_kind": None if accepted else "policy_decision",
+        "blocked_reason": None if accepted else _policy_decision_block_reason(summary, violations),
+        "policy_decision_summary": summary,
+        "policy_decision": _policy_decision_contract_payload(decision),
+        "violations": violations,
+    }
+
+
 def project_policy_decision(
     decision: Any,
     *,
@@ -239,6 +257,46 @@ def project_policy_decision(
             },
         }
     )
+
+
+def _policy_decision_contract(decision: PolicyDecisionContract | dict[str, Any]) -> PolicyDecisionContract | None:
+    if isinstance(decision, PolicyDecisionContract):
+        return decision
+    if isinstance(decision, dict) and decision.get("kind") == "policy_decision":
+        return parse_policy_decision(decision)
+    return None
+
+
+def _policy_decision_contract_payload(decision: PolicyDecisionContract | dict[str, Any]) -> dict[str, Any] | None:
+    parsed_decision = _policy_decision_contract(decision)
+    return dump_policy_decision(parsed_decision) if parsed_decision is not None else None
+
+
+def _policy_decision_violation_payloads(decision: PolicyDecisionContract | dict[str, Any]) -> list[dict[str, Any]]:
+    parsed_decision = _policy_decision_contract(decision)
+    if parsed_decision is None:
+        return []
+    return [
+        violation.model_dump(mode="json")
+        for violation in parsed_decision.violations
+    ]
+
+
+def _policy_decision_block_reason(summary: dict[str, Any], violations: list[dict[str, Any]]) -> str:
+    for severity in ("error", "warning", "info"):
+        violation = next(
+            (
+                item
+                for item in violations
+                if str(item.get("severity") or "error").strip().lower() == severity
+            ),
+            None,
+        )
+        if violation is not None:
+            message = str(violation.get("message") or "").strip()
+            if message:
+                return message
+    return format_policy_decision_summary(summary)
 
 
 def _decision_payload(decision: Any) -> dict[str, Any]:

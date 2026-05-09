@@ -3168,3 +3168,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - run ledger checkpoint summary 现在能识别只有 `policy_decision_summary`、没有完整 `policy_decision` contract 的事件
 - task-run detail 仍列出 summary-only policy decision entry，并将缺失的 full contract 标记为 `None`
 - 暂不改变 `policy_decision_recorded` event schema，也不改变默认 append helper 的 full-contract 写入行为
+
+### `Project policy decisions into gate results`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `build_policy_decision_gate_result(...)`
+- 将 accepted/rejected verdict 投影为 executor-friendly `allowed` / `blocked` / `blocked_kind` / `blocked_reason`
+- rejected full-contract decision 优先使用 violation message 作为 block reason
+- summary-only decision 也能生成 gate result，但不会伪造完整 contract
+- 暂不接 executor 主路径，也不改变已有 tool governance blocked 结果
