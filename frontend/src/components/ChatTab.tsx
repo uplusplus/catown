@@ -2204,6 +2204,16 @@ function summarizeStreamingDetail(detail: string | undefined) {
   return oneLinePreview(detail, "", 112) || undefined;
 }
 
+function summarizeStreamingStepOutput(step: MessageStreamStep) {
+  const output = step.detailContent?.trim();
+  if (!output) return undefined;
+  return oneLinePreview(output, "", 180) || undefined;
+}
+
+function summarizeStreamingStepCurrentDetail(step: MessageStreamStep) {
+  return summarizeStreamingStepOutput(step) || summarizeStreamingDetail(step.detail);
+}
+
 function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDescriptor {
   const steps = message.streamSteps ?? [];
   const activeStep = [...steps].reverse().find((step) => step.state === "live") ?? steps[steps.length - 1];
@@ -2221,7 +2231,7 @@ function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDe
     return {
       mode: "queued",
       title: `${actor} is queued to respond`,
-      subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting to start the first step.",
+      subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting to start the first step.",
     };
   }
 
@@ -2231,44 +2241,44 @@ function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDe
         return {
           mode: "llm",
           title: `${actor} is waiting for the model response`,
-          subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting for the first tokens from the model.",
+          subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting for the first tokens from the model.",
         };
       }
       return {
         mode: "llm",
         title: `${actor} is sending prompt + context to the model`,
-        subtitle: summarizeStreamingDetail(activeStep.detail) || "Packaging the latest chat, project context, and tool list.",
+        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Packaging the latest chat, project context, and tool list.",
       };
     case "llm_inbound":
       return {
         mode: "llm",
         title: `${actor} is waiting for the model response`,
-        subtitle: summarizeStreamingDetail(activeStep.detail) || "Waiting for the first tokens from the model.",
+        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting for the first tokens from the model.",
       };
     case "tool_call":
       if (/^Planning\b/i.test(activeStep.detail ?? "")) {
         return {
           mode: "tool",
           title: `${actor} is planning ${activeStep.tool || "a tool"} call`,
-          subtitle: summarizeStreamingDetail(activeStep.detail) || "The model is assembling tool arguments.",
+          subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "The model is assembling tool arguments.",
         };
       }
       return {
         mode: "tool",
         title: `${actor} is calling ${activeStep.tool || "a tool"}`,
-        subtitle: summarizeStreamingDetail(activeStep.detail) || "Executing the tool request now.",
+        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Executing the tool request now.",
       };
     case "tool_result_to_llm":
       return {
         mode: "handoff",
         title: `${actor} is sending ${activeStep.tool || "tool"} output back to the model`,
-        subtitle: summarizeStreamingDetail(activeStep.detail) || "Tool finished; preparing the next LLM round.",
+        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Tool finished; preparing the next LLM round.",
       };
     default:
       return {
         mode: "handoff",
         title: activeStep.label,
-        subtitle: summarizeStreamingDetail(activeStep.detail),
+        subtitle: summarizeStreamingStepCurrentDetail(activeStep),
       };
   }
 }
@@ -2779,6 +2789,36 @@ function compactCardSummary(card: ThreadCard) {
   }
 }
 
+function compactCardCurrentDetail(card: ThreadCard, isCurrent: boolean) {
+  const summary = compactCardSummary(card);
+  if (!isCurrent) return summary;
+
+  switch (card.kind) {
+    case "tool_call":
+      return oneLinePreview(card.result, summary || `${card.tool || "Tool"} output`);
+    case "tool_merge":
+      return oneLinePreview(
+        card.items[card.items.length - 1]?.result,
+        summary || `${card.tool || "tool"} output`,
+        180,
+      );
+    case "llm_call":
+      return oneLinePreview(card.response, summary || "Model output", 180);
+    case "agent_error":
+      return oneLinePreview(card.error || card.summary || card.content, summary || "Agent flow failed.", 180);
+    case "stage_start":
+      return oneLinePreview(card.content || card.summary, summary || card.display_name || card.stage || "Stage started", 180);
+    case "stage_end":
+      return oneLinePreview(card.summary, summary || card.stage || "Stage completed", 180);
+    case "agent_message":
+      return oneLinePreview(card.content, summary || "Agent handoff", 180);
+    case "boss_instruction":
+      return oneLinePreview(card.content_preview, summary || "Instruction recorded", 180);
+    default:
+      return summary;
+  }
+}
+
 function renderCompactCard(
   card: ThreadCard,
   groupKey: string,
@@ -2791,7 +2831,7 @@ function renderCompactCard(
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
 ) {
-  const detail = compactCardSummary(card);
+  const detail = compactCardCurrentDetail(card, isCurrent);
   const meta = compactCardMeta(card);
   const state = compactCardState(card, isLive);
   const gatePipelineId =
@@ -3012,6 +3052,8 @@ function renderMessage(
       ? message.streamSteps.map((step) => ({ ...step }))
       : fallbackCards.flatMap((card, index) => buildMessageStepsFromCard(card, message.id, index));
   const hasStreamSteps = streamSteps.length > 0;
+  const currentStreamStepId =
+    [...streamSteps].reverse().find((step) => step.state === "live")?.id ?? streamSteps[streamSteps.length - 1]?.id ?? null;
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
   const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
@@ -3042,7 +3084,13 @@ function renderMessage(
             </span>
             <span className="message-stream-step__copy">
               <strong>{step.label}</strong>
-              {step.detail ? <small>{step.detail}</small> : null}
+              {(() => {
+                const detail =
+                  step.id === currentStreamStepId
+                    ? summarizeStreamingStepCurrentDetail(step)
+                    : summarizeStreamingDetail(step.detail);
+                return detail ? <small>{detail}</small> : null;
+              })()}
             </span>
             <span className="message-stream-step__toggle" aria-hidden="true">
               ▸

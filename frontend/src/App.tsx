@@ -851,9 +851,18 @@ function finalizeStreamingTrace(
     };
   }
 
+  const existingFinal = [...settled].reverse().find((step) => step.label === finalLabel);
+  const finalStep = existingFinal
+    ? {
+        ...existingFinal,
+        detail: finalDetail ?? existingFinal.detail,
+        state,
+      }
+    : buildStreamStep(finalLabel, finalDetail, state);
+
   return {
     ...message,
-    streamSteps: trimStreamSteps([...settled, buildStreamStep(finalLabel, finalDetail, state)]),
+    streamSteps: trimStreamSteps([...settled.filter((step) => step.label !== finalLabel), finalStep]),
   };
 }
 
@@ -1536,7 +1545,7 @@ function messageLooksApprovalHold(message: MessageItem) {
 function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRunSummary) {
   const status = (taskRun.status || "").toLowerCase();
   const isFailed = status === "failed" || status === "cancelled";
-  const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Approval resolved";
+  const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Continuing";
   const detail =
     taskRun.summary ||
     taskRun.continuation_state_summary ||
