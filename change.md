@@ -3279,3 +3279,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 使用 `append_policy_decision_event_from_result_payload(...)` 写入 `policy_decision_recorded`
 - policy decision 类型为 `workflow_spec_policy`
 - 当前只记录 accepted/rejected verdict，不改变 pipeline start 行为
+
+### `Record artifact policy decisions on pipeline stage completion`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- pipeline stage completion 记录 expected artifact 后，为每个已发现 artifact 构造 `artifact_contract`
+- 使用 runner policy 校验 artifact delivery contract
+- 使用 `append_policy_decision_event_from_result_payload(...)` 写入 `artifact_contract_policy` decision
+- 当前只记录 artifact verdict，不改变 stage completion 或 gate blocking 行为

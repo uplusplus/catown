@@ -1195,7 +1195,7 @@ async def test_resume_appends_checkpoint_continuation_state(fresh_db):
 
 
 @pytest.mark.asyncio
-async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_db, tmp_path):
+async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_db, tmp_path, monkeypatch):
     engine_mod = _reload_pipeline_engine()
     from pipeline.config import PipelineConfig, StageConfig
 
@@ -1203,6 +1203,13 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
 
     db = fresh_db.SessionLocal()
     try:
+        agent_config = tmp_path / "agents.json"
+        agent_config.write_text(
+            json.dumps({"permissions": {"auto_approve_all": False}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_CONFIG_FILE", str(agent_config))
+
         workspace = tmp_path / "workspace"
         (workspace / "reports").mkdir(parents=True)
         (workspace / "reports" / "summary.md").write_text("# Summary\n", encoding="utf-8")
@@ -1323,13 +1330,15 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
         )
         assert [event.event_type for event in events] == [
             "pipeline_stage_started",
+            "policy_decision_recorded",
             "pipeline_stage_completed",
             "approval_queue_item_created",
             "pipeline_gate_blocked",
         ]
 
         started_payload = json.loads(events[0].payload_json)
-        queue_payload = json.loads(events[2].payload_json)
+        artifact_policy_payload = json.loads(events[1].payload_json)
+        queue_payload = json.loads(events[3].payload_json)
         blocked_payload = json.loads(events[-1].payload_json)
 
         assert started_payload["stage_policy"]["stage_name"] == "qa_gate"
@@ -1340,6 +1349,11 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
         assert started_payload["stage_policy"]["metadata"]["tool_policy_summary"]["tool_count"] >= 1
         assert started_payload["checkpoint_snapshot"]["event_count"] == 0
         assert started_payload["continuation_state"]["consumed"] is False
+
+        assert artifact_policy_payload["policy_decision"]["decision_type"] == "artifact_contract_policy"
+        assert artifact_policy_payload["policy_decision"]["accepted"] is True
+        assert artifact_policy_payload["policy_decision"]["subject"]["kind"] == "artifact_contract"
+        assert artifact_policy_payload["policy_decision"]["subject"]["type"] == "workspace.file"
 
         assert blocked_payload["stage_policy"]["approval"]["kind"] == "manual"
         assert blocked_payload["stage_policy"]["delivery"]["required"] is True

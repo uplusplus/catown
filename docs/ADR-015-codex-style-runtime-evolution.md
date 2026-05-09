@@ -7871,6 +7871,31 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不接 stage completion / artifact acceptance
 - 当前不接 approval queue resolution
 
+### 11.199 2026-05-09 新进展：pipeline stage completion 已记录 artifact_contract_policy decision
+
+11.198 接入了 pipeline start 的 workflow spec verdict。
+下一个低风险执行点是 stage completion：当前 pipeline 已经会按 `expected_artifacts` 记录 `StageArtifact`，但不会把 artifact delivery policy verdict 写入 task-run ledger。
+
+本轮更新 `backend/pipeline/engine.py`：
+
+- `_record_artifacts(...)` 返回本轮发现并记录的 `StageArtifact` 列表
+- 对每个已记录 artifact 构造 schema-v1 `artifact_contract`
+- 调用 `validate_artifact_contract_for_policy(...)`
+- 用 `ArtifactPublicationPolicyResult.to_payload()` 生成 canonical payload
+- 用 `append_policy_decision_event_from_result_payload(...)` 写入 `policy_decision_recorded`
+
+这一步的意义是：
+
+- artifact delivery policy decision 首次接入真实 pipeline stage completion path
+- run ledger / Monitor API 可以看到每个已记录 artifact 的 accepted/rejected verdict
+- policy checker、result payload、ledger adapter 三层开始在真实 executor path 串起来
+
+边界：
+
+- 当前只为已发现并记录的 expected artifacts 写 verdict
+- 当前不因 rejected artifact 阻塞 stage completion
+- 当前不处理 missing expected artifact 的 rejected verdict
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

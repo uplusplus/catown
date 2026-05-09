@@ -243,6 +243,10 @@ Pipeline start now records a `workflow_spec_policy` decision for the selected
 template's execution-readiness check when a task-run ledger exists. This is an
 audit event only; it does not yet block pipeline startup.
 
+Pipeline stage completion now records `artifact_contract_policy` decisions for
+expected artifacts that are found and recorded as `StageArtifact` rows. This is
+also an audit event only; it does not yet block stage completion or gate flow.
+
 ## 8. Expected Next Steps
 
 The next likely follow-ups are:

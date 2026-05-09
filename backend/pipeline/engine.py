@@ -62,6 +62,9 @@ from services.approval_replay import (
     resolve_replay_arguments_text,
     resolve_replay_tool_name,
 )
+from services.artifact_contract_policy import validate_artifact_contract_for_policy
+from services.artifact_contracts import parse_artifact_contract
+from services.artifact_publication import ArtifactPublicationPolicyResult
 from services.turn_state import (
     TurnContextState,
     build_tool_result_record,
@@ -293,6 +296,88 @@ def _pipeline_workflow_policy_result(pipeline: Pipeline, template: Any | None) -
         template_payload,
     )
     return validate_and_project_workflow_spec_for_execution(workflow_spec)
+
+
+def _stage_artifact_contract(
+    *,
+    artifact: StageArtifact,
+    stage: PipelineStage,
+    stage_policy: Any,
+    run: PipelineRun,
+) -> Any:
+    artifact_path = str(getattr(artifact, "file_path", "") or "").strip()
+    artifact_kind = str(getattr(artifact, "artifact_type", "") or "").strip().lower()
+    common_payload = {
+        "kind": "artifact_contract",
+        "version": 1,
+        "artifact_id": f"stage-artifact-{artifact.id}",
+        "artifact_type": f"workspace.{artifact_kind or 'file'}",
+        "title": artifact_path or f"Stage artifact {artifact.id}",
+        "summary": getattr(artifact, "summary", None),
+        "producer": {
+            "agent_name": getattr(stage_policy, "agent_name", None),
+            "agent_type": getattr(stage_policy, "agent_name", None),
+            "stage_name": getattr(stage_policy, "stage_name", None) or getattr(stage, "stage_name", None),
+            "task_run_id": getattr(run, "task_run_id", None),
+            "pipeline_run_id": getattr(run, "id", None),
+            "pipeline_stage_id": getattr(stage, "id", None),
+        },
+        "source_input_refs": [f"pipeline_stage:{getattr(stage, 'id', '')}"],
+        "metadata": {
+            "pipeline_run_id": getattr(run, "id", None),
+            "pipeline_stage_id": getattr(stage, "id", None),
+            "stage_name": getattr(stage_policy, "stage_name", None),
+        },
+    }
+    if artifact_kind == "directory":
+        return parse_artifact_contract(
+            {
+                **common_payload,
+                "mode": "workspace_directory",
+                "directory_path": artifact_path.rstrip("/") + "/",
+            }
+        )
+    return parse_artifact_contract(
+        {
+            **common_payload,
+            "mode": "workspace_file",
+            "file_path": artifact_path,
+            "media_type": None,
+        }
+    )
+
+
+def _record_stage_artifact_policy_decisions(
+    db: Session,
+    *,
+    run: PipelineRun,
+    stage: PipelineStage,
+    stage_policy: Any,
+    runner_policy: Any,
+    artifacts: list[StageArtifact],
+) -> None:
+    task_run = _pipeline_task_run(db, run)
+    if task_run is None:
+        return
+    for artifact in artifacts:
+        contract = _stage_artifact_contract(
+            artifact=artifact,
+            stage=stage,
+            stage_policy=stage_policy,
+            run=run,
+        )
+        decision = validate_artifact_contract_for_policy(
+            contract=contract,
+            policy=runner_policy,
+            stage_name=getattr(stage_policy, "stage_name", None),
+        )
+        result = ArtifactPublicationPolicyResult(contract=contract, decision=decision)
+        append_policy_decision_event_from_result_payload(
+            db,
+            task_run,
+            result.to_payload(),
+            agent_name=getattr(stage_policy, "agent_name", None),
+        )
 
 
 def _queue_pipeline_gate_approval(
@@ -1744,7 +1829,15 @@ class PipelineEngine:
 
                 # 记录产出物
                 workspace = _get_workspace(run)
-                self._record_artifacts(db, stage, workspace, stage_policy.delivery.expected_artifacts)
+                artifacts = self._record_artifacts(db, stage, workspace, stage_policy.delivery.expected_artifacts)
+                _record_stage_artifact_policy_decisions(
+                    db,
+                    run=run,
+                    stage=stage,
+                    stage_policy=stage_policy,
+                    runner_policy=runner_policy,
+                    artifacts=artifacts,
+                )
 
                 stage.status = "completed"
                 stage.output_summary = summary[:2000] if summary else "(no output)"
@@ -2648,8 +2741,9 @@ class PipelineEngine:
         stage: PipelineStage,
         workspace: Path,
         expected: List[str],
-    ):
+    ) -> List[StageArtifact]:
         """记录阶段产出物"""
+        artifacts: List[StageArtifact] = []
         for expected_path in expected:
             full_path = workspace / expected_path
             if full_path.exists():
@@ -2672,7 +2766,9 @@ class PipelineEngine:
                     summary=summary,
                 )
                 db.add(artifact)
+                artifacts.append(artifact)
         db.commit()
+        return artifacts
 
     def _git_init(self, run: PipelineRun):
         """初始化 workspace 的 Git 仓库"""
