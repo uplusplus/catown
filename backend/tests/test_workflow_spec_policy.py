@@ -8,6 +8,8 @@ from services.workflow_spec_contracts import (
 )
 from services.workflow_spec_policy import (
     compile_pipeline_template_with_policy_report,
+    project_workflow_spec_policy_report,
+    validate_and_project_workflow_spec_for_execution,
     validate_workflow_spec_for_execution,
 )
 
@@ -99,6 +101,50 @@ def test_compile_pipeline_template_with_policy_report_surfaces_template_errors()
     assert [diagnostic.code for diagnostic in result.policy_report.diagnostics] == [
         "rollback_target_unknown"
     ]
+
+
+def test_workflow_spec_policy_report_projects_policy_decision():
+    report = validate_workflow_spec_for_execution(
+        WorkflowSpec(
+            workflow_id="empty",
+            name="Empty",
+            stages=[],
+        )
+    )
+
+    policy_decision = project_workflow_spec_policy_report(report)
+    dumped = policy_decision.model_dump(mode="json")
+    assert dumped["decision_type"] == "workflow_spec_policy"
+    assert dumped["subject"] == {
+        "kind": "workflow_spec",
+        "id": "empty",
+        "type": None,
+    }
+    assert dumped["accepted"] is False
+    assert dumped["policy_source"] == "workflow_spec_policy"
+    assert dumped["stage_count"] == 0
+    assert [violation["code"] for violation in dumped["violations"]] == ["workflow_has_no_stages"]
+
+
+def test_validate_and_project_workflow_spec_builds_ledger_payload():
+    result = validate_and_project_workflow_spec_for_execution(
+        WorkflowSpec(
+            workflow_id="valid",
+            name="Valid",
+            stages=[
+                WorkflowStageSpec(
+                    stage_id="analysis",
+                    display_name="Analysis",
+                    agent_type="analyst",
+                )
+            ],
+        )
+    )
+
+    payload = result.to_payload()
+    assert payload["policy_report"]["executable"] is True
+    assert payload["policy_decision"]["accepted"] is True
+    assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
 
 
 def test_workflow_requires_at_least_one_stage():

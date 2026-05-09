@@ -3023,3 +3023,23 @@ No failures were observed in the new context builder unit tests or Python syntax
 - evaluation result 按 runner policy 校验后，现在可输出 canonical `policy_decision`
 - 同时输出 `policy_decision_event_payload`
 - 暂不接 stage gate，也不写 run ledger
+
+### `Project workflow readiness decisions`
+
+范围：
+
+- `backend/services/workflow_spec_policy.py`
+- `backend/tests/test_workflow_spec_policy.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `WorkflowSpecPolicyDecisionResult`
+- 新增 `project_workflow_spec_policy_report(...)`
+- 新增 `validate_and_project_workflow_spec_for_execution(...)`
+- workflow spec execution-readiness report 现在可输出 canonical `policy_decision`
+- 同时输出 `policy_decision_event_payload`
+- 暂不接 pipeline start 主路径，也不写 run ledger

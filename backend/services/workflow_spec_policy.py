@@ -6,6 +6,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from services.policy_decision_contracts import (
+    PolicyDecisionContract,
+    build_policy_decision_event_payload,
+    dump_policy_decision,
+    project_policy_decision,
+)
 from services.workflow_spec_contracts import (
     WorkflowSpec,
     WorkflowStageSpec,
@@ -64,6 +70,21 @@ class WorkflowSpecCompilationResult:
         }
 
 
+@dataclass(frozen=True)
+class WorkflowSpecPolicyDecisionResult:
+    policy_report: WorkflowSpecPolicyReport
+    policy_decision: PolicyDecisionContract
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "policy_report": self.policy_report.to_payload(),
+            "policy_decision": dump_policy_decision(self.policy_decision),
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                self.policy_decision
+            ),
+        }
+
+
 def compile_pipeline_template_with_policy_report(
     template_name: str,
     payload: dict[str, Any],
@@ -75,6 +96,38 @@ def compile_pipeline_template_with_policy_report(
     return WorkflowSpecCompilationResult(
         workflow_spec=workflow_spec,
         policy_report=policy_report,
+    )
+
+
+def validate_and_project_workflow_spec_for_execution(
+    workflow_spec: WorkflowSpec,
+) -> WorkflowSpecPolicyDecisionResult:
+    """Validate workflow execution readiness and project the software verdict."""
+
+    report = validate_workflow_spec_for_execution(workflow_spec)
+    return WorkflowSpecPolicyDecisionResult(
+        policy_report=report,
+        policy_decision=project_workflow_spec_policy_report(report),
+    )
+
+
+def project_workflow_spec_policy_report(
+    report: WorkflowSpecPolicyReport,
+) -> PolicyDecisionContract:
+    """Project one workflow execution-readiness report into policy_decision v1."""
+
+    return project_policy_decision(
+        {
+            "accepted": report.executable,
+            "violations": [diagnostic.to_payload() for diagnostic in report.diagnostics],
+            "metadata": {
+                "policy_source": "workflow_spec_policy",
+                **dict(report.metadata),
+            },
+        },
+        decision_type="workflow_spec_policy",
+        subject_kind="workflow_spec",
+        subject_id=report.workflow_id or "workflow",
     )
 
 

@@ -220,6 +220,8 @@ The first execution-readiness validator is now present in:
 It checks canonical workflow specs for deterministic execution hazards such as empty stage lists,
 duplicate stage ids, missing stage owners, invalid timeouts, invalid rollback targets, and delivery
 contracts that require artifacts without naming them.
+It can also project the execution-readiness report into canonical `policy_decision`
+form and a ledger-ready policy-decision event payload.
 
 The first compile-with-diagnostics helper is also present in:
 
@@ -262,6 +264,7 @@ It is currently a draft contract intended to guide the next refactor.
 The next likely follow-ups are:
 
 1. connect submitted workflow specs to a durable draft/template persistence path
-2. connect action-request policy validation to selected runtime request paths
-3. define v2 for richer branching / sidecar topology
-4. connect workflow versioning and compatibility rules into the executor
+2. connect workflow readiness policy decisions to the pipeline executor start path
+3. connect action-request policy validation to selected runtime request paths
+4. define v2 for richer branching / sidecar topology
+5. connect workflow versioning and compatibility rules into the executor

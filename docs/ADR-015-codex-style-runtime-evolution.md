@@ -7488,6 +7488,35 @@ action_request -> artifact_contract -> artifact policy decision
 - 当前不接 stage gate
 - 当前不改变 evaluation-result policy checker 行为
 
+### 11.185 2026-05-09 新进展：workflow spec readiness 已能投影为 policy_decision
+
+workflow spec policy report 之前已经能给出 execution-readiness diagnostics，但它仍是独立 report shape。
+如果 pipeline start path 后续要把“可执行/不可执行”的裁定写入 ledger，仍需要统一 policy_decision。
+
+本轮扩展 `backend/services/workflow_spec_policy.py`：
+
+- 新增 `WorkflowSpecPolicyDecisionResult`
+- 新增 `project_workflow_spec_policy_report(...)`
+- 新增 `validate_and_project_workflow_spec_for_execution(...)`
+
+`to_payload()` 输出：
+
+- workflow policy report
+- canonical `policy_decision`
+- `policy_decision_event_payload`
+
+这一步的意义是：
+
+- workflow spec 自身的 readiness check 也进入统一控制面 verdict
+- pipeline start 前的 block reason 可以用同一种 policy decision 记录
+- workflow/action/artifact/evaluation 四类 policy verdict 的外形开始一致
+
+边界：
+
+- 当前不阻断 pipeline start 主路径
+- 当前不写 run ledger
+- 当前不改变 workflow spec diagnostic 规则
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

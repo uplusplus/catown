@@ -149,6 +149,7 @@ It can project existing service-level decisions from:
 - `ActionRequestPolicyDecision`
 - `ArtifactContractPolicyDecision`
 - `EvaluationResultPolicyDecision`
+- `WorkflowSpecPolicyReport`
 
 into canonical `policy_decision` payloads.
 
@@ -177,6 +178,10 @@ is converted into a rollback action request and validated.
 `EvaluationResultPolicyResult.to_payload()` includes the projected `policy_decision`
 and ledger-ready event payload after an evaluation result itself is validated
 against runner policy.
+
+`WorkflowSpecPolicyDecisionResult.to_payload()` includes the projected
+`policy_decision` and ledger-ready event payload after a workflow spec is checked
+for execution readiness.
 
 This schema is **not** yet wired into:
 
