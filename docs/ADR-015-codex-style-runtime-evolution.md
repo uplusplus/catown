@@ -7582,6 +7582,30 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不扫描 run ledger events
 - 当前不改变 policy decision contract
 
+### 11.188 2026-05-09 新进展：run ledger read model 已能汇总 policy_decision events
+
+11.181 已经定义了 `policy_decision_recorded` 事件 payload，但 run ledger read model 还不会识别它。
+如果后续开始写这些事件而 read-side 不聚合，Monitor 仍然只能展示原始 event 列表。
+
+本轮更新 `backend/services/run_ledger.py`：
+
+- 识别 event_type 或 payload `event_kind` 为 `policy_decision_recorded` 的事件
+- 提取其中 canonical `policy_decision`
+- 使用 `summarize_policy_decision_set(...)` 生成集合摘要
+- 在 checkpoint snapshot 和 task run summary 中暴露 `policy_decision_summary`
+
+这一步的意义是：
+
+- run ledger read-side 已准备好消费 policy decision events
+- Monitor/API 可以读取聚合后的 accepted/rejected/error/warning counters
+- 仍保持写路径不变，避免在 executor 主路径脏文件上冲突
+
+边界：
+
+- 当前不主动写 `policy_decision_recorded` 事件
+- 当前不改 Monitor UI
+- 当前不改变 task execution 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

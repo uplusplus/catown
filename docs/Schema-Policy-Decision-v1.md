@@ -188,6 +188,9 @@ for execution readiness.
 and ledger-ready event payload after an action request is validated against
 workflow/runner policy.
 
+The task-run read model now recognizes `policy_decision_recorded` event payloads
+and exposes aggregate policy decision summary in checkpoint and task-run summaries.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

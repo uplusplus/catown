@@ -3080,3 +3080,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 输出 decision_count、accepted/rejected counts、severity counts 和 by_decision_type counters
 - 为后续 run ledger / Monitor 集合级 read model 提供统一聚合逻辑
 - 暂不接 Monitor endpoint，也不扫描 run ledger events
+
+### `Summarize policy decisions in run ledger read models`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_ledger_policy_decisions.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- run ledger checkpoint snapshot 现在识别 `policy_decision_recorded` 事件 payload
+- 提取其中 canonical `policy_decision` 并使用 `summarize_policy_decision_set(...)` 聚合
+- `serialize_task_run_summary(...)` 暴露 `policy_decision_summary`
+- 暂不写 policy decision 事件，不改 Monitor UI，也不改变执行路径

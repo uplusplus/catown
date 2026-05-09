@@ -22,6 +22,7 @@ from services.orchestration_inbox import (
     summarize_orchestration_handoff_projection,
 )
 from services.pipeline_inbox import summarize_pipeline_run_inbox
+from services.policy_decision_contracts import summarize_policy_decision_set
 from services.subagent_lifecycle import (
     build_subagent_lifecycle_from_events,
     build_subagent_runtime_handles,
@@ -224,6 +225,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "orchestration_handoff_inbox_summary": checkpoint_snapshot.get("orchestration_handoff_inbox_summary"),
         "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
         "subagent_handles_summary": checkpoint_snapshot.get("subagent_handles_summary"),
+        "policy_decision_summary": checkpoint_snapshot.get("policy_decision_summary"),
         "checkpoint_snapshot": checkpoint_snapshot,
         "event_count": len(task_run.events or []),
         "approval_queue_count": len(approval_items),
@@ -347,6 +349,10 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     orchestration_handoff_inbox = summarize_orchestration_handoff_inbox(task_run)
     subagent_lifecycle = build_subagent_lifecycle_from_events(events)
     subagent_handles = build_subagent_runtime_handles(subagent_lifecycle)
+    policy_decisions = _extract_policy_decision_contracts(
+        events=events,
+        payload_by_event_id=payload_by_event_id,
+    )
     pending_tool_queue_item = next(
         (
             item for item in reversed(approval_items)
@@ -411,6 +417,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         "subagent_lifecycle_summary": summarize_subagent_lifecycle(subagent_lifecycle),
         "subagent_handles": subagent_handles,
         "subagent_handles_summary": summarize_subagent_runtime_handles(subagent_handles),
+        "policy_decision_summary": summarize_policy_decision_set(policy_decisions),
         "continuation_cursor": continuation_cursor,
         "turn_local_state": turn_local_state,
         "pending_approval_count": sum(1 for item in approval_items if (item.status or "") == "pending"),
@@ -422,6 +429,27 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     snapshot["continuation_state"] = describe_checkpoint_continuation_state(snapshot)
     snapshot["continuation_state_summary"] = summarize_continuation_state(snapshot["continuation_state"])
     return snapshot
+
+
+def _extract_policy_decision_contracts(
+    *,
+    events: list[TaskRunEvent],
+    payload_by_event_id: dict[int, Any],
+) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for event in events:
+        payload = payload_by_event_id.get(event.id)
+        if not isinstance(payload, dict):
+            continue
+        if (
+            event.event_type != "policy_decision_recorded"
+            and payload.get("event_kind") != "policy_decision_recorded"
+        ):
+            continue
+        contract = payload.get("policy_decision")
+        if isinstance(contract, dict) and contract.get("kind") == "policy_decision":
+            contracts.append(contract)
+    return contracts
 
 
 def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str, Any]:
