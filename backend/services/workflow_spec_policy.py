@@ -6,7 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.workflow_spec_contracts import WorkflowSpec, WorkflowStageSpec
+from services.workflow_spec_contracts import (
+    WorkflowSpec,
+    WorkflowStageSpec,
+    compile_pipeline_template_to_workflow_spec,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,37 @@ class WorkflowSpecPolicyReport:
             "diagnostics": [diagnostic.to_payload() for diagnostic in self.diagnostics],
             "metadata": dict(self.metadata),
         }
+
+
+@dataclass(frozen=True)
+class WorkflowSpecCompilationResult:
+    workflow_spec: WorkflowSpec
+    policy_report: WorkflowSpecPolicyReport
+
+    @property
+    def executable(self) -> bool:
+        return self.policy_report.executable
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "workflow_spec": self.workflow_spec.model_dump(mode="json"),
+            "policy_report": self.policy_report.to_payload(),
+            "executable": self.executable,
+        }
+
+
+def compile_pipeline_template_with_policy_report(
+    template_name: str,
+    payload: dict[str, Any],
+) -> WorkflowSpecCompilationResult:
+    """Compile today's pipeline template shape and attach execution diagnostics."""
+
+    workflow_spec = compile_pipeline_template_to_workflow_spec(template_name, payload)
+    policy_report = validate_workflow_spec_for_execution(workflow_spec)
+    return WorkflowSpecCompilationResult(
+        workflow_spec=workflow_spec,
+        policy_report=policy_report,
+    )
 
 
 def validate_workflow_spec_for_execution(

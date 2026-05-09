@@ -2639,3 +2639,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 canonical workflow spec execution-readiness diagnostics
 - 校验 empty stages、duplicate stage id、missing owner、invalid timeout、invalid rollback、required delivery without artifacts
 - 先保持 pipeline config/runtime 主路径不变，为后续 LLM-generated workflow spec 接入提供软件裁定层
+
+### `Compile workflow templates with diagnostics`
+
+范围：
+
+- `backend/services/workflow_spec_policy.py`
+- `backend/tests/test_workflow_spec_policy.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `compile_pipeline_template_with_policy_report(...)`
+- 把现有 pipeline template payload 编译成 canonical `workflow_spec` 后，立即附带 execution-readiness report
+- 仍不改 `PipelineConfigManager` 和 engine 主路径，先提供可复用的编译裁定入口

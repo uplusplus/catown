@@ -210,6 +210,13 @@ It checks canonical workflow specs for deterministic execution hazards such as e
 duplicate stage ids, missing stage owners, invalid timeouts, invalid rollback targets, and delivery
 contracts that require artifacts without naming them.
 
+The first compile-with-diagnostics helper is also present in:
+
+- `backend/services/workflow_spec_policy.py`
+
+It compiles today's pipeline template payload into canonical `workflow_spec` and returns the
+execution-readiness report in the same result object.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path

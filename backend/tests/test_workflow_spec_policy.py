@@ -6,7 +6,10 @@ from services.workflow_spec_contracts import (
     WorkflowStageSpec,
     compile_pipeline_template_to_workflow_spec,
 )
-from services.workflow_spec_policy import validate_workflow_spec_for_execution
+from services.workflow_spec_policy import (
+    compile_pipeline_template_with_policy_report,
+    validate_workflow_spec_for_execution,
+)
 
 
 def test_valid_pipeline_template_workflow_is_executable():
@@ -48,6 +51,54 @@ def test_valid_pipeline_template_workflow_is_executable():
     assert report.executable is True
     assert report.diagnostics == []
     assert report.to_payload()["metadata"]["stage_count"] == 3
+
+
+def test_compile_pipeline_template_with_policy_report_returns_spec_and_diagnostics():
+    result = compile_pipeline_template_with_policy_report(
+        "default",
+        {
+            "name": "Default workflow",
+            "stages": [
+                {
+                    "name": "analysis",
+                    "display_name": "Analysis",
+                    "agent": "analyst",
+                    "gate": "manual",
+                    "expected_artifacts": ["PRD.md"],
+                }
+            ],
+        },
+    )
+
+    payload = result.to_payload()
+    assert result.executable is True
+    assert result.workflow_spec.workflow_id == "default"
+    assert payload["workflow_spec"]["stages"][0]["stage_id"] == "analysis"
+    assert payload["policy_report"]["executable"] is True
+
+
+def test_compile_pipeline_template_with_policy_report_surfaces_template_errors():
+    result = compile_pipeline_template_with_policy_report(
+        "broken",
+        {
+            "name": "Broken workflow",
+            "stages": [
+                {
+                    "name": "testing",
+                    "display_name": "Testing",
+                    "agent": "tester",
+                    "rollback_on_blocker": True,
+                    "max_rollback_count": 3,
+                    "rollback_target": "missing",
+                }
+            ],
+        },
+    )
+
+    assert result.executable is False
+    assert [diagnostic.code for diagnostic in result.policy_report.diagnostics] == [
+        "rollback_target_unknown"
+    ]
 
 
 def test_workflow_requires_at_least_one_stage():

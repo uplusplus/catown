@@ -6761,6 +6761,38 @@ v1 当前覆盖：
 - 未接入 pipeline executor start path
 - 不改变现有 `pipelines.json` 加载和执行行为
 
+### 11.163 2026-05-09 新进展：pipeline template 编译已能携带 workflow diagnostics
+
+11.162 新增了 workflow spec 的 execution-readiness diagnostics，但调用方仍需要手工分两步：
+
+- 先把 pipeline template 编译成 canonical workflow spec
+- 再调用 diagnostics
+
+这对后续接入配置加载、API submit 或编排 Agent 生成流程都不够直接。
+
+本轮在 `backend/services/workflow_spec_policy.py` 增加：
+
+- `WorkflowSpecCompilationResult`
+- `compile_pipeline_template_with_policy_report(...)`
+
+它把当前 `pipelines.json` 形状一次性转成：
+
+- canonical `workflow_spec`
+- execution-readiness report
+- top-level `executable` flag
+
+这一步的意义是：
+
+- 现有 pipeline template 形状第一次有了“编译 + 裁定”的单一入口
+- 后续如果让 LLM 生成 workflow spec 或让 API 接收 workflow spec，可以复用同一组 report 结构
+- 仍然保持主执行路径不变，避免在 engine 并行修改期间扩大影响面
+
+边界：
+
+- 当前 helper 还没有接入 `PipelineConfigManager`
+- 还没有在 API 层对 submitted workflow spec 做 enforcement
+- 仍然只是 service-level contract
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
