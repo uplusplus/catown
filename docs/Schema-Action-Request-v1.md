@@ -255,6 +255,8 @@ The first workflow-aware policy validator is now present in:
 
 It validates schema-v1 action requests against compiled canonical workflow policy for stage
 ownership, manual gate approvals, rollback targets, and expected artifact delivery.
+The projected result helper in the same module also returns canonical `policy_decision`
+and ledger-ready policy-decision event payloads for any action-request policy check.
 
 The first artifact-publication bridge is now present in:
 

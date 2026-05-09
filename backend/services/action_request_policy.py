@@ -6,7 +6,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.action_request_contracts import ActionRequest, parse_action_request
+from services.action_request_contracts import (
+    ActionRequest,
+    dump_action_request,
+    parse_action_request,
+)
+from services.policy_decision_contracts import (
+    build_policy_decision_event_payload,
+    dump_policy_decision,
+    project_policy_decision,
+)
 from services.runner_policy import (
     RunnerGovernancePolicy,
     StageRunnerPolicy,
@@ -52,6 +61,23 @@ class ActionRequestPolicyDecision:
         }
 
 
+@dataclass(frozen=True)
+class ActionRequestPolicyResult:
+    request: ActionRequest
+    decision: ActionRequestPolicyDecision
+
+    def to_payload(self) -> dict[str, Any]:
+        policy_decision = project_policy_decision(self.decision)
+        return {
+            "request": dump_action_request(self.request),
+            "decision": self.decision.to_payload(),
+            "policy_decision": dump_policy_decision(policy_decision),
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                policy_decision
+            ),
+        }
+
+
 def validate_action_request_for_workflow(
     *,
     request: ActionRequest | dict[str, Any],
@@ -68,6 +94,25 @@ def validate_action_request_for_workflow(
         stage_tool_packs=stage_tool_packs,
     )
     return validate_action_request_for_policy(request=parsed_request, policy=policy)
+
+
+def validate_and_project_action_request_for_workflow(
+    *,
+    request: ActionRequest | dict[str, Any],
+    workflow_spec: WorkflowSpec,
+    project_id: int | None = None,
+    stage_tool_packs: dict[str, dict[str, Any]] | None = None,
+) -> ActionRequestPolicyResult:
+    """Validate an action request and project the policy decision."""
+
+    parsed_request = _ensure_action_request(request)
+    decision = validate_action_request_for_workflow(
+        request=parsed_request,
+        workflow_spec=workflow_spec,
+        project_id=project_id,
+        stage_tool_packs=stage_tool_packs,
+    )
+    return ActionRequestPolicyResult(request=parsed_request, decision=decision)
 
 
 def validate_action_request_for_policy(
@@ -156,6 +201,21 @@ def validate_action_request_for_policy(
             "stage_count": policy.stage_count,
         },
     )
+
+
+def validate_and_project_action_request_for_policy(
+    *,
+    request: ActionRequest | dict[str, Any],
+    policy: RunnerGovernancePolicy,
+) -> ActionRequestPolicyResult:
+    """Validate an action request against runner policy and project the decision."""
+
+    parsed_request = _ensure_action_request(request)
+    decision = validate_action_request_for_policy(
+        request=parsed_request,
+        policy=policy,
+    )
+    return ActionRequestPolicyResult(request=parsed_request, decision=decision)
 
 
 def _validate_request_approval(

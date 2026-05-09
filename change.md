@@ -3043,3 +3043,23 @@ No failures were observed in the new context builder unit tests or Python syntax
 - workflow spec execution-readiness report 现在可输出 canonical `policy_decision`
 - 同时输出 `policy_decision_event_payload`
 - 暂不接 pipeline start 主路径，也不写 run ledger
+
+### `Project action request policy decisions`
+
+范围：
+
+- `backend/services/action_request_policy.py`
+- `backend/tests/test_action_request_policy.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `ActionRequestPolicyResult`
+- 新增 `validate_and_project_action_request_for_workflow(...)`
+- 新增 `validate_and_project_action_request_for_policy(...)`
+- 任意 action request policy check 现在可输出 canonical `policy_decision`
+- 同时输出 `policy_decision_event_payload`
+- 暂不接 approval queue、tool request 或 run ledger 主路径

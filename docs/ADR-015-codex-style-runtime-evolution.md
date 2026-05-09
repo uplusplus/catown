@@ -7517,6 +7517,36 @@ workflow spec policy report 之前已经能给出 execution-readiness diagnostic
 - 当前不写 run ledger
 - 当前不改变 workflow spec diagnostic 规则
 
+### 11.186 2026-05-09 新进展：action_request policy result 已携带 policy_decision 投影
+
+action request policy checker 是最早接入 workflow/runner policy 的裁定器之一。
+但通用入口此前仍只返回 `ActionRequestPolicyDecision`，只有 artifact/evaluation 特定链路额外做了 policy_decision 投影。
+
+本轮扩展 `backend/services/action_request_policy.py`：
+
+- 新增 `ActionRequestPolicyResult`
+- 新增 `validate_and_project_action_request_for_workflow(...)`
+- 新增 `validate_and_project_action_request_for_policy(...)`
+
+`to_payload()` 输出：
+
+- original action request
+- original action-request policy decision
+- canonical `policy_decision`
+- `policy_decision_event_payload`
+
+这一步的意义是：
+
+- 任意 action request policy check 都能进入统一 ledger/read-model 形态
+- artifact/evaluation 特定链路不再是唯一拥有 projection 的路径
+- 后续 approval queue、tool request、ask_agent 等主链接入时可以复用同一个返回结构
+
+边界：
+
+- 当前不写 run ledger
+- 当前不改 approval queue 主路径
+- 当前不改变 action-request policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

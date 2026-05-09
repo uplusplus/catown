@@ -183,6 +183,10 @@ against runner policy.
 `policy_decision` and ledger-ready event payload after a workflow spec is checked
 for execution readiness.
 
+`ActionRequestPolicyResult.to_payload()` includes the projected `policy_decision`
+and ledger-ready event payload after an action request is validated against
+workflow/runner policy.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

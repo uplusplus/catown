@@ -1,4 +1,7 @@
-from services.action_request_policy import validate_action_request_for_workflow
+from services.action_request_policy import (
+    validate_action_request_for_workflow,
+    validate_and_project_action_request_for_workflow,
+)
 from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
 
 
@@ -76,6 +79,35 @@ def test_manual_gate_approval_request_is_accepted():
     assert decision.accepted is True
     assert decision.violations == []
     assert decision.to_payload()["metadata"]["pipeline_name"] == "default"
+
+
+def test_action_request_policy_result_projects_policy_decision():
+    result = validate_and_project_action_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request={
+            "kind": "action_request",
+            "version": 1,
+            "request_id": "req-gate-projected-1",
+            "type": "request_approval",
+            "source": _source("analysis", "analyst"),
+            "payload": {
+                "queue_kind": "approval",
+                "target_kind": "pipeline_gate",
+                "target_name": "analysis",
+                "reason": "Analysis gate requires human confirmation.",
+            },
+        },
+    )
+
+    payload = result.to_payload()
+    assert payload["request"]["request_id"] == "req-gate-projected-1"
+    assert payload["decision"]["accepted"] is True
+    assert payload["policy_decision"]["subject"] == {
+        "kind": "action_request",
+        "id": "req-gate-projected-1",
+        "type": "request_approval",
+    }
+    assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
 
 
 def test_auto_gate_approval_request_is_rejected():
