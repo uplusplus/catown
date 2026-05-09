@@ -194,11 +194,19 @@ The first API exposure bridge is now present in:
 This makes canonical workflow specs visible from a stable read-side API without yet forcing the
 pipeline executor to consume them as its primary execution input.
 
+The first action-request policy bridge is now present in:
+
+- `backend/services/action_request_policy.py`
+
+It validates `action_request` payloads against compiled workflow policy before those requests are
+allowed to become runtime effects. This is still an isolated validator, not a pipeline-engine
+behavior change.
+
 This schema is **not** yet wired into:
 
 - pipeline executor start path
 - orchestration runtime path
-- action-request validation against workflow policy
+- runtime-enforced action-request validation
 - richer DAG or sidecar topology
 
 It is currently a draft contract intended to guide the next refactor.
@@ -208,6 +216,6 @@ It is currently a draft contract intended to guide the next refactor.
 The next likely follow-ups are:
 
 1. compile current `pipelines.json` into canonical `workflow_spec`
-2. let `action_request` validation consult stage/role policy from the compiled workflow
+2. connect action-request policy validation to selected runtime request paths
 3. define v2 for richer branching / sidecar topology
 4. connect workflow versioning and compatibility rules into the executor

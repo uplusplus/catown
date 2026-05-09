@@ -249,6 +249,13 @@ The second compatibility bridge has also been added for pipeline-gate approval p
   now includes a helper that compiles pipeline-gate approval intent into the same
   `request_approval` action-request form, again without yet changing queue persistence semantics.
 
+The first workflow-aware policy validator is now present in:
+
+- `backend/services/action_request_policy.py`
+
+It validates schema-v1 action requests against compiled canonical workflow policy for stage
+ownership, manual gate approvals, rollback targets, and expected artifact delivery.
+
 This schema is **not** yet wired into:
 
 - pipeline engine execution
@@ -264,5 +271,5 @@ The next likely follow-ups are:
 
 1. map existing implicit request payloads into schema v1
 2. define `artifact contract schema v1`
-3. compile workflow specs so action requests can be validated against role/stage policy
+3. connect the workflow-aware validator to selected runtime request paths
 4. add runtime adapters that convert current event payloads into typed action requests

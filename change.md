@@ -2589,3 +2589,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `GET /api/pipelines/templates/{pipeline_name}/workflow-spec`
 - 让 canonical workflow spec 首次通过稳定只读 API 暴露，而不直接改 executor 主链
 - 为前端、调试工具和未来编排 Agent 提供统一读取入口
+
+### `Validate action requests against workflow policy`
+
+范围：
+
+- `backend/services/action_request_policy.py`
+- `backend/tests/test_action_request_policy.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 workflow-aware action request policy validator
+- 用 canonical `workflow_spec -> RunnerGovernancePolicy` 校验 stage ownership、manual gate、rollback target、expected artifact
+- 保持 pipeline engine 和 approval queue 主路径不变，先把 action request 与 workflow policy 的裁定层补齐

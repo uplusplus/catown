@@ -6662,6 +6662,40 @@ v1 当前覆盖：
   - runner-policy bridge
   - API exposure bridge
 
+### 11.160 2026-05-09 新进展：action request 已能按 workflow policy 做独立裁定
+
+在 11.157 到 11.159 之后，canonical workflow spec 已经具备：
+
+- 配置加载侧的 canonical view
+- runner governance policy 编译
+- 只读 API 暴露
+
+但 `action_request schema v1` 仍缺少一个关键中间层：
+
+- agent 可以表达 intent
+- workflow spec 可以表达阶段/角色/gate/rollback/产物要求
+- 中间还没有一个稳定裁定器判断“这个 intent 在当前 workflow policy 下是否合法”
+
+本轮新增 `backend/services/action_request_policy.py`，先不改 pipeline engine 主路径，只补一个独立 validator：
+
+- 校验 source stage 是否属于 workflow
+- 校验 source agent 是否匹配 stage owner
+- 校验 pipeline/stage gate approval 是否指向 manual/condition gate
+- 校验 rollback suggestion 是否符合 workflow rollback target
+- 校验 publish artifact 是否匹配当前 stage 的 expected artifacts
+
+这一步的意义是：
+
+- `action_request` 不再只是 schema 和兼容桥
+- `workflow_spec` 不再只是计划描述和 API payload
+- 二者第一次通过软件裁定层连接起来
+
+边界：
+
+- 当前仍是 isolated validator
+- 还没有接入 approval queue creation、pipeline engine 或 artifact publication 主路径
+- 不改变现有 runtime 行为，只为后续渐进接入提供可测试 contract
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
