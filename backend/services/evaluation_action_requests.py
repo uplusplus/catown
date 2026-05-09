@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from services.action_request_policy import ActionRequestPolicyDecision
@@ -12,7 +13,29 @@ from services.evaluation_result_contracts import (
     EvaluationRubricResult,
     parse_evaluation_result,
 )
+from services.policy_decision_contracts import (
+    build_policy_decision_event_payload,
+    dump_policy_decision,
+    project_policy_decision,
+)
 from services.workflow_spec_contracts import WorkflowSpec
+
+
+@dataclass(frozen=True)
+class EvaluationRollbackPolicyResult:
+    request: dict[str, Any]
+    decision: ActionRequestPolicyDecision
+
+    def to_payload(self) -> dict[str, Any]:
+        policy_decision = project_policy_decision(self.decision)
+        return {
+            "request": dict(self.request),
+            "decision": self.decision.to_payload(),
+            "policy_decision": dump_policy_decision(policy_decision),
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                policy_decision
+            ),
+        }
 
 
 def build_report_blocker_request_from_evaluation_result(
@@ -111,6 +134,30 @@ def build_and_validate_rollback_request_from_evaluation_result(
         project_id=project_id,
     )
     return request, decision
+
+
+def build_rollback_policy_result_from_evaluation_result(
+    *,
+    result: EvaluationRubricResult | dict[str, Any],
+    request_id: str,
+    agent_name: str,
+    target_stage_name: str,
+    workflow_spec: WorkflowSpec,
+    agent_type: str | None = None,
+    project_id: int | None = None,
+) -> EvaluationRollbackPolicyResult:
+    """Build rollback intent, validate it, and project the policy decision."""
+
+    request, decision = build_and_validate_rollback_request_from_evaluation_result(
+        result=result,
+        request_id=request_id,
+        agent_name=agent_name,
+        target_stage_name=target_stage_name,
+        workflow_spec=workflow_spec,
+        agent_type=agent_type,
+        project_id=project_id,
+    )
+    return EvaluationRollbackPolicyResult(request=request, decision=decision)
 
 
 def _ensure_result(result: EvaluationRubricResult | dict[str, Any]) -> EvaluationRubricResult:

@@ -136,6 +136,10 @@ The first build-and-validate bridge is also present in:
 It can build a rollback request from a failed evaluation result and immediately validate that request
 against canonical workflow policy, without executing the rollback.
 
+The rollback bridge now also has a projected result form that includes the generated
+action request, the action-request policy decision, canonical `policy_decision`, and
+a ledger-ready policy-decision event payload.
+
 The first read-model summary helper is now present in:
 
 - `backend/services/evaluation_result_contracts.py`

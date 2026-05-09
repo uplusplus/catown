@@ -2985,3 +2985,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 同时输出 `policy_decision_event_payload`
 - artifact publication 组合结果现在包含 contract、原始 decision、统一 policy_decision、ledger-ready payload
 - 暂不写 run ledger，也不持久化 artifact_contract
+
+### `Project evaluation rollback policy decisions`
+
+范围：
+
+- `backend/services/evaluation_action_requests.py`
+- `backend/tests/test_evaluation_action_requests.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `EvaluationRollbackPolicyResult`
+- 新增 `build_rollback_policy_result_from_evaluation_result(...)`
+- failed evaluation result -> suggest_rollback action request -> action-request policy decision 后，现在可输出 canonical `policy_decision`
+- 同时输出 `policy_decision_event_payload`
+- 暂不执行 rollback，也不写 run ledger

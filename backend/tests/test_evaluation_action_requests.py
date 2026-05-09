@@ -2,6 +2,7 @@ import pytest
 
 from services.evaluation_action_requests import (
     build_and_validate_rollback_request_from_evaluation_result,
+    build_rollback_policy_result_from_evaluation_result,
     build_report_blocker_request_from_evaluation_result,
     build_suggest_rollback_request_from_evaluation_result,
 )
@@ -150,6 +151,26 @@ def test_evaluation_rollback_request_policy_rejects_wrong_target():
     assert [violation.code for violation in decision.violations] == [
         "unknown_rollback_target"
     ]
+
+
+def test_evaluation_rollback_policy_result_projects_policy_decision():
+    result = build_rollback_policy_result_from_evaluation_result(
+        result=_failed_result(),
+        request_id="req-rollback-result-1",
+        agent_name="Tester",
+        target_stage_name="development",
+        workflow_spec=_workflow_spec(),
+    )
+
+    payload = result.to_payload()
+    assert payload["request"]["type"] == "suggest_rollback"
+    assert payload["decision"]["accepted"] is True
+    assert payload["policy_decision"]["subject"] == {
+        "kind": "action_request",
+        "id": "req-rollback-result-1",
+        "type": "suggest_rollback",
+    }
+    assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
 
 
 def test_passed_evaluation_result_does_not_build_blocker_request():

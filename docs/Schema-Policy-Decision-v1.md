@@ -170,6 +170,10 @@ optionally, the full canonical policy decision contract.
 `policy_decision` and this ledger-ready event payload after a `publish_artifact`
 request is compiled and validated.
 
+`EvaluationRollbackPolicyResult.to_payload()` also includes the projected
+`policy_decision` and ledger-ready event payload after a failed evaluation result
+is converted into a rollback action request and validated.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

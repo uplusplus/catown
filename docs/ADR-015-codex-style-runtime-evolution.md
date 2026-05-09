@@ -7430,6 +7430,35 @@ action_request -> artifact_contract -> artifact policy decision
 - 当前不持久化 artifact_contract
 - 当前不改变 artifact acceptance 语义
 
+### 11.183 2026-05-09 新进展：evaluation rollback result 已携带 policy_decision 投影
+
+11.170 已经让 failed evaluation result 可以生成 `suggest_rollback` 并按 workflow policy 裁定。
+但该 helper 仍返回 `(request, decision)` 二元组，调用方如果要进 ledger 还要自己投影 policy decision。
+
+本轮扩展 `backend/services/evaluation_action_requests.py`：
+
+- 新增 `EvaluationRollbackPolicyResult`
+- 新增 `build_rollback_policy_result_from_evaluation_result(...)`
+
+`to_payload()` 现在输出：
+
+- generated action request
+- original action-request policy decision
+- canonical `policy_decision`
+- `policy_decision_event_payload`
+
+这一步的意义是：
+
+- evaluation-result -> rollback-action -> policy-decision 的链路与 artifact publication 链路对齐
+- 后续 executor/runtime 可以直接拿统一 policy decision payload 写 ledger
+- failed evaluation result 仍不会直接执行 rollback，执行权仍留给 runtime policy / executor
+
+边界：
+
+- 当前不执行 rollback
+- 当前不写 run ledger
+- 当前不改变 action_request policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
