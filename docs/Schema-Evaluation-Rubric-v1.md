@@ -144,6 +144,8 @@ The intended layering is:
 
 - `workflow_spec`
   defines where evaluation should happen
+- `workflow_spec.stages[].evaluation.rubric_refs`
+  references which rubrics should be used for a stage
 - `artifact_contract`
   describes what was produced
 - `evaluation_rubric`

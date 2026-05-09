@@ -18,6 +18,7 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
                     "context_prompt": "Write a PRD.",
                     "active_skills": ["document-analysis"],
                     "hint_only_skills": [],
+                    "evaluation_rubrics": ["rubric-analysis-prd"],
                 },
                 {
                     "name": "testing",
@@ -32,6 +33,7 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
                     "rollback_target": "development",
                     "active_skills": ["test-generation"],
                     "hint_only_skills": ["security-testing"],
+                    "evaluation_rubrics": ["rubric-testing"],
                 },
             ],
         },
@@ -50,6 +52,8 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
     assert analysis.delivery.expected_artifacts == ["PRD.md"]
     assert analysis.delivery.required is True
     assert analysis.skills.active == ["document-analysis"]
+    assert analysis.evaluation.rubric_refs == ["rubric-analysis-prd"]
+    assert analysis.evaluation.required is True
     assert analysis.rollback.enabled is False
 
     testing = spec.stages[1]
@@ -59,3 +63,4 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
     assert testing.rollback.max_attempts == 3
     assert testing.rollback.target_stage_name == "development"
     assert testing.skills.hint_only == ["security-testing"]
+    assert testing.evaluation.rubric_refs == ["rubric-testing"]

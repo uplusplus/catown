@@ -7059,6 +7059,35 @@ v1 覆盖：
 - 没有 monitor endpoint
 - 没有 artifact review workflow
 
+### 11.172 2026-05-09 新进展：workflow stage 已能引用 evaluation rubric
+
+11.167 到 11.171 已经补齐 rubric/result/action bridge/read-model summary。
+但 workflow spec 还不能表达：
+
+- 哪个 stage 应该使用哪个 rubric
+- 这个 stage 是否要求 evaluation
+
+这会让 rubric 仍然游离在 workflow 外部。
+
+本轮更新 `backend/services/workflow_spec_contracts.py`：
+
+- 新增 `WorkflowEvaluationSpec`
+- `WorkflowStageSpec.evaluation.rubric_refs`
+- `WorkflowStageSpec.evaluation.required`
+- pipeline template compiler 支持可选 `evaluation_rubrics`
+
+这一步的意义是：
+
+- workflow spec 可以声明 stage-level evaluation policy
+- evaluation rubric 不再只是独立 schema
+- 后续可以在 stage completion / artifact acceptance / release review 中读取统一 rubric refs
+
+边界：
+
+- 当前不改变 gate 行为
+- 不强制 stage 必须产出 evaluation result
+- 不接入 pipeline engine 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

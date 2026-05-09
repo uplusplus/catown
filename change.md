@@ -2789,3 +2789,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `summarize_evaluation_result(...)`
 - 输出 result id、rubric id、overall status、target、reviewer、criterion counts、recommended action request count
 - 为后续 API/Monitor 投影评审结果提供稳定 read model，暂不接持久化
+
+### `Attach evaluation rubric refs to workflow stages`
+
+范围：
+
+- `backend/services/workflow_spec_contracts.py`
+- `backend/tests/test_workflow_spec_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/Schema-Evaluation-Rubric-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `WorkflowStageSpec` 新增 `evaluation.rubric_refs` 与 `evaluation.required`
+- pipeline template compiler 支持从可选 `evaluation_rubrics` 字段映射到 canonical workflow spec
+- 将 workflow stage 与 evaluation rubric 连接起来，但不改变执行器 gate 行为

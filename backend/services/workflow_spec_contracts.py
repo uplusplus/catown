@@ -24,6 +24,11 @@ class WorkflowSkillSpec(BaseModel):
     hint_only: list[str] = Field(default_factory=list)
 
 
+class WorkflowEvaluationSpec(BaseModel):
+    rubric_refs: list[str] = Field(default_factory=list)
+    required: bool = False
+
+
 class WorkflowStageSpec(BaseModel):
     stage_id: str
     display_name: str
@@ -34,6 +39,7 @@ class WorkflowStageSpec(BaseModel):
     delivery: WorkflowDeliverySpec = Field(default_factory=WorkflowDeliverySpec)
     rollback: WorkflowRollbackSpec = Field(default_factory=WorkflowRollbackSpec)
     skills: WorkflowSkillSpec = Field(default_factory=WorkflowSkillSpec)
+    evaluation: WorkflowEvaluationSpec = Field(default_factory=WorkflowEvaluationSpec)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -58,6 +64,11 @@ def compile_pipeline_template_to_workflow_spec(template_name: str, payload: dict
         expected_artifacts = [
             str(item).strip()
             for item in list(stage.get("expected_artifacts", []) or [])
+            if str(item).strip()
+        ]
+        rubric_refs = [
+            str(item).strip()
+            for item in list(stage.get("evaluation_rubrics", []) or [])
             if str(item).strip()
         ]
         stages.append(
@@ -90,6 +101,10 @@ def compile_pipeline_template_to_workflow_spec(template_name: str, payload: dict
                         for item in list(stage.get("hint_only_skills", []) or [])
                         if str(item).strip()
                     ],
+                ),
+                evaluation=WorkflowEvaluationSpec(
+                    rubric_refs=rubric_refs,
+                    required=bool(rubric_refs),
                 ),
             )
         )

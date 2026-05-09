@@ -18,6 +18,7 @@ Schema v1 covers:
 - delivery expectations
 - rollback configuration
 - skill injection configuration
+- evaluation rubric references
 
 It does **not** yet cover:
 
@@ -74,6 +75,7 @@ Each stage carries:
 - `delivery`
 - `rollback`
 - `skills`
+- `evaluation`
 - `metadata`
 
 Example:
@@ -99,6 +101,10 @@ Example:
     "active": ["test-generation", "bug-reporting"],
     "hint_only": ["security-testing"]
   },
+  "evaluation": {
+    "rubric_refs": ["rubric-testing"],
+    "required": true
+  },
   "metadata": {}
 }
 ```
@@ -120,6 +126,7 @@ Current field mapping:
 - `rollback_target` -> `rollback.target_stage_name`
 - `active_skills` -> `skills.active`
 - `hint_only_skills` -> `skills.hint_only`
+- `evaluation_rubrics` -> `evaluation.rubric_refs`
 
 This means schema v1 is not yet a brand-new workflow language; it is the first explicit contract layer over the current pipeline template shape.
 
