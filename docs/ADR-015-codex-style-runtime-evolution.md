@@ -7788,6 +7788,31 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不改变默认 full-contract 写入行为
 - 当前不新增数据库表
 
+### 11.196 2026-05-09 新进展：policy result payload 已携带 gate result
+
+11.193 增加了 `build_policy_decision_gate_result(...)`，但各类 policy result payload 仍只携带 `policy_decision` 和 `policy_decision_event_payload`。
+这意味着 executor adapter 即使拿到 result payload，也还要再调用一次 gate projection。
+
+本轮将 `policy_decision_gate_result` 加入：
+
+- `ActionRequestPolicyResult.to_payload()`
+- `ArtifactPublicationPolicyResult.to_payload()`
+- `EvaluationRollbackPolicyResult.to_payload()`
+- `EvaluationResultPolicyResult.to_payload()`
+- `WorkflowSpecPolicyDecisionResult.to_payload()`
+
+这一步的意义是：
+
+- policy checker 输出、ledger 写入 payload、executor gate projection 已在同一个 result payload 内对齐
+- 后续执行路径可以直接读取 `allowed` / `blocked` / `blocked_reason`
+- 不需要每个 executor 自己重新解释 canonical decision
+
+边界：
+
+- 当前不改变 executor 主路径
+- 当前不改变原有 `policy_decision` payload
+- 当前不改变原有 `policy_decision_event_payload`
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

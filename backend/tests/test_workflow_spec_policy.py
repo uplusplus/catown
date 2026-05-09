@@ -145,6 +145,7 @@ def test_validate_and_project_workflow_spec_builds_ledger_payload():
     assert payload["policy_report"]["executable"] is True
     assert payload["policy_decision"]["accepted"] is True
     assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
+    assert payload["policy_decision_gate_result"]["allowed"] is True
 
 
 def test_workflow_requires_at_least_one_stage():

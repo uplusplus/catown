@@ -171,6 +171,7 @@ def test_evaluation_rollback_policy_result_projects_policy_decision():
         "type": "suggest_rollback",
     }
     assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
+    assert payload["policy_decision_gate_result"]["allowed"] is True
 
 
 def test_passed_evaluation_result_does_not_build_blocker_request():

@@ -13,6 +13,7 @@ from services.evaluation_result_contracts import (
 )
 from services.policy_decision_contracts import (
     build_policy_decision_event_payload,
+    build_policy_decision_gate_result,
     dump_policy_decision,
     project_policy_decision,
 )
@@ -67,6 +68,7 @@ class EvaluationResultPolicyResult:
             "policy_decision_event_payload": build_policy_decision_event_payload(
                 policy_decision
             ),
+            "policy_decision_gate_result": build_policy_decision_gate_result(policy_decision),
         }
 
 

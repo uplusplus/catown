@@ -119,3 +119,5 @@ def test_evaluation_result_policy_result_projects_policy_decision():
         "type": None,
     }
     assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
+    assert payload["policy_decision_gate_result"]["blocked"] is True
+    assert payload["policy_decision_gate_result"]["blocked_kind"] == "policy_decision"

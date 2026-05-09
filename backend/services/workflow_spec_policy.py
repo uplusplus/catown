@@ -9,6 +9,7 @@ from typing import Any
 from services.policy_decision_contracts import (
     PolicyDecisionContract,
     build_policy_decision_event_payload,
+    build_policy_decision_gate_result,
     dump_policy_decision,
     project_policy_decision,
 )
@@ -82,6 +83,7 @@ class WorkflowSpecPolicyDecisionResult:
             "policy_decision_event_payload": build_policy_decision_event_payload(
                 self.policy_decision
             ),
+            "policy_decision_gate_result": build_policy_decision_gate_result(self.policy_decision),
         }
 
 

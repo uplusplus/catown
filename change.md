@@ -3222,3 +3222,28 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 支持从 service result payload 的 `policy_decision` 或 `policy_decision_event_payload` 写入标准 ledger event
 - 支持 summary-only `policy_decision_event_payload`
 - 暂不主动接 action/artifact/evaluation/workflow executor 主路径
+
+### `Embed gate results in policy result payloads`
+
+范围：
+
+- `backend/services/action_request_policy.py`
+- `backend/services/artifact_publication.py`
+- `backend/services/evaluation_action_requests.py`
+- `backend/services/evaluation_result_policy.py`
+- `backend/services/workflow_spec_policy.py`
+- `backend/tests/test_action_request_policy.py`
+- `backend/tests/test_artifact_publication.py`
+- `backend/tests/test_evaluation_action_requests.py`
+- `backend/tests/test_evaluation_result_policy.py`
+- `backend/tests/test_workflow_spec_policy.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- action/artifact/evaluation/workflow policy result payloads 现在包含 `policy_decision_gate_result`
+- gate result 由 `build_policy_decision_gate_result(...)` 统一生成
+- 调用方可直接读取 `allowed` / `blocked` / `blocked_reason`
+- 暂不改变 executor 主路径，也不改变原有 `policy_decision` 或 `policy_decision_event_payload`

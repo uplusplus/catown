@@ -108,6 +108,7 @@ def test_action_request_policy_result_projects_policy_decision():
         "type": "request_approval",
     }
     assert payload["policy_decision_event_payload"]["event_kind"] == "policy_decision_recorded"
+    assert payload["policy_decision_gate_result"]["allowed"] is True
 
 
 def test_auto_gate_approval_request_is_rejected():
