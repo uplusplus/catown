@@ -7629,6 +7629,33 @@ action request policy checker 是最早接入 workflow/runner policy 的裁定�
 - 当前不主动写 policy decision event
 - 当前不改变 execution behavior
 
+### 11.190 2026-05-09 新进展：policy decision 已有标准 ledger append helper
+
+11.188 和 11.189 让 run ledger read-side 能消费 policy decision events。
+但写入侧如果未来由各 executor 手工调用 `append_task_event`，仍会重复拼 event type、summary 和 payload。
+
+本轮在 `backend/services/run_ledger.py` 增加：
+
+- `append_policy_decision_event(...)`
+
+它做三件事：
+
+- 调用 `build_policy_decision_event_payload(...)`
+- 使用标准 event type `policy_decision_recorded`
+- 生成默认 summary 后调用现有 `append_task_event`
+
+这一步的意义是：
+
+- policy decision 写 ledger 有了唯一 helper
+- 后续 action/artifact/evaluation/workflow checks 接 executor 时，只需要传 canonical decision
+- read-side summary/detail 已经能消费该 helper 写出的事件
+
+边界：
+
+- 当前不主动接任何 executor 主路径
+- 当前不新增数据库表
+- 当前不改变 policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

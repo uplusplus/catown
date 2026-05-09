@@ -193,9 +193,16 @@ and exposes aggregate policy decision summary in checkpoint and task-run summari
 Task-run detail serialization also exposes a `policy_decisions` list with per-event
 summary and the canonical decision payload.
 
+A run-ledger append helper is now present:
+
+- `append_policy_decision_event(...)`
+
+It writes a standard `policy_decision_recorded` event payload via the existing task-run
+ledger API when a caller explicitly invokes it.
+
 This schema is **not** yet wired into:
 
-- run ledger persistence
+- automatic run ledger persistence from executor paths
 - pipeline stage completion
 - artifact acceptance
 - approval queue resolution

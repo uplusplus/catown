@@ -1,4 +1,5 @@
 import json
+import importlib
 
 from services.policy_decision_contracts import build_policy_decision_event_payload
 from services.run_ledger import (
@@ -88,5 +89,58 @@ def test_task_run_checkpoint_summarizes_policy_decision_events(fresh_db):
         assert policy_decision_entry["event_index"] == 1
         assert policy_decision_entry["policy_decision_summary"]["decision_id"] == "policy-decision-action-1"
         assert policy_decision_entry["policy_decision"]["subject"]["id"] == "req-1"
+    finally:
+        db.close()
+
+
+def test_append_policy_decision_event_writes_standard_payload(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Policy Decision Append Chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="chat_turn",
+            status="running",
+            title="Policy decision append run",
+            user_request="Append policy decisions.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        import services.run_ledger as run_ledger_service
+
+        run_ledger_service = importlib.reload(run_ledger_service)
+        event = run_ledger_service.append_policy_decision_event(
+            db,
+            task_run,
+            {
+                "kind": "policy_decision",
+                "version": 1,
+                "decision_id": "policy-decision-artifact-1",
+                "decision_type": "artifact_contract_policy",
+                "subject": {
+                    "kind": "artifact_contract",
+                    "id": "artifact-1",
+                    "type": "workspace.file",
+                },
+                "accepted": True,
+                "stage_name": "testing",
+            },
+            agent_name="Tester",
+        )
+
+        assert event is not None
+        assert event.event_type == "policy_decision_recorded"
+        assert event.summary == "Policy decision accepted for artifact_contract artifact-1."
+        detail = run_ledger_service.serialize_task_run_detail(task_run)
+        assert detail["policy_decision_summary"]["accepted_count"] == 1
+        assert detail["policy_decisions"][0]["policy_decision"]["decision_id"] == "policy-decision-artifact-1"
     finally:
         db.close()

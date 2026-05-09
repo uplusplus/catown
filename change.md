@@ -3114,3 +3114,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 从已有 `policy_decision_recorded` 事件中提取 canonical policy decision
 - 每条明细包含 event metadata、policy decision summary 和完整 payload
 - 暂不写 policy decision 事件，不改 Monitor UI
+
+### `Append policy decision ledger events`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_ledger_policy_decisions.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `append_policy_decision_event(...)`
+- 使用标准 `policy_decision_recorded` event type 和 `build_policy_decision_event_payload(...)`
+- 自动生成默认 summary 并委托现有 `append_task_event`
+- 暂不接具体 executor 主路径，也不改变 policy checker 行为
