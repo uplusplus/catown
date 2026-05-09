@@ -126,13 +126,15 @@ This schema does not authorize a rubric to directly change runtime state.
 Instead:
 
 - the rubric describes quality criteria
-- an agent or human applies the rubric
+- an agent, human, or software evaluator applies the rubric
+- the result is recorded as `evaluation_result`
 - the software records or routes the result
 - runtime policy decides whether any gate, rollback, or approval action follows
 
 So:
 
 - `evaluation_rubric` describes how to judge quality
+- `evaluation_result` records one actual judgment
 - `action_request` expresses what an agent wants done after judgment
 - runtime policy decides whether that request may affect state
 
@@ -146,10 +148,13 @@ The intended layering is:
   describes what was produced
 - `evaluation_rubric`
   describes how that output should be judged
+- `evaluation_result`
+  records how one output was judged
 - `action_request`
   asks the executor to act on the judgment
 
-This keeps workflow structure, produced objects, semantic judgment, and runtime intent separate.
+This keeps workflow structure, produced objects, semantic criteria, semantic results, and runtime
+intent separate.
 
 ## 7. Current Implementation Status
 
@@ -170,7 +175,7 @@ It is currently a draft contract intended to guide the next refactor.
 
 The next likely follow-ups are:
 
-1. define rubric result schema v1
-2. attach optional rubric refs to workflow stages or artifact contracts
-3. map existing tester/release conclusions into rubric result records
-4. decide which rubric outcomes can suggest action requests and which require final approval
+1. attach optional rubric refs to workflow stages or artifact contracts
+2. map existing tester/release conclusions into rubric result records
+3. decide which rubric outcomes can suggest action requests and which require final approval
+4. connect evaluation results to durable review persistence

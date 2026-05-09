@@ -6922,6 +6922,48 @@ v1 覆盖：
 - 未接入 workflow stage gates
 - 未接入 artifact acceptance 或 review persistence
 
+### 11.168 2026-05-09 新进展：evaluation result 已从 rubric 中拆出
+
+11.167 新增了 `evaluation_rubric`，用于描述“怎么判断好坏”。
+但 rubric 本身只是标准，不是一次实际评审。
+
+如果没有独立 result schema，系统后续很容易把：
+
+- rubric criteria
+- agent/human 评审结论
+- recommended rollback / approval / release action
+
+混在一个 payload 里。
+
+本轮新增：
+
+- `backend/services/evaluation_result_contracts.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+
+v1 覆盖：
+
+- result identity
+- rubric reference
+- evaluated target reference
+- reviewer ownership
+- overall status
+- criterion-level result
+- evidence refs
+- recommended action request ids
+
+这一步的意义是：
+
+- `evaluation_rubric` 负责“怎么评”
+- `evaluation_result` 负责“一次评审得出什么”
+- `action_request` 负责“评审后希望 runtime 做什么”
+- runtime policy 仍然裁定这些请求是否能影响状态
+
+边界：
+
+- 当前没有 durable review persistence
+- 未接入 artifact acceptance
+- 未接入 stage/release gate enforcement
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -2720,3 +2720,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `evaluation_rubric schema v1`
 - 覆盖 applies-to、criteria、scale、evaluator owner、required、weight、threshold、guidance
 - 将协议对象从 workflow/action/artifact 扩展为 workflow/action/artifact/rubric 四类，承载模糊质量和品味判断
+
+### `Draft evaluation result schema v1`
+
+范围：
+
+- `backend/services/evaluation_result_contracts.py`
+- `backend/tests/test_evaluation_result_contracts.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/Schema-Evaluation-Rubric-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `evaluation_result schema v1`
+- 记录 rubric application 的 target、reviewer、overall status、criterion results、evidence refs、recommended action request ids
+- 将“怎么评”与“一次评审结果”拆开，避免模糊判断直接变成 runtime state mutation

@@ -507,9 +507,9 @@ The following should vary mainly as data, config, or plugins:
 
 This is where software delivery, UI design, video generation, or other future project types should differ.
 
-#### The Four Main Protocol Objects
+#### The Five Main Protocol Objects
 
-To avoid one-off implementations, Catown should increasingly converge on four first-class protocol objects:
+To avoid one-off implementations, Catown should increasingly converge on five first-class protocol objects:
 
 1. `workflow spec`
    - how a task is organized
@@ -522,6 +522,9 @@ To avoid one-off implementations, Catown should increasingly converge on four fi
 4. `evaluation rubric`
    - how quality, completeness, taste, and semantic adequacy should be judged
    - criteria, scale, evaluator owner, threshold, guidance
+5. `evaluation result`
+   - what one agent, human, or software evaluator concluded
+   - target, criterion results, evidence, recommended follow-up requests
 
 This is more robust than loosely saying that the software receives a "script".
 The important point is not arbitrary programmability, but bounded interpretability.
@@ -555,7 +558,7 @@ not:
 
 When adding a new capability, the first design question should be:
 
-- can this be expressed as `workflow spec`, `action request`, `artifact contract`, or `evaluation rubric`?
+- can this be expressed as `workflow spec`, `action request`, `artifact contract`, `evaluation rubric`, or `evaluation result`?
 
 If yes, prefer extending protocols over extending the kernel.
 If no, then and only then consider adding a new runtime primitive.
@@ -576,7 +579,11 @@ The fourth concrete draft is:
 
 - [Evaluation Rubric Schema v1](Schema-Evaluation-Rubric-v1.md)
 
-These schemas keep workflow structure, runtime intent, produced objects, and semantic judgment as separate protocol objects.
+The fifth concrete draft is:
+
+- [Evaluation Result Schema v1](Schema-Evaluation-Result-v1.md)
+
+These schemas keep workflow structure, runtime intent, produced objects, semantic criteria, and semantic results as separate protocol objects.
 
 ## 4. Monitor Read Model
 
