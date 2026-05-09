@@ -558,7 +558,7 @@ not:
 
 When adding a new capability, the first design question should be:
 
-- can this be expressed as `workflow spec`, `action request`, `artifact contract`, `evaluation rubric`, or `evaluation result`?
+- can this be expressed as `workflow spec`, `action request`, `artifact contract`, `evaluation rubric`, `evaluation result`, or `policy decision`?
 
 If yes, prefer extending protocols over extending the kernel.
 If no, then and only then consider adding a new runtime primitive.
@@ -583,7 +583,11 @@ The fifth concrete draft is:
 
 - [Evaluation Result Schema v1](Schema-Evaluation-Result-v1.md)
 
-These schemas keep workflow structure, runtime intent, produced objects, semantic criteria, and semantic results as separate protocol objects.
+The sixth concrete draft is:
+
+- [Policy Decision Schema v1](Schema-Policy-Decision-v1.md)
+
+These schemas keep workflow structure, runtime intent, produced objects, semantic criteria, semantic results, and local software verdicts as separate protocol objects.
 
 ## 4. Monitor Read Model
 

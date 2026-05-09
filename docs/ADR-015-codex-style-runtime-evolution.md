@@ -7288,6 +7288,54 @@ publish_artifact action_request
 - 当前不写 artifact acceptance decision
 - 当前不改变 pipeline engine 或 orchestration runtime 主路径
 
+### 11.179 2026-05-09 新进展：policy decision 已有统一 schema 投影
+
+11.170 到 11.178 已经形成了多条 policy decision：
+
+- action_request policy decision
+- artifact_contract policy decision
+- evaluation_result policy decision
+
+但这些 decision 仍是各服务自己的 shape。
+如果直接接入 run ledger、Monitor 或持久化，会再次出现三套 read model。
+
+本轮新增：
+
+- `docs/Schema-Policy-Decision-v1.md`
+- `backend/services/policy_decision_contracts.py`
+- `backend/tests/test_policy_decision_contracts.py`
+
+新增 schema-v1 `policy_decision`：
+
+- `decision_type`
+- `subject`
+- `accepted`
+- `stage_name`
+- `policy_source`
+- `pipeline_name`
+- `violations`
+- `metadata`
+
+并新增 `project_policy_decision(...)`，可把当前已有的：
+
+- `ActionRequestPolicyDecision`
+- `ArtifactContractPolicyDecision`
+- `EvaluationResultPolicyDecision`
+
+投影为统一 payload。
+
+这一步的意义是：
+
+- policy decision 成为独立控制面对象
+- local software verdict 与 LLM/人产生的语义对象分离
+- 后续 run ledger / Monitor / executor gate 可以消费统一 shape
+
+边界：
+
+- 当前不写 run ledger
+- 当前不新增数据库表
+- 当前不改变任何 policy checker 的行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

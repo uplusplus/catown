@@ -2913,3 +2913,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `compile_and_validate_publish_artifact_request_for_policy(...)`
 - 将 `publish_artifact action_request -> artifact_contract -> artifact policy decision` 收成纯服务闭环
 - 暂不持久化 artifact_contract，也不改变 pipeline engine 或 orchestration runtime 主路径
+
+### `Project runtime policy decisions into a canonical contract`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/Architecture.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `policy_decision schema v1`
+- 新增 `project_policy_decision(...)`
+- 支持把 action request、artifact contract、evaluation result policy decision 投影为统一 payload
+- 明确 policy decision 是本地软件 verdict，不是 LLM 直接输出
+- 暂不接 run ledger、Monitor read model 或数据库持久化
