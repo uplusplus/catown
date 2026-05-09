@@ -19,6 +19,7 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
                     "context_prompt": "Write a PRD.",
                     "active_skills": ["document-analysis"],
                     "hint_only_skills": [],
+                    "evaluation_rubrics": ["rubric-analysis-prd"],
                 },
                 {
                     "name": "testing",
@@ -33,6 +34,7 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
                     "rollback_target": "development",
                     "active_skills": ["test-generation"],
                     "hint_only_skills": ["security-testing"],
+                    "evaluation_rubrics": ["rubric-testing"],
                 },
             ],
         },
@@ -59,6 +61,10 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
     assert analysis["approval"]["required"] is True
     assert analysis["delivery"]["expected_artifacts"] == ["PRD.md"]
     assert analysis["metadata"]["tool_policy_summary"]["tool_count"] == 1
+    assert analysis["metadata"]["evaluation_policy"] == {
+        "rubric_refs": ["rubric-analysis-prd"],
+        "required": True,
+    }
 
     testing = payload["stages"][1]
     assert testing["stage_name"] == "testing"
@@ -66,3 +72,4 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
     assert testing["rollback"]["max_attempts"] == 3
     assert testing["rollback"]["target_stage"] == "development"
     assert testing["hint_only_skills"] == ["security-testing"]
+    assert testing["metadata"]["evaluation_policy"]["rubric_refs"] == ["rubric-testing"]

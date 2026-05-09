@@ -7088,6 +7088,29 @@ v1 覆盖：
 - 不强制 stage 必须产出 evaluation result
 - 不接入 pipeline engine 主路径
 
+### 11.173 2026-05-09 新进展：runner policy 已投影 stage evaluation policy
+
+11.172 让 workflow stage 能引用 evaluation rubric。
+但如果 runner governance policy 不携带这些引用，下游 action/policy/read-side 仍然要回头读 workflow spec 原文。
+
+本轮更新 `backend/services/runner_policy.py`：
+
+- `compile_workflow_stage_policy(...)` 读取 `stage_spec.evaluation`
+- stage metadata 增加 `evaluation_policy`
+- payload 包含 `rubric_refs` 与 `required`
+
+这一步的意义是：
+
+- workflow spec 中的 evaluation intent 进入 runner governance projection
+- 后续 stage completion、artifact acceptance、monitor 展示可以读取统一 policy payload
+- 仍然不改变 executor 主行为
+
+边界：
+
+- legacy `StageConfig` 路径没有 evaluation policy
+- pipeline engine 未消费该 metadata
+- 未强制 rubric result 存在
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

@@ -2806,3 +2806,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `WorkflowStageSpec` 新增 `evaluation.rubric_refs` 与 `evaluation.required`
 - pipeline template compiler 支持从可选 `evaluation_rubrics` 字段映射到 canonical workflow spec
 - 将 workflow stage 与 evaluation rubric 连接起来，但不改变执行器 gate 行为
+
+### `Project workflow evaluation policy into runner policy`
+
+范围：
+
+- `backend/services/runner_policy.py`
+- `backend/tests/test_runner_policy_contracts.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- `compile_workflow_stage_policy(...)` 将 stage evaluation rubric refs 投影到 `metadata.evaluation_policy`
+- runner governance policy 现在能携带 stage-level evaluation policy
+- 保持 runner policy 仍为 read-side/governance projection，不改变 executor 主路径

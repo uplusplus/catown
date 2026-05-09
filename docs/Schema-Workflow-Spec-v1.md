@@ -193,6 +193,8 @@ The first governance-policy bridge is now present in:
 
 `RunnerGovernancePolicy` can now be compiled directly from canonical `workflow_spec`,
 without first requiring legacy `StageConfig` objects.
+Stage-level evaluation rubric refs are included in the compiled stage metadata as
+`evaluation_policy`.
 
 The first API exposure bridge is now present in:
 

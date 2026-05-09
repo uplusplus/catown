@@ -160,6 +160,7 @@ def compile_workflow_stage_policy(
     ]
     rollback = getattr(stage_spec, "rollback", None)
     skills = getattr(stage_spec, "skills", None)
+    evaluation = getattr(stage_spec, "evaluation", None)
 
     return StageRunnerPolicy(
         stage_name=_clean_text(getattr(stage_spec, "stage_id", None)),
@@ -187,6 +188,7 @@ def compile_workflow_stage_policy(
         ),
         metadata={
             **dict(getattr(stage_spec, "metadata", {}) or {}),
+            "evaluation_policy": _stage_evaluation_metadata(evaluation),
             **_stage_tool_metadata(tool_policy_pack),
         },
     )
@@ -412,6 +414,18 @@ def _stage_tool_metadata(tool_policy_pack: dict[str, Any] | None) -> dict[str, A
     return {
         "tool_names": list(pack.get("tool_names") or []),
         "tool_policy_summary": dict(pack.get("tool_policy_summary") or {}),
+    }
+
+
+def _stage_evaluation_metadata(evaluation: Any) -> dict[str, Any]:
+    rubric_refs = [
+        str(item).strip()
+        for item in list(getattr(evaluation, "rubric_refs", []) or [])
+        if str(item).strip()
+    ]
+    return {
+        "rubric_refs": rubric_refs,
+        "required": bool(getattr(evaluation, "required", False) or rubric_refs),
     }
 
 
