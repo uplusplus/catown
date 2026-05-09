@@ -7143,6 +7143,46 @@ v1 覆盖：
 - 不持久化 decision
 - stage 没有 rubric policy 时仍保持兼容接受
 
+### 11.175 2026-05-09 新进展：StageArtifact 已能归一化为 artifact_contract
+
+前面几轮已经补齐：
+
+- `publish_artifact` action request 到 artifact_contract 的编译桥
+- workflow stage delivery policy
+- evaluation result policy
+
+但当前 pipeline 主路径仍会写入历史形态的 `StageArtifact`：
+
+- `artifact_type`
+- `file_path`
+- `summary`
+
+如果不先提供一个无副作用的归一化桥，后续 executor、API、Monitor、持久化层会继续各自解释这三个字段。
+
+本轮新增：
+
+- `backend/services/artifact_normalization.py`
+- `backend/tests/test_artifact_normalization.py`
+
+新增 `compile_stage_artifact_to_contract(...)`，支持把 ORM row 或 dict 形态的 StageArtifact-like payload 转成 canonical `artifact_contract`：
+
+- `file` 转为 `workspace_file`
+- `directory` 转为 `workspace_directory`
+- 保留 source row id、stage id、created_at、原始 artifact_type 到 metadata
+- 从 stage/run 关系投影 producer 的 agent、stage、task run、pipeline run、pipeline stage
+
+这一步的意义是：
+
+- StageArtifact 不再只是 legacy DB row，而有了统一协议层投影
+- artifact_contract 开始承接现有 pipeline artifact，而不只承接未来的 publish_artifact
+- 后续可以在不立即迁移数据库 schema 的情况下，让 API/Monitor/executor 逐步消费统一 contract
+
+边界：
+
+- 当前不改 `pipeline/engine.py` 的 artifact 写入流程
+- 当前不新增 artifact_contract 持久化字段或表
+- 当前不处理 project `Asset` 归一化
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

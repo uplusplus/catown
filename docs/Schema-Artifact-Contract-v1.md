@@ -204,9 +204,17 @@ The first publication bridge is now present in:
 It compiles `publish_artifact` action requests into canonical `artifact_contract` payloads for
 document, workspace-file, workspace-directory, and structured-asset artifacts.
 
+The first pipeline artifact normalization bridge is now present in:
+
+- `backend/services/artifact_normalization.py`
+
+It compiles current `StageArtifact`-like ORM rows or dict payloads into canonical
+workspace-file or workspace-directory artifact contracts. The bridge preserves source
+row identity, producer stage/run context, summary, and original artifact type in metadata.
+
 This schema is **not** yet wired into:
 
-- pipeline stage artifact recording
+- native artifact_contract persistence for pipeline stage artifact recording
 - project asset persistence
 - publish_artifact runtime persistence flow
 - artifact approval and supersession logic
@@ -217,7 +225,7 @@ It is currently a draft contract intended to guide the next refactor.
 
 The next likely follow-ups are:
 
-1. map current `StageArtifact` writes into `artifact_contract` normalization
+1. connect current `StageArtifact` read/write paths to artifact_contract normalization
 2. map current `Asset` writes into `artifact_contract` normalization
 3. connect `publish_artifact` contract compilation to selected runtime persistence paths
 4. define artifact approval/supersession policy on top of this schema

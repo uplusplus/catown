@@ -2839,3 +2839,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 evaluation result policy checker
 - 按 runner governance policy 校验 evaluation result 的 rubric 是否允许用于目标 stage
 - 仍不接 stage gate 或 artifact acceptance，只返回 policy decision
+
+### `Normalize stage artifacts into artifact contracts`
+
+范围：
+
+- `backend/services/artifact_normalization.py`
+- `backend/tests/test_artifact_normalization.py`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `compile_stage_artifact_to_contract(...)`
+- 支持把 StageArtifact-like ORM row 或 dict payload 归一化为 canonical `artifact_contract`
+- `file` 映射为 `workspace_file`，`directory` 映射为 `workspace_directory`
+- 保留 source row id、stage id、created_at、producer stage/run context 与原始 artifact type metadata
+- 仍不改 pipeline engine 写入流程，也不新增 artifact_contract 持久化 schema
