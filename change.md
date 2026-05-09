@@ -2738,3 +2738,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `evaluation_result schema v1`
 - 记录 rubric application 的 target、reviewer、overall status、criterion results、evidence refs、recommended action request ids
 - 将“怎么评”与“一次评审结果”拆开，避免模糊判断直接变成 runtime state mutation
+
+### `Bridge evaluation results to action requests`
+
+范围：
+
+- `backend/services/evaluation_action_requests.py`
+- `backend/tests/test_evaluation_action_requests.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 evaluation result -> action request compatibility bridge
+- failed / needs_review result 可生成 `report_blocker`
+- failed result 可生成 `suggest_rollback`
+- 保持 evaluation result 只是评审记录，后续 runtime effect 仍由 action request policy / runtime policy 裁定

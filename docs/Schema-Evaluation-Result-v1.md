@@ -122,6 +122,13 @@ Schema v1 is now documented and represented by a minimal Pydantic contract in:
 
 - `backend/services/evaluation_result_contracts.py`
 
+The first action-request bridge is now present in:
+
+- `backend/services/evaluation_action_requests.py`
+
+It can compile failed or needs-review evaluation results into bounded `report_blocker` requests,
+and failed evaluation results into bounded `suggest_rollback` requests.
+
 This schema is **not** yet wired into:
 
 - artifact review persistence
@@ -137,5 +144,5 @@ The next likely follow-ups are:
 
 1. connect evaluation results to artifact acceptance flows
 2. map tester/release conclusions into evaluation result payloads
-3. decide which failed results create suggested action requests
+3. validate generated follow-up action requests against workflow policy
 4. add durable review result persistence

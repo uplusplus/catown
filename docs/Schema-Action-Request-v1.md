@@ -263,6 +263,13 @@ The first artifact-publication bridge is now present in:
 It compiles accepted `publish_artifact` action requests into canonical `artifact_contract` payloads
 without yet changing artifact persistence behavior.
 
+The first evaluation-result bridge is now present in:
+
+- `backend/services/evaluation_action_requests.py`
+
+It compiles failed or needs-review evaluation results into bounded follow-up action requests without
+directly mutating runtime state.
+
 This schema is **not** yet wired into:
 
 - pipeline engine execution

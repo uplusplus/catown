@@ -6964,6 +6964,37 @@ v1 覆盖：
 - 未接入 artifact acceptance
 - 未接入 stage/release gate enforcement
 
+### 11.169 2026-05-09 新进展：evaluation result 已能桥接为 follow-up action request
+
+11.168 把 `evaluation_result` 从 `evaluation_rubric` 中拆出来后，仍然缺少一个关键连接：
+
+- 评审结果如何影响后续运行时动作？
+
+如果让 evaluation result 直接改 runtime state，会破坏前面确立的边界。
+更稳的路径是：
+
+- evaluation result 记录语义判断
+- action request 表达后续意图
+- runtime policy 再裁定是否生效
+
+本轮新增 `backend/services/evaluation_action_requests.py`：
+
+- failed / needs-review result -> `report_blocker`
+- failed result -> `suggest_rollback`
+- 保留 evaluation result id、rubric id、target 等 metadata
+
+这一步的意义是：
+
+- 模糊质量判断可以产生结构化 follow-up intent
+- 但不会直接改变 stage、gate、rollback 等 runtime state
+- 后续可以把生成的 action request 继续送入 workflow-aware policy validator
+
+边界：
+
+- 当前没有自动接入 pipeline/tester/release 主路径
+- 未持久化 evaluation result
+- 未自动执行生成的 action request
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
