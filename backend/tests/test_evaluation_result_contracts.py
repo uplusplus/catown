@@ -3,6 +3,7 @@ from pydantic import ValidationError
 from services.evaluation_result_contracts import (
     dump_evaluation_result,
     parse_evaluation_result,
+    summarize_evaluation_result,
 )
 
 
@@ -81,6 +82,47 @@ def test_parse_failed_evaluation_result_can_reference_action_requests():
     dumped = dump_evaluation_result(result)
     assert dumped["overall_status"] == "failed"
     assert dumped["recommended_action_request_ids"] == ["req-rollback-1"]
+
+
+def test_summarize_evaluation_result_returns_compact_read_model():
+    summary = summarize_evaluation_result(
+        {
+            "kind": "evaluation_result",
+            "version": 1,
+            "result_id": "eval-mixed-1",
+            "rubric_id": "rubric-testing",
+            "target": {
+                "artifact_type": "document.test_report",
+                "file_path": "test_report.md",
+                "stage_id": "testing",
+            },
+            "reviewer": {
+                "name": "Tester",
+                "agent_type": "tester",
+                "owner": "agent",
+            },
+            "overall_status": "needs_review",
+            "criterion_results": [
+                {"criterion_id": "coverage", "status": "passed"},
+                {"criterion_id": "security", "status": "needs_review"},
+                {"criterion_id": "docs", "status": "not_applicable"},
+            ],
+            "recommended_action_request_ids": ["req-review-1"],
+            "summary": "Security finding requires review.",
+        }
+    )
+
+    assert summary["result_id"] == "eval-mixed-1"
+    assert summary["overall_status"] == "needs_review"
+    assert summary["target"]["stage_id"] == "testing"
+    assert summary["criterion_count"] == 3
+    assert summary["criterion_counts"] == {
+        "passed": 1,
+        "failed": 0,
+        "needs_review": 1,
+        "not_applicable": 1,
+    }
+    assert summary["recommended_action_request_count"] == 1
 
 
 def test_duplicate_criterion_result_ids_are_rejected():

@@ -76,3 +76,29 @@ def dump_evaluation_result(result: EvaluationRubricResult) -> dict[str, Any]:
     """Return the canonical JSON-compatible payload for one evaluation result."""
 
     return result.model_dump(mode="json")
+
+
+def summarize_evaluation_result(result: EvaluationRubricResult | dict[str, Any]) -> dict[str, Any]:
+    """Return a compact read-model summary for one evaluation result."""
+
+    parsed_result = parse_evaluation_result(result) if isinstance(result, dict) else result
+    criterion_counts = {
+        "passed": 0,
+        "failed": 0,
+        "needs_review": 0,
+        "not_applicable": 0,
+    }
+    for criterion_result in parsed_result.criterion_results:
+        criterion_counts[criterion_result.status] += 1
+
+    return {
+        "result_id": parsed_result.result_id,
+        "rubric_id": parsed_result.rubric_id,
+        "overall_status": parsed_result.overall_status,
+        "target": parsed_result.target.model_dump(mode="json"),
+        "reviewer": parsed_result.reviewer.model_dump(mode="json"),
+        "criterion_count": len(parsed_result.criterion_results),
+        "criterion_counts": criterion_counts,
+        "recommended_action_request_count": len(parsed_result.recommended_action_request_ids),
+        "summary": parsed_result.summary,
+    }

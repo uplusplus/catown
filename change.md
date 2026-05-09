@@ -2773,3 +2773,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 evaluation result -> rollback action request -> workflow policy validation 的组合 helper
 - failed evaluation result 生成 `suggest_rollback` 后，可立即按 canonical workflow policy 校验 target 是否允许
 - 仍不执行 rollback，只返回 action request 与 policy decision
+
+### `Summarize evaluation results for read models`
+
+范围：
+
+- `backend/services/evaluation_result_contracts.py`
+- `backend/tests/test_evaluation_result_contracts.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `summarize_evaluation_result(...)`
+- 输出 result id、rubric id、overall status、target、reviewer、criterion counts、recommended action request count
+- 为后续 API/Monitor 投影评审结果提供稳定 read model，暂不接持久化

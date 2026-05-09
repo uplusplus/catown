@@ -136,6 +136,13 @@ The first build-and-validate bridge is also present in:
 It can build a rollback request from a failed evaluation result and immediately validate that request
 against canonical workflow policy, without executing the rollback.
 
+The first read-model summary helper is now present in:
+
+- `backend/services/evaluation_result_contracts.py`
+
+It creates a compact summary with status, target, reviewer, criterion counts, and recommended-action
+counts for future API or Monitor projection.
+
 This schema is **not** yet wired into:
 
 - artifact review persistence

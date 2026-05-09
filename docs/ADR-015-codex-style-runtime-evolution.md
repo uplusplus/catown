@@ -7022,6 +7022,43 @@ v1 覆盖：
 - 未持久化 decision
 - 未接入 pipeline engine 主路径
 
+### 11.171 2026-05-09 新进展：evaluation result 已有稳定 read-model summary
+
+11.168 到 11.170 已经让 evaluation result 具备：
+
+- schema contract
+- action request bridge
+- workflow policy validation bridge
+
+但后续如果进入 API 或 Monitor，仍需要一个稳定 read model，而不是让每个调用方自己解析完整 result payload。
+
+本轮在 `backend/services/evaluation_result_contracts.py` 增加：
+
+- `summarize_evaluation_result(...)`
+
+输出：
+
+- result id
+- rubric id
+- overall status
+- target
+- reviewer
+- criterion counts
+- recommended action request count
+- summary
+
+这一步的意义是：
+
+- evaluation result 从“只可存原始 payload”推进到“可投影为稳定摘要”
+- 后续 API/Monitor 可以复用同一 read model
+- 不引入数据库 schema，也不改变执行行为
+
+边界：
+
+- 当前没有持久化 evaluation result
+- 没有 monitor endpoint
+- 没有 artifact review workflow
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
