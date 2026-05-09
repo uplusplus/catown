@@ -210,3 +210,62 @@ def test_append_policy_decision_event_writes_standard_payload(fresh_db):
         assert detail["policy_decisions"][0]["policy_decision"]["decision_id"] == "policy-decision-artifact-1"
     finally:
         db.close()
+
+
+def test_append_policy_decision_event_from_result_payload_writes_summary_only_payload(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Policy Decision Result Payload Chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="chat_turn",
+            status="running",
+            title="Policy decision result payload run",
+            user_request="Append result payload policy decisions.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        result_payload = {
+            "policy_decision_event_payload": build_policy_decision_event_payload(
+                {
+                    "kind": "policy_decision",
+                    "version": 1,
+                    "decision_id": "policy-decision-result-payload-1",
+                    "decision_type": "action_request_policy",
+                    "subject": {
+                        "kind": "action_request",
+                        "id": "req-result-payload-1",
+                    },
+                    "accepted": False,
+                },
+                include_contract=False,
+            )
+        }
+
+        import services.run_ledger as run_ledger_service
+
+        run_ledger_service = importlib.reload(run_ledger_service)
+        event = run_ledger_service.append_policy_decision_event_from_result_payload(
+            db,
+            task_run,
+            result_payload,
+            agent_name="Analyst",
+        )
+
+        assert event is not None
+        assert event.event_type == "policy_decision_recorded"
+        assert event.summary == "Policy decision rejected for action_request req-result-payload-1."
+        detail = run_ledger_service.serialize_task_run_detail(task_run)
+        assert detail["policy_decision_summary"]["rejected_count"] == 1
+        assert detail["policy_decisions"][0]["policy_decision"] is None
+        assert detail["policy_decisions"][0]["policy_decision_summary"]["decision_id"] == "policy-decision-result-payload-1"
+    finally:
+        db.close()

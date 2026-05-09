@@ -3205,3 +3205,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `serialize_monitor_policy_decision_item(...)`
 - overview 最近 policy decision 条目复用 canonical `policy_decision_summary`
 - 暂不改前端展示，也不改变 run ledger 写入路径
+
+### `Append policy decisions from result payloads`
+
+范围：
+
+- `backend/services/run_ledger.py`
+- `backend/tests/test_run_ledger_policy_decisions.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `append_policy_decision_event_from_result_payload(...)`
+- 支持从 service result payload 的 `policy_decision` 或 `policy_decision_event_payload` 写入标准 ledger event
+- 支持 summary-only `policy_decision_event_payload`
+- 暂不主动接 action/artifact/evaluation/workflow executor 主路径

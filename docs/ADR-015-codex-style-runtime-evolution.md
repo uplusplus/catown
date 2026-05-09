@@ -7760,6 +7760,34 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不改变 ledger 写入路径
 - 当前不主动接 executor 主路径
 
+### 11.195 2026-05-09 新进展：run ledger 已能从 service result payload 写入 policy decision
+
+当前 action/artifact/evaluation/workflow policy result 的 `to_payload()` 已经包含 `policy_decision` 和 `policy_decision_event_payload`。
+但 run ledger 只有 `append_policy_decision_event(...)`，调用方仍要知道从 result payload 哪个字段取 decision。
+
+本轮在 `backend/services/run_ledger.py` 增加：
+
+- `append_policy_decision_event_from_result_payload(...)`
+
+它支持：
+
+- result payload 顶层 `policy_decision`
+- result payload 顶层 `policy_decision_event_payload`
+- 直接传入 `event_kind=policy_decision_recorded` 的 event payload
+- summary-only `policy_decision_event_payload`
+
+这一步的意义是：
+
+- executor 后续接入时可以把 service result payload 直接交给 run ledger adapter
+- policy checker、result payload、ledger event 三者之间少一层手工字段拼接
+- summary-only 和 full-contract 两种事件都走同一写入边界
+
+边界：
+
+- 当前不主动接 action/artifact/evaluation/workflow executor 主路径
+- 当前不改变默认 full-contract 写入行为
+- 当前不新增数据库表
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

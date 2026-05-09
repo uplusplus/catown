@@ -217,6 +217,61 @@ def append_policy_decision_event(
     )
 
 
+def append_policy_decision_event_from_result_payload(
+    db: Session,
+    task_run: TaskRun | None,
+    result_payload: Any,
+    *,
+    agent_name: str | None = None,
+    message_id: int | None = None,
+    summary: str | None = None,
+) -> Optional[TaskRunEvent]:
+    """Append a policy-decision event from a service result payload when present."""
+
+    payload = result_payload if isinstance(result_payload, dict) else {}
+    decision = payload.get("policy_decision")
+    if isinstance(decision, dict) and decision.get("kind") == "policy_decision":
+        return append_policy_decision_event(
+            db,
+            task_run,
+            decision,
+            agent_name=agent_name,
+            message_id=message_id,
+            summary=summary,
+        )
+
+    event_payload = payload.get("policy_decision_event_payload")
+    if not isinstance(event_payload, dict) and payload.get("event_kind") == "policy_decision_recorded":
+        event_payload = payload
+    if not isinstance(event_payload, dict):
+        return None
+
+    event_decision = event_payload.get("policy_decision")
+    if isinstance(event_decision, dict) and event_decision.get("kind") == "policy_decision":
+        return append_policy_decision_event(
+            db,
+            task_run,
+            event_decision,
+            agent_name=agent_name,
+            message_id=message_id,
+            summary=summary,
+        )
+
+    decision_summary = event_payload.get("policy_decision_summary")
+    if not isinstance(decision_summary, dict):
+        return None
+
+    return append_task_event(
+        db,
+        task_run,
+        "policy_decision_recorded",
+        agent_name=agent_name,
+        message_id=message_id,
+        summary=summary or format_policy_decision_summary(decision_summary),
+        payload=event_payload,
+    )
+
+
 def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     approval_items = list(getattr(task_run, "approval_queue_items", []) or [])
     checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)

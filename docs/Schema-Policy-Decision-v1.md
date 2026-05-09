@@ -210,9 +210,12 @@ task-run, chat, project, event, and subject metadata for API consumers.
 A run-ledger append helper is now present:
 
 - `append_policy_decision_event(...)`
+- `append_policy_decision_event_from_result_payload(...)`
 
 It writes a standard `policy_decision_recorded` event payload via the existing task-run
-ledger API when a caller explicitly invokes it.
+ledger API when a caller explicitly invokes it. The result-payload adapter accepts
+service result payloads that already contain either `policy_decision` or
+`policy_decision_event_payload`, including summary-only event payloads.
 
 A gate projection helper is also present:
 
