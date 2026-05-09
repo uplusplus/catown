@@ -152,6 +152,13 @@ It can project existing service-level decisions from:
 
 into canonical `policy_decision` payloads.
 
+A stable read-model summary helper is also present:
+
+- `summarize_policy_decision(...)`
+
+It returns decision id, decision type, subject identity, accepted status, stage/policy
+context, and violation counts without exposing the full payload.
+
 This schema is **not** yet wired into:
 
 - run ledger persistence

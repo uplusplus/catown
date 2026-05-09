@@ -7,6 +7,7 @@ from services.policy_decision_contracts import (
     dump_policy_decision,
     parse_policy_decision,
     project_policy_decision,
+    summarize_policy_decision,
 )
 from services.runner_policy import compile_workflow_run_policy
 from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
@@ -164,3 +165,52 @@ def test_project_evaluation_result_policy_decision():
 def test_project_policy_decision_requires_identity_for_unknown_payload():
     with pytest.raises(ValueError):
         project_policy_decision({"accepted": True})
+
+
+def test_summarize_policy_decision_returns_read_model_counts():
+    decision = parse_policy_decision(
+        {
+            "kind": "policy_decision",
+            "version": 1,
+            "decision_id": "policy-decision-artifact-1",
+            "decision_type": "artifact_contract_policy",
+            "subject": {
+                "kind": "artifact_contract",
+                "id": "artifact-1",
+                "type": "workspace.file",
+            },
+            "accepted": False,
+            "stage_name": "testing",
+            "policy_source": "workflow_spec",
+            "pipeline_name": "default",
+            "violations": [
+                {
+                    "code": "artifact_not_expected",
+                    "message": "Unexpected artifact.",
+                    "severity": "error",
+                },
+                {
+                    "code": "artifact_summary_missing",
+                    "message": "Summary missing.",
+                    "severity": "warning",
+                },
+            ],
+        }
+    )
+
+    summary = summarize_policy_decision(decision)
+    assert summary == {
+        "decision_id": "policy-decision-artifact-1",
+        "decision_type": "artifact_contract_policy",
+        "subject_kind": "artifact_contract",
+        "subject_id": "artifact-1",
+        "subject_type": "workspace.file",
+        "accepted": False,
+        "stage_name": "testing",
+        "policy_source": "workflow_spec",
+        "pipeline_name": "default",
+        "violation_count": 2,
+        "error_count": 1,
+        "warning_count": 1,
+        "info_count": 0,
+    }

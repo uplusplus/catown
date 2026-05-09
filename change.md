@@ -2932,3 +2932,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 支持把 action request、artifact contract、evaluation result policy decision 投影为统一 payload
 - 明确 policy decision 是本地软件 verdict，不是 LLM 直接输出
 - 暂不接 run ledger、Monitor read model 或数据库持久化
+
+### `Summarize policy decisions for read models`
+
+范围：
+
+- `backend/services/policy_decision_contracts.py`
+- `backend/tests/test_policy_decision_contracts.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `summarize_policy_decision(...)`
+- 输出 decision id/type、subject kind/id/type、accepted、stage/policy context 和 violation severity counts
+- 为后续 Monitor/API/ledger read model 提供稳定摘要
+- 暂不接 Monitor endpoint、run ledger 或数据库持久化

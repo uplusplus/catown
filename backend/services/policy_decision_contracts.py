@@ -69,6 +69,31 @@ def dump_policy_decision(decision: PolicyDecisionContract) -> dict[str, Any]:
     return decision.model_dump(mode="json")
 
 
+def summarize_policy_decision(decision: PolicyDecisionContract | dict[str, Any]) -> dict[str, Any]:
+    """Return a stable read-model summary for one policy decision."""
+
+    parsed_decision = parse_policy_decision(decision) if isinstance(decision, dict) else decision
+    violation_counts = {"info": 0, "warning": 0, "error": 0}
+    for violation in parsed_decision.violations:
+        violation_counts[violation.severity] = violation_counts.get(violation.severity, 0) + 1
+
+    return {
+        "decision_id": parsed_decision.decision_id,
+        "decision_type": parsed_decision.decision_type,
+        "subject_kind": parsed_decision.subject.kind,
+        "subject_id": parsed_decision.subject.id,
+        "subject_type": parsed_decision.subject.type,
+        "accepted": parsed_decision.accepted,
+        "stage_name": parsed_decision.stage_name,
+        "policy_source": parsed_decision.policy_source,
+        "pipeline_name": parsed_decision.pipeline_name,
+        "violation_count": len(parsed_decision.violations),
+        "error_count": violation_counts["error"],
+        "warning_count": violation_counts["warning"],
+        "info_count": violation_counts["info"],
+    }
+
+
 def project_policy_decision(
     decision: Any,
     *,

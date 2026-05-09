@@ -7336,6 +7336,36 @@ publish_artifact action_request
 - 当前不新增数据库表
 - 当前不改变任何 policy checker 的行为
 
+### 11.180 2026-05-09 新进展：policy decision 已有稳定 read-model summary
+
+11.179 让 action/artifact/evaluation 三类 policy decision 可以投影成统一 schema。
+但 Monitor/API 后续如果直接读完整 payload，仍会把 UI/read-side 绑定到完整 contract 结构。
+
+本轮在 `backend/services/policy_decision_contracts.py` 增加：
+
+- `summarize_policy_decision(...)`
+
+输出：
+
+- decision id
+- decision type
+- subject kind/id/type
+- accepted
+- stage/policy context
+- violation counts by severity
+
+这一步的意义是：
+
+- policy decision 从“可持久化 payload”推进到“可展示 read model”
+- Monitor/API 可以先消费 summary，而不是重复解析完整 payload
+- 后续 ledger event、decision persistence、UI 投影可以共享同一摘要逻辑
+
+边界：
+
+- 当前不接 Monitor endpoint
+- 当前不写 run ledger
+- 当前不改变 policy checker 行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
