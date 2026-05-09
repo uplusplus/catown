@@ -6731,6 +6731,36 @@ v1 当前覆盖：
 - 未引入 artifact approval / supersession policy
 - 仍然是兼容桥，而不是主路径迁移
 
+### 11.162 2026-05-09 新进展：workflow spec 已有执行前诊断层
+
+随着 workflow spec 开始承担“LLM 可生成、软件可执行”的协议角色，只靠 Pydantic 字段形状还不够。
+很多错误不是类型错误，而是执行语义错误：
+
+- stage list 为空
+- stage id 重复
+- stage 没有 owner agent
+- timeout 无效
+- rollback target 不存在或指向后续阶段
+- delivery 标记 required 但没有 expected artifacts
+
+本轮新增 `backend/services/workflow_spec_policy.py`：
+
+- 对 canonical workflow spec 做 execution-readiness diagnostics
+- 输出 deterministic report，而不是直接改配置或启动执行
+- 把 error / warning 分开，让 condition gate 和 skill overlap 这类 v1 暂不完整能力先以 warning 暴露
+
+这一步的意义是：
+
+- LLM 生成 workflow spec 后，软件有了进入执行器前的裁定层
+- workflow spec 不再只是“能 parse”，而是开始具备“能否执行”的独立判断
+- 后续可以把 config load、API submit、runtime start 逐步接到同一个 diagnostics contract
+
+边界：
+
+- 当前仍未接入 `PipelineConfigManager.load`
+- 未接入 pipeline executor start path
+- 不改变现有 `pipelines.json` 加载和执行行为
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

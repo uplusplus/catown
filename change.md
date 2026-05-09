@@ -2623,3 +2623,19 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 `publish_artifact -> artifact_contract` compatibility bridge
 - 支持 document、workspace file、workspace directory、structured asset 四类 contract 推导
 - 保持 pipeline artifact persistence 与 asset persistence 主路径不变，先把 intent schema 和 artifact schema 连接起来
+
+### `Validate workflow specs before execution`
+
+范围：
+
+- `backend/services/workflow_spec_policy.py`
+- `backend/tests/test_workflow_spec_policy.py`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 canonical workflow spec execution-readiness diagnostics
+- 校验 empty stages、duplicate stage id、missing owner、invalid timeout、invalid rollback、required delivery without artifacts
+- 先保持 pipeline config/runtime 主路径不变，为后续 LLM-generated workflow spec 接入提供软件裁定层
