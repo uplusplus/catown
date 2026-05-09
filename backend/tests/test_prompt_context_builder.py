@@ -219,6 +219,75 @@ def test_recent_history_preserves_existing_window_semantics():
     ]
 
 
+def test_recent_history_does_not_invent_tool_messages_without_saved_tool_results():
+    recent_messages = [
+        SimpleNamespace(agent_name=None, message_type="user", content="delete the file"),
+        SimpleNamespace(agent_name="analyst", message_type="text", content="Delete approved and completed."),
+    ]
+
+    history = build_recent_history(recent_messages, limit=4)
+
+    assert history == [
+        {"role": "user", "content": "delete the file"},
+        {"role": "assistant", "content": "Delete approved and completed."},
+    ]
+
+
+def test_turn_state_checkpoint_protocol_tail_restores_tool_pair_without_history_tool_result():
+    checkpoint_snapshot = {
+        "turn_local_state": {
+            "protocol_tail_messages": [
+                {
+                    "role": "assistant",
+                    "content": "Delete the dangerous file next.",
+                    "tool_calls": [
+                        {
+                            "id": "call_delete_file_replay",
+                            "type": "function",
+                            "function": {
+                                "name": "delete_file",
+                                "arguments": "{\"file_path\": \"danger.txt\"}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_delete_file_replay",
+                    "name": "delete_file",
+                    "content": "Deleted danger.txt",
+                },
+            ],
+            "prior_round_summaries": [],
+        }
+    }
+
+    turn_state = build_turn_state_from_checkpoint_snapshot(checkpoint_snapshot)
+
+    assert turn_state.protocol_messages() == [
+        {
+            "role": "assistant",
+            "content": "Delete the dangerous file next.",
+            "tool_calls": [
+                {
+                    "id": "call_delete_file_replay",
+                    "type": "function",
+                    "function": {
+                        "name": "delete_file",
+                        "arguments": "{\"file_path\": \"danger.txt\"}",
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_delete_file_replay",
+            "name": "delete_file",
+            "content": "Deleted danger.txt",
+        },
+    ]
+
+
 def test_history_summary_fragment_compacts_only_older_messages():
     recent_messages = [
         SimpleNamespace(agent_name=None, message_type="user", content="first user"),

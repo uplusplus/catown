@@ -285,8 +285,9 @@ export const api = {
   getMonitorLogs(limit = 250) {
     return request<MonitorLogsResponse>(`/api/monitor/logs?limit=${limit}`);
   },
-  getMonitorNetwork(limit = 300, category = "all", query = "") {
+  getMonitorNetwork(limit = 300, category = "all", query = "", includeInternal = false) {
     const params = new URLSearchParams({ limit: String(limit), category });
+    params.set("include_internal", includeInternal ? "true" : "false");
     if (query.trim()) {
       params.set("query", query.trim());
     }

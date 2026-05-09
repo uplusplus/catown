@@ -89,3 +89,5 @@ dmypy.json
 
 #codex
 .codex
+
+test_report.md

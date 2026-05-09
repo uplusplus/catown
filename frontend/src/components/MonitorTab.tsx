@@ -3476,7 +3476,7 @@ export function MonitorTab() {
         api.getProjects(),
         api.getAgents(),
         api.getConfig(),
-        api.getMonitorNetwork(300, networkCategory, networkFilter),
+        api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork),
         api.getMonitorTaskRuns(historyRange),
         api.getMonitorApprovalQueue("all", 120),
       ]);
@@ -3497,7 +3497,7 @@ export function MonitorTab() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [historyRange, networkCategory, networkFilter]);
+  }, [historyRange, networkCategory, networkFilter, showInternalNetwork]);
 
   useEffect(() => {
     if (!error) return undefined;
@@ -3742,7 +3742,7 @@ export function MonitorTab() {
     async function loadAndStreamNetwork() {
       try {
         setNetworkStreamState("connecting");
-        const response = await api.getMonitorNetwork(300, networkCategory, networkFilter);
+        const response = await api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork);
         if (cancelled) return;
 
         setNetworkEntries(mergeMonitorNetwork([], response.entries));
@@ -3752,6 +3752,7 @@ export function MonitorTab() {
         const params = new URLSearchParams({
           cursor: String(response.latest_id),
           category: networkCategory,
+          include_internal: showInternalNetwork ? "true" : "false",
         });
         if (networkFilter.trim()) {
           params.set("query", networkFilter.trim());
@@ -3820,7 +3821,7 @@ export function MonitorTab() {
       }
       streamAbortController?.abort();
     };
-  }, [networkCategory, networkFilter]);
+  }, [networkCategory, networkFilter, showInternalNetwork]);
 
   const sortedProjects = useMemo(
     () => [...projects].sort((left, right) => left.display_order - right.display_order),
@@ -4482,7 +4483,7 @@ export function MonitorTab() {
 
   async function refreshNetwork() {
     try {
-      const response = await api.getMonitorNetwork(300, networkCategory, networkFilter);
+      const response = await api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork);
       setNetworkEntries(mergeMonitorNetwork([], response.entries));
       networkCursorRef.current = Math.max(networkCursorRef.current, response.latest_id);
       setNetworkStreamState((current) => (current === "connected" ? current : "connecting"));

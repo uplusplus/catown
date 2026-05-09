@@ -1272,3 +1272,116 @@ class TestMonitorOverview:
         assert "https://old.example.com/a" not in urls
         assert len(entries) <= 2
         assert "https://new.example.com/d" in urls
+
+    def test_network_install_trims_persisted_rows_to_one_week(self, tmp_path):
+        from datetime import datetime, timedelta
+
+        _make_app(tmp_path)
+        from models.audit import MonitorNetworkRecord
+        from models.database import SessionLocal
+        from monitoring import monitor_network_buffer
+
+        monitor_network_buffer.clear()
+        previous_hours = os.environ.get("MONITOR_NETWORK_RETENTION_HOURS")
+        os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = "168"
+        try:
+            db = SessionLocal()
+            try:
+                db.add(
+                    MonitorNetworkRecord(
+                        created_at=datetime.now() - timedelta(days=8),
+                        category="backend_other",
+                        source="test",
+                        protocol="HTTPS",
+                        from_entity="Backend",
+                        to_entity="WWW",
+                        method="GET",
+                        url="https://old.example.com/stale",
+                        host="old.example.com",
+                        path="/stale",
+                        status_code=200,
+                        success=True,
+                    )
+                )
+                db.add(
+                    MonitorNetworkRecord(
+                        created_at=datetime.now() - timedelta(days=6),
+                        category="backend_other",
+                        source="test",
+                        protocol="HTTPS",
+                        from_entity="Backend",
+                        to_entity="WWW",
+                        method="GET",
+                        url="https://fresh.example.com/kept",
+                        host="fresh.example.com",
+                        path="/kept",
+                        status_code=200,
+                        success=True,
+                    )
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            assert monitor_network_buffer.install() is True
+            entries = monitor_network_buffer.list_entries(limit=10)
+        finally:
+            if previous_hours is None:
+                os.environ.pop("MONITOR_NETWORK_RETENTION_HOURS", None)
+            else:
+                os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = previous_hours
+
+        urls = [entry["url"] for entry in entries]
+        assert "https://old.example.com/stale" not in urls
+        assert "https://fresh.example.com/kept" in urls
+
+    def test_network_api_skips_internal_traffic_before_limit(self, client):
+        from monitoring import monitor_network_buffer
+
+        monitor_network_buffer.clear()
+        monitor_network_buffer.append(
+            {
+                "category": "backend_llm",
+                "source": "backend",
+                "protocol": "HTTPS",
+                "from_entity": "valet",
+                "to_entity": "LLM (example.com)",
+                "method": "POST",
+                "url": "https://example.com/v1/chat/completions",
+                "host": "example.com",
+                "path": "/v1/chat/completions",
+                "status_code": 200,
+                "success": True,
+                "flow_id": "llm-http-visible",
+                "flow_kind": "llm_http",
+                "flow_seq": 3,
+                "aggregated": False,
+                "metadata": {"frame_type": "response_chunk"},
+                "raw_response": "{\"id\":\"visible\"}",
+                "preview": "{\"id\":\"visible\"}",
+            }
+        )
+        for index in range(40):
+            monitor_network_buffer.append(
+                {
+                    "category": "frontend_backend",
+                    "source": "frontend",
+                    "protocol": "HTTP",
+                    "from_entity": "Frontend (monitor)",
+                    "to_entity": "Backend",
+                    "method": "GET",
+                    "url": f"http://localhost:8000/api/monitor/network?i={index}",
+                    "host": "localhost",
+                    "path": "/api/monitor/network",
+                    "status_code": 200,
+                    "success": True,
+                    "preview": f"internal {index}",
+                }
+            )
+
+        response = client.get("/api/monitor/network?limit=20")
+        assert response.status_code == 200
+        payload = response.json()
+        urls = [entry["url"] for entry in payload["entries"]]
+        assert "https://example.com/v1/chat/completions" in urls
+        assert all(entry["category"] != "frontend_backend" for entry in payload["entries"])

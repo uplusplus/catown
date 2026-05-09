@@ -27,6 +27,7 @@ INPUT_PRICE_PER_1K = 0.03
 OUTPUT_PRICE_PER_1K = 0.06
 LOG_STREAM_POLL_INTERVAL = 0.75
 LOG_STREAM_LIMIT = 200
+NETWORK_SCAN_LIMIT = 2000
 USAGE_RANGES = {"1h", "6h", "24h", "7d", "30d"}
 
 monitor_log_buffer.install()
@@ -53,6 +54,105 @@ def _parse_metadata(metadata_json: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _is_monitor_page_network(entry: dict[str, Any]) -> bool:
+    path = str(entry.get("path") or "").lower()
+    url = str(entry.get("url") or "").lower()
+    client_source = str(entry.get("client_source") or "").lower()
+    from_entity = str(entry.get("from_entity") or "").lower()
+    return (
+        client_source == "monitor"
+        or "frontend (monitor)" in from_entity
+        or path.startswith("/api/monitor")
+        or path == "/monitor"
+        or path == "/monitor/"
+        or path.endswith("/monitor.html")
+        or "/monitor" in url
+        or "/api/monitor" in url
+    )
+
+
+def _is_frontend_backend_heartbeat(entry: dict[str, Any]) -> bool:
+    protocol = str(entry.get("protocol") or "").lower()
+    raw_response = str(entry.get("raw_response") or "").strip()
+    preview = str(entry.get("preview") or "").lower()
+    path = str(entry.get("path") or "").lower()
+
+    if "http" not in protocol:
+        return False
+
+    normalized_raw_response = raw_response.replace("\r", "")
+    if raw_response and normalized_raw_response and all(
+        line.strip() == ": ping" for line in normalized_raw_response.splitlines() if line.strip()
+    ):
+        return True
+
+    if (
+        (path.endswith("/stream") or " ping" in preview)
+        and raw_response
+        and '"type": "content"' not in raw_response
+        and '"type":"content"' not in raw_response
+        and '"type": "done"' not in raw_response
+        and '"type":"done"' not in raw_response
+        and (
+            ": ping" in raw_response
+            or '"type": "llm_wait"' in raw_response
+            or '"type":"llm_wait"' in raw_response
+            or '"type": "tool_wait"' in raw_response
+            or '"type":"tool_wait"' in raw_response
+        )
+    ):
+        return True
+
+    return False
+
+
+def _is_frontend_meta_request(entry: dict[str, Any]) -> bool:
+    path = str(entry.get("path") or "").lower()
+    url = str(entry.get("url") or "").lower()
+    return path == "/api/frontend-meta" or "/api/frontend-meta" in url
+
+
+def _is_frontend_backend_traffic(entry: dict[str, Any]) -> bool:
+    return str(entry.get("category") or "").lower() == "frontend_backend"
+
+
+def _is_legacy_backend_llm_app_event(entry: dict[str, Any]) -> bool:
+    if str(entry.get("category") or "").lower() != "backend_llm":
+        return False
+    flow_kind = str(entry.get("flow_kind") or "").lower()
+    metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+    frame_type = str(metadata.get("frame_type") or "").lower()
+    if flow_kind == "llm_http":
+        return False
+    return flow_kind == "llm_stream" or frame_type in {
+        "request_sent",
+        "first_chunk",
+        "first_content",
+        "content",
+        "tool_call_delta",
+        "tool_call_ready",
+        "done",
+    }
+
+
+def _include_network_entry(entry: dict[str, Any], *, include_internal: bool) -> bool:
+    if not include_internal and (
+        _is_frontend_backend_traffic(entry)
+        or _is_monitor_page_network(entry)
+        or _is_frontend_backend_heartbeat(entry)
+        or _is_frontend_meta_request(entry)
+    ):
+        return False
+    if _is_legacy_backend_llm_app_event(entry):
+        return False
+    return bool(entry.get("aggregated") is False or not entry.get("flow_id"))
+
+
+def _filter_network_entries(entries: list[dict[str, Any]], *, include_internal: bool, limit: int) -> list[dict[str, Any]]:
+    visible = [entry for entry in entries if _include_network_entry(entry, include_internal=include_internal)]
+    return visible[:limit] if limit > 0 else visible
 
 
 def _compact_preview(value: Any, limit: int = 220) -> str:
@@ -622,16 +722,18 @@ async def get_monitor_network_events(
     limit: int = Query(300, ge=20, le=2000),
     category: str = Query("all"),
     query: str | None = Query(None, max_length=200),
+    include_internal: bool = Query(False),
 ):
+    scan_limit = limit if include_internal else min(max(limit * 8, limit), NETWORK_SCAN_LIMIT)
     entries = monitor_network_buffer.list_entries(
-        limit=limit,
+        limit=scan_limit,
         category=_normalize_network_category(category),
         query=query,
     )
     return {
         "captured_at": datetime.now().isoformat(),
         "latest_id": monitor_network_buffer.latest_id(),
-        "entries": entries,
+        "entries": _filter_network_entries(entries, include_internal=include_internal, limit=limit),
     }
 
 
@@ -648,8 +750,10 @@ async def stream_monitor_network_events(
     category: str = Query("all"),
     query: str | None = Query(None, max_length=200),
     once: bool = Query(False),
+    include_internal: bool = Query(False),
 ):
     normalized_category = _normalize_network_category(category)
+    scan_limit = LOG_STREAM_LIMIT if include_internal else NETWORK_SCAN_LIMIT
 
     async def event_generator():
         last_seen_id = cursor
@@ -660,13 +764,19 @@ async def stream_monitor_network_events(
                 break
 
             entries = monitor_network_buffer.list_entries(
-                limit=LOG_STREAM_LIMIT,
+                limit=scan_limit,
                 after_id=last_seen_id,
                 category=normalized_category,
                 query=query,
             )
             if entries:
-                for entry in reversed(entries):
+                last_seen_id = max(last_seen_id, max(int(entry["id"]) for entry in entries))
+                filtered_entries = _filter_network_entries(
+                    entries,
+                    include_internal=include_internal,
+                    limit=LOG_STREAM_LIMIT,
+                )
+                for entry in reversed(filtered_entries):
                     last_seen_id = max(last_seen_id, int(entry["id"]))
                     yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
                 idle_ticks = 0
@@ -1262,7 +1372,7 @@ async def get_monitor_overview(
             "collaboration": {
                 "active_collaborators": len(collaboration_coordinator.collaborators),
                 "chatrooms": len(collaboration_coordinator.chatroom_agents),
-                "pending_tasks": len(collaboration_coordinator.task_registry),
+                "pending_tasks": collaboration_coordinator.pending_task_count(),
                 "status": "active",
             },
             "last_message_at": latest_message.created_at.isoformat() if latest_message and latest_message.created_at else None,

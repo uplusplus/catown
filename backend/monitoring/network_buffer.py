@@ -25,6 +25,16 @@ class MonitorNetworkBuffer:
         self._ready_databases: set[str] = set()
         self._warned_databases: set[str] = set()
 
+    def install(self) -> bool:
+        """Ensure persistence is ready and trim data outside the retention window."""
+        if not self._ensure_persisted_table():
+            return False
+        try:
+            self._cleanup_persisted()
+        finally:
+            self._last_cleanup_monotonic = time.monotonic()
+        return True
+
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize(event)
         persisted = self._persist(normalized) or dict(normalized)

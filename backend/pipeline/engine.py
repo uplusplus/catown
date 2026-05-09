@@ -86,6 +86,7 @@ from services.runner_policy import (
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
     record_tool_round as record_runner_tool_round,
+    start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
@@ -2219,11 +2220,27 @@ class PipelineEngine:
 
         async def _execute_pipeline_tool(frame, tool_call):
             fn_name = tool_call["function"]["name"]
+            tool_args_str = tool_call["function"].get("arguments", "{}")
             try:
-                fn_args = json.loads(tool_call["function"]["arguments"])
+                fn_args = json.loads(tool_args_str)
             except json.JSONDecodeError:
                 fn_args = {}
 
+            record_tool_call_started(
+                db,
+                linked_task_run,
+                agent_name=stage_cfg.agent,
+                turn=frame.turn_index + 1,
+                tool_name=fn_name,
+                arguments=tool_args_str,
+                payload={
+                    "pipeline_id": pipeline.id,
+                    "pipeline_run_id": run.id,
+                    "pipeline_stage_id": stage.id,
+                    "stage_name": stage_cfg.name,
+                    "display_name": stage_cfg.display_name,
+                },
+            )
             tool_start = time.time()
             tool_result = await _execute_tool(stage_cfg.agent, run, fn_name, fn_args, db=db, stage_id=stage.id)
             tool_duration = int((time.time() - tool_start) * 1000)

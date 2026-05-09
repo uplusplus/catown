@@ -42,6 +42,8 @@ cd backend && pip install -r requirements.txt
 }
 ```
 
+`/monitor/network` 的网络事件会落盘到 `${CATOWN_HOME:-~/.catown}/state/catown.db`，默认仅保留最近 7 天（`MONITOR_NETWORK_RETENTION_HOURS=168`）。
+
 启动：
 
 ```bash

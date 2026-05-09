@@ -358,6 +358,58 @@ def test_startup_recovers_interrupted_orchestration_run(tmp_path):
         assert assistant_messages.count("Mocked agent response.") == 2
 
 
+def test_startup_recovery_terminalizes_interrupted_single_agent_run(tmp_path):
+    _make_app(tmp_path)
+
+    from models.database import SessionLocal, TaskRun
+    import routes.api as api_routes
+    from services.session_service import SessionService
+
+    db = SessionLocal()
+    try:
+        project, chatroom, _ = SessionService(db).create_project_directly(
+            name="Interrupted Single Agent Project",
+            description="Recovery test project",
+            agent_names=["tester"],
+        )
+        task_run = TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            client_turn_id="delegate-stale-single-agent",
+            run_kind="project_single_agent",
+            status="running",
+            title="Stale single-agent test run",
+            user_request="Run the backend tests",
+            initiator="user",
+            target_agent_name="tester",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+    assert summary["detected"] == 1
+    assert summary["recovered"] == 0
+    assert summary["interrupted"] == 1
+    assert summary["skipped"] == 0
+    assert summary["failed"] == 0
+
+    db = SessionLocal()
+    try:
+        detail = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        assert detail is not None
+        assert detail.status == "failed"
+        assert detail.completed_at is not None
+        assert "backend restart" in (detail.summary or "")
+        interrupted_event = next(event for event in detail.events if event.event_type == "task_run_interrupted")
+        assert interrupted_event is not None
+    finally:
+        db.close()
+
+
 def test_manual_resume_endpoint_recovers_interrupted_orchestration_run(tmp_path):
     from fastapi.testclient import TestClient
 

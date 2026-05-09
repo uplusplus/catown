@@ -474,15 +474,23 @@ logger.info("[Events] Pipeline event bus connected to general WebSocket")
 async def _start_file_watcher():
     loop = _asyncio.get_event_loop()
     file_watcher.start(loop)
+    if monitor_network_buffer.install():
+        logger.info(
+            "[Monitor] Network events persist to %s with %sh retention (max %s rows)",
+            settings.DATABASE_URL,
+            settings.MONITOR_NETWORK_RETENTION_HOURS,
+            settings.MONITOR_NETWORK_MAX_PERSISTED,
+        )
     try:
         from routes.api import recover_interrupted_task_runs
 
         recovery_summary = await recover_interrupted_task_runs(limit=20)
         if recovery_summary["detected"]:
             logger.info(
-                "[Recovery] Task-run recovery scanned %s interrupted run(s): %s recovered / %s skipped / %s failed",
+                "[Recovery] Task-run recovery scanned %s interrupted run(s): %s recovered / %s interrupted / %s skipped / %s failed",
                 recovery_summary["detected"],
                 recovery_summary["recovered"],
+                recovery_summary.get("interrupted", 0),
                 recovery_summary.get("skipped", 0),
                 recovery_summary["failed"],
             )

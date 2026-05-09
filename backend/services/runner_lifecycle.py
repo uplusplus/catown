@@ -257,6 +257,36 @@ def record_tool_round(
     return event
 
 
+def start_tool_call(
+    db: Session,
+    task_run: TaskRun | None,
+    *,
+    agent_name: str,
+    turn: int,
+    tool_name: str,
+    arguments: str | None = None,
+    payload: Any = None,
+):
+    merged_payload = {
+        "turn": int(turn),
+        "tool_name": str(tool_name or "").strip() or "tool",
+    }
+    if arguments is not None:
+        merged_payload["arguments"] = str(arguments or "")
+    if isinstance(payload, dict):
+        merged_payload.update(payload)
+    elif payload is not None:
+        merged_payload["details"] = payload
+    return append_task_event(
+        db,
+        task_run,
+        "tool_call_started",
+        agent_name=agent_name,
+        summary=f"Starting {str(tool_name or '').strip() or 'tool'}.",
+        payload=merged_payload,
+    )
+
+
 def complete_agent_turn(
     db: Session,
     task_run: TaskRun | None,

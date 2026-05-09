@@ -14,8 +14,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _reload_pipeline_engine():
-    sys.modules.pop("models.audit", None)
-    sys.modules.pop("pipeline.engine", None)
+    for module_name in [
+        "models.audit",
+        "services.approval_queue",
+        "services.approval_replay",
+        "services.turn_state",
+        "services.run_ledger",
+        "services.nonstream_turn_executor",
+        "services.runner_policy",
+        "services.runner_lifecycle",
+        "services.runtime_event_helpers",
+        "services.tool_governance",
+        "services.pipeline_inbox",
+        "pipeline.engine",
+    ]:
+        sys.modules.pop(module_name, None)
     import pipeline.engine as engine_mod
 
     return engine_mod
