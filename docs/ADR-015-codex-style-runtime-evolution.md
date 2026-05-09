@@ -7813,6 +7813,40 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不改变原有 `policy_decision` payload
 - 当前不改变原有 `policy_decision_event_payload`
 
+### 11.197 2026-05-09 当前差距：policy decision 已完成 contract/read-model/payload 层，下一步才是 executor 接线
+
+从 11.179 到 11.196，policy decision 已经补齐：
+
+- canonical `policy_decision` schema
+- service-level decision -> canonical decision projection
+- single summary / set summary / human-readable summary
+- ledger event payload
+- task-run checkpoint summary
+- task-run detail list
+- standard ledger append helper
+- result-payload ledger append adapter
+- executor-facing gate result
+- Monitor overview API read model
+- action/artifact/evaluation/workflow result payload 中的 `policy_decision_gate_result`
+
+当前仍未完成的是把这些能力接入真实执行路径：
+
+- action request policy check 发生时自动写 ledger
+- artifact publication/acceptance 时自动写 ledger 并消费 gate result
+- evaluation result/rollback policy check 时自动写 ledger 并消费 gate result
+- workflow start/stage completion 时自动写 ledger 并消费 gate result
+- Monitor 前端展示 `recent_policy_decisions`
+- 决定 full-contract 与 summary-only ledger event 的保留策略
+
+这说明当前工作已经把“判断对象”和“执行动作”分离出来：
+
+- policy checker 产生 canonical decision
+- result payload 同时携带 ledger event payload 和 gate result
+- run ledger adapter 负责写事件
+- executor 后续只需要调用 adapter 并按 gate result 决定继续、阻塞或等待审批
+
+下一阶段应优先接 executor 主路径，但要避开当前并行修改中的 `backend/pipeline/engine.py`、`backend/routes/api.py`、`backend/services/tool_governance.py` 等脏文件，避免覆盖其他线程的改动。
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

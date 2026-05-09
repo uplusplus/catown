@@ -3247,3 +3247,18 @@ No failures were observed in the new context builder unit tests or Python syntax
 - gate result 由 `build_policy_decision_gate_result(...)` 统一生成
 - 调用方可直接读取 `allowed` / `blocked` / `blocked_reason`
 - 暂不改变 executor 主路径，也不改变原有 `policy_decision` 或 `policy_decision_event_payload`
+
+### `Refresh policy decision executor wiring roadmap`
+
+范围：
+
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 更新 policy decision schema 的 Expected Next Steps
+- 记录 contract/read-model/payload 层已完成的能力
+- 明确剩余缺口集中在 executor 主路径接线、Monitor 前端展示和 ledger retention 策略
+- 暂不改代码，避免触碰当前已脏或已 staged 的并行文件

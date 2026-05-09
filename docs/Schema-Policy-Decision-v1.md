@@ -243,7 +243,8 @@ This schema is **not** yet wired into:
 
 The next likely follow-ups are:
 
-1. emit policy_decision payloads into run ledger events
-2. persist policy decisions when artifact/action/evaluation checks occur
-3. expose policy decisions in Monitor read models
-4. let executor gates consume accepted/rejected decisions explicitly
+1. wire `append_policy_decision_event_from_result_payload(...)` into action, artifact, evaluation, and workflow executor paths
+2. let pipeline stage completion and artifact acceptance consume `policy_decision_gate_result`
+3. decide retention rules for full-contract versus summary-only ledger events
+4. expose `recent_policy_decisions` in the Monitor frontend
+5. decide whether high-volume decisions need a dedicated persistence table beyond task-run events
