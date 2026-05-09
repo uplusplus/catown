@@ -2606,3 +2606,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 新增 workflow-aware action request policy validator
 - 用 canonical `workflow_spec -> RunnerGovernancePolicy` 校验 stage ownership、manual gate、rollback target、expected artifact
 - 保持 pipeline engine 和 approval queue 主路径不变，先把 action request 与 workflow policy 的裁定层补齐
+
+### `Compile publish artifact requests to artifact contracts`
+
+范围：
+
+- `backend/services/artifact_publication.py`
+- `backend/tests/test_artifact_publication.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `publish_artifact -> artifact_contract` compatibility bridge
+- 支持 document、workspace file、workspace directory、structured asset 四类 contract 推导
+- 保持 pipeline artifact persistence 与 asset persistence 主路径不变，先把 intent schema 和 artifact schema 连接起来

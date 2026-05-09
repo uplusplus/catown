@@ -256,6 +256,13 @@ The first workflow-aware policy validator is now present in:
 It validates schema-v1 action requests against compiled canonical workflow policy for stage
 ownership, manual gate approvals, rollback targets, and expected artifact delivery.
 
+The first artifact-publication bridge is now present in:
+
+- `backend/services/artifact_publication.py`
+
+It compiles accepted `publish_artifact` action requests into canonical `artifact_contract` payloads
+without yet changing artifact persistence behavior.
+
 This schema is **not** yet wired into:
 
 - pipeline engine execution

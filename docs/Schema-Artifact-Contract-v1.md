@@ -197,11 +197,18 @@ Schema v1 is now documented and represented by a minimal Pydantic contract in:
 
 - `backend/services/artifact_contracts.py`
 
+The first publication bridge is now present in:
+
+- `backend/services/artifact_publication.py`
+
+It compiles `publish_artifact` action requests into canonical `artifact_contract` payloads for
+document, workspace-file, workspace-directory, and structured-asset artifacts.
+
 This schema is **not** yet wired into:
 
 - pipeline stage artifact recording
 - project asset persistence
-- publish_artifact runtime flow
+- publish_artifact runtime persistence flow
 - artifact approval and supersession logic
 
 It is currently a draft contract intended to guide the next refactor.
@@ -212,5 +219,5 @@ The next likely follow-ups are:
 
 1. map current `StageArtifact` writes into `artifact_contract` normalization
 2. map current `Asset` writes into `artifact_contract` normalization
-3. connect `publish_artifact` action requests to `artifact_contract`
+3. connect `publish_artifact` contract compilation to selected runtime persistence paths
 4. define artifact approval/supersession policy on top of this schema

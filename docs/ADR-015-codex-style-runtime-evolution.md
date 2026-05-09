@@ -6696,6 +6696,41 @@ v1 当前覆盖：
 - 还没有接入 approval queue creation、pipeline engine 或 artifact publication 主路径
 - 不改变现有 runtime 行为，只为后续渐进接入提供可测试 contract
 
+### 11.161 2026-05-09 新进展：publish_artifact intent 已能编译成 artifact contract
+
+在 11.160 之后，`action_request` 已经能按 workflow policy 做独立裁定。
+但其中的 `publish_artifact` 仍只是一个 agent intent：
+
+- 它说明 agent 想发布什么
+- 但还没有一个稳定桥把它变成 artifact 层的一等 contract
+
+本轮新增 `backend/services/artifact_publication.py`：
+
+- 接收 `publish_artifact` action request
+- 根据 payload 推导 artifact mode
+- 生成 canonical `artifact_contract`
+- 保留 producer、source request、metadata 等追踪字段
+
+当前支持的推导形状：
+
+- markdown/json 内容 -> `document`
+- 普通文件路径 -> `workspace_file`
+- 目录路径 -> `workspace_directory`
+- `structured.*` / `asset.*` 类型 -> `structured_asset`
+
+这一步的意义是：
+
+- `publish_artifact` 不再只停留在 action request schema
+- `artifact_contract` 不再只停留在孤立 schema
+- intent 和 produced-object contract 之间有了可测试转换层
+
+边界：
+
+- 当前仍未改 pipeline stage artifact persistence
+- 未改 project asset persistence
+- 未引入 artifact approval / supersession policy
+- 仍然是兼容桥，而不是主路径迁移
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
