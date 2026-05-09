@@ -62,9 +62,14 @@ from services.approval_replay import (
     resolve_replay_arguments_text,
     resolve_replay_tool_name,
 )
-from services.artifact_contract_policy import validate_artifact_contract_for_policy
+from services.artifact_contract_policy import (
+    ArtifactContractPolicyDecision,
+    ArtifactContractPolicyViolation,
+    validate_artifact_contract_for_policy,
+)
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
+from services.policy_decision_contracts import dump_policy_decision, project_policy_decision
 from services.turn_state import (
     TurnContextState,
     build_tool_result_record,
@@ -378,6 +383,67 @@ def _record_stage_artifact_policy_decisions(
             result.to_payload(),
             agent_name=getattr(stage_policy, "agent_name", None),
         )
+    _record_missing_stage_artifact_policy_decisions(
+        db,
+        task_run=task_run,
+        stage_policy=stage_policy,
+        runner_policy=runner_policy,
+        expected_artifacts=list(getattr(getattr(stage_policy, "delivery", None), "expected_artifacts", []) or []),
+        recorded_artifacts=artifacts,
+    )
+
+
+def _record_missing_stage_artifact_policy_decisions(
+    db: Session,
+    *,
+    task_run: Any,
+    stage_policy: Any,
+    runner_policy: Any,
+    expected_artifacts: list[str],
+    recorded_artifacts: list[StageArtifact],
+) -> None:
+    recorded_paths = {
+        _normalize_artifact_path(getattr(artifact, "file_path", None))
+        for artifact in recorded_artifacts
+    }
+    for index, expected_artifact in enumerate(expected_artifacts):
+        expected_path = _normalize_artifact_path(expected_artifact)
+        if not expected_path or expected_path in recorded_paths:
+            continue
+        artifact_type = "workspace.directory" if expected_path.endswith("/") else "workspace.file"
+        decision = ArtifactContractPolicyDecision(
+            artifact_id=f"missing-stage-artifact-{getattr(stage_policy, 'stage_name', 'stage')}-{index}",
+            artifact_type=artifact_type,
+            accepted=False,
+            stage_name=getattr(stage_policy, "stage_name", None),
+            violations=[
+                ArtifactContractPolicyViolation(
+                    code="artifact_missing",
+                    field="file_path",
+                    message=(
+                        f"Expected artifact '{expected_path}' was not found for "
+                        f"stage '{getattr(stage_policy, 'stage_name', 'stage')}'."
+                    ),
+                )
+            ],
+            metadata={
+                "artifact_path": expected_path,
+                "policy_source": getattr(runner_policy, "source", None),
+                "pipeline_name": getattr(runner_policy, "pipeline_name", None),
+                "stage_count": getattr(runner_policy, "stage_count", None),
+            },
+        )
+        policy_decision = project_policy_decision(decision)
+        append_policy_decision_event_from_result_payload(
+            db,
+            task_run,
+            {"policy_decision": dump_policy_decision(policy_decision)},
+            agent_name=getattr(stage_policy, "agent_name", None),
+        )
+
+
+def _normalize_artifact_path(value: Any) -> str:
+    return str(value or "").strip().replace("\\", "/")
 
 
 def _queue_pipeline_gate_approval(

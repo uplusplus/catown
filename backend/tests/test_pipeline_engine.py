@@ -1381,6 +1381,144 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
 
 
 @pytest.mark.asyncio
+async def test_execute_stage_records_missing_expected_artifact_policy_decision(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+    from pipeline.config import PipelineConfig, StageConfig
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        project = fresh_db.Project(name="Missing Artifact Policy Project")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        chatroom = fresh_db.Chatroom(
+            project_id=project.id,
+            title="Missing Artifact Policy Chat",
+            session_type="project-bound",
+        )
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        project.default_chatroom_id = chatroom.id
+        db.commit()
+        db.refresh(project)
+
+        pipeline = fresh_db.Pipeline(
+            project_id=project.id,
+            pipeline_name="default",
+            status="running",
+            current_stage_index=0,
+        )
+        db.add(pipeline)
+        db.commit()
+        db.refresh(pipeline)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Missing artifact policy",
+            user_request="Missing artifact policy",
+            initiator="user",
+            target_agent_name="tester",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            input_requirement="Missing artifact policy",
+            workspace_path=str(workspace),
+            started_at=datetime.now(),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        stage = fresh_db.PipelineStage(
+            run_id=run.id,
+            stage_name="qa_gate",
+            display_name="QA Gate",
+            stage_order=0,
+            agent_name="tester",
+            status="pending",
+            gate_type="auto",
+        )
+        db.add(stage)
+        db.commit()
+        db.refresh(stage)
+
+        stage_cfg = StageConfig(
+            name="qa_gate",
+            display_name="QA Gate",
+            agent="tester",
+            gate="auto",
+            expected_artifacts=["reports/missing.md"],
+        )
+        template = PipelineConfig(
+            name="default",
+            description="Missing artifact policy test.",
+            stages=[stage_cfg],
+        )
+
+        engine = engine_mod.PipelineEngine()
+        engine._write_skill_full_files = lambda agent_name, stage_cfg_obj, workspace_path: None
+        engine._git_commit = lambda run_obj, stage_name: None
+
+        async def _fake_run_agent_stage(db, pipeline, run, stage, stage_cfg, context):
+            return "Missing artifact summary"
+
+        engine._run_agent_stage = _fake_run_agent_stage
+
+        success = await engine._execute_stage(
+            db=db,
+            pipeline=pipeline,
+            run=run,
+            stage=stage,
+            stage_cfg=stage_cfg,
+            template=template,
+        )
+
+        assert success is True
+        db.refresh(stage)
+        assert stage.status == "completed"
+
+        events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        assert [event.event_type for event in events] == [
+            "pipeline_stage_started",
+            "policy_decision_recorded",
+            "pipeline_stage_completed",
+        ]
+        policy_payload = json.loads(events[1].payload_json)
+        assert policy_payload["policy_decision"]["decision_type"] == "artifact_contract_policy"
+        assert policy_payload["policy_decision"]["accepted"] is False
+        assert policy_payload["policy_decision"]["violations"][0]["code"] == "artifact_missing"
+        assert policy_payload["policy_decision"]["subject"]["type"] == "workspace.file"
+
+        artifacts = db.query(fresh_db.StageArtifact).filter(fresh_db.StageArtifact.stage_id == stage.id).all()
+        assert artifacts == []
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_stage_started_exposes_checkpoint_continuation_state(fresh_db, tmp_path):
     engine_mod = _reload_pipeline_engine()
     from pipeline.config import PipelineConfig, StageConfig

@@ -3296,3 +3296,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 使用 runner policy 校验 artifact delivery contract
 - 使用 `append_policy_decision_event_from_result_payload(...)` 写入 `artifact_contract_policy` decision
 - 当前只记录 artifact verdict，不改变 stage completion 或 gate blocking 行为
+
+### `Record missing artifact policy decisions`
+
+范围：
+
+- `backend/pipeline/engine.py`
+- `backend/tests/test_pipeline_engine.py`
+- `docs/Schema-Policy-Decision-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- pipeline stage completion 现在会为未发现的 expected artifact 写 rejected `artifact_contract_policy`
+- missing artifact verdict 使用 `artifact_missing` violation
+- result payload 仍通过 `append_policy_decision_event_from_result_payload(...)` 写入 task-run ledger
+- 当前只记录缺失 verdict，不改变 stage completion 行为

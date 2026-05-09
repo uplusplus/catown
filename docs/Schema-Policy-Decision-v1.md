@@ -246,6 +246,8 @@ audit event only; it does not yet block pipeline startup.
 Pipeline stage completion now records `artifact_contract_policy` decisions for
 expected artifacts that are found and recorded as `StageArtifact` rows. This is
 also an audit event only; it does not yet block stage completion or gate flow.
+Missing expected artifacts also produce rejected `artifact_contract_policy`
+decisions with an `artifact_missing` violation.
 
 ## 8. Expected Next Steps
 

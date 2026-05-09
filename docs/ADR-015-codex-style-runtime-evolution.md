@@ -7896,6 +7896,31 @@ policy decision 已有 contract、ledger event payload 和 read model，但 exec
 - 当前不因 rejected artifact 阻塞 stage completion
 - 当前不处理 missing expected artifact 的 rejected verdict
 
+### 11.200 2026-05-09 新进展：missing expected artifact 已记录 rejected policy decision
+
+11.199 只为已发现并记录的 artifact 写 `artifact_contract_policy` verdict。
+这会漏掉更重要的场景：stage 声明了 expected artifact，但 workspace 中没有产物。
+
+本轮继续更新 `backend/pipeline/engine.py`：
+
+- stage completion 后计算 expected artifacts 与 recorded artifacts 的差异
+- 对缺失项构造 `ArtifactContractPolicyDecision`
+- violation code 使用 `artifact_missing`
+- 通过 `project_policy_decision(...)` 投影为 canonical `policy_decision`
+- 继续用 `append_policy_decision_event_from_result_payload(...)` 写入 task-run ledger
+
+这一步的意义是：
+
+- artifact delivery read model 能同时看到“已产出且通过/拒绝”和“缺失”的 verdict
+- missing artifact 不再只能从 StageArtifact 缺行推断
+- Monitor/API 可以直接展示 rejected policy decision
+
+边界：
+
+- 当前仍不因 missing artifact 阻塞 stage completion
+- 当前不自动创建 StageArtifact row
+- 当前不改变 manual gate / auto gate 流程
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
