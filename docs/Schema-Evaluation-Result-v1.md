@@ -143,6 +143,13 @@ The first read-model summary helper is now present in:
 It creates a compact summary with status, target, reviewer, criterion counts, and recommended-action
 counts for future API or Monitor projection.
 
+The first runner-policy validator is now present in:
+
+- `backend/services/evaluation_result_policy.py`
+
+It validates that an evaluation result's rubric is allowed for the target workflow stage according
+to compiled runner governance policy.
+
 This schema is **not** yet wired into:
 
 - artifact review persistence

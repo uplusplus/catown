@@ -2822,3 +2822,20 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `compile_workflow_stage_policy(...)` 将 stage evaluation rubric refs 投影到 `metadata.evaluation_policy`
 - runner governance policy 现在能携带 stage-level evaluation policy
 - 保持 runner policy 仍为 read-side/governance projection，不改变 executor 主路径
+
+### `Validate evaluation results against runner policy`
+
+范围：
+
+- `backend/services/evaluation_result_policy.py`
+- `backend/tests/test_evaluation_result_policy.py`
+- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/Schema-Workflow-Spec-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 evaluation result policy checker
+- 按 runner governance policy 校验 evaluation result 的 rubric 是否允许用于目标 stage
+- 仍不接 stage gate 或 artifact acceptance，只返回 policy decision

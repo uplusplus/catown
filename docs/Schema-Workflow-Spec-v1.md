@@ -195,6 +195,8 @@ The first governance-policy bridge is now present in:
 without first requiring legacy `StageConfig` objects.
 Stage-level evaluation rubric refs are included in the compiled stage metadata as
 `evaluation_policy`.
+Evaluation results can then be validated against that projected policy by
+`backend/services/evaluation_result_policy.py`.
 
 The first API exposure bridge is now present in:
 

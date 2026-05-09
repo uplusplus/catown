@@ -7111,6 +7111,38 @@ v1 覆盖：
 - pipeline engine 未消费该 metadata
 - 未强制 rubric result 存在
 
+### 11.174 2026-05-09 新进展：evaluation result 已能按 runner policy 裁定 rubric 适用性
+
+11.173 已经把 stage evaluation policy 投影进 runner governance policy。
+下一步需要验证 evaluation result 是否真的符合该 policy：
+
+- target stage 是否存在
+- result.rubric_id 是否属于该 stage 的 `evaluation_policy.rubric_refs`
+
+本轮新增：
+
+- `backend/services/evaluation_result_policy.py`
+- `backend/tests/test_evaluation_result_policy.py`
+
+它返回 `EvaluationResultPolicyDecision`，包含：
+
+- accepted
+- stage_name
+- violations
+- policy metadata
+
+这一步的意义是：
+
+- `workflow_spec -> runner_policy -> evaluation_result decision` 形成闭环
+- rubric refs 不再只是文档或 metadata，而有了独立裁定器
+- 仍然保持 evaluation result 不直接影响 runtime state
+
+边界：
+
+- 当前不强制 pipeline stage gate 消费该 decision
+- 不持久化 decision
+- stage 没有 rubric policy 时仍保持兼容接受
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
