@@ -3,10 +3,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from services.action_request_contracts import ActionRequest, parse_action_request
-from services.artifact_contracts import ArtifactContract, parse_artifact_contract
+from services.artifact_contract_policy import (
+    ArtifactContractPolicyDecision,
+    validate_artifact_contract_for_policy,
+    validate_artifact_contract_for_workflow,
+)
+from services.artifact_contracts import (
+    ArtifactContract,
+    dump_artifact_contract,
+    parse_artifact_contract,
+)
+from services.runner_policy import RunnerGovernancePolicy
+from services.workflow_spec_contracts import WorkflowSpec
 
 ArtifactPublicationMode = Literal[
     "workspace_file",
@@ -14,6 +26,18 @@ ArtifactPublicationMode = Literal[
     "document",
     "structured_asset",
 ]
+
+
+@dataclass(frozen=True)
+class ArtifactPublicationPolicyResult:
+    contract: ArtifactContract
+    decision: ArtifactContractPolicyDecision
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "contract": dump_artifact_contract(self.contract),
+            "decision": self.decision.to_payload(),
+        }
 
 
 def compile_publish_artifact_request_to_contract(
@@ -98,6 +122,56 @@ def compile_publish_artifact_request_to_contract(
             "content_json": dict(payload.content_json or {}),
         }
     )
+
+
+def compile_and_validate_publish_artifact_request_for_workflow(
+    *,
+    request: ActionRequest | dict[str, Any],
+    workflow_spec: WorkflowSpec,
+    project_id: int | None = None,
+    artifact_id: str | None = None,
+    mode: ArtifactPublicationMode | None = None,
+    stage_name: str | None = None,
+    stage_tool_packs: dict[str, dict[str, Any]] | None = None,
+) -> ArtifactPublicationPolicyResult:
+    """Compile publish_artifact intent and validate the produced contract."""
+
+    contract = compile_publish_artifact_request_to_contract(
+        request=request,
+        artifact_id=artifact_id,
+        mode=mode,
+    )
+    decision = validate_artifact_contract_for_workflow(
+        contract=contract,
+        workflow_spec=workflow_spec,
+        project_id=project_id,
+        stage_name=stage_name,
+        stage_tool_packs=stage_tool_packs,
+    )
+    return ArtifactPublicationPolicyResult(contract=contract, decision=decision)
+
+
+def compile_and_validate_publish_artifact_request_for_policy(
+    *,
+    request: ActionRequest | dict[str, Any],
+    policy: RunnerGovernancePolicy,
+    artifact_id: str | None = None,
+    mode: ArtifactPublicationMode | None = None,
+    stage_name: str | None = None,
+) -> ArtifactPublicationPolicyResult:
+    """Compile publish_artifact intent and validate against runner policy."""
+
+    contract = compile_publish_artifact_request_to_contract(
+        request=request,
+        artifact_id=artifact_id,
+        mode=mode,
+    )
+    decision = validate_artifact_contract_for_policy(
+        contract=contract,
+        policy=policy,
+        stage_name=stage_name,
+    )
+    return ArtifactPublicationPolicyResult(contract=contract, decision=decision)
 
 
 def _ensure_action_request(request: ActionRequest | dict[str, Any]) -> ActionRequest:

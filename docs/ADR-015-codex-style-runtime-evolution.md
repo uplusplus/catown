@@ -7251,6 +7251,43 @@ v1 覆盖：
 - 当前不持久化 policy decision
 - 当前只覆盖 expected artifact path，不处理 approval/supersession/asset dependency graph
 
+### 11.178 2026-05-09 新进展：publish_artifact 已有 contract+policy 组合闭环
+
+11.177 让 artifact_contract 可以按 runner delivery policy 被裁定。
+但 `publish_artifact` action request 的主链仍需要一个组合入口，否则调用方必须自己串：
+
+- parse action request
+- compile artifact_contract
+- validate artifact_contract against workflow/runner policy
+
+这会让每个调用方重新发明同一段 glue code。
+
+本轮扩展 `backend/services/artifact_publication.py`：
+
+- 新增 `ArtifactPublicationPolicyResult`
+- 新增 `compile_and_validate_publish_artifact_request_for_workflow(...)`
+- 新增 `compile_and_validate_publish_artifact_request_for_policy(...)`
+
+这一步形成的闭环是：
+
+```text
+publish_artifact action_request
+  -> artifact_contract
+  -> artifact_contract_policy decision
+```
+
+这一步的意义是：
+
+- `publish_artifact` 不再只停在 schema compile 层
+- runtime 后续接入 artifact publication 时，可以直接消费 contract+decision
+- 是否接受产物由 workflow/runner policy 裁定，而不是由 action request 文本本身决定
+
+边界：
+
+- 当前不持久化 artifact_contract
+- 当前不写 artifact acceptance decision
+- 当前不改变 pipeline engine 或 orchestration runtime 主路径
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：

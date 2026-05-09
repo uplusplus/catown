@@ -1,7 +1,11 @@
 import pytest
 
 from services.artifact_contracts import dump_artifact_contract
-from services.artifact_publication import compile_publish_artifact_request_to_contract
+from services.artifact_publication import (
+    compile_and_validate_publish_artifact_request_for_workflow,
+    compile_publish_artifact_request_to_contract,
+)
+from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
 
 
 def _publish_request(payload):
@@ -21,6 +25,25 @@ def _publish_request(payload):
         "summary": "Publish produced artifact.",
         "payload": payload,
     }
+
+
+def _workflow_spec():
+    return compile_pipeline_template_to_workflow_spec(
+        "default",
+        {
+            "name": "Default delivery workflow",
+            "description": "testing",
+            "stages": [
+                {
+                    "name": "testing",
+                    "display_name": "Testing",
+                    "agent": "tester",
+                    "gate": "auto",
+                    "expected_artifacts": ["test_report.md"],
+                },
+            ],
+        },
+    )
 
 
 def test_compile_publish_artifact_request_to_document_contract():
@@ -110,3 +133,39 @@ def test_compile_rejects_non_publish_artifact_requests():
                 "payload": {"tool_name": "read_file", "arguments": {}},
             }
         )
+
+
+def test_compile_and_validate_publish_artifact_request_accepts_expected_artifact():
+    result = compile_and_validate_publish_artifact_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request=_publish_request(
+            {
+                "artifact_type": "document.test_report",
+                "title": "Test report",
+                "file_path": "reports/test_report.md",
+                "content_markdown": "# Test Report",
+            }
+        ),
+    )
+
+    payload = result.to_payload()
+    assert result.decision.accepted is True
+    assert payload["contract"]["artifact_id"] == "artifact-req-artifact-1"
+    assert payload["decision"]["accepted"] is True
+
+
+def test_compile_and_validate_publish_artifact_request_rejects_unexpected_artifact():
+    result = compile_and_validate_publish_artifact_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request=_publish_request(
+            {
+                "artifact_type": "document.release_note",
+                "title": "Release note",
+                "file_path": "CHANGELOG.md",
+                "content_markdown": "# Release",
+            }
+        ),
+    )
+
+    assert result.decision.accepted is False
+    assert [violation.code for violation in result.decision.violations] == ["artifact_not_expected"]

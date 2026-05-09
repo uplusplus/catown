@@ -263,6 +263,12 @@ The first artifact-publication bridge is now present in:
 It compiles accepted `publish_artifact` action requests into canonical `artifact_contract` payloads
 without yet changing artifact persistence behavior.
 
+That bridge now also supports compile-and-validate for artifact publication:
+
+- build canonical `artifact_contract`
+- validate it against workflow/runner delivery policy
+- return the artifact policy decision without persisting or accepting the artifact
+
 The first evaluation-result bridge is now present in:
 
 - `backend/services/evaluation_action_requests.py`
@@ -281,7 +287,7 @@ This schema is **not** yet wired into:
 - pipeline engine execution
 - orchestration runtime execution
 - approval queue creation
-- artifact publication flow
+- runtime artifact publication persistence flow
 
 It is currently a draft contract intended to guide the next refactor.
 

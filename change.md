@@ -2894,3 +2894,22 @@ No failures were observed in the new context builder unit tests or Python syntax
 - 支持 workspace file、workspace directory、document file path、structured asset storage path
 - 支持目录型 expected artifact 接受 nested file
 - 返回 `ArtifactContractPolicyDecision`，但暂不接 stage completion、artifact acceptance 或 decision persistence
+
+### `Compile and validate artifact publication requests`
+
+范围：
+
+- `backend/services/artifact_publication.py`
+- `backend/tests/test_artifact_publication.py`
+- `docs/Schema-Action-Request-v1.md`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 `ArtifactPublicationPolicyResult`
+- 新增 `compile_and_validate_publish_artifact_request_for_workflow(...)`
+- 新增 `compile_and_validate_publish_artifact_request_for_policy(...)`
+- 将 `publish_artifact action_request -> artifact_contract -> artifact policy decision` 收成纯服务闭环
+- 暂不持久化 artifact_contract，也不改变 pipeline engine 或 orchestration runtime 主路径
