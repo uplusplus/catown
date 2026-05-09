@@ -2876,3 +2876,21 @@ No failures were observed in the new context builder unit tests or Python syntax
 - `workspace.file*` / `workspace.directory*` asset 在有 `storage_path` 时映射为 workspace artifact
 - 校验 `content_json` 与 `source_input_refs_json`，并保留 project/status/version/supersession/approval metadata
 - 仍不改 `assets` 表结构，也不接入 Asset 写入或审批主路径
+
+### `Validate artifact contracts against runner delivery policy`
+
+范围：
+
+- `backend/services/artifact_contract_policy.py`
+- `backend/tests/test_artifact_contract_policy.py`
+- `docs/Schema-Artifact-Contract-v1.md`
+- `docs/ADR-015-codex-style-runtime-evolution.md`
+- `change.md`
+
+内容：
+
+- 新增 artifact_contract policy checker
+- 按 workflow/runner delivery policy 校验 artifact contract 是否满足 producer stage 的 `expected_artifacts`
+- 支持 workspace file、workspace directory、document file path、structured asset storage path
+- 支持目录型 expected artifact 接受 nested file
+- 返回 `ArtifactContractPolicyDecision`，但暂不接 stage completion、artifact acceptance 或 decision persistence

@@ -217,11 +217,19 @@ It maps document-like assets into `document` contracts, structured JSON assets i
 `structured_asset` contracts, and workspace-prefixed assets into workspace file/directory
 contracts when `storage_path` is present.
 
+A runner-policy checker is now present in:
+
+- `backend/services/artifact_contract_policy.py`
+
+It validates artifact contracts against compiled workflow/runner delivery policy, currently
+focusing on whether the artifact path satisfies the producer stage's expected artifacts.
+
 This schema is **not** yet wired into:
 
 - native artifact_contract persistence for pipeline stage artifact recording
 - native artifact_contract persistence for project assets
 - publish_artifact runtime persistence flow
+- executor artifact acceptance gates
 - artifact approval and supersession logic
 
 It is currently a draft contract intended to guide the next refactor.
@@ -232,5 +240,6 @@ The next likely follow-ups are:
 
 1. connect current `StageArtifact` and `Asset` read/write paths to artifact_contract normalization
 2. persist canonical artifact_contract payloads alongside legacy records
-3. connect `publish_artifact` contract compilation to selected runtime persistence paths
-4. define artifact approval/supersession policy on top of this schema
+3. connect artifact policy decisions to stage completion and artifact acceptance
+4. connect `publish_artifact` contract compilation to selected runtime persistence paths
+5. define artifact approval/supersession policy on top of this schema

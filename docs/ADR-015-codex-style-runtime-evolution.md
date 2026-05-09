@@ -7217,6 +7217,40 @@ v1 覆盖：
 - 当前不改 Asset 创建或审批流程
 - 当前不持久化 canonical artifact_contract payload
 
+### 11.177 2026-05-09 新进展：artifact_contract 已能按 runner delivery policy 裁定
+
+11.175 和 11.176 解决了现有 artifact 形态到 canonical contract 的投影，但还缺少一层软件裁定：
+
+- artifact_contract 说明“产物是什么”
+- runner/workflow delivery policy 说明“某个 stage 期望什么产物”
+
+如果没有这层裁定，后续 stage completion、artifact acceptance、Monitor 只能展示 artifact，不能判断它是否满足 workflow contract。
+
+本轮新增：
+
+- `backend/services/artifact_contract_policy.py`
+- `backend/tests/test_artifact_contract_policy.py`
+
+新增 `validate_artifact_contract_for_workflow(...)` 和 `validate_artifact_contract_for_policy(...)`：
+
+- 从 artifact producer 或显式参数确定 stage
+- 按 runner governance policy 查找 stage delivery contract
+- 校验 workspace/document/structured asset 的 path 是否匹配 `expected_artifacts`
+- 支持目录型 expected artifact 接受 nested file
+- 返回独立 `ArtifactContractPolicyDecision`
+
+这一步的意义是：
+
+- `workflow_spec -> runner_policy -> artifact_contract decision` 形成闭环
+- artifact 是否可被 stage 接受由软件 policy 决定，而不是由 LLM 文本判断
+- 后续 executor 可以先接这个 decision，再决定是否完成 stage、进入 gate 或要求补产物
+
+边界：
+
+- 当前不接 pipeline stage completion 主路径
+- 当前不持久化 policy decision
+- 当前只覆盖 expected artifact path，不处理 approval/supersession/asset dependency graph
+
 ### 11.131 2026-04-29 新进展：single-agent sync/stream 顶层 runtime profile 已统一
 
 在 11.130 之后，route 已经不再手工拼 `runtime context` / `execution context`，但 orchestrator 顶层仍然保留两套 profile 类型：
