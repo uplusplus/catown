@@ -90,6 +90,8 @@ from services.run_shell_processes import (
     load_tracked_run_shell_handle,
     read_tracked_run_shell_tail,
     terminate_tracked_run_shell,
+    tracked_run_shell_has_exit,
+    tracked_run_shell_is_active,
     wait_for_tracked_run_shell,
 )
 from services.orchestration_scheduler import (
@@ -2812,6 +2814,7 @@ PROJECT_FILE_WRITE_MAX_CHARS = 1024 * 1024
 CHAT_PROCESSES_LIMIT = 12
 CHAT_PROCESS_SHELL_TAIL_MAX_CHARS = 5000
 CHAT_PROCESS_SHELL_TAIL_MAX_LINES = 28
+CHAT_PROCESS_TASK_STALE_SECONDS = 120
 
 
 def _project_browser_artifact_type(path: str) -> Optional[str]:
@@ -3041,6 +3044,28 @@ def _is_running_shell_process_card(card: Dict[str, Any]) -> bool:
     return tool == "run_shell" and status == "running" and not _is_internal_tool_pause(card)
 
 
+def _pid_is_alive(pid: Any) -> bool:
+    try:
+        parsed = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if parsed <= 0:
+        return False
+    try:
+        os.kill(parsed, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _running_shell_card_is_active(card: Dict[str, Any]) -> bool:
+    tracked = card.get("tracked_process")
+    record = load_tracked_run_shell_handle(tracked) if isinstance(tracked, dict) else None
+    if record is not None:
+        return not tracked_run_shell_has_exit(record) and tracked_run_shell_is_active(record)
+    return _pid_is_alive(card.get("pid"))
+
+
 def _should_render_inline_task_run(task_run: TaskRun) -> bool:
     pending_approval_count = len([
         item for item in getattr(task_run, "approval_queue_items", [])
@@ -3059,6 +3084,13 @@ def _is_running_browser_task_run(task_run: TaskRun) -> bool:
     if str(getattr(task_run, "status", "") or "").strip().lower() != "running":
         return False
     if _should_render_inline_task_run(task_run):
+        return False
+    now = datetime.now()
+    lease_expires_at = getattr(task_run, "recovery_lease_expires_at", None)
+    if lease_expires_at is not None and lease_expires_at > now:
+        return True
+    updated_at = getattr(task_run, "updated_at", None) or getattr(task_run, "created_at", None)
+    if updated_at is not None and (now - updated_at).total_seconds() > CHAT_PROCESS_TASK_STALE_SECONDS:
         return False
     checkpoint = build_task_run_checkpoint_snapshot(task_run)
     cursor = checkpoint.get("continuation_cursor")
@@ -3093,6 +3125,8 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
             continue
         card_payload = public_runtime_card_payload(dict(card))
         if not _is_running_shell_process_card(card_payload):
+            continue
+        if not _running_shell_card_is_active(card_payload):
             continue
         command = _read_shell_command_preview(card_payload.get("arguments")) or str(card_payload.get("display_name") or "run_shell")
         created_at = getattr(row, "created_at", None)

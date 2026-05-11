@@ -863,10 +863,12 @@ class TestProjectEndpoints:
         assert "node_modules/ignored.js" not in file_paths
         assert "docs/ADR-001-browser.md" in artifact_paths
 
-    def test_chat_processes_are_projected_by_backend(self, client):
+    def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod
+        import routes.api as api_mod
         from datetime import datetime
 
+        monkeypatch.setattr(api_mod, "_pid_is_alive", lambda pid: int(pid) == 12345)
         project = client.post("/api/projects", json={"name": "Process Backend Test"}).json()
         chatroom_id = project["chatroom_id"]
 
@@ -927,6 +929,40 @@ class TestProjectEndpoints:
         assert task["command"] == "Background implementation"
         assert f"task-run:{run_id}" in ids
         assert f"task-run:{inline_run_id}" not in ids
+
+    def test_chat_processes_skip_stale_running_shell_cards(self, client):
+        import models.database as db_mod
+        from datetime import datetime
+
+        project = client.post("/api/projects", json={"name": "Stale Process Test"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest"}),
+                        "status": "running",
+                        "result": "old output",
+                        "pid": 99999999,
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
+
+        assert response.status_code == 200
+        assert response.json() == []
 
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")
