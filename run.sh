@@ -8,6 +8,8 @@ set -e
 
 BACKEND="$(cd "$(dirname "$0")/backend" && pwd)"
 PID=""
+RUN_HOST="${RUN_HOST:-0.0.0.0}"
+RUN_PORT="${RUN_PORT:-8000}"
 BASE_PYTHON="${PYTHON:-python3}"
 PYTHON_CMD=""
 VENV_DIR="${CATOWN_VENV_DIR:-}"
@@ -21,11 +23,74 @@ CATOWN_ENV_FILE="$CATOWN_HOME/.env"
 cleanup() {
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
         echo "Stopping (PID $PID)..."
-        kill "$PID" 2>/dev/null
-        wait "$PID" 2>/dev/null || true
+        stop_server
     fi
     echo "Done."
     exit 0
+}
+
+port_in_use() {
+    "$BASE_PYTHON" - "$RUN_PORT" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", port))
+except OSError:
+    raise SystemExit(0)
+finally:
+    sock.close()
+raise SystemExit(1)
+PY
+}
+
+find_port_pids() {
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -tiTCP:"$RUN_PORT" -sTCP:LISTEN 2>/dev/null | sort -u
+        return
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+        fuser "$RUN_PORT"/tcp 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u
+    fi
+}
+
+wait_for_port_free() {
+    local deadline=$((SECONDS + ${1:-10}))
+    while port_in_use; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.2
+    done
+    return 0
+}
+
+stop_server() {
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+    fi
+    PID=""
+
+    if wait_for_port_free 5; then
+        return
+    fi
+
+    echo "Port $RUN_PORT is still in use; terminating leftover listener..."
+    local pids
+    pids="$(find_port_pids || true)"
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs -r kill 2>/dev/null || true
+        wait_for_port_free 3 || true
+    fi
+
+    if port_in_use && [ -n "$pids" ]; then
+        echo "$pids" | xargs -r kill -9 2>/dev/null || true
+        wait_for_port_free 2 || true
+    fi
 }
 
 prepare_runtime_layout() {
@@ -132,11 +197,16 @@ install_dependencies() {
 
 start_server() {
     echo "Starting Catown..."
-    echo "  Web:      http://localhost:8000"
-    echo "  API Docs: http://localhost:8000/docs"
+    echo "  Web:      http://localhost:$RUN_PORT"
+    echo "  API Docs: http://localhost:$RUN_PORT/docs"
     echo ""
 
-    (cd "$BACKEND" && "$PYTHON_CMD" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 < /dev/null) &
+    if ! wait_for_port_free 10; then
+        echo "[ERROR] Port $RUN_PORT is still in use. Stop the existing server and retry."
+        return 1
+    fi
+
+    (cd "$BACKEND" && "$PYTHON_CMD" -m uvicorn main:app --reload --host "$RUN_HOST" --port "$RUN_PORT" --timeout-graceful-shutdown 5 < /dev/null) &
     PID=$!
     echo "  PID: $PID"
     echo ""
@@ -171,11 +241,8 @@ while true; do
         q|Q) cleanup ;;
         r|R)
             echo "Restarting..."
-            if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-                kill "$PID" 2>/dev/null
-                wait "$PID" 2>/dev/null || true
-            fi
-            start_server
+            stop_server
+            start_server || true
             echo "Done."
             echo ""
             ;;

@@ -5287,10 +5287,39 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             async def _execute_single_agent_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
                 from tools import tool_registry
 
+                async def emit_tool_progress(progress: dict[str, Any]) -> None:
+                    await store_runtime_card(
+                        chatroom.id,
+                        {
+                            "type": "tool_call",
+                            "source": "chatroom",
+                            "agent": target_agent_label,
+                            "tool": tool_name,
+                            "arguments": tool_args_str,
+                            "success": None,
+                            "status": "running",
+                            "blocked": False,
+                            "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                            "duration_ms": progress.get("duration_ms"),
+                            "pid": progress.get("pid"),
+                            "tracked_process": progress.get("tracked_process"),
+                            "tool_call_index": tool_index,
+                            "tool_call_id": tool_call_id,
+                            "client_turn_id": message.client_turn_id,
+                            "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                            "turn": turn_index,
+                        },
+                    )
+
                 return await tool_registry.execute(
                     tool_name,
                     **tool_args,
                     **runtime.runtime_kwargs,
+                    task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
+                    client_turn_id=message.client_turn_id,
+                    tool_call_id=tool_call_id,
+                    turn=turn_index,
+                    progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
                 )
 
             async def _on_single_agent_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
@@ -5402,6 +5431,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             nonlocal client_connected, stream_failed, stream_error
             try:
                 async for chunk in raw_event_generator():
+                    if runtime_is_shutting_down() or await request.is_disconnected():
+                        client_connected = False
+                        break
                     sse_chunks.append(chunk)
                     _record_stream_chunk(chunk)
                     if '"type": "error"' in chunk:
@@ -5425,6 +5457,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     _record_stream_network_event(False, stream_error or "stream_error")
                 else:
                     _record_stream_network_event(True)
+            except asyncio.CancelledError:
+                raise
             finally:
                 if client_connected:
                     try:
@@ -5432,11 +5466,16 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     except asyncio.QueueFull:
                         pass
 
-        asyncio.create_task(producer())
+        producer_task = asyncio.create_task(producer())
 
         try:
             while True:
-                item = await queue.get()
+                if runtime_is_shutting_down() or await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
                 if item is None:
                     break
                 yield item
@@ -5445,6 +5484,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             raise
         finally:
             client_connected = False
+            if not producer_task.done():
+                producer_task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(producer_task, return_exceptions=True),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[SSE] Producer cancellation timed out during stream shutdown.")
 
     return StreamingResponse(
         event_generator(),

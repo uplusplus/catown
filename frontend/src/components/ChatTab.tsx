@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { Archive, FileText, FolderTree, Monitor } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -358,6 +359,32 @@ type ToolMergeCard = {
 };
 
 type ThreadCard = DecoratedChatCardItem | ToolMergeCard;
+type ProjectBrowserTab = "files" | "artifacts" | "processes";
+type BrowserFileEntry = {
+  id: string;
+  path: string;
+  source: string;
+  detail: string;
+  timestamp?: string;
+};
+type BrowserArtifactEntry = {
+  id: string;
+  name: string;
+  stage: string;
+  detail: string;
+  status: string;
+  timestamp?: string;
+};
+type BrowserProcessEntry = {
+  id: string;
+  command: string;
+  status: string;
+  kind: "command" | "task";
+  detail: string;
+  timestamp?: string;
+  pid?: number;
+  output?: string;
+};
 type ParsedLlmConversation = {
   meta: string;
   outbound: string;
@@ -938,6 +965,72 @@ function trimShellOutputTail(output: string | undefined) {
   return clipped ? `... showing latest shell output\n${tail}` : tail;
 }
 
+function parseJsonObject(value: string | undefined): Record<string, unknown> | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectStringValues(value: unknown, keys: string[], output: Set<string>) {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectStringValues(item, keys, output));
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  Object.entries(record).forEach(([key, child]) => {
+    const normalizedKey = key.toLowerCase();
+    if (keys.includes(normalizedKey)) {
+      if (typeof child === "string") output.add(child);
+      if (Array.isArray(child)) {
+        child.forEach((item) => {
+          if (typeof item === "string") output.add(item);
+        });
+      }
+    }
+    if (child && typeof child === "object") collectStringValues(child, keys, output);
+  });
+}
+
+function normalizeBrowserPath(path: string) {
+  return path.replace(/\\/g, "/").replace(/^["'`]+|["'`.,;:)]+$/g, "").trim();
+}
+
+function looksLikeProjectPath(value: string) {
+  const path = normalizeBrowserPath(value);
+  if (!path || path.length < 3 || path.length > 180) return false;
+  if (path.includes("://")) return false;
+  if (/\s/.test(path)) return false;
+  return (
+    path.startsWith("./") ||
+    path.startsWith("/") ||
+    path.includes("/") ||
+    /\.(md|txt|json|ya?ml|toml|py|ts|tsx|js|jsx|css|html|sh|sql|lock)$/i.test(path)
+  );
+}
+
+function extractPathsFromText(text: string | undefined) {
+  const raw = text || "";
+  if (!raw) return [];
+  const matches = raw.match(/(?:\.{1,2}\/|\/|[\w.-]+\/)[\w./@+-]+\.[A-Za-z0-9]+/g) ?? [];
+  return Array.from(new Set(matches.map(normalizeBrowserPath).filter(looksLikeProjectPath))).slice(0, 12);
+}
+
+function dedupeById<T extends { id: string }>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
 function formatTaskRunShellDuration(durationMs: number | undefined) {
   if (typeof durationMs !== "number") return "";
   if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)}s`;
@@ -997,6 +1090,148 @@ function summarizeTaskRunShellStatus(cards: ThreadCard[]) {
     detail,
     state,
   };
+}
+
+function buildBrowserFileEntries(project: ProjectSummary | null, cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
+  const entries: BrowserFileEntry[] = [];
+
+  if (project?.workspace_path) {
+    entries.push({
+      id: `workspace:${project.workspace_path}`,
+      path: normalizeBrowserPath(project.workspace_path),
+      source: "Workspace",
+      detail: project.repo_full_name || project.repo_url || project.name,
+      timestamp: project.created_from_chatroom_id ? undefined : undefined,
+    });
+  }
+
+  cards.forEach((card) => {
+    const parsedArgs = parseJsonObject(card.arguments);
+    const structuredPaths = new Set<string>();
+    collectStringValues(parsedArgs, ["path", "file", "file_path", "filepath", "directory", "cwd", "target_path"], structuredPaths);
+    structuredPaths.forEach((path) => {
+      const normalized = normalizeBrowserPath(path);
+      if (!looksLikeProjectPath(normalized)) return;
+      entries.push({
+        id: `card:${card.id}:${normalized}`,
+        path: normalized,
+        source: card.tool || card.kind,
+        detail: card.summary || card.display_name || card.agent || "Referenced by runtime card",
+        timestamp: card.created_at,
+      });
+    });
+
+    extractPathsFromText(`${card.result || ""}\n${card.summary || ""}\n${card.content_preview || ""}`).forEach((path) => {
+      entries.push({
+        id: `text:${card.id}:${path}`,
+        path,
+        source: card.tool || card.kind,
+        detail: "Mentioned in output",
+        timestamp: card.created_at,
+      });
+    });
+  });
+
+  taskRuns.forEach((run) => {
+    extractPathsFromText(`${run.summary || ""}\n${run.user_request || ""}`).forEach((path) => {
+      entries.push({
+        id: `run:${run.id}:${path}`,
+        path,
+        source: formatTaskRunKind(run.run_kind),
+        detail: run.title,
+        timestamp: run.updated_at || run.created_at || undefined,
+      });
+    });
+  });
+
+  return dedupeById(entries)
+    .sort((left, right) => new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime())
+    .slice(0, 24);
+}
+
+function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
+  const entries: BrowserArtifactEntry[] = [];
+
+  cards.forEach((card) => {
+    card.expected_artifacts?.forEach((artifact) => {
+      entries.push({
+        id: `expected:${card.id}:${artifact}`,
+        name: artifact,
+        stage: card.stage || card.display_name || "Expected artifact",
+        detail: card.summary || card.agent || "Declared by stage plan",
+        status: "expected",
+        timestamp: card.created_at,
+      });
+    });
+
+    extractPathsFromText(`${card.summary || ""}\n${card.result || ""}`).forEach((path) => {
+      if (!/(prd|spec|test|report|changelog|release|artifact|adr|readme)/i.test(path)) return;
+      entries.push({
+        id: `artifact-path:${card.id}:${path}`,
+        name: path,
+        stage: card.stage || card.tool || card.kind,
+        detail: card.success === false ? "Mentioned in failed result" : "Mentioned in result",
+        status: card.success === false ? "needs review" : "referenced",
+        timestamp: card.created_at,
+      });
+    });
+  });
+
+  taskRuns.forEach((run) => {
+    extractPathsFromText(`${run.summary || ""}\n${run.user_request || ""}`).forEach((path) => {
+      if (!/(prd|spec|test|report|changelog|release|artifact|adr|readme)/i.test(path)) return;
+      entries.push({
+        id: `run-artifact:${run.id}:${path}`,
+        name: path,
+        stage: formatTaskRunKind(run.run_kind),
+        detail: run.summary || run.user_request || "Mentioned by task run",
+        status: formatTaskRunStatus(run.status),
+        timestamp: run.completed_at || run.updated_at || run.created_at || undefined,
+      });
+    });
+  });
+
+  return dedupeById(entries)
+    .sort((left, right) => new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime())
+    .slice(0, 24);
+}
+
+function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
+  const entries: BrowserProcessEntry[] = [];
+
+  cards
+    .filter((card) => (card.tool || "").toLowerCase() === "run_shell")
+    .forEach((card) => {
+      const command = readShellCommandPreview(card.arguments) || card.display_name || "run_shell";
+      entries.push({
+        id: `shell:${card.id}`,
+        command,
+        status: card.status || (card.success === false ? "failed" : card.success ? "succeeded" : "captured"),
+        kind: "command",
+        detail: card.summary || oneLinePreview(card.result, "Shell command record.", 140),
+        timestamp: card.created_at,
+        pid: card.pid,
+        output: trimShellOutputTail(card.result),
+      });
+    });
+
+  taskRuns.forEach((run) => {
+    const status = (run.status || "").toLowerCase();
+    const isProcessLike = status === "running" || run.run_kind.includes("orchestration") || run.run_kind.includes("pipeline");
+    if (!isProcessLike) return;
+    entries.push({
+      id: `task-run:${run.id}`,
+      command: run.title,
+      status: run.status,
+      kind: "task",
+      detail: run.summary || run.user_request || `${run.event_count} events`,
+      timestamp: run.updated_at || run.created_at || undefined,
+    });
+  });
+
+  return dedupeById(entries)
+    .sort((left, right) => new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime())
+    .slice(0, 24);
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -3563,6 +3798,7 @@ export function ChatTab({
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
+  const [projectBrowserTab, setProjectBrowserTab] = useState<ProjectBrowserTab>("artifacts");
   const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
@@ -3659,6 +3895,18 @@ export function ChatTab({
     );
   }, [localOverlayMessages, messages]);
   const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
+  const browserFileEntries = useMemo(
+    () => buildBrowserFileEntries(project, cards, taskRuns),
+    [cards, project, taskRuns],
+  );
+  const browserArtifactEntries = useMemo(
+    () => buildBrowserArtifactEntries(cards, taskRuns),
+    [cards, taskRuns],
+  );
+  const browserProcessEntries = useMemo(
+    () => buildBrowserProcessEntries(cards, taskRuns),
+    [cards, taskRuns],
+  );
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
     const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
@@ -5301,297 +5549,149 @@ export function ChatTab({
           </form>
         </div>
 
-        {activityDrawerOpen ? <button type="button" className="mobile-drawer-backdrop" onClick={onCloseActivity} aria-label="Close activity panel" /> : null}
+        {activityDrawerOpen ? <button type="button" className="mobile-drawer-backdrop" onClick={onCloseActivity} aria-label="Close browser panel" /> : null}
         <aside className={`chat-sidebar ${activityDrawerOpen ? "is-mobile-open" : ""}`}>
           <div className="sidebar-panel">
             <div className="sidebar-header">
-              <span className="sidebar-title">Activity</span>
+              <span className="sidebar-title">Project Browser</span>
               <div className="sidebar-header__actions">
-                <span className="soft-pill">{events.length}</span>
+                <span className="soft-pill">{project ? project.name : "Chat"}</span>
                 <button
                   type="button"
                   className="chat-sidebar__close"
                   onClick={onCloseActivity}
-                  aria-label="Close activity"
-                  title="Close activity"
+                  aria-label="Close browser"
+                  title="Close browser"
                 >
                   ×
                 </button>
               </div>
             </div>
-            <div className="sidebar-content sidebar-markdown">
-              <div className="activity-section">
-                <h3>Session</h3>
-                <ul>
-                  <li>{chat ? `Chat: ${chat.title}` : "No chat selected"}</li>
-                  <li>{project ? `Project: ${project.name}` : "Standalone mode"}</li>
-                  <li>{messages.length} messages loaded</li>
-                  <li>{cardsWithPromptPresentation.length} runtime cards</li>
-                  <li>{taskRuns.length} task runs</li>
-                  <li>{activeAgents.length} active agents</li>
-                </ul>
-              </div>
-
-              <div className="activity-section">
-                <div className="activity-section__header">
-                  <h3>Run ledger</h3>
-                  <span className="soft-pill">{taskRuns.length}</span>
+            <div className="sidebar-content project-browser">
+              <div className="project-browser__summary">
+                <div>
+                  <span className="project-browser__eyebrow">{project ? "Project workspace" : "Standalone chat"}</span>
+                  <strong>{project?.name || chat?.title || "No chat selected"}</strong>
                 </div>
-                {taskRuns.length === 0 ? (
-                  <div className="empty-card">No task runs yet.</div>
-                ) : (
-                  <div className="task-run-stack">
-                    <div className="task-run-list">
-                      {taskRuns.slice(0, 6).map((run) => {
-                        const isSelected = run.id === selectedTaskRunSummary?.id;
-                        const tone = taskRunStatusTone(run.status);
-                        const pendingApprovals = Number(run.pending_approval_count || 0);
-                        return (
-                          <button
-                            key={run.id}
-                            type="button"
-                            className={`task-run-card ${isSelected ? "is-selected" : ""} ${pendingApprovals > 0 ? "has-pending-approval" : ""}`}
-                            onClick={() => {
-                              setTaskRunDetailError("");
-                              setSelectedTaskRunId(run.id);
-                            }}
-                          >
-                            <div className="task-run-card__meta">
-                              <span className={`task-run-card__status task-run-card__status--${tone}`}>
-                                {formatTaskRunStatus(run.status)}
-                              </span>
-                              <span>{run.created_at ? formatTime(run.created_at) : "--"}</span>
-                            </div>
-                            <strong>{run.title}</strong>
-                            <div className="task-run-card__subtitle">
-                              {formatTaskRunKind(run.run_kind)}
-                              {run.target_agent_name ? ` · ${run.target_agent_name}` : ""}
-                            </div>
-                            <p>{run.summary || run.user_request || "No summary yet."}</p>
-                            <div className="task-run-card__footer">
-                              <span>{run.event_count} events</span>
-                              {pendingApprovals > 0 ? (
-                                <span className="task-run-card__approval-pill">
-                                  {pendingApprovals} pending approval{pendingApprovals === 1 ? "" : "s"}
-                                </span>
-                              ) : null}
-                              {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                {project?.workspace_path ? <CopyTextButton content={project.workspace_path} title="Copy workspace path" /> : null}
+              </div>
 
-                    {selectedTaskRunSummary ? (
-                      <div className="task-run-detail">
-                        <div className="task-run-detail__header">
-                          <div>
-                            <span className="task-run-detail__eyebrow">Selected run</span>
-                            <h4>{selectedTaskRunSummary.title}</h4>
+              {project?.workspace_path ? (
+                <label className="project-browser__path-field">
+                  <span>Workspace path</span>
+                  <textarea
+                    readOnly
+                    rows={2}
+                    value={normalizeBrowserPath(project.workspace_path)}
+                    onFocus={(event) => event.currentTarget.select()}
+                  />
+                </label>
+              ) : (
+                <div className="empty-card">No project workspace is bound to this chat yet.</div>
+              )}
+
+              <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
+                {[
+                  { id: "files" as const, label: "Files", count: browserFileEntries.length, Icon: FolderTree },
+                  { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
+                  { id: "processes" as const, label: "Processes", count: browserProcessEntries.length, Icon: Monitor },
+                ].map(({ id, label, count, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`project-browser__tab ${projectBrowserTab === id ? "is-active" : ""}`}
+                    onClick={() => setProjectBrowserTab(id)}
+                    role="tab"
+                    aria-selected={projectBrowserTab === id}
+                  >
+                    <Icon size={14} aria-hidden="true" />
+                    <span>{label}</span>
+                    <strong>{count}</strong>
+                  </button>
+                ))}
+              </div>
+
+              {projectBrowserTab === "files" ? (
+                <div className="project-browser__section project-browser__section--files">
+                  {browserFileEntries.length === 0 ? (
+                    <div className="empty-card">Files will appear after tools reference workspace paths.</div>
+                  ) : (
+                    browserFileEntries.map((entry) => (
+                      <article key={entry.id} className="browser-entry browser-entry--file">
+                        <div className="browser-entry__icon">
+                          {entry.source === "Workspace" ? <FolderTree size={15} aria-hidden="true" /> : <FileText size={15} aria-hidden="true" />}
+                        </div>
+                        <div className="browser-entry__body">
+                          <div className="browser-entry__title-row">
+                            <div className="browser-entry__title" title={entry.path}>{entry.path.split("/").filter(Boolean).pop() || entry.path}</div>
                           </div>
-                          <span className={`task-run-card__status task-run-card__status--${taskRunStatusTone(selectedTaskRunSummary.status)}`}>
-                            {formatTaskRunStatus(selectedTaskRunSummary.status)}
-                          </span>
-                        </div>
-
-                        <div className="task-run-detail__meta">
-                          <span>{formatTaskRunKind(selectedTaskRunSummary.run_kind)}</span>
-                          {selectedTaskRunSummary.target_agent_name ? (
-                            <span>{selectedTaskRunSummary.target_agent_name}</span>
+                          {entry.path.includes("/") ? (
+                            <div className="browser-entry__path" title={entry.path}>{entry.path}</div>
                           ) : null}
-                          <span>{selectedTaskRunSummary.event_count} events</span>
-                          <span>
-                            {selectedTaskRunSummary.completed_at
-                              ? `done ${formatTime(selectedTaskRunSummary.completed_at)}`
-                              : selectedTaskRunSummary.created_at
-                                ? `started ${formatTime(selectedTaskRunSummary.created_at)}`
-                                : "time unavailable"}
-                          </span>
+                          <div className="browser-entry__meta">
+                            <span>{entry.source}</span>
+                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
+                          </div>
                         </div>
+                        <CopyTextButton content={entry.path} title="Copy path" />
+                      </article>
+                    ))
+                  )}
+                </div>
+              ) : null}
 
-                        {selectedTaskRunSummary.summary ? (
-                          <p className="task-run-detail__summary">{selectedTaskRunSummary.summary}</p>
-                        ) : null}
-
-                        {taskRunDetailError ? (
-                          <div className="empty-card empty-card--danger">{taskRunDetailError}</div>
-                        ) : null}
-
-                        {approvalActionError ? (
-                          <div className="empty-card empty-card--danger">{approvalActionError}</div>
-                        ) : null}
-                        {approvalActionMessage ? (
-                          <div className="empty-card">{approvalActionMessage}</div>
-                        ) : null}
-
-                        {loadingTaskRunId === selectedTaskRunSummary.id && !selectedTaskRunDetail ? (
-                          <div className="empty-card">Loading event detail…</div>
-                        ) : selectedTaskRunDetail ? (
-                          <>
-                            <div className="task-run-approval-section">
-                              <div className="activity-section__header">
-                                <h3>Approvals</h3>
-                                <span className="soft-pill">{selectedApprovalItems.length}</span>
-                              </div>
-                              {selectedApprovalItems.length === 0 ? (
-                                <div className="empty-card">No approval requests for this run.</div>
-                              ) : (
-                                <div className="task-run-approval-list">
-                                  {selectedApprovalItems.map((item) => {
-                                    const itemStatusTone = approvalQueueStatusTone(item.status);
-                                    const requestPayloadPreview = taskRunPayloadPreview(item.request_payload);
-                                    const resolutionPayloadPreview = taskRunPayloadPreview(item.resolution_payload);
-                                    const isPending = (item.status || "").toLowerCase() === "pending";
-                                    const isBusy = approvalActionItemId === item.id;
-                                    const labels = approvalQueueActionLabels(item);
-                                    return (
-                                      <div
-                                        key={item.id}
-                                        className={`task-run-approval-card task-run-approval-card--${itemStatusTone}`}
-                                      >
-                                        <div className="task-run-approval-card__header">
-                                          <div>
-                                            <strong>{item.title || item.target_name || "Approval request"}</strong>
-                                            <div className="task-run-card__subtitle">
-                                              {item.agent_name ? `${item.agent_name} · ` : ""}
-                                              {item.target_kind}
-                                              {item.target_name ? ` · ${item.target_name}` : ""}
-                                            </div>
-                                          </div>
-                                          <span className={`task-run-card__status task-run-card__status--${itemStatusTone}`}>
-                                            {formatApprovalQueueStatus(item.status)}
-                                          </span>
-                                        </div>
-
-                                        {item.summary ? (
-                                          <div className="task-run-detail__summary">{item.summary}</div>
-                                        ) : null}
-
-                                        <div className="task-run-card__footer">
-                                          <span>#{item.id}</span>
-                                          <span>{item.created_at ? formatTime(item.created_at) : "--"}</span>
-                                          {item.queue_kind ? <span>{item.queue_kind}</span> : null}
-                                        </div>
-
-                                        {requestPayloadPreview ? (
-                                          <details className="task-run-event__payload">
-                                            <summary>Request payload</summary>
-                                            <pre>{requestPayloadPreview}</pre>
-                                          </details>
-                                        ) : null}
-
-                                        {resolutionPayloadPreview ? (
-                                          <details className="task-run-event__payload">
-                                            <summary>Resolution payload</summary>
-                                            <pre>{resolutionPayloadPreview}</pre>
-                                          </details>
-                                        ) : null}
-
-                                        {isPending ? (
-                                          <div className="task-run-approval-card__actions">
-                                            <button
-                                              type="button"
-                                              className="chat-card-action-btn chat-card-action-btn--approve"
-                                              disabled={isBusy}
-                                              onClick={() => void handleResolveApprovalQueueItem(item, "approve")}
-                                            >
-                                              {isBusy ? labels.busy : labels.approve}
-                                            </button>
-                                            {!isTimeoutWaitQueueItem(item) ? (
-                                              <button
-                                                type="button"
-                                                className="chat-card-action-btn"
-                                                disabled={isBusy}
-                                                onClick={() => void handleResolveApprovalQueueItem(item, "approve", true)}
-                                              >
-                                                Approve + Remember
-                                              </button>
-                                            ) : null}
-                                            <button
-                                              type="button"
-                                              className="chat-card-action-btn chat-card-action-btn--reject"
-                                              disabled={isBusy}
-                                              onClick={() => void handleResolveApprovalQueueItem(item, "reject")}
-                                            >
-                                              {labels.reject}
-                                            </button>
-                                            {!isTimeoutWaitQueueItem(item) ? (
-                                              <button
-                                                type="button"
-                                                className="chat-card-action-btn"
-                                                disabled={isBusy}
-                                                onClick={() => void handleResolveApprovalQueueItem(item, "reject", true)}
-                                              >
-                                                Reject + Remember
-                                              </button>
-                                            ) : null}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="task-run-event-list">
-                              {selectedTaskRunDetail.events.map((event) => {
-                                const payloadPreview = taskRunPayloadPreview(event.payload);
-                                return (
-                                  <div
-                                    key={event.id}
-                                    className={`task-run-event task-run-event--${taskRunEventTone(event.event_type)}`}
-                                  >
-                                    <div className="task-run-event__meta">
-                                      <span>
-                                        #{event.event_index} · {formatTaskRunEventType(event.event_type)}
-                                      </span>
-                                      <span>{event.created_at ? formatTime(event.created_at) : "--"}</span>
-                                    </div>
-                                    <div className="task-run-event__summary">
-                                      {event.summary || "No summary."}
-                                    </div>
-                                    {event.agent_name ? (
-                                      <div className="task-run-event__agent">{event.agent_name}</div>
-                                    ) : null}
-                                    {payloadPreview ? (
-                                      <details className="task-run-event__payload">
-                                        <summary>Payload</summary>
-                                        <pre>{payloadPreview}</pre>
-                                      </details>
-                                    ) : null}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="empty-card">No event detail loaded.</div>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-
-              <div className="activity-section">
-                <h3>Recent activity</h3>
-                {events.length === 0 ? (
-                  <div className="empty-card">No activity yet.</div>
-                ) : (
-                  <div className="activity-list">
-                    {[...events].reverse().map((event) => (
-                      <div key={event.id} className={`activity-entry activity-entry--${event.tone}`}>
-                        <div className="activity-entry__meta">
-                          <span>{toneLabel(event.tone)}</span>
-                          <span>{formatTime(event.created_at)}</span>
+              {projectBrowserTab === "artifacts" ? (
+                <div className="project-browser__section">
+                  {browserArtifactEntries.length === 0 ? (
+                    <div className="empty-card">Artifacts will appear from stage plans, task runs, and generated reports.</div>
+                  ) : (
+                    browserArtifactEntries.map((entry) => (
+                      <article key={entry.id} className="browser-entry browser-entry--artifact">
+                        <div className="browser-entry__icon"><Archive size={15} aria-hidden="true" /></div>
+                        <div className="browser-entry__body">
+                          <div className="browser-entry__title" title={entry.name}>{entry.name}</div>
+                          <div className="browser-entry__meta">
+                            <span>{entry.stage}</span>
+                            <span>{entry.status}</span>
+                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
+                          </div>
+                          <p>{oneLinePreview(entry.detail, "Artifact record", 120)}</p>
                         </div>
-                        <div className="activity-entry__message">{event.message}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                        <CopyTextButton content={entry.name} title="Copy artifact name" />
+                      </article>
+                    ))
+                  )}
+                </div>
+              ) : null}
+
+              {projectBrowserTab === "processes" ? (
+                <div className="project-browser__section">
+                  {browserProcessEntries.length === 0 ? (
+                    <div className="empty-card">Background commands and task runs will appear here.</div>
+                  ) : (
+                    browserProcessEntries.map((entry) => (
+                      <article key={entry.id} className="browser-entry browser-entry--process">
+                        <div className="browser-entry__icon"><Monitor size={15} aria-hidden="true" /></div>
+                        <div className="browser-entry__body">
+                          <div className="browser-entry__title" title={entry.command}>{entry.command}</div>
+                          <div className="browser-entry__meta">
+                            <span className={`browser-entry__state browser-entry__state--${(entry.status || "").toLowerCase() === "running" ? "running" : "history"}`}>
+                              {(entry.status || "").toLowerCase() === "running" ? "Running" : "History"}
+                            </span>
+                            <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
+                            <span>{formatTaskRunStatus(entry.status)}</span>
+                            {typeof entry.pid === "number" ? <span>pid {entry.pid}</span> : null}
+                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
+                          </div>
+                          <p>{oneLinePreview(entry.detail, "Process record", 120)}</p>
+                          {entry.output ? <pre className="browser-entry__output">{entry.output}</pre> : null}
+                        </div>
+                        <CopyTextButton content={entry.command} title="Copy command" />
+                      </article>
+                    ))
+                  )}
+                </div>
+              ) : null}
             </div>
           </div>
         </aside>
