@@ -5569,7 +5569,7 @@ export function ChatTab({
           </span>
           <button
             type="button"
-            className="btn btn--sm btn--icon mobile-sidebar-toggle"
+            className="btn btn--sm btn--icon mobile-sidebar-toggle mobile-sidebar-toggle--left"
             onClick={onOpenSidebar}
             aria-label="Open chats and projects"
             title="Open sidebar"
@@ -5578,7 +5578,7 @@ export function ChatTab({
           </button>
           <button
             type="button"
-            className="btn btn--sm btn--icon mobile-sidebar-toggle"
+            className="btn btn--sm btn--icon mobile-sidebar-toggle mobile-sidebar-toggle--right"
             onClick={onOpenActivity}
             aria-label="Open activity"
             title="Open activity"
