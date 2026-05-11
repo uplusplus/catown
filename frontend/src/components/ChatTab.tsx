@@ -395,12 +395,55 @@ type FileReaderState = {
   saveMessage?: string;
 };
 
+type InteractiveFileToolRequest = {
+  path: string;
+  mode: "read" | "edit";
+  projectId?: number | null;
+  reason?: string;
+};
+
+type FileReaderCardActions = {
+  onClose?: () => void;
+  onEdit: () => void;
+  onDraftChange: (value: string) => void;
+  onDiscard: () => void;
+  onSave: () => void;
+};
+
 function isInternalToolPause(card: ThreadCard | DecoratedChatCardItem) {
   if (card.kind !== "tool_call") return false;
   if (!card.blocked) return false;
   const blockedKind = String(card.blocked_kind || "").trim().toLowerCase();
   const status = String(card.status || "").trim().toLowerCase();
   return blockedKind === "approval" || blockedKind === "timeout" || status === "approval_blocked" || status === "timeout_waiting";
+}
+
+function parseInteractiveToolJsonObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseInteractiveFileToolRequest(card: ThreadCard): InteractiveFileToolRequest | null {
+  if (card.kind !== "tool_call" || card.tool !== "open_file_for_user") return null;
+  const resultPayload = parseInteractiveToolJsonObject(card.result);
+  const argsPayload = parseInteractiveToolJsonObject(card.arguments);
+  const payload = resultPayload?.catown_interactive_tool === "file_reader_editor" ? resultPayload : argsPayload;
+  const rawPath = payload?.path;
+  if (typeof rawPath !== "string" || rawPath.trim() === "") return null;
+  const rawMode = typeof payload?.mode === "string" ? payload.mode.toLowerCase() : "";
+  const rawProjectId = typeof payload?.project_id === "number" ? payload.project_id : null;
+  return {
+    path: rawPath,
+    mode: rawMode === "edit" ? "edit" : "read",
+    projectId: rawProjectId,
+    reason: typeof payload?.reason === "string" ? payload.reason : undefined,
+  };
 }
 
 function isToolCardFailure(card: ThreadCard | DecoratedChatCardItem) {
@@ -2219,6 +2262,9 @@ function cardTitle(card: ThreadCard) {
       }
       return `${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)} contacting LLM`;
     case "tool_call":
+      if (parseInteractiveFileToolRequest(card)) {
+        return "Open file for user";
+      }
       return card.tool || "Tool call";
     case "agent_error":
       return `${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)} stream failed`;
@@ -2259,6 +2305,10 @@ function cardSummary(card: ThreadCard) {
         }
         return card.response || "Model response captured.";
       case "tool_call":
+        {
+          const fileRequest = parseInteractiveFileToolRequest(card);
+          if (fileRequest) return fileRequest.path;
+        }
         return card.result || "Tool execution recorded.";
       case "agent_error":
         return card.error || card.summary || "Agent stream failed before a final reply was saved.";
@@ -2732,14 +2782,7 @@ function FileReaderCard({
   onDraftChange,
   onDiscard,
   onSave,
-}: {
-  state: FileReaderState;
-  onClose: () => void;
-  onEdit: () => void;
-  onDraftChange: (value: string) => void;
-  onDiscard: () => void;
-  onSave: () => void;
-}) {
+}: { state: FileReaderState } & FileReaderCardActions) {
   const data = state.data;
   const path = data?.path || state.path;
   const isEditable = Boolean(data && !data.binary && !data.truncated);
@@ -2781,9 +2824,11 @@ function FileReaderCard({
               </button>
             </>
           ) : null}
-          <button type="button" className="chat-copy-inline-btn" onClick={onClose} title="Close file reader">
-            Close
-          </button>
+          {onClose ? (
+            <button type="button" className="chat-copy-inline-btn" onClick={onClose} title="Close file reader">
+              Close
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -2816,6 +2861,106 @@ function FileReaderCard({
         </div>
       )}
     </article>
+  );
+}
+
+function ToolFileReaderCard({
+  request,
+  fallbackProjectId,
+}: {
+  request: InteractiveFileToolRequest;
+  fallbackProjectId?: number | null;
+}) {
+  const projectId = request.projectId ?? fallbackProjectId ?? null;
+  const [state, setState] = useState<FileReaderState>({
+    path: request.path,
+    status: "loading",
+    mode: request.mode,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId) {
+      setState({
+        path: request.path,
+        status: "error",
+        error: "No project is available for this file interaction.",
+      });
+      return;
+    }
+    setState({ path: request.path, status: "loading", mode: request.mode });
+    api.readProjectFile(projectId, request.path)
+      .then((data) => {
+        if (cancelled) return;
+        const canEdit = request.mode === "edit" && !data.binary && !data.truncated;
+        setState({
+          path: data.path,
+          status: "ready",
+          data,
+          mode: canEdit ? "edit" : "read",
+          draft: data.content,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setState({
+          path: request.path,
+          status: "error",
+          error: error instanceof Error ? error.message : "Unable to read file.",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, request.mode, request.path]);
+
+  const saveDraft = useCallback(async () => {
+    if (!projectId || !state.data || state.mode !== "edit") return;
+    const content = state.draft ?? "";
+    setState((current) => ({ ...current, saving: true, error: "", saveMessage: "" }));
+    try {
+      const data = await api.writeProjectFile(projectId, {
+        path: state.data.path,
+        content,
+        expected_mtime: state.data.mtime,
+      });
+      setState({
+        path: data.path,
+        status: "ready",
+        data,
+        mode: "read",
+        draft: data.content,
+        saving: false,
+        saveMessage: "Saved",
+      });
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        saving: false,
+        status: "ready",
+        saveMessage: error instanceof Error ? error.message : "Unable to save file.",
+      }));
+    }
+  }, [projectId, state]);
+
+  return (
+    <FileReaderCard
+      state={state}
+      onEdit={() => {
+        setState((current) => current.data
+          ? { ...current, mode: "edit", draft: current.data.content, saveMessage: "" }
+          : current);
+      }}
+      onDraftChange={(value) => {
+        setState((current) => ({ ...current, draft: value, saveMessage: "" }));
+      }}
+      onDiscard={() => {
+        setState((current) => current.data
+          ? { ...current, mode: "read", draft: current.data.content, saveMessage: "" }
+          : current);
+      }}
+      onSave={() => void saveDraft()}
+    />
   );
 }
 
@@ -3377,6 +3522,12 @@ function renderCardBody(card: ThreadCard) {
         </>
       );
     case "tool_call":
+      {
+        const fileRequest = parseInteractiveFileToolRequest(card);
+        if (fileRequest) {
+          return <ToolFileReaderCard request={fileRequest} fallbackProjectId={null} />;
+        }
+      }
       return (
         <>
           {renderJsonCollapse("ARGS", `${card.tool || "tool"} input`, card.arguments, {
@@ -3576,6 +3727,12 @@ function renderCompactCardBody(card: ThreadCard) {
       );
     }
     case "tool_call":
+      {
+        const fileRequest = parseInteractiveFileToolRequest(card);
+        if (fileRequest) {
+          return <ToolFileReaderCard request={fileRequest} fallbackProjectId={null} />;
+        }
+      }
       return (
         <div className="chat-progress-detail-stack">
           {renderProgressJsonBlock("ARGS", `${card.tool || "tool"} input`, card.arguments)}
@@ -5069,8 +5226,10 @@ export function ChatTab({
       if (
         item.kind === "card" &&
         item.card.kind === "tool_call" &&
+        !parseInteractiveFileToolRequest(item.card) &&
         streak.length > 0 &&
         streak[streak.length - 1].kind === "tool_call" &&
+        !parseInteractiveFileToolRequest(streak[streak.length - 1]) &&
         streak[streak.length - 1].tool === item.card.tool &&
         streak[streak.length - 1].agent === item.card.agent
       ) {
@@ -5078,7 +5237,7 @@ export function ChatTab({
         continue;
       }
 
-      if (item.kind === "card" && item.card.kind === "tool_call") {
+      if (item.kind === "card" && item.card.kind === "tool_call" && !parseInteractiveFileToolRequest(item.card)) {
         flushStreak();
         streak.push(item.card);
         continue;
@@ -6048,27 +6207,6 @@ export function ChatTab({
             }}
           >
             <div className="chat-thread-inner">
-              {fileReader ? (
-                <FileReaderCard
-                  state={fileReader}
-                  onClose={() => setFileReader(null)}
-                  onEdit={() => {
-                    setFileReader((current) => current?.data
-                      ? { ...current, mode: "edit", draft: current.data.content, saveMessage: "" }
-                      : current);
-                  }}
-                  onDraftChange={(value) => {
-                    setFileReader((current) => current ? { ...current, draft: value, saveMessage: "" } : current);
-                  }}
-                  onDiscard={() => {
-                    setFileReader((current) => current?.data
-                      ? { ...current, mode: "read", draft: current.data.content, saveMessage: "" }
-                      : current);
-                  }}
-                  onSave={() => void saveFileReaderDraft()}
-                />
-              ) : null}
-
               {!project && chat && showProjectCreateConfirm ? (
                 <div className="chat-inline-decision">
                   <div className="chat-inline-decision__copy">
@@ -6162,6 +6300,26 @@ export function ChatTab({
               ) : null}
 
               {threadContent}
+              {fileReader ? (
+                <FileReaderCard
+                  state={fileReader}
+                  onClose={() => setFileReader(null)}
+                  onEdit={() => {
+                    setFileReader((current) => current?.data
+                      ? { ...current, mode: "edit", draft: current.data.content, saveMessage: "" }
+                      : current);
+                  }}
+                  onDraftChange={(value) => {
+                    setFileReader((current) => current ? { ...current, draft: value, saveMessage: "" } : current);
+                  }}
+                  onDiscard={() => {
+                    setFileReader((current) => current?.data
+                      ? { ...current, mode: "read", draft: current.data.content, saveMessage: "" }
+                      : current);
+                  }}
+                  onSave={() => void saveFileReaderDraft()}
+                />
+              ) : null}
               <div ref={threadEndRef} />
             </div>
           </div>

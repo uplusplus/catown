@@ -33,6 +33,7 @@ from tools.retrieve_memory import RetrieveMemoryTool
 from tools.github_manager import GitHubManagerTool
 from tools.skill_manager import SkillManagerTool
 from tools.file_operations import DeleteFileTool
+from tools.user_file_interaction import OpenFileForUserTool
 
 
 # ==================== BaseTool & ToolRegistry ====================
@@ -125,6 +126,29 @@ class TestToolRegistry:
 
         assert "skill_manager" in tool_registry.list_tools()
         assert "run_shell" in tool_registry.list_tools()
+        assert "open_file_for_user" in tool_registry.list_tools()
+
+    @pytest.mark.asyncio
+    async def test_open_file_for_user_returns_interactive_file_payload(self):
+        tool = OpenFileForUserTool()
+
+        result = await tool.execute(path="./docs/ADR-017-chat-file-reader.md", mode="edit", project_id=12)
+
+        assert result["success"] is True
+        payload = json.loads(result["result"])
+        assert payload["catown_interactive_tool"] == "file_reader_editor"
+        assert payload["path"] == "docs/ADR-017-chat-file-reader.md"
+        assert payload["mode"] == "edit"
+        assert payload["project_id"] == 12
+
+    @pytest.mark.asyncio
+    async def test_open_file_for_user_rejects_workspace_escape(self):
+        tool = OpenFileForUserTool()
+
+        result = await tool.execute(path="../outside.txt")
+
+        assert result["success"] is False
+        assert result["status"] == "failed"
 
     def test_get_policy_pack_surfaces_approval_sandbox_and_escalation(self):
         registry = ToolRegistry()

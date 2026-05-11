@@ -30,6 +30,7 @@ from .github_manager import GitHubManagerTool
 from .screenshot import ScreenshotTool
 from .browser import BrowserTool
 from .skill_manager import SkillManagerTool
+from .user_file_interaction import OpenFileForUserTool
 
 # Initialize tool registry
 tool_registry = ToolRegistry()
@@ -74,6 +75,7 @@ tool_registry.register(GitHubManagerTool())
 tool_registry.register(ScreenshotTool())
 tool_registry.register(BrowserTool())
 tool_registry.register(SkillManagerTool())
+tool_registry.register(OpenFileForUserTool())
 
 def init_collaboration_tools(coordinator):
     """Initialize collaboration tools with coordinator"""
@@ -108,6 +110,7 @@ __all__ = [
     'ScreenshotTool',
     'BrowserTool',
     'SkillManagerTool',
+    'OpenFileForUserTool',
     'set_collaboration_coordinator',
     'init_collaboration_tools'
 ]
