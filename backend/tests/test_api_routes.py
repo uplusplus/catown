@@ -34,6 +34,7 @@ def _make_app(tmp_path):
         'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
         'services.approval_queue',
         'services.approval_replay',
+        'services.runtime_lifecycle',
         'services.monitor_projection',
         'services.run_ledger',
         'services.chat_publish',
@@ -2733,6 +2734,120 @@ class TestSSEStreaming:
         assert "working directory outside workspace" not in (
             resolved_event["payload"].get("replay_result_preview", "").lower()
         )
+
+    def test_approve_tool_queue_item_during_shutdown_skips_followup_worker(self, tmp_path):
+        _make_app(tmp_path)
+        import models.database as db_mod
+        import routes.api as api_routes
+        from services.runtime_lifecycle import mark_runtime_shutting_down, mark_runtime_starting
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Shutdown Approval Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Shutdown Approval Chat",
+                session_type="project",
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="project_single_agent",
+                status="blocked",
+                title="Approve during shutdown",
+                user_request="Approve during shutdown",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            queue_item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "pwd", "cwd": ".", "timeout_seconds": 10}),
+                        "resume_supported": True,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+            queue_item_id = queue_item.id
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        route_db = db_mod.SessionLocal()
+        mark_runtime_shutting_down()
+        try:
+            with patch.object(api_routes, "_spawn_approval_followup_worker") as spawn_followup:
+                approved = asyncio.run(
+                    api_routes.approve_approval_queue_item(
+                        queue_item_id,
+                        api_routes.ApprovalQueueDecisionRequest(
+                            note="Approve while server is shutting down.",
+                        ),
+                        route_db,
+                    )
+                )
+        finally:
+            route_db.close()
+            mark_runtime_starting()
+
+        assert approved["status"] == "approved"
+        assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
+        assert approved["resolution_payload"]["followup_status"] == "skipped"
+        assert approved["resolution_payload"]["followup_reason"] == "runtime_shutting_down"
+        spawn_followup.assert_not_called()
+
+        db = db_mod.SessionLocal()
+        try:
+            refreshed_item = db.query(db_mod.ApprovalQueueItem).filter(db_mod.ApprovalQueueItem.id == queue_item_id).first()
+            assert refreshed_item is not None
+            assert refreshed_item.status == "approved"
+            persisted_payload = json.loads(refreshed_item.resolution_payload_json or "{}")
+            assert persisted_payload["followup_status"] == "skipped"
+            events = (
+                db.query(db_mod.TaskRunEvent)
+                .filter(db_mod.TaskRunEvent.task_run_id == task_run_id)
+                .filter(db_mod.TaskRunEvent.event_type == "approval_queue_item_resolved")
+                .order_by(db_mod.TaskRunEvent.event_index.asc())
+                .all()
+            )
+        finally:
+            db.close()
+
+        shutdown_event = next(
+            event
+            for event in events
+            if (json.loads(event.payload_json or "{}")).get("followup_reason") == "runtime_shutting_down"
+        )
+        shutdown_payload = json.loads(shutdown_event.payload_json or "{}")
+        assert shutdown_payload["followup_status"] == "skipped"
 
     def test_approve_run_shell_timeout_creates_continue_wait_queue(self, client):
         import models.database as db_mod

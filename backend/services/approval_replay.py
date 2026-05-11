@@ -384,7 +384,18 @@ def build_approval_queue_item_resolved_event_payload(
     }
     if request_payload:
         payload["resume_supported"] = bool(request_payload.get("resume_supported"))
-    for key in ("action_taken", "replay_status", "replay_success", "replay_blocked", "replay_blocked_kind"):
+    for key in (
+        "action_taken",
+        "replay_status",
+        "replay_success",
+        "replay_blocked",
+        "replay_blocked_kind",
+        "followup_attempted",
+        "followup_status",
+        "followup_reason",
+        "followup_error",
+        "followup_message_id",
+    ):
         if resolution_payload.get(key) is not None:
             payload[key] = resolution_payload.get(key)
     return payload

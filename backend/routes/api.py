@@ -150,6 +150,7 @@ from services.runner_policy import (
     find_stage_policy,
 )
 from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
+from services.runtime_lifecycle import runtime_is_shutting_down
 from services.memory_extraction import (
     extract_agent_memories,
     schedule_agent_memory_extraction,
@@ -4288,6 +4289,32 @@ async def _finalize_approved_queue_item_followup_async(
             return
         if (item.target_kind or "") != "tool" or not bool(request_payload.get("resume_supported")):
             return
+        if runtime_is_shutting_down():
+            resolution_payload = load_approval_queue_request_payload(getattr(item, "resolution_payload_json", None))
+            resolution_payload.update(build_followup_skipped_payload("runtime_shutting_down"))
+            item.resolution_payload_json = json.dumps(resolution_payload, ensure_ascii=False)
+            item.resolution_note = resolution_note or item.resolution_note
+            item.resolved_by = resolved_by or item.resolved_by
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            task_run = get_task_run(db, item.task_run_id)
+            append_task_event(
+                db,
+                task_run,
+                "approval_queue_item_resolved",
+                agent_name=item.agent_name,
+                summary=f"Approved queue item follow-up skipped during shutdown for {item.target_name or item.target_kind}.",
+                payload=build_approval_queue_item_resolved_event_payload(
+                    item,
+                    status="approved",
+                    resolved_by=resolved_by,
+                    request_payload=request_payload,
+                    resolution_payload=resolution_payload,
+                ),
+            )
+            logger.info("[ApprovalFlow] followup-skipped-during-shutdown queue_item_id=%s", item_id)
+            return
 
         if (
             str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout"
@@ -4559,18 +4586,46 @@ async def approve_approval_queue_item(
         resolution_payload.get("action_taken"),
     )
     if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")):
-        _spawn_approval_followup_worker(
-            item.id,
-            request_payload=request_payload,
-            resolved_by=resolved_by,
-            resolution_note=resolution_note or f"Approved {item.target_kind or 'action'} from the API.",
-        )
-        logger.info(
-            "[ApprovalFlow] approve-followup-dispatched queue_item_id=%s task_run_id=%s target=%s",
-            item_id,
-            getattr(item, "task_run_id", None),
-            getattr(item, "target_name", None),
-        )
+        if runtime_is_shutting_down():
+            shutdown_followup = build_followup_skipped_payload("runtime_shutting_down")
+            resolution_payload.update(shutdown_followup)
+            resolved.resolution_payload_json = json.dumps(resolution_payload, ensure_ascii=False)
+            db.add(resolved)
+            db.commit()
+            db.refresh(resolved)
+            append_task_event(
+                db,
+                task_run,
+                "approval_queue_item_resolved",
+                agent_name=item.agent_name,
+                summary=f"Approved queue item follow-up skipped during shutdown for {item.target_name or item.target_kind}.",
+                payload=build_approval_queue_item_resolved_event_payload(
+                    resolved,
+                    status="approved",
+                    resolved_by=resolved_by,
+                    request_payload=request_payload,
+                    resolution_payload=resolution_payload,
+                ),
+            )
+            logger.info(
+                "[ApprovalFlow] approve-followup-skipped-during-shutdown queue_item_id=%s task_run_id=%s target=%s",
+                item_id,
+                getattr(item, "task_run_id", None),
+                getattr(item, "target_name", None),
+            )
+        else:
+            _spawn_approval_followup_worker(
+                item.id,
+                request_payload=request_payload,
+                resolved_by=resolved_by,
+                resolution_note=resolution_note or f"Approved {item.target_kind or 'action'} from the API.",
+            )
+            logger.info(
+                "[ApprovalFlow] approve-followup-dispatched queue_item_id=%s task_run_id=%s target=%s",
+                item_id,
+                getattr(item, "task_run_id", None),
+                getattr(item, "target_name", None),
+            )
     return serialize_approval_queue_item(resolved or item)
 
 

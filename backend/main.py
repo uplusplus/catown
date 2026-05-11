@@ -39,6 +39,7 @@ load_dotenv(_default_catown_home() / ".env")
 
 from config import settings
 from monitoring import monitor_network_buffer
+from services.runtime_lifecycle import mark_runtime_starting, mark_runtime_shutting_down
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
@@ -472,6 +473,7 @@ logger.info("[Events] Pipeline event bus connected to general WebSocket")
 
 @app.on_event("startup")
 async def _start_file_watcher():
+    mark_runtime_starting()
     loop = _asyncio.get_event_loop()
     file_watcher.start(loop)
     if monitor_network_buffer.install():
@@ -499,6 +501,7 @@ async def _start_file_watcher():
 
 @app.on_event("shutdown")
 async def _stop_file_watcher():
+    mark_runtime_shutting_down()
     file_watcher.stop()
 
 # 包含 API 路由
