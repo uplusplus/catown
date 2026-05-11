@@ -1409,9 +1409,9 @@ a {
 }
 
 .chat-sidebar {
-  flex: 0 0 clamp(420px, 30vw, 640px);
-  min-width: 420px;
-  max-width: 640px;
+  flex: 0 0 clamp(360px, 26vw, 560px);
+  min-width: 360px;
+  max-width: 560px;
   height: 100%;
   min-height: 0;
   border-left: 1px solid var(--border);
