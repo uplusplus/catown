@@ -141,6 +141,7 @@ def assemble_chat_messages(
     target_agent_name: Optional[str] = None,
     prefix_assistant_name: bool = False,
     standalone_note: str = "",
+    runtime_context: str = "",
     extra_context: str = "",
     turn_state: Any = None,
     selector_profile: str = "chat_interactive",
@@ -208,6 +209,7 @@ def assemble_chat_messages(
     if history_summary is not None:
         user_fragments.append(history_summary)
     user_fragments.extend(build_runtime_user_fragments(
+        runtime_context=runtime_context,
         project=project,
         chatroom=chatroom,
         source_chatroom=source_chatroom,

@@ -81,6 +81,7 @@ from services.chat_prompt_builder import (
 from services.chat_runtime import (
     PreparedChatTurnRuntime,
     assemble_runtime_chat_messages,
+    build_runtime_environment_context,
     build_tool_runtime_kwargs,
     prepare_chat_turn_runtime,
 )
@@ -1249,6 +1250,7 @@ async def trigger_agent_response(
                 history_visibility="all" if visibility == "all" else "target",
                 target_agent_name=runtime.agent_label,
                 prefix_assistant_name=visibility == "all",
+                runtime_context=build_runtime_environment_context(project),
                 extra_context=extra_context,
                 turn_state=current_turn_state,
                 on_compaction=compaction_callback,
@@ -5222,6 +5224,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     available_tools=runtime.available_tools,
                     tool_policy_pack=runtime.tool_policy_pack,
                     history_limit=6,
+                    runtime_context=build_runtime_environment_context(project),
                     turn_state=current_turn_state,
                     on_compaction=compaction_callback,
                 )

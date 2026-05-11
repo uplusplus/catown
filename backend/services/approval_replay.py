@@ -391,9 +391,14 @@ def build_approval_queue_item_resolved_event_payload(
 
 
 def replay_result_is_actionable(replay_result: Any) -> bool:
-    """A replay can continue execution only after a successful, unblocked tool result."""
+    """A replay can continue execution after any non-blocked tool result.
 
-    return bool(getattr(replay_result, "success", False)) and not bool(getattr(replay_result, "blocked", False))
+    Failed command/test output is actionable context for the agent: the next
+    turn should diagnose it or choose a corrected command. Blocked results are
+    not actionable because they still require an external decision.
+    """
+
+    return not bool(getattr(replay_result, "blocked", False))
 
 
 def build_followup_skipped_payload(reason: str) -> Dict[str, Any]:
@@ -478,13 +483,21 @@ def build_tool_replay_followup_context(item: Any, replay_result: Any, *, result_
         or "tool"
     )
     result_preview = _compact_text(getattr(replay_result, "result", ""), limit=result_preview_limit)
+    success = _replay_result_success(replay_result)
+    next_step = (
+        "Continue from this successful result. Do not rerun the same tool call unless the user explicitly asks "
+        "or the result shows it did not complete."
+        if success
+        else "The approved tool ran but failed. Treat the failure output as diagnostic evidence, explain the cause, "
+        "and choose a corrected next step instead of stopping at the tool failure."
+    )
     return (
         "Approved tool continuation completed.\n"
         f"- Tool: {tool_name}\n"
         f"- Status: {getattr(replay_result, 'status', 'unknown')}\n"
+        f"- Success: {str(success).lower()}\n"
         f"- Result: {result_preview}\n"
-        "Continue from this result. Do not rerun the same tool call unless the user explicitly asks "
-        "or the result shows it did not complete."
+        f"{next_step}"
     )
 
 
@@ -507,7 +520,7 @@ def build_queue_replay_resolution_payload(
         {
             "replay_attempted": True,
             "replay_status": getattr(replay_result, "status", None),
-            "replay_success": bool(getattr(replay_result, "success", False)),
+            "replay_success": _replay_result_success(replay_result),
             "replay_blocked": bool(getattr(replay_result, "blocked", False)),
             "replay_blocked_kind": getattr(replay_result, "blocked_kind", None),
             "replay_result_preview": _compact_text(
@@ -536,3 +549,10 @@ def _compact_text(value: Any, *, limit: int) -> str:
     if limit > 0 and len(text) > limit:
         return text[: max(0, limit - 1)].rstrip() + "..."
     return text
+
+
+def _replay_result_success(replay_result: Any) -> bool:
+    if hasattr(replay_result, "success"):
+        return bool(getattr(replay_result, "success", False))
+    status = str(getattr(replay_result, "status", "") or "").strip().lower()
+    return status in {"success", "succeeded", "completed", "done"}

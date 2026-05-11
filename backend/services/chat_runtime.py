@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import re
+import shutil
+import sys
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from sqlalchemy.orm import Session
@@ -121,6 +124,7 @@ def assemble_runtime_chat_messages(
     target_agent_name: Optional[str] = None,
     prefix_assistant_name: bool = False,
     standalone_note: str = "",
+    runtime_context: str = "",
     extra_context: str = "",
     turn_state: Optional[TurnContextState] = None,
     selector_profile: str = "chat_interactive",
@@ -148,11 +152,38 @@ def assemble_runtime_chat_messages(
         target_agent_name=target_agent_name,
         prefix_assistant_name=prefix_assistant_name,
         standalone_note=standalone_note,
+        runtime_context=runtime_context,
         extra_context=extra_context,
         turn_state=turn_state,
         selector_profile=selector_profile,
         on_compaction=on_compaction,
     )
+
+
+def build_runtime_environment_context(project: Any = None) -> str:
+    """Describe the local execution environment agents should rely on for shell work."""
+
+    workspace_path = str(getattr(project, "workspace_path", "") or os.environ.get("CATOWN_WORKSPACE", "") or os.getcwd())
+    executable = sys.executable or ""
+    executable_name = os.path.basename(executable) if executable else "python3"
+    python3_path = shutil.which("python3")
+    python_path = shutil.which("python")
+    recommended_python = executable or python3_path or python_path or "python3"
+    pytest_command = f"{_shell_quote(recommended_python)} -m pytest backend/tests -q --tb=short --disable-warnings"
+
+    lines = [
+        "## Runtime Environment",
+        f"- Workspace path: {workspace_path}",
+        f"- Backend Python executable: {executable or 'unknown'}",
+        f"- `python3` on PATH: {python3_path or 'not found'}",
+        f"- `python` on PATH: {python_path or 'not found'}",
+        f"- Recommended Python command for this session: {_shell_quote(recommended_python)}",
+        f"- Recommended backend test command: {pytest_command}",
+        "- For run_shell, prefer the recommended Python command above over stale commands found in older reports.",
+    ]
+    if executable_name != "python" and not python_path:
+        lines.append("- Do not assume `python` exists in this shell; use the recommended command.")
+    return "\n".join(lines)
 
 
 def build_tool_runtime_kwargs(
@@ -219,3 +250,12 @@ def _related_tools_for_message(tool_names: List[str], user_message: str) -> set[
                 related.add(tool_name)
                 break
     return related
+
+
+def _shell_quote(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "python3"
+    if re.fullmatch(r"[A-Za-z0-9_@%+=:,./\\-]+", text):
+        return text
+    return "'" + text.replace("'", "'\"'\"'") + "'"

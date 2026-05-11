@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.chat_runtime import assemble_runtime_chat_messages, prepare_chat_turn_runtime
+from services.chat_runtime import assemble_runtime_chat_messages, build_runtime_environment_context, prepare_chat_turn_runtime
 
 
 def test_assemble_runtime_chat_messages_adds_tool_guidance(monkeypatch):
@@ -34,6 +34,42 @@ def test_assemble_runtime_chat_messages_adds_tool_guidance(monkeypatch):
     assert "## Active Tool Guides" in captured["tool_guidance"]
     assert "## Relevant Tool Details" in captured["tool_guidance"]
     assert "When you need to use a tool" in captured["tool_guidance"]
+
+
+def test_runtime_environment_context_prefers_current_python(monkeypatch):
+    monkeypatch.setattr("services.chat_runtime.sys.executable", "/opt/catown/venv/bin/python3")
+    monkeypatch.setattr(
+        "services.chat_runtime.shutil.which",
+        lambda name: "/usr/bin/python3" if name == "python3" else None,
+    )
+
+    context = build_runtime_environment_context(SimpleNamespace(workspace_path="/workspace/catown"))
+
+    assert "## Runtime Environment" in context
+    assert "Workspace path: /workspace/catown" in context
+    assert "Recommended Python command for this session: /opt/catown/venv/bin/python3" in context
+    assert "/opt/catown/venv/bin/python3 -m pytest backend/tests" in context
+    assert "Do not assume `python` exists" in context
+
+
+def test_assemble_runtime_chat_messages_passes_runtime_context(monkeypatch):
+    captured = {}
+
+    def fake_shared_assemble_chat_messages(**kwargs):
+        captured.update(kwargs)
+        return [{"role": "system", "content": "ok"}]
+
+    monkeypatch.setattr("services.chat_runtime.shared_assemble_chat_messages", fake_shared_assemble_chat_messages)
+
+    assemble_runtime_chat_messages(
+        db=object(),
+        agent=None,
+        agent_name="Tester",
+        user_message="run tests",
+        runtime_context="## Runtime Environment\n- Recommended Python command for this session: python3",
+    )
+
+    assert captured["runtime_context"].startswith("## Runtime Environment")
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,7 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
         "blocked_kind": "approval",
         "blocked_reason": "delete_file requires approval",
         "resume_supported": True,
+        "metadata": {},
         "pipeline_id": 11,
         "pipeline_run_id": 12,
         "pipeline_stage_id": 13,
@@ -135,6 +136,7 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
                 "blocked_kind": "approval",
                 "blocked_reason": "delete_file requires approval",
                 "resume_supported": True,
+                "metadata": {},
                 "pipeline_id": 11,
                 "pipeline_run_id": 12,
                 "pipeline_stage_id": 13,
@@ -434,10 +436,11 @@ def test_tool_replay_followup_context_preserves_status_and_truncated_result():
     assert "Do not rerun the same tool call" in context
 
 
-def test_replay_result_is_actionable_requires_success_without_block():
+def test_replay_result_is_actionable_requires_non_blocked_result():
     assert replay_result_is_actionable(SimpleNamespace(success=True, blocked=False)) is True
-    assert replay_result_is_actionable(SimpleNamespace(success=False, blocked=False)) is False
+    assert replay_result_is_actionable(SimpleNamespace(success=False, blocked=False)) is True
     assert replay_result_is_actionable(SimpleNamespace(success=True, blocked=True)) is False
+    assert replay_result_is_actionable(SimpleNamespace(success=False, blocked=True)) is False
 
 
 def test_followup_payload_helpers_share_resolution_shape():
