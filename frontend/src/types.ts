@@ -249,6 +249,34 @@ export type TaskRunDetail = TaskRunSummary & {
   approval_queue_items?: ApprovalQueueItem[];
 };
 
+export type TaskActivityStep = {
+  id: string;
+  event_index: number;
+  event_type: string;
+  label: string;
+  state: "live" | "done" | "error";
+  agent?: string | null;
+  tool?: string | null;
+  summary?: string | null;
+  detail?: string | null;
+  detail_content?: string | null;
+  created_at?: string | null;
+  refs?: Record<string, unknown>;
+};
+
+export type TaskActivityProjection = {
+  task_run_id: number;
+  status: string;
+  title: string;
+  run_kind: string;
+  version: number;
+  latest_event_index: number;
+  updated_at?: string | null;
+  current_step_id?: string | null;
+  summary?: string | null;
+  steps: TaskActivityStep[];
+};
+
 export type ApprovalQueueItem = {
   id: number;
   task_run_id?: number | null;

@@ -29,6 +29,7 @@ import type {
   ChatSummary,
   MessageItem,
   MessageStreamStep,
+  TaskActivityProjection,
   ProjectBrowserIndex,
   ProjectSummary,
   TaskRunDetail,
@@ -305,6 +306,7 @@ type ChatTabProps = {
   taskRuns: TaskRunSummary[];
   projectBrowserIndex: ProjectBrowserIndex | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
+  taskActivitiesById: Record<number, TaskActivityProjection>;
   loading: boolean;
   sending: boolean;
   refreshing: boolean;
@@ -1880,13 +1882,29 @@ function renderFailureStepAction(
 function renderTaskRunTrace(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  activity: TaskActivityProjection | null,
   expandedStepId: string | null,
   onToggleStep: (taskRunId: number, stepId: string) => void,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
-  const traceSteps = buildTaskRunTraceSteps(taskRun, detail);
+  const traceSteps = activity?.steps.length
+    ? activity.steps.map((step) => ({
+        id: step.id,
+        label: step.label,
+        detail: step.detail || step.summary || undefined,
+        detailContent: step.detail_content || step.detail || step.summary || undefined,
+        state: step.state,
+        kind: step.tool ? ("tool_call" as const) : undefined,
+        agent: step.agent || undefined,
+        tool: step.tool || undefined,
+      }))
+    : buildTaskRunTraceSteps(taskRun, detail);
   if (traceSteps.length === 0) return null;
-  const currentStepId = [...traceSteps].reverse().find((step) => step.state === "live")?.id ?? traceSteps[traceSteps.length - 1]?.id ?? null;
+  const currentStepId =
+    (activity?.current_step_id && traceSteps.some((step) => step.id === activity.current_step_id) ? activity.current_step_id : null)
+    ?? [...traceSteps].reverse().find((step) => step.state === "live")?.id
+    ?? traceSteps[traceSteps.length - 1]?.id
+    ?? null;
   const resolvedExpandedStepId =
     expandedStepId && traceSteps.some((step) => step.id === expandedStepId) ? expandedStepId : currentStepId;
 
@@ -4043,6 +4061,7 @@ function renderMessage(
 function renderTaskRunInlineCard(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  activity: TaskActivityProjection | null,
   cards: ThreadCard[],
   agents: AgentInfo[],
   approvalItems: ApprovalQueueItem[],
@@ -4075,7 +4094,7 @@ function renderTaskRunInlineCard(
         detail: liveActivity.detail,
       }
     : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride, actorName);
-  const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep, onAnalyzeFailureStep);
+  const trace = renderTaskRunTrace(taskRun, detail, activity, expandedStepId, onToggleStep, onAnalyzeFailureStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
     ? (taskRun.client_turn_id || "").trim().slice("delegate-".length)
@@ -4288,6 +4307,7 @@ export function ChatTab({
   taskRuns,
   projectBrowserIndex,
   liveTaskRunDetailsById,
+  taskActivitiesById,
   loading,
   sending,
   refreshing,
@@ -5699,6 +5719,7 @@ export function ChatTab({
                     ? renderTaskRunInlineCard(
                         item.taskRun,
                         item.detail,
+                        taskActivitiesById[item.taskRun.id] ?? null,
                         item.cards,
                         agents,
                         pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],

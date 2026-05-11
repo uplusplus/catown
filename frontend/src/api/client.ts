@@ -26,6 +26,7 @@ import type {
   SkillMarketplacesResponse,
   SkillMarketplaceUpdateResponse,
   ProjectSummary,
+  TaskActivityProjection,
   TaskRunDetail,
   TaskRunResumeResponse,
   TaskRunSummary,
@@ -227,6 +228,9 @@ export const api = {
   },
   getTaskRunDetail(taskRunId: number) {
     return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
+  },
+  getTaskRunActivity(taskRunId: number) {
+    return request<TaskActivityProjection>(`/api/task-runs/${taskRunId}/activity`);
   },
   getApprovalQueue(params?: {
     status?: string;

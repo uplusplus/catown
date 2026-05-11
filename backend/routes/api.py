@@ -110,6 +110,7 @@ from services.run_ledger import (
     serialize_task_run_summary,
     update_task_run,
 )
+from services.task_activity_projection import build_task_activity_projection
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
     record_tool_round as record_runner_tool_round,
@@ -3664,6 +3665,19 @@ async def get_task_run_detail(task_run_id: int, db: Session = Depends(get_db)):
     if not task_run:
         raise HTTPException(status_code=404, detail="Task run not found")
     return serialize_task_run_detail(task_run)
+
+
+@router.get("/task-runs/{task_run_id}/activity")
+async def get_task_run_activity(task_run_id: int, db: Session = Depends(get_db)):
+    """Return the chat-facing activity projection for one task run."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    return build_task_activity_projection(task_run)
 
 
 @router.post("/task-runs/{task_run_id}/resume")

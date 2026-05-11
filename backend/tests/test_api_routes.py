@@ -37,6 +37,7 @@ def _make_app(tmp_path):
         'services.runtime_lifecycle',
         'services.monitor_projection',
         'services.run_ledger',
+        'services.task_activity_projection',
         'services.chat_publish',
         'services.chat_runtime',
         'services.orchestration_events',
@@ -1136,6 +1137,35 @@ class TestChatEndpoints:
         assert len(completed_events) == 4
         assert completed_events[-1]["payload"]["runtime"]["completed_step_count"] == 4
         assert completed_events[-1]["payload"]["runtime"]["waiting_step_count"] == 0
+
+    def test_get_task_run_activity_projects_steps(self, client):
+        r = client.post("/api/projects", json={
+            "name": "Task Activity Projection", "agent_names": ["analyst", "developer"]
+        })
+        cid = r.json()["chatroom_id"]
+        turn_id = "turn-task-activity-projection"
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={"content": "@analyst @developer inspect task activity", "client_turn_id": turn_id},
+        )
+
+        assert response.status_code == 200
+        runs = client.get(
+            f"/api/chatrooms/{cid}/task-runs",
+            params={"client_turn_id": turn_id},
+        ).json()
+        run = runs[0]
+
+        activity = client.get(f"/api/task-runs/{run['id']}/activity").json()
+
+        assert activity["task_run_id"] == run["id"]
+        assert activity["latest_event_index"] >= 1
+        assert activity["current_step_id"]
+        assert len(activity["steps"]) >= 3
+        assert any(step["event_type"] == "scheduler_plan_created" for step in activity["steps"])
+        assert any(step["event_type"] == "scheduler_step_dispatched" for step in activity["steps"])
+        assert activity["steps"][-1]["state"] in {"done", "live", "error"}
 
     def test_send_message_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod

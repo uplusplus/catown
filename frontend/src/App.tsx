@@ -26,6 +26,7 @@ import type {
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
   ProjectSummary,
+  TaskActivityProjection,
   TaskRunDetail,
   TaskRunSummary,
   ToolAuthorizationRule,
@@ -2076,6 +2077,7 @@ function App() {
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
   const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
+  const [taskActivitiesById, setTaskActivitiesById] = useState<Record<number, TaskActivityProjection>>({});
   const [chatEvents, setChatEvents] = useState<ChatEventItem[]>([]);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">("connecting");
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -2156,6 +2158,32 @@ function App() {
       pushEvent(`Task run history unavailable: ${message}`, "warning");
       return [];
     }
+  }
+
+  async function loadOptionalTaskActivities(rows: TaskRunSummary[]) {
+    const inlineRows = rows.filter((run) => {
+      const clientTurnId = (run.client_turn_id || "").trim().toLowerCase();
+      const runKind = (run.run_kind || "").trim().toLowerCase();
+      return (
+        (run.status || "").toLowerCase() === "running" ||
+        Number(run.pending_approval_count || 0) > 0 ||
+        clientTurnId.startsWith("delegate-") ||
+        runKind.includes("pipeline") ||
+        runKind.includes("orchestration")
+      );
+    });
+    const entries = await Promise.all(
+      inlineRows.map(async (run) => {
+        try {
+          return await api.getTaskRunActivity(run.id);
+        } catch (nextError) {
+          const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
+          pushEvent(`Task activity unavailable: ${message}`, "warning");
+          return null;
+        }
+      }),
+    );
+    return entries.filter((entry): entry is TaskActivityProjection => entry !== null);
   }
 
   async function loadOptionalRuntimeCards(chatId: number) {
@@ -2467,6 +2495,7 @@ function App() {
       setTaskRuns([]);
       setProjectBrowserIndex(null);
       setLiveTaskRunDetailsById({});
+      setTaskActivitiesById({});
       return;
     }
     if (!activeChat) return;
@@ -2482,6 +2511,7 @@ function App() {
         setChatCards([]);
         setChatEvents([]);
         setLiveTaskRunDetailsById({});
+        setTaskActivitiesById({});
         const [rows, runtimeRows, taskRunRows] = await Promise.all([
           api.getMessages(activeChatId),
           loadOptionalRuntimeCards(activeChatId),
@@ -2495,6 +2525,10 @@ function App() {
           setChatCards(nextCards);
           setTaskRuns(taskRunRows);
           setLiveTaskRunDetailsById({});
+          void loadOptionalTaskActivities(taskRunRows).then((entries) => {
+            if (cancelled) return;
+            setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
+          });
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
         }
       } catch (nextError) {
@@ -2664,6 +2698,14 @@ function App() {
             const detail = payload.detail as TaskRunDetail | undefined;
             if (entry && typeof entry.id === "number") {
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
+              void api.getTaskRunActivity(entry.id)
+                .then((activity) => {
+                  setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
+                })
+                .catch((nextError) => {
+                  const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
+                  pushEvent(`Task activity unavailable: ${message}`, "warning");
+                });
               if (detail && typeof detail.id === "number") {
                 setLiveTaskRunDetailsById((current) => ({ ...current, [detail.id]: detail }));
               } else if (taskRunTerminalState(entry) || Number(entry.pending_approval_count || 0) === 0) {
@@ -2874,6 +2916,9 @@ function App() {
       setChatCards(nextCards);
       setTaskRuns(taskRunRows);
       setLiveTaskRunDetailsById({});
+      void loadOptionalTaskActivities(taskRunRows).then((entries) => {
+        setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
+      });
       if (showSpinner) {
         pushEvent("Conversation refreshed", "info");
       }
@@ -4266,6 +4311,7 @@ function App() {
             taskRuns={taskRuns}
             projectBrowserIndex={projectBrowserIndex}
             liveTaskRunDetailsById={liveTaskRunDetailsById}
+            taskActivitiesById={taskActivitiesById}
             events={chatEvents}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}
