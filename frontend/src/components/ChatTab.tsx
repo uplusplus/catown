@@ -5839,44 +5839,18 @@ export function ChatTab({
         {activityDrawerOpen ? <button type="button" className="mobile-drawer-backdrop" onClick={onCloseActivity} aria-label="Close browser panel" /> : null}
         <aside className={`chat-sidebar ${activityDrawerOpen ? "is-mobile-open" : ""}`}>
           <div className="sidebar-panel">
-            <div className="sidebar-header">
-              <span className="sidebar-title">Project Browser</span>
-              <div className="sidebar-header__actions">
-                <span className="soft-pill">{project ? project.name : "Chat"}</span>
-                <button
-                  type="button"
-                  className="chat-sidebar__close"
-                  onClick={onCloseActivity}
-                  aria-label="Close browser"
-                  title="Close browser"
-                >
-                  ×
-                </button>
-              </div>
+            <div className="sidebar-header sidebar-header--browser-actions">
+              <button
+                type="button"
+                className="chat-sidebar__close"
+                onClick={onCloseActivity}
+                aria-label="Close browser"
+                title="Close browser"
+              >
+                ×
+              </button>
             </div>
             <div className="sidebar-content project-browser">
-              <div className="project-browser__summary">
-                <div>
-                  <span className="project-browser__eyebrow">{project ? "Project workspace" : "Standalone chat"}</span>
-                  <strong>{project?.name || chat?.title || "No chat selected"}</strong>
-                </div>
-                {project?.workspace_path ? <CopyTextButton content={project.workspace_path} title="Copy workspace path" /> : null}
-              </div>
-
-              {project?.workspace_path ? (
-                <label className="project-browser__path-field">
-                  <span>Workspace path</span>
-                  <textarea
-                    readOnly
-                    rows={2}
-                    value={normalizeBrowserPath(project.workspace_path)}
-                    onFocus={(event) => event.currentTarget.select()}
-                  />
-                </label>
-              ) : (
-                <div className="empty-card">No project workspace is bound to this chat yet.</div>
-              )}
-
               <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
                 {[
                   { id: "files" as const, label: "Files", count: browserFileEntries.length, Icon: FolderTree },
