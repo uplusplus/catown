@@ -88,7 +88,7 @@ Artifacts 只展示可审阅、可交付、可归档的项目产物，不展示�
 Processes 只展示当前活动的后台执行项：
 
 - `run_shell` 工具卡片必须仍处于 `running` 状态。
-- task run 必须仍处于 `running` 状态，且不能是审批或 timeout 等阻塞等待状态。
+- task run 必须仍处于 `running` 状态，且不能是审批、timeout 或已经在 Chat 主内容区内联展示的前台任务。
 - 已完成、失败、取消、审批等待、timeout 等非当前活动记录不在 Project Browser 展示，统一进入 Monitor。
 
 ---

@@ -419,6 +419,7 @@ function isRunningBrowserShellProcess(card: ChatCardItem) {
 
 function isRunningBrowserTaskRun(run: TaskRunSummary) {
   if ((run.status || "").trim().toLowerCase() !== "running") return false;
+  if (shouldRenderInlineTaskRun(run)) return false;
   if (Number(run.pending_approval_count || 0) > 0) return false;
   const blockedKind = String(run.continuation_cursor?.blocked_kind || "").trim().toLowerCase();
   return blockedKind !== "approval" && blockedKind !== "timeout";
