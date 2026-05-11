@@ -500,6 +500,76 @@ function formatTaskRunEventType(value: string | undefined) {
     .join(" ");
 }
 
+function isInternalContinuationSummary(value: string | null | undefined) {
+  const normalized = (value || "").toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("rebuild_turn_state_from_tool_round") ||
+    normalized.includes("protocol_tail") ||
+    normalized.includes("prior_round_summaries") ||
+    normalized.includes("continue agent turn · via") ||
+    normalized.includes("continue agent turn - via")
+  );
+}
+
+function userFacingTaskRunSummary(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || isInternalContinuationSummary(normalized)) return null;
+  return normalized;
+}
+
+function readTaskRunContinuationToolName(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  fallbackToolName?: string | null,
+) {
+  const checkpointCursor = detail?.checkpoint_snapshot?.continuation_cursor;
+  const cursor = detail?.continuation_cursor ?? taskRun.continuation_cursor ?? checkpointCursor;
+  const toolName =
+    fallbackToolName ||
+    cursor?.tool_name ||
+    checkpointCursor?.tool_name ||
+    null;
+  if (toolName) return toolName;
+
+  const toolNames = cursor?.tool_names ?? checkpointCursor?.tool_names ?? null;
+  if (Array.isArray(toolNames) && toolNames.length > 0) {
+    return toolNames[toolNames.length - 1] || null;
+  }
+  return null;
+}
+
+function describeRunningTaskRunFallback(
+  taskRun: TaskRunSummary,
+  detail: TaskRunDetail | null,
+  actorName = "Agent",
+  options?: {
+    latestEventType?: string | null;
+    latestToolName?: string | null;
+  },
+) {
+  const eventType = (options?.latestEventType || detail?.checkpoint_snapshot?.latest_event_type || taskRun.latest_continuation_event_type || "")
+    .toLowerCase();
+  const toolName = readTaskRunContinuationToolName(taskRun, detail, options?.latestToolName);
+  const subject = actorName || "Agent";
+
+  if (eventType === "tool_round_recorded" || eventType === "approval_queue_item_followup_triggered") {
+    return toolName
+      ? `${subject} is continuing after ${toolName}.`
+      : `${subject} is continuing after the latest tool result.`;
+  }
+  if (eventType === "tool_call_started") {
+    return toolName
+      ? `${subject} is running ${toolName}.`
+      : `${subject} is running a tool.`;
+  }
+  if (eventType.includes("agent_turn")) {
+    return `${subject} is waiting for the next model response.`;
+  }
+  if (toolName) return `${subject} is continuing with ${toolName}.`;
+  return `${subject} is working in the background.`;
+}
+
 function compareTaskRunsForSidebarSelection(left: TaskRunSummary, right: TaskRunSummary) {
   const leftPending = Number(left.pending_approval_count || 0);
   const rightPending = Number(right.pending_approval_count || 0);
@@ -593,6 +663,7 @@ function summarizeTaskRunInlineStatus(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   pendingApprovalOverride?: number,
+  actorName = "Agent",
 ) {
   const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
   const pendingApprovalCount =
@@ -660,11 +731,12 @@ function summarizeTaskRunInlineStatus(
     : "";
   const latestResumeSupported = latestPayload?.resume_supported === true;
   const latestEventSummary =
-    taskRun.latest_continuation_event_summary ||
-    detail?.continuation_state_summary ||
-    detail?.continuation_cursor_summary ||
-    taskRun.continuation_state_summary ||
-    taskRun.continuation_cursor_summary ||
+    userFacingTaskRunSummary(latestEventSummaryText) ||
+    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
+    userFacingTaskRunSummary(detail?.continuation_state_summary) ||
+    userFacingTaskRunSummary(detail?.continuation_cursor_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_cursor_summary) ||
     null;
 
   if (pendingApprovalCount > 0) {
@@ -757,7 +829,10 @@ function summarizeTaskRunInlineStatus(
       label: latestToolName ? `Running · ${latestToolName}` : "Running",
       detail:
         latestEventSummary ||
-        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task is executing in the background."),
+        describeRunningTaskRunFallback(taskRun, detail, actorName, {
+          latestEventType: latestEventType || latestEvent?.event_type || null,
+          latestToolName,
+        }),
     };
   }
   if (normalizedStatus === "completed") {
@@ -791,6 +866,7 @@ function buildTaskRunCardSummary(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   pendingApprovalOverride?: number,
+  actorName = "Agent",
 ) {
   const events = detail?.events ?? [];
   const latestEvent = events[events.length - 1] ?? null;
@@ -798,7 +874,7 @@ function buildTaskRunCardSummary(
     ? latestEvent.payload as Record<string, unknown>
     : null;
   const latestEventTypeValue = String(latestEvent?.event_type || "").toLowerCase();
-  const latestEventSummaryText = typeof latestEvent?.summary === "string" ? latestEvent.summary : null;
+  const latestEventSummaryText = userFacingTaskRunSummary(typeof latestEvent?.summary === "string" ? latestEvent.summary : null);
   const latestResolutionAction = typeof latestPayload?.action_taken === "string"
     ? latestPayload.action_taken.toLowerCase()
     : "";
@@ -881,14 +957,17 @@ function buildTaskRunCardSummary(
       }
       return latestToolName
         ? `Executing ${latestToolName}.`
-        : latestEvent?.summary || "Executing tool work.";
+        : latestEventSummaryText || "Executing tool work.";
     }
     if ((latestEvent?.event_type || "").includes("agent_turn")) {
       return latestResponsePreview
         ? oneLinePreview(latestResponsePreview, "Running LLM turn.", 140)
-        : "Running LLM turn.";
+        : `${actorName} is waiting for the next model response.`;
     }
-    return latestEvent?.summary || "Background task is running.";
+    return latestEventSummaryText || describeRunningTaskRunFallback(taskRun, detail, actorName, {
+      latestEventType: latestEvent?.event_type || taskRun.latest_continuation_event_type || null,
+      latestToolName,
+    });
   }
 
   if (normalizedStatus === "completed") {
@@ -901,14 +980,14 @@ function buildTaskRunCardSummary(
 
   if (normalizedStatus === "failed") {
     return oneLinePreview(
-      taskRun.summary || latestEvent?.summary || "Background task failed.",
+      taskRun.summary || latestEventSummaryText || "Background task failed.",
       "Background task failed.",
       160,
     );
   }
 
   return oneLinePreview(
-    latestEvent?.summary || taskRun.summary || taskRun.user_request || "Background task update.",
+    latestEventSummaryText || taskRun.summary || taskRun.user_request || "Background task update.",
     "Background task update.",
     160,
   );
@@ -3585,7 +3664,8 @@ function renderTaskRunInlineCard(
   const shouldUseLiveActivity = normalizedTaskRunStatus === "running";
   const shellStatus = shouldUseLiveActivity ? summarizeTaskRunShellStatus(cards) : null;
   const liveActivity = shouldUseLiveActivity ? shellStatus ?? summarizeTaskRunRuntimeCards(cards) : null;
-  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, pendingApprovalOverride);
+  const actorName = resolveTaskRunActorName(taskRun, agents);
+  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, pendingApprovalOverride, actorName);
   const inlineStatus = liveActivity
     ? {
         tone:
@@ -3597,8 +3677,7 @@ function renderTaskRunInlineCard(
         label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
-    : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride);
-  const actorName = resolveTaskRunActorName(taskRun, agents);
+    : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride, actorName);
   const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep, onAnalyzeFailureStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
