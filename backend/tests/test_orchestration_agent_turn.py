@@ -35,6 +35,44 @@ class FakeStreamLLMClient:
         }
 
 
+class FakeStreamToolLLMClient:
+    model = "fake-stream-tool-model"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def chat_stream(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "type": "done",
+                "full_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-run-shell",
+                        "type": "function",
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": '{"command":"pytest -q"}',
+                        },
+                    }
+                ],
+                "usage": {"total_tokens": 8},
+                "finish_reason": "tool_calls",
+                "timings": {"completed_ms": 3},
+            }
+            return
+
+        yield {
+            "type": "done",
+            "full_content": "Tests finished.",
+            "tool_calls": [],
+            "usage": {"total_tokens": 4},
+            "finish_reason": "stop",
+            "timings": {"completed_ms": 5},
+        }
+
+
 async def test_run_orchestration_agent_turn_records_lifecycle_and_saves_message(fresh_db):
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
@@ -209,6 +247,137 @@ async def test_iter_stream_orchestration_agent_turn_events_records_start_and_yie
         db.refresh(task_run)
         assert task_run.events[0].event_type == "agent_turn_started"
         assert task_run.events[0].summary == "Developer started an orchestrated streaming turn."
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_orchestration_agent_turn_events_streams_run_shell_progress(fresh_db, monkeypatch):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    stored_cards = []
+    captured_execute = {}
+    try:
+        chatroom = fresh_db.Chatroom(title="Stream shell progress")
+        agent = fresh_db.Agent(agent_type="tester", name="Tester", role="tester")
+        db.add_all([chatroom, agent])
+        db.commit()
+        db.refresh(chatroom)
+        db.refresh(agent)
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="running",
+            title="Stream shell",
+            user_request="Run tests.",
+            client_turn_id="stream-turn",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        async def fake_store_runtime_card(chatroom_id, payload):
+            stored_cards.append((chatroom_id, payload))
+
+        async def fake_execute(tool_name, **kwargs):
+            captured_execute.update({"tool_name": tool_name, **kwargs})
+            await kwargs["progress_callback"](
+                {
+                    "tail_output": "collected 3 items\nbackend/tests/test_example.py .",
+                    "duration_ms": 1234,
+                    "pid": 987,
+                    "tracked_process": {"token": "tracked-shell"},
+                }
+            )
+            return {
+                "__catown_tool_result__": True,
+                "tool_name": tool_name,
+                "success": True,
+                "status": "succeeded",
+                "result": "3 passed",
+            }
+
+        monkeypatch.setattr("services.orchestration_agent_turn.store_runtime_card", fake_store_runtime_card)
+        monkeypatch.setattr("tools.tool_registry.execute", fake_execute)
+
+        async def prepare_chat_turn_runtime(**kwargs):
+            return SimpleNamespace(
+                llm_client=FakeStreamToolLLMClient(),
+                agent_label="Tester",
+                recent_messages=[],
+                available_tools=["run_shell"],
+                tool_schemas=[{"type": "function", "function": {"name": "run_shell", "parameters": {}}}],
+                runtime_kwargs={},
+                turn_state=TurnContextState(),
+            )
+
+        deps = StreamOrchestrationAgentTurnDeps(
+            ensure_collaboration_context=lambda agents, chatroom_id: None,
+            prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+            assemble_chat_messages=lambda **kwargs: [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": kwargs["user_message"]},
+            ],
+            build_llm_card_payload=lambda **kwargs: {"agent": kwargs["agent_name"], "duration_ms": kwargs["duration_ms"]},
+            snapshot_messages=lambda messages: list(messages),
+            preview_tool_calls=lambda tool_calls: [
+                {"name": "run_shell", "args_preview": "pytest -q", "index": 0, "id": "call-run-shell"}
+            ] if tool_calls else [],
+            format_prompt_messages=lambda messages: "formatted",
+            tool_result_success=lambda result: True,
+            max_tool_iterations=3,
+        )
+
+        events = [
+            event
+            async for event in iter_stream_orchestration_agent_turn_events(
+                deps=deps,
+                agent=agent,
+                chatroom_id=chatroom.id,
+                chatroom=chatroom,
+                project=None,
+                agents=[agent],
+                user_message="Run tests.",
+                db=db,
+                client_turn_id="stream-turn",
+                task_run=task_run,
+            )
+        ]
+
+        assert captured_execute["tool_name"] == "run_shell"
+        assert captured_execute["task_run_id"] == task_run.id
+        assert captured_execute["client_turn_id"] == "stream-turn"
+        assert captured_execute["tool_call_id"] == "call-run-shell"
+        assert captured_execute["turn"] == 1
+        assert callable(captured_execute["progress_callback"])
+        assert stored_cards == [
+            (
+                chatroom.id,
+                {
+                    "type": "tool_call",
+                    "source": "chatroom",
+                    "agent": "Tester",
+                    "tool": "run_shell",
+                    "arguments": '{"command":"pytest -q"}',
+                    "success": None,
+                    "status": "running",
+                    "blocked": False,
+                    "result": "collected 3 items\nbackend/tests/test_example.py .",
+                    "duration_ms": 1234,
+                    "pid": 987,
+                    "tracked_process": {"token": "tracked-shell"},
+                    "tool_call_index": 0,
+                    "tool_call_id": "call-run-shell",
+                    "client_turn_id": "stream-turn",
+                    "run_id": task_run.id,
+                    "turn": 1,
+                },
+            )
+        ]
+        assert any(event["type"] == "tool_start" for event in events)
+        assert any(event["type"] == "tool_result" for event in events)
+        assert events[-1]["type"] == "turn_complete"
+        assert events[-1]["content"] == "Tests finished."
     finally:
         db.close()
 

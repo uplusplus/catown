@@ -317,7 +317,40 @@ async def iter_stream_orchestration_agent_turn_events(
     async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
         from tools import tool_registry
 
-        return await tool_registry.execute(tool_name, **tool_args, **runtime.runtime_kwargs)
+        async def emit_tool_progress(progress: dict[str, Any]) -> None:
+            await store_runtime_card(
+                chatroom_id,
+                {
+                    "type": "tool_call",
+                    "source": "chatroom",
+                    "agent": runtime.agent_label,
+                    "tool": tool_name,
+                    "arguments": tool_args_str,
+                    "success": None,
+                    "status": "running",
+                    "blocked": False,
+                    "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
+                    "duration_ms": progress.get("duration_ms"),
+                    "pid": progress.get("pid"),
+                    "tracked_process": progress.get("tracked_process"),
+                    "tool_call_index": tool_index,
+                    "tool_call_id": tool_call_id,
+                    "client_turn_id": client_turn_id,
+                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                    "turn": turn_index,
+                },
+            )
+
+        return await tool_registry.execute(
+            tool_name,
+            **tool_args,
+            **runtime.runtime_kwargs,
+            task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
+            client_turn_id=client_turn_id,
+            tool_call_id=tool_call_id,
+            turn=turn_index,
+            progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
+        )
 
     async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
         blocked_tool_result = getattr(frame, "blocked_tool_result", None)
