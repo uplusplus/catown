@@ -2003,6 +2003,13 @@ function prettyJson(value: string | undefined) {
   }
 }
 
+function fileReaderPreviewKind(path: string, content: string | undefined) {
+  const normalizedPath = path.toLowerCase();
+  if (/\.(md|mdx|markdown)$/.test(normalizedPath)) return "markdown";
+  if (/\.(json|jsonc|jsonl)$/.test(normalizedPath) && isJsonContent(content)) return "json";
+  return "raw";
+}
+
 function isJsonContent(value: string | undefined) {
   if (!value) return false;
   try {
@@ -2775,6 +2782,17 @@ function CopyTextButton({ content, title }: { content: string; title: string }) 
   );
 }
 
+function renderFileReaderPreview(path: string, content: string) {
+  const kind = fileReaderPreviewKind(path, content);
+  if (kind === "markdown") {
+    return renderMarkdownContent(content, "file-reader-card__rendered file-reader-card__rendered--markdown");
+  }
+  if (kind === "json") {
+    return <pre className="file-reader-card__content">{prettyJson(content)}</pre>;
+  }
+  return <pre className="file-reader-card__content">{content}</pre>;
+}
+
 function FileReaderCard({
   state,
   onClose,
@@ -2857,7 +2875,7 @@ function FileReaderCard({
           <div className="file-reader-card__body-meta">
             {lineCount} lines{state.saveMessage ? ` - ${state.saveMessage}` : ""}
           </div>
-          <pre className="file-reader-card__content">{resolvedContent}</pre>
+          {renderFileReaderPreview(path, resolvedContent)}
         </div>
       )}
     </article>

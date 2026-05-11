@@ -1770,6 +1770,19 @@ a {
   white-space: pre;
 }
 
+.file-reader-card__rendered {
+  max-height: min(52vh, 620px);
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 82%, black 18%);
+}
+
+.file-reader-card__rendered .message-markdown {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .file-reader-card__editor {
   width: 100%;
   min-height: min(52vh, 620px);
