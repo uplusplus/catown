@@ -281,6 +281,14 @@ type SystemPromptPresentation = {
   mode: "full" | "delta" | "unchanged";
 };
 
+type FailureStepAnalysisContext = {
+  message?: MessageItem;
+  taskRun?: TaskRunSummary;
+  taskRunDetail?: TaskRunDetail | null;
+};
+
+type FailureStepAnalysisHandler = (step: MessageStreamStep, context: FailureStepAnalysisContext) => void;
+
 type DecoratedChatCardItem = ChatCardItem & {
   systemPromptPresentation?: SystemPromptPresentation;
 };
@@ -1013,11 +1021,108 @@ function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail |
   });
 }
 
+function clipFailureAnalysisText(value: string | undefined | null, limit = 1800) {
+  const normalized = (value || "").trim();
+  if (!normalized) return "";
+  return normalized.length > limit ? `${normalized.slice(0, limit).trimEnd()}\n...[truncated]` : normalized;
+}
+
+function buildFailureStepAnalysisPrompt(step: MessageStreamStep, context: FailureStepAnalysisContext) {
+  const sections = [
+    `@${DEFAULT_AGENT_TYPE} 请分析下面这个失败 step 的原因，并给出可验证的排查步骤和修复建议。`,
+    [
+      "## 失败 Step",
+      `- Label: ${step.label}`,
+      `- State: ${step.state}`,
+      step.agent ? `- Agent: ${step.agent}` : "",
+      step.tool ? `- Tool: ${step.tool}` : "",
+      step.detail ? `- Detail: ${step.detail}` : "",
+    ].filter(Boolean).join("\n"),
+  ];
+
+  if (step.detailContent) {
+    sections.push(`## Step Detail\n\n${clipFailureAnalysisText(step.detailContent)}`);
+  }
+
+  if (context.message) {
+    sections.push(
+      [
+        "## Chat Message Context",
+        `- Message ID: ${context.message.id}`,
+        context.message.agent_name ? `- Message Agent: ${context.message.agent_name}` : "- Message Agent: user",
+        context.message.client_turn_id ? `- Client Turn ID: ${context.message.client_turn_id}` : "",
+        context.message.content ? `\n${clipFailureAnalysisText(context.message.content, 1200)}` : "",
+      ].filter(Boolean).join("\n"),
+    );
+  }
+
+  if (context.taskRun) {
+    sections.push(
+      [
+        "## Task Run Context",
+        `- Run ID: ${context.taskRun.id}`,
+        `- Title: ${context.taskRun.title}`,
+        `- Status: ${context.taskRun.status}`,
+        context.taskRun.target_agent_name ? `- Target Agent: ${context.taskRun.target_agent_name}` : "",
+        context.taskRun.client_turn_id ? `- Client Turn ID: ${context.taskRun.client_turn_id}` : "",
+        context.taskRun.summary ? `- Summary: ${context.taskRun.summary}` : "",
+      ].filter(Boolean).join("\n"),
+    );
+  }
+
+  const taskRunEvents = context.taskRunDetail?.events ?? [];
+  if (taskRunEvents.length > 0) {
+    sections.push(
+      `## Recent Task Events\n\n${clipFailureAnalysisText(
+        taskRunEvents
+          .slice(-6)
+          .map((event) => {
+            const bits = [
+              `${event.created_at || ""} ${event.event_type}`,
+              event.agent_name ? `agent=${event.agent_name}` : "",
+              event.summary || "",
+            ].filter(Boolean);
+            return `- ${bits.join(" | ")}`;
+          })
+          .join("\n"),
+        1600,
+      )}`,
+    );
+  }
+
+  sections.push("请重点说明最可能的根因、还需要查看哪些日志/配置、以及下一步应运行什么验证。");
+  return sections.join("\n\n");
+}
+
+function renderFailureStepAction(
+  step: MessageStreamStep,
+  context: FailureStepAnalysisContext,
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler,
+) {
+  if (step.state !== "error" || !onAnalyzeFailureStep) return null;
+
+  return (
+    <button
+      type="button"
+      className="message-stream-step__analysis"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onAnalyzeFailureStep(step, context);
+      }}
+      title="Ask Valet to analyze this failure"
+    >
+      Valet
+    </button>
+  );
+}
+
 function renderTaskRunTrace(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   expandedStepId: string | null,
   onToggleStep: (taskRunId: number, stepId: string) => void,
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const traceSteps = buildTaskRunTraceSteps(taskRun, detail);
   if (traceSteps.length === 0) return null;
@@ -1044,8 +1149,11 @@ function renderTaskRunTrace(
               <strong>{step.label}</strong>
               {step.detail ? <small>{step.detail}</small> : null}
             </span>
-            <span className="message-stream-step__toggle" aria-hidden="true">
-              ▸
+            <span className="message-stream-step__actions">
+              {renderFailureStepAction(step, { taskRun, taskRunDetail: detail }, onAnalyzeFailureStep)}
+              <span className="message-stream-step__toggle" aria-hidden="true">
+                ▸
+              </span>
             </span>
           </summary>
           {expandedStepId === step.id && (step.detailContent || step.detail) ? (
@@ -3044,6 +3152,7 @@ function renderMessage(
   expandedStepId: string | null,
   onToggleStep: (messageId: number, stepId: string) => void,
   fallbackCards: ThreadCard[] = [],
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const isAssistant = Boolean(message.agent_name);
   const sender = message.agent_name || "You";
@@ -3092,8 +3201,11 @@ function renderMessage(
                 return detail ? <small>{detail}</small> : null;
               })()}
             </span>
-            <span className="message-stream-step__toggle" aria-hidden="true">
-              ▸
+            <span className="message-stream-step__actions">
+              {renderFailureStepAction(step, { message }, onAnalyzeFailureStep)}
+              <span className="message-stream-step__toggle" aria-hidden="true">
+                ▸
+              </span>
             </span>
           </summary>
           {expandedStepId === step.id && (step.detailContent || step.detail) ? (
@@ -3175,6 +3287,7 @@ function renderTaskRunInlineCard(
   expandedStepId: string | null,
   onToggleStep: (taskRunId: number, stepId: string) => void,
   onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject", remember?: boolean) => Promise<void>,
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const pendingItems = approvalItems.filter((item) => (item.status || "").toLowerCase() === "pending");
   const pendingApprovalOverride = approvalQueueLoaded ? pendingItems.length : undefined;
@@ -3198,7 +3311,7 @@ function renderTaskRunInlineCard(
       }
     : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride);
   const actorName = resolveTaskRunActorName(taskRun, agents);
-  const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep);
+  const trace = renderTaskRunTrace(taskRun, detail, expandedStepId, onToggleStep, onAnalyzeFailureStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
     ? (taskRun.client_turn_id || "").trim().slice("delegate-".length)
@@ -3329,6 +3442,7 @@ type MessageRowProps = {
   expandedStepId: string | null;
   onToggleStep: (messageId: number, stepId: string) => void;
   fallbackStepCards: ThreadCard[];
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler;
 };
 
 const MessageRow = memo(
@@ -3339,8 +3453,9 @@ const MessageRow = memo(
     expandedStepId,
     onToggleStep,
     fallbackStepCards,
+    onAnalyzeFailureStep,
   }: MessageRowProps) {
-    return renderMessage(message, copiedMessageId, onCopyMessage, expandedStepId, onToggleStep, fallbackStepCards);
+    return renderMessage(message, copiedMessageId, onCopyMessage, expandedStepId, onToggleStep, fallbackStepCards, onAnalyzeFailureStep);
   },
   (prev, next) => {
     const prevIsCopied = prev.copiedMessageId === prev.message.id;
@@ -3349,6 +3464,7 @@ const MessageRow = memo(
       prev.message === next.message &&
       prev.expandedStepId === next.expandedStepId &&
       prev.fallbackStepCards === next.fallbackStepCards &&
+      prev.onAnalyzeFailureStep === next.onAnalyzeFailureStep &&
       prevIsCopied === nextIsCopied
     );
   },
@@ -4326,8 +4442,8 @@ export function ChatTab({
     return () => window.cancelAnimationFrame(frame);
   }, [chat?.id, loading, threadItems, localOverlayMessages]);
 
-  function submitDraft() {
-    const next = draft.trim();
+  function submitContent(rawContent: string) {
+    const next = rawContent.trim();
     if (!next || sending) return;
     const history = getDraftHistory();
     draftHistoryByChatRef.current[draftHistoryKey] =
@@ -4405,6 +4521,15 @@ export function ChatTab({
         });
       });
     });
+  }
+
+  function submitDraft() {
+    submitContent(draft);
+  }
+
+  function handleAnalyzeFailureStep(step: MessageStreamStep, context: FailureStepAnalysisContext) {
+    if (sending) return;
+    submitContent(buildFailureStepAnalysisPrompt(step, context));
   }
 
   function handleSubmit(event: FormEvent) {
@@ -4699,6 +4824,7 @@ export function ChatTab({
                     expandedStepId={resolveExpandedMessageStepId(item.message)}
                     onToggleStep={toggleMessageStep}
                     fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
+                    onAnalyzeFailureStep={handleAnalyzeFailureStep}
                   />
                 )
                 : item.kind === "activity_batch"
@@ -4725,6 +4851,7 @@ export function ChatTab({
                         expandedTaskRunSteps[item.taskRun.id] ?? null,
                         toggleTaskRunStep,
                         handleResolveApprovalQueueItem,
+                        handleAnalyzeFailureStep,
                       )
                     : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
           )}
@@ -4760,6 +4887,7 @@ export function ChatTab({
     expandedProgressCards,
     fallbackStepCardsByMessageId,
     gateActionPipelineId,
+    handleAnalyzeFailureStep,
     handleApproveGate,
     handleCopyMessage,
     handleRejectGate,
