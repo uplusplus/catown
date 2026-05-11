@@ -441,6 +441,41 @@ function ProcessIcon({ kind }: { kind: BrowserProcessEntry["kind"] }) {
   return kind === "command" ? <Shell size={15} /> : <Workflow size={15} />;
 }
 
+function browserFileTypeLabel(path: string) {
+  const normalized = normalizeBrowserPath(path).toLowerCase();
+  const name = browserPathBaseName(normalized);
+  if (name === "dockerfile" || name.endsWith(".dockerfile")) return "Dockerfile";
+  if (name === "makefile") return "Makefile";
+  if (name === ".gitignore") return "Git ignore";
+  if (name === ".env" || name.startsWith(".env.")) return "Environment";
+  if (name === "package.json") return "Node package";
+  if (name === "tsconfig.json") return "TypeScript config";
+  if (name === "vite.config.ts" || name === "vite.config.js") return "Vite config";
+  if (/\.(test|spec)\.(ts|tsx|js|jsx)$/.test(normalized)) return "Frontend test";
+  if (/\.(test|spec)\.py$|(^|\/)test_.*\.py$|_test\.py$/.test(normalized)) return "Python test";
+  if (/\.tsx$/.test(normalized)) return "React TypeScript";
+  if (/\.jsx$/.test(normalized)) return "React JavaScript";
+  if (/\.ts$/.test(normalized)) return "TypeScript";
+  if (/\.js$/.test(normalized)) return "JavaScript";
+  if (/\.py$/.test(normalized)) return "Python";
+  if (/\.sh$/.test(normalized)) return "Shell script";
+  if (/\.css$/.test(normalized)) return "CSS";
+  if (/\.html?$/.test(normalized)) return "HTML";
+  if (/\.mdx$/.test(normalized)) return "MDX";
+  if (/\.md$/.test(normalized)) return "Markdown";
+  if (/\.ya?ml$/.test(normalized)) return "YAML";
+  if (/\.json$/.test(normalized)) return "JSON";
+  if (/\.toml$/.test(normalized)) return "TOML";
+  if (/\.sql$/.test(normalized)) return "SQL";
+  if (/\.lock$/.test(normalized) || name.endsWith("-lock.json")) return "Lockfile";
+  if (/\.svg$/.test(normalized)) return "SVG";
+  if (/\.(png|jpe?g|gif|webp|ico)$/.test(normalized)) return "Image";
+  if (/\.pdf$/.test(normalized)) return "PDF";
+  if (/\.(zip|tar|tgz|gz)$/.test(normalized)) return "Archive";
+  if (/\.txt$/.test(normalized)) return "Text";
+  return "File";
+}
+
 function FileTreeIcon({ node }: { node: BrowserFileTreeNode }) {
   if (node.kind === "directory") return <Folder size={14} />;
   const path = normalizeBrowserPath(node.path).toLowerCase();
@@ -1393,13 +1428,16 @@ function buildBrowserFileEntries(project: ProjectSummary | null, cards: ChatCard
 
 function buildWorkspaceBrowserFileEntries(projectBrowserIndex: ProjectBrowserIndex | null) {
   if (!projectBrowserIndex) return [];
-  return projectBrowserIndex.files.map((file) => ({
-    id: `workspace-file:${file.path}`,
-    path: file.path,
-    source: "Workspace file",
-    detail: file.size === null || typeof file.size === "undefined" ? "Workspace file" : `${file.size} bytes`,
-    timestamp: typeof file.mtime === "number" ? new Date(file.mtime * 1000).toISOString() : undefined,
-  }));
+  return projectBrowserIndex.files.map((file) => {
+    const fileType = browserFileTypeLabel(file.path);
+    return {
+      id: `workspace-file:${file.path}`,
+      path: file.path,
+      source: fileType,
+      detail: file.size === null || typeof file.size === "undefined" ? fileType : `${fileType} - ${file.size} bytes`,
+      timestamp: typeof file.mtime === "number" ? new Date(file.mtime * 1000).toISOString() : undefined,
+    };
+  });
 }
 
 function mergeBrowserFileEntries(workspaceEntries: BrowserFileEntry[], runtimeEntries: BrowserFileEntry[], workspacePath?: string | null) {
