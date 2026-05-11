@@ -356,6 +356,57 @@ class TestToolRegistry:
         assert any("line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
+    async def test_run_shell_progress_tails_redirected_output(self, fresh_db, tmp_path, monkeypatch):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+        output_path = tmp_path / "pytest.log"
+        command = (
+            f'{sys.executable} -c "import time; '
+            "print(\'redirected line 1\', flush=True); "
+            "time.sleep(0.3); "
+            "print(\'redirected line 2\', flush=True)\" "
+            f"> {output_path} 2>&1"
+        )
+        monkeypatch.setattr("tools.run_shell.TAIL_PROGRESS_INTERVAL_SECONDS", 0.1)
+
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(title="Redirect progress chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            chatroom_id = chatroom.id
+            preference_key = build_run_shell_timeout_preference_key(command, ".")
+            save_wait_forever_preference(
+                db,
+                tool_name="run_shell",
+                preference_key=preference_key,
+                command_preview=f"{command} @ .",
+                chatroom_id=chatroom_id,
+            )
+        finally:
+            db.close()
+
+        progress_updates = []
+
+        async def progress_callback(payload):
+            progress_updates.append(payload)
+
+        result = await registry.execute(
+            "run_shell",
+            command=command,
+            timeout_seconds=1,
+            chatroom_id=chatroom_id,
+            __catown_approval_granted=True,
+            progress_callback=progress_callback,
+        )
+
+        assert result["success"] is True
+        assert "redirected line 1" in result["result"]
+        assert progress_updates
+        assert any("redirected line 1" in str(update.get("tail_output") or "") for update in progress_updates)
+
+    @pytest.mark.asyncio
     async def test_run_shell_timeout_waiting_returns_tracked_process_metadata(self, fresh_db, tmp_path):
         fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
         registry = ToolRegistry()

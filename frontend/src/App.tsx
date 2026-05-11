@@ -881,6 +881,13 @@ function patchMatchingStreamingStep(
   };
 }
 
+function findMatchingStreamStep(
+  message: MessageItem,
+  matcher: (step: MessageStreamStep) => boolean,
+) {
+  return [...(message.streamSteps ?? [])].reverse().find(matcher) ?? null;
+}
+
 function finalizeStreamingTrace(
   message: MessageItem,
   state: Extract<MessageStreamStep["state"], "done" | "error"> = "done",
@@ -1059,6 +1066,15 @@ function isRunningToolRuntimeCard(card: ChatCardItem) {
   if (card.kind !== "tool_call") return false;
   const status = (card.status || "").trim().toLowerCase();
   return status === "running" || status === "approval_blocked" || status === "timeout_waiting";
+}
+
+function streamStepHasToolOutput(step: MessageStreamStep | null | undefined) {
+  const detailContent = step?.detailContent || "";
+  return (
+    detailContent.includes("### Tool Result") ||
+    detailContent.includes("### Result") ||
+    detailContent.includes("### Error")
+  );
 }
 
 function streamStepStateFromRuntimeCard(card: ChatCardItem): MessageStreamStep["state"] {
@@ -1256,6 +1272,13 @@ function buildCardToolResultDetailContent(card: ChatCardItem) {
   return sections.join("\n\n");
 }
 
+function buildCardToolStepDetailContent(card: ChatCardItem) {
+  return [
+    buildCardToolCallDetailContent(card),
+    buildCardToolResultDetailContent(card),
+  ].filter(Boolean).join("\n\n");
+}
+
 function buildLlmResponseStepDetail(card: ChatCardItem) {
   const bits: string[] = [];
   const outcomeSummary = llmOutcomeSummary(card);
@@ -1284,6 +1307,10 @@ function buildToolResultStepDetail(card: ChatCardItem) {
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
   return bits.filter(Boolean).join(" · ");
+}
+
+function buildUnifiedToolStepDetail(card: ChatCardItem) {
+  return buildToolResultStepDetail(card) || buildToolCallStepDetail(card);
 }
 
 function buildCardStepDetail(card: ChatCardItem) {
@@ -1469,12 +1496,16 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
       const toolName = card.tool || "tool";
       const toolCallIndex = card.tool_call_index;
       const toolCallId = card.tool_call_id;
+      const existingStep = findMatchingStreamStep(message, (step) =>
+        isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
+      );
+      const shouldKeepExistingOutput = streamStepHasToolOutput(existingStep) && !card.result;
       const nextMessage = patchMatchingStreamingStep(
         message,
         (step) => isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
         {
-          detail: buildToolCallStepDetail(card),
-          detailContent: buildCardToolCallDetailContent(card),
+          detail: shouldKeepExistingOutput ? existingStep?.detail : buildUnifiedToolStepDetail(card),
+          detailContent: shouldKeepExistingOutput ? existingStep?.detailContent : buildCardToolStepDetailContent(card),
           state: streamStepStateFromRuntimeCard(card),
           kind: "tool_call",
           agent: actor,
@@ -1485,21 +1516,12 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
         toolCallStepLabel(actor, toolName),
       );
 
-      return patchMatchingStreamingStep(
-        nextMessage,
-        (step) => isActorToolResultStep(step, actor, toolName, toolCallIndex),
-        {
-          detail: buildToolResultStepDetail(card),
-          detailContent: buildCardToolResultDetailContent(card),
-          state: "done",
-          kind: "tool_result_to_llm",
-          agent: actor,
-          tool: toolName,
-          toolCallIndex,
-          toolCallId,
-        },
-        toolOutputStepLabel(actor, toolName),
-      );
+      return {
+        ...nextMessage,
+        streamSteps: (nextMessage.streamSteps ?? []).filter(
+          (step) => !isActorToolResultStep(step, actor, toolName, toolCallIndex),
+        ),
+      };
     }
     case "agent_error": {
       return pushStreamingStep(
@@ -1637,14 +1659,21 @@ function taskRunContinuationToolName(taskRun: TaskRunSummary) {
   return blockedTool && typeof blockedTool["tool_name"] === "string" ? String(blockedTool["tool_name"]) : null;
 }
 
-function latestTaskRunDetailEvent(taskRun: TaskRunSummary | TaskRunDetail) {
-  return "events" in taskRun && Array.isArray(taskRun.events) && taskRun.events.length > 0
-    ? taskRun.events[taskRun.events.length - 1]
-    : null;
+function taskRunDetailEvents(taskRun: TaskRunSummary | TaskRunDetail) {
+  return "events" in taskRun && Array.isArray(taskRun.events) ? taskRun.events : [];
+}
+
+function latestTaskRunDetailEvent(taskRun: TaskRunSummary | TaskRunDetail, options?: { skipCompaction?: boolean }) {
+  const events = taskRunDetailEvents(taskRun);
+  if (events.length === 0) return null;
+  if (options?.skipCompaction) {
+    return [...events].reverse().find((event) => event.event_type !== "context_compaction") ?? events[events.length - 1];
+  }
+  return events[events.length - 1];
 }
 
 function latestTaskRunToolResult(taskRun: TaskRunSummary | TaskRunDetail) {
-  const events = "events" in taskRun && Array.isArray(taskRun.events) ? taskRun.events : [];
+  const events = taskRunDetailEvents(taskRun);
   const toolRoundEvent = [...events].reverse().find((event) => event.event_type === "tool_round_recorded");
   const turnLocalState = toolRoundEvent?.payload?.turn_local_state;
   if (!turnLocalState || typeof turnLocalState !== "object") return null;
@@ -1655,7 +1684,7 @@ function latestTaskRunToolResult(taskRun: TaskRunSummary | TaskRunDetail) {
 }
 
 function taskRunLatestEventType(taskRun: TaskRunSummary | TaskRunDetail) {
-  const latestEvent = latestTaskRunDetailEvent(taskRun);
+  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
   return (
     latestEvent?.event_type ||
     taskRun.latest_event_type ||
@@ -1667,9 +1696,70 @@ function taskRunLatestEventType(taskRun: TaskRunSummary | TaskRunDetail) {
   ).toLowerCase();
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatInlineSourceList(values: string[]) {
+  return values.length > 0 ? values.map((value) => `\`${value}\``).join(", ") : "none";
+}
+
+function buildContextCompactionStepDetail(payload: Record<string, unknown> | null, fallbackSummary?: string | null) {
+  const diagnostics = readRecord(payload?.selector_diagnostics);
+  if (!diagnostics) return { detail: fallbackSummary || "Context was compacted.", detailContent: fallbackSummary || "" };
+
+  const selector = readRecord(diagnostics.selector);
+  const summary = readRecord(diagnostics.summary);
+  const developer = readRecord(diagnostics.developer);
+  const user = readRecord(diagnostics.user);
+  const maxFragments = readNumber(selector?.max_fragments);
+  const maxTokens = readNumber(selector?.max_tokens);
+  const candidateCount = readNumber(summary?.candidate_count);
+  const selectedCount = readNumber(summary?.selected_count);
+  const droppedCount = readNumber(summary?.dropped_count) ?? 0;
+  const truncatedCount = readNumber(summary?.truncated_count) ?? 0;
+  const candidateTokens = readNumber(summary?.candidate_tokens);
+  const selectedTokens = readNumber(summary?.selected_tokens);
+  const droppedSources = [
+    ...readStringArray(developer?.dropped_sources),
+    ...readStringArray(user?.dropped_sources),
+  ];
+  const truncatedSources = [
+    ...readStringArray(developer?.truncated_sources),
+    ...readStringArray(user?.truncated_sources),
+  ];
+  const budget = [
+    maxFragments !== null ? `${maxFragments} fragments` : "",
+    maxTokens !== null ? `${maxTokens} tokens` : "",
+  ].filter(Boolean).join(" / ");
+  const detail = [
+    candidateCount !== null && selectedCount !== null ? `${candidateCount} -> ${selectedCount} fragments` : "",
+    candidateTokens !== null && selectedTokens !== null ? `${candidateTokens} -> ${selectedTokens} tokens` : "",
+    `${droppedCount} dropped`,
+    `${truncatedCount} truncated`,
+  ].filter(Boolean).join(" · ");
+  const detailContent = [
+    fallbackSummary ? `### Summary\n\n${fallbackSummary}` : "",
+    `### Why\n\nThe context selector compacted the prompt${budget ? ` to fit the ${budget} budget` : ""}.`,
+    [
+      "### What Changed",
+      "",
+      `- Dropped sources: ${formatInlineSourceList(droppedSources)}`,
+      `- Truncated sources: ${formatInlineSourceList(truncatedSources)}`,
+      developer ? `- Developer context: ${readNumber(developer.selected_count) ?? "?"}/${readNumber(developer.candidate_count) ?? "?"} selected, ${readNumber(developer.selected_tokens) ?? "?"}/${readNumber(developer.candidate_tokens) ?? "?"} tokens` : "",
+      user ? `- User context: ${readNumber(user.selected_count) ?? "?"}/${readNumber(user.candidate_count) ?? "?"} selected, ${readNumber(user.selected_tokens) ?? "?"}/${readNumber(user.candidate_tokens) ?? "?"} tokens` : "",
+    ].filter(Boolean).join("\n"),
+  ].filter(Boolean).join("\n\n");
+  return { detail, detailContent };
+}
+
 function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSummary | TaskRunDetail) {
   const actor = taskRunActorName(taskRun, message.agent_name);
-  const latestEvent = latestTaskRunDetailEvent(taskRun);
+  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
   const latestPayload = latestEvent?.payload && typeof latestEvent.payload === "object"
     ? latestEvent.payload
     : null;
@@ -1711,12 +1801,12 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
 
   if (eventType === "tool_round_recorded" || eventType === "approval_queue_item_followup_triggered") {
     return {
-      label: toolName ? `Tool Output · ${actor} · ${toolName}` : `Tool Output · ${actor}`,
+      label: toolName ? `${actor} calls ${toolName}` : `${actor} calls a tool`,
       detail:
         statusSummary ||
         summarizeStepDetail(latestToolResultText, 140) ||
-        (toolName ? `Handing ${toolName} result back to ${actor}.` : `Handing the latest tool result back to ${actor}.`),
-      kind: "tool_result_to_llm" as const,
+        (toolName ? `${toolName} finished.` : "Tool finished."),
+      kind: "tool_call" as const,
       tool: toolName || undefined,
     };
   }
@@ -1725,6 +1815,17 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
     return {
       label: `LLM -> ${actor}`,
       detail: statusSummary || `${actor} is waiting for the next model response.`,
+      kind: "llm_inbound" as const,
+      tool: undefined,
+    };
+  }
+
+  if (eventType === "context_compaction") {
+    const compaction = buildContextCompactionStepDetail(latestPayload, statusSummary);
+    return {
+      label: `${actor} is compacting context`,
+      detail: compaction.detail,
+      detailContent: compaction.detailContent,
       kind: "llm_inbound" as const,
       tool: undefined,
     };
@@ -1742,7 +1843,8 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
   return {
     label: toolName ? `${actor} continues with ${toolName}` : `${actor} is continuing`,
     detail: statusSummary || (toolName ? `${actor} is continuing after ${toolName}.` : undefined),
-    kind: toolName ? ("tool_result_to_llm" as const) : ("llm_inbound" as const),
+    detailContent: undefined,
+    kind: toolName ? ("tool_call" as const) : ("llm_inbound" as const),
     tool: toolName || undefined,
   };
 }
@@ -1767,6 +1869,7 @@ function updateRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRu
     {
       label: step.label,
       detail: step.detail,
+      detailContent: step.detailContent,
       state: "live",
       kind: step.kind,
       agent: actor,
@@ -3328,16 +3431,20 @@ function App() {
               const waitStatus = elapsedText ? `Running tool · ${elapsedText}` : "Running tool";
               const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
               commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) =>
-                  patchMatchingStreamingStep(
+                updateMessage(current, readAssistantMessageId(), (message) => {
+                  const existingStep = findMatchingStreamStep(message, (step) =>
+                    isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
+                  );
+                  const shouldKeepExistingOutput = streamStepHasToolOutput(existingStep);
+                  return patchMatchingStreamingStep(
                     {
                       ...message,
                       agent_name: message.agent_name || activeAgentName,
                     },
                     (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
-                      detail: waitStatus,
-                      detailContent: buildLiveToolCallDetailContent(rawToolArgs, waitStatus),
+                      detail: shouldKeepExistingOutput ? existingStep?.detail : waitStatus,
+                      detailContent: shouldKeepExistingOutput ? existingStep?.detailContent : buildLiveToolCallDetailContent(rawToolArgs, waitStatus),
                       state: "live",
                       kind: "tool_call",
                       agent: activeAgentName,
@@ -3346,8 +3453,8 @@ function App() {
                       toolCallId,
                     },
                     toolCallStepLabel(activeAgentName, toolName),
-                  ),
-                ),
+                  );
+                }),
               );
             }
             break;
@@ -3359,6 +3466,7 @@ function App() {
               const toolName = data.tool;
               const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
+              const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
               liveToolArgs.delete(buildToolWaitKey(activeAgentName, toolCallIndex, toolName));
               const rawResult = typeof data.result === "string" ? data.result : "";
               const blockedKind = typeof data.blocked_kind === "string" ? data.blocked_kind.trim().toLowerCase() : "";
@@ -3374,10 +3482,15 @@ function App() {
                   : `${toolName} completed.`;
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
-                  const nextMessage = patchMatchingStreamingStep(
+                  return patchMatchingStreamingStep(
                     message,
                     (step) => isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
+                      detail: resultPreview,
+                      detailContent: [
+                        buildLiveToolCallDetailContent(rawToolArgs),
+                        buildToolResultToLlmDetailContent(rawResult, failed),
+                      ].filter(Boolean).join("\n\n"),
                       state: failed ? "error" : "done",
                       kind: "tool_call",
                       agent: activeAgentName,
@@ -3386,21 +3499,6 @@ function App() {
                       toolCallId,
                     },
                     toolCallStepLabel(activeAgentName, toolName),
-                  );
-
-                  return pushStreamingStep(
-                    nextMessage,
-                    toolOutputStepLabel(activeAgentName, toolName),
-                    resultPreview,
-                    "live",
-                    buildToolResultToLlmDetailContent(rawResult, failed),
-                    {
-                      kind: "tool_result_to_llm",
-                      agent: activeAgentName,
-                      tool: toolName,
-                      toolCallIndex,
-                      toolCallId,
-                    },
                   );
                 }),
               );

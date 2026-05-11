@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -80,6 +81,7 @@ def create_tracked_run_shell_handle(
         "finished_at": None,
         "exit_code": None,
         "last_result_preview": None,
+        "redirected_log_path": _detect_redirected_output_path(command, cwd),
     }
     _write_record(record)
     return _public_handle(record)
@@ -253,8 +255,8 @@ def read_tracked_run_shell_tail(record_or_handle: Any, *, max_chars: int = DEFAU
     record = record_or_handle if isinstance(record_or_handle, dict) else load_tracked_run_shell_handle(record_or_handle)
     if not isinstance(record, dict):
         return ""
-    log_path = Path(str(record.get("log_path") or "")).expanduser()
-    if not log_path.exists():
+    log_path = _resolve_readable_tail_path(record)
+    if log_path is None:
         return ""
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -264,6 +266,18 @@ def read_tracked_run_shell_tail(record_or_handle: Any, *, max_chars: int = DEFAU
     if max_chars > 0 and len(text) > max_chars:
         return text[-max_chars:]
     return text
+
+
+def _resolve_readable_tail_path(record: dict[str, Any]) -> Path | None:
+    log_path = Path(str(record.get("log_path") or "")).expanduser()
+    if log_path.exists() and _path_has_content(log_path):
+        return log_path
+
+    redirected_log_path = Path(str(record.get("redirected_log_path") or "")).expanduser()
+    if redirected_log_path.exists() and _safe_redirected_output_path(record, redirected_log_path):
+        return redirected_log_path
+
+    return log_path if log_path.exists() else None
 
 
 def run_tracked_run_shell_worker(state_path: str) -> int:
@@ -401,6 +415,54 @@ def _append_bounded_log(log_path: Path, chunk: bytes, *, max_bytes: int = DEFAUL
         log_file.seek(max(0, current_size - max_bytes))
         tail = log_file.read(max_bytes)
     log_path.write_bytes(tail)
+
+
+def _path_has_content(path: Path) -> bool:
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _detect_redirected_output_path(command: str, cwd: str) -> str | None:
+    try:
+        tokens = shlex.split(str(command or ""), posix=True)
+    except ValueError:
+        return None
+
+    for index, token in enumerate(tokens):
+        path_token: str | None = None
+        if token in {">", "1>", ">>", "1>>"} and index + 1 < len(tokens):
+            path_token = tokens[index + 1]
+        elif token.startswith((">", "1>", ">>", "1>>")) and len(token.lstrip("1>")) > 0:
+            path_token = token.lstrip("1>")
+
+        if not path_token:
+            continue
+        if path_token.startswith("&"):
+            continue
+        path = Path(path_token)
+        if not path.is_absolute():
+            path = Path(str(cwd or ".")).expanduser() / path
+        return str(path.expanduser().resolve())
+
+    return None
+
+
+def _safe_redirected_output_path(record: dict[str, Any], path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return False
+
+    allowed_roots = [Path(str(record.get("cwd") or ".")).expanduser().resolve(), Path("/tmp").resolve()]
+    for root in allowed_roots:
+        try:
+            if os.path.commonpath([str(root), str(resolved)]) == str(root):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _public_handle(record: dict[str, Any]) -> dict[str, Any]:

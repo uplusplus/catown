@@ -1639,6 +1639,11 @@ function resolveTaskRunActorName(taskRun: TaskRunSummary, agents: AgentInfo[]) {
 }
 
 function buildTaskRunTraceDetailContent(event: TaskRunEvent) {
+  if (event.event_type === "context_compaction") {
+    const compactionDetail = buildContextCompactionDetail(event.payload, event.summary);
+    if (compactionDetail) return compactionDetail;
+  }
+
   const sections = [markdownSection("Event", formatTaskRunEventType(event.event_type), { asMarkdown: true })];
   if (event.summary?.trim()) {
     sections.push(markdownSection("Summary", event.summary, { asMarkdown: true }));
@@ -1653,16 +1658,105 @@ function buildTaskRunTraceDetailContent(event: TaskRunEvent) {
   return sections.join("\n\n");
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function formatSourceList(values: string[]) {
+  return values.length > 0 ? values.map((value) => `\`${value}\``).join(", ") : "none";
+}
+
+function buildContextCompactionDetail(payload: Record<string, unknown> | undefined, fallbackSummary?: string | null) {
+  const root = readRecord(payload);
+  const diagnostics = readRecord(root?.selector_diagnostics);
+  if (!diagnostics) return "";
+
+  const selector = readRecord(diagnostics.selector);
+  const summary = readRecord(diagnostics.summary);
+  const developer = readRecord(diagnostics.developer);
+  const user = readRecord(diagnostics.user);
+
+  const maxFragments = readNumber(selector?.max_fragments);
+  const maxTokens = readNumber(selector?.max_tokens);
+  const candidateCount = readNumber(summary?.candidate_count);
+  const selectedCount = readNumber(summary?.selected_count);
+  const droppedCount = readNumber(summary?.dropped_count) ?? 0;
+  const truncatedCount = readNumber(summary?.truncated_count) ?? 0;
+  const candidateTokens = readNumber(summary?.candidate_tokens);
+  const selectedTokens = readNumber(summary?.selected_tokens);
+  const developerDropped = readStringArray(developer?.dropped_sources);
+  const developerTruncated = readStringArray(developer?.truncated_sources);
+  const userDropped = readStringArray(user?.dropped_sources);
+  const userTruncated = readStringArray(user?.truncated_sources);
+  const droppedSources = [...developerDropped, ...userDropped];
+  const truncatedSources = [...developerTruncated, ...userTruncated];
+
+  const budget = [
+    maxFragments !== null ? `${maxFragments} fragments` : "",
+    maxTokens !== null ? `${maxTokens} tokens` : "",
+  ].filter(Boolean).join(" / ");
+  const candidateText = candidateCount !== null && selectedCount !== null
+    ? `${candidateCount} candidate fragments were reduced to ${selectedCount} selected fragments`
+    : "The context selector reduced the prompt context";
+  const tokenText = candidateTokens !== null && selectedTokens !== null
+    ? `Token estimate changed from ${candidateTokens} to ${selectedTokens}.`
+    : "";
+
+  const sections = [
+    markdownSection(
+      "Why",
+      [
+        `${candidateText}${budget ? ` to fit the ${budget} budget` : ""}.`,
+        `${droppedCount} source${droppedCount === 1 ? "" : "s"} dropped; ${truncatedCount} source${truncatedCount === 1 ? "" : "s"} truncated.`,
+        tokenText,
+      ].filter(Boolean).join("\n\n"),
+      { asMarkdown: true },
+    ),
+    markdownSection(
+      "What Changed",
+      [
+        `- Dropped sources: ${formatSourceList(droppedSources)}`,
+        `- Truncated sources: ${formatSourceList(truncatedSources)}`,
+        developer ? `- Developer context: ${readNumber(developer.selected_count) ?? "?"}/${readNumber(developer.candidate_count) ?? "?"} selected, ${readNumber(developer.selected_tokens) ?? "?"}/${readNumber(developer.candidate_tokens) ?? "?"} tokens` : "",
+        user ? `- User context: ${readNumber(user.selected_count) ?? "?"}/${readNumber(user.candidate_count) ?? "?"} selected, ${readNumber(user.selected_tokens) ?? "?"}/${readNumber(user.candidate_tokens) ?? "?"} tokens` : "",
+      ].filter(Boolean).join("\n"),
+      { asMarkdown: true },
+    ),
+  ];
+  if (fallbackSummary?.trim()) {
+    sections.unshift(markdownSection("Summary", fallbackSummary, { asMarkdown: true }));
+  }
+  return sections.join("\n\n");
+}
+
 function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail | null): MessageStreamStep[] {
   const events = detail?.events ?? [];
   const recentEvents = events.slice(-6);
   const isRunning = (taskRun.status || "").toLowerCase() === "running";
+  const latestActiveEventId =
+    [...recentEvents].reverse().find((event) => event.event_type !== "context_compaction")?.id ??
+    recentEvents[recentEvents.length - 1]?.id ??
+    null;
+  const displayEvents =
+    isRunning && latestActiveEventId !== null && recentEvents[recentEvents.length - 1]?.id !== latestActiveEventId
+      ? [
+          ...recentEvents.filter((event) => event.id !== latestActiveEventId),
+          recentEvents.find((event) => event.id === latestActiveEventId),
+        ].filter((event): event is TaskRunEvent => Boolean(event))
+      : recentEvents;
 
-  return recentEvents.map((event, index) => {
-    const isLatest = index === recentEvents.length - 1;
+  return displayEvents.map((event) => {
     const tone = taskRunEventTone(event.event_type);
     const state: MessageStreamStep["state"] =
-      isLatest && isRunning
+      event.id === latestActiveEventId && isRunning
         ? "live"
         : tone === "error"
           ? "error"
@@ -1793,7 +1887,8 @@ function renderTaskRunTrace(
   const traceSteps = buildTaskRunTraceSteps(taskRun, detail);
   if (traceSteps.length === 0) return null;
   const currentStepId = [...traceSteps].reverse().find((step) => step.state === "live")?.id ?? traceSteps[traceSteps.length - 1]?.id ?? null;
-  const resolvedExpandedStepId = expandedStepId ?? currentStepId;
+  const resolvedExpandedStepId =
+    expandedStepId && traceSteps.some((step) => step.id === expandedStepId) ? expandedStepId : currentStepId;
 
   return (
     <div className="message-stream-trace message-stream-trace--task-run">
@@ -2533,20 +2628,13 @@ function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: n
         {
           id: `${messageId}-card-${card.id}-${index}-tool`,
           label: toolCallStepLabel(actor, toolName),
-          detail: card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool.",
-          detailContent: messageToolCallDetailFromCard(card),
+          detail: compactCardSummary(card) || (card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool."),
+          detailContent: [
+            messageToolCallDetailFromCard(card),
+            messageToolResultDetailFromCard(card),
+          ].filter(Boolean).join("\n\n"),
           state: messageStepStateFromCard(card),
           kind: "tool_call",
-          agent: actor,
-          tool: toolName,
-        },
-        {
-          id: `${messageId}-card-${card.id}-${index}-tool-result`,
-          label: toolOutputStepLabel(actor, toolName),
-          detail: compactCardSummary(card),
-          detailContent: messageToolResultDetailFromCard(card),
-          state: "done",
-          kind: "tool_result_to_llm",
           agent: actor,
           tool: toolName,
         },
@@ -3833,7 +3921,8 @@ function renderMessage(
   const hasStreamSteps = streamSteps.length > 0;
   const currentStreamStepId =
     [...streamSteps].reverse().find((step) => step.state === "live")?.id ?? streamSteps[streamSteps.length - 1]?.id ?? null;
-  const resolvedExpandedStepId = expandedStepId ?? currentStreamStepId;
+  const resolvedExpandedStepId =
+    expandedStepId && streamSteps.some((step) => step.id === expandedStepId) ? expandedStepId : currentStreamStepId;
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
   const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
@@ -3890,6 +3979,10 @@ function renderMessage(
                     className: "message-stream-step__detail-content llm-exchange-stack",
                   });
                   return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+                }
+
+                if (step.kind === "tool_call") {
+                  return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
                 }
 
                 if (step.state === "live") {
