@@ -1849,12 +1849,18 @@ a {
 .artifact-row {
   min-width: 0;
   height: 28px;
+  width: 100%;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) minmax(0, auto);
   align-items: center;
   gap: 6px;
   padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
 
 .artifact-row:hover {

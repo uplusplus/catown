@@ -411,6 +411,7 @@ type BrowserArtifactEntry = {
   id: string;
   name: string;
   type: string;
+  path?: string;
   stage: string;
   detail: string;
   status: string;
@@ -1530,6 +1531,7 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `artifact-path:${card.id}:${path}`,
         name: artifactDisplayName(path),
         type: artifactType,
+        path,
         stage: card.stage || card.tool || card.kind,
         detail: path,
         status: isToolCardFailure(card) ? "needs review" : "referenced",
@@ -1546,6 +1548,7 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `run-artifact:${run.id}:${path}`,
         name: artifactDisplayName(path),
         type: artifactType,
+        path,
         stage: formatTaskRunKind(run.run_kind),
         detail: path,
         status: formatTaskRunStatus(run.status),
@@ -1565,6 +1568,7 @@ function buildWorkspaceBrowserArtifactEntries(projectBrowserIndex: ProjectBrowse
     id: `workspace-artifact:${artifact.path}`,
     name: artifact.name || artifactDisplayName(artifact.path),
     type: artifact.type,
+    path: artifact.path,
     stage: "Workspace",
     detail: artifact.path,
     status: "file",
@@ -4573,23 +4577,33 @@ export function ChatTab({
   const toggleFileTreePath = useCallback((path: string) => {
     setExpandedFileTreePaths((current) => ({ ...current, [path]: !current[path] }));
   }, []);
-  const openFileReader = useCallback(async (node: BrowserFileTreeNode) => {
-    if (!project?.id || node.kind !== "file") return;
-    setFileReader({ path: node.path, status: "loading" });
+  const openProjectFilePath = useCallback(async (path: string) => {
+    if (!project?.id || !path.trim()) return;
+    shouldStickThreadToBottomRef.current = true;
+    setFileReader({ path, status: "loading" });
     try {
-      const data = await api.readProjectFile(project.id, node.path);
+      const data = await api.readProjectFile(project.id, path);
       setFileReader({ path: data.path, status: "ready", data });
       requestAnimationFrame(() => {
-        threadRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+        threadEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
       });
     } catch (error) {
       setFileReader({
-        path: node.path,
+        path,
         status: "error",
         error: error instanceof Error ? error.message : "Unable to read file.",
       });
     }
   }, [project?.id]);
+  const openFileReader = useCallback((node: BrowserFileTreeNode) => {
+    if (node.kind !== "file") return;
+    void openProjectFilePath(node.path);
+  }, [openProjectFilePath]);
+  const openArtifactReader = useCallback((entry: BrowserArtifactEntry) => {
+    const path = entry.path || entry.detail;
+    if (!path) return;
+    void openProjectFilePath(path);
+  }, [openProjectFilePath]);
   const saveFileReaderDraft = useCallback(async () => {
     if (!project?.id || !fileReader?.data || fileReader.mode !== "edit") return;
     const content = fileReader.draft ?? "";
@@ -6348,14 +6362,20 @@ export function ChatTab({
                             <strong>{group.items.length}</strong>
                           </summary>
                           {group.items.map((entry) => (
-                            <article key={entry.id} className="artifact-row" title={entry.detail || entry.name}>
+                            <button
+                              key={entry.id}
+                              type="button"
+                              className="artifact-row"
+                              title={entry.detail || entry.name}
+                              onClick={() => openArtifactReader(entry)}
+                            >
                               <span className="artifact-row__icon" aria-hidden="true"><ArtifactIcon type={entry.type} /></span>
                               <span className="artifact-row__name">{entry.name}</span>
                               <span className="artifact-row__meta">
                                 <span>{entry.status}</span>
                                 {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
                               </span>
-                            </article>
+                            </button>
                           ))}
                         </details>
                       ))}
