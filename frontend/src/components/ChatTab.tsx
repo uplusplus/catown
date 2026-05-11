@@ -26,6 +26,7 @@ import type {
   AgentInfo,
   ChatCardItem,
   ChatEventItem,
+  ChatProcessEntry,
   ChatSummary,
   MessageItem,
   MessageStreamStep,
@@ -305,6 +306,7 @@ type ChatTabProps = {
   optimisticMessages: MessageItem[];
   cards: ChatCardItem[];
   taskRuns: TaskRunSummary[];
+  processes: ChatProcessEntry[];
   projectBrowserIndex: ProjectBrowserIndex | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   taskActivitiesById: Record<number, TaskActivityProjection>;
@@ -414,30 +416,6 @@ type BrowserArtifactEntry = {
   status: string;
   timestamp?: string;
 };
-type BrowserProcessEntry = {
-  id: string;
-  command: string;
-  kind: "command" | "task";
-  detail: string;
-  timestamp?: string;
-  pid?: number;
-  output?: string;
-};
-
-function isRunningBrowserShellProcess(card: ChatCardItem) {
-  const tool = (card.tool || "").trim().toLowerCase();
-  const status = (card.status || "").trim().toLowerCase();
-  return tool === "run_shell" && status === "running" && !isInternalToolPause(card);
-}
-
-function isRunningBrowserTaskRun(run: TaskRunSummary) {
-  if ((run.status || "").trim().toLowerCase() !== "running") return false;
-  if (shouldRenderInlineTaskRun(run)) return false;
-  if (Number(run.pending_approval_count || 0) > 0) return false;
-  const blockedKind = String(run.continuation_cursor?.blocked_kind || "").trim().toLowerCase();
-  return blockedKind !== "approval" && blockedKind !== "timeout";
-}
-
 function ArtifactIcon({ type }: { type: string }) {
   const normalized = type.trim().toLowerCase();
   if (normalized === "adr") return <ScrollText size={14} />;
@@ -450,7 +428,7 @@ function ArtifactIcon({ type }: { type: string }) {
   return <Boxes size={14} />;
 }
 
-function ProcessIcon({ kind }: { kind: BrowserProcessEntry["kind"] }) {
+function ProcessIcon({ kind }: { kind: ChatProcessEntry["kind"] }) {
   return kind === "command" ? <Shell size={15} /> : <Workflow size={15} />;
 }
 
@@ -1631,40 +1609,6 @@ function groupBrowserArtifactEntries(entries: BrowserArtifactEntry[]) {
       if (left.latestTimestamp !== right.latestTimestamp) return right.latestTimestamp - left.latestTimestamp;
       return left.type.localeCompare(right.type);
     });
-}
-
-function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
-  const entries: BrowserProcessEntry[] = [];
-
-  cards
-    .filter(isRunningBrowserShellProcess)
-    .forEach((card) => {
-      const command = readShellCommandPreview(card.arguments) || card.display_name || "run_shell";
-      entries.push({
-        id: `shell:${card.id}`,
-        command,
-        kind: "command",
-        detail: card.summary || oneLinePreview(card.result, "Shell process is running.", 140),
-        timestamp: card.created_at,
-        pid: card.pid,
-        output: trimShellOutputTail(card.result),
-      });
-    });
-
-  taskRuns.forEach((run) => {
-    if (!isRunningBrowserTaskRun(run)) return;
-    entries.push({
-      id: `task-run:${run.id}`,
-      command: run.title,
-      kind: "task",
-      detail: run.summary || run.user_request || `${run.event_count} events`,
-      timestamp: run.updated_at || run.created_at || undefined,
-    });
-  });
-
-  return dedupeById(entries)
-    .sort((left, right) => new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime())
-    .slice(0, 12);
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -4455,6 +4399,7 @@ export function ChatTab({
   optimisticMessages,
   cards,
   taskRuns,
+  processes,
   projectBrowserIndex,
   liveTaskRunDetailsById,
   taskActivitiesById,
@@ -4620,10 +4565,7 @@ export function ChatTab({
     () => groupBrowserArtifactEntries(browserArtifactEntries),
     [browserArtifactEntries],
   );
-  const browserProcessEntries = useMemo(
-    () => buildBrowserProcessEntries(cards, taskRuns),
-    [cards, taskRuns],
-  );
+  const browserProcessEntries = processes;
   useEffect(() => {
     const nextExpanded: Record<string, boolean> = { [browserFileTree.path]: true };
     setExpandedFileTreePaths((current) => ({ ...nextExpanded, ...current }));

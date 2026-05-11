@@ -16,6 +16,7 @@ import type {
   ChatCardLlmTimings,
   ChatEventItem,
   ChatEventTone,
+  ChatProcessEntry,
   ChatSummary,
   ConfigSection,
   ConfigResponse,
@@ -2076,6 +2077,7 @@ function App() {
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [chatCards, setChatCards] = useState<ChatCardItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
+  const [chatProcesses, setChatProcesses] = useState<ChatProcessEntry[]>([]);
   const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [taskActivitiesById, setTaskActivitiesById] = useState<Record<number, TaskActivityProjection>>({});
@@ -2213,6 +2215,18 @@ function App() {
     }
   }
 
+  async function loadOptionalChatProcesses(chatId: number, options: { silent?: boolean } = {}) {
+    try {
+      return await api.getChatProcesses(chatId);
+    } catch (nextError) {
+      if (!options.silent) {
+        const message = nextError instanceof Error ? nextError.message : "Failed to load processes";
+        pushEvent(`Process list unavailable: ${message}`, "warning");
+      }
+      return [];
+    }
+  }
+
   useEffect(() => {
     if (!error) return undefined;
 
@@ -2223,7 +2237,8 @@ function App() {
   useEffect(() => {
     if (!bootstrapped || !selectedChatId) return undefined;
     const activeRuns = taskRuns.filter(shouldPollTaskActivity);
-    if (activeRuns.length === 0) return undefined;
+    const hasRunningProcesses = chatProcesses.length > 0;
+    if (activeRuns.length === 0 && !hasRunningProcesses) return undefined;
 
     let cancelled = false;
     let inFlight = false;
@@ -2232,9 +2247,13 @@ function App() {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const entries = await loadOptionalTaskActivities(activeRuns, { silent: true });
+        const [entries, processRows] = await Promise.all([
+          activeRuns.length > 0 ? loadOptionalTaskActivities(activeRuns, { silent: true }) : Promise.resolve([]),
+          loadOptionalChatProcesses(selectedChatId, { silent: true }),
+        ]);
         if (!cancelled) {
           mergeTaskActivities(entries);
+          setChatProcesses(processRows);
         }
       } finally {
         inFlight = false;
@@ -2250,7 +2269,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [bootstrapped, selectedChatId, taskRuns]);
+  }, [bootstrapped, selectedChatId, taskRuns, chatProcesses.length]);
 
   function nextTempMessageId() {
     const nextId = tempMessageIdRef.current;
@@ -2542,6 +2561,7 @@ function App() {
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
       setTaskRuns([]);
+      setChatProcesses([]);
       setProjectBrowserIndex(null);
       setLiveTaskRunDetailsById({});
       setTaskActivitiesById({});
@@ -2558,13 +2578,15 @@ function App() {
         setError("");
         setMessages([]);
         setChatCards([]);
+        setChatProcesses([]);
         setChatEvents([]);
         setLiveTaskRunDetailsById({});
         setTaskActivitiesById({});
-        const [rows, runtimeRows, taskRunRows] = await Promise.all([
+        const [rows, runtimeRows, taskRunRows, processRows] = await Promise.all([
           api.getMessages(activeChatId),
           loadOptionalRuntimeCards(activeChatId),
           loadOptionalTaskRuns(activeChatId),
+          loadOptionalChatProcesses(activeChatId),
         ]);
         if (!cancelled) {
           const nextCards = runtimeRows
@@ -2573,6 +2595,7 @@ function App() {
           setMessages(rows);
           setChatCards(nextCards);
           setTaskRuns(taskRunRows);
+          setChatProcesses(processRows);
           setLiveTaskRunDetailsById({});
           void loadOptionalTaskActivities(taskRunRows).then((entries) => {
             if (cancelled) return;
@@ -2719,6 +2742,9 @@ function App() {
             const card = buildCard(data.card as Record<string, unknown>);
             if (card) {
               pushCard(card);
+              if (selectedChatIdRef.current) {
+                void loadOptionalChatProcesses(selectedChatIdRef.current, { silent: true }).then(setChatProcesses);
+              }
               commitOptimisticMessages((current) => applyRuntimeCardToMatchingPlaceholders(current, card));
               if (streamingAssistantIdRef.current !== null) {
                 commitOptimisticMessages((current) =>
@@ -2747,6 +2773,9 @@ function App() {
             const detail = payload.detail as TaskRunDetail | undefined;
             if (entry && typeof entry.id === "number") {
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
+              if (selectedChatIdRef.current) {
+                void loadOptionalChatProcesses(selectedChatIdRef.current, { silent: true }).then(setChatProcesses);
+              }
               void api.getTaskRunActivity(entry.id)
                 .then((activity) => {
                   setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
@@ -2952,10 +2981,11 @@ function App() {
         setRefreshingMessages(true);
       }
       setError("");
-      const [rows, runtimeRows, taskRunRows] = await Promise.all([
+      const [rows, runtimeRows, taskRunRows, processRows] = await Promise.all([
         api.getMessages(chatId),
         loadOptionalRuntimeCards(chatId),
         loadOptionalTaskRuns(chatId),
+        loadOptionalChatProcesses(chatId),
       ]);
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
@@ -2964,6 +2994,7 @@ function App() {
       commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
       setChatCards(nextCards);
       setTaskRuns(taskRunRows);
+      setChatProcesses(processRows);
       setLiveTaskRunDetailsById({});
       void loadOptionalTaskActivities(taskRunRows).then((entries) => {
         setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
@@ -4358,6 +4389,7 @@ function App() {
             connectionState={connectionState}
             cards={chatCards}
             taskRuns={taskRuns}
+            processes={chatProcesses}
             projectBrowserIndex={projectBrowserIndex}
             liveTaskRunDetailsById={liveTaskRunDetailsById}
             taskActivitiesById={taskActivitiesById}

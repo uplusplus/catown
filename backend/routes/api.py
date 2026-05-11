@@ -2626,6 +2626,16 @@ class ProjectBrowserInfo(BaseModel):
     truncated: bool = False
 
 
+class ChatProcessInfo(BaseModel):
+    id: str
+    command: str
+    kind: str
+    detail: str = ""
+    timestamp: Optional[str] = None
+    pid: Optional[int] = None
+    output: Optional[str] = None
+
+
 class ProjectFileReadInfo(BaseModel):
     path: str
     name: str
@@ -2799,6 +2809,9 @@ PROJECT_BROWSER_MAX_DIRS = 400
 PROJECT_BROWSER_BATCH_SIZE = 50
 PROJECT_FILE_READ_MAX_BYTES = 512 * 1024
 PROJECT_FILE_WRITE_MAX_CHARS = 1024 * 1024
+CHAT_PROCESSES_LIMIT = 12
+CHAT_PROCESS_SHELL_TAIL_MAX_CHARS = 5000
+CHAT_PROCESS_SHELL_TAIL_MAX_LINES = 28
 
 
 def _project_browser_artifact_type(path: str) -> Optional[str]:
@@ -2965,6 +2978,158 @@ def _scan_project_browser(workspace_path: str) -> ProjectBrowserInfo:
         artifacts=artifacts,
         truncated=truncated,
     )
+
+
+def _one_line_preview(value: Any, fallback: str, limit: int = 96) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    normalized = " ".join(text.split())
+    return normalized if len(normalized) <= limit else f"{normalized[:limit].rstrip()}..."
+
+
+def _parse_json_object(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _read_shell_command_preview(arguments_text: Any) -> str:
+    raw = arguments_text.strip() if isinstance(arguments_text, str) else ""
+    if not raw:
+        return ""
+
+    parsed = _parse_json_object(raw)
+    command = str(parsed.get("command") or "").strip()
+    cwd = str(parsed.get("cwd") or "").strip()
+    if command and cwd and cwd != ".":
+        return f"{_one_line_preview(command, '', 160)} · cwd {_one_line_preview(cwd, '', 60)}"
+    if command:
+        return _one_line_preview(command, "", 180)
+    return _one_line_preview(raw, "", 180)
+
+
+def _trim_shell_output_tail(output: Any) -> str:
+    normalized = str(output or "").replace("\r\n", "\n").rstrip()
+    if not normalized:
+        return ""
+    char_clipped = normalized[-CHAT_PROCESS_SHELL_TAIL_MAX_CHARS:]
+    lines = char_clipped.split("\n")
+    line_clipped = len(lines) > CHAT_PROCESS_SHELL_TAIL_MAX_LINES
+    tail = "\n".join(lines[-CHAT_PROCESS_SHELL_TAIL_MAX_LINES:]) if line_clipped else char_clipped
+    clipped = len(normalized) > len(char_clipped) or line_clipped
+    return f"... showing latest shell output\n{tail}" if clipped else tail
+
+
+def _is_internal_tool_pause(card: Dict[str, Any]) -> bool:
+    if card.get("type") != "tool_call":
+        return False
+    if not bool(card.get("blocked")):
+        return False
+    blocked_kind = str(card.get("blocked_kind") or "").strip().lower()
+    status = str(card.get("status") or "").strip().lower()
+    return blocked_kind in {"approval", "timeout"} or status in {"approval_blocked", "timeout_waiting"}
+
+
+def _is_running_shell_process_card(card: Dict[str, Any]) -> bool:
+    tool = str(card.get("tool") or "").strip().lower()
+    status = str(card.get("status") or "").strip().lower()
+    return tool == "run_shell" and status == "running" and not _is_internal_tool_pause(card)
+
+
+def _should_render_inline_task_run(task_run: TaskRun) -> bool:
+    pending_approval_count = len([
+        item for item in getattr(task_run, "approval_queue_items", [])
+        if str(getattr(item, "status", "") or "").lower() == "pending"
+    ])
+    if pending_approval_count > 0:
+        return True
+    client_turn_id = str(getattr(task_run, "client_turn_id", "") or "").strip().lower()
+    if client_turn_id.startswith("delegate-"):
+        return True
+    run_kind = str(getattr(task_run, "run_kind", "") or "").strip().lower()
+    return "pipeline" in run_kind or "orchestration" in run_kind
+
+
+def _is_running_browser_task_run(task_run: TaskRun) -> bool:
+    if str(getattr(task_run, "status", "") or "").strip().lower() != "running":
+        return False
+    if _should_render_inline_task_run(task_run):
+        return False
+    checkpoint = build_task_run_checkpoint_snapshot(task_run)
+    cursor = checkpoint.get("continuation_cursor")
+    blocked_kind = str((cursor or {}).get("blocked_kind") or "").strip().lower() if isinstance(cursor, dict) else ""
+    return blocked_kind not in {"approval", "timeout"}
+
+
+def _dedupe_process_entries(entries: List[ChatProcessInfo]) -> List[ChatProcessInfo]:
+    by_id: Dict[str, ChatProcessInfo] = {}
+    for entry in entries:
+        by_id[entry.id] = entry
+    return list(by_id.values())
+
+
+def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = CHAT_PROCESSES_LIMIT) -> List[ChatProcessInfo]:
+    entries: List[ChatProcessInfo] = []
+
+    card_rows = (
+        db.query(Message)
+        .filter(Message.chatroom_id == chatroom_id, Message.message_type == "runtime_card")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(200)
+        .all()
+    )
+    for row in card_rows:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        card = metadata.get("card")
+        if not isinstance(card, dict):
+            continue
+        card_payload = public_runtime_card_payload(dict(card))
+        if not _is_running_shell_process_card(card_payload):
+            continue
+        command = _read_shell_command_preview(card_payload.get("arguments")) or str(card_payload.get("display_name") or "run_shell")
+        created_at = getattr(row, "created_at", None)
+        entries.append(ChatProcessInfo(
+            id=f"shell:{card_payload.get('id') or row.id}",
+            command=command,
+            kind="command",
+            detail=str(card_payload.get("summary") or _one_line_preview(card_payload.get("result"), "Shell process is running.", 140)),
+            timestamp=created_at.isoformat() if hasattr(created_at, "isoformat") else None,
+            pid=card_payload.get("pid") if isinstance(card_payload.get("pid"), int) else None,
+            output=_trim_shell_output_tail(card_payload.get("result")) or None,
+        ))
+
+    task_runs = (
+        db.query(TaskRun)
+        .filter(TaskRun.chatroom_id == chatroom_id, TaskRun.status == "running")
+        .order_by(TaskRun.updated_at.desc(), TaskRun.created_at.desc(), TaskRun.id.desc())
+        .limit(100)
+        .all()
+    )
+    for run in task_runs:
+        if not _is_running_browser_task_run(run):
+            continue
+        timestamp = run.updated_at or run.created_at
+        entries.append(ChatProcessInfo(
+            id=f"task-run:{run.id}",
+            command=run.title,
+            kind="task",
+            detail=run.summary or run.user_request or f"{len(getattr(run, 'events', []) or [])} events",
+            timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
+        ))
+
+    return sorted(
+        _dedupe_process_entries(entries),
+        key=lambda entry: entry.timestamp or "",
+        reverse=True,
+    )[:limit]
 
 
 def _resolve_project_workspace_file(workspace_path: str, relative_path: str) -> Path:
@@ -3671,6 +3836,17 @@ async def list_task_runs(
         query = query.filter(TaskRun.client_turn_id == client_turn_id)
 
     return [serialize_task_run_summary(task_run) for task_run in query.limit(limit).all()]
+
+
+@router.get("/chatrooms/{chatroom_id}/processes", response_model=List[ChatProcessInfo])
+async def list_chat_processes(chatroom_id: int, limit: int = CHAT_PROCESSES_LIMIT, db: Session = Depends(get_db)):
+    """Return backend-owned running process/task projection for the chat sidebar."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+
+    bounded_limit = max(1, min(limit, 50))
+    return _build_chat_process_entries(db, chatroom_id, limit=bounded_limit)
 
 
 @router.get("/task-runs/{task_run_id}/subagents")

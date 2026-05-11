@@ -863,6 +863,71 @@ class TestProjectEndpoints:
         assert "node_modules/ignored.js" not in file_paths
         assert "docs/ADR-001-browser.md" in artifact_paths
 
+    def test_chat_processes_are_projected_by_backend(self, client):
+        import models.database as db_mod
+        from datetime import datetime
+
+        project = client.post("/api/projects", json={"name": "Process Backend Test"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="chat_turn",
+                status="running",
+                title="Background implementation",
+                user_request="Implement the feature",
+                summary="Working in the background",
+                target_agent_name="Developer",
+            )
+            inline_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="delegate-inline",
+                run_kind="project_single_agent",
+                status="running",
+                title="Inline tester",
+            )
+            db.add_all([run, inline_run])
+            db.flush()
+            run_id = run.id
+            inline_run_id = inline_run.id
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest", "cwd": "/tmp/work"}),
+                        "status": "running",
+                        "result": "collecting\nrunning tests",
+                        "pid": 12345,
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
+
+        assert response.status_code == 200
+        data = response.json()
+        ids = {item["id"] for item in data}
+        shell = next(item for item in data if item["kind"] == "command")
+        task = next(item for item in data if item["kind"] == "task")
+        assert shell["command"].startswith("python -m pytest")
+        assert shell["pid"] == 12345
+        assert "running tests" in shell["output"]
+        assert task["command"] == "Background implementation"
+        assert f"task-run:{run_id}" in ids
+        assert f"task-run:{inline_run_id}" not in ids
+
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")
         assert r.status_code == 404

@@ -84,6 +84,16 @@ export type ProjectBrowserIndex = {
   truncated: boolean;
 };
 
+export type ChatProcessEntry = {
+  id: string;
+  command: string;
+  kind: "command" | "task";
+  detail: string;
+  timestamp?: string | null;
+  pid?: number | null;
+  output?: string | null;
+};
+
 export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
   type: "start" | "batch" | "done";
 };

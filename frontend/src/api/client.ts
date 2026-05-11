@@ -3,6 +3,7 @@ import type {
   AgentConfigPayload,
   AgentInfo,
   ChatSummary,
+  ChatProcessEntry,
   ConfigResponse,
   GlobalConfigPayload,
   GitHubProjectImportPayload,
@@ -237,6 +238,9 @@ export const api = {
     }
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return request<TaskRunSummary[]>(`/api/chatrooms/${chatroomId}/task-runs${suffix}`);
+  },
+  getChatProcesses(chatroomId: number) {
+    return request<ChatProcessEntry[]>(`/api/chatrooms/${chatroomId}/processes`);
   },
   getTaskRunDetail(taskRunId: number) {
     return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
