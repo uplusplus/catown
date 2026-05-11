@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
-import { Archive, ChevronDown, ChevronRight, File, Folder, FolderTree, Monitor } from "lucide-react";
+import { Archive, BookOpen, Boxes, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Workflow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -411,6 +411,35 @@ type BrowserProcessEntry = {
   pid?: number;
   output?: string;
 };
+
+function ArtifactIcon({ type }: { type: string }) {
+  const normalized = type.trim().toLowerCase();
+  if (normalized === "adr") return <ScrollText size={14} />;
+  if (normalized === "prd") return <BookOpen size={14} />;
+  if (normalized === "spec") return <FileText size={14} />;
+  if (normalized === "test") return <ClipboardCheck size={14} />;
+  if (normalized === "report") return <FileText size={14} />;
+  if (normalized === "release") return <PackageCheck size={14} />;
+  if (normalized === "doc") return <FileText size={14} />;
+  return <Boxes size={14} />;
+}
+
+function ProcessIcon({ kind }: { kind: BrowserProcessEntry["kind"] }) {
+  return kind === "command" ? <Shell size={15} /> : <Workflow size={15} />;
+}
+
+function FileTreeIcon({ node }: { node: BrowserFileTreeNode }) {
+  if (node.kind === "directory") return <Folder size={14} />;
+  const path = normalizeBrowserPath(node.path).toLowerCase();
+  if (/(^|\/)(readme|guide|docs?)\b|\.mdx?$|\.txt$/.test(path)) return <FileText size={14} />;
+  if (/\badr[-_.]|\bprd\b|\bspec\b|requirements?|proposal|report|release[-_]?notes?/.test(path)) {
+    return <ArtifactIcon type={classifyBrowserArtifact(path) || "Doc"} />;
+  }
+  if (/\.(json|ya?ml|toml|sql|lock)$/i.test(path)) return <ScrollText size={14} />;
+  if (/\.(test|spec)\.(ts|tsx|js|jsx|py)$|test_|_test\.py$/.test(path)) return <ClipboardCheck size={14} />;
+  if (/\.(ts|tsx|js|jsx|py|sh|css|html)$/.test(path)) return <FileText size={14} />;
+  return <File size={14} />;
+}
 type ParsedLlmConversation = {
   meta: string;
   outbound: string;
@@ -4036,7 +4065,7 @@ function renderProjectFileTreeNode(
   onToggle: (path: string) => void,
 ) {
   const isDirectory = node.kind === "directory";
-  const isExpanded = isDirectory && expandedPaths[node.path] !== false;
+  const isExpanded = isDirectory && expandedPaths[node.path] === true;
   const hasChildren = node.children.length > 0;
 
   return (
@@ -4054,7 +4083,7 @@ function renderProjectFileTreeNode(
           ) : null}
         </span>
         <span className="file-tree__icon" aria-hidden="true">
-          {isDirectory ? <Folder size={14} /> : <File size={14} />}
+          <FileTreeIcon node={node} />
         </span>
         <span className="file-tree__name">{node.name}</span>
         {!isDirectory && (node.source || node.timestamp) ? (
@@ -5992,14 +6021,14 @@ export function ChatTab({
                   ) : (
                     <div className="artifact-list" aria-label="Project artifacts">
                       {browserArtifactGroups.map((group) => (
-                        <div key={group.type} className="artifact-group">
-                          <div className="artifact-group__header">
+                        <details key={group.type} className="artifact-group">
+                          <summary className="artifact-group__header">
                             <span>{group.type}</span>
                             <strong>{group.items.length}</strong>
-                          </div>
+                          </summary>
                           {group.items.map((entry) => (
                             <article key={entry.id} className="artifact-row" title={entry.detail || entry.name}>
-                              <span className="artifact-row__icon" aria-hidden="true"><Archive size={14} /></span>
+                              <span className="artifact-row__icon" aria-hidden="true"><ArtifactIcon type={entry.type} /></span>
                               <span className="artifact-row__name">{entry.name}</span>
                               <span className="artifact-row__meta">
                                 <span>{entry.status}</span>
@@ -6007,7 +6036,7 @@ export function ChatTab({
                               </span>
                             </article>
                           ))}
-                        </div>
+                        </details>
                       ))}
                     </div>
                   )}
@@ -6020,10 +6049,22 @@ export function ChatTab({
                     <div className="empty-card">Running background tasks will appear here.</div>
                   ) : (
                     browserProcessEntries.map((entry) => (
-                      <article key={entry.id} className="browser-entry browser-entry--process">
-                        <div className="browser-entry__icon"><Monitor size={15} aria-hidden="true" /></div>
-                        <div className="browser-entry__body">
-                          <div className="browser-entry__title" title={entry.command}>{entry.command}</div>
+                      <details key={entry.id} className="browser-entry browser-entry--process">
+                        <summary className="browser-entry__summary">
+                          <div className="browser-entry__icon"><ProcessIcon kind={entry.kind} /></div>
+                          <div className="browser-entry__body">
+                            <div className="browser-entry__title" title={entry.command}>{entry.command}</div>
+                            <div className="browser-entry__meta">
+                              <span className={`browser-entry__state browser-entry__state--${(entry.status || "").toLowerCase() === "running" ? "running" : "history"}`}>
+                                {(entry.status || "").toLowerCase() === "running" ? "Running" : "History"}
+                              </span>
+                              <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
+                              <span>{formatTaskRunStatus(entry.status)}</span>
+                            </div>
+                          </div>
+                          <CopyTextButton content={entry.command} title="Copy command" />
+                        </summary>
+                        <div className="browser-entry__details">
                           <div className="browser-entry__meta">
                             <span className={`browser-entry__state browser-entry__state--${(entry.status || "").toLowerCase() === "running" ? "running" : "history"}`}>
                               {(entry.status || "").toLowerCase() === "running" ? "Running" : "History"}
@@ -6036,8 +6077,7 @@ export function ChatTab({
                           <p>{oneLinePreview(entry.detail, "Process record", 120)}</p>
                           {entry.output ? <pre className="browser-entry__output">{entry.output}</pre> : null}
                         </div>
-                        <CopyTextButton content={entry.command} title="Copy command" />
-                      </article>
+                      </details>
                     ))
                   )}
                 </div>

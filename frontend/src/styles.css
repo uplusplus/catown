@@ -1704,16 +1704,34 @@ a {
   gap: 8px;
   padding: 0 8px;
   color: var(--muted);
+  cursor: pointer;
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
+  list-style: none;
   text-transform: uppercase;
+}
+
+.artifact-group__header::-webkit-details-marker {
+  display: none;
+}
+
+.artifact-group__header::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.artifact-group[open] .artifact-group__header::before {
+  transform: rotate(90deg);
 }
 
 .artifact-group__header strong {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
+  margin-left: auto;
 }
 
 .artifact-row {
@@ -1768,14 +1786,23 @@ a {
 }
 
 .browser-entry {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
+}
+
+.browser-entry__summary {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.browser-entry__summary::-webkit-details-marker {
+  display: none;
 }
 
 .browser-entry__icon {
@@ -1835,6 +1862,11 @@ a {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.browser-entry__details {
+  margin-top: 8px;
+  padding-left: 34px;
 }
 
 .browser-entry__state {
