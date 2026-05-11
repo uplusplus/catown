@@ -5622,18 +5622,12 @@ export function ChatTab({
                           {entry.source === "Workspace" ? <FolderTree size={15} aria-hidden="true" /> : <FileText size={15} aria-hidden="true" />}
                         </div>
                         <div className="browser-entry__body">
-                          <div className="browser-entry__title-row">
-                            <div className="browser-entry__title" title={entry.path}>{entry.path.split("/").filter(Boolean).pop() || entry.path}</div>
-                          </div>
-                          {entry.path.includes("/") ? (
-                            <div className="browser-entry__path" title={entry.path}>{entry.path}</div>
-                          ) : null}
-                          <div className="browser-entry__meta">
-                            <span>{entry.source}</span>
-                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
-                          </div>
+                          <div className="browser-file-row__path" title={entry.path}>{entry.path}</div>
                         </div>
-                        <CopyTextButton content={entry.path} title="Copy path" />
+                        <div className="browser-file-row__meta">
+                          <span>{entry.source}</span>
+                          {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
+                        </div>
                       </article>
                     ))
                   )}
