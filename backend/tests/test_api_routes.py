@@ -1166,6 +1166,16 @@ class TestChatEndpoints:
         assert any(step["event_type"] == "scheduler_plan_created" for step in activity["steps"])
         assert any(step["event_type"] == "scheduler_step_dispatched" for step in activity["steps"])
         assert activity["steps"][-1]["state"] in {"done", "live", "error"}
+        assert activity["background"]["scheduler_runtime_summary"]
+        assert not [
+            step
+            for step in activity["steps"]
+            if step["event_type"].startswith("scheduler_step_") and step["state"] == "live"
+        ]
+        scheduler_step = next(step for step in activity["steps"] if step["event_type"] == "scheduler_step_dispatched")
+        assert "### Step State" in scheduler_step["detail_content"]
+        assert "### Runtime" in scheduler_step["detail_content"]
+        assert "step_state" in scheduler_step["refs"]
 
     def test_send_message_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod

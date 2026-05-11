@@ -27,7 +27,8 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
     events = list(getattr(task_run, "events", []) or [])
     latest_event_index = max((int(getattr(event, "event_index", 0) or 0) for event in events), default=0)
     summary = serialize_task_run_summary(task_run)
-    steps = [_event_to_step(event, task_run) for event in events]
+    scheduler_step_statuses = _scheduler_step_statuses(events)
+    steps = [_event_to_step(event, task_run, scheduler_step_statuses) for event in events]
     steps = [step for step in steps if step is not None]
     current_step = _resolve_current_step(steps)
 
@@ -41,16 +42,21 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         "updated_at": task_run.updated_at.isoformat() if task_run.updated_at else None,
         "current_step_id": current_step.get("id") if current_step else None,
         "summary": summary.get("summary") or summary.get("latest_continuation_event_summary") or task_run.summary,
+        "background": _background_projection(summary),
         "steps": steps,
     }
 
 
-def _event_to_step(event: TaskRunEvent, task_run: TaskRun) -> dict[str, Any] | None:
+def _event_to_step(
+    event: TaskRunEvent,
+    task_run: TaskRun,
+    scheduler_step_statuses: dict[str, str],
+) -> dict[str, Any] | None:
     payload = _load_payload(getattr(event, "payload_json", None))
     event_type = str(getattr(event, "event_type", "") or "event")
     agent_name = str(getattr(event, "agent_name", "") or payload.get("agent_name") or payload.get("agent_type") or "").strip()
     tool_name = _read_tool_name(payload)
-    state = _step_state(event_type, str(getattr(task_run, "status", "") or ""))
+    state = _step_state(event_type, str(getattr(task_run, "status", "") or ""), payload, scheduler_step_statuses)
     label = _step_label(event_type, agent_name=agent_name, tool_name=tool_name, payload=payload)
     detail = _step_detail(event, payload, event_type)
     detail_content = _step_detail_content(event, payload, event_type, detail)
@@ -71,13 +77,26 @@ def _event_to_step(event: TaskRunEvent, task_run: TaskRun) -> dict[str, Any] | N
     }
 
 
-def _step_state(event_type: str, task_status: str) -> str:
+def _step_state(
+    event_type: str,
+    task_status: str,
+    payload: dict[str, Any],
+    scheduler_step_statuses: dict[str, str],
+) -> str:
     normalized_event = event_type.lower()
     normalized_status = task_status.lower()
     if normalized_status in TERMINAL_TASK_STATUSES:
         return "error" if normalized_status in {"failed", "cancelled"} or _event_is_error(normalized_event) else "done"
     if _event_is_error(normalized_event):
         return "error"
+    if normalized_event.startswith("scheduler_step_"):
+        step_status = scheduler_step_statuses.get(str(payload.get("step_id") or ""))
+        if step_status in {"failed", "cancelled"}:
+            return "error"
+        if step_status == "completed":
+            return "done"
+        if step_status == "running":
+            return "live"
     if normalized_event in LIVE_EVENT_TYPES:
         return "live"
     if normalized_event.endswith("_completed") or normalized_event in {"agent_turn_completed", "tool_round_recorded"}:
@@ -132,27 +151,49 @@ def _step_detail(event: TaskRunEvent, payload: dict[str, Any], event_type: str) 
 
 def _step_detail_content(event: TaskRunEvent, payload: dict[str, Any], event_type: str, detail: str) -> str:
     lines = [
-        f"Event: {event_type}",
-        f"Index: {event.event_index}",
+        "### Task Step",
+        f"- Event: `{event_type}`",
+        f"- Index: `{event.event_index}`",
     ]
     if event.agent_name:
-        lines.append(f"Agent: {event.agent_name}")
+        lines.append(f"- Agent: `{event.agent_name}`")
     if detail:
-        lines.append(f"Summary: {detail}")
+        lines.append(f"- Summary: {detail}")
+    step_state = payload.get("step_state") if isinstance(payload.get("step_state"), dict) else None
+    if step_state:
+        lines.extend(["", "### Step State", *_dict_lines(step_state)])
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else None
     if runtime:
-        lines.append(f"Runtime: {_runtime_summary(runtime)}")
+        lines.extend(["", "### Runtime", f"- Summary: {_runtime_summary(runtime)}", *_dict_lines(runtime)])
+    tool_details = _tool_detail_lines(payload)
+    if tool_details:
+        lines.extend(["", "### Tool Details", *tool_details])
     refs = _step_refs(payload)
     if refs:
-        lines.append(f"Refs: {json.dumps(refs, ensure_ascii=False)}")
+        lines.extend(["", "### Refs", f"```json\n{json.dumps(refs, ensure_ascii=False, indent=2)}\n```"])
     return "\n".join(line for line in lines if line)
 
 
 def _step_refs(payload: dict[str, Any]) -> dict[str, Any]:
     refs: dict[str, Any] = {}
-    for key in ("pipeline_run_id", "pipeline_stage_id", "step_id", "tool_call_id"):
+    for key in (
+        "pipeline_run_id",
+        "pipeline_stage_id",
+        "step_id",
+        "tool_call_id",
+        "agent_type",
+        "dispatch_kind",
+        "wait_for_step_id",
+        "attached_to_step_id",
+    ):
         if payload.get(key) is not None:
             refs[key] = payload.get(key)
+    step_state = payload.get("step_state")
+    if isinstance(step_state, dict):
+        refs["step_state"] = _compact_ref_dict(step_state)
+    runtime = payload.get("runtime")
+    if isinstance(runtime, dict):
+        refs["runtime"] = _compact_ref_dict(runtime)
     tracked = payload.get("tracked_process")
     if isinstance(tracked, dict):
         refs["tracked_process"] = {
@@ -161,6 +202,27 @@ def _step_refs(payload: dict[str, Any]) -> dict[str, Any]:
             if tracked.get(key) is not None
         }
     return refs
+
+
+def _scheduler_step_statuses(events: list[TaskRunEvent]) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for event in events:
+        payload = _load_payload(getattr(event, "payload_json", None))
+        step_id = str(payload.get("step_id") or "").strip()
+        if not step_id:
+            continue
+        event_type = str(getattr(event, "event_type", "") or "").lower()
+        step_state = payload.get("step_state") if isinstance(payload.get("step_state"), dict) else {}
+        status = str(step_state.get("status") or "").strip().lower()
+        if event_type == "scheduler_step_completed":
+            status = "completed"
+        elif event_type == "scheduler_step_failed":
+            status = "failed"
+        elif event_type in {"scheduler_step_dispatched", "scheduler_step_resumed"} and not status:
+            status = "running"
+        if status:
+            statuses[step_id] = status
+    return statuses
 
 
 def _read_tool_name(payload: dict[str, Any]) -> str | None:
@@ -184,6 +246,74 @@ def _runtime_summary(runtime: dict[str, Any]) -> str:
         if runtime.get(key) is not None:
             bits.append(f"{runtime.get(key)} {label}")
     return " · ".join(bits)
+
+
+def _background_projection(summary: dict[str, Any]) -> dict[str, Any]:
+    checkpoint = summary.get("checkpoint_snapshot") if isinstance(summary.get("checkpoint_snapshot"), dict) else {}
+    background: dict[str, Any] = {}
+    for key in (
+        "scheduler_runtime_summary",
+        "subagent_lifecycle_summary",
+        "subagent_handles_summary",
+        "pipeline_inbox_summary",
+        "orchestration_handoff_inbox_summary",
+    ):
+        value = summary.get(key) or checkpoint.get(key)
+        if value:
+            background[key] = value
+    latest_runtime = summary.get("latest_scheduler_runtime") or checkpoint.get("latest_scheduler_runtime")
+    if isinstance(latest_runtime, dict):
+        background["latest_scheduler_runtime"] = _compact_ref_dict(latest_runtime)
+    return background
+
+
+def _tool_detail_lines(payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    tool_names = payload.get("tool_names") if isinstance(payload.get("tool_names"), list) else []
+    if tool_names:
+        lines.append(f"- Tools: {', '.join(f'`{name}`' for name in tool_names)}")
+    status_counts = payload.get("tool_status_counts")
+    if isinstance(status_counts, dict) and status_counts:
+        lines.append(f"- Status counts: {json.dumps(status_counts, ensure_ascii=False)}")
+    turn_local_state = payload.get("turn_local_state") if isinstance(payload.get("turn_local_state"), dict) else {}
+    for key in ("tool_results", "blocked_tools"):
+        items = payload.get(key)
+        if not isinstance(items, list) and isinstance(turn_local_state.get(key), list):
+            items = turn_local_state.get(key)
+        if not isinstance(items, list) or not items:
+            continue
+        lines.append(f"- {key}: {len(items)}")
+        for index, item in enumerate(items[:5], start=1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("tool_name") or item.get("name") or "tool")
+            status = str(item.get("status") or ("succeeded" if item.get("success") else "unknown"))
+            result = str(item.get("result") or item.get("blocked_reason") or "").strip()
+            preview = f" - {result[:180]}" if result else ""
+            lines.append(f"  - {index}. `{name}` `{status}`{preview}")
+            metadata = item.get("metadata")
+            tracked = metadata.get("tracked_process") if isinstance(metadata, dict) else None
+            if isinstance(tracked, dict):
+                lines.append(f"    - tracked process: `{tracked.get('token') or tracked.get('pid') or 'attached'}`")
+    return lines
+
+
+def _dict_lines(value: dict[str, Any]) -> list[str]:
+    lines = []
+    for key in sorted(value):
+        item = value.get(key)
+        if item is None or isinstance(item, (dict, list)):
+            continue
+        lines.append(f"- {key}: `{item}`")
+    return lines
+
+
+def _compact_ref_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item
+        for key, item in value.items()
+        if item is not None and not isinstance(item, (list, dict))
+    }
 
 
 def _event_is_error(event_type: str) -> bool:

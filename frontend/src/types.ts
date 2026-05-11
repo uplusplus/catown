@@ -292,6 +292,7 @@ export type TaskActivityProjection = {
   updated_at?: string | null;
   current_step_id?: string | null;
   summary?: string | null;
+  background?: Record<string, unknown>;
   steps: TaskActivityStep[];
 };
 
