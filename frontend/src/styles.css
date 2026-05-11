@@ -1409,9 +1409,9 @@ a {
 }
 
 .chat-sidebar {
-  flex: 0 0 clamp(360px, 28vw, 520px);
-  min-width: 360px;
-  max-width: 520px;
+  flex: 0 0 clamp(420px, 30vw, 640px);
+  min-width: 420px;
+  max-width: 640px;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -1639,6 +1639,83 @@ a {
   background: color-mix(in srgb, var(--panel) 72%, transparent);
 }
 
+.file-tree {
+  padding: 4px 0;
+}
+
+.file-tree__item,
+.file-tree__children {
+  min-width: 0;
+}
+
+.file-tree__row {
+  --file-tree-depth: 0;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  display: grid;
+  grid-template-columns: 16px 18px minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 calc(8px + (var(--file-tree-depth) * 14px));
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.file-tree__row:hover {
+  background: color-mix(in srgb, var(--panel-hover) 50%, transparent);
+}
+
+.file-tree__row.is-file {
+  cursor: default;
+}
+
+.file-tree__row.is-directory {
+  cursor: pointer;
+  color: var(--text-strong);
+}
+
+.file-tree__twisty,
+.file-tree__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.file-tree__name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree__meta {
+  min-width: 0;
+  max-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.file-tree__meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .browser-entry {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;
@@ -1648,24 +1725,6 @@ a {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
-}
-
-.browser-entry--file {
-  grid-template-columns: 20px minmax(0, 1fr) max-content;
-  min-height: 34px;
-  padding: 5px 8px;
-  border-width: 0 0 1px;
-  border-color: color-mix(in srgb, var(--border) 70%, transparent);
-  border-radius: 0;
-  background: transparent;
-}
-
-.browser-entry--file:last-child {
-  border-bottom: 0;
-}
-
-.browser-entry--file:hover {
-  background: color-mix(in srgb, var(--panel-hover) 46%, transparent);
 }
 
 .browser-entry__icon {
@@ -1679,34 +1738,6 @@ a {
 
 .browser-entry__body {
   min-width: 0;
-}
-
-.browser-file-row__path {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.browser-file-row__meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 132px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9.5px;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.browser-file-row__meta span {
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .browser-entry__title-row {

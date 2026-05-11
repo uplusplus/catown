@@ -1,6 +1,6 @@
-import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
-import { Archive, FileText, FolderTree, Monitor } from "lucide-react";
+import { Archive, ChevronDown, ChevronRight, File, Folder, FolderTree, Monitor } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -367,6 +367,29 @@ type BrowserFileEntry = {
   detail: string;
   timestamp?: string;
 };
+type BrowserFileTreeNode = {
+  id: string;
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  children: BrowserFileTreeNode[];
+  source?: string;
+  detail?: string;
+  timestamp?: string;
+};
+
+function isInternalToolPause(card: ThreadCard | DecoratedChatCardItem) {
+  if (card.kind !== "tool_call") return false;
+  if (!card.blocked) return false;
+  const blockedKind = String(card.blocked_kind || "").trim().toLowerCase();
+  const status = String(card.status || "").trim().toLowerCase();
+  return blockedKind === "approval" || blockedKind === "timeout" || status === "approval_blocked" || status === "timeout_waiting";
+}
+
+function isToolCardFailure(card: ThreadCard | DecoratedChatCardItem) {
+  if (isInternalToolPause(card)) return false;
+  return "success" in card && card.success === false;
+}
 type BrowserArtifactEntry = {
   id: string;
   name: string;
@@ -1081,6 +1104,101 @@ function normalizeBrowserPath(path: string) {
   return path.replace(/\\/g, "/").replace(/^["'`]+|["'`.,;:)]+$/g, "").trim();
 }
 
+function browserPathBaseName(path: string) {
+  const normalized = normalizeBrowserPath(path).replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).pop() || normalized || "workspace";
+}
+
+function relativeBrowserPath(path: string, workspacePath?: string | null) {
+  const normalized = normalizeBrowserPath(path).replace(/\/+$/g, "");
+  const workspace = workspacePath ? normalizeBrowserPath(workspacePath).replace(/\/+$/g, "") : "";
+  if (!normalized) return "";
+  if (workspace && normalized === workspace) return "";
+  if (workspace && normalized.startsWith(`${workspace}/`)) return normalized.slice(workspace.length + 1);
+  return normalized.replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+function compareBrowserFileTreeNodes(left: BrowserFileTreeNode, right: BrowserFileTreeNode) {
+  if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+  return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function sortBrowserFileTree(node: BrowserFileTreeNode) {
+  node.children.sort(compareBrowserFileTreeNodes);
+  node.children.forEach(sortBrowserFileTree);
+}
+
+function buildBrowserFileTree(entries: BrowserFileEntry[], workspacePath?: string | null, projectName?: string) {
+  const workspace = workspacePath ? normalizeBrowserPath(workspacePath) : "";
+  const rootName = browserPathBaseName(workspace) || projectName?.trim() || "workspace";
+  const root: BrowserFileTreeNode = {
+    id: "file-tree:root",
+    name: rootName,
+    path: workspace || rootName,
+    kind: "directory",
+    children: [],
+    source: "Workspace",
+  };
+  const directories = new Map<string, BrowserFileTreeNode>([["", root]]);
+  const files = new Map<string, BrowserFileTreeNode>();
+
+  entries.forEach((entry) => {
+    if (entry.source === "Workspace") return;
+    const relativePath = relativeBrowserPath(entry.path, workspacePath);
+    if (!relativePath || relativePath === "." || relativePath === root.name) return;
+    const parts = relativePath.split("/").map((part) => part.trim()).filter(Boolean);
+    if (parts.length === 0) return;
+
+    let parent = root;
+    let currentPath = "";
+    parts.forEach((part, index) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const isLeaf = index === parts.length - 1;
+      if (isLeaf) {
+        const existing = files.get(currentPath);
+        if (existing) {
+          if (!existing.timestamp || new Date(entry.timestamp || 0).getTime() > new Date(existing.timestamp || 0).getTime()) {
+            existing.source = entry.source;
+            existing.detail = entry.detail;
+            existing.timestamp = entry.timestamp;
+          }
+          return;
+        }
+        const fileNode: BrowserFileTreeNode = {
+          id: `file-tree:file:${currentPath}`,
+          name: part,
+          path: currentPath,
+          kind: "file",
+          children: [],
+          source: entry.source,
+          detail: entry.detail,
+          timestamp: entry.timestamp,
+        };
+        files.set(currentPath, fileNode);
+        parent.children.push(fileNode);
+        return;
+      }
+
+      let directory = directories.get(currentPath);
+      if (!directory) {
+        directory = {
+          id: `file-tree:dir:${currentPath}`,
+          name: part,
+          path: currentPath,
+          kind: "directory",
+          children: [],
+        };
+        directories.set(currentPath, directory);
+        parent.children.push(directory);
+      }
+      parent = directory;
+    });
+  });
+
+  sortBrowserFileTree(root);
+  return root;
+}
+
 function looksLikeProjectPath(value: string) {
   const path = normalizeBrowserPath(value);
   if (!path || path.length < 3 || path.length > 180) return false;
@@ -1126,7 +1244,7 @@ function renderTaskRunShellOutput(taskRun: TaskRunSummary, cards: ThreadCard[]) 
 
   const taskStatus = (taskRun.status || "").toLowerCase();
   const isRunning = latestCard.status === "running" && taskStatus === "running";
-  const isError = latestCard.success === false || taskStatus === "failed";
+  const isError = isToolCardFailure(latestCard) || taskStatus === "failed";
   const commandPreview = readShellCommandPreview(latestCard.arguments);
   const meta = [
     isRunning ? "running" : isError ? "failed" : taskStatus || "captured",
@@ -1249,8 +1367,8 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `artifact-path:${card.id}:${path}`,
         name: path,
         stage: card.stage || card.tool || card.kind,
-        detail: card.success === false ? "Mentioned in failed result" : "Mentioned in result",
-        status: card.success === false ? "needs review" : "referenced",
+        detail: isToolCardFailure(card) ? "Mentioned in failed result" : "Mentioned in result",
+        status: isToolCardFailure(card) ? "needs review" : "referenced",
         timestamp: card.created_at,
       });
     });
@@ -1285,7 +1403,7 @@ function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSumm
       entries.push({
         id: `shell:${card.id}`,
         command,
-        status: card.status || (card.success === false ? "failed" : card.success ? "succeeded" : "captured"),
+        status: card.status || (isToolCardFailure(card) ? "failed" : card.success ? "succeeded" : "captured"),
         kind: "command",
         detail: card.summary || oneLinePreview(card.result, "Shell command record.", 140),
         timestamp: card.created_at,
@@ -2067,7 +2185,8 @@ function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat
 }
 
 function messageStepStateFromCard(card: ThreadCard): MessageStreamStep["state"] {
-  if ("success" in card && card.success === false) return "error";
+  if (isInternalToolPause(card)) return "live";
+  if (isToolCardFailure(card)) return "error";
   if (card.kind === "agent_error") return "error";
   if (card.kind === "gate_blocked" || card.kind === "gate_rejected") return "error";
   return "done";
@@ -2117,8 +2236,8 @@ function messageStepDetailFromCard(card: ThreadCard) {
       if (card.result) {
         sections.push(
           isJsonContent(card.result)
-            ? markdownSection(card.success === false ? "Error" : "Result", prettyJson(card.result), { language: "json" })
-            : markdownSection(card.success === false ? "Error" : "Result", card.result, { asMarkdown: true }),
+            ? markdownSection(isToolCardFailure(card) ? "Error" : "Result", prettyJson(card.result), { language: "json" })
+            : markdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result, { asMarkdown: true }),
         );
       }
       return sections.join("\n\n");
@@ -2196,8 +2315,8 @@ function messageToolCallDetailFromCard(card: DecoratedChatCardItem) {
 function messageToolResultDetailFromCard(card: DecoratedChatCardItem) {
   if (!card.result) return "";
   return isJsonContent(card.result)
-    ? markdownSection(card.success === false ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
-    : markdownSection(card.success === false ? "Error" : "Tool Result", card.result, { asMarkdown: true });
+    ? markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
+    : markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result, { asMarkdown: true });
 }
 
 function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: number): MessageStreamStep[] {
@@ -2233,7 +2352,7 @@ function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: n
           label: toolCallStepLabel(actor, toolName),
           detail: card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool.",
           detailContent: messageToolCallDetailFromCard(card),
-          state: card.success === false ? "error" : "done",
+          state: messageStepStateFromCard(card),
           kind: "tool_call",
           agent: actor,
           tool: toolName,
@@ -2879,12 +2998,12 @@ function renderCardBody(card: ThreadCard) {
           {renderJsonCollapse("ARGS", `${card.tool || "tool"} input`, card.arguments, {
             copyLabel: `Copy ${card.tool || "tool"} input`,
           })}
-          {renderJsonCollapse(card.success === false ? "ERROR" : "RESULT", `${card.tool || "tool"} output`, card.result, {
+          {renderJsonCollapse(isToolCardFailure(card) ? "ERROR" : "RESULT", `${card.tool || "tool"} output`, card.result, {
             pretty: false,
-            open: card.success === false,
+            open: isToolCardFailure(card),
             copyLabel: `Copy ${card.tool || "tool"} output`,
           })}
-          {card.blocked_kind === "approval" ? (
+          {isInternalToolPause(card) ? null : card.blocked_kind === "approval" ? (
             <div className="chat-card-summary">
               Approval pending. Open Activity to approve or reject this blocked tool request.
             </div>
@@ -2916,7 +3035,7 @@ function renderCardBody(card: ThreadCard) {
                 <div className="chat-tool-merge-item__meta">
                   <span>#{index + 1}</span>
                   <span>{typeof item.duration_ms === "number" ? `${item.duration_ms}ms` : "n/a"}</span>
-                  <span>{item.success === false ? "failed" : "ok"}</span>
+                  <span>{isToolCardFailure(item) ? "failed" : isInternalToolPause(item) ? "paused" : "ok"}</span>
                 </div>
                 {item.arguments ? (
                   <div className="chat-json-block">
@@ -3077,7 +3196,7 @@ function renderCompactCardBody(card: ThreadCard) {
         <div className="chat-progress-detail-stack">
           {renderProgressJsonBlock("ARGS", `${card.tool || "tool"} input`, card.arguments)}
           {renderProgressTextBlock(
-            card.success === false ? "ERROR" : "RESULT",
+            isToolCardFailure(card) ? "ERROR" : "RESULT",
             `${card.tool || "tool"} output`,
             card.result,
           )}
@@ -3100,13 +3219,13 @@ function renderCompactCardBody(card: ThreadCard) {
                 <span className="chat-progress-detail-block__label">
                   #{index + 1} · {item.tool || card.tool || "tool"}
                   {typeof item.duration_ms === "number" ? ` · ${item.duration_ms}ms` : ""}
-                  {item.success === false ? " · failed" : ""}
+                  {isToolCardFailure(item) ? " · failed" : isInternalToolPause(item) ? " · paused" : ""}
                 </span>
               </div>
               <div className="chat-progress-detail-stack chat-progress-detail-stack--nested">
                 {renderProgressJsonBlock("ARGS", "Tool input", item.arguments)}
                 {renderProgressTextBlock(
-                  item.success === false ? "ERROR" : "RESULT",
+                  isToolCardFailure(item) ? "ERROR" : "RESULT",
                   "Tool output",
                   item.result,
                 )}
@@ -3204,9 +3323,10 @@ function compactCardDefaultOpen(card: ThreadCard, isLive: boolean) {
 function compactCardState(card: ThreadCard, isLive: boolean) {
   if (isLive) return "live";
   if ("status" in card && card.status === "running") return "live";
+  if (isInternalToolPause(card)) return "live";
   if (card.kind === "gate_blocked") return "blocked";
   if (card.kind === "agent_error") return "error";
-  if ("success" in card && card.success === false) return "error";
+  if (isToolCardFailure(card)) return "error";
   return "done";
 }
 
@@ -3802,6 +3922,50 @@ function renderTaskRunInlineCard(
   );
 }
 
+function renderProjectFileTreeNode(
+  node: BrowserFileTreeNode,
+  depth: number,
+  expandedPaths: Record<string, boolean>,
+  onToggle: (path: string) => void,
+) {
+  const isDirectory = node.kind === "directory";
+  const isExpanded = isDirectory && expandedPaths[node.path] !== false;
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <div key={node.id} className="file-tree__item">
+      <button
+        type="button"
+        className={`file-tree__row ${isDirectory ? "is-directory" : "is-file"}`}
+        style={{ "--file-tree-depth": depth } as CSSProperties}
+        onClick={isDirectory ? () => onToggle(node.path) : undefined}
+        title={node.path}
+      >
+        <span className="file-tree__twisty" aria-hidden="true">
+          {isDirectory && hasChildren ? (
+            isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+          ) : null}
+        </span>
+        <span className="file-tree__icon" aria-hidden="true">
+          {isDirectory ? <Folder size={14} /> : <File size={14} />}
+        </span>
+        <span className="file-tree__name">{node.name}</span>
+        {!isDirectory && (node.source || node.timestamp) ? (
+          <span className="file-tree__meta">
+            {node.source ? <span>{node.source}</span> : null}
+            {node.timestamp ? <span>{formatTime(node.timestamp)}</span> : null}
+          </span>
+        ) : null}
+      </button>
+      {isDirectory && isExpanded && hasChildren ? (
+        <div className="file-tree__children">
+          {node.children.map((child) => renderProjectFileTreeNode(child, depth + 1, expandedPaths, onToggle))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 type MessageRowProps = {
   message: MessageItem;
   copiedMessageId: number | null;
@@ -3878,6 +4042,7 @@ export function ChatTab({
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
   const [projectBrowserTab, setProjectBrowserTab] = useState<ProjectBrowserTab>("artifacts");
+  const [expandedFileTreePaths, setExpandedFileTreePaths] = useState<Record<string, boolean>>({});
   const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
@@ -3978,6 +4143,10 @@ export function ChatTab({
     () => buildBrowserFileEntries(project, cards, taskRuns),
     [cards, project, taskRuns],
   );
+  const browserFileTree = useMemo(
+    () => buildBrowserFileTree(browserFileEntries, project?.workspace_path, project?.name || chat?.title),
+    [browserFileEntries, chat?.title, project?.name, project?.workspace_path],
+  );
   const browserArtifactEntries = useMemo(
     () => buildBrowserArtifactEntries(cards, taskRuns),
     [cards, taskRuns],
@@ -3986,6 +4155,16 @@ export function ChatTab({
     () => buildBrowserProcessEntries(cards, taskRuns),
     [cards, taskRuns],
   );
+  useEffect(() => {
+    const nextExpanded: Record<string, boolean> = { [browserFileTree.path]: true };
+    browserFileTree.children.forEach((node) => {
+      if (node.kind === "directory") nextExpanded[node.path] = true;
+    });
+    setExpandedFileTreePaths((current) => ({ ...nextExpanded, ...current }));
+  }, [browserFileTree.path, browserFileTree.children]);
+  const toggleFileTreePath = useCallback((path: string) => {
+    setExpandedFileTreePaths((current) => ({ ...current, [path]: current[path] === false }));
+  }, []);
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
     const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
@@ -5692,23 +5871,12 @@ export function ChatTab({
 
               {projectBrowserTab === "files" ? (
                 <div className="project-browser__section project-browser__section--files">
-                  {browserFileEntries.length === 0 ? (
+                  {browserFileTree.children.length === 0 ? (
                     <div className="empty-card">Files will appear after tools reference workspace paths.</div>
                   ) : (
-                    browserFileEntries.map((entry) => (
-                      <article key={entry.id} className="browser-entry browser-entry--file">
-                        <div className="browser-entry__icon">
-                          {entry.source === "Workspace" ? <FolderTree size={15} aria-hidden="true" /> : <FileText size={15} aria-hidden="true" />}
-                        </div>
-                        <div className="browser-entry__body">
-                          <div className="browser-file-row__path" title={entry.path}>{entry.path}</div>
-                        </div>
-                        <div className="browser-file-row__meta">
-                          <span>{entry.source}</span>
-                          {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
-                        </div>
-                      </article>
-                    ))
+                    <div className="file-tree" role="tree" aria-label="Workspace files">
+                      {renderProjectFileTreeNode(browserFileTree, 0, expandedFileTreePaths, toggleFileTreePath)}
+                    </div>
                   )}
                 </div>
               ) : null}
