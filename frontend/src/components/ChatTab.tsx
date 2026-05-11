@@ -35,6 +35,7 @@ import type {
 } from "../types";
 
 const LOCAL_OVERLAY_STORAGE_KEY = "catown:chat-local-overlay";
+const DRAFT_HISTORY_STORAGE_KEY = "catown:chat-draft-history";
 const THREAD_AUTO_SCROLL_THRESHOLD = 72;
 const LARGE_MARKDOWN_HIGHLIGHT_LIMIT = 12000;
 const OVERLAY_MAX_CHATS = 6;
@@ -45,6 +46,9 @@ const OVERLAY_MAX_STEP_LABEL_CHARS = 120;
 const OVERLAY_MAX_STEP_DETAIL_CHARS = 180;
 const TASK_RUN_SHELL_TAIL_MAX_CHARS = 5000;
 const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
+const DRAFT_HISTORY_MAX_CHATS = 30;
+const DRAFT_HISTORY_MAX_ITEMS_PER_CHAT = 50;
+const DRAFT_HISTORY_MAX_ITEM_CHARS = 4000;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -238,6 +242,55 @@ function migrateOverlayMessages(fromChatId: number | null, toChatId: number | nu
   delete store[fromKey];
   writeOverlayStore(store, [toKey]);
   return nextMessages;
+}
+
+function sanitizeDraftHistoryItems(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const items: string[] = [];
+  for (const item of value) {
+    const text = typeof item === "string" ? item.trim() : "";
+    if (!text) continue;
+    const clipped = text.length > DRAFT_HISTORY_MAX_ITEM_CHARS ? text.slice(0, DRAFT_HISTORY_MAX_ITEM_CHARS).trimEnd() : text;
+    if (!clipped || items[items.length - 1] === clipped) continue;
+    items.push(clipped);
+  }
+  return items.slice(-DRAFT_HISTORY_MAX_ITEMS_PER_CHAT);
+}
+
+function compactDraftHistoryStore(store: Record<string, unknown>, preferredKeys: string[] = []) {
+  const normalizedEntries = Object.entries(store)
+    .map(([key, value]) => [key, sanitizeDraftHistoryItems(value)] as const)
+    .filter(([, value]) => value.length > 0);
+  const preferredSet = new Set(preferredKeys.filter(Boolean));
+  const preferredEntries = normalizedEntries.filter(([key]) => preferredSet.has(key));
+  const remainingEntries = normalizedEntries.filter(([key]) => !preferredSet.has(key));
+  return Object.fromEntries([...preferredEntries, ...remainingEntries].slice(0, DRAFT_HISTORY_MAX_CHATS));
+}
+
+function readDraftHistoryStore() {
+  if (typeof window === "undefined") return {} as Record<string, string[]>;
+  try {
+    const raw = window.localStorage.getItem(DRAFT_HISTORY_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? compactDraftHistoryStore(parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDraftHistoryStore(store: Record<string, string[]>, preferredKeys: string[] = []) {
+  if (typeof window === "undefined") return;
+  const nextStore = compactDraftHistoryStore(store, preferredKeys);
+  if (Object.keys(nextStore).length === 0) {
+    window.localStorage.removeItem(DRAFT_HISTORY_STORAGE_KEY);
+    return;
+  }
+  try {
+    window.localStorage.setItem(DRAFT_HISTORY_STORAGE_KEY, JSON.stringify(nextStore));
+  } catch {
+    window.localStorage.removeItem(DRAFT_HISTORY_STORAGE_KEY);
+  }
 }
 
 type ChatTabProps = {
@@ -3520,7 +3573,7 @@ export function ChatTab({
   const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const draftHistoryByChatRef = useRef<Record<string, string[]>>({});
+  const draftHistoryByChatRef = useRef<Record<string, string[]>>(readDraftHistoryStore());
   const draftHistoryIndexRef = useRef<number | null>(null);
   const draftHistoryPendingDraftRef = useRef("");
   const isComposingRef = useRef(false);
@@ -4448,6 +4501,7 @@ export function ChatTab({
     const history = getDraftHistory();
     draftHistoryByChatRef.current[draftHistoryKey] =
       history[history.length - 1] === next ? history : mergeDraftHistory(history, [next]);
+    writeDraftHistoryStore(draftHistoryByChatRef.current, [draftHistoryKey, globalDraftHistoryKey]);
     draftHistoryIndexRef.current = null;
     draftHistoryPendingDraftRef.current = "";
     shouldStickThreadToBottomRef.current = true;
@@ -4594,6 +4648,7 @@ export function ChatTab({
     const targetHistory = draftHistoryByChatRef.current[targetKey] ?? [];
     draftHistoryByChatRef.current[targetKey] = mergeDraftHistory(globalHistory, targetHistory);
     delete draftHistoryByChatRef.current[globalDraftHistoryKey];
+    writeDraftHistoryStore(draftHistoryByChatRef.current, [targetKey]);
   }
 
   function getDraftHistory() {
