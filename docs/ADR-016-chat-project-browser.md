@@ -23,13 +23,13 @@ Chat 主界面已经承担了当前对话、审批、运行中命令、Agent 工
 
 - **Files**：项目文件和最近变更的轻量索引。
 - **Artifacts**：PRD、tech spec、test report、changelog 等正式产物和预期产物。
-- **Processes**：后台命令和任务运行记录，侧重查看，不替代主界面的审批/继续等待操作。
+- **Processes**：仅展示当前仍在运行的后台命令和任务，侧重查看，不替代主界面的审批/继续等待操作。
 
 职责边界：
 
 - Chat 主界面：对话、审批、选择、当前进度、运行中命令的主要交互。
-- Project Browser：查找、浏览、验证文件和产物，查看后台记录。
-- Monitor：Agent 上下文、事件流、系统诊断、深度调试。
+- Project Browser：查找、浏览、验证文件和产物，查看当前运行中的后台任务。
+- Monitor：Agent 上下文、事件流、系统诊断、深度调试、非活动任务和历史任务记录。
 
 ---
 
@@ -82,6 +82,14 @@ Artifacts 只展示可审阅、可交付、可归档的项目产物，不展示�
 - 明确命名为 artifact 且符合交付物语义的文档。
 
 页面布局采用和 Files 接近的轻量单行列表：类型、名称、状态、更新时间；详情只作为 hover/title 和后续预览入口。
+
+### 2026-05-11 Processes 范围修订
+
+Processes 只展示当前活动的后台执行项：
+
+- `run_shell` 工具卡片必须仍处于 `running` 状态。
+- task run 必须仍处于 `running` 状态，且不能是审批或 timeout 等阻塞等待状态。
+- 已完成、失败、取消、审批等待、timeout 等非当前活动记录不在 Project Browser 展示，统一进入 Monitor。
 
 ---
 

@@ -404,13 +404,25 @@ type BrowserArtifactEntry = {
 type BrowserProcessEntry = {
   id: string;
   command: string;
-  status: string;
   kind: "command" | "task";
   detail: string;
   timestamp?: string;
   pid?: number;
   output?: string;
 };
+
+function isRunningBrowserShellProcess(card: ChatCardItem) {
+  const tool = (card.tool || "").trim().toLowerCase();
+  const status = (card.status || "").trim().toLowerCase();
+  return tool === "run_shell" && status === "running" && !isInternalToolPause(card);
+}
+
+function isRunningBrowserTaskRun(run: TaskRunSummary) {
+  if ((run.status || "").trim().toLowerCase() !== "running") return false;
+  if (Number(run.pending_approval_count || 0) > 0) return false;
+  const blockedKind = String(run.continuation_cursor?.blocked_kind || "").trim().toLowerCase();
+  return blockedKind !== "approval" && blockedKind !== "timeout";
+}
 
 function ArtifactIcon({ type }: { type: string }) {
   const normalized = type.trim().toLowerCase();
@@ -1531,15 +1543,14 @@ function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSumm
   const entries: BrowserProcessEntry[] = [];
 
   cards
-    .filter((card) => (card.tool || "").toLowerCase() === "run_shell" && (card.status || "").toLowerCase() === "running")
+    .filter(isRunningBrowserShellProcess)
     .forEach((card) => {
       const command = readShellCommandPreview(card.arguments) || card.display_name || "run_shell";
       entries.push({
         id: `shell:${card.id}`,
         command,
-        status: card.status || (isToolCardFailure(card) ? "failed" : card.success ? "succeeded" : "captured"),
         kind: "command",
-        detail: card.summary || oneLinePreview(card.result, "Shell command record.", 140),
+        detail: card.summary || oneLinePreview(card.result, "Shell process is running.", 140),
         timestamp: card.created_at,
         pid: card.pid,
         output: trimShellOutputTail(card.result),
@@ -1547,12 +1558,10 @@ function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSumm
     });
 
   taskRuns.forEach((run) => {
-    const status = (run.status || "").toLowerCase();
-    if (status !== "running") return;
+    if (!isRunningBrowserTaskRun(run)) return;
     entries.push({
       id: `task-run:${run.id}`,
       command: run.title,
-      status: run.status,
       kind: "task",
       detail: run.summary || run.user_request || `${run.event_count} events`,
       timestamp: run.updated_at || run.created_at || undefined,
@@ -6055,22 +6064,16 @@ export function ChatTab({
                           <div className="browser-entry__body">
                             <div className="browser-entry__title" title={entry.command}>{entry.command}</div>
                             <div className="browser-entry__meta">
-                              <span className={`browser-entry__state browser-entry__state--${(entry.status || "").toLowerCase() === "running" ? "running" : "history"}`}>
-                                {(entry.status || "").toLowerCase() === "running" ? "Running" : "History"}
-                              </span>
+                              <span className="browser-entry__state browser-entry__state--running">Running</span>
                               <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
-                              <span>{formatTaskRunStatus(entry.status)}</span>
                             </div>
                           </div>
                           <CopyTextButton content={entry.command} title="Copy command" />
                         </summary>
                         <div className="browser-entry__details">
                           <div className="browser-entry__meta">
-                            <span className={`browser-entry__state browser-entry__state--${(entry.status || "").toLowerCase() === "running" ? "running" : "history"}`}>
-                              {(entry.status || "").toLowerCase() === "running" ? "Running" : "History"}
-                            </span>
+                            <span className="browser-entry__state browser-entry__state--running">Running</span>
                             <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
-                            <span>{formatTaskRunStatus(entry.status)}</span>
                             {typeof entry.pid === "number" ? <span>pid {entry.pid}</span> : null}
                             {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
                           </div>
