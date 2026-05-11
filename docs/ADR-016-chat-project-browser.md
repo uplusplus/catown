@@ -69,6 +69,20 @@ Files 不采用扁平路径卡片列表，改为常见文件浏览器模式：
 - 文件行只保留弱化来源/时间元信息，不放复制按钮。
 - Phase 1 仍不扫描真实磁盘；目录树由已有工具路径引用推断，Phase 2 再接入后端真实文件树 API。
 
+### 2026-05-11 Artifacts 分类修订
+
+Artifacts 只展示可审阅、可交付、可归档的项目产物，不展示普通源码文件、运行日志、Agent 动作或重试指令。
+
+纳入范围：
+
+- PRD、需求文档、用户故事等需求产物。
+- ADR、架构决策、设计方案、tech spec。
+- Test plan、test report、QA/verification report。
+- Review、audit、migration、deployment、release notes、changelog。
+- 明确命名为 artifact 且符合交付物语义的文档。
+
+页面布局采用和 Files 接近的轻量单行列表：类型、名称、状态、更新时间；详情只作为 hover/title 和后续预览入口。
+
 ---
 
 ## 4. 非目标

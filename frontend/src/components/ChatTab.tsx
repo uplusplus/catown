@@ -393,6 +393,7 @@ function isToolCardFailure(card: ThreadCard | DecoratedChatCardItem) {
 type BrowserArtifactEntry = {
   id: string;
   name: string;
+  type: string;
   stage: string;
   detail: string;
   status: string;
@@ -1346,14 +1347,38 @@ function buildBrowserFileEntries(project: ProjectSummary | null, cards: ChatCard
     .slice(0, 24);
 }
 
+function classifyBrowserArtifact(value: string) {
+  const normalized = normalizeBrowserPath(value).toLowerCase();
+  if (!normalized) return null;
+  if (/^@[\w.-]+\b/.test(normalized)) return null;
+  if (/(^|\/)adr[-_./]|\badr[-_ ]?\d+|\barchitecture[-_ ]decision/.test(normalized)) return "ADR";
+  if (/\bprd\b|product[-_ ]requirements?|requirements?[-_ ]doc/.test(normalized)) return "PRD";
+  if (/\btech[-_ ]?spec\b|\bspecification\b|\bspec\b|design[-_ ]doc|proposal/.test(normalized)) return "Spec";
+  if (/test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification/.test(normalized)) return "Test";
+  if (/\breport\b|audit|review/.test(normalized)) return "Report";
+  if (/changelog|change[-_ ]?log|release[-_ ]?notes?/.test(normalized)) return "Release";
+  if (/readme|docs?\//.test(normalized)) return "Doc";
+  if (/artifact/.test(normalized)) return "Artifact";
+  if (/\.(md|mdx|pdf|docx?)$/i.test(normalized) && /(plan|summary|guide|notes|decision|migration|deploy)/.test(normalized)) return "Doc";
+  return null;
+}
+
+function artifactDisplayName(value: string) {
+  const normalized = normalizeBrowserPath(value);
+  return browserPathBaseName(normalized) || normalized;
+}
+
 function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
   const entries: BrowserArtifactEntry[] = [];
 
   cards.forEach((card) => {
     card.expected_artifacts?.forEach((artifact) => {
+      const artifactType = classifyBrowserArtifact(artifact);
+      if (!artifactType) return;
       entries.push({
         id: `expected:${card.id}:${artifact}`,
-        name: artifact,
+        name: artifactDisplayName(artifact),
+        type: artifactType,
         stage: card.stage || card.display_name || "Expected artifact",
         detail: card.summary || card.agent || "Declared by stage plan",
         status: "expected",
@@ -1362,12 +1387,14 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
     });
 
     extractPathsFromText(`${card.summary || ""}\n${card.result || ""}`).forEach((path) => {
-      if (!/(prd|spec|test|report|changelog|release|artifact|adr|readme)/i.test(path)) return;
+      const artifactType = classifyBrowserArtifact(path);
+      if (!artifactType) return;
       entries.push({
         id: `artifact-path:${card.id}:${path}`,
-        name: path,
+        name: artifactDisplayName(path),
+        type: artifactType,
         stage: card.stage || card.tool || card.kind,
-        detail: isToolCardFailure(card) ? "Mentioned in failed result" : "Mentioned in result",
+        detail: path,
         status: isToolCardFailure(card) ? "needs review" : "referenced",
         timestamp: card.created_at,
       });
@@ -1376,12 +1403,14 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
 
   taskRuns.forEach((run) => {
     extractPathsFromText(`${run.summary || ""}\n${run.user_request || ""}`).forEach((path) => {
-      if (!/(prd|spec|test|report|changelog|release|artifact|adr|readme)/i.test(path)) return;
+      const artifactType = classifyBrowserArtifact(path);
+      if (!artifactType) return;
       entries.push({
         id: `run-artifact:${run.id}:${path}`,
-        name: path,
+        name: artifactDisplayName(path),
+        type: artifactType,
         stage: formatTaskRunKind(run.run_kind),
-        detail: run.summary || run.user_request || "Mentioned by task run",
+        detail: path,
         status: formatTaskRunStatus(run.status),
         timestamp: run.completed_at || run.updated_at || run.created_at || undefined,
       });
@@ -5882,25 +5911,23 @@ export function ChatTab({
               ) : null}
 
               {projectBrowserTab === "artifacts" ? (
-                <div className="project-browser__section">
+                <div className="project-browser__section project-browser__section--artifacts">
                   {browserArtifactEntries.length === 0 ? (
-                    <div className="empty-card">Artifacts will appear from stage plans, task runs, and generated reports.</div>
+                    <div className="empty-card">Deliverables such as PRDs, ADRs, specs, reports, and release notes will appear here.</div>
                   ) : (
-                    browserArtifactEntries.map((entry) => (
-                      <article key={entry.id} className="browser-entry browser-entry--artifact">
-                        <div className="browser-entry__icon"><Archive size={15} aria-hidden="true" /></div>
-                        <div className="browser-entry__body">
-                          <div className="browser-entry__title" title={entry.name}>{entry.name}</div>
-                          <div className="browser-entry__meta">
-                            <span>{entry.stage}</span>
+                    <div className="artifact-list" aria-label="Project artifacts">
+                      {browserArtifactEntries.map((entry) => (
+                        <article key={entry.id} className="artifact-row" title={entry.detail || entry.name}>
+                          <span className="artifact-row__icon" aria-hidden="true"><Archive size={14} /></span>
+                          <span className="artifact-row__type">{entry.type}</span>
+                          <span className="artifact-row__name">{entry.name}</span>
+                          <span className="artifact-row__meta">
                             <span>{entry.status}</span>
                             {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
-                          </div>
-                          <p>{oneLinePreview(entry.detail, "Artifact record", 120)}</p>
-                        </div>
-                        <CopyTextButton content={entry.name} title="Copy artifact name" />
-                      </article>
-                    ))
+                          </span>
+                        </article>
+                      ))}
+                    </div>
                   )}
                 </div>
               ) : null}
