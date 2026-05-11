@@ -1007,6 +1007,19 @@ function llmOutcomeSummary(card: ChatCardItem) {
   return "";
 }
 
+function isInternalToolPause(card: ChatCardItem) {
+  if (card.kind !== "tool_call") return false;
+  if (!card.blocked) return false;
+  const blockedKind = String(card.blocked_kind || "").trim().toLowerCase();
+  const status = String(card.status || "").trim().toLowerCase();
+  return blockedKind === "approval" || blockedKind === "timeout" || status === "approval_blocked" || status === "timeout_waiting";
+}
+
+function isToolCardFailure(card: ChatCardItem) {
+  if (isInternalToolPause(card)) return false;
+  return card.success === false;
+}
+
 function isActorToolCallStep(step: MessageStreamStep, actor: string, toolName: string) {
   return (
     (step.agent === actor &&
@@ -1038,6 +1051,19 @@ function isActorToolResultStep(step: MessageStreamStep, actor: string, toolName:
       ((typeof toolCallIndex === "number" && step.toolCallIndex === toolCallIndex) || step.tool === toolName)) ||
     step.label === toolOutputStepLabel(actor, toolName)
   );
+}
+
+function isRunningToolRuntimeCard(card: ChatCardItem) {
+  if (card.kind !== "tool_call") return false;
+  const status = (card.status || "").trim().toLowerCase();
+  return status === "running" || status === "approval_blocked" || status === "timeout_waiting";
+}
+
+function streamStepStateFromRuntimeCard(card: ChatCardItem): MessageStreamStep["state"] {
+  if (isRunningToolRuntimeCard(card)) return "live";
+  if (isToolCardFailure(card)) return "error";
+  if (card.kind === "agent_error" || card.kind === "gate_blocked" || card.kind === "gate_rejected") return "error";
+  return "done";
 }
 
 function isToolResultFailure(rawResult: string) {
@@ -1221,8 +1247,8 @@ function buildCardToolResultDetailContent(card: ChatCardItem) {
   if (card.result) {
     sections.push(
       isJsonContent(card.result)
-        ? markdownSection(card.success === false ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
-        : markdownSection(card.success === false ? "Error" : "Tool Result", card.result, { asMarkdown: true }),
+        ? markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
+        : markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result, { asMarkdown: true }),
     );
   }
   return sections.join("\n\n");
@@ -1242,7 +1268,9 @@ function buildLlmResponseStepDetail(card: ChatCardItem) {
 
 function buildToolCallStepDetail(card: ChatCardItem) {
   const bits: string[] = [];
+  if (isRunningToolRuntimeCard(card)) bits.push("running");
   if (card.arguments) bits.push(`args: ${summarizeStepDetail(card.arguments, 90)}`);
+  if (card.result && isRunningToolRuntimeCard(card)) bits.push(summarizeStepDetail(card.result, 140));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
   return bits.filter(Boolean).join(" · ");
@@ -1366,8 +1394,8 @@ function buildCardStepDetailContent(card: ChatCardItem) {
       if (card.result) {
         sections.push(
           isJsonContent(card.result)
-            ? markdownSection(card.success === false ? "Error" : "Result", prettyJson(card.result), { language: "json" })
-            : markdownSection(card.success === false ? "Error" : "Result", card.result, { asMarkdown: true }),
+            ? markdownSection(isToolCardFailure(card) ? "Error" : "Result", prettyJson(card.result), { language: "json" })
+            : markdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result, { asMarkdown: true }),
         );
       }
       return sections.join("\n\n");
@@ -1445,7 +1473,7 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
         {
           detail: buildToolCallStepDetail(card),
           detailContent: buildCardToolCallDetailContent(card),
-          state: card.success === false ? "error" : "done",
+          state: streamStepStateFromRuntimeCard(card),
           kind: "tool_call",
           agent: actor,
           tool: toolName,
@@ -3073,8 +3101,13 @@ function App() {
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
               liveToolArgs.delete(buildToolWaitKey(activeAgentName, toolCallIndex, toolName));
               const rawResult = typeof data.result === "string" ? data.result : "";
+              const blockedKind = typeof data.blocked_kind === "string" ? data.blocked_kind.trim().toLowerCase() : "";
+              const status = typeof data.status === "string" ? data.status.trim().toLowerCase() : "";
+              const internalPause =
+                data.blocked === true &&
+                (blockedKind === "approval" || blockedKind === "timeout" || status === "approval_blocked" || status === "timeout_waiting");
               const failed =
-                typeof data.success === "boolean" ? data.success === false : isToolResultFailure(rawResult);
+                internalPause ? false : typeof data.success === "boolean" ? data.success === false : isToolResultFailure(rawResult);
               const resultPreview =
                 rawResult.trim()
                   ? rawResult.replace(/\s+/g, " ").trim().slice(0, 140)
