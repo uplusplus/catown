@@ -21,10 +21,10 @@ CATOWN_WORKSPACES_DIR="${CATOWN_WORKSPACES_DIR:-$CATOWN_HOME/workspaces}"
 CATOWN_ENV_FILE="$CATOWN_HOME/.env"
 
 cleanup() {
-    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    if [ -n "$PID" ]; then
         echo "Stopping (PID $PID)..."
-        stop_server
     fi
+    stop_server
     echo "Done."
     exit 0
 }
