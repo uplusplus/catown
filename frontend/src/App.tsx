@@ -44,6 +44,7 @@ const OPTIMISTIC_MAX_STEP_LABEL_CHARS = 160;
 const OPTIMISTIC_MAX_STEP_DETAIL_CHARS = 800;
 const OPTIMISTIC_MAX_STEP_DETAIL_CONTENT_CHARS = 2400;
 const ERROR_AUTO_DISMISS_MS = 8000;
+const TASK_ACTIVITY_POLL_MS = 2500;
 
 const CONFIG_SECTION_META: Record<
   ConfigSection,
@@ -2160,25 +2161,41 @@ function App() {
     }
   }
 
-  async function loadOptionalTaskActivities(rows: TaskRunSummary[]) {
-    const inlineRows = rows.filter((run) => {
-      const clientTurnId = (run.client_turn_id || "").trim().toLowerCase();
-      const runKind = (run.run_kind || "").trim().toLowerCase();
-      return (
-        (run.status || "").toLowerCase() === "running" ||
-        Number(run.pending_approval_count || 0) > 0 ||
-        clientTurnId.startsWith("delegate-") ||
-        runKind.includes("pipeline") ||
-        runKind.includes("orchestration")
-      );
-    });
+  function shouldLoadTaskActivity(run: TaskRunSummary) {
+    const clientTurnId = (run.client_turn_id || "").trim().toLowerCase();
+    const runKind = (run.run_kind || "").trim().toLowerCase();
+    return (
+      (run.status || "").toLowerCase() === "running" ||
+      Number(run.pending_approval_count || 0) > 0 ||
+      clientTurnId.startsWith("delegate-") ||
+      runKind.includes("pipeline") ||
+      runKind.includes("orchestration")
+    );
+  }
+
+  function shouldPollTaskActivity(run: TaskRunSummary) {
+    return shouldLoadTaskActivity(run) && !taskRunTerminalState(run);
+  }
+
+  function mergeTaskActivities(entries: TaskActivityProjection[]) {
+    if (entries.length === 0) return;
+    setTaskActivitiesById((current) => ({
+      ...current,
+      ...Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])),
+    }));
+  }
+
+  async function loadOptionalTaskActivities(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
+    const inlineRows = rows.filter(shouldLoadTaskActivity);
     const entries = await Promise.all(
       inlineRows.map(async (run) => {
         try {
           return await api.getTaskRunActivity(run.id);
         } catch (nextError) {
-          const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
-          pushEvent(`Task activity unavailable: ${message}`, "warning");
+          if (!options.silent) {
+            const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
+            pushEvent(`Task activity unavailable: ${message}`, "warning");
+          }
           return null;
         }
       }),
@@ -2202,6 +2219,38 @@ function App() {
     const timeoutId = window.setTimeout(() => setError(""), ERROR_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timeoutId);
   }, [error]);
+
+  useEffect(() => {
+    if (!bootstrapped || !selectedChatId) return undefined;
+    const activeRuns = taskRuns.filter(shouldPollTaskActivity);
+    if (activeRuns.length === 0) return undefined;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const poll = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const entries = await loadOptionalTaskActivities(activeRuns, { silent: true });
+        if (!cancelled) {
+          mergeTaskActivities(entries);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void poll();
+    }, TASK_ACTIVITY_POLL_MS);
+    void poll();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [bootstrapped, selectedChatId, taskRuns]);
 
   function nextTempMessageId() {
     const nextId = tempMessageIdRef.current;

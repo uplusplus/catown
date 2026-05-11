@@ -985,6 +985,41 @@ function summarizeTaskRunInlineStatus(
   };
 }
 
+function backgroundText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function taskActivityBackgroundRows(activity: TaskActivityProjection | null) {
+  const background = activity?.background;
+  if (!background) return [];
+
+  const rows = [
+    { key: "scheduler_runtime_summary", label: "Scheduler", detail: backgroundText(background.scheduler_runtime_summary) },
+    { key: "subagent_lifecycle_summary", label: "Agents", detail: backgroundText(background.subagent_lifecycle_summary) },
+    { key: "subagent_handles_summary", label: "Handles", detail: backgroundText(background.subagent_handles_summary) },
+    { key: "pipeline_inbox_summary", label: "Pipeline", detail: backgroundText(background.pipeline_inbox_summary) },
+    { key: "orchestration_handoff_inbox_summary", label: "Handoffs", detail: backgroundText(background.orchestration_handoff_inbox_summary) },
+  ];
+
+  return rows.filter((row) => row.detail.length > 0);
+}
+
+function renderTaskActivityBackground(activity: TaskActivityProjection | null) {
+  const rows = taskActivityBackgroundRows(activity);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="task-activity-background" aria-label="Task background activity">
+      {rows.map((row) => (
+        <div className="task-activity-background__row" key={row.key}>
+          <span className="task-activity-background__label">{row.label}</span>
+          <span className="task-activity-background__detail">{row.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function buildTaskRunCardSummary(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
@@ -4239,6 +4274,8 @@ function renderTaskRunInlineCard(
               <span>{inlineStatus.detail}</span>
             </div>
           ) : null}
+
+          {renderTaskActivityBackground(activity)}
 
           {shellOutput}
 

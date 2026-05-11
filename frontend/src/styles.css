@@ -5372,6 +5372,36 @@ a {
   border-color: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
+.task-activity-background {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+
+.task-activity-background__row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.task-activity-background__label {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.task-activity-background__detail {
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task-run-shell-output {
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 12px;
