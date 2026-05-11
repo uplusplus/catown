@@ -100,6 +100,12 @@ export type ProjectFileReadResponse = {
   preview_limit: number;
 };
 
+export type ProjectFileWritePayload = {
+  path: string;
+  content: string;
+  expected_mtime?: number | null;
+};
+
 export type MessageItem = {
   id: number;
   agent_id?: number | null;

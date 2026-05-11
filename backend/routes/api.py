@@ -2638,6 +2638,12 @@ class ProjectFileReadInfo(BaseModel):
     preview_limit: int
 
 
+class ProjectFileWriteRequest(BaseModel):
+    path: str
+    content: str
+    expected_mtime: Optional[float] = None
+
+
 class ProjectUpdate(BaseModel):
     name: str
 
@@ -2792,6 +2798,7 @@ PROJECT_BROWSER_MAX_FILES = 800
 PROJECT_BROWSER_MAX_DIRS = 400
 PROJECT_BROWSER_BATCH_SIZE = 50
 PROJECT_FILE_READ_MAX_BYTES = 512 * 1024
+PROJECT_FILE_WRITE_MAX_CHARS = 1024 * 1024
 
 
 def _project_browser_artifact_type(path: str) -> Optional[str]:
@@ -3022,6 +3029,23 @@ def _read_project_workspace_file(workspace_path: str, relative_path: str) -> Pro
         binary=False,
         preview_limit=PROJECT_FILE_READ_MAX_BYTES,
     )
+
+
+def _write_project_workspace_file(workspace_path: str, request: ProjectFileWriteRequest) -> ProjectFileReadInfo:
+    if len(request.content) > PROJECT_FILE_WRITE_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="File content is too large to save from chat")
+
+    file_path = _resolve_project_workspace_file(workspace_path, request.path)
+    stat = file_path.stat()
+    if request.expected_mtime is not None and abs(stat.st_mtime - request.expected_mtime) > 0.0001:
+        raise HTTPException(status_code=409, detail="Workspace file changed after it was opened")
+
+    current_preview = file_path.read_bytes()[:PROJECT_FILE_READ_MAX_BYTES]
+    if b"\x00" in current_preview:
+        raise HTTPException(status_code=400, detail="Binary files cannot be edited from chat")
+
+    file_path.write_text(request.content, encoding="utf-8")
+    return _read_project_workspace_file(workspace_path, request.path)
 
 
 def _resolve_chatroom_project(db: Session, chatroom: Chatroom | None) -> Optional[Project]:
@@ -3468,6 +3492,17 @@ async def read_project_file(project_id: int, path: str, db: Session = Depends(ge
     if not project.workspace_path:
         raise HTTPException(status_code=400, detail="Project has no workspace path")
     return _read_project_workspace_file(project.workspace_path, path)
+
+
+@router.put("/projects/{project_id}/files/write", response_model=ProjectFileReadInfo)
+async def write_project_file(project_id: int, payload: ProjectFileWriteRequest, db: Session = Depends(get_db)):
+    """Save a text file inside the project workspace with optimistic mtime conflict detection."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+    return _write_project_workspace_file(project.workspace_path, payload)
 
 
 @router.get("/projects/{project_id}/chat", response_model=ChatInfo)

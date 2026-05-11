@@ -387,6 +387,10 @@ type FileReaderState = {
   status: "loading" | "ready" | "error";
   data?: ProjectFileReadResponse;
   error?: string;
+  mode?: "read" | "edit";
+  draft?: string;
+  saving?: boolean;
+  saveMessage?: string;
 };
 
 function isInternalToolPause(card: ThreadCard | DecoratedChatCardItem) {
@@ -2741,13 +2745,25 @@ function CopyTextButton({ content, title }: { content: string; title: string }) 
 function FileReaderCard({
   state,
   onClose,
+  onEdit,
+  onDraftChange,
+  onDiscard,
+  onSave,
 }: {
   state: FileReaderState;
   onClose: () => void;
+  onEdit: () => void;
+  onDraftChange: (value: string) => void;
+  onDiscard: () => void;
+  onSave: () => void;
 }) {
   const data = state.data;
   const path = data?.path || state.path;
-  const lineCount = data?.content ? data.content.split("\n").length : 0;
+  const isEditable = Boolean(data && !data.binary && !data.truncated);
+  const isEditing = state.mode === "edit" && isEditable;
+  const resolvedContent = isEditing ? state.draft ?? data?.content ?? "" : data?.content ?? "";
+  const lineCount = resolvedContent ? resolvedContent.split("\n").length : 0;
+  const dirty = isEditing && (state.draft ?? "") !== (data?.content ?? "");
 
   return (
     <article className="file-reader-card">
@@ -2767,6 +2783,21 @@ function FileReaderCard({
         <div className="file-reader-card__actions">
           <CopyTextButton content={path} title="Copy path" />
           {data && !data.binary ? <CopyTextButton content={data.content} title="Copy file content" /> : null}
+          {isEditable && !isEditing ? (
+            <button type="button" className="chat-copy-inline-btn" onClick={onEdit} title="Edit file">
+              Edit
+            </button>
+          ) : null}
+          {isEditing ? (
+            <>
+              <button type="button" className="chat-copy-inline-btn" onClick={onDiscard} disabled={state.saving} title="Discard changes">
+                Discard
+              </button>
+              <button type="button" className="chat-copy-inline-btn" onClick={onSave} disabled={!dirty || state.saving} title="Save file">
+                {state.saving ? "Saving" : "Save"}
+              </button>
+            </>
+          ) : null}
           <button type="button" className="chat-copy-inline-btn" onClick={onClose} title="Close file reader">
             Close
           </button>
@@ -2781,10 +2812,24 @@ function FileReaderCard({
         <div className="file-reader-card__empty">
           Binary file preview is not available. Size: {formatFileSize(data.size)}.
         </div>
+      ) : isEditing ? (
+        <div className="file-reader-card__body">
+          <div className="file-reader-card__body-meta">
+            {lineCount} lines{state.saveMessage ? ` - ${state.saveMessage}` : ""}
+          </div>
+          <textarea
+            className="file-reader-card__editor"
+            value={state.draft ?? ""}
+            onChange={(event) => onDraftChange(event.target.value)}
+            spellCheck={false}
+          />
+        </div>
       ) : (
         <div className="file-reader-card__body">
-          <div className="file-reader-card__body-meta">{lineCount} lines</div>
-          <pre className="file-reader-card__content">{data?.content || ""}</pre>
+          <div className="file-reader-card__body-meta">
+            {lineCount} lines{state.saveMessage ? ` - ${state.saveMessage}` : ""}
+          </div>
+          <pre className="file-reader-card__content">{resolvedContent}</pre>
         </div>
       )}
     </article>
@@ -4566,6 +4611,34 @@ export function ChatTab({
       });
     }
   }, [project?.id]);
+  const saveFileReaderDraft = useCallback(async () => {
+    if (!project?.id || !fileReader?.data || fileReader.mode !== "edit") return;
+    const content = fileReader.draft ?? "";
+    setFileReader((current) => current ? { ...current, saving: true, error: "", saveMessage: "" } : current);
+    try {
+      const data = await api.writeProjectFile(project.id, {
+        path: fileReader.data.path,
+        content,
+        expected_mtime: fileReader.data.mtime,
+      });
+      setFileReader({
+        path: data.path,
+        status: "ready",
+        data,
+        mode: "read",
+        draft: data.content,
+        saving: false,
+        saveMessage: "Saved",
+      });
+    } catch (error) {
+      setFileReader((current) => current ? {
+        ...current,
+        saving: false,
+        status: "ready",
+        saveMessage: error instanceof Error ? error.message : "Unable to save file.",
+      } : current);
+    }
+  }, [fileReader, project?.id]);
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
     const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
@@ -5986,6 +6059,20 @@ export function ChatTab({
                 <FileReaderCard
                   state={fileReader}
                   onClose={() => setFileReader(null)}
+                  onEdit={() => {
+                    setFileReader((current) => current?.data
+                      ? { ...current, mode: "edit", draft: current.data.content, saveMessage: "" }
+                      : current);
+                  }}
+                  onDraftChange={(value) => {
+                    setFileReader((current) => current ? { ...current, draft: value, saveMessage: "" } : current);
+                  }}
+                  onDiscard={() => {
+                    setFileReader((current) => current?.data
+                      ? { ...current, mode: "read", draft: current.data.content, saveMessage: "" }
+                      : current);
+                  }}
+                  onSave={() => void saveFileReaderDraft()}
                 />
               ) : null}
 

@@ -23,6 +23,7 @@ import type {
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
   ProjectFileReadResponse,
+  ProjectFileWritePayload,
   ProjectSyncResponse,
   SkillMarketplacesResponse,
   SkillMarketplaceUpdateResponse,
@@ -152,6 +153,12 @@ export const api = {
   readProjectFile(projectId: number, path: string) {
     const params = new URLSearchParams({ path });
     return request<ProjectFileReadResponse>(`/api/projects/${projectId}/files/read?${params.toString()}`);
+  },
+  writeProjectFile(projectId: number, payload: ProjectFileWritePayload) {
+    return request<ProjectFileReadResponse>(`/api/projects/${projectId}/files/write`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
   },
   async streamProjectBrowser(
     projectId: number,
