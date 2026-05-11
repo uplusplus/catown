@@ -22,6 +22,7 @@ import type {
   ProjectFromChatPayload,
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
+  ProjectFileReadResponse,
   ProjectSyncResponse,
   SkillMarketplacesResponse,
   SkillMarketplaceUpdateResponse,
@@ -147,6 +148,10 @@ export const api = {
   },
   getProjectBrowser(projectId: number) {
     return request<ProjectBrowserIndex>(`/api/projects/${projectId}/browser`);
+  },
+  readProjectFile(projectId: number, path: string) {
+    const params = new URLSearchParams({ path });
+    return request<ProjectFileReadResponse>(`/api/projects/${projectId}/files/read?${params.toString()}`);
   },
   async streamProjectBrowser(
     projectId: number,

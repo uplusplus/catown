@@ -1643,7 +1643,7 @@ a {
 }
 
 .file-tree__row.is-file {
-  cursor: default;
+  cursor: pointer;
 }
 
 .file-tree__row.is-directory {
@@ -1686,6 +1686,98 @@ a {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.file-reader-card {
+  margin: 0 0 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel-strong) 72%, transparent);
+}
+
+.file-reader-card__header {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.file-reader-card__title {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.file-reader-card__title strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-reader-card__icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.file-reader-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.file-reader-card__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.file-reader-card__body-meta {
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.file-reader-card__content {
+  max-height: min(52vh, 620px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 82%, black 18%);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.file-reader-card__empty {
+  padding: 16px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-reader-card__empty.is-error {
+  color: var(--danger);
 }
 
 .artifact-list {

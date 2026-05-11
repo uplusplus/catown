@@ -88,6 +88,18 @@ export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
   type: "start" | "batch" | "done";
 };
 
+export type ProjectFileReadResponse = {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  content: string;
+  encoding: string;
+  truncated: boolean;
+  binary: boolean;
+  preview_limit: number;
+};
+
 export type MessageItem = {
   id: number;
   agent_id?: number | null;

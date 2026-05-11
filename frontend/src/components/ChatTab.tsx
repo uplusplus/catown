@@ -31,6 +31,7 @@ import type {
   MessageStreamStep,
   TaskActivityProjection,
   ProjectBrowserIndex,
+  ProjectFileReadResponse,
   ProjectSummary,
   TaskRunDetail,
   TaskRunEvent,
@@ -381,6 +382,12 @@ type BrowserFileTreeNode = {
   detail?: string;
   timestamp?: string;
 };
+type FileReaderState = {
+  path: string;
+  status: "loading" | "ready" | "error";
+  data?: ProjectFileReadResponse;
+  error?: string;
+};
 
 function isInternalToolPause(card: ThreadCard | DecoratedChatCardItem) {
   if (card.kind !== "tool_call") return false;
@@ -476,6 +483,13 @@ function browserFileTypeLabel(path: string) {
   if (/\.(zip|tar|tgz|gz)$/.test(normalized)) return "Archive";
   if (/\.txt$/.test(normalized)) return "Text";
   return "File";
+}
+
+function formatFileSize(bytes: number | null | undefined) {
+  const value = Math.max(bytes ?? 0, 0);
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
 }
 
 function FileTreeIcon({ node }: { node: BrowserFileTreeNode }) {
@@ -2724,6 +2738,59 @@ function CopyTextButton({ content, title }: { content: string; title: string }) 
   );
 }
 
+function FileReaderCard({
+  state,
+  onClose,
+}: {
+  state: FileReaderState;
+  onClose: () => void;
+}) {
+  const data = state.data;
+  const path = data?.path || state.path;
+  const lineCount = data?.content ? data.content.split("\n").length : 0;
+
+  return (
+    <article className="file-reader-card">
+      <div className="file-reader-card__header">
+        <div className="file-reader-card__title">
+          <span className="file-reader-card__icon" aria-hidden="true"><FileText size={16} /></span>
+          <div>
+            <strong>{path}</strong>
+            <div className="file-reader-card__meta">
+              {data ? <span>{formatFileSize(data.size)}</span> : null}
+              {data?.mtime ? <span>{formatTime(new Date(data.mtime * 1000).toISOString())}</span> : null}
+              {data?.encoding ? <span>{data.encoding}</span> : null}
+              {data?.truncated ? <span>truncated at {formatFileSize(data.preview_limit)}</span> : null}
+            </div>
+          </div>
+        </div>
+        <div className="file-reader-card__actions">
+          <CopyTextButton content={path} title="Copy path" />
+          {data && !data.binary ? <CopyTextButton content={data.content} title="Copy file content" /> : null}
+          <button type="button" className="chat-copy-inline-btn" onClick={onClose} title="Close file reader">
+            Close
+          </button>
+        </div>
+      </div>
+
+      {state.status === "loading" ? (
+        <div className="file-reader-card__empty">Loading file...</div>
+      ) : state.status === "error" ? (
+        <div className="file-reader-card__empty is-error">{state.error || "Unable to read file."}</div>
+      ) : data?.binary ? (
+        <div className="file-reader-card__empty">
+          Binary file preview is not available. Size: {formatFileSize(data.size)}.
+        </div>
+      ) : (
+        <div className="file-reader-card__body">
+          <div className="file-reader-card__body-meta">{lineCount} lines</div>
+          <pre className="file-reader-card__content">{data?.content || ""}</pre>
+        </div>
+      )}
+    </article>
+  );
+}
+
 function renderJsonCollapse(
   badge: string,
   label: string,
@@ -4223,6 +4290,7 @@ function renderProjectFileTreeNode(
   depth: number,
   expandedPaths: Record<string, boolean>,
   onToggle: (path: string) => void,
+  onOpenFile: (node: BrowserFileTreeNode) => void,
 ) {
   const isDirectory = node.kind === "directory";
   const isExpanded = isDirectory && expandedPaths[node.path] === true;
@@ -4234,7 +4302,7 @@ function renderProjectFileTreeNode(
         type="button"
         className={`file-tree__row ${isDirectory ? "is-directory" : "is-file"}`}
         style={{ "--file-tree-depth": depth } as CSSProperties}
-        onClick={isDirectory ? () => onToggle(node.path) : undefined}
+        onClick={isDirectory ? () => onToggle(node.path) : () => onOpenFile(node)}
         title={node.path}
       >
         <span className="file-tree__twisty" aria-hidden="true">
@@ -4255,7 +4323,7 @@ function renderProjectFileTreeNode(
       </button>
       {isDirectory && isExpanded && hasChildren ? (
         <div className="file-tree__children">
-          {node.children.map((child) => renderProjectFileTreeNode(child, depth + 1, expandedPaths, onToggle))}
+          {node.children.map((child) => renderProjectFileTreeNode(child, depth + 1, expandedPaths, onToggle, onOpenFile))}
         </div>
       ) : null}
     </div>
@@ -4341,6 +4409,7 @@ export function ChatTab({
   const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
   const [projectBrowserTab, setProjectBrowserTab] = useState<ProjectBrowserTab>("artifacts");
   const [expandedFileTreePaths, setExpandedFileTreePaths] = useState<Record<string, boolean>>({});
+  const [fileReader, setFileReader] = useState<FileReaderState | null>(null);
   const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
@@ -4478,8 +4547,25 @@ export function ChatTab({
     setExpandedFileTreePaths((current) => ({ ...nextExpanded, ...current }));
   }, [browserFileTree.path]);
   const toggleFileTreePath = useCallback((path: string) => {
-    setExpandedFileTreePaths((current) => ({ ...current, [path]: current[path] === false }));
+    setExpandedFileTreePaths((current) => ({ ...current, [path]: !current[path] }));
   }, []);
+  const openFileReader = useCallback(async (node: BrowserFileTreeNode) => {
+    if (!project?.id || node.kind !== "file") return;
+    setFileReader({ path: node.path, status: "loading" });
+    try {
+      const data = await api.readProjectFile(project.id, node.path);
+      setFileReader({ path: data.path, status: "ready", data });
+      requestAnimationFrame(() => {
+        threadRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    } catch (error) {
+      setFileReader({
+        path: node.path,
+        status: "error",
+        error: error instanceof Error ? error.message : "Unable to read file.",
+      });
+    }
+  }, [project?.id]);
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
     const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
@@ -5896,6 +5982,13 @@ export function ChatTab({
             }}
           >
             <div className="chat-thread-inner">
+              {fileReader ? (
+                <FileReaderCard
+                  state={fileReader}
+                  onClose={() => setFileReader(null)}
+                />
+              ) : null}
+
               {!project && chat && showProjectCreateConfirm ? (
                 <div className="chat-inline-decision">
                   <div className="chat-inline-decision__copy">
@@ -6170,7 +6263,7 @@ export function ChatTab({
                     <div className="empty-card">Files will appear after tools reference workspace paths.</div>
                   ) : (
                     <div className="file-tree" role="tree" aria-label="Workspace files">
-                      {renderProjectFileTreeNode(browserFileTree, 0, expandedFileTreePaths, toggleFileTreePath)}
+                      {renderProjectFileTreeNode(browserFileTree, 0, expandedFileTreePaths, toggleFileTreePath, openFileReader)}
                     </div>
                   )}
                 </div>

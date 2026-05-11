@@ -2626,6 +2626,18 @@ class ProjectBrowserInfo(BaseModel):
     truncated: bool = False
 
 
+class ProjectFileReadInfo(BaseModel):
+    path: str
+    name: str
+    size: int
+    mtime: float
+    content: str = ""
+    encoding: str = "utf-8"
+    truncated: bool = False
+    binary: bool = False
+    preview_limit: int
+
+
 class ProjectUpdate(BaseModel):
     name: str
 
@@ -2779,6 +2791,7 @@ PROJECT_BROWSER_IGNORED_DIRS = {
 PROJECT_BROWSER_MAX_FILES = 800
 PROJECT_BROWSER_MAX_DIRS = 400
 PROJECT_BROWSER_BATCH_SIZE = 50
+PROJECT_FILE_READ_MAX_BYTES = 512 * 1024
 
 
 def _project_browser_artifact_type(path: str) -> Optional[str]:
@@ -2944,6 +2957,70 @@ def _scan_project_browser(workspace_path: str) -> ProjectBrowserInfo:
         files=files,
         artifacts=artifacts,
         truncated=truncated,
+    )
+
+
+def _resolve_project_workspace_file(workspace_path: str, relative_path: str) -> Path:
+    workspace = Path(workspace_path).expanduser().resolve()
+    if not workspace.exists() or not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="Workspace path not found")
+
+    normalized = (relative_path or "").replace("\\", "/").strip()
+    if not normalized or normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        raise HTTPException(status_code=400, detail="Invalid workspace file path")
+
+    resolved = (workspace / normalized).resolve()
+    try:
+        resolved.relative_to(workspace)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="File path escapes workspace")
+
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Workspace file not found")
+    if not resolved.is_file():
+        raise HTTPException(status_code=400, detail="Workspace path is not a file")
+    return resolved
+
+
+def _read_project_workspace_file(workspace_path: str, relative_path: str) -> ProjectFileReadInfo:
+    workspace = Path(workspace_path).expanduser().resolve()
+    file_path = _resolve_project_workspace_file(workspace_path, relative_path)
+    stat = file_path.stat()
+    with file_path.open("rb") as handle:
+        raw = handle.read(PROJECT_FILE_READ_MAX_BYTES + 1)
+    truncated = len(raw) > PROJECT_FILE_READ_MAX_BYTES
+    preview = raw[:PROJECT_FILE_READ_MAX_BYTES]
+    relative = file_path.relative_to(workspace).as_posix()
+
+    if b"\x00" in preview:
+        return ProjectFileReadInfo(
+            path=relative,
+            name=file_path.name,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+            content="",
+            truncated=truncated or stat.st_size > PROJECT_FILE_READ_MAX_BYTES,
+            binary=True,
+            preview_limit=PROJECT_FILE_READ_MAX_BYTES,
+        )
+
+    try:
+        content = preview.decode("utf-8")
+        encoding = "utf-8"
+    except UnicodeDecodeError:
+        content = preview.decode("utf-8", errors="replace")
+        encoding = "utf-8-replace"
+
+    return ProjectFileReadInfo(
+        path=relative,
+        name=file_path.name,
+        size=stat.st_size,
+        mtime=stat.st_mtime,
+        content=content,
+        encoding=encoding,
+        truncated=truncated or stat.st_size > PROJECT_FILE_READ_MAX_BYTES,
+        binary=False,
+        preview_limit=PROJECT_FILE_READ_MAX_BYTES,
     )
 
 
@@ -3380,6 +3457,17 @@ async def stream_project_browser(project_id: int, db: Session = Depends(get_db))
     if not project.workspace_path:
         raise HTTPException(status_code=400, detail="Project has no workspace path")
     return StreamingResponse(_stream_project_browser(project.workspace_path), media_type="application/x-ndjson")
+
+
+@router.get("/projects/{project_id}/files/read", response_model=ProjectFileReadInfo)
+async def read_project_file(project_id: int, path: str, db: Session = Depends(get_db)):
+    """Return a bounded, workspace-scoped read-only preview of a project file."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+    return _read_project_workspace_file(project.workspace_path, path)
 
 
 @router.get("/projects/{project_id}/chat", response_model=ChatInfo)
