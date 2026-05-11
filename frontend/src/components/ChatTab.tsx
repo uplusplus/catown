@@ -3408,6 +3408,7 @@ export function ChatTab({
   const draftHistoryIndexRef = useRef<number | null>(null);
   const draftHistoryPendingDraftRef = useRef("");
   const isComposingRef = useRef(false);
+  const pendingComposerCaretRef = useRef<number | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const currentScopeRef = useRef<string>(overlayScopeKey(chat?.id ?? null));
@@ -3463,6 +3464,7 @@ export function ChatTab({
     [activeAgents],
   );
   const draftHistoryKey = useMemo(() => `chat:${chat?.id ?? "global"}`, [chat?.id]);
+  const globalDraftHistoryKey = "chat:global";
   const defaultAgentNames = useMemo(() => {
     if (primaryAgent) {
       return [getAgentType(primaryAgent)];
@@ -3515,6 +3517,9 @@ export function ChatTab({
   );
 
   useEffect(() => {
+    if (draftHistoryKey !== globalDraftHistoryKey) {
+      migrateGlobalDraftHistory(draftHistoryKey);
+    }
     setTaskRunDetailError("");
     setLoadingTaskRunId(null);
     setTaskRunDetailsById({});
@@ -3527,7 +3532,7 @@ export function ChatTab({
     setApprovalQueueLoaded(false);
     draftHistoryIndexRef.current = null;
     draftHistoryPendingDraftRef.current = "";
-  }, [chat?.id]);
+  }, [chat?.id, draftHistoryKey]);
 
   useEffect(() => {
     if (draftHistoryIndexRef.current === null) {
@@ -4273,6 +4278,18 @@ export function ChatTab({
     setSelectedMentionIndex((current) => Math.min(current, Math.max(mentionOptions.length - 1, 0)));
   }, [mentionOptions.length, showMentionPicker]);
 
+  useLayoutEffect(() => {
+    const nextCaret = pendingComposerCaretRef.current;
+    if (nextCaret === null) return;
+
+    pendingComposerCaretRef.current = null;
+    const input = composerInputRef.current;
+    if (!input) return;
+
+    input.focus();
+    input.setSelectionRange(nextCaret, nextCaret);
+  }, [draft]);
+
   useEffect(() => {
     if (!showMentionPicker) return;
 
@@ -4312,9 +4329,9 @@ export function ChatTab({
   function submitDraft() {
     const next = draft.trim();
     if (!next || sending) return;
-    const history = draftHistoryByChatRef.current[draftHistoryKey] ?? [];
+    const history = getDraftHistory();
     draftHistoryByChatRef.current[draftHistoryKey] =
-      history[history.length - 1] === next ? history : [...history, next].slice(-50);
+      history[history.length - 1] === next ? history : mergeDraftHistory(history, [next]);
     draftHistoryIndexRef.current = null;
     draftHistoryPendingDraftRef.current = "";
     shouldStickThreadToBottomRef.current = true;
@@ -4416,34 +4433,85 @@ export function ChatTab({
     }));
   }, []);
 
+  function queueComposerCaret(caret: number) {
+    pendingComposerCaretRef.current = caret;
+    window.requestAnimationFrame(() => {
+      const nextCaret = pendingComposerCaretRef.current;
+      if (nextCaret === null) return;
+
+      pendingComposerCaretRef.current = null;
+      const input = composerInputRef.current;
+      if (!input) return;
+
+      input.focus();
+      input.setSelectionRange(nextCaret, nextCaret);
+    });
+  }
+
+  function mergeDraftHistory(...sources: string[][]) {
+    const merged: string[] = [];
+    for (const source of sources) {
+      for (const item of source) {
+        if (!item.trim()) continue;
+        if (merged[merged.length - 1] === item) continue;
+        merged.push(item);
+      }
+    }
+    return merged.slice(-50);
+  }
+
+  function migrateGlobalDraftHistory(targetKey: string) {
+    if (targetKey === globalDraftHistoryKey) return;
+
+    const globalHistory = draftHistoryByChatRef.current[globalDraftHistoryKey] ?? [];
+    if (globalHistory.length === 0) return;
+
+    const targetHistory = draftHistoryByChatRef.current[targetKey] ?? [];
+    draftHistoryByChatRef.current[targetKey] = mergeDraftHistory(globalHistory, targetHistory);
+    delete draftHistoryByChatRef.current[globalDraftHistoryKey];
+  }
+
+  function getDraftHistory() {
+    const history = draftHistoryByChatRef.current[draftHistoryKey] ?? [];
+    if (history.length > 0 || draftHistoryKey === globalDraftHistoryKey) return history;
+    return draftHistoryByChatRef.current[globalDraftHistoryKey] ?? [];
+  }
+
   function insertMention(agentType: string) {
     setDraft((current) => {
       if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) {
-        return current.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, `$1@${agentType} `);
+        const next = current.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, `$1@${agentType} `);
+        queueComposerCaret(next.length);
+        return next;
       }
 
       const separator = current.length === 0 || /\s$/.test(current) ? "" : " ";
-      return `${current}${separator}@${agentType} `;
+      const next = `${current}${separator}@${agentType} `;
+      queueComposerCaret(next.length);
+      return next;
     });
     setShowMentionPicker(false);
     setSelectedMentionIndex(0);
-    window.requestAnimationFrame(() => composerInputRef.current?.focus());
   }
 
   function handleMentionTriggerClick() {
     if (sending) return;
     setDraft((current) => {
-      if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) return current;
+      if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) {
+        queueComposerCaret(current.length);
+        return current;
+      }
       const separator = current.length === 0 || /\s$/.test(current) ? "" : " ";
-      return `${current}${separator}@`;
+      const next = `${current}${separator}@`;
+      queueComposerCaret(next.length);
+      return next;
     });
     setShowMentionPicker(true);
     setSelectedMentionIndex(0);
-    window.requestAnimationFrame(() => composerInputRef.current?.focus());
   }
 
   function navigateDraftHistory(direction: -1 | 1) {
-    const history = draftHistoryByChatRef.current[draftHistoryKey] ?? [];
+    const history = getDraftHistory();
     if (history.length === 0) return;
 
     const currentIndex = draftHistoryIndexRef.current;
@@ -4512,8 +4580,9 @@ export function ChatTab({
     const hasSelection = selectionStart !== selectionEnd;
     const caretAtStart = selectionStart === 0 && selectionEnd === 0;
     const caretAtEnd = selectionStart === draft.length && selectionEnd === draft.length;
+    const singleLineDraft = !draft.includes("\n");
 
-    if (!showMentionPicker && !hasSelection && isArrowUpKey && (draft.length === 0 || caretAtStart)) {
+    if (!showMentionPicker && !hasSelection && isArrowUpKey && (draft.length === 0 || caretAtStart || (singleLineDraft && caretAtEnd))) {
       event.preventDefault();
       navigateDraftHistory(-1);
       return;

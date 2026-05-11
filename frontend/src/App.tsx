@@ -144,6 +144,41 @@ function sanitizePersistedStep(step: MessageStreamStep): MessageStreamStep {
   };
 }
 
+function streamStepDedupeKey(step: MessageStreamStep) {
+  return [
+    step.kind || "",
+    step.agent || "",
+    step.tool || "",
+    step.toolCallIndex ?? "",
+    step.toolCallId ?? "",
+    step.label || "",
+    step.detail || "",
+  ].join("\u0001");
+}
+
+function dedupeStreamSteps(steps: MessageStreamStep[]) {
+  const byKey = new Map<string, MessageStreamStep>();
+  const order: string[] = [];
+
+  for (const step of steps) {
+    const key = streamStepDedupeKey(step);
+    if (!byKey.has(key)) {
+      order.push(key);
+    }
+    byKey.set(key, step);
+  }
+
+  return order.map((key) => byKey.get(key)).filter((step): step is MessageStreamStep => Boolean(step));
+}
+
+function dedupeMessageStreamSteps(message: MessageItem) {
+  const steps = message.streamSteps ?? [];
+  if (steps.length <= 1) return message;
+
+  const dedupedSteps = dedupeStreamSteps(steps);
+  return dedupedSteps.length === steps.length ? message : { ...message, streamSteps: dedupedSteps };
+}
+
 function sanitizePersistedMessage(message: MessageItem): MessageItem {
   return {
     id: message.id,
@@ -156,7 +191,7 @@ function sanitizePersistedMessage(message: MessageItem): MessageItem {
     isStreaming: message.isStreaming,
     optimisticKind: message.optimisticKind,
     localOnly: message.localOnly,
-    streamSteps: (message.streamSteps || []).slice(-OPTIMISTIC_MAX_STEP_COUNT).map(sanitizePersistedStep),
+    streamSteps: dedupeStreamSteps((message.streamSteps || []).map(sanitizePersistedStep)).slice(-OPTIMISTIC_MAX_STEP_COUNT),
   };
 }
 
@@ -764,9 +799,16 @@ function pushStreamingStep(
   detail?: string,
   state: MessageStreamStep["state"] = "live",
   detailContent?: string,
-  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool">>,
+  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId">>,
 ) {
-  const nextSteps = [...settleLiveStreamSteps(message.streamSteps), buildStreamStep(label, detail, state, detailContent, meta)];
+  const nextStep = buildStreamStep(label, detail, state, detailContent, meta);
+  const settledSteps = settleLiveStreamSteps(message.streamSteps);
+  const nextKey = streamStepDedupeKey(nextStep);
+  const existingIndex = settledSteps.findIndex((step) => streamStepDedupeKey(step) === nextKey);
+  const nextSteps =
+    existingIndex === -1
+      ? [...settledSteps, nextStep]
+      : settledSteps.map((step, index) => (index === existingIndex ? { ...step, ...nextStep, id: step.id } : step));
   return {
     ...message,
     streamSteps: trimStreamSteps(nextSteps),
@@ -1809,7 +1851,10 @@ function App() {
   function commitOptimisticMessages(
     updater: MessageItem[] | ((current: MessageItem[]) => MessageItem[]),
   ) {
-    setOptimisticMessages((current) => (typeof updater === "function" ? updater(current) : updater));
+    setOptimisticMessages((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      return next.map(dedupeMessageStreamSteps);
+    });
   }
 
   function commitChats(updater: ChatSummary[] | ((current: ChatSummary[]) => ChatSummary[])) {
