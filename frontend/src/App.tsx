@@ -23,6 +23,8 @@ import type {
   MessageItem,
   MessageStreamStep,
   PermissionsConfigPayload,
+  ProjectBrowserIndex,
+  ProjectBrowserStreamBatch,
   ProjectSummary,
   TaskRunDetail,
   TaskRunSummary,
@@ -1604,6 +1606,176 @@ function taskRunTerminalState(taskRun: TaskRunSummary) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+function isInternalTaskRunSummary(value: string | null | undefined) {
+  const normalized = (value || "").toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("rebuild_turn_state_from_tool_round") ||
+    normalized.includes("protocol_tail") ||
+    normalized.includes("prior_round_summaries") ||
+    normalized.includes("continue agent turn · via") ||
+    normalized.includes("continue agent turn - via")
+  );
+}
+
+function userFacingTaskRunSummary(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || isInternalTaskRunSummary(normalized)) return null;
+  return normalized;
+}
+
+function taskRunActorName(taskRun: TaskRunSummary, fallback?: string | null) {
+  return taskRun.target_agent_name || fallback || "Agent";
+}
+
+function taskRunContinuationToolName(taskRun: TaskRunSummary) {
+  const cursor = taskRun.continuation_cursor ?? taskRun.checkpoint_snapshot?.continuation_cursor ?? null;
+  if (cursor?.tool_name) return cursor.tool_name;
+  const toolNames = cursor?.tool_names ?? taskRun.checkpoint_snapshot?.continuation_cursor?.tool_names ?? null;
+  if (Array.isArray(toolNames) && toolNames.length > 0) return toolNames[toolNames.length - 1] || null;
+  const blockedTool = taskRun.checkpoint_snapshot?.turn_local_state?.blocked_tool;
+  return blockedTool && typeof blockedTool["tool_name"] === "string" ? String(blockedTool["tool_name"]) : null;
+}
+
+function latestTaskRunDetailEvent(taskRun: TaskRunSummary | TaskRunDetail) {
+  return "events" in taskRun && Array.isArray(taskRun.events) && taskRun.events.length > 0
+    ? taskRun.events[taskRun.events.length - 1]
+    : null;
+}
+
+function latestTaskRunToolResult(taskRun: TaskRunSummary | TaskRunDetail) {
+  const events = "events" in taskRun && Array.isArray(taskRun.events) ? taskRun.events : [];
+  const toolRoundEvent = [...events].reverse().find((event) => event.event_type === "tool_round_recorded");
+  const turnLocalState = toolRoundEvent?.payload?.turn_local_state;
+  if (!turnLocalState || typeof turnLocalState !== "object") return null;
+  const toolResults = (turnLocalState as Record<string, unknown>).tool_results;
+  if (!Array.isArray(toolResults) || toolResults.length === 0) return null;
+  const result = toolResults[toolResults.length - 1];
+  return result && typeof result === "object" ? result as Record<string, unknown> : null;
+}
+
+function taskRunLatestEventType(taskRun: TaskRunSummary | TaskRunDetail) {
+  const latestEvent = latestTaskRunDetailEvent(taskRun);
+  return (
+    latestEvent?.event_type ||
+    taskRun.latest_event_type ||
+    taskRun.checkpoint_snapshot?.latest_event_type ||
+    taskRun.latest_continuation_event_type ||
+    taskRun.continuation_cursor?.source_event_type ||
+    taskRun.checkpoint_snapshot?.continuation_cursor?.source_event_type ||
+    ""
+  ).toLowerCase();
+}
+
+function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSummary | TaskRunDetail) {
+  const actor = taskRunActorName(taskRun, message.agent_name);
+  const latestEvent = latestTaskRunDetailEvent(taskRun);
+  const latestPayload = latestEvent?.payload && typeof latestEvent.payload === "object"
+    ? latestEvent.payload
+    : null;
+  const latestToolResult = latestTaskRunToolResult(taskRun);
+  const eventType = taskRunLatestEventType(taskRun);
+  const toolName =
+    (latestToolResult && typeof latestToolResult.tool_name === "string" ? latestToolResult.tool_name : null) ||
+    (latestPayload && typeof latestPayload.tool_name === "string" ? latestPayload.tool_name : null) ||
+    taskRunContinuationToolName(taskRun);
+  const latestToolResultText = latestToolResult && typeof latestToolResult.result === "string"
+    ? latestToolResult.result
+    : "";
+  const statusSummary =
+    userFacingTaskRunSummary(latestEvent?.summary) ||
+    userFacingTaskRunSummary(taskRun.summary) ||
+    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_cursor_summary);
+  const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
+
+  if (pendingApprovalCount > 0) {
+    return {
+      label: toolName ? `${actor} is waiting for approval · ${toolName}` : `${actor} is waiting for approval`,
+      detail: statusSummary || `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
+      kind: "tool_call" as const,
+      tool: toolName || undefined,
+    };
+  }
+
+  if (eventType === "tool_call_started") {
+    const argumentsText = latestPayload && typeof latestPayload.arguments === "string" ? latestPayload.arguments : "";
+    return {
+      label: toolName ? `${actor} calls ${toolName}` : `${actor} calls a tool`,
+      detail: statusSummary || summarizeStepDetail(argumentsText, 140) || (toolName ? `Running ${toolName}.` : "Running tool."),
+      kind: "tool_call" as const,
+      tool: toolName || undefined,
+    };
+  }
+
+  if (eventType === "tool_round_recorded" || eventType === "approval_queue_item_followup_triggered") {
+    return {
+      label: toolName ? `Tool Output · ${actor} · ${toolName}` : `Tool Output · ${actor}`,
+      detail:
+        statusSummary ||
+        summarizeStepDetail(latestToolResultText, 140) ||
+        (toolName ? `Handing ${toolName} result back to ${actor}.` : `Handing the latest tool result back to ${actor}.`),
+      kind: "tool_result_to_llm" as const,
+      tool: toolName || undefined,
+    };
+  }
+
+  if (eventType.includes("agent_turn")) {
+    return {
+      label: `LLM -> ${actor}`,
+      detail: statusSummary || `${actor} is waiting for the next model response.`,
+      kind: "llm_inbound" as const,
+      tool: undefined,
+    };
+  }
+
+  if (eventType) {
+    return {
+      label: `${actor} is processing ${eventType.replace(/_/g, " ")}`,
+      detail: statusSummary || `${actor} is continuing from ${eventType.replace(/_/g, " ")}.`,
+      kind: "llm_inbound" as const,
+      tool: undefined,
+    };
+  }
+
+  return {
+    label: toolName ? `${actor} continues with ${toolName}` : `${actor} is continuing`,
+    detail: statusSummary || (toolName ? `${actor} is continuing after ${toolName}.` : undefined),
+    kind: toolName ? ("tool_result_to_llm" as const) : ("llm_inbound" as const),
+    tool: toolName || undefined,
+  };
+}
+
+function updateRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRunSummary | TaskRunDetail) {
+  const actor = taskRunActorName(taskRun, message.agent_name);
+  const step = buildRecoveredTaskRunLiveStep(message, taskRun);
+  const baseMessage = {
+    ...message,
+    content: message.content || step.detail,
+    agent_name: actor,
+    client_turn_id: taskRun.client_turn_id || message.client_turn_id,
+    isStreaming: true,
+  };
+  return patchMatchingStreamingStep(
+    baseMessage,
+    (candidate) =>
+      candidate.state === "live" &&
+      candidate.agent === actor &&
+      candidate.kind === step.kind &&
+      (step.tool ? candidate.tool === step.tool : true),
+    {
+      label: step.label,
+      detail: step.detail,
+      state: "live",
+      kind: step.kind,
+      agent: actor,
+      tool: step.tool,
+    },
+    step.label,
+  );
+}
+
 function messageLooksApprovalHold(message: MessageItem) {
   return (message.streamSteps ?? []).some((step) => {
     const label = (step.label || "").toLowerCase();
@@ -1617,9 +1789,10 @@ function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: Task
   const isFailed = status === "failed" || status === "cancelled";
   const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Continuing";
   const detail =
-    taskRun.summary ||
-    taskRun.continuation_state_summary ||
-    taskRun.continuation_cursor_summary ||
+    userFacingTaskRunSummary(taskRun.summary) ||
+    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
+    userFacingTaskRunSummary(taskRun.continuation_cursor_summary) ||
     (isFailed ? "Task run stopped before a final reply was saved." : "Task run state recovered from the run ledger.");
 
   return finalizeStreamingTrace(
@@ -1651,6 +1824,29 @@ function replayRuntimeCardsForTurn(message: MessageItem, cards: ChatCardItem[]) 
     nextMessage = { ...nextMessage, agent_name: lastActor };
   }
   return nextMessage;
+}
+
+function applyRuntimeCardToMatchingPlaceholders(current: MessageItem[], card: ChatCardItem) {
+  if (!card.client_turn_id) return current;
+  let didUpdate = false;
+  const next = current.map((message) => {
+    if (message.optimisticKind !== "assistant_placeholder") return message;
+    if (!sameClientTurn(message.client_turn_id, card.client_turn_id)) return message;
+    didUpdate = true;
+    return applyRuntimeCardStep(
+      {
+        ...message,
+        agent_name:
+          card.agent ||
+          card.from_agent ||
+          card.to_agent ||
+          message.agent_name,
+        isStreaming: true,
+      },
+      card,
+    );
+  });
+  return didUpdate ? next : current;
 }
 
 function finalizeRecoveredPlaceholder(
@@ -1704,11 +1900,20 @@ function reconcileOptimisticMessagesWithServer(
 
       const matchingTaskRun = findMatchingTaskRun(taskRuns, item);
       if (matchingTaskRun) {
+        const taskRunDetail = "events" in matchingTaskRun
+          ? matchingTaskRun
+          : taskRuns.find((run) => run.id === matchingTaskRun.id && "events" in run) || matchingTaskRun;
         const pendingApprovalCount = Number(matchingTaskRun.pending_approval_count || 0);
-        if (taskRunTerminalState(matchingTaskRun) || (pendingApprovalCount === 0 && messageLooksApprovalHold(item))) {
+        if (taskRunTerminalState(matchingTaskRun)) {
           next.push(finalizeRecoveredTaskRunPlaceholder(replayed, matchingTaskRun));
           return next;
         }
+        if (pendingApprovalCount === 0 && messageLooksApprovalHold(item)) {
+          next.push(updateRecoveredTaskRunPlaceholder(replayed, taskRunDetail));
+          return next;
+        }
+        next.push(updateRecoveredTaskRunPlaceholder(replayed, taskRunDetail));
+        return next;
       }
 
       next.push(
@@ -1766,6 +1971,7 @@ function App() {
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [chatCards, setChatCards] = useState<ChatCardItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
+  const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [chatEvents, setChatEvents] = useState<ChatEventItem[]>([]);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">("connecting");
@@ -1901,6 +2107,25 @@ function App() {
     });
   }
 
+  function mergeProjectBrowserBatch(
+    current: ProjectBrowserIndex | null,
+    batch: ProjectBrowserStreamBatch,
+  ): ProjectBrowserIndex {
+    const workspacePath = batch.workspace_path || current?.workspace_path || "";
+    const fileMap = new Map((current?.files ?? []).map((item) => [item.path, item]));
+    const artifactMap = new Map((current?.artifacts ?? []).map((item) => [item.path, item]));
+    batch.files.forEach((item) => fileMap.set(item.path, item));
+    batch.artifacts.forEach((item) => artifactMap.set(item.path, item));
+    return {
+      workspace_path: workspacePath,
+      files: Array.from(fileMap.values()).sort((left, right) => left.path.localeCompare(right.path)),
+      artifacts: Array.from(artifactMap.values()).sort((left, right) =>
+        left.type === right.type ? left.path.localeCompare(right.path) : left.type.localeCompare(right.type),
+      ),
+      truncated: Boolean(current?.truncated || batch.truncated),
+    };
+  }
+
   function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
     const previousChatId = selectedChatIdRef.current;
     debugConsole("info", "applyChatSelection", {
@@ -1916,6 +2141,7 @@ function App() {
       setMessages([]);
       setChatCards([]);
       setChatEvents([]);
+      setProjectBrowserIndex(null);
     }
     selectedChatIdRef.current = nextChatId;
     selectedProjectIdRef.current = nextProjectId;
@@ -2099,6 +2325,36 @@ function App() {
   }, [activeChat, bootstrapped, chats, projects, selectedChatId]);
 
   useEffect(() => {
+    if (!bootstrapped || !selectedProject) {
+      setProjectBrowserIndex(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setProjectBrowserIndex({
+      workspace_path: selectedProject.workspace_path || "",
+      files: [],
+      artifacts: [],
+      truncated: false,
+    });
+
+    api.streamProjectBrowser(
+      selectedProject.id,
+      (batch) => {
+        if (controller.signal.aborted) return;
+        setProjectBrowserIndex((current) => mergeProjectBrowserBatch(current, batch));
+      },
+      controller.signal,
+    ).catch((nextError) => {
+      if (controller.signal.aborted) return;
+      const message = nextError instanceof Error ? nextError.message : "Failed to scan workspace";
+      pushEvent(`Project browser scan unavailable: ${message}`, "warning");
+    });
+
+    return () => controller.abort();
+  }, [bootstrapped, selectedProject]);
+
+  useEffect(() => {
     if (!bootstrapped) return;
     if (!selectedChatId) {
       setMessages([]);
@@ -2106,6 +2362,7 @@ function App() {
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
       setTaskRuns([]);
+      setProjectBrowserIndex(null);
       setLiveTaskRunDetailsById({});
       return;
     }
@@ -2276,6 +2533,7 @@ function App() {
             const card = buildCard(data.card as Record<string, unknown>);
             if (card) {
               pushCard(card);
+              commitOptimisticMessages((current) => applyRuntimeCardToMatchingPlaceholders(current, card));
               if (streamingAssistantIdRef.current !== null) {
                 commitOptimisticMessages((current) =>
                   updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) =>
@@ -2313,7 +2571,9 @@ function App() {
                   return next;
                 });
               }
-              commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, [], [], [entry]));
+              commitOptimisticMessages((current) =>
+                reconcileOptimisticMessagesWithServer(current, [], [], [detail && typeof detail.id === "number" ? detail : entry]),
+              );
             }
             return;
           }
@@ -3906,6 +4166,7 @@ function App() {
             connectionState={connectionState}
             cards={chatCards}
             taskRuns={taskRuns}
+            projectBrowserIndex={projectBrowserIndex}
             liveTaskRunDetailsById={liveTaskRunDetailsById}
             events={chatEvents}
             onSend={handleSendMessage}

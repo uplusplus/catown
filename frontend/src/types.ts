@@ -61,6 +61,33 @@ export type ProjectSummary = {
   agents: AgentInfo[];
 };
 
+export type ProjectBrowserFileItem = {
+  path: string;
+  name: string;
+  kind: "file" | "directory";
+  size?: number | null;
+  mtime?: number | null;
+};
+
+export type ProjectBrowserArtifactItem = {
+  path: string;
+  name: string;
+  type: string;
+  size?: number | null;
+  mtime?: number | null;
+};
+
+export type ProjectBrowserIndex = {
+  workspace_path: string;
+  files: ProjectBrowserFileItem[];
+  artifacts: ProjectBrowserArtifactItem[];
+  truncated: boolean;
+};
+
+export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
+  type: "start" | "batch" | "done";
+};
+
 export type MessageItem = {
   id: number;
   agent_id?: number | null;
@@ -119,6 +146,7 @@ export type TaskRunSummary = {
     prior_round_summary_count?: number | null;
   } | null;
   continuation_state_summary?: string | null;
+  latest_event_type?: string | null;
   latest_continuation_event_type?: string | null;
   latest_continuation_event_summary?: string | null;
   latest_continuation_event_at?: string | null;

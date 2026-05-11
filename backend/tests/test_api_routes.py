@@ -841,6 +841,27 @@ class TestProjectEndpoints:
         assert r2.status_code == 200
         assert r2.json()["name"] == "GetTest"
 
+    def test_get_project_browser_indexes_workspace_files_and_artifacts(self, client):
+        project = client.post("/api/projects", json={"name": "BrowserTest"}).json()
+        workspace = Path(project["workspace_path"])
+        (workspace / "src").mkdir()
+        (workspace / "docs").mkdir()
+        (workspace / "node_modules").mkdir()
+        (workspace / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        (workspace / "docs" / "ADR-001-browser.md").write_text("# ADR\n", encoding="utf-8")
+        (workspace / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+
+        response = client.get(f"/api/projects/{project['id']}/browser")
+        assert response.status_code == 200
+        data = response.json()
+        file_paths = {item["path"] for item in data["files"]}
+        artifact_paths = {item["path"] for item in data["artifacts"]}
+
+        assert "src/app.py" in file_paths
+        assert "docs/ADR-001-browser.md" in file_paths
+        assert "node_modules/ignored.js" not in file_paths
+        assert "docs/ADR-001-browser.md" in artifact_paths
+
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")
         assert r.status_code == 404

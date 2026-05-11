@@ -1676,11 +1676,35 @@ a {
   padding: 4px 0;
 }
 
+.artifact-group + .artifact-group {
+  border-top: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+}
+
+.artifact-group__header {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.artifact-group__header strong {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
 .artifact-row {
   min-width: 0;
   height: 28px;
   display: grid;
-  grid-template-columns: 18px 56px minmax(0, 1fr) minmax(0, auto);
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, auto);
   align-items: center;
   gap: 6px;
   padding: 0 8px;
@@ -1696,18 +1720,6 @@ a {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-}
-
-.artifact-row__type {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9.5px;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .artifact-row__name {

@@ -20,6 +20,8 @@ import type {
   PermissionsConfigPayload,
   ProjectCreatePayload,
   ProjectFromChatPayload,
+  ProjectBrowserIndex,
+  ProjectBrowserStreamBatch,
   ProjectSyncResponse,
   SkillMarketplacesResponse,
   SkillMarketplaceUpdateResponse,
@@ -141,6 +143,52 @@ export const api = {
   },
   getProjectChat(projectId: number) {
     return request<ChatSummary>(`/api/projects/${projectId}/chat`);
+  },
+  getProjectBrowser(projectId: number) {
+    return request<ProjectBrowserIndex>(`/api/projects/${projectId}/browser`);
+  },
+  async streamProjectBrowser(
+    projectId: number,
+    onBatch: (batch: ProjectBrowserStreamBatch) => void,
+    signal?: AbortSignal,
+  ) {
+    const response = await fetch(`/api/projects/${projectId}/browser/stream`, {
+      cache: "no-store",
+      signal,
+      headers: {
+        "X-Catown-Client": getClientSource(),
+        "X-Catown-UI-Version": UI_VERSION,
+      },
+    });
+    handleServerVersionHeaders(response.headers, `api:/api/projects/${projectId}/browser/stream`);
+
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`);
+    }
+    if (!response.body) {
+      onBatch({ ...(await this.getProjectBrowser(projectId)), type: "done" });
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        onBatch(JSON.parse(trimmed) as ProjectBrowserStreamBatch);
+      });
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      onBatch(JSON.parse(buffer.trim()) as ProjectBrowserStreamBatch);
+    }
   },
   createProjectSubchat(projectId: number, title?: string) {
     return request<ChatSummary>(`/api/projects/${projectId}/subchats`, {

@@ -29,6 +29,7 @@ import type {
   ChatSummary,
   MessageItem,
   MessageStreamStep,
+  ProjectBrowserIndex,
   ProjectSummary,
   TaskRunDetail,
   TaskRunEvent,
@@ -302,6 +303,7 @@ type ChatTabProps = {
   optimisticMessages: MessageItem[];
   cards: ChatCardItem[];
   taskRuns: TaskRunSummary[];
+  projectBrowserIndex: ProjectBrowserIndex | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   loading: boolean;
   sending: boolean;
@@ -1347,6 +1349,28 @@ function buildBrowserFileEntries(project: ProjectSummary | null, cards: ChatCard
     .slice(0, 24);
 }
 
+function buildWorkspaceBrowserFileEntries(projectBrowserIndex: ProjectBrowserIndex | null) {
+  if (!projectBrowserIndex) return [];
+  return projectBrowserIndex.files.map((file) => ({
+    id: `workspace-file:${file.path}`,
+    path: file.path,
+    source: "Workspace file",
+    detail: file.size === null || typeof file.size === "undefined" ? "Workspace file" : `${file.size} bytes`,
+    timestamp: typeof file.mtime === "number" ? new Date(file.mtime * 1000).toISOString() : undefined,
+  }));
+}
+
+function mergeBrowserFileEntries(workspaceEntries: BrowserFileEntry[], runtimeEntries: BrowserFileEntry[], workspacePath?: string | null) {
+  const merged = new Map<string, BrowserFileEntry>();
+  workspaceEntries.forEach((entry) => merged.set(normalizeBrowserPath(entry.path), entry));
+  runtimeEntries.forEach((entry) => {
+    const key = relativeBrowserPath(entry.path, workspacePath);
+    const existing = merged.get(key) ?? merged.get(normalizeBrowserPath(entry.path));
+    merged.set(existing ? normalizeBrowserPath(existing.path) : key, existing ? { ...existing, ...entry, path: existing.path } : entry);
+  });
+  return Array.from(merged.values());
+}
+
 function classifyBrowserArtifact(value: string) {
   const normalized = normalizeBrowserPath(value).toLowerCase();
   if (!normalized) return null;
@@ -1422,11 +1446,63 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
     .slice(0, 24);
 }
 
+function buildWorkspaceBrowserArtifactEntries(projectBrowserIndex: ProjectBrowserIndex | null) {
+  if (!projectBrowserIndex) return [];
+  return projectBrowserIndex.artifacts.map((artifact) => ({
+    id: `workspace-artifact:${artifact.path}`,
+    name: artifact.name || artifactDisplayName(artifact.path),
+    type: artifact.type,
+    stage: "Workspace",
+    detail: artifact.path,
+    status: "file",
+    timestamp: typeof artifact.mtime === "number" ? new Date(artifact.mtime * 1000).toISOString() : undefined,
+  }));
+}
+
+function mergeBrowserArtifactEntries(workspaceEntries: BrowserArtifactEntry[], runtimeEntries: BrowserArtifactEntry[]) {
+  const merged = new Map<string, BrowserArtifactEntry>();
+  workspaceEntries.forEach((entry) => merged.set(entry.detail || entry.name, entry));
+  runtimeEntries.forEach((entry) => {
+    const key = entry.detail || entry.name;
+    merged.set(key, merged.has(key) ? { ...merged.get(key), ...entry } as BrowserArtifactEntry : entry);
+  });
+  return Array.from(merged.values())
+    .sort((left, right) => {
+      const leftTime = new Date(left.timestamp || 0).getTime();
+      const rightTime = new Date(right.timestamp || 0).getTime();
+      if (leftTime !== rightTime) return rightTime - leftTime;
+      return left.name.localeCompare(right.name);
+    });
+}
+
+function groupBrowserArtifactEntries(entries: BrowserArtifactEntry[]) {
+  const groups = new Map<string, BrowserArtifactEntry[]>();
+  entries.forEach((entry) => {
+    groups.set(entry.type, [...(groups.get(entry.type) ?? []), entry]);
+  });
+
+  return Array.from(groups.entries())
+    .map(([type, items]) => ({
+      type,
+      latestTimestamp: items.reduce((latest, item) => Math.max(latest, new Date(item.timestamp || 0).getTime()), 0),
+      items: items.sort((left, right) => {
+        const leftTime = new Date(left.timestamp || 0).getTime();
+        const rightTime = new Date(right.timestamp || 0).getTime();
+        if (leftTime !== rightTime) return rightTime - leftTime;
+        return left.name.localeCompare(right.name);
+      }),
+    }))
+    .sort((left, right) => {
+      if (left.latestTimestamp !== right.latestTimestamp) return right.latestTimestamp - left.latestTimestamp;
+      return left.type.localeCompare(right.type);
+    });
+}
+
 function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
   const entries: BrowserProcessEntry[] = [];
 
   cards
-    .filter((card) => (card.tool || "").toLowerCase() === "run_shell")
+    .filter((card) => (card.tool || "").toLowerCase() === "run_shell" && (card.status || "").toLowerCase() === "running")
     .forEach((card) => {
       const command = readShellCommandPreview(card.arguments) || card.display_name || "run_shell";
       entries.push({
@@ -1443,8 +1519,7 @@ function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSumm
 
   taskRuns.forEach((run) => {
     const status = (run.status || "").toLowerCase();
-    const isProcessLike = status === "running" || run.run_kind.includes("orchestration") || run.run_kind.includes("pipeline");
-    if (!isProcessLike) return;
+    if (status !== "running") return;
     entries.push({
       id: `task-run:${run.id}`,
       command: run.title,
@@ -1457,7 +1532,7 @@ function buildBrowserProcessEntries(cards: ChatCardItem[], taskRuns: TaskRunSumm
 
   return dedupeById(entries)
     .sort((left, right) => new Date(right.timestamp || 0).getTime() - new Date(left.timestamp || 0).getTime())
-    .slice(0, 24);
+    .slice(0, 12);
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -1640,6 +1715,8 @@ function renderTaskRunTrace(
 ) {
   const traceSteps = buildTaskRunTraceSteps(taskRun, detail);
   if (traceSteps.length === 0) return null;
+  const currentStepId = [...traceSteps].reverse().find((step) => step.state === "live")?.id ?? traceSteps[traceSteps.length - 1]?.id ?? null;
+  const resolvedExpandedStepId = expandedStepId ?? currentStepId;
 
   return (
     <div className="message-stream-trace message-stream-trace--task-run">
@@ -1647,7 +1724,7 @@ function renderTaskRunTrace(
         <details
           key={step.id}
           className={`message-stream-step message-stream-step--${step.state}`}
-          open={expandedStepId === step.id}
+          open={resolvedExpandedStepId === step.id}
         >
           <summary
             className="message-stream-step__summary"
@@ -1670,7 +1747,7 @@ function renderTaskRunTrace(
               </span>
             </span>
           </summary>
-          {expandedStepId === step.id && (step.detailContent || step.detail) ? (
+          {resolvedExpandedStepId === step.id && (step.detailContent || step.detail) ? (
             <div className="message-stream-step__detail">
               {renderMarkdownContent(step.detailContent || step.detail || "", "message-stream-step__detail-content", {
                 highlight: false,
@@ -3679,6 +3756,7 @@ function renderMessage(
   const hasStreamSteps = streamSteps.length > 0;
   const currentStreamStepId =
     [...streamSteps].reverse().find((step) => step.state === "live")?.id ?? streamSteps[streamSteps.length - 1]?.id ?? null;
+  const resolvedExpandedStepId = expandedStepId ?? currentStreamStepId;
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
   const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
@@ -3695,7 +3773,7 @@ function renderMessage(
         <details
           key={step.id}
           className={`message-stream-step message-stream-step--${step.state}`}
-          open={expandedStepId === step.id}
+          open={resolvedExpandedStepId === step.id}
         >
           <summary
             className="message-stream-step__summary"
@@ -3724,7 +3802,7 @@ function renderMessage(
               </span>
             </span>
           </summary>
-          {expandedStepId === step.id && (step.detailContent || step.detail) ? (
+          {resolvedExpandedStepId === step.id && (step.detailContent || step.detail) ? (
             <div className="message-stream-step__detail">
               {(() => {
                 const detailSource = step.detailContent || step.detail || "";
@@ -4038,6 +4116,7 @@ export function ChatTab({
   optimisticMessages,
   cards,
   taskRuns,
+  projectBrowserIndex,
   liveTaskRunDetailsById,
   loading,
   sending,
@@ -4168,17 +4247,37 @@ export function ChatTab({
     );
   }, [localOverlayMessages, messages]);
   const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
-  const browserFileEntries = useMemo(
+  const runtimeBrowserFileEntries = useMemo(
     () => buildBrowserFileEntries(project, cards, taskRuns),
     [cards, project, taskRuns],
+  );
+  const workspaceBrowserFileEntries = useMemo(
+    () => buildWorkspaceBrowserFileEntries(projectBrowserIndex),
+    [projectBrowserIndex],
+  );
+  const browserFileEntries = useMemo(
+    () => mergeBrowserFileEntries(workspaceBrowserFileEntries, runtimeBrowserFileEntries, project?.workspace_path),
+    [project?.workspace_path, runtimeBrowserFileEntries, workspaceBrowserFileEntries],
   );
   const browserFileTree = useMemo(
     () => buildBrowserFileTree(browserFileEntries, project?.workspace_path, project?.name || chat?.title),
     [browserFileEntries, chat?.title, project?.name, project?.workspace_path],
   );
-  const browserArtifactEntries = useMemo(
+  const runtimeBrowserArtifactEntries = useMemo(
     () => buildBrowserArtifactEntries(cards, taskRuns),
     [cards, taskRuns],
+  );
+  const workspaceBrowserArtifactEntries = useMemo(
+    () => buildWorkspaceBrowserArtifactEntries(projectBrowserIndex),
+    [projectBrowserIndex],
+  );
+  const browserArtifactEntries = useMemo(
+    () => mergeBrowserArtifactEntries(workspaceBrowserArtifactEntries, runtimeBrowserArtifactEntries),
+    [runtimeBrowserArtifactEntries, workspaceBrowserArtifactEntries],
+  );
+  const browserArtifactGroups = useMemo(
+    () => groupBrowserArtifactEntries(browserArtifactEntries),
+    [browserArtifactEntries],
   );
   const browserProcessEntries = useMemo(
     () => buildBrowserProcessEntries(cards, taskRuns),
@@ -4186,11 +4285,8 @@ export function ChatTab({
   );
   useEffect(() => {
     const nextExpanded: Record<string, boolean> = { [browserFileTree.path]: true };
-    browserFileTree.children.forEach((node) => {
-      if (node.kind === "directory") nextExpanded[node.path] = true;
-    });
     setExpandedFileTreePaths((current) => ({ ...nextExpanded, ...current }));
-  }, [browserFileTree.path, browserFileTree.children]);
+  }, [browserFileTree.path]);
   const toggleFileTreePath = useCallback((path: string) => {
     setExpandedFileTreePaths((current) => ({ ...current, [path]: current[path] === false }));
   }, []);
@@ -5853,7 +5949,12 @@ export function ChatTab({
             <div className="sidebar-content project-browser">
               <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
                 {[
-                  { id: "files" as const, label: "Files", count: browserFileEntries.length, Icon: FolderTree },
+                  {
+                    id: "files" as const,
+                    label: "Files",
+                    count: projectBrowserIndex?.truncated ? `${browserFileEntries.length}+` : browserFileEntries.length,
+                    Icon: FolderTree,
+                  },
                   { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
                   { id: "processes" as const, label: "Processes", count: browserProcessEntries.length, Icon: Monitor },
                 ].map(({ id, label, count, Icon }) => (
@@ -5890,16 +5991,23 @@ export function ChatTab({
                     <div className="empty-card">Deliverables such as PRDs, ADRs, specs, reports, and release notes will appear here.</div>
                   ) : (
                     <div className="artifact-list" aria-label="Project artifacts">
-                      {browserArtifactEntries.map((entry) => (
-                        <article key={entry.id} className="artifact-row" title={entry.detail || entry.name}>
-                          <span className="artifact-row__icon" aria-hidden="true"><Archive size={14} /></span>
-                          <span className="artifact-row__type">{entry.type}</span>
-                          <span className="artifact-row__name">{entry.name}</span>
-                          <span className="artifact-row__meta">
-                            <span>{entry.status}</span>
-                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
-                          </span>
-                        </article>
+                      {browserArtifactGroups.map((group) => (
+                        <div key={group.type} className="artifact-group">
+                          <div className="artifact-group__header">
+                            <span>{group.type}</span>
+                            <strong>{group.items.length}</strong>
+                          </div>
+                          {group.items.map((entry) => (
+                            <article key={entry.id} className="artifact-row" title={entry.detail || entry.name}>
+                              <span className="artifact-row__icon" aria-hidden="true"><Archive size={14} /></span>
+                              <span className="artifact-row__name">{entry.name}</span>
+                              <span className="artifact-row__meta">
+                                <span>{entry.status}</span>
+                                {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
+                              </span>
+                            </article>
+                          ))}
+                        </div>
                       ))}
                     </div>
                   )}
@@ -5909,7 +6017,7 @@ export function ChatTab({
               {projectBrowserTab === "processes" ? (
                 <div className="project-browser__section">
                   {browserProcessEntries.length === 0 ? (
-                    <div className="empty-card">Background commands and task runs will appear here.</div>
+                    <div className="empty-card">Running background tasks will appear here.</div>
                   ) : (
                     browserProcessEntries.map((entry) => (
                       <article key={entry.id} className="browser-entry browser-entry--process">

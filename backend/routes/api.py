@@ -2602,6 +2602,29 @@ class ProjectSyncInfo(BaseModel):
     summary: str
 
 
+class ProjectBrowserFileInfo(BaseModel):
+    path: str
+    name: str
+    kind: str
+    size: Optional[int] = None
+    mtime: Optional[float] = None
+
+
+class ProjectBrowserArtifactInfo(BaseModel):
+    path: str
+    name: str
+    type: str
+    size: Optional[int] = None
+    mtime: Optional[float] = None
+
+
+class ProjectBrowserInfo(BaseModel):
+    workspace_path: str
+    files: List[ProjectBrowserFileInfo]
+    artifacts: List[ProjectBrowserArtifactInfo]
+    truncated: bool = False
+
+
 class ProjectUpdate(BaseModel):
     name: str
 
@@ -2728,6 +2751,199 @@ def _open_workspace_path(workspace_path: str) -> None:
         return
 
     raise HTTPException(status_code=500, detail="No file manager opener is available")
+
+
+PROJECT_BROWSER_IGNORED_DIRS = {
+    ".cache",
+    ".catown",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".turbo",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+}
+PROJECT_BROWSER_MAX_FILES = 800
+PROJECT_BROWSER_MAX_DIRS = 400
+PROJECT_BROWSER_BATCH_SIZE = 50
+
+
+def _project_browser_artifact_type(path: str) -> Optional[str]:
+    normalized = path.replace("\\", "/").lower()
+    if not normalized or re.match(r"^@[\w.-]+\b", normalized):
+        return None
+    if re.search(r"(^|/)adr[-_./]|\badr[-_ ]?\d+|\barchitecture[-_ ]decision", normalized):
+        return "ADR"
+    if re.search(r"\bprd\b|product[-_ ]requirements?|requirements?[-_ ]doc", normalized):
+        return "PRD"
+    if re.search(r"\btech[-_ ]?spec\b|\bspecification\b|\bspec\b|design[-_ ]doc|proposal", normalized):
+        return "Spec"
+    if re.search(r"test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification", normalized):
+        return "Test"
+    if re.search(r"\breport\b|audit|review", normalized):
+        return "Report"
+    if re.search(r"changelog|change[-_ ]?log|release[-_ ]?notes?", normalized):
+        return "Release"
+    if re.search(r"readme|docs?/", normalized):
+        return "Doc"
+    if "artifact" in normalized:
+        return "Artifact"
+    if re.search(r"\.(md|mdx|pdf|docx?)$", normalized) and re.search(r"plan|summary|guide|notes|decision|migration|deploy", normalized):
+        return "Doc"
+    return None
+
+
+def _project_browser_file_records(workspace: Path, file_path: Path) -> tuple[ProjectBrowserFileInfo, Optional[ProjectBrowserArtifactInfo]] | None:
+    try:
+        if not file_path.is_file():
+            return None
+        stat = file_path.stat()
+        relative_path = file_path.relative_to(workspace).as_posix()
+    except (OSError, ValueError):
+        return None
+
+    file_info = ProjectBrowserFileInfo(
+        path=relative_path,
+        name=file_path.name,
+        kind="file",
+        size=stat.st_size,
+        mtime=stat.st_mtime,
+    )
+    artifact_type = _project_browser_artifact_type(relative_path)
+    artifact_info = (
+        ProjectBrowserArtifactInfo(
+            path=relative_path,
+            name=file_path.name,
+            type=artifact_type,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+        if artifact_type
+        else None
+    )
+    return file_info, artifact_info
+
+
+def _iter_project_browser_batches(workspace_path: str, batch_size: int = PROJECT_BROWSER_BATCH_SIZE):
+    workspace = Path(workspace_path).expanduser().resolve()
+    if not workspace.exists() or not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="Workspace path not found")
+
+    yield {
+        "type": "start",
+        "workspace_path": str(workspace),
+        "files": [],
+        "artifacts": [],
+        "truncated": False,
+    }
+
+    file_batch: List[ProjectBrowserFileInfo] = []
+    artifact_batch: List[ProjectBrowserArtifactInfo] = []
+    truncated = False
+    visited_dirs = 0
+    emitted_files = 0
+
+    for root, dirnames, filenames in os.walk(workspace):
+        root_path = Path(root)
+        visited_dirs += 1
+        if visited_dirs > PROJECT_BROWSER_MAX_DIRS:
+            truncated = True
+            dirnames[:] = []
+            break
+
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames
+            if dirname not in PROJECT_BROWSER_IGNORED_DIRS and not dirname.startswith(".catown-")
+        )
+
+        for filename in sorted(filenames):
+            if filename.startswith(".") and filename not in {".env.example"}:
+                continue
+            file_path = root_path / filename
+            records = _project_browser_file_records(workspace, file_path)
+            if not records:
+                continue
+
+            file_info, artifact_info = records
+            file_batch.append(file_info)
+            if artifact_info:
+                artifact_batch.append(artifact_info)
+            emitted_files += 1
+
+            if len(file_batch) >= batch_size:
+                yield {
+                    "type": "batch",
+                    "workspace_path": str(workspace),
+                    "files": [item.model_dump() for item in file_batch],
+                    "artifacts": [item.model_dump() for item in artifact_batch],
+                    "truncated": False,
+                }
+                file_batch = []
+                artifact_batch = []
+
+            if emitted_files >= PROJECT_BROWSER_MAX_FILES:
+                truncated = True
+                dirnames[:] = []
+                break
+
+        if truncated:
+            break
+
+    if file_batch or artifact_batch:
+        yield {
+            "type": "batch",
+            "workspace_path": str(workspace),
+            "files": [item.model_dump() for item in file_batch],
+            "artifacts": [item.model_dump() for item in artifact_batch],
+            "truncated": False,
+        }
+
+    yield {
+        "type": "done",
+        "workspace_path": str(workspace),
+        "files": [],
+        "artifacts": [],
+        "truncated": truncated,
+    }
+
+
+def _stream_project_browser(workspace_path: str):
+    for batch in _iter_project_browser_batches(workspace_path):
+        yield json.dumps(batch, ensure_ascii=False) + "\n"
+
+
+def _scan_project_browser(workspace_path: str) -> ProjectBrowserInfo:
+    files: List[ProjectBrowserFileInfo] = []
+    artifacts: List[ProjectBrowserArtifactInfo] = []
+    workspace = ""
+    truncated = False
+
+    for batch in _iter_project_browser_batches(workspace_path, batch_size=PROJECT_BROWSER_MAX_FILES):
+        workspace = batch.get("workspace_path") or workspace
+        truncated = bool(batch.get("truncated") or truncated)
+        files.extend(ProjectBrowserFileInfo(**item) for item in batch.get("files", []))
+        artifacts.extend(ProjectBrowserArtifactInfo(**item) for item in batch.get("artifacts", []))
+
+    files.sort(key=lambda item: item.path.lower())
+    artifacts.sort(key=lambda item: (item.type.lower(), item.path.lower()))
+    return ProjectBrowserInfo(
+        workspace_path=workspace,
+        files=files,
+        artifacts=artifacts,
+        truncated=truncated,
+    )
 
 
 def _resolve_chatroom_project(db: Session, chatroom: Chatroom | None) -> Optional[Project]:
@@ -3141,6 +3357,28 @@ async def get_project(project_id: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return _serialize_project(db, project)
+
+
+@router.get("/projects/{project_id}/browser", response_model=ProjectBrowserInfo)
+async def get_project_browser(project_id: int, db: Session = Depends(get_db)):
+    """Return a bounded workspace file/artifact index for the project browser."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+    return _scan_project_browser(project.workspace_path)
+
+
+@router.get("/projects/{project_id}/browser/stream")
+async def stream_project_browser(project_id: int, db: Session = Depends(get_db)):
+    """Stream workspace file/artifact batches as newline-delimited JSON."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+    return StreamingResponse(_stream_project_browser(project.workspace_path), media_type="application/x-ndjson")
 
 
 @router.get("/projects/{project_id}/chat", response_model=ChatInfo)

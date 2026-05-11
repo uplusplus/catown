@@ -300,6 +300,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "continuation_cursor_summary": checkpoint_snapshot.get("continuation_cursor_summary"),
         "continuation_state": checkpoint_snapshot.get("continuation_state"),
         "continuation_state_summary": checkpoint_snapshot.get("continuation_state_summary"),
+        "latest_event_type": task_run.events[-1].event_type if task_run.events else None,
         "latest_continuation_event_type": latest_continuation_event.get("event_type") if latest_continuation_event else None,
         "latest_continuation_event_summary": latest_continuation_event.get("continuation_state_summary") if latest_continuation_event else None,
         "latest_continuation_event_at": latest_continuation_event.get("created_at") if latest_continuation_event else None,
