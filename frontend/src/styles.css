@@ -1606,7 +1606,8 @@ a {
   gap: 0;
   border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
   border-radius: 6px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: color-mix(in srgb, var(--panel) 72%, transparent);
 }
 
