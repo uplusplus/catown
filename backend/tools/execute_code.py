@@ -129,11 +129,8 @@ class ExecuteCodeTool(BaseTool):
                 temp_path = f.name
 
             try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
+                result = await self._run_subprocess(
                     [sys.executable, "-u", temp_path],
-                    capture_output=True,
-                    text=True,
                     timeout=TIMEOUT_SECONDS,
                     cwd=working_dir,
                     env={**os.environ, "PYTHONIOENCODING": "utf-8"},
@@ -185,11 +182,8 @@ class ExecuteCodeTool(BaseTool):
                 temp_path = f.name
 
             try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
+                result = await self._run_subprocess(
                     [node_bin, temp_path],
-                    capture_output=True,
-                    text=True,
                     timeout=TIMEOUT_SECONDS,
                     cwd=working_dir,
                     env={**os.environ, "NODE_NO_WARNINGS": "1"},
@@ -216,6 +210,34 @@ class ExecuteCodeTool(BaseTool):
 
     async def _find_node(self) -> str | None:
         return await asyncio.to_thread(self._find_node_sync)
+
+    async def _run_subprocess(
+        self,
+        args: list[str],
+        *,
+        timeout: int,
+        cwd: str,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            raise subprocess.TimeoutExpired(args, timeout) from exc
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=int(proc.returncode or 0),
+            stdout=stdout_bytes.decode("utf-8", errors="replace"),
+            stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        )
 
     def _find_node_sync(self) -> str | None:
         """Find Node.js binary"""

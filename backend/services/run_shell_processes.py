@@ -23,6 +23,9 @@ from services.tool_governance import build_structured_tool_result
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 2.0
 DEFAULT_TAIL_CHARS = 4000
 DEFAULT_RESULT_CHARS = 50000
+DEFAULT_LOG_MAX_BYTES = 1024 * 1024
+LOG_READ_CHUNK_BYTES = 8192
+LOG_TRIM_EXTRA_BYTES = 256 * 1024
 
 
 def run_shell_process_state_dir() -> Path:
@@ -224,7 +227,10 @@ def terminate_tracked_run_shell(handle: Any) -> bool:
     killed = False
     if pgid:
         try:
-            os.killpg(pgid, signal.SIGTERM)
+            if hasattr(os, "killpg"):
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                os.kill(pgid, signal.SIGTERM)
             killed = True
         except OSError:
             pass
@@ -279,35 +285,47 @@ def run_tracked_run_shell_worker(state_path: str) -> int:
     record["updated_at"] = started_at
     _write_record(record)
 
-    with log_path.open("a", encoding="utf-8", buffering=1) as log_file:
-        try:
-            child = subprocess.Popen(
-                shell_cmd,
-                cwd=str(record.get("cwd") or "."),
-                env={**os.environ, "TERM": "dumb"},
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
-                start_new_session=True,
-            )
-        except Exception as exc:
-            log_file.write(f"[Run Shell] Error: {exc}\n")
-            _write_exit(record, exit_code=127, error=str(exc))
-            return 127
+    try:
+        child = subprocess.Popen(
+            shell_cmd,
+            cwd=str(record.get("cwd") or "."),
+            env={**os.environ, "TERM": "dumb"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=False,
+            bufsize=0,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        _append_bounded_log(log_path, f"[Run Shell] Error: {exc}\n".encode("utf-8", errors="replace"))
+        _write_exit(record, exit_code=127, error=str(exc))
+        return 127
 
+    try:
         record = _load_record(Path(state_path))
         record["pid"] = child.pid
-        try:
-            record["pgid"] = os.getpgid(child.pid)
-        except OSError:
-            record["pgid"] = child.pid
+        record["pgid"] = _process_group_id(child.pid)
         record["status"] = "running"
         record["updated_at"] = datetime.now().isoformat()
         _write_record(record)
 
+        if child.stdout is not None:
+            while True:
+                chunk = child.stdout.read(LOG_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                _append_bounded_log(log_path, chunk)
+
         returncode = child.wait()
+    except Exception as exc:
+        try:
+            child.kill()
+        except Exception:
+            pass
+        _append_bounded_log(log_path, f"[Run Shell] Worker error: {exc}\n".encode("utf-8", errors="replace"))
+        _write_exit(record, exit_code=1, error=str(exc))
+        return 1
 
     _write_exit(record, exit_code=returncode)
     return int(returncode or 0)
@@ -358,6 +376,33 @@ def _write_record(record: dict[str, Any]) -> None:
     path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _append_bounded_log(log_path: Path, chunk: bytes, *, max_bytes: int = DEFAULT_LOG_MAX_BYTES) -> None:
+    if not chunk:
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    max_bytes = max(1, int(max_bytes or DEFAULT_LOG_MAX_BYTES))
+    if len(chunk) >= max_bytes:
+        log_path.write_bytes(chunk[-max_bytes:])
+        return
+
+    with log_path.open("ab") as log_file:
+        log_file.write(chunk)
+
+    try:
+        current_size = log_path.stat().st_size
+    except FileNotFoundError:
+        return
+
+    trim_extra_bytes = min(LOG_TRIM_EXTRA_BYTES, max(0, max_bytes // 4))
+    if current_size <= max_bytes + trim_extra_bytes:
+        return
+
+    with log_path.open("rb") as log_file:
+        log_file.seek(max(0, current_size - max_bytes))
+        tail = log_file.read(max_bytes)
+    log_path.write_bytes(tail)
+
+
 def _public_handle(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "token": record.get("token"),
@@ -405,6 +450,15 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _process_group_id(pid: int) -> int:
+    if hasattr(os, "getpgid"):
+        try:
+            return int(os.getpgid(pid))
+        except OSError:
+            return int(pid)
+    return int(pid)
 
 
 def _shell_invocation(command: str) -> list[str] | None:

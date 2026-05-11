@@ -7,8 +7,6 @@ import json
 import subprocess
 import sys
 import os
-import threading
-import time
 from unittest.mock import patch
 
 # 添加 backend 目录到 path
@@ -253,17 +251,18 @@ class TestToolRegistry:
         assert (tmp_path / "created.txt").exists()
 
     @pytest.mark.asyncio
-    async def test_run_shell_timeout_requests_continue_waiting(self, tmp_path):
+    async def test_run_shell_timeout_requests_continue_waiting(self, fresh_db, tmp_path):
+        fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
 
-        with patch("tools.run_shell.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="python", timeout=1)):
-            result = await registry.execute(
-                "run_shell",
-                command="cat /dev/zero",
-                timeout_seconds=1,
-                chatroom_id=1,
-            )
+        result = await registry.execute(
+            "run_shell",
+            command=f'{sys.executable} -c "import time; time.sleep(2)"',
+            timeout_seconds=1,
+            chatroom_id=1,
+            __catown_approval_granted=True,
+        )
 
         assert result["success"] is False
         assert result["status"] == "timeout_waiting"
@@ -275,6 +274,7 @@ class TestToolRegistry:
     async def test_run_shell_saved_wait_preference_disables_timeout(self, fresh_db, tmp_path):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
+        (tmp_path / "sample.txt").write_text("ok\n", encoding="utf-8")
 
         db = fresh_db.SessionLocal()
         try:
@@ -294,26 +294,28 @@ class TestToolRegistry:
         finally:
             db.close()
 
-        def fake_run(*args, **kwargs):
-            assert "timeout" not in kwargs
-            return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
-
-        with patch("tools.run_shell.subprocess.run", side_effect=fake_run):
-            result = await registry.execute(
-                "run_shell",
-                command="cat sample.txt",
-                timeout_seconds=1,
-                chatroom_id=chatroom_id,
-            )
+        result = await registry.execute(
+            "run_shell",
+            command="cat sample.txt",
+            timeout_seconds=1,
+            chatroom_id=chatroom_id,
+        )
 
         assert result["success"] is True
         assert result["status"] == "succeeded"
         assert "ok" in result["result"]
 
     @pytest.mark.asyncio
-    async def test_run_shell_wait_forever_emits_progress(self, fresh_db, tmp_path):
+    async def test_run_shell_wait_forever_emits_progress(self, fresh_db, tmp_path, monkeypatch):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
+        command = (
+            f'{sys.executable} -c "import time; '
+            "print('line 1', flush=True); "
+            "time.sleep(0.3); "
+            "print('line 2', flush=True)\""
+        )
+        monkeypatch.setattr("tools.run_shell.TAIL_PROGRESS_INTERVAL_SECONDS", 0.1)
 
         db = fresh_db.SessionLocal()
         try:
@@ -322,67 +324,30 @@ class TestToolRegistry:
             db.commit()
             db.refresh(chatroom)
             chatroom_id = chatroom.id
-            preference_key = build_run_shell_timeout_preference_key("long-job", ".")
+            preference_key = build_run_shell_timeout_preference_key(command, ".")
             save_wait_forever_preference(
                 db,
                 tool_name="run_shell",
                 preference_key=preference_key,
-                command_preview="long-job @ .",
+                command_preview=f"{command} @ .",
                 chatroom_id=chatroom_id,
             )
         finally:
             db.close()
-
-        class FakeStdout:
-            def __init__(self):
-                self._lines = ["line 1\n", "line 2\n", ""]
-                self._index = 0
-
-            def readline(self):
-                if self._index < 2:
-                    time.sleep(0.05)
-                value = self._lines[self._index]
-                self._index += 1
-                return value
-
-        class FakePopen:
-            def __init__(self, *args, **kwargs):
-                self.stdout = FakeStdout()
-                self.returncode = None
-                self._done = False
-                self._lock = threading.Lock()
-                self._thread = threading.Thread(target=self._finish, daemon=True)
-                self._thread.start()
-
-            def _finish(self):
-                time.sleep(2.3)
-                with self._lock:
-                    self.returncode = 0
-                    self._done = True
-
-            def poll(self):
-                with self._lock:
-                    return self.returncode if self._done else None
-
-            def kill(self):
-                with self._lock:
-                    self.returncode = -9
-                    self._done = True
 
         progress_updates = []
 
         async def progress_callback(payload):
             progress_updates.append(payload)
 
-        with patch("tools.run_shell.subprocess.Popen", side_effect=FakePopen):
-            result = await registry.execute(
-                "run_shell",
-                command="long-job",
-                timeout_seconds=1,
-                chatroom_id=chatroom_id,
-                __catown_approval_granted=True,
-                progress_callback=progress_callback,
-            )
+        result = await registry.execute(
+            "run_shell",
+            command=command,
+            timeout_seconds=1,
+            chatroom_id=chatroom_id,
+            __catown_approval_granted=True,
+            progress_callback=progress_callback,
+        )
 
         assert result["success"] is True
         assert result["status"] == "succeeded"
@@ -391,13 +356,14 @@ class TestToolRegistry:
         assert any("line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
-    async def test_run_shell_timeout_waiting_returns_tracked_process_metadata(self, tmp_path):
+    async def test_run_shell_timeout_waiting_returns_tracked_process_metadata(self, fresh_db, tmp_path):
+        fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
 
         result = await registry.execute(
             "run_shell",
-            command='python -c "import time; time.sleep(2); print(\'done\')"',
+            command=f'{sys.executable} -c "import time; time.sleep(2); print(\'done\')"',
             timeout_seconds=1,
             __catown_approval_granted=True,
         )
@@ -407,6 +373,19 @@ class TestToolRegistry:
         tracked_process = result.get("metadata", {}).get("tracked_process")
         assert isinstance(tracked_process, dict)
         assert tracked_process.get("token")
+
+    def test_tracked_run_shell_log_is_bounded(self, tmp_path):
+        from services.run_shell_processes import _append_bounded_log
+
+        log_path = tmp_path / "tracked.log"
+
+        for index in range(10):
+            _append_bounded_log(log_path, f"chunk-{index}-".encode() * 40, max_bytes=256)
+
+        payload = log_path.read_bytes()
+        assert len(payload) <= 256 + (len("chunk-9-") * 40)
+        assert b"chunk-9-" in payload
+        assert b"chunk-0-" not in payload
 
     @pytest.mark.asyncio
     async def test_saved_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
@@ -635,7 +614,7 @@ class TestExecuteCodeTool:
         tool = ExecuteCodeTool(workspace=str(fallback))
         token = set_active_workspace(str(project))
         try:
-            with patch("tools.execute_code.subprocess.run") as mocked_run:
+            with patch.object(tool, "_run_subprocess") as mocked_run:
                 mocked_run.return_value = subprocess.CompletedProcess(
                     args=["python"],
                     returncode=0,
