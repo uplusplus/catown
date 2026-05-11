@@ -1651,7 +1651,8 @@ a {
 }
 
 .browser-entry--file {
-  min-height: 38px;
+  grid-template-columns: 20px minmax(0, 1fr) max-content;
+  min-height: 34px;
   padding: 5px 8px;
   border-width: 0 0 1px;
   border-color: color-mix(in srgb, var(--border) 70%, transparent);
@@ -1667,13 +1668,6 @@ a {
   background: color-mix(in srgb, var(--panel-hover) 46%, transparent);
 }
 
-.browser-entry--file .chat-copy-inline-btn {
-  min-height: 22px;
-  padding: 2px 6px;
-  font-size: 10px;
-  opacity: 0.72;
-}
-
 .browser-entry__icon {
   width: 20px;
   height: 20px;
@@ -1685,6 +1679,34 @@ a {
 
 .browser-entry__body {
   min-width: 0;
+}
+
+.browser-file-row__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-file-row__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 132px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.browser-file-row__meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .browser-entry__title-row {
