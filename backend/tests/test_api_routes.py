@@ -1241,21 +1241,132 @@ class TestProjectEndpoints:
                 }),
                 created_at=datetime.now(),
             ))
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "duplicate running output",
+                        "pid": 97008,
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_reconcile",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
             db.commit()
             task_run_id = task_run.id
         finally:
             db.close()
 
-        cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
+        followup_calls = []
+
+        def fake_spawn_followup(task_run_id, next_card):
+            followup_calls.append({"task_run_id": task_run_id, "next_card": next_card})
+
+        with patch.object(api_mod, "_spawn_tracked_run_shell_followup", side_effect=fake_spawn_followup):
+            cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
         shell_card = next(card for card in cards if card.get("tool") == "run_shell")
         assert shell_card["status"] == "succeeded"
         assert shell_card["success"] is True
         assert "tests passed" in shell_card["result"]
         assert "stale running output" not in shell_card["result"]
+        assert len(followup_calls) == 1
+        assert followup_calls[0]["task_run_id"] == task_run_id
+        assert followup_calls[0]["next_card"]["tool"] == "run_shell"
+        assert followup_calls[0]["next_card"]["status"] == "succeeded"
+        assert followup_calls[0]["next_card"]["success"] is True
+        assert "tests passed" in followup_calls[0]["next_card"]["result"]
 
         detail = client.get(f"/api/task-runs/{task_run_id}").json()
-        assert detail["status"] == "completed"
-        assert "tests passed" in detail["summary"]
+        assert detail["status"] == "running"
+        assert detail["completed_at"] is None
+        assert any(
+            event["event_type"] == "tracked_run_shell_completed"
+            for event in detail["events"]
+        )
+
+    def test_tracked_run_shell_followup_calls_agent_with_result_context(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+
+        project = client.post("/api/projects", json={"name": "Tracked Shell Followup"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-followup",
+                run_kind="project_single_agent",
+                status="running",
+                title="Tracked shell followup",
+                user_request="@tester summarize results",
+                target_agent_name="Tester",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        async def fake_trigger_agent_response(
+            chatroom_id,
+            user_message,
+            client_turn_id=None,
+            task_run_id=None,
+            extra_context="",
+            checkpoint_snapshot=None,
+        ):
+            followup_calls.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "task_run_id": task_run_id,
+                    "extra_context": extra_context,
+                    "checkpoint_snapshot": checkpoint_snapshot,
+                }
+            )
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": task_run_id}
+
+        next_card = {
+            "type": "tool_call",
+            "agent": "Tester",
+            "tool": "run_shell",
+            "arguments": json.dumps({"command": "pytest"}),
+            "status": "failed",
+            "success": False,
+            "result": "[Run Shell] Error:\n2 failed, 10 passed",
+            "tool_call_id": "call_followup",
+            "turn": 1,
+            "tracked_process": {"token": "followup-token", "tool_call_id": "call_followup"},
+        }
+        with patch.object(api_mod, "trigger_agent_response", side_effect=fake_trigger_agent_response):
+            asyncio.run(api_mod._continue_agent_after_tracked_run_shell_async(task_run_id, next_card))
+
+        assert len(followup_calls) == 1
+        assert followup_calls[0]["chatroom_id"] == chatroom_id
+        assert followup_calls[0]["user_message"] == "@tester summarize results"
+        assert followup_calls[0]["client_turn_id"] == "turn-followup"
+        assert followup_calls[0]["task_run_id"] == task_run_id
+        assert "run_shell" in followup_calls[0]["extra_context"]
+        assert "2 failed, 10 passed" in followup_calls[0]["extra_context"]
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert detail["status"] == "running"
+        assert any(event["event_type"] == "tracked_run_shell_followup_queued" for event in detail["events"])
 
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")

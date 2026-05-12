@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 from typing import Callable, List, Optional, Dict, Any, Awaitable
 from pydantic import BaseModel, Field, field_validator
 
@@ -1883,6 +1883,172 @@ def _task_run_has_pending_timeout_approval(task_run: TaskRun | None) -> bool:
     return False
 
 
+def _task_run_has_tracked_shell_followup(
+    task_run: TaskRun | None,
+    *,
+    token: str | None = None,
+    include_completed_marker: bool = False,
+) -> bool:
+    if task_run is None:
+        return False
+    event_types = [
+        "tracked_run_shell_followup_queued",
+        "approval_queue_item_followup_triggered",
+        "agent_turn_completed",
+    ]
+    if include_completed_marker:
+        event_types.append("tracked_run_shell_completed")
+    query_session = object_session(task_run)
+    if query_session is not None:
+        query = (
+            query_session.query(TaskRunEvent)
+            .filter(
+                TaskRunEvent.task_run_id == task_run.id,
+                TaskRunEvent.event_type.in_(event_types),
+            )
+        )
+        if not token:
+            return query.first() is not None
+        for event in query.all():
+            payload = _task_run_event_payload(event)
+            tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
+            if tracked.get("token") == token:
+                return True
+        return False
+
+    for event in list(getattr(task_run, "events", []) or []):
+        if event.event_type not in event_types:
+            continue
+        payload = _task_run_event_payload(event)
+        if not token:
+            return True
+        tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
+        if tracked.get("token") == token:
+            return True
+    return False
+
+
+async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_card: Dict[str, Any]) -> None:
+    db = SessionLocal()
+    try:
+        task_run = get_task_run(db, task_run_id)
+        if task_run is None:
+            return
+        if str(getattr(task_run, "status", "") or "").strip().lower() != "running":
+            return
+        tracked_process = next_card.get("tracked_process") if isinstance(next_card.get("tracked_process"), dict) else {}
+        token = str(tracked_process.get("token") or "").strip() or None
+        if _task_run_has_tracked_shell_followup(task_run, token=token):
+            return
+
+        arguments = str(next_card.get("arguments") or "{}")
+        try:
+            turn = max(1, int(next_card.get("turn") or tracked_process.get("turn") or 1))
+        except (TypeError, ValueError):
+            turn = 1
+        result_payload = {
+            "__catown_tool_result__": True,
+            "tool_name": "run_shell",
+            "success": bool(next_card.get("success")),
+            "status": str(next_card.get("status") or ("succeeded" if next_card.get("success") else "failed")),
+            "blocked": bool(next_card.get("blocked")),
+            "blocked_kind": next_card.get("blocked_kind"),
+            "blocked_reason": next_card.get("blocked_reason"),
+            "result": str(next_card.get("result") or "").strip() or "Tracked run_shell finished without output.",
+        }
+        tool_result = build_tool_result_record(
+            tool_call_id=next_card.get("tool_call_id") or tracked_process.get("tool_call_id"),
+            tool_name="run_shell",
+            arguments=arguments,
+            result=result_payload,
+            success=bool(next_card.get("success")),
+        )
+        record_runner_tool_round(
+            db,
+            task_run,
+            agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or "agent",
+            turn=turn,
+            tool_names=["run_shell"],
+            tool_results=[tool_result],
+            summary="Tracked run_shell completed; returning result to agent for analysis.",
+            payload={
+                "source": "tracked_run_shell_reconcile",
+                "tracked_process": tracked_process,
+            },
+        )
+        append_task_event(
+            db,
+            task_run,
+            "tracked_run_shell_followup_queued",
+            agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or "agent",
+            summary="Queued agent follow-up after tracked run_shell completed.",
+            payload={
+                "task_run_id": task_run.id,
+                "tool_name": "run_shell",
+                "tool_call_id": tool_result.tool_call_id,
+                "tool_status": tool_result.status,
+                "tool_success": tool_result.success,
+                "tracked_process": tracked_process,
+            },
+        )
+        replay_result = SimpleNamespace(
+            tool_name=tool_result.tool_name,
+            tool_call_id=tool_result.tool_call_id,
+            result=tool_result.result,
+            success=tool_result.success,
+            status=tool_result.status,
+            blocked=tool_result.blocked,
+            blocked_kind=tool_result.blocked_kind,
+            blocked_reason=tool_result.blocked_reason,
+        )
+        fake_item = SimpleNamespace(
+            id=None,
+            task_run_id=task_run.id,
+            chatroom_id=task_run.chatroom_id,
+            project_id=task_run.project_id,
+            agent_name=task_run.target_agent_name,
+            target_name="run_shell",
+            target_kind="tool",
+        )
+        followup_context = build_tool_replay_followup_context(fake_item, replay_result, result_preview_limit=2000)
+        await trigger_agent_response(
+            task_run.chatroom_id,
+            task_run.user_request or "",
+            task_run.client_turn_id,
+            task_run_id=task_run.id,
+            extra_context=followup_context,
+            checkpoint_snapshot=build_task_run_checkpoint_snapshot(task_run),
+        )
+    except Exception as exc:
+        logger.exception("Tracked run_shell agent follow-up failed for task_run_id=%s: %s", task_run_id, exc)
+        task_run = get_task_run(db, task_run_id)
+        append_task_event(
+            db,
+            task_run,
+            "tracked_run_shell_followup_failed",
+            agent_name=getattr(task_run, "target_agent_name", None),
+            summary="Agent follow-up failed after tracked run_shell completed.",
+            payload={"error": str(exc), "task_run_id": task_run_id},
+        )
+    finally:
+        db.close()
+
+
+def _spawn_tracked_run_shell_followup(task_run_id: int, next_card: Dict[str, Any]) -> None:
+    def _runner() -> None:
+        try:
+            asyncio.run(_continue_agent_after_tracked_run_shell_async(task_run_id, next_card))
+        except Exception as exc:
+            logger.exception("Tracked run_shell follow-up worker crashed for task_run_id=%s: %s", task_run_id, exc)
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"tracked-run-shell-followup-{task_run_id}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | None = None, *, limit: int = 500) -> int:
     query = db.query(Message).filter(Message.message_type == "runtime_card")
     if chatroom_id is not None:
@@ -1914,14 +2080,31 @@ def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | No
             task_run is not None
             and str(getattr(task_run, "status", "") or "").strip().lower() == "running"
             and not _task_run_has_pending_timeout_approval(task_run)
+            and not _task_run_has_tracked_shell_followup(
+                task_run,
+                token=(
+                    str((next_card.get("tracked_process") or {}).get("token") or "").strip()
+                    if isinstance(next_card.get("tracked_process"), dict)
+                    else None
+                ),
+                include_completed_marker=True,
+            )
         ):
-            summary = str(next_card.get("result") or "").strip() or "Tracked run_shell finished after backend restart."
-            complete_task_run(
+            append_task_event(
                 db,
                 task_run,
-                status="completed" if bool(next_card.get("success")) else "failed",
-                summary=summary,
+                "tracked_run_shell_completed",
+                agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or None,
+                summary="Tracked run_shell completed; agent follow-up will analyze the result.",
+                payload={
+                    "tool_name": "run_shell",
+                    "tool_call_id": next_card.get("tool_call_id"),
+                    "tool_status": next_card.get("status"),
+                    "tool_success": bool(next_card.get("success")),
+                    "tracked_process": next_card.get("tracked_process"),
+                },
             )
+            _spawn_tracked_run_shell_followup(task_run.id, dict(next_card))
     if updated:
         db.commit()
     return updated
