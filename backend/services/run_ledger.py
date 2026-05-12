@@ -1090,3 +1090,15 @@ async def _broadcast_monitor_task_run_payload(payload: dict[str, Any]) -> None:
             },
             chatroom_id,
         )
+        await websocket_manager.broadcast_to_room(
+            {
+                "type": "chat_processes_changed",
+                "chatroom_id": chatroom_id,
+                "reason": "task_run_update",
+                "task_run_id": entry.get("id"),
+                "change_reason": payload.get("change_reason"),
+                "task_event_type": payload.get("task_event_type"),
+                "captured_at": payload.get("captured_at"),
+            },
+            chatroom_id,
+        )

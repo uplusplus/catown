@@ -26,6 +26,48 @@ def test_public_runtime_card_payload_omits_debug_fields():
 
 
 @pytest.mark.asyncio
+async def test_publish_runtime_card_event_notifies_process_projection(monkeypatch, fresh_db):
+    import services.stream_runtime_persistence as persistence_mod
+
+    persistence_mod = importlib.reload(persistence_mod)
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    room_calls = []
+    topic_calls = []
+    try:
+        chatroom = fresh_db.Chatroom(title="Runtime Card Process Chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        async def fake_broadcast_to_room(message, chatroom_id):
+            room_calls.append((message, chatroom_id))
+
+        async def fake_broadcast_to_topic(message, topic):
+            topic_calls.append((message, topic))
+
+        monkeypatch.setattr(persistence_mod.websocket_manager, "broadcast_to_room", fake_broadcast_to_room)
+        monkeypatch.setattr(persistence_mod.websocket_manager, "broadcast_to_topic", fake_broadcast_to_topic)
+
+        await persistence_mod.publish_runtime_card_event(
+            db,
+            chatroom.id,
+            runtime_message_id=12,
+            created_at="2026-05-12T10:00:00",
+            card_payload={"type": "tool_call", "tool": "run_shell"},
+        )
+
+        room_messages = [call[0] for call in room_calls]
+        assert any(message.get("type") == "runtime_card" for message in room_messages)
+        process_message = next(message for message in room_messages if message.get("type") == "chat_processes_changed")
+        assert process_message["chatroom_id"] == chatroom.id
+        assert process_message["reason"] == "runtime_card"
+        assert topic_calls
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_persist_stream_failure_creates_visible_fallback_and_uses_shared_store(monkeypatch):
     import services.stream_runtime_persistence as persistence_mod
 

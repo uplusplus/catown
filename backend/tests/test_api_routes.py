@@ -964,6 +964,48 @@ class TestProjectEndpoints:
         assert response.status_code == 200
         assert response.json() == []
 
+    def test_chat_processes_ignore_bad_tracked_shell_state_file(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        app = _make_app(tmp_path)
+        client = TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"})
+
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime
+
+        project = client.post("/api/projects", json={"name": "Bad Tracked State Test"}).json()
+        chatroom_id = project["chatroom_id"]
+        state_dir = api_mod.run_shell_process_state_dir()
+        (state_dir / "bad-token.json").write_text("", encoding="utf-8")
+
+        db = db_mod.SessionLocal()
+        try:
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest"}),
+                        "status": "running",
+                        "result": "runtime card fallback output",
+                        "tracked_process": {"token": "bad-token"},
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")
         assert r.status_code == 404

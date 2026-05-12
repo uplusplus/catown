@@ -6005,7 +6005,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             yield render_sse_payload({"type": "error", "error": str(persist_exc)}, serialize_payload=lambda payload: _json.dumps(payload))
         finally:
             if workspace_token is not None:
-                reset_active_workspace(workspace_token)
+                try:
+                    reset_active_workspace(workspace_token)
+                except ValueError:
+                    logger.debug("[SSE] Active workspace context was already detached during stream shutdown.")
             db.close()
 
     async def event_generator():

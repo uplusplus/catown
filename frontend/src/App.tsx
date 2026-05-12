@@ -2144,6 +2144,7 @@ function App() {
   const tempMessageIdRef = useRef(-1);
   const streamingAssistantIdRef = useRef<number | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
+  const processRefreshTimerRef = useRef<number | null>(null);
 
   function pushEvent(message: string, tone: ChatEventTone = "info") {
     setChatEvents((current) => [...current.slice(-79), buildEvent(message, tone)]);
@@ -2227,6 +2228,19 @@ function App() {
     }
   }
 
+  function scheduleChatProcessRefresh(chatId: number | null | undefined) {
+    if (!chatId) return;
+    if (processRefreshTimerRef.current !== null) {
+      window.clearTimeout(processRefreshTimerRef.current);
+    }
+    processRefreshTimerRef.current = window.setTimeout(() => {
+      processRefreshTimerRef.current = null;
+      void loadOptionalChatProcesses(chatId, { silent: true }).then((processRows) => {
+        if (selectedChatIdRef.current === chatId) setChatProcesses(processRows);
+      });
+    }, 150);
+  }
+
   useEffect(() => {
     if (!error) return undefined;
 
@@ -2237,8 +2251,7 @@ function App() {
   useEffect(() => {
     if (!bootstrapped || !selectedChatId) return undefined;
     const activeRuns = taskRuns.filter(shouldPollTaskActivity);
-    const hasRunningProcesses = chatProcesses.length > 0;
-    if (activeRuns.length === 0 && !hasRunningProcesses) return undefined;
+    if (activeRuns.length === 0) return undefined;
 
     let cancelled = false;
     let inFlight = false;
@@ -2247,13 +2260,9 @@ function App() {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const [entries, processRows] = await Promise.all([
-          activeRuns.length > 0 ? loadOptionalTaskActivities(activeRuns, { silent: true }) : Promise.resolve([]),
-          loadOptionalChatProcesses(selectedChatId, { silent: true }),
-        ]);
-        if (!cancelled) {
+        const entries = await loadOptionalTaskActivities(activeRuns, { silent: true });
+        if (!cancelled && selectedChatIdRef.current === selectedChatId) {
           mergeTaskActivities(entries);
-          setChatProcesses(processRows);
         }
       } finally {
         inFlight = false;
@@ -2269,7 +2278,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [bootstrapped, selectedChatId, taskRuns, chatProcesses.length]);
+  }, [bootstrapped, selectedChatId, taskRuns]);
 
   function nextTempMessageId() {
     const nextId = tempMessageIdRef.current;
@@ -2742,9 +2751,7 @@ function App() {
             const card = buildCard(data.card as Record<string, unknown>);
             if (card) {
               pushCard(card);
-              if (selectedChatIdRef.current) {
-                void loadOptionalChatProcesses(selectedChatIdRef.current, { silent: true }).then(setChatProcesses);
-              }
+              scheduleChatProcessRefresh(selectedChatIdRef.current);
               commitOptimisticMessages((current) => applyRuntimeCardToMatchingPlaceholders(current, card));
               if (streamingAssistantIdRef.current !== null) {
                 commitOptimisticMessages((current) =>
@@ -2773,9 +2780,7 @@ function App() {
             const detail = payload.detail as TaskRunDetail | undefined;
             if (entry && typeof entry.id === "number") {
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
-              if (selectedChatIdRef.current) {
-                void loadOptionalChatProcesses(selectedChatIdRef.current, { silent: true }).then(setChatProcesses);
-              }
+              scheduleChatProcessRefresh(entry.chatroom_id);
               void api.getTaskRunActivity(entry.id)
                 .then((activity) => {
                   setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
@@ -2797,6 +2802,14 @@ function App() {
               commitOptimisticMessages((current) =>
                 reconcileOptimisticMessagesWithServer(current, [], [], [detail && typeof detail.id === "number" ? detail : entry]),
               );
+            }
+            return;
+          }
+
+          if (data.type === "chat_processes_changed") {
+            const chatroomId = typeof data.chatroom_id === "number" ? data.chatroom_id : selectedChatIdRef.current;
+            if (selectedChatIdRef.current === chatroomId) {
+              scheduleChatProcessRefresh(chatroomId);
             }
             return;
           }
@@ -2929,6 +2942,10 @@ function App() {
       cancelled = true;
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
+      }
+      if (processRefreshTimerRef.current !== null) {
+        window.clearTimeout(processRefreshTimerRef.current);
+        processRefreshTimerRef.current = null;
       }
       joinedRoomRef.current = null;
       socketRef.current?.close();

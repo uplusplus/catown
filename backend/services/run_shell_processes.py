@@ -94,7 +94,11 @@ def load_tracked_run_shell_handle(handle: Any) -> dict[str, Any] | None:
     path = run_shell_process_state_dir() / f"{token}.json"
     if not path.exists():
         return None
-    return _load_record(path)
+    try:
+        record = _load_record(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def launch_tracked_run_shell(handle: Any) -> dict[str, Any] | None:
@@ -387,7 +391,10 @@ def _write_record(record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     record = dict(record)
     record["updated_at"] = datetime.now().isoformat()
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(record, ensure_ascii=False, indent=2)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _append_bounded_log(log_path: Path, chunk: bytes, *, max_bytes: int = DEFAULT_LOG_MAX_BYTES) -> None:

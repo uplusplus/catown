@@ -56,6 +56,15 @@ async def publish_runtime_card_event(
         },
         chatroom_id,
     )
+    await websocket_manager.broadcast_to_room(
+        {
+            "type": "chat_processes_changed",
+            "chatroom_id": chatroom_id,
+            "reason": "runtime_card",
+            "runtime_message_id": runtime_message_id,
+        },
+        chatroom_id,
+    )
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
     if not chatroom:

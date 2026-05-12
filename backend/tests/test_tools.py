@@ -449,6 +449,15 @@ class TestToolRegistry:
         assert isinstance(tracked_process, dict)
         assert tracked_process.get("token")
 
+    def test_tracked_run_shell_bad_state_file_is_ignored(self, tmp_path, monkeypatch):
+        from services import run_shell_processes
+
+        monkeypatch.setattr(run_shell_processes.settings, "STATE_DIR", tmp_path / "state")
+        state_dir = run_shell_processes.run_shell_process_state_dir()
+        (state_dir / "bad-token.json").write_text("", encoding="utf-8")
+
+        assert run_shell_processes.load_tracked_run_shell_handle({"token": "bad-token"}) is None
+
     def test_tracked_run_shell_log_is_bounded(self, tmp_path):
         from services.run_shell_processes import _append_bounded_log
 
