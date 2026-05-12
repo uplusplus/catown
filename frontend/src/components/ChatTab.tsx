@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { Archive, BookOpen, Boxes, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Workflow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
 import { FormSuggestionStrip } from "./FormSuggestionStrip";
+import { UI_VERSION } from "../uiVersion";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
 import {
   DEFAULT_AGENT_TYPE,
@@ -54,6 +55,11 @@ const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
 const DRAFT_HISTORY_MAX_CHATS = 30;
 const DRAFT_HISTORY_MAX_ITEMS_PER_CHAT = 50;
 const DRAFT_HISTORY_MAX_ITEM_CHARS = 4000;
+const ACTIVITY_SIDEBAR_DEFAULT_WIDTH = 380;
+const ACTIVITY_SIDEBAR_MIN_WIDTH = 320;
+const ACTIVITY_SIDEBAR_MAX_WIDTH = 560;
+
+type StepExpansionValue = string | null;
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -105,6 +111,7 @@ function sanitizeOverlayStep(step: MessageStreamStep): MessageStreamStep {
     tool: step.tool,
     toolCallIndex: step.toolCallIndex,
     toolCallId: step.toolCallId,
+    runId: step.runId,
   };
 }
 
@@ -249,6 +256,10 @@ function migrateOverlayMessages(fromChatId: number | null, toChatId: number | nu
   return nextMessages;
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function sanitizeDraftHistoryItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   const items: string[] = [];
@@ -306,7 +317,7 @@ type ChatTabProps = {
   optimisticMessages: MessageItem[];
   cards: ChatCardItem[];
   taskRuns: TaskRunSummary[];
-  processes: ChatProcessEntry[];
+  processes: ChatProcessEntry | null;
   projectBrowserIndex: ProjectBrowserIndex | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   taskActivitiesById: Record<number, TaskActivityProjection>;
@@ -393,6 +404,8 @@ type FileReaderState = {
   draft?: string;
   saving?: boolean;
   saveMessage?: string;
+  history?: string[];
+  historyIndex?: number;
 };
 
 type InteractiveFileToolRequest = {
@@ -408,6 +421,9 @@ type FileReaderCardActions = {
   onDraftChange: (value: string) => void;
   onDiscard: () => void;
   onSave: () => void;
+  onOpenLinkedFile?: (path: string) => void;
+  onBack?: () => void;
+  onForward?: () => void;
 };
 
 function isInternalToolPause(card: ThreadCard | DecoratedChatCardItem) {
@@ -473,7 +489,73 @@ function ArtifactIcon({ type }: { type: string }) {
 }
 
 function ProcessIcon({ kind }: { kind: ChatProcessEntry["kind"] }) {
+  if (kind === "project") return <FolderTree size={15} />;
+  if (kind === "chat") return <Monitor size={15} />;
   return kind === "command" ? <Shell size={15} /> : <Workflow size={15} />;
+}
+
+function processKindLabel(kind: ChatProcessEntry["kind"]) {
+  if (kind === "project") return "Project";
+  if (kind === "chat") return "Chat";
+  return kind === "command" ? "Shell command" : "Task run";
+}
+
+function countRuntimeProcessNodes(node: ChatProcessEntry | null): number {
+  if (!node) return 0;
+  const selfCount = node.kind === "task" || node.kind === "command" ? 1 : 0;
+  return selfCount + node.children.reduce((total, child) => total + countRuntimeProcessNodes(child), 0);
+}
+
+function processStatusLabel(status: ChatProcessEntry["status"]) {
+  return String(status || "running").trim().toLowerCase() === "terminated" ? "Terminated" : "Running";
+}
+
+function ProcessTreeNode({ node, depth = 0 }: { node: ChatProcessEntry; depth?: number }) {
+  const runtimeChildCount = node.children.reduce((total, child) => total + countRuntimeProcessNodes(child), 0);
+  const isRuntimeNode = node.kind === "task" || node.kind === "command";
+  const statusLabel = processStatusLabel(node.status);
+  const isTerminated = statusLabel === "Terminated";
+  const hasOutputDetails = node.kind === "command" && Boolean(node.output?.trim());
+  const rowContent = (
+    <>
+      <div className="browser-entry__icon"><ProcessIcon kind={node.kind} /></div>
+      <div className="process-tree__main">
+        <span className="process-tree__label" title={node.label}>{node.label}</span>
+        <span className="process-tree__kind">{processKindLabel(node.kind)}</span>
+        {isRuntimeNode ? <span className={`process-tree__state ${isTerminated ? "process-tree__state--terminated" : ""}`}>{statusLabel}</span> : null}
+        {typeof node.pid === "number" ? <span className="process-tree__meta">pid {node.pid}</span> : null}
+        {runtimeChildCount > 0 ? <span className="process-tree__meta">{runtimeChildCount} child</span> : null}
+        {node.timestamp ? <span className="process-tree__meta">{formatTime(node.timestamp)}</span> : null}
+      </div>
+      {isRuntimeNode ? <CopyTextButton content={node.label} title="Copy process label" /> : <span aria-hidden="true" />}
+    </>
+  );
+  return (
+    <div className="process-tree__node" style={{ "--process-depth": depth } as CSSProperties}>
+      {hasOutputDetails ? (
+        <details className="browser-entry browser-entry--process process-tree__details">
+          <summary className="process-tree__row process-tree__summary">
+            {rowContent}
+          </summary>
+          <div className="process-tree__output-panel">
+            <p>{oneLinePreview(node.detail, "Shell process is running.", 160)}</p>
+            <pre className="browser-entry__output">{node.output}</pre>
+          </div>
+        </details>
+      ) : (
+        <div className="browser-entry browser-entry--process process-tree__row">
+          {rowContent}
+        </div>
+      )}
+      {node.children.length > 0 ? (
+        <div className="process-tree__children">
+          {node.children.map((child) => (
+            <ProcessTreeNode key={child.id} node={child} depth={depth + 1} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function browserFileTypeLabel(path: string) {
@@ -653,14 +735,242 @@ function isInternalContinuationSummary(value: string | null | undefined) {
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
     normalized.includes("continue agent turn · via") ||
-    normalized.includes("continue agent turn - via")
+    normalized.includes("continue agent turn - via") ||
+    normalized.includes(" · via ") ||
+    normalized.includes(" - via ")
+  );
+}
+
+function isInternalTaskRunEventSummary(value: string | null | undefined) {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    isInternalContinuationSummary(normalized) ||
+    normalized === "user message saved." ||
+    normalized === "user message saved for execution." ||
+    normalized === "user message saved for streaming execution." ||
+    normalized.includes("selected standalone") ||
+    normalized.includes("selected project") ||
+    normalized.includes("execution mode") ||
+    normalized.includes("streaming execution mode") ||
+    normalized.includes("runtime mode") ||
+    normalized.includes("streaming schedule") ||
+    normalized.includes("orchestration schedule") ||
+    normalized.includes("scheduler state") ||
+    normalized.includes("checkpoint") ||
+    normalized.includes("continuation cursor") ||
+    normalized.includes("recovery started") ||
+    normalized.includes("recovered interrupted")
   );
 }
 
 function userFacingTaskRunSummary(value: string | null | undefined) {
   const normalized = value?.trim();
-  if (!normalized || isInternalContinuationSummary(normalized)) return null;
+  if (!normalized || isInternalTaskRunEventSummary(normalized)) return null;
   return normalized;
+}
+
+function userFacingTaskRunFailureSummary(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || isInternalTaskRunEventSummary(normalized)) return null;
+  return normalized;
+}
+
+function readTextField(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readTaskRunEventPayload(event: TaskRunEvent | null | undefined) {
+  return event?.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : null;
+}
+
+function eventSummary(event: TaskRunEvent | null | undefined) {
+  return userFacingTaskRunSummary(typeof event?.summary === "string" ? event.summary : null);
+}
+
+function latestTaskRunEvent(
+  detail: TaskRunDetail | null,
+  predicate: (event: TaskRunEvent, payload: Record<string, unknown> | null) => boolean,
+) {
+  const events = detail?.events ?? [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (predicate(event, readTaskRunEventPayload(event))) return event;
+  }
+  return null;
+}
+
+function latestAgentResponse(detail: TaskRunDetail | null) {
+  const checkpointPreview =
+    typeof detail?.checkpoint_snapshot?.latest_agent_turn?.response_preview === "string"
+      ? detail.checkpoint_snapshot.latest_agent_turn.response_preview.trim()
+      : "";
+  const event = latestTaskRunEvent(
+    detail,
+    (candidate, payload) => candidate.event_type === "agent_turn_completed" && Boolean(readTextField(payload, "response_preview")),
+  );
+  const payload = readTaskRunEventPayload(event);
+  const response = readTextField(payload, "response_preview") || checkpointPreview || null;
+  return response
+    ? {
+        agent: event?.agent_name || detail?.checkpoint_snapshot?.latest_agent_turn?.agent_name || null,
+        response,
+      }
+    : null;
+}
+
+function latestToolRoundResult(detail: TaskRunDetail | null) {
+  const event = latestTaskRunEvent(detail, (candidate, payload) => {
+    const turnState = payload?.turn_local_state;
+    return candidate.event_type === "tool_round_recorded" && Boolean(turnState && typeof turnState === "object");
+  });
+  const payload = readTaskRunEventPayload(event);
+  const turnState = payload?.turn_local_state && typeof payload.turn_local_state === "object"
+    ? payload.turn_local_state as Record<string, unknown>
+    : null;
+  const toolResults = Array.isArray(turnState?.tool_results)
+    ? turnState.tool_results.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const latest = toolResults[toolResults.length - 1] ?? null;
+  if (!latest) return null;
+  return {
+    agent: event?.agent_name || null,
+    toolName: readTextField(latest, "tool_name") || readTextField(payload, "tool_name"),
+    result: readTextField(latest, "result") || readTextField(latest, "blocked_reason"),
+    status: readTextField(latest, "status") || (latest.success === false ? "failed" : latest.success === true ? "succeeded" : null),
+    success: typeof latest.success === "boolean" ? latest.success : null,
+  };
+}
+
+function latestStartedToolCall(detail: TaskRunDetail | null) {
+  const event = latestTaskRunEvent(detail, (candidate) => candidate.event_type === "tool_call_started");
+  const payload = readTaskRunEventPayload(event);
+  if (!event && !payload) return null;
+  return {
+    agent: event?.agent_name || null,
+    toolName: readTextField(payload, "tool_name"),
+    argumentsText: readTextField(payload, "arguments"),
+  };
+}
+
+function latestSubtaskDispatch(detail: TaskRunDetail | null) {
+  const event = latestTaskRunEvent(detail, (candidate) =>
+    ["scheduler_step_dispatched", "scheduler_step_resumed", "handoff_created"].includes(candidate.event_type),
+  );
+  const payload = readTaskRunEventPayload(event);
+  if (!event) return null;
+  const stepState = payload?.step_state && typeof payload.step_state === "object"
+    ? payload.step_state as Record<string, unknown>
+    : null;
+  return {
+    eventType: event.event_type,
+    agent: event.agent_name || readTextField(payload, "agent_name") || readTextField(stepState, "agent_name"),
+    dispatchKind: readTextField(payload, "dispatch_kind") || readTextField(stepState, "dispatch_kind"),
+    summary: eventSummary(event),
+  };
+}
+
+function latestSubtaskResult(detail: TaskRunDetail | null) {
+  const event = latestTaskRunEvent(detail, (candidate) => candidate.event_type === "scheduler_step_completed");
+  const payload = readTaskRunEventPayload(event);
+  if (!event) return null;
+  return {
+    agent: event.agent_name || readTextField(payload, "agent_name"),
+    summary: eventSummary(event),
+    completedWithOutput: payload?.completed_with_output === true,
+  };
+}
+
+function chatFacingTaskRunText(taskRun: TaskRunSummary, detail: TaskRunDetail | null, actorName = "Agent") {
+  const agentResponse = latestAgentResponse(detail);
+  const toolResult = latestToolRoundResult(detail);
+  const toolCall = latestStartedToolCall(detail);
+  const subtaskResult = latestSubtaskResult(detail);
+  const subtaskDispatch = latestSubtaskDispatch(detail);
+  const userRequest = typeof taskRun.user_request === "string" && taskRun.user_request.trim()
+    ? taskRun.user_request.trim()
+    : null;
+  const taskSummary = userFacingTaskRunSummary(taskRun.summary);
+
+  return {
+    userRequest,
+    agentResponse,
+    toolResult,
+    toolCall,
+    subtaskResult,
+    subtaskDispatch,
+  terminalSummary: taskSummary || agentResponse?.response || userRequest,
+    actor: agentResponse?.agent || actorName || "Agent",
+  };
+}
+
+function canTaskRunEventUpdateChatDetail(eventType: string | null | undefined) {
+  const normalized = (eventType || "").toLowerCase();
+  return new Set([
+    "agent_turn_started",
+    "agent_turn_completed",
+    "tool_call_started",
+    "tool_round_recorded",
+    "approval_queue_item_created",
+    "approval_queue_item_resolved",
+    "approval_queue_item_followup_triggered",
+    "scheduler_step_dispatched",
+    "scheduler_step_resumed",
+    "scheduler_step_completed",
+    "scheduler_step_failed",
+    "handoff_created",
+    "task_run_failed",
+  ]).has(normalized);
+}
+
+function isInternalTaskActivityStep(step: TaskActivityProjection["steps"][number]) {
+  return !canTaskRunEventUpdateChatDetail(step.event_type);
+}
+
+function chatFacingActivityStepText(step: TaskActivityProjection["steps"][number], taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
+  const rawDetail = step.detail || step.summary || "";
+  const detailText = userFacingTaskRunSummary(rawDetail);
+  const projection = chatFacingTaskRunText(taskRun, detail, step.agent || taskRun.target_agent_name || "Agent");
+  const eventType = (step.event_type || "").toLowerCase();
+
+  if (eventType === "agent_turn_completed" && projection.agentResponse?.response) {
+    return oneLinePreview(projection.agentResponse.response, "Agent responded.", 160);
+  }
+  if (eventType === "tool_round_recorded" && projection.toolResult?.result) {
+    return oneLinePreview(projection.toolResult.result, "Tool returned output.", 160);
+  }
+  if (eventType === "tool_call_started" && projection.toolCall?.argumentsText) {
+    return oneLinePreview(projection.toolCall.argumentsText, "Tool call started.", 160);
+  }
+  if (eventType === "scheduler_step_dispatched" || eventType === "scheduler_step_resumed" || eventType === "handoff_created") {
+    return detailText ||
+      (step.agent ? `${projection.actor} asked ${step.agent} to help.` : `${projection.actor} delegated part of the work.`);
+  }
+  if (eventType === "scheduler_step_completed") {
+    return detailText ||
+      (step.agent ? `${step.agent} returned from the subtask.` : "A subtask returned.");
+  }
+  if (eventType === "agent_turn_started") {
+    return projection.userRequest ? `Working on: ${oneLinePreview(projection.userRequest, "your request", 140)}` : "Preparing the next model response.";
+  }
+  if (eventType === "approval_queue_item_created") {
+    return detailText || "Waiting for your approval.";
+  }
+  if (eventType === "approval_queue_item_resolved" || eventType === "approval_queue_item_followup_triggered") {
+    return detailText || "Continuing after approval.";
+  }
+  if (eventType === "task_run_failed" || eventType === "scheduler_step_failed") {
+    return detailText || "Task failed.";
+  }
+  return undefined;
+}
+
+function chatFacingActivityStepDetailContent(step: TaskActivityProjection["steps"][number], visibleDetail: string | undefined) {
+  if (!visibleDetail) return undefined;
+  if (isInternalTaskRunEventSummary(step.detail_content)) return visibleDetail;
+  if (isInternalTaskRunEventSummary(step.detail) || isInternalTaskRunEventSummary(step.summary)) return visibleDetail;
+  return step.detail_content || visibleDetail;
 }
 
 function readTaskRunContinuationToolName(
@@ -712,7 +1022,9 @@ function describeRunningTaskRunFallback(
     return `${subject} is waiting for the next model response.`;
   }
   if (toolName) return `${subject} is continuing with ${toolName}.`;
-  return `${subject} is working in the background.`;
+  return taskRun.user_request
+    ? `Working on: ${oneLinePreview(taskRun.user_request, "your request", 132)}`
+    : `${subject} is working on your request.`;
 }
 
 function compareTaskRunsForSidebarSelection(left: TaskRunSummary, right: TaskRunSummary) {
@@ -810,6 +1122,7 @@ function summarizeTaskRunInlineStatus(
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
+  const chatProjection = chatFacingTaskRunText(taskRun, detail, actorName);
   const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
   const pendingApprovalCount =
     typeof pendingApprovalOverride === "number"
@@ -867,7 +1180,6 @@ function summarizeTaskRunInlineStatus(
       ? (typeof latestPayload?.tool_name === "string" ? latestPayload.tool_name : null)
       : null;
   const latestEventTypeValue = String(latestEvent?.event_type || latestEventType || "").toLowerCase();
-  const latestEventSummaryText = typeof latestEvent?.summary === "string" ? latestEvent.summary : null;
   const latestResolutionAction = typeof latestPayload?.action_taken === "string"
     ? latestPayload.action_taken.toLowerCase()
     : "";
@@ -875,14 +1187,6 @@ function summarizeTaskRunInlineStatus(
     ? latestPayload.replay_status.toLowerCase()
     : "";
   const latestResumeSupported = latestPayload?.resume_supported === true;
-  const latestEventSummary =
-    userFacingTaskRunSummary(latestEventSummaryText) ||
-    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
-    userFacingTaskRunSummary(detail?.continuation_state_summary) ||
-    userFacingTaskRunSummary(detail?.continuation_cursor_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_cursor_summary) ||
-    null;
 
   if (pendingApprovalCount > 0) {
     if (pendingTimeoutItem) {
@@ -892,15 +1196,13 @@ function summarizeTaskRunInlineStatus(
         detail:
           pendingTimeoutCommand
             ? oneLinePreview(pendingTimeoutCommand, "Command still running.", 132)
-            : latestEventSummary || "Command is still running.",
+            : "Command is still running.",
       };
     }
     return {
       tone: "warning" as const,
       label: blockedToolName ? `Waiting for approval · ${blockedToolName}` : "Waiting for approval",
-      detail:
-        latestEventSummary ||
-        `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
+      detail: `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
     };
   }
 
@@ -966,18 +1268,40 @@ function summarizeTaskRunInlineStatus(
       return {
         tone: "info" as const,
         label: "Running LLM query",
-        detail: latestEventSummary || "Preparing the next model response.",
+        detail: chatProjection.userRequest
+          ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
+          : "Preparing the next model response.",
+      };
+    }
+    if (chatProjection.agentResponse) {
+      return {
+        tone: "info" as const,
+        label: `${chatProjection.agentResponse.agent || actorName} responded`,
+        detail: oneLinePreview(chatProjection.agentResponse.response, "Continuing from the latest response.", 132),
+      };
+    }
+    if (chatProjection.subtaskDispatch) {
+      return {
+        tone: "info" as const,
+        label: chatProjection.subtaskDispatch.agent
+          ? `Subtask · ${chatProjection.subtaskDispatch.agent}`
+          : "Subtask",
+        detail: chatProjection.subtaskDispatch.summary ||
+          (chatProjection.subtaskDispatch.agent
+            ? `${actorName} asked ${chatProjection.subtaskDispatch.agent} to help.`
+            : `${actorName} delegated part of the work.`),
       };
     }
     return {
       tone: "info" as const,
       label: latestToolName ? `Running · ${latestToolName}` : "Running",
       detail:
-        latestEventSummary ||
-        describeRunningTaskRunFallback(taskRun, detail, actorName, {
-          latestEventType: latestEventType || latestEvent?.event_type || null,
-          latestToolName,
-        }),
+        chatProjection.userRequest
+          ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
+          : describeRunningTaskRunFallback(taskRun, detail, actorName, {
+            latestEventType: latestEventType || latestEvent?.event_type || null,
+            latestToolName,
+          }),
     };
   }
   if (normalizedStatus === "completed") {
@@ -985,8 +1309,9 @@ function summarizeTaskRunInlineStatus(
       tone: "success" as const,
       label: "Completed",
       detail:
-        latestEventSummary ||
-        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task finished."),
+        chatProjection.terminalSummary
+          ? oneLinePreview(chatProjection.terminalSummary, "Task finished.", 132)
+          : "Task finished.",
     };
   }
   if (normalizedStatus === "failed") {
@@ -994,16 +1319,18 @@ function summarizeTaskRunInlineStatus(
       tone: "error" as const,
       label: "Failed",
       detail:
-        latestEventSummary ||
-        (latestEventType ? formatTaskRunEventType(latestEventType) : "Task failed."),
+        chatProjection.terminalSummary
+          ? oneLinePreview(chatProjection.terminalSummary, "Task failed.", 132)
+          : "Task failed.",
     };
   }
   return {
     tone: "neutral" as const,
     label: formatTaskRunStatus(taskRun.status),
     detail:
-      latestEventSummary ||
-      (latestEventType ? formatTaskRunEventType(latestEventType) : "Background task update."),
+      chatProjection.terminalSummary
+        ? oneLinePreview(chatProjection.terminalSummary, "Task update.", 132)
+        : "Task update.",
   };
 }
 
@@ -1048,13 +1375,13 @@ function buildTaskRunCardSummary(
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
+  const chatProjection = chatFacingTaskRunText(taskRun, detail, actorName);
   const events = detail?.events ?? [];
   const latestEvent = events[events.length - 1] ?? null;
   const latestPayload = (latestEvent?.payload && typeof latestEvent.payload === "object")
     ? latestEvent.payload as Record<string, unknown>
     : null;
   const latestEventTypeValue = String(latestEvent?.event_type || "").toLowerCase();
-  const latestEventSummaryText = userFacingTaskRunSummary(typeof latestEvent?.summary === "string" ? latestEvent.summary : null);
   const latestResolutionAction = typeof latestPayload?.action_taken === "string"
     ? latestPayload.action_taken.toLowerCase()
     : "";
@@ -1128,6 +1455,18 @@ function buildTaskRunCardSummary(
         ? `Continuing the agent turn with ${latestToolName}.`
         : "Continuing the agent turn.";
     }
+    if (chatProjection.subtaskResult) {
+      return chatProjection.subtaskResult.summary ||
+        (chatProjection.subtaskResult.agent
+          ? `${chatProjection.subtaskResult.agent} returned from the subtask.`
+          : "A subtask returned.");
+    }
+    if (chatProjection.subtaskDispatch) {
+      return chatProjection.subtaskDispatch.summary ||
+        (chatProjection.subtaskDispatch.agent
+          ? `${actorName} asked ${chatProjection.subtaskDispatch.agent} to help.`
+          : `${actorName} delegated part of the work.`);
+    }
     if ((latestEvent?.event_type || "").includes("tool")) {
       if ((latestEvent?.event_type || "").toLowerCase() === "tool_call_started") {
         const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
@@ -1137,14 +1476,18 @@ function buildTaskRunCardSummary(
       }
       return latestToolName
         ? `Executing ${latestToolName}.`
-        : latestEventSummaryText || "Executing tool work.";
+        : "Executing tool work.";
     }
     if ((latestEvent?.event_type || "").includes("agent_turn")) {
-      return latestResponsePreview
+      return chatProjection.agentResponse?.response
+        ? oneLinePreview(chatProjection.agentResponse.response, "Running LLM turn.", 140)
+        : latestResponsePreview
         ? oneLinePreview(latestResponsePreview, "Running LLM turn.", 140)
         : `${actorName} is waiting for the next model response.`;
     }
-    return latestEventSummaryText || describeRunningTaskRunFallback(taskRun, detail, actorName, {
+    return chatProjection.userRequest
+      ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 140)}`
+      : describeRunningTaskRunFallback(taskRun, detail, actorName, {
       latestEventType: latestEvent?.event_type || taskRun.latest_continuation_event_type || null,
       latestToolName,
     });
@@ -1152,7 +1495,7 @@ function buildTaskRunCardSummary(
 
   if (normalizedStatus === "completed") {
     return oneLinePreview(
-      taskRun.summary || latestResponsePreview || taskRun.user_request || "Background task completed.",
+      chatProjection.terminalSummary || "Task completed.",
       "Background task completed.",
       160,
     );
@@ -1160,14 +1503,14 @@ function buildTaskRunCardSummary(
 
   if (normalizedStatus === "failed") {
     return oneLinePreview(
-      taskRun.summary || latestEventSummaryText || "Background task failed.",
+      userFacingTaskRunFailureSummary(taskRun.summary) || chatProjection.terminalSummary || "Background task failed.",
       "Background task failed.",
       160,
     );
   }
 
   return oneLinePreview(
-    latestEventSummaryText || taskRun.summary || taskRun.user_request || "Background task update.",
+    chatProjection.terminalSummary || "Task update.",
     "Background task update.",
     160,
   );
@@ -1273,6 +1616,19 @@ function relativeBrowserPath(path: string, workspacePath?: string | null) {
   if (workspace && normalized === workspace) return "";
   if (workspace && normalized.startsWith(`${workspace}/`)) return normalized.slice(workspace.length + 1);
   return normalized.replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+function isAbsoluteBrowserPath(path: string) {
+  const normalized = normalizeBrowserPath(path);
+  return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+}
+
+function isRuntimePathInsideWorkspace(path: string, workspacePath?: string | null) {
+  const normalized = normalizeBrowserPath(path).replace(/\/+$/g, "");
+  const workspace = workspacePath ? normalizeBrowserPath(workspacePath).replace(/\/+$/g, "") : "";
+  if (!isAbsoluteBrowserPath(normalized)) return true;
+  if (!workspace) return false;
+  return normalized === workspace || normalized.startsWith(`${workspace}/`);
 }
 
 function compareBrowserFileTreeNodes(left: BrowserFileTreeNode, right: BrowserFileTreeNode) {
@@ -1521,6 +1877,7 @@ function mergeBrowserFileEntries(workspaceEntries: BrowserFileEntry[], runtimeEn
   const merged = new Map<string, BrowserFileEntry>();
   workspaceEntries.forEach((entry) => merged.set(normalizeBrowserPath(entry.path), entry));
   runtimeEntries.forEach((entry) => {
+    if (!isRuntimePathInsideWorkspace(entry.path, workspacePath)) return;
     const key = relativeBrowserPath(entry.path, workspacePath);
     const existing = merged.get(key) ?? merged.get(normalizeBrowserPath(entry.path));
     merged.set(existing ? normalizeBrowserPath(existing.path) : key, existing ? { ...existing, ...entry, path: existing.path } : entry);
@@ -1785,7 +2142,8 @@ function buildContextCompactionDetail(payload: Record<string, unknown> | undefin
 
 function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail | null): MessageStreamStep[] {
   const events = detail?.events ?? [];
-  const recentEvents = events.slice(-6);
+  const visibleEvents = events.filter((event) => canTaskRunEventUpdateChatDetail(event.event_type));
+  const recentEvents = visibleEvents.slice(-6);
   const isRunning = (taskRun.status || "").toLowerCase() === "running";
   const latestActiveEventId =
     [...recentEvents].reverse().find((event) => event.event_type !== "context_compaction")?.id ??
@@ -1927,21 +2285,27 @@ function renderTaskRunTrace(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   activity: TaskActivityProjection | null,
-  expandedStepId: string | null,
-  onToggleStep: (taskRunId: number, stepId: string) => void,
+  expandedStepId: StepExpansionValue | undefined,
+  onToggleStep: (taskRunId: number, stepId: string, isExpanded: boolean) => void,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const traceSteps = activity?.steps.length
-    ? activity.steps.map((step) => ({
-        id: step.id,
-        label: step.label,
-        detail: step.detail || step.summary || undefined,
-        detailContent: step.detail_content || step.detail || step.summary || undefined,
-        state: step.state,
-        kind: step.tool ? ("tool_call" as const) : undefined,
-        agent: step.agent || undefined,
-        tool: step.tool || undefined,
-      }))
+    ? activity.steps
+      .filter((step) => !isInternalTaskActivityStep(step))
+      .map((step) => {
+        const visibleDetail = chatFacingActivityStepText(step, taskRun, detail);
+        return {
+          id: step.id,
+          label: userFacingTaskRunSummary(step.label) || step.label,
+          detail: visibleDetail,
+          detailContent: chatFacingActivityStepDetailContent(step, visibleDetail),
+          state: step.state,
+          kind: step.tool ? ("tool_call" as const) : undefined,
+          agent: step.agent || undefined,
+          tool: step.tool || undefined,
+          runId: taskRun.id,
+        };
+      })
     : buildTaskRunTraceSteps(taskRun, detail);
   if (traceSteps.length === 0) return null;
   const currentStepId =
@@ -1950,46 +2314,56 @@ function renderTaskRunTrace(
     ?? traceSteps[traceSteps.length - 1]?.id
     ?? null;
   const resolvedExpandedStepId =
-    expandedStepId && traceSteps.some((step) => step.id === expandedStepId) ? expandedStepId : currentStepId;
+    expandedStepId === undefined
+      ? currentStepId
+      : expandedStepId && traceSteps.some((step) => step.id === expandedStepId)
+        ? expandedStepId
+        : null;
 
   return (
     <div className="message-stream-trace message-stream-trace--task-run">
-      {traceSteps.map((step) => (
-        <details
-          key={step.id}
-          className={`message-stream-step message-stream-step--${step.state}`}
-          open={resolvedExpandedStepId === step.id}
-        >
-          <summary
-            className="message-stream-step__summary"
-            onClick={(event) => {
-              event.preventDefault();
-              onToggleStep(taskRun.id, step.id);
-            }}
+      {traceSteps.map((step) => {
+        const isExpanded = resolvedExpandedStepId === step.id;
+        return (
+          <details
+            key={step.id}
+            className={`message-stream-step message-stream-step--${step.state}`}
+            open={isExpanded}
           >
-            <span className="message-stream-step__state" aria-hidden="true">
-              {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
-            </span>
-            <span className="message-stream-step__copy">
-              <strong>{step.label}</strong>
-              {step.detail ? <small>{step.detail}</small> : null}
-            </span>
-            <span className="message-stream-step__actions">
-              {renderFailureStepAction(step, { taskRun, taskRunDetail: detail }, onAnalyzeFailureStep)}
-              <span className="message-stream-step__toggle" aria-hidden="true">
-                ▸
+            <summary
+              className="message-stream-step__summary"
+              onClick={(event) => {
+                event.preventDefault();
+                onToggleStep(taskRun.id, step.id, isExpanded);
+              }}
+            >
+              <span className="message-stream-step__state" aria-hidden="true">
+                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
               </span>
-            </span>
-          </summary>
-          {resolvedExpandedStepId === step.id && (step.detailContent || step.detail) ? (
-            <div className="message-stream-step__detail">
-              {renderMarkdownContent(step.detailContent || step.detail || "", "message-stream-step__detail-content", {
-                highlight: false,
-              })}
-            </div>
-          ) : null}
-        </details>
-      ))}
+              <span className="message-stream-step__copy">
+                <span className="message-stream-step__title-line">
+                  <strong>{step.label}</strong>
+                  {renderStepIdBadges(step)}
+                </span>
+                {step.detail ? <small>{step.detail}</small> : null}
+              </span>
+              <span className="message-stream-step__actions">
+                {renderFailureStepAction(step, { taskRun, taskRunDetail: detail }, onAnalyzeFailureStep)}
+                <span className="message-stream-step__toggle" aria-hidden="true">
+                  ▸
+                </span>
+              </span>
+            </summary>
+            {isExpanded && (step.detailContent || step.detail) ? (
+              <div className="message-stream-step__detail">
+                {renderMarkdownContent(step.detailContent || step.detail || "", "message-stream-step__detail-content", {
+                  highlight: false,
+                })}
+              </div>
+            ) : null}
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -2008,6 +2382,45 @@ function fileReaderPreviewKind(path: string, content: string | undefined) {
   if (/\.(md|mdx|markdown)$/.test(normalizedPath)) return "markdown";
   if (/\.(json|jsonc|jsonl)$/.test(normalizedPath) && isJsonContent(content)) return "json";
   return "raw";
+}
+
+function resolveMarkdownFileLink(currentPath: string, href: string | undefined) {
+  const rawHref = href?.trim() || "";
+  if (!rawHref) return null;
+  if (rawHref.startsWith("#")) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(rawHref)) return null;
+  if (rawHref.startsWith("//")) return null;
+
+  const withoutHash = rawHref.split("#", 1)[0];
+  const withoutQuery = withoutHash.split("?", 1)[0];
+  const decodedHref = (() => {
+    try {
+      return decodeURIComponent(withoutQuery);
+    } catch {
+      return withoutQuery;
+    }
+  })();
+  const normalizedHref = normalizeBrowserPath(decodedHref);
+  if (!normalizedHref || normalizedHref.endsWith("/")) return null;
+
+  const baseParts = normalizeBrowserPath(currentPath).split("/");
+  baseParts.pop();
+  const parts = normalizedHref.startsWith("/")
+    ? normalizedHref.split("/")
+    : [...baseParts, ...normalizedHref.split("/")];
+  const resolved: string[] = [];
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed || trimmed === ".") continue;
+    if (trimmed === "..") {
+      resolved.pop();
+      continue;
+    }
+    resolved.push(trimmed);
+  }
+
+  return resolved.join("/");
 }
 
 function isJsonContent(value: string | undefined) {
@@ -2387,6 +2800,36 @@ function toolOutputStepLabel(actor: string, toolName: string) {
   return `Tool Output · ${actor} · ${toolName}`;
 }
 
+function compactToolCallId(toolCallId?: string | null) {
+  const normalized = (toolCallId || "").trim();
+  if (!normalized) return "";
+  if (normalized.length <= 12) return normalized;
+  return `${normalized.slice(0, 6)}...${normalized.slice(-4)}`;
+}
+
+function renderStepIdBadges(step: MessageStreamStep) {
+  const badges: string[] = [];
+  if (typeof step.runId === "number" && Number.isFinite(step.runId)) {
+    badges.push(`task #${step.runId}`);
+  }
+  const callId = compactToolCallId(step.toolCallId);
+  if (callId) {
+    badges.push(`call ${callId}`);
+  } else if (typeof step.toolCallIndex === "number" && Number.isFinite(step.toolCallIndex)) {
+    badges.push(`call #${step.toolCallIndex + 1}`);
+  }
+  if (badges.length === 0) return null;
+  return (
+    <span className="message-stream-step__ids" aria-label={badges.join(", ")}>
+      {badges.map((badge) => (
+        <span key={badge} className="message-stream-step__id">
+          {badge}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function buildLlmMetaSummary(model?: string, turn?: number) {
   return [
     model,
@@ -2589,9 +3032,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
       if (card.arguments) sections.push(markdownSection("Arguments", prettyJson(card.arguments), { language: "json" }));
       if (card.result) {
         sections.push(
-          isJsonContent(card.result)
-            ? markdownSection(isToolCardFailure(card) ? "Error" : "Result", prettyJson(card.result), { language: "json" })
-            : markdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result, { asMarkdown: true }),
+          toolResultMarkdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result),
         );
       }
       return sections.join("\n\n");
@@ -2607,7 +3048,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
       return card.items
         .map(
           (item, index) =>
-            `### #${index + 1} ${item.tool || card.tool || "tool"}\n\n${item.arguments ? `${markdownSection("Arguments", prettyJson(item.arguments), { language: "json" })}\n\n` : ""}${item.result ? isJsonContent(item.result) ? markdownSection("Result", prettyJson(item.result), { language: "json" }) : markdownSection("Result", item.result, { asMarkdown: true }) : ""}`,
+            `### #${index + 1} ${item.tool || card.tool || "tool"}\n\n${item.arguments ? `${markdownSection("Arguments", prettyJson(item.arguments), { language: "json" })}\n\n` : ""}${item.result ? toolResultMarkdownSection("Result", item.result) : ""}`,
         )
         .join("\n\n");
     case "stage_start":
@@ -2666,11 +3107,15 @@ function messageToolCallDetailFromCard(card: DecoratedChatCardItem) {
   return markdownSection("Arguments", prettyJson(card.arguments), { language: "json" });
 }
 
+function toolResultMarkdownSection(title: string, content: string) {
+  return isJsonContent(content)
+    ? markdownSection(title, prettyJson(content), { language: "json" })
+    : markdownSection(title, content, { language: "text" });
+}
+
 function messageToolResultDetailFromCard(card: DecoratedChatCardItem) {
   if (!card.result) return "";
-  return isJsonContent(card.result)
-    ? markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
-    : markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result, { asMarkdown: true });
+  return toolResultMarkdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result);
 }
 
 function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: number): MessageStreamStep[] {
@@ -2701,20 +3146,23 @@ function buildMessageStepsFromCard(card: ThreadCard, messageId: number, index: n
     case "tool_call": {
       const toolName = card.tool || "tool";
       return [
-        {
-          id: `${messageId}-card-${card.id}-${index}-tool`,
-          label: toolCallStepLabel(actor, toolName),
-          detail: compactCardSummary(card) || (card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool."),
+          {
+            id: `${messageId}-card-${card.id}-${index}-tool`,
+            label: toolCallStepLabel(actor, toolName),
+            detail: compactCardSummary(card) || (card.arguments ? `args: ${oneLinePreview(card.arguments, "prepared")}` : "Calling tool."),
           detailContent: [
             messageToolCallDetailFromCard(card),
             messageToolResultDetailFromCard(card),
           ].filter(Boolean).join("\n\n"),
           state: messageStepStateFromCard(card),
           kind: "tool_call",
-          agent: actor,
-          tool: toolName,
-        },
-      ];
+            agent: actor,
+            tool: toolName,
+            runId: typeof card.run_id === "number" ? card.run_id : undefined,
+            toolCallIndex: typeof card.tool_call_index === "number" ? card.tool_call_index : undefined,
+            toolCallId: card.tool_call_id ?? null,
+          },
+        ];
     }
     case "agent_error":
       return [
@@ -2782,10 +3230,49 @@ function CopyTextButton({ content, title }: { content: string; title: string }) 
   );
 }
 
-function renderFileReaderPreview(path: string, content: string) {
+function renderFileReaderPreview(path: string, content: string, onOpenLinkedFile?: (path: string) => void) {
   const kind = fileReaderPreviewKind(path, content);
   if (kind === "markdown") {
-    return renderMarkdownContent(content, "file-reader-card__rendered file-reader-card__rendered--markdown");
+    return (
+      <div className="file-reader-card__rendered file-reader-card__rendered--markdown">
+        <div className="message-markdown">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={content.length <= LARGE_MARKDOWN_HIGHLIGHT_LIMIT ? [rehypeHighlight] : []}
+            components={{
+              a: ({ node: _node, href, children, ...props }) => {
+                const linkedPath = resolveMarkdownFileLink(path, href);
+                if (!linkedPath || !onOpenLinkedFile) {
+                  return <a href={href} {...props} target="_blank" rel="noreferrer">{children}</a>;
+                }
+                return (
+                  <a
+                    href={href}
+                    {...props}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onOpenLinkedFile(linkedPath);
+                    }}
+                    title={`Open ${linkedPath}`}
+                  >
+                    {children}
+                  </a>
+                );
+              },
+              table: ({ node: _node, ...props }) => (
+                <div className="message-markdown__table-wrap">
+                  <table {...props} />
+                </div>
+              ),
+              input: ({ node: _node, ...props }) =>
+                props.type === "checkbox" ? <input {...props} disabled readOnly className="message-markdown__checkbox" /> : <input {...props} />,
+            }}
+          >
+            {content}
+          </ReactMarkdown>
+        </div>
+      </div>
+    );
   }
   if (kind === "json") {
     return <pre className="file-reader-card__content">{prettyJson(content)}</pre>;
@@ -2800,6 +3287,9 @@ function FileReaderCard({
   onDraftChange,
   onDiscard,
   onSave,
+  onOpenLinkedFile,
+  onBack,
+  onForward,
 }: { state: FileReaderState } & FileReaderCardActions) {
   const data = state.data;
   const path = data?.path || state.path;
@@ -2808,6 +3298,8 @@ function FileReaderCard({
   const resolvedContent = isEditing ? state.draft ?? data?.content ?? "" : data?.content ?? "";
   const lineCount = resolvedContent ? resolvedContent.split("\n").length : 0;
   const dirty = isEditing && (state.draft ?? "") !== (data?.content ?? "");
+  const canGoBack = (state.historyIndex ?? 0) > 0;
+  const canGoForward = (state.historyIndex ?? 0) < (state.history?.length ?? 0) - 1;
 
   return (
     <article className="file-reader-card">
@@ -2825,6 +3317,12 @@ function FileReaderCard({
           </div>
         </div>
         <div className="file-reader-card__actions">
+          <button type="button" className="chat-copy-inline-btn" onClick={onBack} disabled={!canGoBack} title="Previous file">
+            Back
+          </button>
+          <button type="button" className="chat-copy-inline-btn" onClick={onForward} disabled={!canGoForward} title="Next file">
+            Next
+          </button>
           <CopyTextButton content={path} title="Copy path" />
           {data && !data.binary ? <CopyTextButton content={data.content} title="Copy file content" /> : null}
           {isEditable && !isEditing ? (
@@ -2875,7 +3373,7 @@ function FileReaderCard({
           <div className="file-reader-card__body-meta">
             {lineCount} lines{state.saveMessage ? ` - ${state.saveMessage}` : ""}
           </div>
-          {renderFileReaderPreview(path, resolvedContent)}
+          {renderFileReaderPreview(path, resolvedContent, onOpenLinkedFile)}
         </div>
       )}
     </article>
@@ -2894,42 +3392,80 @@ function ToolFileReaderCard({
     path: request.path,
     status: "loading",
     mode: request.mode,
+    history: [request.path],
+    historyIndex: 0,
   });
 
-  useEffect(() => {
+  const openToolProjectFilePath = useCallback((path: string, options?: { history?: string[]; historyIndex?: number }) => {
     let cancelled = false;
     if (!projectId) {
       setState({
-        path: request.path,
+        path,
         status: "error",
         error: "No project is available for this file interaction.",
       });
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
-    setState({ path: request.path, status: "loading", mode: request.mode });
-    api.readProjectFile(projectId, request.path)
+
+    let nextHistory = options?.history;
+    let nextHistoryIndex = options?.historyIndex;
+    setState((current) => {
+      if (!nextHistory) {
+        const currentHistory = current.history?.length ? current.history : [current.path].filter(Boolean);
+        const currentIndex = typeof current.historyIndex === "number" ? current.historyIndex : currentHistory.length - 1;
+        if (currentHistory[currentIndex] === path) {
+          nextHistory = currentHistory;
+          nextHistoryIndex = currentIndex;
+        } else {
+          nextHistory = [...currentHistory.slice(0, currentIndex + 1), path];
+          nextHistoryIndex = nextHistory.length - 1;
+        }
+      }
+      return {
+        path,
+        status: "loading",
+        mode: request.mode,
+        history: nextHistory,
+        historyIndex: nextHistoryIndex,
+      };
+    });
+    api.readProjectFile(projectId, path)
       .then((data) => {
         if (cancelled) return;
         const canEdit = request.mode === "edit" && !data.binary && !data.truncated;
-        setState({
-          path: data.path,
-          status: "ready",
-          data,
-          mode: canEdit ? "edit" : "read",
-          draft: data.content,
+        setState((current) => {
+          const history = [...(current.history ?? [data.path])];
+          const historyIndex = typeof current.historyIndex === "number" ? current.historyIndex : history.length - 1;
+          if (historyIndex >= 0) history[historyIndex] = data.path;
+          return {
+            path: data.path,
+            status: "ready",
+            data,
+            mode: canEdit ? "edit" : "read",
+            draft: data.content,
+            history,
+            historyIndex,
+          };
         });
       })
       .catch((error) => {
         if (cancelled) return;
-        setState({
-          path: request.path,
+        setState((current) => ({
+          ...current,
+          path,
           status: "error",
           error: error instanceof Error ? error.message : "Unable to read file.",
-        });
+        }));
       });
     return () => {
       cancelled = true;
     };
+  }, [projectId, request.mode]);
+
+  useEffect(() => {
+    return openToolProjectFilePath(request.path, { history: [request.path], historyIndex: 0 });
   }, [projectId, request.mode, request.path]);
 
   const saveDraft = useCallback(async () => {
@@ -2950,6 +3486,8 @@ function ToolFileReaderCard({
         draft: data.content,
         saving: false,
         saveMessage: "Saved",
+        history: state.history,
+        historyIndex: state.historyIndex,
       });
     } catch (error) {
       setState((current) => ({
@@ -2978,6 +3516,21 @@ function ToolFileReaderCard({
           : current);
       }}
       onSave={() => void saveDraft()}
+      onOpenLinkedFile={(path) => {
+        openToolProjectFilePath(path);
+      }}
+      onBack={() => {
+        const history = state.history ?? [];
+        const nextIndex = Math.max((state.historyIndex ?? 0) - 1, 0);
+        const path = history[nextIndex];
+        if (path) openToolProjectFilePath(path, { history, historyIndex: nextIndex });
+      }}
+      onForward={() => {
+        const history = state.history ?? [];
+        const nextIndex = Math.min((state.historyIndex ?? 0) + 1, history.length - 1);
+        const path = history[nextIndex];
+        if (path) openToolProjectFilePath(path, { history, historyIndex: nextIndex });
+      }}
     />
   );
 }
@@ -3980,7 +4533,7 @@ function renderCompactCard(
   isLive: boolean,
   isCurrent: boolean,
   isExpanded: boolean,
-  onToggle: (groupKey: string, cardId: string) => void,
+  onToggle: (groupKey: string, cardId: string, isExpanded: boolean) => void,
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
@@ -4003,7 +4556,7 @@ function renderCompactCard(
         className="chat-progress-item__summary"
         onClick={(event) => {
           event.preventDefault();
-          onToggle(groupKey, card.id);
+          onToggle(groupKey, card.id, isExpanded);
         }}
       >
         <span className={`chat-progress-item__state chat-progress-item__state--${state}`} aria-hidden="true">
@@ -4079,8 +4632,8 @@ function renderActivityBatch(
   cards: ThreadCard[],
   isCurrentBatch: boolean,
   currentActivityAgentName: string | null,
-  expandedProgressCards: Record<string, string | null>,
-  onToggleProgressCard: (groupKey: string, cardId: string) => void,
+  expandedProgressCards: Record<string, StepExpansionValue>,
+  onToggleProgressCard: (groupKey: string, cardId: string, isExpanded: boolean) => void,
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
@@ -4195,8 +4748,8 @@ function renderMessage(
   message: MessageItem,
   copiedMessageId: number | null,
   onCopyMessage: (message: MessageItem) => Promise<void>,
-  expandedStepId: string | null,
-  onToggleStep: (messageId: number, stepId: string) => void,
+  expandedStepId: StepExpansionValue | undefined,
+  onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void,
   fallbackCards: ThreadCard[] = [],
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
@@ -4210,7 +4763,11 @@ function renderMessage(
   const currentStreamStepId =
     [...streamSteps].reverse().find((step) => step.state === "live")?.id ?? streamSteps[streamSteps.length - 1]?.id ?? null;
   const resolvedExpandedStepId =
-    expandedStepId && streamSteps.some((step) => step.id === expandedStepId) ? expandedStepId : currentStreamStepId;
+    expandedStepId === undefined
+      ? currentStreamStepId
+      : expandedStepId && streamSteps.some((step) => step.id === expandedStepId)
+        ? expandedStepId
+        : null;
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
   const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
@@ -4223,66 +4780,72 @@ function renderMessage(
     : renderMarkdownContent(messageBodyContent, messageBodyClassName);
   const messageTrace = hasStreamSteps ? (
     <div className={`message-stream-trace ${showReplyAfterTrace ? "message-stream-trace--top" : ""}`}>
-      {streamSteps.map((step: MessageStreamStep) => (
-        <details
-          key={step.id}
-          className={`message-stream-step message-stream-step--${step.state}`}
-          open={resolvedExpandedStepId === step.id}
-        >
-          <summary
-            className="message-stream-step__summary"
-            onClick={(event) => {
-              event.preventDefault();
-              onToggleStep(message.id, step.id);
-            }}
+      {streamSteps.map((step: MessageStreamStep) => {
+        const isExpanded = resolvedExpandedStepId === step.id;
+        return (
+          <details
+            key={step.id}
+            className={`message-stream-step message-stream-step--${step.state}`}
+            open={isExpanded}
           >
-            <span className="message-stream-step__state" aria-hidden="true">
-              {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
-            </span>
-            <span className="message-stream-step__copy">
-              <strong>{step.label}</strong>
-              {(() => {
-                const detail =
-                  step.id === currentStreamStepId
-                    ? summarizeStreamingStepCurrentDetail(step)
-                    : summarizeStreamingDetail(step.detail);
-                return detail ? <small>{detail}</small> : null;
-              })()}
-            </span>
-            <span className="message-stream-step__actions">
-              {renderFailureStepAction(step, { message }, onAnalyzeFailureStep)}
-              <span className="message-stream-step__toggle" aria-hidden="true">
-                ▸
+            <summary
+              className="message-stream-step__summary"
+              onClick={(event) => {
+                event.preventDefault();
+                onToggleStep(message.id, step.id, isExpanded);
+              }}
+            >
+              <span className="message-stream-step__state" aria-hidden="true">
+                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
               </span>
-            </span>
-          </summary>
-          {resolvedExpandedStepId === step.id && (step.detailContent || step.detail) ? (
-            <div className="message-stream-step__detail">
-              {(() => {
-                const detailSource = step.detailContent || step.detail || "";
-                const isLlmStep = isLikelyLlmStep(step.label, detailSource);
-                if (isLlmStep) {
-                  const llmDetail = parseLlmConversationMarkdown(detailSource);
-                  const structuredDetail = renderLlmDetailLayout(inferAgentNameFromLlmStepLabel(step.label), llmDetail, {
-                    className: "message-stream-step__detail-content llm-exchange-stack",
-                  });
-                  return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-                }
+              <span className="message-stream-step__copy">
+                <span className="message-stream-step__title-line">
+                  <strong>{step.label}</strong>
+                  {renderStepIdBadges(step)}
+                </span>
+                {(() => {
+                  const detail =
+                    step.id === currentStreamStepId
+                      ? summarizeStreamingStepCurrentDetail(step)
+                      : summarizeStreamingDetail(step.detail);
+                  return detail ? <small>{detail}</small> : null;
+                })()}
+              </span>
+              <span className="message-stream-step__actions">
+                {renderFailureStepAction(step, { message }, onAnalyzeFailureStep)}
+                <span className="message-stream-step__toggle" aria-hidden="true">
+                  ▸
+                </span>
+              </span>
+            </summary>
+            {isExpanded && (step.detailContent || step.detail) ? (
+              <div className="message-stream-step__detail">
+                {(() => {
+                  const detailSource = step.detailContent || step.detail || "";
+                  const isLlmStep = isLikelyLlmStep(step.label, detailSource);
+                  if (isLlmStep) {
+                    const llmDetail = parseLlmConversationMarkdown(detailSource);
+                    const structuredDetail = renderLlmDetailLayout(inferAgentNameFromLlmStepLabel(step.label), llmDetail, {
+                      className: "message-stream-step__detail-content llm-exchange-stack",
+                    });
+                    return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+                  }
 
-                if (step.kind === "tool_call") {
+                  if (step.kind === "tool_call") {
+                    return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+                  }
+
+                  if (step.state === "live") {
+                    return renderStreamingTextContent(detailSource, "message-stream-step__detail-content");
+                  }
+
                   return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-                }
-
-                if (step.state === "live") {
-                  return renderStreamingTextContent(detailSource, "message-stream-step__detail-content");
-                }
-
-                return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-              })()}
-            </div>
-          ) : null}
-        </details>
-      ))}
+                })()}
+              </div>
+            ) : null}
+          </details>
+        );
+      })}
     </div>
   ) : null;
   const messageUsageFooter =
@@ -4337,8 +4900,8 @@ function renderTaskRunInlineCard(
   approvalItems: ApprovalQueueItem[],
   approvalQueueLoaded: boolean,
   approvalActionItemId: number | null,
-  expandedStepId: string | null,
-  onToggleStep: (taskRunId: number, stepId: string) => void,
+  expandedStepId: StepExpansionValue | undefined,
+  onToggleStep: (taskRunId: number, stepId: string, isExpanded: boolean) => void,
   onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject", remember?: boolean) => Promise<void>,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
@@ -4539,8 +5102,8 @@ type MessageRowProps = {
   message: MessageItem;
   copiedMessageId: number | null;
   onCopyMessage: (message: MessageItem) => void | Promise<void>;
-  expandedStepId: string | null;
-  onToggleStep: (messageId: number, stepId: string) => void;
+  expandedStepId: StepExpansionValue | undefined;
+  onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void;
   fallbackStepCards: ThreadCard[];
   onAnalyzeFailureStep?: FailureStepAnalysisHandler;
 };
@@ -4607,15 +5170,17 @@ export function ChatTab({
   const [showProjectCreateConfirm, setShowProjectCreateConfirm] = useState(false);
   const [gateActionPipelineId, setGateActionPipelineId] = useState<number | null>(null);
   const [localOverlayMessages, setLocalOverlayMessages] = useState<MessageItem[]>([]);
-  const [expandedMessageSteps, setExpandedMessageSteps] = useState<Record<number, string | null>>({});
-  const [expandedTaskRunSteps, setExpandedTaskRunSteps] = useState<Record<number, string | null>>({});
-  const [expandedProgressCards, setExpandedProgressCards] = useState<Record<string, string | null>>({});
+  const [expandedMessageSteps, setExpandedMessageSteps] = useState<Record<number, StepExpansionValue>>({});
+  const [expandedTaskRunSteps, setExpandedTaskRunSteps] = useState<Record<number, StepExpansionValue>>({});
+  const [expandedProgressCards, setExpandedProgressCards] = useState<Record<string, StepExpansionValue>>({});
+  const [stepAutoExpansionDisabled, setStepAutoExpansionDisabled] = useState(false);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [selectedTaskRunId, setSelectedTaskRunId] = useState<number | null>(null);
   const [projectBrowserTab, setProjectBrowserTab] = useState<ProjectBrowserTab>("artifacts");
   const [expandedFileTreePaths, setExpandedFileTreePaths] = useState<Record<string, boolean>>({});
   const [fileReader, setFileReader] = useState<FileReaderState | null>(null);
+  const [activitySidebarWidth, setActivitySidebarWidth] = useState(ACTIVITY_SIDEBAR_DEFAULT_WIDTH);
   const [taskRunDetailsById, setTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [loadingTaskRunId, setLoadingTaskRunId] = useState<number | null>(null);
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
@@ -4636,6 +5201,31 @@ export function ChatTab({
   const currentScopeRef = useRef<string>(overlayScopeKey(chat?.id ?? null));
   const shouldStickThreadToBottomRef = useRef(true);
   const lastAutoScrolledChatIdRef = useRef<number | null>(chat?.id ?? null);
+  const chatShellStyle = useMemo(
+    () => ({ "--activity-sidebar-width": `${activitySidebarWidth}px` }) as CSSProperties,
+    [activitySidebarWidth],
+  );
+  const handleActivitySidebarResizeStart = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = activitySidebarWidth;
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      setActivitySidebarWidth(clampNumber(startWidth + startX - moveEvent.clientX, ACTIVITY_SIDEBAR_MIN_WIDTH, ACTIVITY_SIDEBAR_MAX_WIDTH));
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
   const activeAgents = useMemo(() => agents.filter((agent) => agent.is_active), [agents]);
   const agentRunState = useMemo(() => {
     const state = new Map<string, { isWorking: boolean; runningCount: number }>();
@@ -4744,7 +5334,11 @@ export function ChatTab({
     () => groupBrowserArtifactEntries(browserArtifactEntries),
     [browserArtifactEntries],
   );
-  const browserProcessEntries = processes;
+  const browserProcessTree = processes;
+  const browserProcessCount = useMemo(
+    () => countRuntimeProcessNodes(browserProcessTree),
+    [browserProcessTree],
+  );
   useEffect(() => {
     const nextExpanded: Record<string, boolean> = { [browserFileTree.path]: true };
     setExpandedFileTreePaths((current) => ({ ...nextExpanded, ...current }));
@@ -4752,24 +5346,77 @@ export function ChatTab({
   const toggleFileTreePath = useCallback((path: string) => {
     setExpandedFileTreePaths((current) => ({ ...current, [path]: !current[path] }));
   }, []);
-  const openProjectFilePath = useCallback(async (path: string) => {
+  const openProjectFilePath = useCallback(async (path: string, options?: { history?: string[]; historyIndex?: number }) => {
     if (!project?.id || !path.trim()) return;
     shouldStickThreadToBottomRef.current = true;
-    setFileReader({ path, status: "loading" });
+    let nextHistory = options?.history;
+    let nextHistoryIndex = options?.historyIndex;
+    setFileReader((current) => {
+      if (!nextHistory) {
+        const currentHistory = current?.history?.length ? current.history : [current?.path].filter((item): item is string => Boolean(item));
+        const currentIndex = typeof current?.historyIndex === "number" ? current.historyIndex : currentHistory.length - 1;
+        if (currentHistory[currentIndex] === path) {
+          nextHistory = currentHistory;
+          nextHistoryIndex = currentIndex;
+        } else {
+          nextHistory = [...currentHistory.slice(0, currentIndex + 1), path];
+          nextHistoryIndex = nextHistory.length - 1;
+        }
+      }
+      return {
+        path,
+        status: "loading",
+        history: nextHistory,
+        historyIndex: nextHistoryIndex,
+      };
+    });
     try {
       const data = await api.readProjectFile(project.id, path);
-      setFileReader({ path: data.path, status: "ready", data });
+      setFileReader((current) => {
+        const history = [...(current?.history ?? [data.path])];
+        const historyIndex = typeof current?.historyIndex === "number" ? current.historyIndex : history.length - 1;
+        if (historyIndex >= 0) history[historyIndex] = data.path;
+        return {
+          path: data.path,
+          status: "ready",
+          data,
+          history,
+          historyIndex,
+        };
+      });
       requestAnimationFrame(() => {
         threadEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
       });
     } catch (error) {
-      setFileReader({
+      setFileReader((current) => ({
+        ...current,
         path,
         status: "error",
         error: error instanceof Error ? error.message : "Unable to read file.",
-      });
+      }));
     }
   }, [project?.id]);
+  const navigateFileReaderHistory = useCallback((direction: -1 | 1) => {
+    const history = fileReader?.history ?? [];
+    const currentIndex = fileReader?.historyIndex ?? 0;
+    const nextIndex = Math.min(Math.max(currentIndex + direction, 0), history.length - 1);
+    const path = history[nextIndex];
+    if (!path || nextIndex === currentIndex) return;
+    void openProjectFilePath(path, { history, historyIndex: nextIndex });
+  }, [fileReader?.history, fileReader?.historyIndex, openProjectFilePath]);
+  useEffect(() => {
+    if (!fileReader) return undefined;
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing) return;
+      if (event.key !== "Escape" && event.code !== "Escape") return;
+      event.preventDefault();
+      setFileReader(null);
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [fileReader]);
   const openFileReader = useCallback((node: BrowserFileTreeNode) => {
     if (node.kind !== "file") return;
     void openProjectFilePath(node.path);
@@ -5386,8 +6033,23 @@ export function ChatTab({
 
   useEffect(() => {
     setExpandedMessageSteps({});
+    setExpandedTaskRunSteps({});
     setExpandedProgressCards({});
+    setStepAutoExpansionDisabled(false);
   }, [chat?.id]);
+
+  useEffect(() => {
+    function handleStepCollapseKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setExpandedMessageSteps({});
+      setExpandedTaskRunSteps({});
+      setExpandedProgressCards({});
+      setStepAutoExpansionDisabled(true);
+    }
+
+    document.addEventListener("keydown", handleStepCollapseKeyDown);
+    return () => document.removeEventListener("keydown", handleStepCollapseKeyDown);
+  }, []);
 
   useEffect(() => {
     const chatId = chat?.id ?? null;
@@ -5741,24 +6403,27 @@ export function ChatTab({
     submitDraft();
   }
 
-  const toggleProgressCard = useCallback((groupKey: string, cardId: string) => {
+  const toggleProgressCard = useCallback((groupKey: string, cardId: string, isExpanded: boolean) => {
+    setStepAutoExpansionDisabled(false);
     setExpandedProgressCards((current) => ({
       ...current,
-      [groupKey]: current[groupKey] === cardId ? null : cardId,
+      [groupKey]: isExpanded ? null : cardId,
     }));
   }, []);
 
-  const toggleMessageStep = useCallback((messageId: number, stepId: string) => {
+  const toggleMessageStep = useCallback((messageId: number, stepId: string, isExpanded: boolean) => {
+    setStepAutoExpansionDisabled(false);
     setExpandedMessageSteps((current) => ({
       ...current,
-      [messageId]: current[messageId] === stepId ? null : stepId,
+      [messageId]: isExpanded ? null : stepId,
     }));
   }, []);
 
-  const toggleTaskRunStep = useCallback((taskRunId: number, stepId: string) => {
+  const toggleTaskRunStep = useCallback((taskRunId: number, stepId: string, isExpanded: boolean) => {
+    setStepAutoExpansionDisabled(false);
     setExpandedTaskRunSteps((current) => ({
       ...current,
-      [taskRunId]: current[taskRunId] === stepId ? null : stepId,
+      [taskRunId]: isExpanded ? null : stepId,
     }));
   }, []);
 
@@ -5996,8 +6661,11 @@ export function ChatTab({
   const chatSubheading = project ? "" : chat ? "standalone chat" : "Your first message will create a chat";
   const threadContent = useMemo(() => {
     const resolveExpandedMessageStepId = (message: MessageItem) => {
-      const explicit = expandedMessageSteps[message.id];
-      return explicit ?? null;
+      return Object.prototype.hasOwnProperty.call(expandedMessageSteps, message.id)
+        ? expandedMessageSteps[message.id]
+        : stepAutoExpansionDisabled
+          ? null
+          : undefined;
     };
 
     if (!chat && threadItems.length === 0) {
@@ -6054,7 +6722,11 @@ export function ChatTab({
                         pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],
                         approvalQueueLoaded,
                         approvalActionItemId,
-                        expandedTaskRunSteps[item.taskRun.id] ?? null,
+                        Object.prototype.hasOwnProperty.call(expandedTaskRunSteps, item.taskRun.id)
+                          ? expandedTaskRunSteps[item.taskRun.id]
+                          : stepAutoExpansionDisabled
+                            ? null
+                            : undefined,
                         toggleTaskRunStep,
                         handleResolveApprovalQueueItem,
                         handleAnalyzeFailureStep,
@@ -6091,23 +6763,29 @@ export function ChatTab({
     currentActivityAgentName,
     expandedMessageSteps,
     expandedProgressCards,
+    expandedTaskRunSteps,
     fallbackStepCardsByMessageId,
     gateActionPipelineId,
     handleAnalyzeFailureStep,
     handleApproveGate,
     handleCopyMessage,
     handleRejectGate,
+    handleResolveApprovalQueueItem,
     latestActivityBatchId,
     loading,
     localOverlayMessages,
+    pendingApprovalItemsByTaskRunId,
     project,
+    stepAutoExpansionDisabled,
+    taskActivitiesById,
     threadItems,
     toggleMessageStep,
     toggleProgressCard,
+    toggleTaskRunStep,
   ]);
 
   return (
-    <section className="chat-shell chat">
+    <section className="chat-shell chat" style={chatShellStyle}>
       <header className="chat-header">
         <div className="chat-header__left">
           <div className="chat-session">
@@ -6179,9 +6857,9 @@ export function ChatTab({
         </div>
 
         <div className="chat-header__right">
-          <span className={`chat-live-pill is-${connectionState}`}>
+          <span className={`chat-live-pill is-${connectionState}`} title={`UI version ${UI_VERSION}`}>
             <span className="status-dot chat-live-pill__dot" />
-            <span>{connectionCopy}</span>
+            <span>v{UI_VERSION}</span>
           </span>
           <button
             type="button"
@@ -6336,6 +7014,9 @@ export function ChatTab({
                       : current);
                   }}
                   onSave={() => void saveFileReaderDraft()}
+                  onOpenLinkedFile={(path) => void openProjectFilePath(path)}
+                  onBack={() => navigateFileReaderHistory(-1)}
+                  onForward={() => navigateFileReaderHistory(1)}
                 />
               ) : null}
               <div ref={threadEndRef} />
@@ -6474,6 +7155,13 @@ export function ChatTab({
 
         {activityDrawerOpen ? <button type="button" className="mobile-drawer-backdrop" onClick={onCloseActivity} aria-label="Close browser panel" /> : null}
         <aside className={`chat-sidebar ${activityDrawerOpen ? "is-mobile-open" : ""}`}>
+          <button
+            type="button"
+            className="sidebar-resize-handle sidebar-resize-handle--right"
+            onPointerDown={handleActivitySidebarResizeStart}
+            aria-label="Resize activity sidebar"
+            title="Resize sidebar"
+          />
           <div className="sidebar-panel">
             <div className="sidebar-header sidebar-header--browser-actions">
               <button
@@ -6496,7 +7184,7 @@ export function ChatTab({
                     Icon: FolderTree,
                   },
                   { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
-                  { id: "processes" as const, label: "Processes", count: browserProcessEntries.length, Icon: Monitor },
+                  { id: "processes" as const, label: "Processes", count: browserProcessCount, Icon: Monitor },
                 ].map(({ id, label, count, Icon }) => (
                   <button
                     key={id}
@@ -6561,35 +7249,11 @@ export function ChatTab({
               ) : null}
 
               {projectBrowserTab === "processes" ? (
-                <div className="project-browser__section">
-                  {browserProcessEntries.length === 0 ? (
+                <div className="project-browser__section project-browser__section--processes">
+                  {browserProcessCount === 0 || !browserProcessTree ? (
                     <div className="empty-card">Running background tasks will appear here.</div>
                   ) : (
-                    browserProcessEntries.map((entry) => (
-                      <details key={entry.id} className="browser-entry browser-entry--process">
-                        <summary className="browser-entry__summary">
-                          <div className="browser-entry__icon"><ProcessIcon kind={entry.kind} /></div>
-                          <div className="browser-entry__body">
-                            <div className="browser-entry__title" title={entry.command}>{entry.command}</div>
-                            <div className="browser-entry__meta">
-                              <span className="browser-entry__state browser-entry__state--running">Running</span>
-                              <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
-                            </div>
-                          </div>
-                          <CopyTextButton content={entry.command} title="Copy command" />
-                        </summary>
-                        <div className="browser-entry__details">
-                          <div className="browser-entry__meta">
-                            <span className="browser-entry__state browser-entry__state--running">Running</span>
-                            <span>{entry.kind === "command" ? "Shell command" : "Task run"}</span>
-                            {typeof entry.pid === "number" ? <span>pid {entry.pid}</span> : null}
-                            {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
-                          </div>
-                          <p>{oneLinePreview(entry.detail, "Process record", 120)}</p>
-                          {entry.output ? <pre className="browser-entry__output">{entry.output}</pre> : null}
-                        </div>
-                      </details>
-                    ))
+                    <ProcessTreeNode node={browserProcessTree} />
                   )}
                 </div>
               ) : null}

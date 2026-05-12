@@ -86,12 +86,15 @@ export type ProjectBrowserIndex = {
 
 export type ChatProcessEntry = {
   id: string;
-  command: string;
-  kind: "command" | "task";
+  label: string;
+  kind: "project" | "chat" | "task" | "command";
   detail: string;
+  status?: "running" | "terminated" | string | null;
+  parent_id?: string | null;
   timestamp?: string | null;
   pid?: number | null;
   output?: string | null;
+  children: ChatProcessEntry[];
 };
 
 export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
@@ -431,6 +434,7 @@ export type MessageStreamStep = {
   tool?: string;
   toolCallIndex?: number;
   toolCallId?: string | null;
+  runId?: number;
 };
 
 export type ChatEventTone = "neutral" | "success" | "warning" | "error" | "info";
@@ -745,6 +749,7 @@ export type MonitorRuntimeItem = {
   to_entity?: string | null;
   model?: string | null;
   tool_name?: string | null;
+  tool_call_id?: string | null;
   success?: boolean | null;
   tokens_in?: number;
   tokens_out?: number;
@@ -781,6 +786,51 @@ export type MonitorRuntimeDetail = {
   card: Record<string, unknown>;
 };
 
+export type MonitorFileEvent = {
+  id: string;
+  source: string;
+  runtime_message_id?: number | null;
+  created_at?: string | null;
+  agent?: string | null;
+  tool_name: string;
+  action: "read" | "write" | "list" | "search" | "delete" | "access" | string;
+  file_path: string;
+  project_id?: number | null;
+  project_name?: string | null;
+  chatroom_id: number;
+  chat_title: string;
+  success?: boolean | null;
+  status?: string | null;
+  blocked?: boolean | null;
+  duration_ms?: number | null;
+  turn?: number | null;
+  client_turn_id?: string | null;
+  arguments?: Record<string, unknown>;
+  arguments_preview?: string | null;
+  result_preview?: string | null;
+  result_size?: number | null;
+};
+
+export type MonitorFilesResponse = {
+  captured_at: string;
+  limit: number;
+  tool: string;
+  query: string;
+  counts: {
+    total: number;
+    reads: number;
+    writes: number;
+    lists: number;
+    searches: number;
+    deletes: number;
+    errors: number;
+    unique_paths: number;
+  };
+  by_tool: { tool_name: string; count: number }[];
+  by_agent: { agent: string; count: number }[];
+  entries: MonitorFileEvent[];
+};
+
 export type MonitorTaskRunSummary = TaskRunSummary & {
   chat_title: string;
   project_name?: string | null;
@@ -791,6 +841,50 @@ export type MonitorTaskRunsResponse = {
   captured_at: string;
   range: "1h" | "6h" | "24h" | "7d" | "30d";
   entries: MonitorTaskRunSummary[];
+};
+
+export type MonitorProcessEntry = {
+  id: string;
+  token: string;
+  tool_name?: string | null;
+  command: string;
+  cwd?: string | null;
+  timeout_seconds?: number | null;
+  chatroom_id?: number | null;
+  project_id?: number | null;
+  task_run_id?: number | null;
+  client_turn_id?: string | null;
+  tool_call_id?: string | null;
+  turn?: number | null;
+  agent_name?: string | null;
+  status: string;
+  is_active: boolean;
+  is_terminal: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  pid?: number | null;
+  worker_pid?: number | null;
+  pgid?: number | null;
+  exit_code?: number | null;
+  tail_output?: string | null;
+  last_result_preview?: string | null;
+  redirected_log_path?: string | null;
+  state_path?: string | null;
+  log_path?: string | null;
+  exit_path?: string | null;
+};
+
+export type MonitorProcessesResponse = {
+  captured_at: string;
+  entries: MonitorProcessEntry[];
+  counts: {
+    total: number;
+    running: number;
+    finished: number;
+    failed: number;
+  };
 };
 
 export type MonitorTaskRunStep = {

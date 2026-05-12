@@ -1,5 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Boxes, BrainCircuit, Crown, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
+import { Bot, Boxes, BrainCircuit, CheckCircle2, CircleDashed, Crown, FileText, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -18,9 +18,13 @@ import type {
   MonitorTaskRunsResponse,
   MonitorApprovalQueueEntry,
   MonitorApprovalQueueResponse,
+  MonitorFileEvent,
+  MonitorFilesResponse,
   MonitorLogEntry,
   MonitorNetworkEvent,
   MonitorOverview,
+  MonitorProcessEntry,
+  MonitorProcessesResponse,
   MonitorRuntimeDetail,
   MonitorUsageResponse,
   ProjectSummary,
@@ -45,7 +49,9 @@ const PRIMARY_PAGES = [
   { id: "overview", label: "Overview" },
   { id: "flow", label: "Flow" },
   { id: "network", label: "Network" },
+  { id: "files", label: "Files" },
   { id: "usage", label: "Usage" },
+  { id: "processes", label: "Processes" },
   { id: "transcripts", label: "Transcripts" },
   { id: "logs", label: "Logs" },
   { id: "memory", label: "Memory" },
@@ -79,6 +85,8 @@ type BrainTimelineUnit = "minute" | "hour" | "day" | "month";
 type HistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
 type LogLevel = "all" | "info" | "warn" | "error";
 type TaskRunStatusFilter = "all" | "running" | "completed" | "failed";
+type ProcessStatusFilter = "all" | "running" | "finished" | "failed";
+type FileToolFilter = "all" | "read_file" | "write_file" | "list_files" | "search_files" | "delete_file";
 
 const RESUMABLE_TASK_RUN_KINDS = new Set([
   "multi_agent_orchestration",
@@ -359,6 +367,40 @@ function taskRunStatusTone(status: string | null | undefined) {
   if (normalized === "failed") return "error";
   if (normalized === "running") return "warning";
   return "neutral";
+}
+
+function processStatusTone(process: MonitorProcessEntry | null | undefined) {
+  if (!process) return "neutral";
+  const normalized = (process.status || "").toLowerCase();
+  if (normalized === "failed") return "error";
+  if (process.is_active || !process.is_terminal || normalized === "running") return "warning";
+  if (process.is_terminal || normalized === "completed" || normalized === "succeeded") return "success";
+  return "neutral";
+}
+
+function ProcessStatusIcon({ process }: { process: MonitorProcessEntry }) {
+  const isRunning = process.is_active || !process.is_terminal || (process.status || "").toLowerCase() === "running";
+  const Icon = isRunning ? CircleDashed : CheckCircle2;
+  return (
+    <Icon
+      className={`process-status-icon process-status-icon--${isRunning ? "running" : "finished"}`}
+      aria-label={isRunning ? "running" : "finished"}
+      size={18}
+    />
+  );
+}
+
+function fileActionTone(entry: MonitorFileEvent): "success" | "warning" | "error" | "neutral" {
+  if (entry.success === false) return "error";
+  if (entry.blocked) return "warning";
+  if (entry.action === "write" || entry.action === "delete") return "warning";
+  if (entry.success === true) return "success";
+  return "neutral";
+}
+
+function fileActionLabel(action: string) {
+  if (!action) return "access";
+  return action.replace(/_/g, " ");
 }
 
 function taskRunEventTone(eventType: string | null | undefined) {
@@ -1120,16 +1162,36 @@ function mergeMonitorRuntime(
   current: MonitorOverview["recent_runtime"],
   incoming: MonitorOverview["recent_runtime"],
 ) {
-  const merged = new Map<number, MonitorOverview["recent_runtime"][number]>();
+  const mergeKey = (item: MonitorOverview["recent_runtime"][number]) => {
+    const toolCallId = (item.tool_call_id || "").trim();
+    if (item.type === "tool_call" && toolCallId) {
+      return [
+        "tool_call",
+        item.chatroom_id,
+        item.client_turn_id || "",
+        toolCallId,
+      ].join(":");
+    }
+    return `runtime:${item.id}`;
+  };
+  const merged = new Map<string, MonitorOverview["recent_runtime"][number]>();
   current.forEach((item) => {
-    merged.set(item.id, item);
+    merged.set(mergeKey(item), item);
   });
   incoming.forEach((item) => {
-    merged.set(item.id, { ...merged.get(item.id), ...item });
+    const key = mergeKey(item);
+    merged.set(key, { ...merged.get(key), ...item });
   });
   return [...merged.values()]
     .sort(compareMonitorItemsNewest)
     .slice(0, MONITOR_RUNTIME_LIMIT);
+}
+
+function normalizeMonitorOverviewRuntime(overview: MonitorOverview): MonitorOverview {
+  return {
+    ...overview,
+    recent_runtime: mergeMonitorRuntime([], overview.recent_runtime),
+  };
 }
 
 function compareMonitorApprovalQueueItemsNewest(
@@ -1369,7 +1431,18 @@ function applyMonitorRuntimeUpdate(
   item: MonitorOverview["recent_runtime"][number],
 ) {
   if (!current) return current;
-  const exists = current.recent_runtime.some((entry) => entry.id === item.id);
+  const itemToolCallId = (item.tool_call_id || "").trim();
+  const exists = current.recent_runtime.some((entry) => {
+    if (entry.id === item.id) return true;
+    return (
+      item.type === "tool_call" &&
+      entry.type === "tool_call" &&
+      itemToolCallId !== "" &&
+      entry.chatroom_id === item.chatroom_id &&
+      (entry.client_turn_id || "") === (item.client_turn_id || "") &&
+      (entry.tool_call_id || "").trim() === itemToolCallId
+    );
+  });
   if (exists) {
     return {
       ...current,
@@ -3404,6 +3477,8 @@ export function MonitorTab() {
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
   const [usage, setUsage] = useState<MonitorUsageResponse | null>(null);
   const [taskRunsResponse, setTaskRunsResponse] = useState<MonitorTaskRunsResponse | null>(null);
+  const [processesResponse, setProcessesResponse] = useState<MonitorProcessesResponse | null>(null);
+  const [filesResponse, setFilesResponse] = useState<MonitorFilesResponse | null>(null);
   const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -3420,6 +3495,9 @@ export function MonitorTab() {
   const [brainActivityFilter, setBrainActivityFilter] = useState("");
   const [historyRange, setHistoryRange] = useState<HistoryRange>("24h");
   const [taskRunStatusFilter, setTaskRunStatusFilter] = useState<TaskRunStatusFilter>("all");
+  const [processStatusFilter, setProcessStatusFilter] = useState<ProcessStatusFilter>("all");
+  const [fileToolFilter, setFileToolFilter] = useState<FileToolFilter>("all");
+  const [fileFilter, setFileFilter] = useState("");
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
   const [logFilter, setLogFilter] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -3454,14 +3532,6 @@ export function MonitorTab() {
   const logCursorRef = useRef(0);
   const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
-  const overviewSummaryRowRef = useRef<HTMLDivElement | null>(null);
-  const overviewHeroCardRef = useRef<HTMLDivElement | null>(null);
-  const overviewRuntimeCardRef = useRef<HTMLDivElement | null>(null);
-  const overviewRuntimeBarRef = useRef<HTMLDivElement | null>(null);
-  const overviewRuntimeStatsItemRefs = useRef(new Map<string, HTMLDivElement>());
-  const [overviewRuntimeStatsColumns, setOverviewRuntimeStatsColumns] = useState(3);
-  const [overviewRuntimeCardMaxWidth, setOverviewRuntimeCardMaxWidth] = useState<number | null>(null);
-
   const loadMonitor = useCallback(async (silent = false) => {
     if (silent) {
       setRefreshing(true);
@@ -3470,24 +3540,16 @@ export function MonitorTab() {
     }
 
     try {
-      const [nextOverview, nextUsage, nextProjects, nextAgents, nextConfig, nextNetwork, nextTaskRuns, nextApprovalQueue] = await Promise.all([
+      const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
         api.getMonitorOverview(),
-        api.getMonitorUsage(historyRange),
         api.getProjects(),
         api.getAgents(),
         api.getConfig(),
-        api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork),
-        api.getMonitorTaskRuns(historyRange),
-        api.getMonitorApprovalQueue("all", 120),
       ]);
-      setOverview(nextOverview);
-      setUsage(nextUsage);
-      setTaskRunsResponse(nextTaskRuns);
-      setApprovalQueueResponse(nextApprovalQueue);
+      setOverview(normalizeMonitorOverviewRuntime(nextOverview));
       setProjects(nextProjects);
       setAgents(nextAgents);
       setConfig(nextConfig);
-      setNetworkEntries(nextNetwork.entries);
       setConnectionState("connected");
       setError("");
     } catch (nextError) {
@@ -3497,7 +3559,7 @@ export function MonitorTab() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [historyRange, networkCategory, networkFilter, showInternalNetwork]);
+  }, []);
 
   useEffect(() => {
     if (!error) return undefined;
@@ -3526,6 +3588,41 @@ export function MonitorTab() {
   useEffect(() => {
     void loadMonitor(false);
   }, [loadMonitor]);
+
+  useEffect(() => {
+    if (activePage !== "processes" || processesResponse) return;
+    void refreshProcesses();
+  }, [activePage, processesResponse]);
+
+  useEffect(() => {
+    if (activePage !== "usage") return;
+    void refreshUsage();
+  }, [activePage, historyRange]);
+
+  useEffect(() => {
+    if (activePage !== "network") return;
+    void refreshNetwork();
+  }, [activePage, networkCategory, networkFilter, showInternalNetwork]);
+
+  useEffect(() => {
+    if (activePage !== "tasks") return;
+    void refreshTaskRuns();
+  }, [activePage, historyRange]);
+
+  useEffect(() => {
+    if (activePage !== "approvals") return;
+    void refreshApprovalQueue();
+  }, [activePage]);
+
+  useEffect(() => {
+    if (activePage !== "files" || filesResponse) return;
+    void refreshFiles();
+  }, [activePage, filesResponse]);
+
+  useEffect(() => {
+    if (activePage !== "files" || !filesResponse) return;
+    void refreshFiles();
+  }, [activePage, fileFilter, fileToolFilter]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4009,6 +4106,19 @@ export function MonitorTab() {
     return entries.filter((entry) => (entry.status || "").toLowerCase() === taskRunStatusFilter);
   }, [taskRunStatusFilter, taskRunsResponse]);
 
+  const visibleProcesses = useMemo(() => {
+    const entries = processesResponse?.entries ?? [];
+    return entries.filter((entry) => {
+      if (processStatusFilter === "all") return true;
+      if (processStatusFilter === "running") return entry.is_active || (entry.status || "").toLowerCase() === "running";
+      if (processStatusFilter === "finished") return entry.is_terminal || ["completed", "succeeded"].includes((entry.status || "").toLowerCase());
+      if (processStatusFilter === "failed") return (entry.status || "").toLowerCase() === "failed";
+      return true;
+    });
+  }, [processStatusFilter, processesResponse]);
+
+  const visibleFileEvents = filesResponse?.entries ?? [];
+
   const selectedTaskRunSummary = useMemo(
     () => visibleTaskRuns.find((entry) => entry.id === selectedTaskRunId) ?? visibleTaskRuns[0] ?? null,
     [selectedTaskRunId, visibleTaskRuns],
@@ -4337,87 +4447,6 @@ export function MonitorTab() {
     ],
   );
 
-  useEffect(() => {
-    const row = overviewSummaryRowRef.current;
-    if (!row) return;
-
-    let frameId = 0;
-    const measure = () => {
-      frameId = 0;
-      const rowWidth = row.getBoundingClientRect().width;
-      if (rowWidth <= 0) return;
-
-      const rowStyle = window.getComputedStyle(row);
-      const rowGap = Number.parseFloat(rowStyle.columnGap || rowStyle.gap || "14") || 14;
-      const heroRect = overviewHeroCardRef.current?.getBoundingClientRect() ?? null;
-      const runtimeRect = overviewRuntimeCardRef.current?.getBoundingClientRect() ?? null;
-      const heroWidth = heroRect?.width ?? 0;
-      const barWidth = overviewRuntimeBarRef.current?.scrollWidth ?? 0;
-      const itemWidths = overviewRuntimeStats
-        .map((item) => overviewRuntimeStatsItemRefs.current.get(item.id)?.getBoundingClientRect().width ?? 0)
-        .filter((width) => width > 0);
-
-      if (!itemWidths.length) return;
-
-      const runtimeWrapped =
-        heroRect && runtimeRect ? runtimeRect.top - heroRect.top > Math.max(heroRect.height * 0.25, 12) : false;
-      const availableWidth = runtimeWrapped
-        ? rowWidth
-        : Math.max(rowWidth - heroWidth - rowGap, 0);
-      const fullWidth = rowWidth;
-      const cardPadding = 32;
-      const statsGap = 12;
-
-      const computeGridWidth = (columns: number) => {
-        const columnWidths = Array.from({ length: columns }, () => 0);
-        itemWidths.forEach((width, index) => {
-          const column = index % columns;
-          columnWidths[column] = Math.max(columnWidths[column], width);
-        });
-        return columnWidths.reduce((total, width) => total + width, 0) + Math.max(0, columns - 1) * statsGap;
-      };
-
-      let nextColumns = 1;
-      for (let columns = itemWidths.length; columns >= 1; columns -= 1) {
-        const contentWidth = Math.max(computeGridWidth(columns), barWidth);
-        if (contentWidth + cardPadding <= availableWidth) {
-          nextColumns = columns;
-          break;
-        }
-      }
-
-      const resolvedContentWidth = Math.max(computeGridWidth(nextColumns), Math.min(barWidth, fullWidth - cardPadding));
-      setOverviewRuntimeStatsColumns((current) => (current === nextColumns ? current : nextColumns));
-      setOverviewRuntimeCardMaxWidth((current) => {
-        const nextWidth = Math.min(fullWidth, resolvedContentWidth + cardPadding);
-        return current === nextWidth ? current : nextWidth;
-      });
-    };
-
-    const scheduleMeasure = () => {
-      if (frameId) return;
-      frameId = window.requestAnimationFrame(measure);
-    };
-
-    scheduleMeasure();
-
-    if (typeof ResizeObserver === "undefined") return;
-
-      const observer = new ResizeObserver(() => scheduleMeasure());
-      observer.observe(row);
-      if (overviewHeroCardRef.current) observer.observe(overviewHeroCardRef.current);
-      if (overviewRuntimeCardRef.current) observer.observe(overviewRuntimeCardRef.current);
-      if (overviewRuntimeBarRef.current) observer.observe(overviewRuntimeBarRef.current);
-      overviewRuntimeStatsItemRefs.current.forEach((element) => observer.observe(element));
-
-    return () => {
-      if (frameId) {
-        window.cancelAnimationFrame(frameId);
-      }
-      observer.disconnect();
-    };
-  }, [overviewRuntimeStats]);
-
   const approvalsPending = useMemo(
     () => approvalQueueResponse?.entries.filter((item) => item.status === "pending") ?? [],
     [approvalQueueResponse],
@@ -4470,6 +4499,58 @@ export function MonitorTab() {
     await loadMonitor(true);
   }
 
+  async function refreshProcesses() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorProcesses();
+      setProcessesResponse(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load monitor processes");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshUsage() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorUsage(historyRange);
+      setUsage(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load monitor usage");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshTaskRuns() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorTaskRuns(historyRange);
+      setTaskRunsResponse(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load monitor task runs");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshApprovalQueue() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorApprovalQueue("all", 120);
+      setApprovalQueueResponse(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load monitor approval queue");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function refreshLogs() {
     try {
       const response = await api.getMonitorLogs();
@@ -4490,6 +4571,15 @@ export function MonitorTab() {
     } catch {
       setNetworkStreamState("disconnected");
       // Keep the current snapshot on fetch failures.
+    }
+  }
+
+  async function refreshFiles() {
+    try {
+      const response = await api.getMonitorFiles(200, fileToolFilter, fileFilter);
+      setFilesResponse(response);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load file monitor events");
     }
   }
 
@@ -4604,8 +4694,8 @@ export function MonitorTab() {
       {loading && !overview ? <div className="page active"><div className="empty-state">Loading Catown monitor...</div></div> : null}
 
       <section className={pageClass("overview", "page--detail-full")} id="page-overview">
-        <div className="overview-summary-row" ref={overviewSummaryRowRef}>
-          <div className="card overview-hero-card" ref={overviewHeroCardRef}>
+        <div className="overview-summary-row">
+          <div className="card overview-hero-card">
             <div>
               <div className="card-title">How independent is your agent?</div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
@@ -4627,17 +4717,9 @@ export function MonitorTab() {
             </div>
           </div>
 
-          <div
-            className="card overview-runtime-window-card"
-            ref={overviewRuntimeCardRef}
-            style={
-              {
-                "--overview-runtime-card-max-width": overviewRuntimeCardMaxWidth ? `${overviewRuntimeCardMaxWidth}px` : undefined,
-              } as CSSProperties
-            }
-          >
+          <div className="card overview-runtime-window-card">
             <div className="card-title">Runtime Cards</div>
-            <div className="refresh-bar overview-runtime-window-card__bar" style={{ marginBottom: 0 }} ref={overviewRuntimeBarRef}>
+            <div className="refresh-bar overview-runtime-window-card__bar" style={{ marginBottom: 0 }}>
               <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
                 ↻
               </button>
@@ -4645,22 +4727,9 @@ export function MonitorTab() {
               <span className="live-badge">Live</span>
               <span className="refresh-time">Live subscription · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
             </div>
-            <div
-              className="stats-footer overview-runtime-window-card__stats"
-              style={{ "--overview-runtime-stats-columns": `${overviewRuntimeStatsColumns}` } as CSSProperties}
-            >
+            <div className="stats-footer overview-runtime-window-card__stats">
               {overviewRuntimeStats.map((item) => (
-                <div
-                  key={item.id}
-                  className="stats-footer-item"
-                  ref={(element) => {
-                    if (element) {
-                      overviewRuntimeStatsItemRefs.current.set(item.id, element);
-                    } else {
-                      overviewRuntimeStatsItemRefs.current.delete(item.id);
-                    }
-                  }}
-                >
+                <div key={item.id} className="stats-footer-item">
                   <span className="stats-footer-icon">{item.icon}</span>
                   <div>
                     <div className="stats-footer-label">{item.label}</div>
@@ -4924,9 +4993,148 @@ export function MonitorTab() {
         )}
       </section>
 
+      <section className={pageClass("files", "page--detail-full")} id="page-files">
+        {activePage === "files" ? (
+          <>
+            <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
+              <div>
+                <div className="section-title">Files</div>
+                <div className="section-subtitle">Agent file tool activity captured from persisted runtime cards.</div>
+              </div>
+              <button type="button" className="refresh-btn" onClick={() => void refreshFiles()}>
+                Refresh
+              </button>
+            </div>
+
+            <div className="grid" style={{ marginBottom: 16 }}>
+              <div className="card">
+                <div className="card-title">Events</div>
+                <div className="card-value">{formatNumber(filesResponse?.counts.total)}</div>
+                <div className="card-sub">file tool calls in current window</div>
+              </div>
+              <div className="card">
+                <div className="card-title">Read / Search</div>
+                <div className="card-value">{formatNumber((filesResponse?.counts.reads ?? 0) + (filesResponse?.counts.searches ?? 0))}</div>
+                <div className="card-sub">read_file plus search_files</div>
+              </div>
+              <div className="card">
+                <div className="card-title">Writes</div>
+                <div className="card-value">{formatNumber(filesResponse?.counts.writes)}</div>
+                <div className="card-sub">write_file and delete_file</div>
+              </div>
+              <div className="card">
+                <div className="card-title">Paths</div>
+                <div className="card-value">{formatNumber(filesResponse?.counts.unique_paths)}</div>
+                <div className="card-sub">{formatNumber(filesResponse?.counts.errors)} errors</div>
+              </div>
+            </div>
+
+            <div className="filter-row" style={{ marginBottom: 12 }}>
+              {(["all", "read_file", "write_file", "list_files", "search_files", "delete_file"] as const).map((toolName) => (
+                <button
+                  key={toolName}
+                  type="button"
+                  className={`time-btn ${fileToolFilter === toolName ? "active" : ""}`}
+                  onClick={() => setFileToolFilter(toolName)}
+                >
+                  {toolName === "all" ? "all" : toolName.replace("_file", "")}
+                </button>
+              ))}
+              <input
+                className="activity-filter-input"
+                type="search"
+                value={fileFilter}
+                onChange={(event) => setFileFilter(event.target.value)}
+                placeholder="Filter path, agent, project..."
+                aria-label="Filter file activity"
+              />
+              {fileFilter ? (
+                <button type="button" className="time-btn" onClick={() => setFileFilter("")}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
+
+            <div className="grid" style={{ marginBottom: 16 }}>
+              <div className="card">
+                <SectionTitle title="By Agent" />
+                <div className="simple-list">
+                  {(filesResponse?.by_agent ?? []).slice(0, 10).map((item) => (
+                    <div key={item.agent} className="metric-row">
+                      <span className="file-agent-chip">{item.agent}</span>
+                      <strong>{formatNumber(item.count)}</strong>
+                    </div>
+                  ))}
+                  {filesResponse?.by_agent.length ? null : <div className="muted-block">No file activity by agent yet.</div>}
+                </div>
+              </div>
+              <div className="card">
+                <SectionTitle title="By Tool" />
+                <div className="simple-list">
+                  {(filesResponse?.by_tool ?? []).map((item) => (
+                    <div key={item.tool_name} className="metric-row">
+                      <span>{item.tool_name}</span>
+                      <strong>{formatNumber(item.count)}</strong>
+                    </div>
+                  ))}
+                  {filesResponse?.by_tool.length ? null : <div className="muted-block">No file tool calls captured.</div>}
+                </div>
+              </div>
+            </div>
+
+            {visibleFileEvents.length > 0 ? (
+              <div className="feed-list">
+                {visibleFileEvents.map((entry) => {
+                  const tone = fileActionTone(entry);
+                  return (
+                    <details key={entry.id} className="file-event-card">
+                      <summary className="file-event-card__summary">
+                        <span className="file-event-card__icon" title={entry.tool_name}>
+                          <FileText size={16} strokeWidth={2.2} />
+                        </span>
+                        <div className="file-event-card__main">
+                          <div className="feed-head">
+                            <strong className="mono">{entry.file_path || "(path unavailable)"}</strong>
+                            <span className="small-note">{formatTimeAgo(entry.created_at)}</span>
+                          </div>
+                          <div className="feed-meta">
+                            <span className={`feed-badge feed-badge--${tone}`}>{fileActionLabel(entry.action)}</span>
+                            <span>{entry.tool_name}</span>
+                            {entry.agent ? <span className="file-agent-chip">{entry.agent}</span> : null}
+                            <span>{entry.project_name || "Standalone"}</span>
+                            <span>{entry.chat_title}</span>
+                            {entry.duration_ms ? <span>{formatDuration(entry.duration_ms)}</span> : null}
+                            {entry.turn ? <span>turn {entry.turn}</span> : null}
+                          </div>
+                          {entry.result_preview ? <div className="feed-preview">{entry.result_preview}</div> : null}
+                        </div>
+                      </summary>
+                      <div className="file-event-card__details">
+                        <pre className="monitor-pre">{formatRawMonitorValue({
+                          arguments: entry.arguments ?? entry.arguments_preview,
+                          result_preview: entry.result_preview,
+                          result_size: entry.result_size,
+                          runtime_message_id: entry.runtime_message_id,
+                          client_turn_id: entry.client_turn_id,
+                          status: entry.status,
+                          blocked: entry.blocked,
+                          success: entry.success,
+                        })}</pre>
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="muted-block">No Agent file read/write activity captured for the current filter yet.</div>
+            )}
+          </>
+        ) : null}
+      </section>
+
       <section className={pageClass("usage", "page--viz-readable")} id="page-usage">
         <div className="refresh-bar">
-          <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+          <button type="button" className="refresh-btn" onClick={() => void refreshUsage()} disabled={refreshing}>
             ↻ Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
@@ -5908,7 +6116,7 @@ export function MonitorTab() {
                   {historyRange} 内 {taskRunCounts.total} 个任务，当前筛选后 {visibleTaskRuns.length} 个。
                 </div>
               </div>
-              <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+              <button type="button" className="refresh-btn" onClick={() => void refreshTaskRuns()} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
               </button>
             </div>
@@ -6088,6 +6296,97 @@ export function MonitorTab() {
               </>
             )}
           </div>
+        </div>
+      </section>
+
+      <section className={pageClass("processes", "page--dashboard-wide")} id="page-processes">
+        <div className="refresh-bar" style={{ marginBottom: 12, alignItems: "flex-start" }}>
+          <div>
+            <div className="section-title">Processes</div>
+            <div className="section-subtitle">
+              最近 30 条后台 run_shell 进程记录，新任务按创建时间置顶。
+            </div>
+          </div>
+          <div className="inline-actions">
+            {(["all", "running", "finished", "failed"] as const).map((status) => (
+              <button
+                key={status}
+                type="button"
+                className={`time-btn ${processStatusFilter === status ? "active" : ""}`}
+                onClick={() => setProcessStatusFilter(status)}
+              >
+                {status === "all" ? "all" : titleCaseLabel(status)}
+              </button>
+            ))}
+            <button type="button" className="refresh-btn" onClick={() => void refreshProcesses()} disabled={refreshing}>
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        <div className="stats-footer">
+          <div className="stats-footer-item">
+            <span>Total</span>
+            <strong>{formatNumber(processesResponse?.counts.total)}</strong>
+          </div>
+          <div className="stats-footer-item">
+            <span>Running</span>
+            <strong>{formatNumber(processesResponse?.counts.running)}</strong>
+          </div>
+          <div className="stats-footer-item">
+            <span>Finished</span>
+            <strong>{formatNumber(processesResponse?.counts.finished)}</strong>
+          </div>
+          <div className="stats-footer-item">
+            <span>Failed</span>
+            <strong>{formatNumber(processesResponse?.counts.failed)}</strong>
+          </div>
+        </div>
+
+        <div className="card">
+          {!processesResponse ? (
+            <div className="muted-block">Loading background processes...</div>
+          ) : visibleProcesses.length > 0 ? (
+            <div className="process-list">
+              {visibleProcesses.map((process) => (
+                <div key={process.id} className={`process-row process-row--${processStatusTone(process)}`}>
+                  <div className="process-row__icon">
+                    <ProcessStatusIcon process={process} />
+                  </div>
+                  <div className="process-row__main">
+                    <div className="process-row__head">
+                      <strong className="mono">{process.command || process.tool_name || process.token}</strong>
+                      <div className="run-history-item__badges">
+                        <span className={`feed-badge feed-badge--${processStatusTone(process)}`}>
+                          {titleCaseLabel(process.status)}
+                        </span>
+                        {process.exit_code !== null && process.exit_code !== undefined ? (
+                          <span className="feed-badge">exit {process.exit_code}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="feed-meta">
+                      <span>{process.tool_name || "process"}</span>
+                      {process.agent_name ? <span>{process.agent_name}</span> : null}
+                      {process.pid ? <span>pid {process.pid}</span> : null}
+                      {process.task_run_id ? <span>task #{process.task_run_id}</span> : null}
+                      {process.client_turn_id ? <span>{process.client_turn_id}</span> : null}
+                      <span>{formatTimeAgo(process.created_at)}</span>
+                      {process.finished_at ? <span>done {shortDate(process.finished_at)}</span> : null}
+                    </div>
+                    <div className="small-note mono">{process.cwd || "."}</div>
+                    {process.tail_output || process.last_result_preview ? (
+                      <pre className="process-row__output">{process.tail_output || process.last_result_preview}</pre>
+                    ) : (
+                      <div className="feed-preview">No process output captured yet.</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted-block">No background processes captured for the current filter.</div>
+          )}
         </div>
       </section>
 
@@ -6630,7 +6929,7 @@ export function MonitorTab() {
           </div>
           <div className="inline-actions">
             <span className="small-note">{approvalQueueResponse?.counts.pending ?? approvalsPending.length} pending</span>
-            <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+            <button type="button" className="refresh-btn" onClick={() => void refreshApprovalQueue()} disabled={refreshing}>
               ↻ Refresh
             </button>
           </div>

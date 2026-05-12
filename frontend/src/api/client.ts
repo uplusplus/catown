@@ -8,7 +8,9 @@ import type {
   GlobalConfigPayload,
   GitHubProjectImportPayload,
   MonitorLogsResponse,
+  MonitorFilesResponse,
   MonitorNetworkResponse,
+  MonitorProcessesResponse,
   MonitorApprovalQueueResponse,
   ApprovalQueueItem,
   MonitorRuntimeDetail,
@@ -240,7 +242,7 @@ export const api = {
     return request<TaskRunSummary[]>(`/api/chatrooms/${chatroomId}/task-runs${suffix}`);
   },
   getChatProcesses(chatroomId: number) {
-    return request<ChatProcessEntry[]>(`/api/chatrooms/${chatroomId}/processes`);
+    return request<ChatProcessEntry>(`/api/chatrooms/${chatroomId}/processes`);
   },
   getTaskRunDetail(taskRunId: number) {
     return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
@@ -364,12 +366,26 @@ export const api = {
   getMonitorRuntimeCardDetail(messageId: number) {
     return request<MonitorRuntimeDetail>(`/api/monitor/runtime-cards/${messageId}`);
   },
+  getMonitorFiles(limit = 200, tool = "all", query = "") {
+    const params = new URLSearchParams({ limit: String(limit), tool });
+    if (query.trim()) {
+      params.set("query", query.trim());
+    }
+    return request<MonitorFilesResponse>(`/api/monitor/files?${params.toString()}`);
+  },
   getMonitorTaskRuns(range = "24h", limit = 120) {
     const params = new URLSearchParams({
       range,
       limit: String(limit),
     });
     return request<MonitorTaskRunsResponse>(`/api/monitor/task-runs?${params.toString()}`);
+  },
+  getMonitorProcesses(limit = 30, tailChars = 0) {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      tail_chars: String(tailChars),
+    });
+    return request<MonitorProcessesResponse>(`/api/monitor/processes?${params.toString()}`);
   },
   getMonitorTaskRunSteps(taskRunId: number) {
     return request<MonitorTaskRunStepsResponse>(`/api/monitor/task-runs/${taskRunId}/steps`);

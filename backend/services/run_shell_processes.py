@@ -255,19 +255,90 @@ def terminate_tracked_run_shell(handle: Any) -> bool:
     return killed
 
 
+def list_tracked_run_shell_processes(
+    *,
+    limit: int = 120,
+    tail_chars: int = 1200,
+) -> list[dict[str, Any]]:
+    root = run_shell_process_state_dir()
+    candidates: list[tuple[tuple[str, str, str], dict[str, Any]]] = []
+
+    for state_path in root.glob("*.json"):
+        if state_path.name.endswith(".exit.json"):
+            continue
+        try:
+            record = _load_record(state_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict) or not record.get("token"):
+            continue
+
+        sort_key = (
+            str(record.get("created_at") or ""),
+            str(record.get("updated_at") or ""),
+            str(record.get("token") or ""),
+        )
+        candidates.append((sort_key, record))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected_records = [record for _, record in candidates[: max(1, int(limit or 120))]]
+
+    records: list[dict[str, Any]] = []
+    include_output = tail_chars > 0
+    for record in selected_records:
+        has_exit = tracked_run_shell_has_exit(record)
+        is_active = tracked_run_shell_is_active(record) and not has_exit
+        status = str(record.get("status") or "").strip() or "unknown"
+        if not has_exit and status in {"created", "starting", "launching_command", "unknown"}:
+            status = "running"
+        is_terminal = has_exit or status.lower() in {"completed", "failed", "cancelled", "interrupted"}
+
+        entry = {
+            **_public_handle(record),
+            "id": record.get("token"),
+            "tool_name": record.get("tool_name") or "run_shell",
+            "command": record.get("command") or "",
+            "cwd": record.get("cwd") or "",
+            "timeout_seconds": record.get("timeout_seconds"),
+            "chatroom_id": record.get("chatroom_id"),
+            "project_id": record.get("project_id"),
+            "turn": record.get("turn"),
+            "agent_name": record.get("agent_name"),
+            "status": status,
+            "is_active": is_active,
+            "is_terminal": is_terminal,
+            "created_at": record.get("created_at"),
+            "updated_at": record.get("updated_at"),
+            "exit_code": record.get("exit_code"),
+            "last_result_preview": record.get("last_result_preview") if include_output else None,
+            "tail_output": read_tracked_run_shell_tail(record, max_chars=tail_chars) if include_output else "",
+            "redirected_log_path": record.get("redirected_log_path"),
+        }
+        records.append(entry)
+
+    return records
+
+
 def read_tracked_run_shell_tail(record_or_handle: Any, *, max_chars: int = DEFAULT_TAIL_CHARS) -> str:
     record = record_or_handle if isinstance(record_or_handle, dict) else load_tracked_run_shell_handle(record_or_handle)
     if not isinstance(record, dict):
+        return ""
+    if max_chars <= 0:
         return ""
     log_path = _resolve_readable_tail_path(record)
     if log_path is None:
         return ""
     try:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
+        with log_path.open("rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            size = log_file.tell()
+            read_bytes = min(size, max(4096, int(max_chars) * 4))
+            log_file.seek(max(0, size - read_bytes))
+            text = log_file.read(read_bytes).decode("utf-8", errors="replace")
     except OSError:
         return ""
     text = text.strip()
-    if max_chars > 0 and len(text) > max_chars:
+    if len(text) > max_chars:
         return text[-max_chars:]
     return text
 

@@ -16,6 +16,8 @@ def _make_app(tmp_path):
     os.environ["LLM_MODEL"] = "test-model"
     os.environ["LOG_LEVEL"] = "WARNING"
     os.environ["DATABASE_URL"] = str(tmp_path / "test.db")
+    os.environ["CATOWN_HOME"] = str(tmp_path / "catown-home")
+    os.environ["CATOWN_STATE_DIR"] = str(tmp_path / "catown-state")
     os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = "24"
     os.environ["MONITOR_NETWORK_MAX_PERSISTED"] = "100"
 
@@ -39,6 +41,7 @@ def _make_app(tmp_path):
         "services.approval_queue",
         "services.approval_replay",
         "services.monitor_projection",
+        "services.run_shell_processes",
         "services.tool_execution_preferences",
     ]
     for mod_name in modules_to_clear:
@@ -150,6 +153,7 @@ class TestMonitorOverview:
                     "type": "tool_call",
                     "agent": agent_name,
                     "tool": "read_file",
+                    "tool_call_id": "call-monitor-readme",
                     "arguments": json.dumps({"path": "README.md"}),
                     "success": False,
                     "duration_ms": 85,
@@ -215,6 +219,7 @@ class TestMonitorOverview:
         assert tool_runtime["from_entity"] == agent_name
         assert tool_runtime["to_entity"] == "read_file"
         assert tool_runtime["client_turn_id"] == "turn-monitor-1"
+        assert tool_runtime["tool_call_id"] == "call-monitor-readme"
         assert "README.md" in tool_runtime["arguments_preview"]
 
         text_message = next(item for item in data["recent_messages"] if item["content"] == "Final answer to the user")
@@ -225,6 +230,90 @@ class TestMonitorOverview:
         detail = detail_response.json()
         assert detail["card"]["type"] == "llm_call"
         assert detail["card"]["model"] == "gpt-4.1-mini"
+
+    def test_files_endpoint_extracts_file_tool_runtime_cards(self, client):
+        from models.database import Chatroom, Message, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Files Project", status="active", workspace_path="/tmp/catown-files")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Files Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            db.add(
+                Message(
+                    chatroom_id=chatroom.id,
+                    agent_id=None,
+                    content="tool_call",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "turn-files-1",
+                            "card": {
+                                "type": "tool_call",
+                                "agent": "Developer",
+                                "tool": "write_file",
+                                "arguments": json.dumps({"file_path": "src/app.py", "content": "print('ok')"}),
+                                "success": True,
+                                "status": "completed",
+                                "result": "[Write File] Wrote to 'src/app.py' successfully (11 characters)",
+                                "duration_ms": 42,
+                                "turn": 2,
+                            },
+                        }
+                    ),
+                )
+            )
+            db.add(
+                Message(
+                    chatroom_id=chatroom.id,
+                    agent_id=None,
+                    content="tool_call",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "turn-files-1",
+                            "card": {
+                                "type": "tool_call",
+                                "agent": "Developer",
+                                "tool": "run_shell",
+                                "arguments": json.dumps({"command": "ls"}),
+                                "success": True,
+                                "result": "ignored",
+                            },
+                        }
+                    ),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/files?tool=write_file&query=app.py")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["total"] == 1
+        assert data["counts"]["writes"] == 1
+        assert data["counts"]["unique_paths"] == 1
+        assert data["by_agent"] == [{"agent": "Developer", "count": 1}]
+        entry = data["entries"][0]
+        assert entry["tool_name"] == "write_file"
+        assert entry["action"] == "write"
+        assert entry["file_path"] == "src/app.py"
+        assert entry["project_name"] == "Files Project"
+        assert entry["client_turn_id"] == "turn-files-1"
+        assert entry["arguments"]["content"] == "print('ok')"
 
     def test_overview_returns_recent_context_compactions(self, client):
         from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
@@ -481,6 +570,36 @@ class TestMonitorOverview:
         assert entry["checkpoint_snapshot"]["event_count"] == 2
         assert entry["checkpoint_snapshot"]["latest_event_type"] == "handoff_created"
         assert entry["checkpoint_snapshot"]["continuation_cursor_summary"] is None
+
+    def test_monitor_processes_returns_newest_tracked_processes_first(self, client):
+        from services import run_shell_processes
+
+        first = run_shell_processes.create_tracked_run_shell_handle(
+            command="python old_task.py",
+            cwd="/tmp",
+            timeout_seconds=20,
+            task_run_id=101,
+            agent_name="Builder",
+        )
+        second = run_shell_processes.create_tracked_run_shell_handle(
+            command="python new_task.py",
+            cwd="/tmp",
+            timeout_seconds=20,
+            task_run_id=102,
+            agent_name="Tester",
+        )
+
+        response = client.get("/api/monitor/processes?limit=20&tail_chars=0")
+        assert response.status_code == 200
+        data = response.json()
+
+        ids = [entry["id"] for entry in data["entries"]]
+        assert ids.index(second["token"]) < ids.index(first["token"])
+        newest = next(entry for entry in data["entries"] if entry["id"] == second["token"])
+        assert newest["command"] == "python new_task.py"
+        assert newest["status"] in {"created", "starting", "running"}
+        assert newest["is_terminal"] is False
+        assert data["counts"]["total"] >= 2
 
     def test_monitor_approval_queue_returns_enriched_items(self, client):
         from models.database import ApprovalQueueItem, Chatroom, Project, SessionLocal, TaskRun

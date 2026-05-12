@@ -14,6 +14,7 @@ import subprocess
 import time
 import traceback
 import uuid
+from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache, partial
@@ -89,6 +90,7 @@ from services.run_shell_processes import (
     build_tracked_run_shell_result,
     load_tracked_run_shell_handle,
     read_tracked_run_shell_tail,
+    run_shell_process_state_dir,
     terminate_tracked_run_shell,
     tracked_run_shell_has_exit,
     tracked_run_shell_is_active,
@@ -1768,6 +1770,286 @@ def _terminalize_interrupted_single_agent_task_run(
     return True
 
 
+def _find_tracked_run_shell_from_runtime_cards(db: Session, task_run: TaskRun) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    rows = (
+        db.query(Message)
+        .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(500)
+        .all()
+    )
+    for row in rows:
+        try:
+            metadata = json.loads(row.metadata_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        card = metadata.get("card")
+        if not isinstance(card, dict):
+            continue
+        if str(card.get("tool") or "").strip().lower() != "run_shell":
+            continue
+        run_id = card.get("run_id")
+        if run_id is not None and str(run_id) != str(task_run.id):
+            continue
+        if run_id is None and card.get("client_turn_id") and card.get("client_turn_id") != task_run.client_turn_id:
+            continue
+        tracked = card.get("tracked_process")
+        handle = load_tracked_run_shell_handle(tracked) if isinstance(tracked, dict) else None
+        if handle is not None:
+            return handle, {"source": "runtime_card", "runtime_message_id": row.id}
+    return None, {}
+
+
+def _find_tracked_run_shell_from_state(task_run: TaskRun) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    try:
+        state_files = sorted(
+            run_shell_process_state_dir().glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None, {}
+
+    for path in state_files:
+        if path.name.endswith(".exit.json"):
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("task_run_id") or "") == str(task_run.id):
+            return record, {"source": "state_file", "state_path": str(path)}
+        if task_run.client_turn_id and record.get("client_turn_id") == task_run.client_turn_id:
+            return record, {"source": "state_file", "state_path": str(path)}
+    return None, {}
+
+
+def _find_tracked_run_shell_for_task_run(db: Session, task_run: TaskRun) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    handle, source = _find_tracked_run_shell_from_runtime_cards(db, task_run)
+    if handle is not None:
+        return handle, source
+    return _find_tracked_run_shell_from_state(task_run)
+
+
+def _tracked_run_shell_final_card_payload(card: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any] | None:
+    result = build_tracked_run_shell_result(record, max_chars=50000)
+    if not isinstance(result, dict) or result.get("__catown_tool_result__") is not True:
+        return None
+    next_card = dict(card)
+    next_card["success"] = bool(result.get("success"))
+    next_card["status"] = str(result.get("status") or ("succeeded" if result.get("success") else "failed"))
+    next_card["blocked"] = bool(result.get("blocked"))
+    next_card["blocked_kind"] = result.get("blocked_kind")
+    next_card["blocked_reason"] = result.get("blocked_reason")
+    next_card["result"] = str(result.get("result") or "").strip() or "Tracked run_shell finished without output."
+    next_card["pid"] = record.get("pid") if isinstance(record.get("pid"), int) else next_card.get("pid")
+    tracked = next_card.get("tracked_process") if isinstance(next_card.get("tracked_process"), dict) else {}
+    next_card["tracked_process"] = {
+        **tracked,
+        "token": record.get("token") or tracked.get("token"),
+        "pid": record.get("pid"),
+        "worker_pid": record.get("worker_pid"),
+        "pgid": record.get("pgid"),
+        "status": record.get("status"),
+        "finished_at": record.get("finished_at"),
+        "task_run_id": record.get("task_run_id") or tracked.get("task_run_id"),
+        "client_turn_id": record.get("client_turn_id") or tracked.get("client_turn_id"),
+        "tool_call_id": record.get("tool_call_id") or tracked.get("tool_call_id"),
+    }
+    return next_card
+
+
+def _runtime_card_is_running_tracked_run_shell(card: Dict[str, Any]) -> bool:
+    return (
+        str(card.get("type") or "").strip().lower() == "tool_call"
+        and str(card.get("tool") or "").strip().lower() == "run_shell"
+        and str(card.get("status") or "").strip().lower() == "running"
+        and isinstance(card.get("tracked_process"), dict)
+        and not _is_internal_tool_pause(card)
+    )
+
+
+def _task_run_has_pending_timeout_approval(task_run: TaskRun | None) -> bool:
+    if task_run is None:
+        return False
+    for item in list(getattr(task_run, "approval_queue_items", []) or []):
+        if str(getattr(item, "status", "") or "").strip().lower() != "pending":
+            continue
+        request_payload = load_approval_queue_request_payload(getattr(item, "request_payload_json", None))
+        if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
+            return True
+    return False
+
+
+def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | None = None, *, limit: int = 500) -> int:
+    query = db.query(Message).filter(Message.message_type == "runtime_card")
+    if chatroom_id is not None:
+        query = query.filter(Message.chatroom_id == chatroom_id)
+    rows = query.order_by(Message.created_at.desc(), Message.id.desc()).limit(max(1, limit)).all()
+
+    updated = 0
+    for row in rows:
+        metadata = _load_jsonish_payload(row.metadata_json)
+        card = metadata.get("card")
+        if not isinstance(card, dict) or not _runtime_card_is_running_tracked_run_shell(card):
+            continue
+        record = load_tracked_run_shell_handle(card.get("tracked_process"))
+        if record is None:
+            continue
+        if not tracked_run_shell_has_exit(record) and tracked_run_shell_is_active(record):
+            continue
+        next_card = _tracked_run_shell_final_card_payload(card, record)
+        if next_card is None:
+            continue
+        metadata["card"] = next_card
+        row.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        db.add(row)
+        updated += 1
+
+        task_run_id = next_card.get("run_id") or record.get("task_run_id")
+        task_run = get_task_run(db, task_run_id)
+        if (
+            task_run is not None
+            and str(getattr(task_run, "status", "") or "").strip().lower() == "running"
+            and not _task_run_has_pending_timeout_approval(task_run)
+        ):
+            summary = str(next_card.get("result") or "").strip() or "Tracked run_shell finished after backend restart."
+            complete_task_run(
+                db,
+                task_run,
+                status="completed" if bool(next_card.get("success")) else "failed",
+                summary=summary,
+            )
+    if updated:
+        db.commit()
+    return updated
+
+
+async def _store_recovered_run_shell_final_card(
+    task_run: TaskRun,
+    *,
+    result: dict[str, Any],
+    tracked_handle: dict[str, Any],
+    arguments: str,
+    turn: int,
+) -> None:
+    if not isinstance(getattr(task_run, "chatroom_id", None), int):
+        return
+    await store_runtime_card(
+        task_run.chatroom_id,
+        {
+            "type": "tool_call",
+            "source": "recovery",
+            "agent": (task_run.target_agent_name or "").strip() or "agent",
+            "tool": "run_shell",
+            "arguments": arguments,
+            "success": bool(result.get("success")),
+            "status": str(result.get("status") or ("succeeded" if result.get("success") else "failed")),
+            "blocked": bool(result.get("blocked")),
+            "blocked_kind": result.get("blocked_kind"),
+            "blocked_reason": result.get("blocked_reason"),
+            "result": str(result.get("result") or "").strip() or "Recovered run_shell finished without output.",
+            "pid": tracked_handle.get("pid"),
+            "tracked_process": {
+                "token": tracked_handle.get("token"),
+                "pid": tracked_handle.get("pid"),
+                "worker_pid": tracked_handle.get("worker_pid"),
+                "pgid": tracked_handle.get("pgid"),
+                "status": tracked_handle.get("status"),
+                "finished_at": tracked_handle.get("finished_at"),
+                "task_run_id": tracked_handle.get("task_run_id"),
+                "client_turn_id": tracked_handle.get("client_turn_id"),
+                "tool_call_id": tracked_handle.get("tool_call_id"),
+            },
+            "tool_call_id": tracked_handle.get("tool_call_id"),
+            "client_turn_id": task_run.client_turn_id,
+            "run_id": task_run.id,
+            "turn": turn,
+        },
+    )
+
+
+async def _recover_orphaned_single_agent_run_shell_task_run(
+    db: Session,
+    task_run: TaskRun,
+    *,
+    trigger: str,
+) -> bool:
+    if str(task_run.status or "").strip().lower() != "running":
+        return False
+
+    tracked_handle, source_payload = _find_tracked_run_shell_for_task_run(db, task_run)
+    if tracked_handle is None:
+        return False
+    if tracked_run_shell_has_exit(tracked_handle) or tracked_run_shell_is_active(tracked_handle):
+        return False
+
+    result = build_tracked_run_shell_result(tracked_handle, max_chars=50000)
+    arguments = json.dumps(
+        {
+            "command": tracked_handle.get("command") or "",
+            "cwd": tracked_handle.get("cwd") or ".",
+            "timeout_seconds": tracked_handle.get("timeout_seconds"),
+        },
+        ensure_ascii=False,
+    )
+    turn = max(1, int(tracked_handle.get("turn") or 1))
+    tool_result = build_tool_result_record(
+        tool_call_id=tracked_handle.get("tool_call_id"),
+        tool_name="run_shell",
+        arguments=arguments,
+        result=result,
+        success=False,
+    )
+    record_runner_tool_round(
+        db,
+        task_run,
+        agent_name=(task_run.target_agent_name or tracked_handle.get("agent_name") or "").strip() or "agent",
+        turn=turn,
+        tool_names=["run_shell"],
+        tool_results=[tool_result],
+        summary="Recovered interrupted run_shell result after backend restart.",
+        payload={
+            "recovery": True,
+            "recovery_kind": "orphaned_run_shell_tracked_process",
+            "tracked_process": {
+                "token": tracked_handle.get("token"),
+                "pid": tracked_handle.get("pid"),
+                "worker_pid": tracked_handle.get("worker_pid"),
+                "status": tracked_handle.get("status"),
+                "has_exit": tracked_run_shell_has_exit(tracked_handle),
+                "is_active": tracked_run_shell_is_active(tracked_handle),
+            },
+            **source_payload,
+        },
+    )
+    summary = str(tool_result.result or "").strip() or "Recovered run_shell stopped before completion."
+    complete_task_run(db, task_run, status="failed", summary=summary)
+    append_task_event(
+        db,
+        task_run,
+        "task_run_recovery_completed",
+        agent_name=task_run.target_agent_name,
+        summary="Recovered interrupted run_shell state after backend restart.",
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery_kind": "orphaned_run_shell_tracked_process",
+            **source_payload,
+        },
+    )
+    await _store_recovered_run_shell_final_card(
+        task_run,
+        result=result,
+        tracked_handle=tracked_handle,
+        arguments=arguments,
+        turn=turn,
+    )
+    return True
+
+
 async def _recover_tracked_single_agent_run_shell_task_run(
     db: Session,
     task_run: TaskRun,
@@ -1848,48 +2130,71 @@ async def _recover_tracked_single_agent_run_shell_task_run(
         },
     )
 
-    if tool_result.success:
-        complete_task_run(
+    recovery_replay_result = SimpleNamespace(
+        tool_name=tool_result.tool_name,
+        tool_call_id=tool_result.tool_call_id,
+        result=tool_result.result,
+        success=tool_result.success,
+        status=tool_result.status,
+        blocked=tool_result.blocked,
+        blocked_kind=tool_result.blocked_kind,
+        blocked_reason=tool_result.blocked_reason,
+    )
+    resolution_payload = build_queue_replay_resolution_payload(
+        request_payload=request_payload,
+        replay_result=recovery_replay_result,
+        action_taken="startup_recovered",
+    )
+    resolution_payload.update(
+        await _continue_runtime_after_approved_tool_replay(
             db,
-            task_run,
-            status="completed",
-            summary=str(tool_result.result or "").strip() or "Recovered run_shell completed after backend restart.",
+            pending_timeout_item,
+            request_payload,
+            recovery_replay_result,
         )
-        append_task_event(
-            db,
-            task_run,
-            "task_run_recovery_completed",
-            agent_name=task_run.target_agent_name,
-            summary="Recovered tracked run_shell result after backend restart.",
-            payload={
-                "task_run_id": task_run.id,
-                "trigger": trigger,
-                "recovery_kind": "run_shell_tracked_process",
-                "tracked_process": tracked_process,
-            },
-        )
-        return True
-
-    if tool_result.blocked:
-        return True
-
-    complete_task_run(
+    )
+    resolved_item = resolve_approval_queue_item(
         db,
-        task_run,
-        status="failed",
-        summary=str(tool_result.result or "").strip() or "Recovered run_shell failed after backend restart.",
+        pending_timeout_item,
+        status="approved",
+        resolved_by=f"startup:{trigger}",
+        resolution_note="Recovered tracked run_shell result after backend restart.",
+        resolution_payload=resolution_payload,
     )
     append_task_event(
         db,
         task_run,
+        "approval_queue_item_resolved",
+        agent_name=pending_timeout_item.agent_name,
+        summary="Recovered timeout queue item after backend restart.",
+        payload=build_approval_queue_item_resolved_event_payload(
+            resolved_item or pending_timeout_item,
+            status="approved",
+            resolved_by=f"startup:{trigger}",
+            request_payload=request_payload,
+            resolution_payload=resolution_payload,
+        ),
+    )
+    _finalize_noncontinuable_approval_task_run(
+        db,
+        get_task_run(db, task_run.id),
+        item=resolved_item or pending_timeout_item,
+        replay_result=recovery_replay_result,
+        resolution_payload=resolution_payload,
+    )
+    append_task_event(
+        db,
+        get_task_run(db, task_run.id),
         "task_run_recovery_completed",
         agent_name=task_run.target_agent_name,
-        summary="Recovered tracked run_shell termination after backend restart.",
+        summary="Recovered tracked run_shell result after backend restart.",
         payload={
             "task_run_id": task_run.id,
             "trigger": trigger,
             "recovery_kind": "run_shell_tracked_process",
             "tracked_process": tracked_process,
+            "followup_status": resolution_payload.get("followup_status"),
+            "followup_reason": resolution_payload.get("followup_reason"),
         },
     )
     return True
@@ -2365,6 +2670,7 @@ async def _resume_interrupted_orchestration_task_run(
 async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
     db = SessionLocal()
     try:
+        reconcile_tracked_run_shell_runtime_cards(db, limit=1000)
         recoverable_run_kinds = RECOVERABLE_ORCHESTRATION_RUN_KINDS | INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS
         pending_runs = (
             db.query(TaskRun)
@@ -2401,6 +2707,8 @@ async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
                     if task_run is None or str(task_run.status or "").strip().lower() != "running":
                         skipped += 1
                     elif await _recover_tracked_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
+                        recovered += 1
+                    elif await _recover_orphaned_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
                         recovered += 1
                     elif _terminalize_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
                         interrupted += 1
@@ -2628,14 +2936,20 @@ class ProjectBrowserInfo(BaseModel):
     truncated: bool = False
 
 
-class ChatProcessInfo(BaseModel):
+class ChatProcessNodeInfo(BaseModel):
     id: str
-    command: str
+    label: str
     kind: str
     detail: str = ""
+    status: Optional[str] = None
+    parent_id: Optional[str] = None
     timestamp: Optional[str] = None
     pid: Optional[int] = None
     output: Optional[str] = None
+    children: List["ChatProcessNodeInfo"] = Field(default_factory=list)
+
+
+ChatProcessNodeInfo.model_rebuild()
 
 
 class ProjectFileReadInfo(BaseModel):
@@ -3038,10 +3352,9 @@ def _is_internal_tool_pause(card: Dict[str, Any]) -> bool:
     return blocked_kind in {"approval", "timeout"} or status in {"approval_blocked", "timeout_waiting"}
 
 
-def _is_running_shell_process_card(card: Dict[str, Any]) -> bool:
+def _is_shell_process_card(card: Dict[str, Any]) -> bool:
     tool = str(card.get("tool") or "").strip().lower()
-    status = str(card.get("status") or "").strip().lower()
-    return tool == "run_shell" and status == "running" and not _is_internal_tool_pause(card)
+    return tool == "run_shell" and not _is_internal_tool_pause(card)
 
 
 def _pid_is_alive(pid: Any) -> bool:
@@ -3058,12 +3371,58 @@ def _pid_is_alive(pid: Any) -> bool:
     return True
 
 
-def _running_shell_card_is_active(card: Dict[str, Any]) -> bool:
+def _running_shell_card_is_active(card: Dict[str, Any], observed_at: Any = None) -> bool:
     tracked = card.get("tracked_process")
     record = load_tracked_run_shell_handle(tracked) if isinstance(tracked, dict) else None
     if record is not None:
-        return not tracked_run_shell_has_exit(record) and tracked_run_shell_is_active(record)
+        if tracked_run_shell_has_exit(record):
+            return False
+        return tracked_run_shell_is_active(record)
     return _pid_is_alive(card.get("pid"))
+
+
+def _shell_process_card_status(card: Dict[str, Any], observed_at: Any = None) -> str:
+    status = str(card.get("status") or "").strip().lower()
+    if status == "running" and _running_shell_card_is_active(card, observed_at):
+        return "running"
+    return "terminated"
+
+
+def _running_shell_card_process_snapshot(card: Dict[str, Any]) -> tuple[Optional[int], str]:
+    tracked = card.get("tracked_process")
+    record = load_tracked_run_shell_handle(tracked) if isinstance(tracked, dict) else None
+    if record is not None:
+        pid = record.get("pid") if isinstance(record.get("pid"), int) else None
+        output = read_tracked_run_shell_tail(record, max_chars=CHAT_PROCESS_SHELL_TAIL_MAX_CHARS)
+        return pid, output
+    return card.get("pid") if isinstance(card.get("pid"), int) else None, str(card.get("result") or "")
+
+
+def _running_shell_process_entry_id(card: Dict[str, Any], row_id: Any) -> str:
+    tracked = card.get("tracked_process")
+    if isinstance(tracked, dict):
+        token = str(tracked.get("token") or "").strip()
+        if token:
+            return f"shell:tracked:{token}"
+    tool_call_id = str(card.get("tool_call_id") or "").strip()
+    if tool_call_id:
+        return f"shell:tool-call:{tool_call_id}"
+    pid = card.get("pid")
+    if pid is not None:
+        return f"shell:pid:{pid}"
+    return f"shell:card:{row_id}"
+
+
+def _running_shell_process_parent_id(card: Dict[str, Any]) -> Optional[str]:
+    tracked = card.get("tracked_process")
+    if isinstance(tracked, dict):
+        task_run_id = tracked.get("task_run_id")
+        if task_run_id is not None:
+            return f"task-run:{task_run_id}"
+    run_id = card.get("run_id")
+    if run_id is not None:
+        return f"task-run:{run_id}"
+    return None
 
 
 def _should_render_inline_task_run(task_run: TaskRun) -> bool:
@@ -3098,15 +3457,15 @@ def _is_running_browser_task_run(task_run: TaskRun) -> bool:
     return blocked_kind not in {"approval", "timeout"}
 
 
-def _dedupe_process_entries(entries: List[ChatProcessInfo]) -> List[ChatProcessInfo]:
-    by_id: Dict[str, ChatProcessInfo] = {}
+def _dedupe_process_entries(entries: List[ChatProcessNodeInfo]) -> List[ChatProcessNodeInfo]:
+    by_id: Dict[str, ChatProcessNodeInfo] = {}
     for entry in entries:
-        by_id[entry.id] = entry
+        by_id.setdefault(entry.id, entry)
     return list(by_id.values())
 
 
-def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = CHAT_PROCESSES_LIMIT) -> List[ChatProcessInfo]:
-    entries: List[ChatProcessInfo] = []
+def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = CHAT_PROCESSES_LIMIT) -> List[ChatProcessNodeInfo]:
+    entries: List[ChatProcessNodeInfo] = []
 
     card_rows = (
         db.query(Message)
@@ -3124,20 +3483,22 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
         if not isinstance(card, dict):
             continue
         card_payload = public_runtime_card_payload(dict(card))
-        if not _is_running_shell_process_card(card_payload):
+        if not _is_shell_process_card(card_payload):
             continue
-        if not _running_shell_card_is_active(card_payload):
-            continue
-        command = _read_shell_command_preview(card_payload.get("arguments")) or str(card_payload.get("display_name") or "run_shell")
         created_at = getattr(row, "created_at", None)
-        entries.append(ChatProcessInfo(
-            id=f"shell:{card_payload.get('id') or row.id}",
-            command=command,
+        process_status = _shell_process_card_status(card_payload, created_at)
+        command = _read_shell_command_preview(card_payload.get("arguments")) or str(card_payload.get("display_name") or "run_shell")
+        pid, output = _running_shell_card_process_snapshot(card_payload)
+        entries.append(ChatProcessNodeInfo(
+            id=_running_shell_process_entry_id(card_payload, row.id),
+            label=command,
             kind="command",
-            detail=str(card_payload.get("summary") or _one_line_preview(card_payload.get("result"), "Shell process is running.", 140)),
+            detail=str(card_payload.get("summary") or _one_line_preview(output or card_payload.get("result"), "Shell process is running.", 140)),
+            status=process_status,
+            parent_id=_running_shell_process_parent_id(card_payload),
             timestamp=created_at.isoformat() if hasattr(created_at, "isoformat") else None,
-            pid=card_payload.get("pid") if isinstance(card_payload.get("pid"), int) else None,
-            output=_trim_shell_output_tail(card_payload.get("result")) or None,
+            pid=pid,
+            output=_trim_shell_output_tail(output or card_payload.get("result")) or None,
         ))
 
     task_runs = (
@@ -3151,11 +3512,12 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
         if not _is_running_browser_task_run(run):
             continue
         timestamp = run.updated_at or run.created_at
-        entries.append(ChatProcessInfo(
+        entries.append(ChatProcessNodeInfo(
             id=f"task-run:{run.id}",
-            command=run.title,
+            label=run.title,
             kind="task",
             detail=run.summary or run.user_request or f"{len(getattr(run, 'events', []) or [])} events",
+            status="running",
             timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
         ))
 
@@ -3164,6 +3526,73 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
         key=lambda entry: entry.timestamp or "",
         reverse=True,
     )[:limit]
+
+
+def _process_node_timestamp(node: ChatProcessNodeInfo) -> str:
+    timestamps = [node.timestamp or ""]
+    timestamps.extend(_process_node_timestamp(child) for child in node.children)
+    return max(timestamps)
+
+
+def _process_node_has_running(node: ChatProcessNodeInfo) -> bool:
+    return node.status == "running" or any(_process_node_has_running(child) for child in node.children)
+
+
+def _build_process_node_children(entries: List[ChatProcessNodeInfo], chat_node_id: str) -> List[ChatProcessNodeInfo]:
+    nodes: Dict[str, ChatProcessNodeInfo] = {
+        entry.id: entry.model_copy(update={"children": []})
+        for entry in entries
+    }
+    roots: List[ChatProcessNodeInfo] = []
+
+    for entry in entries:
+        node = nodes.get(entry.id)
+        if node is None:
+            continue
+        parent_id = (entry.parent_id or "").strip()
+        parent = nodes.get(parent_id) if parent_id else None
+        if parent is not None and parent.id != node.id:
+            parent.children.append(node)
+        else:
+            node.parent_id = chat_node_id
+            roots.append(node)
+
+    def sort_children(items: List[ChatProcessNodeInfo]) -> None:
+        items.sort(key=lambda item: (_process_node_has_running(item), _process_node_timestamp(item)), reverse=True)
+        for item in items:
+            sort_children(item.children)
+
+    sort_children(roots)
+    return roots
+
+
+def _build_chat_process_tree(db: Session, chatroom: Chatroom, *, limit: int = CHAT_PROCESSES_LIMIT) -> ChatProcessNodeInfo:
+    project = _resolve_chatroom_project(db, chatroom)
+    project_node_id = f"project:{project.id}" if project is not None else "project:none"
+    chat_node_id = f"chat:{chatroom.id}"
+    process_entries = _build_chat_process_entries(db, chatroom.id, limit=limit)
+    chat_children = _build_process_node_children(process_entries, chat_node_id)
+    latest_timestamp = max([chatroom.created_at.isoformat() if getattr(chatroom, "created_at", None) else ""] + [
+        _process_node_timestamp(child)
+        for child in chat_children
+    ])
+    chat_node = ChatProcessNodeInfo(
+        id=chat_node_id,
+        label=chatroom.title or f"Chat {chatroom.id}",
+        kind="chat",
+        detail="Current chat",
+        parent_id=project_node_id,
+        timestamp=latest_timestamp or None,
+        children=chat_children,
+    )
+    return ChatProcessNodeInfo(
+        id=project_node_id,
+        label=(project.name if project is not None else "Standalone"),
+        kind="project",
+        detail="Project root" if project is not None else "Standalone chat root",
+        timestamp=latest_timestamp or None,
+        children=[chat_node],
+    )
 
 
 def _resolve_project_workspace_file(workspace_path: str, relative_path: str) -> Path:
@@ -3825,6 +4254,8 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
         )
         raise HTTPException(status_code=404, detail="Chatroom not found")
 
+    reconcile_tracked_run_shell_runtime_cards(db, chatroom_id, limit=max(limit, 200))
+
     rows = (
         db.query(Message)
         .filter(Message.chatroom_id == chatroom_id, Message.message_type == "runtime_card")
@@ -3872,7 +4303,7 @@ async def list_task_runs(
     return [serialize_task_run_summary(task_run) for task_run in query.limit(limit).all()]
 
 
-@router.get("/chatrooms/{chatroom_id}/processes", response_model=List[ChatProcessInfo])
+@router.get("/chatrooms/{chatroom_id}/processes", response_model=ChatProcessNodeInfo)
 async def list_chat_processes(chatroom_id: int, limit: int = CHAT_PROCESSES_LIMIT, db: Session = Depends(get_db)):
     """Return backend-owned running process/task projection for the chat sidebar."""
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -3880,7 +4311,7 @@ async def list_chat_processes(chatroom_id: int, limit: int = CHAT_PROCESSES_LIMI
         raise HTTPException(status_code=404, detail="Chatroom not found")
 
     bounded_limit = max(1, min(limit, 50))
-    return _build_chat_process_entries(db, chatroom_id, limit=bounded_limit)
+    return _build_chat_process_tree(db, chatroom, limit=bounded_limit)
 
 
 @router.get("/task-runs/{task_run_id}/subagents")

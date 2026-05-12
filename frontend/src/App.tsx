@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
 import { api } from "./api/client";
 import { AppSidebar } from "./components/AppSidebar";
@@ -46,6 +46,9 @@ const OPTIMISTIC_MAX_STEP_DETAIL_CHARS = 800;
 const OPTIMISTIC_MAX_STEP_DETAIL_CONTENT_CHARS = 2400;
 const ERROR_AUTO_DISMISS_MS = 8000;
 const TASK_ACTIVITY_POLL_MS = 2500;
+const APP_SIDEBAR_DEFAULT_WIDTH = 258;
+const APP_SIDEBAR_MIN_WIDTH = 220;
+const APP_SIDEBAR_MAX_WIDTH = 420;
 
 const CONFIG_SECTION_META: Record<
   ConfigSection,
@@ -146,6 +149,7 @@ function sanitizePersistedStep(step: MessageStreamStep): MessageStreamStep {
     tool: step.tool,
     toolCallIndex: step.toolCallIndex,
     toolCallId: step.toolCallId,
+    runId: step.runId,
   };
 }
 
@@ -156,6 +160,7 @@ function streamStepDedupeKey(step: MessageStreamStep) {
     step.tool || "",
     step.toolCallIndex ?? "",
     step.toolCallId ?? "",
+    step.runId ?? "",
     step.label || "",
     step.detail || "",
   ].join("\u0001");
@@ -304,6 +309,10 @@ function writeOptimisticMessageStore(store: Record<string, MessageItem[]>, prefe
 
     window.localStorage.removeItem(OPTIMISTIC_MESSAGES_STORAGE_KEY);
   }
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function readOptimisticMessages(chatId: number | null) {
@@ -742,7 +751,7 @@ function buildStreamStep(
   detail?: string,
   state: MessageStreamStep["state"] = "live",
   detailContent?: string,
-  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId">>,
+  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId" | "runId">>,
 ): MessageStreamStep {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -791,6 +800,12 @@ function markdownSection(title: string, content: string, options?: { language?: 
   return `### ${title}\n\n${markdownCodeFence(normalized, options?.language ?? "")}`;
 }
 
+function toolResultMarkdownSection(title: string, content: string) {
+  return isJsonContent(content)
+    ? markdownSection(title, prettyJson(content), { language: "json" })
+    : markdownSection(title, content, { language: "text" });
+}
+
 function settleLiveStreamSteps(
   steps: MessageStreamStep[] | undefined,
   state: Extract<MessageStreamStep["state"], "done" | "error"> = "done",
@@ -804,7 +819,7 @@ function pushStreamingStep(
   detail?: string,
   state: MessageStreamStep["state"] = "live",
   detailContent?: string,
-  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId">>,
+  meta?: Partial<Pick<MessageStreamStep, "kind" | "agent" | "tool" | "toolCallIndex" | "toolCallId" | "runId">>,
 ) {
   const nextStep = buildStreamStep(label, detail, state, detailContent, meta);
   const settledSteps = settleLiveStreamSteps(message.streamSteps);
@@ -847,6 +862,7 @@ function patchLatestStreamingStep(
         tool: patch.tool,
         toolCallIndex: patch.toolCallIndex,
         toolCallId: patch.toolCallId,
+        runId: patch.runId,
       }),
     ]),
   };
@@ -879,6 +895,7 @@ function patchMatchingStreamingStep(
         tool: patch.tool,
         toolCallIndex: patch.toolCallIndex,
         toolCallId: patch.toolCallId,
+        runId: patch.runId,
       }),
     ]),
   };
@@ -1211,9 +1228,7 @@ function buildToolResultToLlmDetailContent(result?: string, failed = false) {
 
   if (result && result.trim()) {
     sections.push(
-      isJsonContent(result)
-        ? markdownSection(failed ? "Error" : "Tool Result", prettyJson(result), { language: "json" })
-        : markdownSection(failed ? "Error" : "Tool Result", result.trim(), { asMarkdown: true }),
+      toolResultMarkdownSection(failed ? "Error" : "Tool Result", result),
     );
   }
 
@@ -1267,9 +1282,7 @@ function buildCardToolResultDetailContent(card: ChatCardItem) {
   const sections: string[] = [];
   if (card.result) {
     sections.push(
-      isJsonContent(card.result)
-        ? markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", prettyJson(card.result), { language: "json" })
-        : markdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result, { asMarkdown: true }),
+      toolResultMarkdownSection(isToolCardFailure(card) ? "Error" : "Tool Result", card.result),
     );
   }
   return sections.join("\n\n");
@@ -1425,9 +1438,7 @@ function buildCardStepDetailContent(card: ChatCardItem) {
       if (card.arguments) sections.push(markdownSection("Arguments", prettyJson(card.arguments), { language: "json" }));
       if (card.result) {
         sections.push(
-          isJsonContent(card.result)
-            ? markdownSection(isToolCardFailure(card) ? "Error" : "Result", prettyJson(card.result), { language: "json" })
-            : markdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result, { asMarkdown: true }),
+          toolResultMarkdownSection(isToolCardFailure(card) ? "Error" : "Result", card.result),
         );
       }
       return sections.join("\n\n");
@@ -1499,6 +1510,7 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
       const toolName = card.tool || "tool";
       const toolCallIndex = card.tool_call_index;
       const toolCallId = card.tool_call_id;
+      const runId = typeof card.run_id === "number" ? card.run_id : undefined;
       const existingStep = findMatchingStreamStep(message, (step) =>
         isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
       );
@@ -1515,6 +1527,7 @@ function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
           tool: toolName,
           toolCallIndex,
           toolCallId,
+          runId,
         },
         toolCallStepLabel(actor, toolName),
       );
@@ -1632,14 +1645,31 @@ function taskRunTerminalState(taskRun: TaskRunSummary) {
 }
 
 function isInternalTaskRunSummary(value: string | null | undefined) {
-  const normalized = (value || "").toLowerCase();
+  const normalized = (value || "").trim().toLowerCase();
   if (!normalized) return false;
   return (
     normalized.includes("rebuild_turn_state_from_tool_round") ||
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
     normalized.includes("continue agent turn · via") ||
-    normalized.includes("continue agent turn - via")
+    normalized.includes("continue agent turn - via") ||
+    normalized.includes(" · via ") ||
+    normalized.includes(" - via ") ||
+    normalized === "user message saved." ||
+    normalized === "user message saved for execution." ||
+    normalized === "user message saved for streaming execution." ||
+    normalized.includes("selected standalone") ||
+    normalized.includes("selected project") ||
+    normalized.includes("execution mode") ||
+    normalized.includes("streaming execution mode") ||
+    normalized.includes("runtime mode") ||
+    normalized.includes("streaming schedule") ||
+    normalized.includes("orchestration schedule") ||
+    normalized.includes("scheduler state") ||
+    normalized.includes("checkpoint") ||
+    normalized.includes("continuation cursor") ||
+    normalized.includes("recovery started") ||
+    normalized.includes("recovered interrupted")
   );
 }
 
@@ -1697,6 +1727,29 @@ function taskRunLatestEventType(taskRun: TaskRunSummary | TaskRunDetail) {
     taskRun.checkpoint_snapshot?.continuation_cursor?.source_event_type ||
     ""
   ).toLowerCase();
+}
+
+function taskRunUserRequestPreview(taskRun: TaskRunSummary | TaskRunDetail, limit = 140) {
+  return typeof taskRun.user_request === "string" && taskRun.user_request.trim()
+    ? summarizeStepDetail(taskRun.user_request, limit)
+    : "";
+}
+
+function latestTaskRunAgentResponse(taskRun: TaskRunSummary | TaskRunDetail) {
+  const events = taskRunDetailEvents(taskRun);
+  const responseEvent = [...events].reverse().find((event) => {
+    const response = event.payload?.response_preview;
+    return event.event_type === "agent_turn_completed" && typeof response === "string" && response.trim();
+  });
+  const response = responseEvent?.payload?.response_preview;
+  if (typeof response === "string" && response.trim()) return response.trim();
+  const checkpointResponse = taskRun.checkpoint_snapshot?.latest_agent_turn?.response_preview;
+  return typeof checkpointResponse === "string" && checkpointResponse.trim() ? checkpointResponse.trim() : "";
+}
+
+function taskRunWorkInProgressDetail(taskRun: TaskRunSummary | TaskRunDetail, fallback = "Working on your request.") {
+  const userRequest = taskRunUserRequestPreview(taskRun);
+  return userRequest ? `Working on: ${userRequest}` : fallback;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -1775,12 +1828,11 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
   const latestToolResultText = latestToolResult && typeof latestToolResult.result === "string"
     ? latestToolResult.result
     : "";
+  const latestAgentResponse = latestTaskRunAgentResponse(taskRun);
   const statusSummary =
-    userFacingTaskRunSummary(latestEvent?.summary) ||
     userFacingTaskRunSummary(taskRun.summary) ||
-    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_cursor_summary);
+    latestAgentResponse ||
+    taskRunUserRequestPreview(taskRun);
   const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
 
   if (pendingApprovalCount > 0) {
@@ -1817,7 +1869,7 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
   if (eventType.includes("agent_turn")) {
     return {
       label: `LLM -> ${actor}`,
-      detail: statusSummary || `${actor} is waiting for the next model response.`,
+      detail: latestAgentResponse || taskRunWorkInProgressDetail(taskRun, `${actor} is waiting for the next model response.`),
       kind: "llm_inbound" as const,
       tool: undefined,
     };
@@ -1834,18 +1886,11 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
     };
   }
 
-  if (eventType) {
-    return {
-      label: `${actor} is processing ${eventType.replace(/_/g, " ")}`,
-      detail: statusSummary || `${actor} is continuing from ${eventType.replace(/_/g, " ")}.`,
-      kind: "llm_inbound" as const,
-      tool: undefined,
-    };
-  }
-
   return {
-    label: toolName ? `${actor} continues with ${toolName}` : `${actor} is continuing`,
-    detail: statusSummary || (toolName ? `${actor} is continuing after ${toolName}.` : undefined),
+    label: toolName ? `${actor} continues with ${toolName}` : `${actor} is working`,
+    detail: toolName
+      ? `${actor} is continuing after ${toolName}.`
+      : taskRunWorkInProgressDetail(taskRun),
     detailContent: undefined,
     kind: toolName ? ("tool_call" as const) : ("llm_inbound" as const),
     tool: toolName || undefined,
@@ -1896,9 +1941,8 @@ function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: Task
   const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Continuing";
   const detail =
     userFacingTaskRunSummary(taskRun.summary) ||
-    userFacingTaskRunSummary(taskRun.latest_continuation_event_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_state_summary) ||
-    userFacingTaskRunSummary(taskRun.continuation_cursor_summary) ||
+    latestTaskRunAgentResponse(taskRun) ||
+    taskRunUserRequestPreview(taskRun) ||
     (isFailed ? "Task run stopped before a final reply was saved." : "Task run state recovered from the run ledger.");
 
   return finalizeStreamingTrace(
@@ -2066,6 +2110,7 @@ function App() {
   const [activeConfigSection, setActiveConfigSection] = useState<ConfigSection>("agents");
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
+  const [appSidebarWidth, setAppSidebarWidth] = useState(APP_SIDEBAR_DEFAULT_WIDTH);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -2077,7 +2122,7 @@ function App() {
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [chatCards, setChatCards] = useState<ChatCardItem[]>([]);
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
-  const [chatProcesses, setChatProcesses] = useState<ChatProcessEntry[]>([]);
+  const [chatProcesses, setChatProcesses] = useState<ChatProcessEntry | null>(null);
   const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [taskActivitiesById, setTaskActivitiesById] = useState<Record<number, TaskActivityProjection>>({});
@@ -2131,6 +2176,10 @@ function App() {
     [agents],
   );
   const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
+  const appShellStyle = useMemo(
+    () => ({ "--app-sidebar-width": `${appSidebarWidth}px` }) as CSSProperties,
+    [appSidebarWidth],
+  );
 
   const socketRef = useRef<WebSocket | null>(null);
   const bootstrappedRef = useRef<boolean>(bootstrapped);
@@ -2145,6 +2194,30 @@ function App() {
   const streamingAssistantIdRef = useRef<number | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
   const processRefreshTimerRef = useRef<number | null>(null);
+  function isCurrentChatRequest(chatId: number | null | undefined) {
+    return Boolean(chatId) && selectedChatIdRef.current === chatId;
+  }
+  const handleAppSidebarResizeStart = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = appSidebarWidth;
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      setAppSidebarWidth(clampNumber(startWidth + moveEvent.clientX - startX, APP_SIDEBAR_MIN_WIDTH, APP_SIDEBAR_MAX_WIDTH));
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  };
 
   function pushEvent(message: string, tone: ChatEventTone = "info") {
     setChatEvents((current) => [...current.slice(-79), buildEvent(message, tone)]);
@@ -2224,7 +2297,7 @@ function App() {
         const message = nextError instanceof Error ? nextError.message : "Failed to load processes";
         pushEvent(`Process list unavailable: ${message}`, "warning");
       }
-      return [];
+      return null;
     }
   }
 
@@ -2236,7 +2309,7 @@ function App() {
     processRefreshTimerRef.current = window.setTimeout(() => {
       processRefreshTimerRef.current = null;
       void loadOptionalChatProcesses(chatId, { silent: true }).then((processRows) => {
-        if (selectedChatIdRef.current === chatId) setChatProcesses(processRows);
+        if (isCurrentChatRequest(chatId)) setChatProcesses(processRows);
       });
     }, 150);
   }
@@ -2261,7 +2334,7 @@ function App() {
       inFlight = true;
       try {
         const entries = await loadOptionalTaskActivities(activeRuns, { silent: true });
-        if (!cancelled && selectedChatIdRef.current === selectedChatId) {
+        if (!cancelled && isCurrentChatRequest(selectedChatId)) {
           mergeTaskActivities(entries);
         }
       } finally {
@@ -2336,9 +2409,10 @@ function App() {
 
   function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
     const previousChatId = selectedChatIdRef.current;
+    const previousProjectId = selectedProjectIdRef.current;
     debugConsole("info", "applyChatSelection", {
       previousChatId,
-      previousProjectId: selectedProjectIdRef.current,
+      previousProjectId,
       nextChatId,
       nextProjectId,
       lastChatStorage: readLastChatId(),
@@ -2349,6 +2423,8 @@ function App() {
       setMessages([]);
       setChatCards([]);
       setChatEvents([]);
+    }
+    if (previousProjectId !== nextProjectId) {
       setProjectBrowserIndex(null);
     }
     selectedChatIdRef.current = nextChatId;
@@ -2570,7 +2646,7 @@ function App() {
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
       setTaskRuns([]);
-      setChatProcesses([]);
+      setChatProcesses(null);
       setProjectBrowserIndex(null);
       setLiveTaskRunDetailsById({});
       setTaskActivitiesById({});
@@ -2587,7 +2663,7 @@ function App() {
         setError("");
         setMessages([]);
         setChatCards([]);
-        setChatProcesses([]);
+        setChatProcesses(null);
         setChatEvents([]);
         setLiveTaskRunDetailsById({});
         setTaskActivitiesById({});
@@ -2597,7 +2673,7 @@ function App() {
           loadOptionalTaskRuns(activeChatId),
           loadOptionalChatProcesses(activeChatId),
         ]);
-        if (!cancelled) {
+        if (!cancelled && isCurrentChatRequest(activeChatId)) {
           const nextCards = runtimeRows
             .map((payload) => buildCard(payload))
             .filter((card): card is ChatCardItem => card !== null);
@@ -2607,7 +2683,7 @@ function App() {
           setChatProcesses(processRows);
           setLiveTaskRunDetailsById({});
           void loadOptionalTaskActivities(taskRunRows).then((entries) => {
-            if (cancelled) return;
+            if (cancelled || !isCurrentChatRequest(activeChatId)) return;
             setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
           });
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
@@ -2783,6 +2859,7 @@ function App() {
               scheduleChatProcessRefresh(entry.chatroom_id);
               void api.getTaskRunActivity(entry.id)
                 .then((activity) => {
+                  if (!isCurrentChatRequest(entry.chatroom_id)) return;
                   setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
                 })
                 .catch((nextError) => {
@@ -2808,7 +2885,7 @@ function App() {
 
           if (data.type === "chat_processes_changed") {
             const chatroomId = typeof data.chatroom_id === "number" ? data.chatroom_id : selectedChatIdRef.current;
-            if (selectedChatIdRef.current === chatroomId) {
+            if (isCurrentChatRequest(chatroomId)) {
               scheduleChatProcessRefresh(chatroomId);
             }
             return;
@@ -3004,6 +3081,7 @@ function App() {
         loadOptionalTaskRuns(chatId),
         loadOptionalChatProcesses(chatId),
       ]);
+      if (!isCurrentChatRequest(chatId)) return;
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
         .filter((card): card is ChatCardItem => card !== null);
@@ -3014,6 +3092,7 @@ function App() {
       setChatProcesses(processRows);
       setLiveTaskRunDetailsById({});
       void loadOptionalTaskActivities(taskRunRows).then((entries) => {
+        if (!isCurrentChatRequest(chatId)) return;
         setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
       });
       if (showSpinner) {
@@ -4271,7 +4350,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell ${activeTab === "chat" ? "app-shell--chat" : ""}`}>
+    <div className={`app-shell ${activeTab === "chat" ? "app-shell--chat" : ""}`} style={appShellStyle}>
       <AppSidebar
         mode={activeTab === "config" ? "settings" : "workspace"}
         chats={chats}
@@ -4309,6 +4388,13 @@ function App() {
         }}
         drawerOpen={sidebarDrawerOpen}
         onCloseDrawer={() => setSidebarDrawerOpen(false)}
+      />
+      <button
+        type="button"
+        className="sidebar-resize-handle sidebar-resize-handle--left"
+        onPointerDown={handleAppSidebarResizeStart}
+        aria-label="Resize navigation sidebar"
+        title="Resize sidebar"
       />
 
       {activeTab === "chat" && sidebarDrawerOpen ? (

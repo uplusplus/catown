@@ -222,6 +222,7 @@ def serialize_monitor_runtime_item(
         "to_entity": to_entity,
         "model": card.get("model"),
         "tool_name": card.get("tool"),
+        "tool_call_id": card.get("tool_call_id"),
         "success": card.get("success"),
         "tokens_in": int(card.get("tokens_in") or 0),
         "tokens_out": int(card.get("tokens_out") or 0),

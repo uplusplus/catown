@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from agents.collaboration import collaboration_coordinator
@@ -24,6 +24,7 @@ from services.monitor_projection import (
     serialize_monitor_policy_decision_item,
 )
 from services.run_ledger import serialize_monitor_task_run_summary
+from services.run_shell_processes import list_tracked_run_shell_processes
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
@@ -33,6 +34,14 @@ LOG_STREAM_POLL_INTERVAL = 0.75
 LOG_STREAM_LIMIT = 200
 NETWORK_SCAN_LIMIT = 2000
 USAGE_RANGES = {"1h", "6h", "24h", "7d", "30d"}
+FILE_MONITOR_TOOLS = {"read_file", "write_file", "list_files", "delete_file", "search_files"}
+FILE_MONITOR_ACTIONS = {
+    "read_file": "read",
+    "write_file": "write",
+    "list_files": "list",
+    "delete_file": "delete",
+    "search_files": "search",
+}
 
 monitor_log_buffer.install()
 
@@ -171,6 +180,84 @@ def _compact_preview(value: Any, limit: int = 220) -> str:
             text = str(value)
     compact = " ".join(text.strip().split())
     return compact[:limit]
+
+
+def _parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _file_monitor_tool_path(tool_name: str, arguments: dict[str, Any]) -> str:
+    if tool_name in {"read_file", "write_file", "delete_file"}:
+        return str(arguments.get("file_path") or arguments.get("path") or "")
+    if tool_name == "list_files":
+        directory = str(arguments.get("directory") or ".")
+        pattern = str(arguments.get("pattern") or "*")
+        return directory if pattern == "*" else f"{directory.rstrip('/')}/{pattern}"
+    if tool_name == "search_files":
+        directory = str(arguments.get("directory") or ".")
+        pattern = str(arguments.get("file_pattern") or "*")
+        return directory if pattern == "*" else f"{directory.rstrip('/')}/{pattern}"
+    return str(arguments.get("file_path") or arguments.get("path") or "")
+
+
+def _file_monitor_result_size(result: Any) -> int | None:
+    if isinstance(result, str):
+        return len(result)
+    if result is None:
+        return None
+    try:
+        return len(json.dumps(result, ensure_ascii=False))
+    except TypeError:
+        return len(str(result))
+
+
+def _file_monitor_item_from_runtime_card(
+    *,
+    message: Message,
+    chatroom: Chatroom,
+    project: Project | None,
+    card: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    if str(card.get("type") or "") != "tool_call":
+        return None
+    tool_name = str(card.get("tool") or "")
+    if tool_name not in FILE_MONITOR_TOOLS:
+        return None
+    arguments = _parse_json_object(card.get("arguments"))
+    file_path = _file_monitor_tool_path(tool_name, arguments)
+    return {
+        "id": f"runtime-{message.id}",
+        "source": "runtime_card",
+        "runtime_message_id": message.id,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "agent": card.get("agent") or card.get("from_agent") or "agent",
+        "tool_name": tool_name,
+        "action": FILE_MONITOR_ACTIONS.get(tool_name, "access"),
+        "file_path": file_path,
+        "project_id": project.id if project else None,
+        "project_name": project.name if project else None,
+        "chatroom_id": chatroom.id,
+        "chat_title": chatroom.title,
+        "success": card.get("success"),
+        "status": card.get("status"),
+        "blocked": card.get("blocked"),
+        "duration_ms": int(card.get("duration_ms") or 0),
+        "turn": int(card.get("turn") or 0) or None,
+        "client_turn_id": _metadata_client_turn_id(metadata),
+        "arguments": arguments,
+        "arguments_preview": _compact_preview(card.get("arguments")),
+        "result_preview": _compact_preview(card.get("result"), limit=320),
+        "result_size": _file_monitor_result_size(card.get("result")),
+    }
 
 
 def _metadata_client_turn_id(metadata: dict[str, Any]) -> str | None:
@@ -1012,6 +1099,24 @@ async def get_monitor_task_runs(
     }
 
 
+@router.get("/processes")
+async def get_monitor_processes(
+    limit: int = Query(120, ge=10, le=300),
+    tail_chars: int = Query(1200, ge=0, le=8000),
+):
+    entries = list_tracked_run_shell_processes(limit=limit, tail_chars=tail_chars)
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "entries": entries,
+        "counts": {
+            "total": len(entries),
+            "running": sum(1 for entry in entries if entry.get("is_active")),
+            "finished": sum(1 for entry in entries if entry.get("is_terminal")),
+            "failed": sum(1 for entry in entries if str(entry.get("status") or "").lower() == "failed"),
+        },
+    }
+
+
 @router.get("/task-runs/{task_run_id}/steps")
 async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get_db)):
     task_run = (
@@ -1154,6 +1259,115 @@ async def get_monitor_approval_queue(
     }
 
 
+@router.get("/files")
+async def get_monitor_files(
+    limit: int = Query(200, ge=20, le=1000),
+    tool: str = Query("all"),
+    query: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    normalized_tool = tool.strip()
+    if normalized_tool != "all" and normalized_tool not in FILE_MONITOR_TOOLS:
+        raise HTTPException(status_code=400, detail="Unsupported file monitor tool")
+
+    query_text = query.strip().lower()
+    sql_filters = [
+        Message.message_type == "runtime_card",
+        func.json_extract(Message.metadata_json, "$.card.type") == "tool_call",
+        func.json_extract(Message.metadata_json, "$.card.tool").in_(sorted(FILE_MONITOR_TOOLS)),
+    ]
+    if normalized_tool != "all":
+        sql_filters.append(func.json_extract(Message.metadata_json, "$.card.tool") == normalized_tool)
+
+    scan_limit = min(max(limit * 8, 400), 4000) if query_text else limit
+    rows = (
+        db.query(Message, Chatroom, Project)
+        .join(Chatroom, Message.chatroom_id == Chatroom.id)
+        .outerjoin(Project, Chatroom.project_id == Project.id)
+        .filter(*sql_filters)
+        .order_by(desc(Message.created_at), desc(Message.id))
+        .limit(scan_limit)
+        .all()
+    )
+
+    entries: list[dict[str, Any]] = []
+    for message, chatroom, project in rows:
+        metadata = _parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card:
+            continue
+        entry = _file_monitor_item_from_runtime_card(
+            message=message,
+            chatroom=chatroom,
+            project=project,
+            card=card,
+            metadata=metadata,
+        )
+        if not entry:
+            continue
+        if normalized_tool != "all" and entry["tool_name"] != normalized_tool:
+            continue
+        if query_text:
+            haystack = " ".join(
+                str(entry.get(key) or "")
+                for key in (
+                    "agent",
+                    "tool_name",
+                    "action",
+                    "file_path",
+                    "project_name",
+                    "chat_title",
+                    "arguments_preview",
+                    "result_preview",
+                )
+            ).lower()
+            if query_text not in haystack:
+                continue
+        entries.append(entry)
+        if len(entries) >= limit:
+            break
+
+    action_counts: dict[str, int] = defaultdict(int)
+    tool_counts: dict[str, int] = defaultdict(int)
+    agent_counts: dict[str, int] = defaultdict(int)
+    touched_paths: set[str] = set()
+    write_count = 0
+    error_count = 0
+    for entry in entries:
+        action = str(entry.get("action") or "access")
+        tool_name = str(entry.get("tool_name") or "tool")
+        agent = str(entry.get("agent") or "agent")
+        action_counts[action] += 1
+        tool_counts[tool_name] += 1
+        agent_counts[agent] += 1
+        if entry.get("file_path"):
+            touched_paths.add(str(entry["file_path"]))
+        if action in {"write", "delete"}:
+            write_count += 1
+        if entry.get("success") is False:
+            error_count += 1
+
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "limit": limit,
+        "tool": normalized_tool,
+        "query": query,
+        "counts": {
+            "total": len(entries),
+            "reads": int(action_counts.get("read", 0)),
+            "writes": write_count,
+            "lists": int(action_counts.get("list", 0)),
+            "searches": int(action_counts.get("search", 0)),
+            "deletes": int(action_counts.get("delete", 0)),
+            "errors": error_count,
+            "unique_paths": len(touched_paths),
+        },
+        "by_tool": [{"tool_name": name, "count": count} for name, count in sorted(tool_counts.items())],
+        "by_agent": [{"agent": name, "count": count} for name, count in sorted(agent_counts.items())],
+        "entries": entries,
+    }
+
+
 @router.get("/overview")
 async def get_monitor_overview(
     runtime_limit: int = Query(24, ge=6, le=80),
@@ -1292,6 +1506,7 @@ async def get_monitor_overview(
                 "to_entity": to_entity,
                 "model": card.get("model"),
                 "tool_name": card.get("tool"),
+                "tool_call_id": card.get("tool_call_id"),
                 "success": card.get("success"),
                 "tokens_in": int(card.get("tokens_in") or 0),
                 "tokens_out": int(card.get("tokens_out") or 0),

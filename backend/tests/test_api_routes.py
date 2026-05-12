@@ -908,6 +908,7 @@ class TestProjectEndpoints:
                         "status": "running",
                         "result": "collecting\nrunning tests",
                         "pid": 12345,
+                        "run_id": run_id,
                     }
                 }),
                 created_at=datetime.now(),
@@ -920,17 +921,21 @@ class TestProjectEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        ids = {item["id"] for item in data}
-        shell = next(item for item in data if item["kind"] == "command")
-        task = next(item for item in data if item["kind"] == "task")
-        assert shell["command"].startswith("python -m pytest")
+        assert data["id"] == f"project:{project['id']}"
+        chat_node = data["children"][0]
+        assert chat_node["id"] == f"chat:{chatroom_id}"
+        ids = {item["id"] for item in chat_node["children"]}
+        task = next(item for item in chat_node["children"] if item["kind"] == "task")
+        shell = next(item for item in task["children"] if item["kind"] == "command")
+        assert shell["label"].startswith("python -m pytest")
         assert shell["pid"] == 12345
+        assert shell["parent_id"] == f"task-run:{run_id}"
         assert "running tests" in shell["output"]
-        assert task["command"] == "Background implementation"
+        assert task["label"] == "Background implementation"
         assert f"task-run:{run_id}" in ids
         assert f"task-run:{inline_run_id}" not in ids
 
-    def test_chat_processes_skip_stale_running_shell_cards(self, client):
+    def test_chat_processes_keep_terminated_shell_cards(self, client):
         import models.database as db_mod
         from datetime import datetime
 
@@ -962,7 +967,14 @@ class TestProjectEndpoints:
         response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
 
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        assert data["kind"] == "project"
+        assert data["children"][0]["kind"] == "chat"
+        entries = data["children"][0]["children"]
+        assert len(entries) == 1
+        assert entries[0]["kind"] == "command"
+        assert entries[0]["status"] == "terminated"
+        assert entries[0]["output"] == "old output"
 
     def test_chat_processes_ignore_bad_tracked_shell_state_file(self, tmp_path):
         from fastapi.testclient import TestClient
@@ -1004,7 +1016,246 @@ class TestProjectEndpoints:
         response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
 
         assert response.status_code == 200
-        assert response.json() == []
+        entries = response.json()["children"][0]["children"]
+        assert len(entries) == 1
+        assert entries[0]["status"] == "terminated"
+        assert entries[0]["output"] == "runtime card fallback output"
+
+    def test_chat_processes_sort_running_before_terminated_shell_cards(self, client, monkeypatch):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime, timedelta
+
+        monkeypatch.setattr(api_mod, "_pid_is_alive", lambda pid: int(pid) == 12345)
+        project = client.post("/api/projects", json={"name": "Process Sort Test"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            for offset, command, pid in [
+                (0, "old finished command", 99999999),
+                (1, "active command", 12345),
+            ]:
+                db.add(db_mod.Message(
+                    chatroom_id=chatroom_id,
+                    content="runtime_card",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps({
+                        "card": {
+                            "type": "tool_call",
+                            "tool": "run_shell",
+                            "arguments": json.dumps({"command": command}),
+                            "status": "running",
+                            "result": command,
+                            "pid": pid,
+                        }
+                    }),
+                    created_at=datetime.now() + timedelta(seconds=offset),
+                ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
+
+        assert response.status_code == 200
+        entries = response.json()["children"][0]["children"]
+        assert [entry["status"] for entry in entries] == ["running", "terminated"]
+        assert entries[0]["label"] == "active command"
+        assert entries[1]["label"] == "old finished command"
+
+    def test_chat_processes_dedupe_shell_progress_by_tracked_token(self, tmp_path, monkeypatch):
+        _make_app(tmp_path)
+
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime, timedelta
+
+        monkeypatch.setattr(api_mod, "_running_shell_card_is_active", lambda card, observed_at=None: True)
+        tracked = {"token": "same-process-token", "pid": 12345}
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Process Dedupe Test", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Process Dedupe Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            chatroom_id = chatroom.id
+
+            for offset, output in enumerate(("line 1", "line 2")):
+                db.add(db_mod.Message(
+                    chatroom_id=chatroom_id,
+                    content="runtime_card",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps({
+                        "card": {
+                            "type": "tool_call",
+                            "tool": "run_shell",
+                            "arguments": json.dumps({"command": "python -m pytest"}),
+                            "status": "running",
+                            "result": output,
+                            "pid": 12345,
+                            "tracked_process": tracked,
+                        }
+                    }),
+                    created_at=datetime.now() + timedelta(seconds=offset),
+                ))
+            db.commit()
+            data = [entry.model_dump() for entry in api_mod._build_chat_process_entries(db, chatroom_id)]
+        finally:
+            db.close()
+
+        assert len(data) == 1
+        assert data[0]["id"] == "shell:tracked:same-process-token"
+        assert data[0]["output"] == "line 2"
+
+    def test_chat_processes_reads_latest_tracked_shell_tail(self, tmp_path, monkeypatch):
+        _make_app(tmp_path)
+
+        import models.database as db_mod
+        import routes.api as api_mod
+        from services.run_shell_processes import create_tracked_run_shell_handle
+        from datetime import datetime
+
+        tracked = create_tracked_run_shell_handle(
+            command="python -m pytest backend/tests -q",
+            cwd=str(tmp_path),
+            timeout_seconds=60,
+        )
+        record = api_mod.load_tracked_run_shell_handle(tracked)
+        assert record is not None
+        state_path = Path(record["state_path"])
+        record["pid"] = 97008
+        record["status"] = "running"
+        state_path.write_text(json.dumps(record), encoding="utf-8")
+        Path(record["log_path"]).write_text("old line\nlatest pytest progress\n", encoding="utf-8")
+
+        monkeypatch.setattr(api_mod, "tracked_run_shell_is_active", lambda record: True)
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Tracked Tail Test", status="active")
+            db.add(project)
+            db.flush()
+            chatroom = db_mod.Chatroom(project_id=project.id, title="Tracked Tail Chat")
+            db.add(chatroom)
+            db.flush()
+            db.add(db_mod.Message(
+                chatroom_id=chatroom.id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "result": "stale runtime card output",
+                        "pid": 97008,
+                        "tracked_process": tracked,
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            data = [entry.model_dump() for entry in api_mod._build_chat_process_entries(db, chatroom.id)]
+        finally:
+            db.close()
+
+        assert len(data) == 1
+        assert data[0]["pid"] == 97008
+        assert "latest pytest progress" in data[0]["output"]
+        assert "stale runtime card output" not in data[0]["output"]
+
+    def test_runtime_cards_reconcile_finished_tracked_run_shell(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from services.run_shell_processes import create_tracked_run_shell_handle
+        from datetime import datetime
+
+        project = client.post("/api/projects", json={"name": "Runtime Card Reconcile"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Tracked shell task",
+                user_request="Run command",
+                target_agent_name="tester",
+            )
+            db.add(task_run)
+            db.flush()
+            handle = create_tracked_run_shell_handle(
+                command="python -m pytest backend/tests -q",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                task_run_id=task_run.id,
+                client_turn_id="turn-reconcile",
+                tool_call_id="call_reconcile",
+                turn=1,
+                agent_name="tester",
+            )
+            record = api_mod.load_tracked_run_shell_handle(handle)
+            assert record is not None
+            Path(record["log_path"]).write_text("tests passed\n", encoding="utf-8")
+            Path(record["exit_path"]).write_text(
+                json.dumps({"exit_code": 0, "finished_at": datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+            record.update({"status": "completed", "exit_code": 0, "finished_at": datetime.now().isoformat()})
+            Path(record["state_path"]).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "stale running output",
+                        "pid": 97008,
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_reconcile",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
+        shell_card = next(card for card in cards if card.get("tool") == "run_shell")
+        assert shell_card["status"] == "succeeded"
+        assert shell_card["success"] is True
+        assert "tests passed" in shell_card["result"]
+        assert "stale running output" not in shell_card["result"]
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert detail["status"] == "completed"
+        assert "tests passed" in detail["summary"]
 
     def test_get_project_not_found(self, client):
         r = client.get("/api/projects/99999")
@@ -3158,7 +3409,7 @@ class TestSSEStreaming:
         assert resolved_event["payload"]["replay_status"] == "timeout_waiting"
         assert resolved_event["payload"]["replay_success"] is False
 
-    def test_startup_recovery_completes_tracked_run_shell_task_run(self, tmp_path):
+    def test_startup_recovery_continues_agent_after_tracked_run_shell_result(self, tmp_path):
         app = _make_app(tmp_path)
 
         from fastapi.testclient import TestClient
@@ -3199,8 +3450,9 @@ class TestSSEStreaming:
                 db.commit()
                 db.refresh(task_run)
 
+                command = f'{sys.executable} -c "print(\'recovered done\')"'
                 handle = create_tracked_run_shell_handle(
-                    command='python -c "import time; time.sleep(1); print(\'recovered done\')"',
+                    command=command,
                     cwd=str(tmp_path),
                     timeout_seconds=1,
                     chatroom_id=chatroom.id,
@@ -3230,7 +3482,7 @@ class TestSSEStreaming:
                             "tool_name": "run_shell",
                             "arguments": json.dumps(
                                 {
-                                    "command": 'python -c "import time; time.sleep(1); print(\'recovered done\')"',
+                                    "command": command,
                                     "cwd": str(tmp_path),
                                     "timeout_seconds": 1,
                                 },
@@ -3247,17 +3499,172 @@ class TestSSEStreaming:
                 )
                 db.add(queue_item)
                 db.commit()
+                queue_item_id = queue_item.id
                 task_run_id = task_run.id
             finally:
                 db.close()
 
-            summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+            followup_calls = []
+
+            async def fake_trigger_agent_response(
+                chatroom_id,
+                user_message,
+                client_turn_id=None,
+                task_run_id=None,
+                extra_context="",
+                checkpoint_snapshot=None,
+            ):
+                followup_calls.append(
+                    {
+                        "chatroom_id": chatroom_id,
+                        "user_message": user_message,
+                        "client_turn_id": client_turn_id,
+                        "task_run_id": task_run_id,
+                        "extra_context": extra_context,
+                        "checkpoint_snapshot": checkpoint_snapshot,
+                    }
+                )
+                return {"completed": True, "awaiting_tool_approval": False, "task_run_id": task_run_id}
+
+            with patch.object(api_routes, "trigger_agent_response", side_effect=fake_trigger_agent_response):
+                summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
             assert summary["detected"] == 1
             assert summary["recovered"] == 1
+            assert len(followup_calls) == 1
+            assert followup_calls[0]["task_run_id"] == task_run_id
+            assert followup_calls[0]["client_turn_id"] == "delegate-tracked-recovery"
+            assert "run_shell" in followup_calls[0]["extra_context"]
+            assert "recovered done" in followup_calls[0]["extra_context"].lower()
 
             detail = client.get(f"/api/task-runs/{task_run_id}").json()
-            assert detail["status"] == "completed"
-            assert "recovered done" in (detail.get("summary") or "").lower()
+            assert any(
+                event["event_type"] == "approval_queue_item_followup_triggered"
+                for event in detail["events"]
+            )
+            resolved_event = next(
+                event
+                for event in detail["events"]
+                if event["event_type"] == "approval_queue_item_resolved"
+                and event["payload"].get("queue_item_id") == queue_item_id
+            )
+            assert resolved_event["payload"]["action_taken"] == "startup_recovered"
+            assert resolved_event["payload"]["followup_status"] == "continued"
+            queue_items = client.get(
+                "/api/approval-queue",
+                params={"task_run_id": task_run_id, "status": "pending"},
+            ).json()
+            assert queue_items == []
+
+    def test_startup_recovery_terminalizes_orphaned_tracked_run_shell_task_run(self, tmp_path):
+        _make_app(tmp_path)
+
+        import models.database as db_mod
+        import routes.api as api_routes
+        from services.run_shell_processes import create_tracked_run_shell_handle, load_tracked_run_shell_handle
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Orphaned Tracked Shell Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Orphaned Tracked Shell Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                client_turn_id="orphaned-tracked-shell",
+                run_kind="project_single_agent_stream",
+                status="running",
+                title="Orphaned run_shell recovery",
+                user_request="Run tests",
+                initiator="user",
+                target_agent_name="Tester",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            handle = create_tracked_run_shell_handle(
+                command="python -m pytest",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                task_run_id=task_run.id,
+                client_turn_id=task_run.client_turn_id,
+                tool_call_id="call_orphaned",
+                turn=1,
+                agent_name="Tester",
+            )
+            record = load_tracked_run_shell_handle(handle)
+            assert record is not None
+            state_path = Path(record["state_path"])
+            log_path = Path(record["log_path"])
+            record.update({
+                "status": "running",
+                "pid": 99999999,
+                "worker_pid": 99999998,
+                "started_at": "2026-05-11T21:53:57",
+            })
+            state_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            log_path.write_text("...........FF\n", encoding="utf-8")
+
+            db.add(db_mod.Message(
+                chatroom_id=chatroom.id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest", "cwd": str(tmp_path)}),
+                        "status": "running",
+                        "result": "...........FF",
+                        "pid": 99999999,
+                        "tracked_process": handle,
+                        "tool_call_id": "call_orphaned",
+                        "client_turn_id": task_run.client_turn_id,
+                        "run_id": task_run.id,
+                        "turn": 1,
+                    }
+                }),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+        assert summary["detected"] == 1
+        assert summary["recovered"] == 1
+
+        db = db_mod.SessionLocal()
+        try:
+            detail = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == task_run_id).first()
+            assert detail is not None
+            assert detail.status == "failed"
+            assert "command stopped before completion" in (detail.summary or "")
+            assert any(
+                event.event_type == "tool_round_recorded"
+                and json.loads(event.payload_json or "{}")["recovery_kind"] == "orphaned_run_shell_tracked_process"
+                for event in detail.events
+            )
+
+            processes = [entry.model_dump() for entry in api_routes._build_chat_process_entries(db, chatroom_id)]
+            assert processes == []
+        finally:
+            db.close()
 
     def test_approve_pipeline_tool_queue_item_replays_and_resumes_pipeline(self, client):
         import models.database as db_mod
