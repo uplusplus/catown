@@ -1369,6 +1369,8 @@ textarea {
   padding: 12px 14px;
   display: grid;
   gap: 8px;
+  width: 100%;
+  min-width: 0;
   text-align: left;
   transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
@@ -1391,6 +1393,19 @@ textarea {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.run-history-item__head > *,
+.run-history-item__foot > *,
+.run-event-row__head > *,
+.run-detail-hero > * {
+  min-width: 0;
+}
+
+.run-history-item__head strong,
+.run-detail-hero strong,
+.task-step-card__title strong {
+  overflow-wrap: anywhere;
 }
 
 .run-history-item__badges,
@@ -1595,6 +1610,7 @@ textarea {
   background: var(--bg-primary);
   border: 1px solid var(--border-secondary);
   border-radius: 10px;
+  max-width: 100%;
   overflow: auto;
   font-size: 12px;
   line-height: 1.5;
@@ -1637,6 +1653,7 @@ textarea {
   border-radius: 12px;
   background: var(--bg-secondary);
   padding: 12px;
+  min-width: 0;
 }
 
 .task-step-card--success {
@@ -3025,6 +3042,27 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, clamp(320px, 30vw, 520px)), 1fr));
 }
 
+#page-tasks .split-panels {
+  grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.35fr);
+  align-items: start;
+}
+
+#page-tasks .split-panels > .card,
+#page-tasks .run-history-list,
+#page-tasks .task-step-list,
+#page-tasks .task-step-card__sections {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#page-tasks .feed-meta,
+#page-tasks .feed-preview,
+#page-tasks .small-note,
+#page-tasks .run-history-item__foot,
+#page-tasks .run-detail-section {
+  overflow-wrap: anywhere;
+}
+
 .security-posture {
   display: grid;
   grid-template-columns: clamp(72px, 8vw, 96px) minmax(0, 1fr) auto;
@@ -3123,6 +3161,7 @@ textarea {
   .browser-shell,
   .history-charts,
   .split-panels,
+  #page-tasks .split-panels,
   .grid-2,
   .grid-3,
   .security-posture {

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache, partial
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, object_session
@@ -4602,7 +4602,11 @@ async def wait_task_run_subagent(
 
 
 @router.get("/task-runs/{task_run_id}")
-async def get_task_run_detail(task_run_id: int, db: Session = Depends(get_db)):
+async def get_task_run_detail(
+    task_run_id: int,
+    event_limit: int = Query(0, ge=0, le=500),
+    db: Session = Depends(get_db),
+):
     """Get a single orchestration/task run with ordered ledger events."""
     task_run = (
         db.query(TaskRun)
@@ -4611,7 +4615,7 @@ async def get_task_run_detail(task_run_id: int, db: Session = Depends(get_db)):
     )
     if not task_run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    return serialize_task_run_detail(task_run)
+    return serialize_task_run_detail(task_run, event_limit=event_limit or None)
 
 
 @router.get("/task-runs/{task_run_id}/activity")

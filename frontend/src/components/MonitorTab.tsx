@@ -39,6 +39,10 @@ const MONITOR_MESSAGE_LIMIT = 40;
 const MONITOR_USAGE_WINDOW_LIMIT = 400;
 const MONITOR_STREAM_RECONNECT_DELAY_MS = 3000;
 const ERROR_AUTO_DISMISS_MS = 8000;
+const MONITOR_NETWORK_RETAIN_LIMIT = 300;
+const MONITOR_NETWORK_RENDER_LIMIT = 120;
+const TASK_RUN_EVENT_RENDER_LIMIT = 80;
+const TASK_RUN_STEP_RENDER_LIMIT = 80;
 
 type MonitorPage = {
   id: string;
@@ -728,7 +732,7 @@ function mergeMonitorNetwork(current: MonitorNetworkEvent[], incoming: MonitorNe
   });
   return [...merged.values()]
     .sort((left, right) => right.id - left.id)
-    .slice(0, 800);
+    .slice(0, MONITOR_NETWORK_RETAIN_LIMIT);
 }
 
 function historyRangeStart(range: HistoryRange) {
@@ -773,13 +777,14 @@ function mergeTaskRunDetailIntoMonitorSummary(
   current: MonitorTaskRunSummary,
   detail: TaskRunDetail,
 ): MonitorTaskRunSummary {
+  const latestDetailEvent = detail.events[detail.events.length - 1];
   return {
     ...current,
     ...detail,
     chat_title: current.chat_title,
     project_name: current.project_name,
-    latest_event_type: detail.events[detail.events.length - 1]?.event_type ?? current.latest_event_type,
-    event_count: detail.events.length,
+    latest_event_type: latestDetailEvent?.event_type ?? detail.latest_event_type ?? current.latest_event_type,
+    event_count: detail.event_count ?? detail.events.length,
   };
 }
 
@@ -939,6 +944,44 @@ function buildNetworkRawDump(entry: MonitorNetworkEvent) {
   }
 
   return lines.join("\n").trim();
+}
+
+function NetworkRawDump({ entry }: { entry: MonitorNetworkEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const dump = useMemo(() => (expanded ? buildNetworkRawDump(entry) : ""), [entry, expanded]);
+
+  return (
+    <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary className="small-note" style={{ cursor: "pointer", marginTop: 8 }}>
+        Request/response details
+      </summary>
+      <pre className="monitor-pre" style={{ marginTop: 8, padding: "8px 10px", fontSize: 12, lineHeight: 1.45 }}>
+        {dump}
+      </pre>
+    </details>
+  );
+}
+
+function LazyRawPayload({
+  label,
+  value,
+  className,
+  style,
+}: {
+  label: string;
+  value: unknown;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const payload = useMemo(() => (expanded ? formatRawMonitorValue(value) : ""), [expanded, value]);
+
+  return (
+    <details className={className} style={style} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>{label}</summary>
+      {expanded ? <pre>{payload}</pre> : null}
+    </details>
+  );
 }
 
 function hashFlowColor(flowId: string) {
@@ -1851,25 +1894,6 @@ function renderMonitorMarkdown(content: string, className: string) {
       </ReactMarkdown>
     </div>
   );
-}
-
-function renderTaskStepBody(step: MonitorTaskRunStep) {
-  const sections: Array<{ label: string; content: string; markdown?: boolean }> = [];
-  if (step.prompt_preview) {
-    sections.push({ label: "Prompt", content: step.prompt_preview });
-  }
-  if (step.arguments) {
-    sections.push({ label: "Arguments", content: step.arguments });
-  }
-  if (step.result) {
-    sections.push({ label: "Result", content: step.result, markdown: true });
-  } else if (step.response_preview && step.response_preview !== step.preview) {
-    sections.push({ label: "Response", content: step.response_preview, markdown: true });
-  }
-  if (step.payload && Object.keys(step.payload).length > 0) {
-    sections.push({ label: "Payload", content: formatRawMonitorValue(step.payload) });
-  }
-  return sections;
 }
 
 function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
@@ -4138,6 +4162,26 @@ export function MonitorTab() {
     () => extractRunHandoffs(selectedTaskRunDetail),
     [selectedTaskRunDetail],
   );
+  const selectedTaskRunVisibleEvents = useMemo(
+    () => selectedTaskRunDetail?.events.slice(-TASK_RUN_EVENT_RENDER_LIMIT) ?? [],
+    [selectedTaskRunDetail],
+  );
+  const selectedTaskRunVisibleSteps = useMemo(
+    () => selectedTaskRunSteps?.steps.slice(-TASK_RUN_STEP_RENDER_LIMIT) ?? [],
+    [selectedTaskRunSteps],
+  );
+  const selectedTaskRunEventTotalCount =
+    selectedTaskRunDetail?.event_count ?? selectedTaskRunDetail?.events.length ?? 0;
+  const selectedTaskRunStepTotalCount =
+    selectedTaskRunSteps?.counts.total ?? selectedTaskRunSteps?.steps.length ?? 0;
+  const selectedTaskRunHiddenEventCount = Math.max(
+    0,
+    selectedTaskRunEventTotalCount - selectedTaskRunVisibleEvents.length,
+  );
+  const selectedTaskRunHiddenStepCount = Math.max(
+    0,
+    selectedTaskRunStepTotalCount - selectedTaskRunVisibleSteps.length,
+  );
 
   useEffect(() => {
     if (!visibleTaskRuns.length) {
@@ -4161,7 +4205,7 @@ export function MonitorTab() {
         return next;
       });
       try {
-        const detail = await api.getTaskRunDetail(taskRunId);
+        const detail = await api.getTaskRunDetail(taskRunId, TASK_RUN_EVENT_RENDER_LIMIT);
         setTaskRunDetails((current) => ({ ...current, [taskRunId]: detail }));
       } catch (nextError) {
         setTaskRunDetailErrors((current) => ({
@@ -4185,7 +4229,7 @@ export function MonitorTab() {
         return next;
       });
       try {
-        const detail = await api.getMonitorTaskRunSteps(taskRunId);
+        const detail = await api.getMonitorTaskRunSteps(taskRunId, TASK_RUN_STEP_RENDER_LIMIT);
         setTaskRunSteps((current) => ({ ...current, [taskRunId]: detail }));
       } catch (nextError) {
         setTaskRunStepErrors((current) => ({
@@ -4247,18 +4291,6 @@ export function MonitorTab() {
     },
     [historyRange, taskRunResumeLoading],
   );
-
-  useEffect(() => {
-    if (!selectedTaskRunSummary) return;
-    if (taskRunDetails[selectedTaskRunSummary.id] || taskRunDetailLoading[selectedTaskRunSummary.id]) return;
-    void loadTaskRunDetail(selectedTaskRunSummary.id);
-  }, [loadTaskRunDetail, selectedTaskRunSummary, taskRunDetailLoading, taskRunDetails]);
-
-  useEffect(() => {
-    if (!selectedTaskRunSummary) return;
-    if (taskRunSteps[selectedTaskRunSummary.id] || taskRunStepLoading[selectedTaskRunSummary.id]) return;
-    void loadTaskRunSteps(selectedTaskRunSummary.id);
-  }, [loadTaskRunSteps, selectedTaskRunSummary, taskRunStepLoading, taskRunSteps]);
 
   const historyBuckets = useMemo(() => buildHourlyBuckets(brainEvents, historyRange), [brainEvents, historyRange]);
   const brainTimelineBuckets = useMemo(
@@ -4492,7 +4524,9 @@ export function MonitorTab() {
       );
     }
     entries = entries.filter((entry) => !isLegacyBackendLlmAppEvent(entry));
-    return entries.filter((entry) => entry.aggregated === false || !entry.flow_id);
+    return entries
+      .filter((entry) => entry.aggregated === false || !entry.flow_id)
+      .slice(0, MONITOR_NETWORK_RENDER_LIMIT);
   }, [networkEntries, showInternalNetwork]);
 
   async function refreshMonitor() {
@@ -4981,9 +5015,7 @@ export function MonitorTab() {
                       <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
                     </div>
                   </summary>
-                  <pre className="monitor-pre" style={{ marginTop: 8, padding: "8px 10px", fontSize: 12, lineHeight: 1.45 }}>
-                    {buildNetworkRawDump(entry)}
-                  </pre>
+                  <NetworkRawDump entry={entry} />
                 </details>
               );
             })}
@@ -6080,7 +6112,7 @@ export function MonitorTab() {
           <div>
             <div className="section-title">Background Tasks</div>
             <div className="section-subtitle">
-              独立查看后台任务列表，以及每个任务的 LLM 通信、Tool 调用和账本事件。
+              平铺查看后台任务，以及当前任务内的执行步骤。
             </div>
           </div>
           <div className="inline-actions">
@@ -6144,14 +6176,6 @@ export function MonitorTab() {
                       {run.target_agent_name ? <span>{run.target_agent_name}</span> : null}
                       <span>{formatTimeAgo(run.created_at)}</span>
                     </div>
-                    <div className="feed-preview">
-                      {run.summary || run.user_request || "No summary recorded for this run."}
-                    </div>
-                    <div className="run-history-item__foot">
-                      <span>{run.event_count} events</span>
-                      {run.pending_approval_count ? <span>{run.pending_approval_count} approvals</span> : null}
-                      {run.continuation_cursor_summary ? <span>{run.continuation_cursor_summary}</span> : null}
-                    </div>
                   </button>
                 ))}
               </div>
@@ -6161,9 +6185,9 @@ export function MonitorTab() {
           </div>
 
           <div className="card">
-            <div className="section-title">Task Detail</div>
+            <div className="section-title">Task</div>
             {!selectedTaskRunSummary ? (
-              <div className="muted-block">Pick a task run to inspect backend execution.</div>
+              <div className="muted-block">Pick a task to inspect its current state.</div>
             ) : (
               <>
                 <div className="run-detail-hero">
@@ -6195,6 +6219,21 @@ export function MonitorTab() {
                   </div>
                 </div>
 
+                <div className="inline-actions" style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    disabled={Boolean(taskRunStepLoading[selectedTaskRunSummary.id])}
+                    onClick={() => void loadTaskRunSteps(selectedTaskRunSummary.id)}
+                  >
+                    {selectedTaskRunSteps
+                      ? "Refresh Steps"
+                      : taskRunStepLoading[selectedTaskRunSummary.id]
+                        ? "Loading Steps..."
+                        : "Load Steps"}
+                  </button>
+                </div>
+
                 {taskRunStepLoading[selectedTaskRunSummary.id] ? (
                   <div className="muted-block" style={{ marginTop: 12 }}>Loading task steps…</div>
                 ) : null}
@@ -6209,8 +6248,8 @@ export function MonitorTab() {
                     <div className="run-detail-section">
                       <div className="run-detail-section__head">
                         <div>
-                          <strong>Execution Summary</strong>
-                          <div className="small-note">按任务聚合的 LLM / Tool / 事件步骤。</div>
+                          <strong>Task Steps</strong>
+                          <div className="small-note">当前任务内的标准化执行步骤。</div>
                         </div>
                         <div className="run-detail-hero__badges">
                           <span className="feed-badge">{selectedTaskRunSteps.counts.total} steps</span>
@@ -6240,8 +6279,12 @@ export function MonitorTab() {
                     </div>
 
                     <div className="task-step-list">
-                      {selectedTaskRunSteps.steps.map((step) => {
-                        const sections = renderTaskStepBody(step);
+                      {selectedTaskRunHiddenStepCount > 0 ? (
+                        <div className="muted-block">
+                          Showing latest {selectedTaskRunVisibleSteps.length} of {selectedTaskRunStepTotalCount} steps.
+                        </div>
+                      ) : null}
+                      {selectedTaskRunVisibleSteps.map((step) => {
                         return (
                           <div key={step.id} className={`task-step-card task-step-card--${taskRunStepTone(step)}`}>
                             <div className="task-step-card__head">
@@ -6275,24 +6318,16 @@ export function MonitorTab() {
                                 ))}
                               </div>
                             ) : null}
-                            {sections.length > 0 ? (
-                              <div className="task-step-card__sections">
-                                {sections.map((section) => (
-                                  <details key={`${step.id}-${section.label}`} className="run-event-row__payload">
-                                    <summary>{section.label}</summary>
-                                    {section.markdown
-                                      ? renderMonitorMarkdown(section.content, "monitor-markdown")
-                                      : <pre>{section.content}</pre>}
-                                  </details>
-                                ))}
-                              </div>
-                            ) : null}
                           </div>
                         );
                       })}
                     </div>
                   </>
-                ) : null}
+                ) : (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    Task steps are available on demand for this task.
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -6550,6 +6585,20 @@ export function MonitorTab() {
                     {" "}until {shortDate(selectedTaskRunRecoveryState.recovery_lease_expires_at)}.
                   </div>
                 ) : null}
+                <div className="inline-actions" style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    disabled={Boolean(taskRunDetailLoading[selectedTaskRunSummary.id])}
+                    onClick={() => void loadTaskRunDetail(selectedTaskRunSummary.id)}
+                  >
+                    {selectedTaskRunDetail
+                      ? "Refresh Detail"
+                      : taskRunDetailLoading[selectedTaskRunSummary.id]
+                        ? "Loading Detail..."
+                        : "Load Detail"}
+                  </button>
+                </div>
                 <div className="simple-list" style={{ marginTop: 12 }}>
                   <div className="simple-row">
                     <strong>Target Agent</strong>
@@ -6834,34 +6883,47 @@ export function MonitorTab() {
                       </div>
                     </div>
                     {selectedTaskRunDetail.checkpoint_snapshot.turn_local_state?.protocol_tail_messages?.length ? (
-                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
-                        <summary>Turn-Local State Payload</summary>
-                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state)}</pre>
-                      </details>
+                      <LazyRawPayload
+                        label="Turn-Local State Payload"
+                        value={selectedTaskRunDetail.checkpoint_snapshot.turn_local_state}
+                        className="run-event-row__payload"
+                        style={{ marginTop: 12 }}
+                      />
                     ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor ? (
-                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
-                        <summary>Continuation Cursor Payload</summary>
-                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor)}</pre>
-                      </details>
+                      <LazyRawPayload
+                        label="Continuation Cursor Payload"
+                        value={selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor}
+                        className="run-event-row__payload"
+                        style={{ marginTop: 12 }}
+                      />
                     ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.continuation_state ? (
-                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
-                        <summary>Continuation State Payload</summary>
-                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.continuation_state)}</pre>
-                      </details>
+                      <LazyRawPayload
+                        label="Continuation State Payload"
+                        value={selectedTaskRunDetail.checkpoint_snapshot.continuation_state}
+                        className="run-event-row__payload"
+                        style={{ marginTop: 12 }}
+                      />
                     ) : null}
                     {selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime ? (
-                      <details className="run-event-row__payload" style={{ marginTop: 12 }}>
-                        <summary>Runtime Payload</summary>
-                        <pre>{formatRawMonitorValue(selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime)}</pre>
-                      </details>
+                      <LazyRawPayload
+                        label="Runtime Payload"
+                        value={selectedTaskRunDetail.checkpoint_snapshot.latest_scheduler_runtime}
+                        className="run-event-row__payload"
+                        style={{ marginTop: 12 }}
+                      />
                     ) : null}
                   </div>
                 ) : null}
                 {selectedTaskRunDetail ? (
                   <div className="simple-list" style={{ marginTop: 12 }}>
-                    {selectedTaskRunDetail.events.map((event) => (
+                    {selectedTaskRunHiddenEventCount > 0 ? (
+                      <div className="muted-block">
+                        Showing latest {selectedTaskRunVisibleEvents.length} of {selectedTaskRunEventTotalCount} events.
+                      </div>
+                    ) : null}
+                    {selectedTaskRunVisibleEvents.map((event) => (
                       <div key={event.id} className={`run-event-row run-event-row--${taskRunEventTone(event.event_type)}`}>
                         <div className="run-event-row__head">
                           <strong>
@@ -6882,10 +6944,7 @@ export function MonitorTab() {
                           </div>
                         ) : null}
                         {event.payload && Object.keys(event.payload).length > 0 ? (
-                          <details className="run-event-row__payload">
-                            <summary>Payload</summary>
-                            <pre>{formatRawMonitorValue(event.payload)}</pre>
-                          </details>
+                          <LazyRawPayload label="Payload" value={event.payload} className="run-event-row__payload" />
                         ) : null}
                       </div>
                     ))}

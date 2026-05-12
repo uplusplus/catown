@@ -491,6 +491,75 @@ class TestConfigEndpoint:
         assert any(rule["decision_kind"] == "allow" and rule["command_preview"] == "touch created.txt @ ." for rule in rules)
         assert any(rule["decision_kind"] == "deny" and rule["command_preview"] == "pwd @ ." for rule in rules)
 
+    def test_remembered_run_shell_approval_matches_workspace_cwd_alias(self, client):
+        import models.database as db_mod
+        from tools import tool_registry
+        from tools.file_operations import reset_active_workspace, set_active_workspace
+
+        project = client.post("/api/projects", json={"name": "Remember Shell Alias", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            queue_item = db_mod.ApprovalQueueItem(
+                task_run_id=None,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve run_shell",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps(
+                            {"command": "touch remembered-alias.txt", "cwd": project["workspace_path"]},
+                            ensure_ascii=False,
+                        ),
+                        "blocked_kind": "approval",
+                        "resume_supported": False,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(queue_item)
+            db.commit()
+            db.refresh(queue_item)
+            queue_item_id = queue_item.id
+        finally:
+            db.close()
+
+        approved = client.post(
+            f"/api/approval-queue/{queue_item_id}/approve",
+            json={"remember_scope": "project"},
+        ).json()
+
+        assert approved["status"] == "approved"
+        assert approved["resolution_payload"]["remembered_rule"]["decision_kind"] == "allow"
+
+        workspace_token = set_active_workspace(project["workspace_path"])
+        try:
+            result = asyncio.run(
+                tool_registry.execute(
+                    "run_shell",
+                    command="touch remembered-alias.txt",
+                    cwd=".",
+                    project_id=project["id"],
+                    chatroom_id=cid,
+                    __catown_workspace_path=project["workspace_path"],
+                )
+            )
+        finally:
+            reset_active_workspace(workspace_token)
+
+        assert result["success"] is True
+        assert Path(project["workspace_path"], "remembered-alias.txt").exists()
+
     def test_update_agent_full_config(self, tmp_path):
         from fastapi.testclient import TestClient
 

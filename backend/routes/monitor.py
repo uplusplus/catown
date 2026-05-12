@@ -42,6 +42,9 @@ FILE_MONITOR_ACTIONS = {
     "delete_file": "delete",
     "search_files": "search",
 }
+TASK_RUN_STEP_SCAN_MULTIPLIER = 4
+TASK_RUN_STEP_SCAN_MIN = 200
+TASK_RUN_STEP_SCAN_MAX = 800
 
 monitor_log_buffer.install()
 
@@ -685,6 +688,27 @@ def _serialize_task_event_step(event: TaskRunEvent, payload: dict[str, Any]) -> 
     }
 
 
+def _step_counts(steps: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(steps),
+        "llm": sum(1 for step in steps if step.get("step_kind") == "llm"),
+        "tool": sum(1 for step in steps if step.get("step_kind") == "tool"),
+        "event": sum(1 for step in steps if step.get("step_kind") == "event"),
+        "tool_errors": sum(
+            1
+            for step in steps
+            if step.get("step_kind") == "tool" and step.get("success") is False
+        ),
+        "tool_blocked": sum(
+            1
+            for step in steps
+            if step.get("step_kind") == "tool" and bool(step.get("blocked"))
+        ),
+        "tokens_in": sum(int(step.get("tokens_in") or 0) for step in steps),
+        "tokens_out": sum(int(step.get("tokens_out") or 0) for step in steps),
+    }
+
+
 def _serialize_pipeline_llm_step(call: LLMCall) -> dict[str, Any]:
     prompt_preview = ""
     planned_tools: list[str] = []
@@ -1118,7 +1142,11 @@ async def get_monitor_processes(
 
 
 @router.get("/task-runs/{task_run_id}/steps")
-async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get_db)):
+async def get_monitor_task_run_steps(
+    task_run_id: int,
+    limit: int = Query(120, ge=10, le=500),
+    db: Session = Depends(get_db),
+):
     task_run = (
         db.query(TaskRun)
         .filter(TaskRun.id == task_run_id)
@@ -1127,16 +1155,20 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
     if not task_run:
         raise HTTPException(status_code=404, detail="Task run not found")
 
+    scan_limit = max(TASK_RUN_STEP_SCAN_MIN, min(TASK_RUN_STEP_SCAN_MAX, limit * TASK_RUN_STEP_SCAN_MULTIPLIER))
     runtime_rows = (
         db.query(Message)
         .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
-        .order_by(Message.created_at.asc(), Message.id.asc())
+        .order_by(Message.id.desc())
+        .limit(scan_limit)
         .all()
     )
 
     runtime_steps: list[dict[str, Any]] = []
     runtime_message_ids: list[int] = []
     for message in runtime_rows:
+        if len(runtime_steps) >= limit:
+            break
         metadata = _parse_metadata(message.metadata_json)
         card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
         if not card:
@@ -1157,7 +1189,8 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
         llm_calls = (
             db.query(LLMCall)
             .filter(LLMCall.run_id.in_(pipeline_run_ids))
-            .order_by(LLMCall.created_at.asc(), LLMCall.id.asc())
+            .order_by(LLMCall.id.desc())
+            .limit(limit)
             .all()
         )
         pipeline_llm_steps = [_serialize_pipeline_llm_step(call) for call in llm_calls]
@@ -1165,7 +1198,8 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
         tool_calls = (
             db.query(ToolCall)
             .filter(ToolCall.run_id.in_(pipeline_run_ids))
-            .order_by(ToolCall.created_at.asc(), ToolCall.id.asc())
+            .order_by(ToolCall.id.desc())
+            .limit(limit)
             .all()
         )
         pipeline_tool_steps = [_serialize_pipeline_tool_step(call) for call in tool_calls]
@@ -1176,7 +1210,20 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
     }
 
     event_steps: list[dict[str, Any]] = []
-    for event in list(getattr(task_run, "events", []) or []):
+    task_events = (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.task_run_id == task_run.id)
+        .order_by(TaskRunEvent.event_index.desc(), TaskRunEvent.id.desc())
+        .limit(limit)
+        .all()
+    )
+    task_event_count = (
+        db.query(func.count(TaskRunEvent.id))
+        .filter(TaskRunEvent.task_run_id == task_run.id)
+        .scalar()
+        or 0
+    )
+    for event in task_events:
         payload = _parse_metadata(event.payload_json)
         event_type = str(event.event_type or "")
         turn = _coerce_int(payload.get("turn"))
@@ -1196,25 +1243,10 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
     )
     for index, step in enumerate(merged_steps, start=1):
         step["sequence"] = index
+    visible_steps = merged_steps[-limit:]
 
-    counts = {
-        "total": len(merged_steps),
-        "llm": sum(1 for step in merged_steps if step.get("step_kind") == "llm"),
-        "tool": sum(1 for step in merged_steps if step.get("step_kind") == "tool"),
-        "event": sum(1 for step in merged_steps if step.get("step_kind") == "event"),
-        "tool_errors": sum(
-            1
-            for step in merged_steps
-            if step.get("step_kind") == "tool" and step.get("success") is False
-        ),
-        "tool_blocked": sum(
-            1
-            for step in merged_steps
-            if step.get("step_kind") == "tool" and bool(step.get("blocked"))
-        ),
-        "tokens_in": sum(int(step.get("tokens_in") or 0) for step in merged_steps),
-        "tokens_out": sum(int(step.get("tokens_out") or 0) for step in merged_steps),
-    }
+    counts = _step_counts(visible_steps)
+    counts["total"] = max(task_event_count + len(runtime_steps) + len(pipeline_llm_steps) + len(pipeline_tool_steps), len(visible_steps))
 
     return {
         "task_run_id": task_run.id,
@@ -1224,7 +1256,7 @@ async def get_monitor_task_run_steps(task_run_id: int, db: Session = Depends(get
         "captured_at": datetime.now().isoformat(),
         "counts": counts,
         "runtime_message_ids": runtime_message_ids,
-        "steps": merged_steps,
+        "steps": visible_steps,
     }
 
 

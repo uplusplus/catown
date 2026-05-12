@@ -321,11 +321,14 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     }
 
 
-def serialize_task_run_detail(task_run: TaskRun) -> dict[str, Any]:
+def serialize_task_run_detail(task_run: TaskRun, *, event_limit: int | None = None) -> dict[str, Any]:
     payload = serialize_task_run_summary(task_run)
+    events = list(task_run.events or [])
+    if event_limit is not None and event_limit > 0:
+        events = events[-event_limit:]
     payload["events"] = [
         _serialize_task_run_event(event)
-        for event in task_run.events
+        for event in events
     ]
     payload["policy_decisions"] = _serialize_task_run_policy_decision_entries(
         list(task_run.events or [])

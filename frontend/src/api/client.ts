@@ -244,8 +244,13 @@ export const api = {
   getChatProcesses(chatroomId: number) {
     return request<ChatProcessEntry>(`/api/chatrooms/${chatroomId}/processes`);
   },
-  getTaskRunDetail(taskRunId: number) {
-    return request<TaskRunDetail>(`/api/task-runs/${taskRunId}`);
+  getTaskRunDetail(taskRunId: number, eventLimit?: number) {
+    const params = new URLSearchParams();
+    if (eventLimit !== undefined) {
+      params.set("event_limit", String(eventLimit));
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<TaskRunDetail>(`/api/task-runs/${taskRunId}${suffix}`);
   },
   getTaskRunActivity(taskRunId: number) {
     return request<TaskActivityProjection>(`/api/task-runs/${taskRunId}/activity`);
@@ -387,8 +392,13 @@ export const api = {
     });
     return request<MonitorProcessesResponse>(`/api/monitor/processes?${params.toString()}`);
   },
-  getMonitorTaskRunSteps(taskRunId: number) {
-    return request<MonitorTaskRunStepsResponse>(`/api/monitor/task-runs/${taskRunId}/steps`);
+  getMonitorTaskRunSteps(taskRunId: number, limit?: number) {
+    const params = new URLSearchParams();
+    if (limit !== undefined) {
+      params.set("limit", String(limit));
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<MonitorTaskRunStepsResponse>(`/api/monitor/task-runs/${taskRunId}/steps${suffix}`);
   },
   getMonitorUsage(range = "24h") {
     return request<MonitorUsageResponse>(`/api/monitor/usage?range=${encodeURIComponent(range)}`);

@@ -508,6 +508,50 @@ class TestToolRegistry:
         assert (tmp_path / "created.txt").exists()
 
     @pytest.mark.asyncio
+    async def test_saved_allow_rule_matches_project_workspace_cwd_alias(self, fresh_db, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        db = fresh_db.SessionLocal()
+        try:
+            project = fresh_db.Project(name="Allow rule workspace alias", workspace_path=str(tmp_path))
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+            chatroom = fresh_db.Chatroom(project_id=project.id, title="Allow rule workspace alias chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="project",
+                matcher_type=AUTH_MATCHER_COMMAND_FINGERPRINT,
+                matcher_value=build_run_shell_command_matcher_value("touch alias-created.txt", str(tmp_path)),
+                decision_kind=AUTH_DECISION_ALLOW,
+                project_id=project.id,
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="granted",
+                command_preview=f"touch alias-created.txt @ {tmp_path}",
+            )
+            project_id = project.id
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        result = await registry.execute(
+            "run_shell",
+            command="touch alias-created.txt",
+            cwd=".",
+            project_id=project_id,
+            chatroom_id=chatroom_id,
+            __catown_workspace_path=str(tmp_path),
+        )
+
+        assert result["success"] is True
+        assert (tmp_path / "alias-created.txt").exists()
+
+    @pytest.mark.asyncio
     async def test_saved_deny_rule_blocks_tool_even_if_normally_allowed(self, fresh_db, tmp_path):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime
 from typing import Any, Optional
 
@@ -71,6 +72,26 @@ def normalize_authorization_scope(
     return AUTH_SCOPE_GLOBAL
 
 
+def _equivalent_run_shell_cwds(cwd: str, workspace_path: str | None = None) -> list[str]:
+    normalized_cwd = str(cwd or ".").strip() or "."
+    values = [normalized_cwd]
+    normalized_workspace = str(workspace_path or "").strip()
+    if normalized_workspace:
+        try:
+            workspace_real = os.path.realpath(os.path.expanduser(normalized_workspace))
+            cwd_real = (
+                os.path.realpath(os.path.expanduser(normalized_cwd))
+                if os.path.isabs(normalized_cwd)
+                else os.path.realpath(os.path.join(workspace_real, normalized_cwd))
+            )
+            if cwd_real == workspace_real:
+                values.extend([".", workspace_real])
+        except Exception:
+            pass
+    seen: set[str] = set()
+    return [value for value in values if value and not (value in seen or seen.add(value))]
+
+
 def authorization_matchers_for_tool(tool_name: str, arguments: dict[str, Any] | None = None) -> list[tuple[str, str]]:
     normalized_tool_name = str(tool_name or "").strip().lower()
     arguments = arguments if isinstance(arguments, dict) else {}
@@ -79,7 +100,14 @@ def authorization_matchers_for_tool(tool_name: str, arguments: dict[str, Any] | 
         command = str(arguments.get("command") or "").strip()
         if command:
             cwd = str(arguments.get("cwd") or ".").strip() or "."
-            matchers.append((AUTH_MATCHER_COMMAND_FINGERPRINT, build_run_shell_command_matcher_value(command, cwd)))
+            workspace_path = str(arguments.get("__catown_workspace_path") or "").strip() or None
+            for equivalent_cwd in _equivalent_run_shell_cwds(cwd, workspace_path):
+                matchers.append(
+                    (
+                        AUTH_MATCHER_COMMAND_FINGERPRINT,
+                        build_run_shell_command_matcher_value(command, equivalent_cwd),
+                    )
+                )
     if normalized_tool_name:
         matchers.append((AUTH_MATCHER_TOOL_TARGET, build_tool_target_matcher_value(normalized_tool_name)))
     return matchers

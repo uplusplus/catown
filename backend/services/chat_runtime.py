@@ -200,6 +200,8 @@ def build_tool_runtime_kwargs(
         payload["agent_name"] = agent_name_of(agent)
     if project is not None and getattr(project, "id", None) is not None:
         payload["project_id"] = project.id
+    if project is not None and getattr(project, "workspace_path", None):
+        payload["__catown_workspace_path"] = str(project.workspace_path)
     if task_run_id is not None:
         payload["task_run_id"] = task_run_id
     if client_turn_id:
