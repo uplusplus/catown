@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
-import { Archive, BookOpen, Bot, Boxes, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Workflow } from "lucide-react";
+import { Archive, BookOpen, Bot, Boxes, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Square, Workflow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -784,6 +784,18 @@ function rememberLlmConversationMarkdown(content: string, parsed: ParsedLlmConve
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatMessageCopyBlock(message: MessageItem) {
+  const sender = message.agent_name || "You";
+  const timestamp = new Date(message.created_at).toLocaleString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `[${timestamp}] ${sender}\n${message.content.trim()}`;
 }
 
 function initials(name: string) {
@@ -5025,6 +5037,13 @@ function renderMessage(
   message: MessageItem,
   copiedMessageId: number | null,
   onCopyMessage: (message: MessageItem) => Promise<void>,
+  selectionMode: boolean,
+  selected: boolean,
+  onToggleSelected: (message: MessageItem) => void,
+  selectedMessageCount: number,
+  copiedSelection: boolean,
+  onCancelSelection: () => void,
+  onCopySelectedMessages: () => Promise<void>,
   expandedStepId: StepExpansionValue | undefined,
   onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void,
   fallbackCards: ThreadCard[] = [],
@@ -5131,7 +5150,19 @@ function renderMessage(
       : null;
 
   return (
-    <div className={`chat-group ${isAssistant ? "" : "user"}`}>
+    <div className={`chat-group ${isAssistant ? "" : "user"} ${selectionMode ? "is-selecting" : ""} ${selected ? "is-selected" : ""}`}>
+      {selectionMode ? (
+        <button
+          type="button"
+          className="chat-message-select-btn"
+          onClick={() => onToggleSelected(message)}
+          aria-pressed={selected}
+          aria-label={selected ? "Deselect message" : "Select message"}
+          title={selected ? "Deselect message" : "Select message"}
+        >
+          {selected ? <CheckSquare size={16} /> : <Square size={16} />}
+        </button>
+      ) : null}
       <div className={`chat-avatar ${isAssistant ? "assistant" : "user"}`}>{initials(sender)}</div>
 
       <div className="chat-group-messages">
@@ -5156,9 +5187,36 @@ function renderMessage(
           <span className="chat-group-timestamp">{formatTime(message.created_at)}</span>
           {message.isStreaming ? <span className="soft-pill">streaming</span> : null}
           {!message.localOnly ? (
-            <button type="button" className="chat-footer-btn" onClick={() => void onCopyMessage(message)}>
-              {copiedMessageId === message.id ? "Copied" : "Copy"}
-            </button>
+            <>
+              <button type="button" className="chat-footer-btn" onClick={() => void onCopyMessage(message)}>
+                {copiedMessageId === message.id ? "Copied" : "Copy"}
+              </button>
+              <button
+                type="button"
+                className={`chat-footer-btn ${selectionMode ? "is-active" : ""}`}
+                onClick={() => onToggleSelected(message)}
+                aria-pressed={selectionMode ? selected : false}
+                title={selectionMode ? (selected ? "Deselect message" : "Select message") : "Select messages"}
+              >
+                {selectionMode ? (selected ? "Selected" : "Select") : "Select"}
+              </button>
+              {selectionMode ? (
+                <>
+                  <span className="chat-footer-selection-count">{selectedMessageCount} selected</span>
+                  <button
+                    type="button"
+                    className="chat-footer-btn chat-footer-btn--primary"
+                    onClick={() => void onCopySelectedMessages()}
+                    disabled={selectedMessageCount === 0}
+                  >
+                    {copiedSelection ? "Copied" : "Copy selected"}
+                  </button>
+                  <button type="button" className="chat-footer-btn" onClick={onCancelSelection}>
+                    Cancel
+                  </button>
+                </>
+              ) : null}
+            </>
           ) : (
             <span className="soft-pill">local</span>
           )}
@@ -5380,6 +5438,13 @@ type MessageRowProps = {
   message: MessageItem;
   copiedMessageId: number | null;
   onCopyMessage: (message: MessageItem) => void | Promise<void>;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelected: (message: MessageItem) => void;
+  selectedMessageCount: number;
+  copiedSelection: boolean;
+  onCancelSelection: () => void;
+  onCopySelectedMessages: () => Promise<void>;
   expandedStepId: StepExpansionValue | undefined;
   onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void;
   fallbackStepCards: ThreadCard[];
@@ -5391,20 +5456,49 @@ const MessageRow = memo(
     message,
     copiedMessageId,
     onCopyMessage,
+    selectionMode,
+    selected,
+    onToggleSelected,
+    selectedMessageCount,
+    copiedSelection,
+    onCancelSelection,
+    onCopySelectedMessages,
     expandedStepId,
     onToggleStep,
     fallbackStepCards,
     onAnalyzeFailureStep,
   }: MessageRowProps) {
-    return renderMessage(message, copiedMessageId, onCopyMessage, expandedStepId, onToggleStep, fallbackStepCards, onAnalyzeFailureStep);
+    return renderMessage(
+      message,
+      copiedMessageId,
+      onCopyMessage,
+      selectionMode,
+      selected,
+      onToggleSelected,
+      selectedMessageCount,
+      copiedSelection,
+      onCancelSelection,
+      onCopySelectedMessages,
+      expandedStepId,
+      onToggleStep,
+      fallbackStepCards,
+      onAnalyzeFailureStep,
+    );
   },
   (prev, next) => {
     const prevIsCopied = prev.copiedMessageId === prev.message.id;
     const nextIsCopied = next.copiedMessageId === next.message.id;
     return (
       prev.message === next.message &&
+      prev.selectionMode === next.selectionMode &&
+      prev.selected === next.selected &&
+      prev.selectedMessageCount === next.selectedMessageCount &&
+      prev.copiedSelection === next.copiedSelection &&
       prev.expandedStepId === next.expandedStepId &&
       prev.fallbackStepCards === next.fallbackStepCards &&
+      prev.onToggleSelected === next.onToggleSelected &&
+      prev.onCancelSelection === next.onCancelSelection &&
+      prev.onCopySelectedMessages === next.onCopySelectedMessages &&
       prev.onAnalyzeFailureStep === next.onAnalyzeFailureStep &&
       prevIsCopied === nextIsCopied
     );
@@ -5447,6 +5541,9 @@ export function ChatTab({
 }: ChatTabProps) {
   const [draft, setDraft] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  const [messageSelectionMode, setMessageSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set());
+  const [copiedSelection, setCopiedSelection] = useState(false);
   const [showProjectCreateConfirm, setShowProjectCreateConfirm] = useState(false);
   const [gateActionPipelineId, setGateActionPipelineId] = useState<number | null>(null);
   const [localOverlayMessages, setLocalOverlayMessages] = useState<MessageItem[]>([]);
@@ -5584,6 +5681,15 @@ export function ChatTab({
       (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
     );
   }, [localOverlayMessages, messages]);
+  const selectableMessages = useMemo(
+    () => visibleMessages.filter((message) => !message.localOnly && message.content.trim() !== ""),
+    [visibleMessages],
+  );
+  const selectedMessages = useMemo(() => {
+    if (selectedMessageIds.size === 0) return [];
+    return selectableMessages.filter((message) => selectedMessageIds.has(message.id));
+  }, [selectableMessages, selectedMessageIds]);
+  const selectedMessageCount = selectedMessages.length;
   const cardsWithPromptPresentation = useMemo(() => decorateCardsWithSystemPromptPresentation(cards), [cards]);
   const runtimeBrowserFileEntries = useMemo(
     () => buildBrowserFileEntries(project, cards, taskRuns),
@@ -5780,6 +5886,9 @@ export function ChatTab({
     setSubagentActionMessage("");
     setPendingApprovalItems([]);
     setApprovalQueueLoaded(false);
+    setMessageSelectionMode(false);
+    setSelectedMessageIds(new Set());
+    setCopiedSelection(false);
     draftHistoryIndexRef.current = null;
     draftHistoryPendingDraftRef.current = "";
   }, [chat?.id, draftHistoryKey]);
@@ -6982,6 +7091,39 @@ export function ChatTab({
     }
   }, []);
 
+  const cancelMessageSelection = useCallback(() => {
+    setCopiedSelection(false);
+    setSelectedMessageIds(new Set());
+    setMessageSelectionMode(false);
+  }, []);
+
+  const toggleSelectedMessage = useCallback((message: MessageItem) => {
+    if (message.localOnly || message.content.trim() === "") return;
+    setCopiedSelection(false);
+    setMessageSelectionMode(true);
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(message.id)) {
+        next.delete(message.id);
+      } else {
+        next.add(message.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleCopySelectedMessages = useCallback(async () => {
+    if (selectedMessages.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(selectedMessages.map(formatMessageCopyBlock).join("\n\n"));
+      setCopiedSelection(false);
+      setSelectedMessageIds(new Set());
+      setMessageSelectionMode(false);
+    } catch {
+      setCopiedSelection(false);
+    }
+  }, [selectedMessages]);
+
   async function handleConfirmCreateProject() {
     const nextProjectName = projectNameDraft.trim() || defaultProjectName;
     if (!nextProjectName || projectAgentNames.length === 0) return;
@@ -7073,6 +7215,13 @@ export function ChatTab({
                     message={item.message}
                     copiedMessageId={copiedMessageId}
                     onCopyMessage={handleCopyMessage}
+                    selectionMode={messageSelectionMode}
+                    selected={selectedMessageIds.has(item.message.id)}
+                    onToggleSelected={toggleSelectedMessage}
+                    selectedMessageCount={selectedMessageCount}
+                    copiedSelection={copiedSelection}
+                    onCancelSelection={cancelMessageSelection}
+                    onCopySelectedMessages={handleCopySelectedMessages}
                     expandedStepId={resolveExpandedMessageStepId(item.message)}
                     onToggleStep={toggleMessageStep}
                     fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
@@ -7149,7 +7298,9 @@ export function ChatTab({
     );
   }, [
     chat,
+    cancelMessageSelection,
     copiedMessageId,
+    copiedSelection,
     currentActivityAgentName,
     expandedMessageSteps,
     expandedProgressCards,
@@ -7159,16 +7310,21 @@ export function ChatTab({
     handleAnalyzeFailureStep,
     handleApproveGate,
     handleCopyMessage,
+    handleCopySelectedMessages,
     handleRejectGate,
     handleResolveApprovalQueueItem,
     latestActivityBatchId,
     loading,
     localOverlayMessages,
+    messageSelectionMode,
     pendingApprovalItemsByTaskRunId,
     project,
+    selectedMessageCount,
+    selectedMessageIds,
     stepAutoExpansionDisabled,
     taskActivitiesById,
     threadItems,
+    toggleSelectedMessage,
     toggleMessageStep,
     toggleProgressCard,
     toggleTaskRunStep,
