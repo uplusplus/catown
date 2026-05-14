@@ -11,6 +11,7 @@ import type {
   MonitorFilesResponse,
   MonitorNetworkResponse,
   MonitorProcessesResponse,
+  MonitorApprovalAuditResponse,
   MonitorApprovalQueueResponse,
   ApprovalQueueItem,
   MonitorRuntimeDetail,
@@ -255,6 +256,25 @@ export const api = {
   getTaskRunActivity(taskRunId: number) {
     return request<TaskActivityProjection>(`/api/task-runs/${taskRunId}/activity`);
   },
+  waitTaskRunSubagent(taskRunId: number, stepId: string, params?: { sinceEventIndex?: number; timeoutMs?: number }) {
+    const search = new URLSearchParams();
+    if (typeof params?.sinceEventIndex === "number") search.set("since_event_index", String(params.sinceEventIndex));
+    if (typeof params?.timeoutMs === "number") search.set("timeout_ms", String(params.timeoutMs));
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<Record<string, unknown>>(`/api/task-runs/${taskRunId}/subagents/${encodeURIComponent(stepId)}/wait${suffix}`);
+  },
+  cancelTaskRunSubagent(taskRunId: number, stepId: string, payload?: { note?: string; cancelled_by?: string }) {
+    return request<Record<string, unknown>>(`/api/task-runs/${taskRunId}/subagents/${encodeURIComponent(stepId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
+  closeTaskRunSubagent(taskRunId: number, stepId: string, payload?: { note?: string; cancelled_by?: string }) {
+    return request<Record<string, unknown>>(`/api/task-runs/${taskRunId}/subagents/${encodeURIComponent(stepId)}/close`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
   getApprovalQueue(params?: {
     status?: string;
     queue_kind?: string;
@@ -283,6 +303,13 @@ export const api = {
       limit: String(limit),
     });
     return request<MonitorApprovalQueueResponse>(`/api/monitor/approval-queue?${params.toString()}`);
+  },
+  getMonitorApprovalAudit(decision = "all", limit = 200) {
+    const params = new URLSearchParams({
+      decision,
+      limit: String(limit),
+    });
+    return request<MonitorApprovalAuditResponse>(`/api/monitor/approval-audit?${params.toString()}`);
   },
   approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string; remember_scope?: string }) {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/approve`, {

@@ -14,6 +14,10 @@ from sqlalchemy.orm import Session
 from agents.identity import agent_name_of
 from models.database import Chatroom, TaskRun
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
+from services.orchestration_chat_profile import (
+    build_orchestration_stream_turn_profile,
+    build_orchestration_sync_turn_profile,
+)
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
     record_tool_round as record_runner_tool_round,
@@ -105,122 +109,66 @@ async def run_orchestration_agent_turn(
             inter_agent_message_count=len(inter_agent_messages or []),
         ),
     )
-
-    def _assemble_orchestration_turn_messages(current_turn_state: TurnContextState) -> list[dict[str, Any]]:
-        return deps.assemble_chat_messages(
-            db=db,
-            agent=agent,
-            agent_name=runtime.agent_label,
-            model_id=getattr(runtime.llm_client, "model", ""),
-            chatroom=current_chatroom,
-            project=project,
-            agents=agents,
-            recent_messages=runtime.recent_messages,
-            user_message=user_message,
-            available_tools=runtime.available_tools,
-            history_limit=4,
-            standalone_note=(
-                "This is a standalone chat. Reply directly, stay concise, "
-                "and coordinate with mentioned teammates when it helps."
-            )
-            if not project
-            else "",
-            turn_state=current_turn_state,
-            on_compaction=compaction_callback,
-        )
-
-    async def _execute_orchestration_tool(frame: Any, tool_call: dict[str, Any]):
-        tool_name = tool_call["function"]["name"]
-        tool_args_str = tool_call["function"].get("arguments", "{}")
-        record_tool_call_started(
-            db,
-            task_run,
-            agent_name=runtime.agent_label,
-            turn=frame.turn_index + 1,
-            tool_name=tool_name,
-            arguments=tool_args_str,
-        )
-        async def emit_tool_progress(progress: dict[str, Any]) -> None:
-            await store_runtime_card(
-                chatroom_id,
-                {
-                    "type": "tool_call",
-                    "source": "chatroom",
-                    "agent": runtime.agent_label,
-                    "tool": tool_name,
-                    "arguments": tool_args_str,
-                    "success": None,
-                    "status": "running",
-                    "blocked": False,
-                    "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
-                    "duration_ms": progress.get("duration_ms"),
-                    "pid": progress.get("pid"),
-                    "tracked_process": progress.get("tracked_process"),
-                    "tool_call_id": tool_call.get("id"),
-                    "client_turn_id": client_turn_id,
-                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                    "turn": frame.turn_index + 1,
-                },
-            )
-        try:
-            tool_args = json.loads(tool_args_str or "{}")
-            from tools import tool_registry
-
-            tool_result = await tool_registry.execute(
-                tool_name,
-                **tool_args,
-                **runtime.runtime_kwargs,
-                task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
-                client_turn_id=client_turn_id,
-                tool_call_id=tool_call.get("id"),
-                turn=frame.turn_index + 1,
-                progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
-            )
-            tool_success = bool(tool_result.get("success")) if isinstance(tool_result, dict) and tool_result.get("__catown_tool_result__") is True else True
-        except Exception as te:
-            tool_result = f"Error: {te}"
-            tool_success = False
-        return build_tool_result_record(
-            tool_call_id=tool_call.get("id"),
-            tool_name=tool_name,
-            arguments=tool_args_str,
-            result=tool_result,
-            success=tool_success,
-        )
-
-    async def _on_orchestration_tool_round(frame: Any, tool_results: list[Any], current_turn_state: TurnContextState):
-        blocked_tool_result = getattr(frame, "blocked_tool_result", None)
-        record_runner_tool_round(
-            db,
-            task_run,
-            agent_name=runtime.agent_label,
-            turn=frame.turn_index + 1,
-            tool_names=[
-                tool_call["function"]["name"]
-                for tool_call in (
-                    (frame.executed_tool_calls or frame.normalized_tool_calls)
-                    + ([{"function": {"name": blocked_tool_result.tool_name}}] if blocked_tool_result is not None else [])
-                )
-            ],
-            tool_results=tool_results,
-            blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
-            summary=f"{runtime.agent_label} completed a tool round.",
-            assistant_content=frame.content,
-        )
-
     async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
         raise_if_task_run_cancelled(db, task_run, context=f"agent turn {runtime.agent_label}")
 
-    loop_result = await execute_non_stream_turn_loop(
-        llm_client=runtime.llm_client,
-        tools=runtime.tool_schemas,
-        turn_state=runtime.turn_state,
-        assemble_messages=_assemble_orchestration_turn_messages,
-        execute_tool_call=_execute_orchestration_tool,
+    async def _execute_tool(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_args_str: str,
+        tool_call_id: str | None,
+        turn: int,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ):
+        from tools import tool_registry
+
+        return await tool_registry.execute(
+            tool_name,
+            **tool_args,
+            **runtime.runtime_kwargs,
+            task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
+            client_turn_id=client_turn_id,
+            tool_call_id=tool_call_id,
+            turn=turn,
+            progress_callback=progress_callback,
+        )
+
+    profile = build_orchestration_sync_turn_profile(
+        runtime=runtime,
+        agent=agent,
+        db=db,
+        project=project,
+        agents=agents,
+        chatroom=current_chatroom,
+        user_message=user_message,
+        standalone_note=(
+            "This is a standalone chat. Reply directly, stay concise, "
+            "and coordinate with mentioned teammates when it helps."
+        )
+        if not project
+        else "",
+        task_run=task_run,
+        client_turn_id=client_turn_id,
         max_turns=deps.max_tool_iterations,
-        before_turn=_check_cancel,
-        before_tool_call=_check_cancel,
-        on_tool_round=_on_orchestration_tool_round,
+        assemble_chat_messages=deps.assemble_chat_messages,
+        save_tool_progress=lambda payload: store_runtime_card(chatroom_id, payload),
+        execute_tool=_execute_tool,
+        record_tool_call_started=record_tool_call_started,
+        record_tool_round=record_runner_tool_round,
+        check_cancel=_check_cancel,
+        compaction_callback=compaction_callback,
+    )
+
+    loop_result = await execute_non_stream_turn_loop(
+        llm_client=profile.runtime.llm_client,
+        tools=profile.runtime.tool_schemas,
+        turn_state=profile.runtime.turn_state,
+        assemble_messages=profile.assemble_messages,
+        execute_tool_call=profile.execute_tool_call,
+        max_turns=deps.max_tool_iterations,
+        before_turn=profile.check_cancel,
+        before_tool_call=profile.check_cancel,
+        on_tool_round=profile.on_tool_round,
     )
     if loop_result.awaiting_tool_approval:
         return None, None
@@ -296,50 +244,19 @@ async def iter_stream_orchestration_agent_turn_events(
             inter_agent_message_count=len(inter_agent_messages or []),
         ),
     )
+    async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
+        raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {runtime.agent_label}")
 
-    def _assemble_stream_messages(current_turn_state: TurnContextState) -> list[dict[str, Any]]:
-        return deps.assemble_chat_messages(
-            db=db,
-            agent=agent,
-            agent_name=runtime.agent_label,
-            model_id=getattr(runtime.llm_client, "model", ""),
-            chatroom=chatroom,
-            project=project,
-            agents=agents,
-            recent_messages=runtime.recent_messages,
-            user_message=user_message,
-            available_tools=runtime.available_tools,
-            history_limit=history_limit,
-            standalone_note=standalone_note,
-            turn_state=current_turn_state,
-        )
-
-    async def _execute_stream_tool(tool_name, tool_args, tool_args_str, tool_call_id, tool_index, turn_index):
+    async def _execute_tool(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        tool_args_str: str,
+        tool_call_id: str | None,
+        tool_index: int,
+        turn_index: int,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ):
         from tools import tool_registry
-
-        async def emit_tool_progress(progress: dict[str, Any]) -> None:
-            await store_runtime_card(
-                chatroom_id,
-                {
-                    "type": "tool_call",
-                    "source": "chatroom",
-                    "agent": runtime.agent_label,
-                    "tool": tool_name,
-                    "arguments": tool_args_str,
-                    "success": None,
-                    "status": "running",
-                    "blocked": False,
-                    "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
-                    "duration_ms": progress.get("duration_ms"),
-                    "pid": progress.get("pid"),
-                    "tracked_process": progress.get("tracked_process"),
-                    "tool_call_index": tool_index,
-                    "tool_call_id": tool_call_id,
-                    "client_turn_id": client_turn_id,
-                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                    "turn": turn_index,
-                },
-            )
 
         return await tool_registry.execute(
             tool_name,
@@ -349,66 +266,47 @@ async def iter_stream_orchestration_agent_turn_events(
             client_turn_id=client_turn_id,
             tool_call_id=tool_call_id,
             turn=turn_index,
-            progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
+            progress_callback=progress_callback,
         )
 
-    async def _on_stream_tool_round(frame, normalized_tool_calls, tool_results, current_turn_state):
-        blocked_tool_result = getattr(frame, "blocked_tool_result", None)
-        record_runner_tool_round(
-            db,
-            task_run,
-            agent_name=runtime.agent_label,
-            turn=frame.turn_index,
-            tool_names=[
-                tool_call["function"]["name"]
-                for tool_call in (
-                    normalized_tool_calls
-                    + ([{"function": {"name": blocked_tool_result.tool_name}}] if blocked_tool_result is not None else [])
-                )
-            ],
-            tool_results=tool_results,
-            blocked_tool_results=[blocked_tool_result] if blocked_tool_result is not None else None,
-            summary=f"{runtime.agent_label} completed a streaming tool round.",
-            assistant_content=frame.llm_content,
-        )
-
-    async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
-        raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {runtime.agent_label}")
-
-    def _build_stream_llm_card(frame, response_content, raw_tool_calls, tool_call_previews, raw_event):
-        return deps.build_llm_card_payload(
-            agent_name=runtime.agent_label,
-            llm_client=runtime.llm_client,
-            turn=frame.turn_index,
-            duration_ms=int((raw_event.get("timings", {}) or {}).get("completed_ms") or ((time.time() - frame.llm_started_at) * 1000)),
-            system_prompt=frame.system_prompt,
-            prompt_messages=frame.prompt_snapshot,
-            response_content=response_content,
-            tool_call_previews=tool_call_previews,
-            raw_tool_calls=raw_tool_calls,
-            usage=raw_event.get("usage"),
-            finish_reason=raw_event.get("finish_reason"),
-            timings=raw_event.get("timings"),
-        )
+    profile = build_orchestration_stream_turn_profile(
+        runtime=runtime,
+        agent=agent,
+        db=db,
+        project=project,
+        agents=agents,
+        chatroom=chatroom,
+        user_message=user_message,
+        history_limit=history_limit,
+        standalone_note=standalone_note,
+        task_run=task_run,
+        client_turn_id=client_turn_id,
+        assemble_chat_messages=deps.assemble_chat_messages,
+        save_tool_progress=lambda payload: store_runtime_card(chatroom_id, payload),
+        execute_tool=_execute_tool,
+        record_tool_round=record_runner_tool_round,
+        check_cancel=_check_cancel,
+        build_llm_card_payload=deps.build_llm_card_payload,
+    )
 
     async for event in iter_stream_turn_events(
-        llm_client=runtime.llm_client,
-        tools=runtime.tool_schemas,
-        turn_state=runtime.turn_state,
-        agent_name=runtime.agent_label,
+        llm_client=profile.runtime.llm_client,
+        tools=profile.runtime.tool_schemas,
+        turn_state=profile.runtime.turn_state,
+        agent_name=profile.runtime.agent_label,
         client_turn_id=client_turn_id,
-        assemble_messages=_assemble_stream_messages,
-        execute_tool=_execute_stream_tool,
-        build_llm_runtime_card=_build_stream_llm_card,
+        assemble_messages=profile.assemble_messages,
+        execute_tool=profile.execute_tool,
+        build_llm_runtime_card=profile.build_llm_runtime_card,
         snapshot_messages=deps.snapshot_messages,
         preview_tool_calls=deps.preview_tool_calls,
         format_prompt_messages=deps.format_prompt_messages,
         tool_result_success=deps.tool_result_success,
         max_turns=deps.max_tool_iterations,
-        before_turn=_check_cancel,
-        before_event=_check_cancel,
-        before_tool_call=_check_cancel,
-        on_tool_round=_on_stream_tool_round,
+        before_turn=profile.check_cancel,
+        before_event=profile.check_cancel,
+        before_tool_call=profile.check_cancel,
+        on_tool_round=profile.on_tool_round,
     ):
         if event["type"] == "turn_complete":
             event["agent"] = agent

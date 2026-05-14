@@ -34,6 +34,15 @@ class AgentConfig(BaseModel):
         self.type = normalize_agent_type(self.type or self.name)
         self.name = (self.name or "").strip() or default_agent_name(self.type)
 
+    def build_system_prompt(self, project_memory: str = "", long_term_memory: str = "") -> str:
+        """Return the legacy prompt while matching the V2 config interface."""
+        parts = [self.system_prompt]
+        if project_memory:
+            parts.append(f"## 项目上下文\n{project_memory}")
+        if long_term_memory:
+            parts.append(f"## 你的经验\n{long_term_memory}")
+        return "\n\n".join(part for part in parts if part)
+
 
 class MemoryItem(BaseModel):
     """记忆项"""
@@ -76,7 +85,10 @@ class Agent:
 
     @property
     def system_prompt(self) -> str:
-        return self.config.build_system_prompt()
+        build_prompt = getattr(self.config, "build_system_prompt", None)
+        if callable(build_prompt):
+            return build_prompt()
+        return str(getattr(self.config, "system_prompt", ""))
     
     @property
     def tools(self) -> List[str]:

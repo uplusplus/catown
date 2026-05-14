@@ -190,12 +190,12 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 
 | Agent | 可用工具 |
 |-------|---------|
-| analyst | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent |
-| architect | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent |
-| developer | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, query_agent |
-| tester | web_fetch, retrieve_memory, read_file, execute_code, list_files, search_files, send_direct_message, query_agent |
-| release | web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, query_agent, github_manager |
-| assistant | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, query_agent |
+| analyst | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, consult_agent |
+| architect | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, consult_agent |
+| developer | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, consult_agent |
+| tester | web_fetch, retrieve_memory, read_file, execute_code, list_files, search_files, send_direct_message, consult_agent |
+| release | web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, send_direct_message, consult_agent, github_manager |
+| assistant | web_search, web_fetch, retrieve_memory, read_file, write_file, list_files, execute_code, search_files, send_direct_message, consult_agent |
 
 ### 4.4 可扩展性
 
@@ -219,15 +219,15 @@ def build_system_prompt(agent_config, project_memory="", long_term_memory=""):
 ```json
 {
   "analyst": {
-    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "query_agent"],
+    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "consult_agent"],
     "skills": ["document-analysis", "requirement-decomposition", "user-story-writing"]
   },
   "developer": {
-    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory", "send_direct_message", "query_agent"],
+    "tools": ["web_search", "web_fetch", "read_file", "write_file", "list_files", "execute_code", "search_files", "retrieve_memory", "send_direct_message", "consult_agent"],
     "skills": ["code-generation", "unit-testing", "refactoring", "debugging"]
   },
   "release": {
-    "tools": ["read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "query_agent", "github_manager"],
+    "tools": ["read_file", "write_file", "list_files", "execute_code", "retrieve_memory", "send_direct_message", "consult_agent", "github_manager"],
     "skills": ["changelog-generation", "version-tagging", "release-management"]
   }
 }
@@ -2447,4 +2447,3 @@ Catown 6 个 Agent 在 Pipeline 执行中产生大量工具调用输出（代码
 - [ADR-011: 聊天室全事件卡片统一](ADR-011-chatroom-full-event-cards.md)
 
 ---
-

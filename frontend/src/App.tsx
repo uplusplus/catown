@@ -601,6 +601,21 @@ function buildCard(payload: Record<string, unknown>): ChatCardItem | null {
         tool_call_index: typeof payload.tool_call_index === "number" ? payload.tool_call_index : undefined,
         tool_call_id: typeof payload.tool_call_id === "string" ? payload.tool_call_id : null,
       };
+    case "consult_call":
+      return {
+        ...baseCard,
+        kind: "consult_call",
+        agent: typeof payload.agent === "string" ? payload.agent : undefined,
+        target_agent: typeof payload.target_agent === "string" ? payload.target_agent : undefined,
+        question_preview: typeof payload.question_preview === "string" ? payload.question_preview : undefined,
+        response_preview: typeof payload.response_preview === "string" ? payload.response_preview : undefined,
+        consult_step_id: typeof payload.consult_step_id === "string" ? payload.consult_step_id : undefined,
+        status: typeof payload.status === "string" ? payload.status : undefined,
+        available_actions: Array.isArray(payload.available_actions)
+          ? payload.available_actions.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          : [],
+        error: typeof payload.error === "string" ? payload.error : undefined,
+      };
     case "agent_error":
       return {
         ...baseCard,
@@ -2194,6 +2209,7 @@ function App() {
   const streamingAssistantIdRef = useRef<number | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
   const processRefreshTimerRef = useRef<number | null>(null);
+  const lastProcessRefreshByChatRef = useRef<Record<number, number>>({});
   function isCurrentChatRequest(chatId: number | null | undefined) {
     return Boolean(chatId) && selectedChatIdRef.current === chatId;
   }
@@ -2225,6 +2241,318 @@ function App() {
 
   function pushCard(card: ChatCardItem) {
     setChatCards((current) => mergeCards(current, [card]).slice(-40));
+  }
+
+  function patchProcessTreeEntry(
+    node: ChatProcessEntry | null,
+    patch: {
+      taskRunId: number;
+      stepId: string;
+      status?: string;
+      availableActions?: string[];
+      controlState?: string | null;
+      terminal?: boolean;
+      label?: string;
+      detail?: string | null;
+      dispatchKind?: string | null;
+      source?: string | null;
+      timestamp?: string | null;
+    },
+  ): ChatProcessEntry | null {
+    if (!node) return node;
+    const metadata = node.metadata && typeof node.metadata === "object" ? node.metadata : null;
+    const matches =
+      node.kind === "subagent"
+      && typeof metadata?.["task_run_id"] === "number"
+      && metadata["task_run_id"] === patch.taskRunId
+      && typeof metadata?.["step_id"] === "string"
+      && metadata["step_id"] === patch.stepId;
+    const nextChildren = node.children
+      .map((child) => patchProcessTreeEntry(child, patch))
+      .filter((child): child is ChatProcessEntry => child !== null);
+    if (!matches) {
+      const childrenChanged = nextChildren.some((child, index) => child !== node.children[index]);
+      return childrenChanged ? { ...node, children: nextChildren } : node;
+    }
+    const nextMetadata: Record<string, unknown> = { ...(metadata || {}) };
+    if (patch.availableActions) nextMetadata["available_actions"] = patch.availableActions;
+    if (patch.controlState !== undefined) nextMetadata["control_state"] = patch.controlState;
+    nextMetadata["task_run_id"] = patch.taskRunId;
+    if (patch.dispatchKind !== undefined) nextMetadata["dispatch_kind"] = patch.dispatchKind;
+    if (patch.source !== undefined) nextMetadata["source"] = patch.source;
+    return {
+      ...node,
+      label: patch.label || node.label,
+      detail: patch.detail ?? node.detail,
+      status: patch.terminal ? "terminated" : (patch.status || node.status),
+      metadata: nextMetadata,
+      timestamp: patch.timestamp || node.timestamp,
+      children: nextChildren,
+    };
+  }
+
+  function upsertTaskProcessEntry(
+    node: ChatProcessEntry | null,
+    taskRun: TaskRunSummary | TaskRunDetail,
+  ): ChatProcessEntry | null {
+    if (!node) return node;
+    const nextChildren = node.children.map((child) => upsertTaskProcessEntry(child, taskRun));
+    const matchesTaskNode = node.kind === "task" && node.id === `task-run:${taskRun.id}`;
+    if (matchesTaskNode) {
+      return {
+        ...node,
+        label: taskRun.title || node.label,
+        detail: taskRun.summary || taskRun.user_request || node.detail,
+        status: taskRunTerminalState(taskRun) ? "terminated" : "running",
+        timestamp: taskRun.updated_at || taskRun.created_at || node.timestamp,
+        children: nextChildren,
+      };
+    }
+    const childrenChanged = nextChildren.some((child, index) => child !== node.children[index]);
+    if (node.kind === "chat" && node.id.startsWith("chat:")) {
+      const hasTaskChild = nextChildren.some((child) => child.kind === "task" && child.id === `task-run:${taskRun.id}`);
+      if (!hasTaskChild && !taskRunTerminalState(taskRun)) {
+        return {
+          ...node,
+          children: [
+            {
+              id: `task-run:${taskRun.id}`,
+              label: taskRun.title || `Task run ${taskRun.id}`,
+              kind: "task",
+              detail: taskRun.summary || taskRun.user_request || "Task run is active.",
+              status: "running",
+              parent_id: node.id,
+              timestamp: taskRun.updated_at || taskRun.created_at || new Date().toISOString(),
+              children: [],
+            },
+            ...nextChildren,
+          ],
+        };
+      }
+    }
+    return childrenChanged ? { ...node, children: nextChildren } : node;
+  }
+
+  function upsertSubagentProcessEntry(
+    node: ChatProcessEntry | null,
+    patch: {
+      taskRunId: number;
+      stepId: string;
+      status?: string;
+      availableActions?: string[];
+      controlState?: string | null;
+      terminal?: boolean;
+      label?: string;
+      detail?: string | null;
+      dispatchKind?: string | null;
+      source?: string | null;
+      timestamp?: string | null;
+    },
+  ): ChatProcessEntry | null {
+    if (!node) return node;
+    const nextNode = patchProcessTreeEntry(node, patch);
+    if (!nextNode) return nextNode;
+    const nextChildren = nextNode.children.map((child) => upsertSubagentProcessEntry(child, patch));
+    const childrenChanged = nextChildren.some((child, index) => child !== nextNode.children[index]);
+    const matchesTaskNode = nextNode.kind === "task" && nextNode.id === `task-run:${patch.taskRunId}`;
+    if (!matchesTaskNode) {
+      return childrenChanged ? { ...nextNode, children: nextChildren } : nextNode;
+    }
+    const hasSubagentChild = nextChildren.some((child) => child.kind === "subagent" && child.id === `subagent:${patch.stepId}`);
+    if (hasSubagentChild || patch.terminal) {
+      return childrenChanged ? { ...nextNode, children: nextChildren } : nextNode;
+    }
+    return {
+      ...nextNode,
+      children: [
+        {
+          id: `subagent:${patch.stepId}`,
+          label: patch.label || `subagent (${patch.dispatchKind || "consult"})`,
+          kind: "subagent",
+          detail: patch.detail ?? patch.controlState ?? patch.status ?? "Subagent is active.",
+          status: patch.terminal ? "terminated" : (patch.status || "running"),
+          parent_id: `task-run:${patch.taskRunId}`,
+          timestamp: patch.timestamp || new Date().toISOString(),
+          metadata: {
+            task_run_id: patch.taskRunId,
+            step_id: patch.stepId,
+            dispatch_kind: patch.dispatchKind,
+            control_state: patch.controlState,
+            available_actions: patch.availableActions,
+            source: patch.source,
+          },
+          children: [],
+        },
+        ...nextChildren,
+      ],
+    };
+  }
+
+  function patchTaskActivityHandle(
+    handle: Record<string, unknown> | null | undefined,
+    patch: {
+      stepId: string;
+      status?: string;
+      availableActions?: string[];
+      controlState?: string | null;
+      note?: string | null;
+    },
+  ) {
+    if (!handle || typeof handle !== "object") return handle;
+    if (typeof handle["step_id"] !== "string" || handle["step_id"] !== patch.stepId) return handle;
+    const nextHandle: Record<string, unknown> = { ...handle };
+    if (patch.status !== undefined) nextHandle["status"] = patch.status;
+    if (patch.availableActions) nextHandle["available_actions"] = patch.availableActions;
+    if (patch.controlState !== undefined) nextHandle["control_state"] = patch.controlState;
+    if (patch.note !== undefined) nextHandle["note"] = patch.note;
+    return nextHandle;
+  }
+
+  function patchTaskActivityProjection(
+    activity: TaskActivityProjection,
+    patch: {
+      taskRunId: number;
+      stepId: string;
+      status?: string;
+      availableActions?: string[];
+      controlState?: string | null;
+      terminal?: boolean;
+      note?: string | null;
+    },
+  ) {
+    if (activity.task_run_id !== patch.taskRunId) return activity;
+    const background = activity.background && typeof activity.background === "object" ? activity.background : {};
+    const nextBackground: Record<string, unknown> = { ...background };
+    if ("active_consult_handle" in nextBackground) {
+      nextBackground["active_consult_handle"] = patchTaskActivityHandle(
+        nextBackground["active_consult_handle"] as Record<string, unknown> | null | undefined,
+        patch,
+      );
+    }
+    if ("active_subagent_handle" in nextBackground) {
+      nextBackground["active_subagent_handle"] = patchTaskActivityHandle(
+        nextBackground["active_subagent_handle"] as Record<string, unknown> | null | undefined,
+        patch,
+      );
+    }
+    return {
+      ...activity,
+      background: nextBackground,
+    };
+  }
+
+  function patchMessageRuntimeSummary(
+    message: MessageItem,
+    patch: {
+      taskRunId: number;
+      stepId: string;
+      status?: string;
+      availableActions?: string[];
+      controlState?: string | null;
+      note?: string | null;
+    },
+  ) {
+    const summary = message.runtime_summary;
+    if (!summary || summary.task_run_id !== patch.taskRunId) return message;
+    const nextSummary = { ...summary };
+    if (summary.active_consult_handle && typeof summary.active_consult_handle === "object") {
+      nextSummary.active_consult_handle = patchTaskActivityHandle(summary.active_consult_handle, patch);
+    }
+    if (summary.active_subagent_handle && typeof summary.active_subagent_handle === "object") {
+      nextSummary.active_subagent_handle = patchTaskActivityHandle(summary.active_subagent_handle, patch);
+    }
+    return { ...message, runtime_summary: nextSummary };
+  }
+
+  function patchSubagentRuntime(patch: {
+    taskRunId: number;
+    stepId: string;
+    status?: string;
+    availableActions?: string[];
+    controlState?: string | null;
+    terminal?: boolean;
+    note?: string | null;
+    label?: string;
+    detail?: string | null;
+    dispatchKind?: string | null;
+    source?: string | null;
+    timestamp?: string | null;
+  }) {
+    setChatCards((current) =>
+      current.map((card) => {
+        if (card.kind !== "consult_call") return card;
+        if (card.run_id !== patch.taskRunId || card.consult_step_id !== patch.stepId) return card;
+        return {
+          ...card,
+          status: patch.status ?? card.status,
+          available_actions: patch.availableActions ?? card.available_actions,
+          error: patch.note ?? card.error,
+        };
+      }),
+    );
+    setChatProcesses((current) => upsertSubagentProcessEntry(current, patch));
+    setTaskActivitiesById((current) => {
+      const activity = current[patch.taskRunId];
+      if (!activity) return current;
+      return { ...current, [patch.taskRunId]: patchTaskActivityProjection(activity, patch) };
+    });
+    setMessages((current) => current.map((message) => patchMessageRuntimeSummary(message, patch)));
+  }
+
+  function isTerminalHandleStatus(status: string | undefined) {
+    const value = (status || "").trim().toLowerCase();
+    return value === "completed" || value === "failed" || value === "cancelled" || value === "closed";
+  }
+
+  function patchSubagentRuntimeFromCard(card: ChatCardItem) {
+    if (card.kind !== "consult_call") return;
+    if (typeof card.run_id !== "number" || typeof card.consult_step_id !== "string") return;
+    patchSubagentRuntime({
+      taskRunId: card.run_id,
+      stepId: card.consult_step_id,
+      status: card.status,
+      availableActions: card.available_actions,
+      controlState: card.status ?? null,
+      terminal: isTerminalHandleStatus(card.status),
+      note: card.error ?? card.response_preview ?? null,
+      label: `${card.target_agent || "subagent"} (consult)`,
+      detail: card.response_preview || card.question_preview || card.error || null,
+      dispatchKind: "consult",
+      source: card.source ?? "runtime_card",
+      timestamp: card.created_at,
+    });
+  }
+
+  function patchTaskActivityProjectionFromTaskRun(
+    activity: TaskActivityProjection,
+    taskRun: TaskRunSummary | TaskRunDetail,
+  ): TaskActivityProjection {
+    if (activity.task_run_id !== taskRun.id) return activity;
+    return {
+      ...activity,
+      status: taskRun.status || activity.status,
+      title: taskRun.title || activity.title,
+      run_kind: taskRun.run_kind || activity.run_kind,
+      summary: taskRun.summary ?? activity.summary,
+      updated_at: taskRun.updated_at ?? activity.updated_at,
+    };
+  }
+
+  function patchMessageRuntimeSummaryFromTaskRun(
+    message: MessageItem,
+    taskRun: TaskRunSummary | TaskRunDetail,
+  ): MessageItem {
+    const summary = message.runtime_summary;
+    if (!summary || summary.task_run_id !== taskRun.id) return message;
+    return {
+      ...message,
+      runtime_summary: {
+        ...summary,
+        status: taskRun.status ?? summary.status,
+        run_kind: taskRun.run_kind ?? summary.run_kind,
+        continuation_state_summary: taskRun.continuation_state_summary ?? summary.continuation_state_summary,
+      },
+    };
   }
 
   async function loadOptionalTaskRuns(chatId: number) {
@@ -2303,12 +2631,18 @@ function App() {
 
   function scheduleChatProcessRefresh(chatId: number | null | undefined) {
     if (!chatId) return;
+    const now = Date.now();
+    const lastRefreshedAt = lastProcessRefreshByChatRef.current[chatId] ?? 0;
+    if (now - lastRefreshedAt < 350) {
+      return;
+    }
     if (processRefreshTimerRef.current !== null) {
       window.clearTimeout(processRefreshTimerRef.current);
     }
     processRefreshTimerRef.current = window.setTimeout(() => {
       processRefreshTimerRef.current = null;
       void loadOptionalChatProcesses(chatId, { silent: true }).then((processRows) => {
+        lastProcessRefreshByChatRef.current[chatId] = Date.now();
         if (isCurrentChatRequest(chatId)) setChatProcesses(processRows);
       });
     }, 150);
@@ -2827,6 +3161,7 @@ function App() {
             const card = buildCard(data.card as Record<string, unknown>);
             if (card) {
               pushCard(card);
+              patchSubagentRuntimeFromCard(card);
               scheduleChatProcessRefresh(selectedChatIdRef.current);
               commitOptimisticMessages((current) => applyRuntimeCardToMatchingPlaceholders(current, card));
               if (streamingAssistantIdRef.current !== null) {
@@ -2856,6 +3191,13 @@ function App() {
             const detail = payload.detail as TaskRunDetail | undefined;
             if (entry && typeof entry.id === "number") {
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
+              setChatProcesses((current) => upsertTaskProcessEntry(current, detail && typeof detail.id === "number" ? detail : entry));
+              setTaskActivitiesById((current) => {
+                const activity = current[entry.id];
+                if (!activity) return current;
+                return { ...current, [entry.id]: patchTaskActivityProjectionFromTaskRun(activity, detail && typeof detail.id === "number" ? detail : entry) };
+              });
+              setMessages((current) => current.map((message) => patchMessageRuntimeSummaryFromTaskRun(message, detail && typeof detail.id === "number" ? detail : entry)));
               scheduleChatProcessRefresh(entry.chatroom_id);
               void api.getTaskRunActivity(entry.id)
                 .then((activity) => {
@@ -2885,6 +3227,10 @@ function App() {
 
           if (data.type === "chat_processes_changed") {
             const chatroomId = typeof data.chatroom_id === "number" ? data.chatroom_id : selectedChatIdRef.current;
+            const reason = typeof data.reason === "string" ? data.reason : "";
+            if (reason === "runtime_card" || reason === "task_run_update") {
+              return;
+            }
             if (isCurrentChatRequest(chatroomId)) {
               scheduleChatProcessRefresh(chatroomId);
             }
@@ -3104,6 +3450,33 @@ function App() {
       if (showSpinner) {
         setRefreshingMessages(false);
       }
+    }
+  }
+
+  async function refreshRuntimeForTaskRun(taskRunId: number) {
+    const chatId = selectedChatIdRef.current;
+    if (!chatId) return;
+    try {
+      const [rows, runtimeRows, taskRunRows, processRows, activity] = await Promise.all([
+        api.getMessages(chatId),
+        loadOptionalRuntimeCards(chatId),
+        loadOptionalTaskRuns(chatId),
+        loadOptionalChatProcesses(chatId, { silent: true }),
+        api.getTaskRunActivity(taskRunId),
+      ]);
+      if (!isCurrentChatRequest(chatId)) return;
+      const nextCards = runtimeRows
+        .map((payload) => buildCard(payload))
+        .filter((card): card is ChatCardItem => card !== null);
+      setMessages(rows);
+      commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
+      setChatCards(nextCards);
+      setTaskRuns(taskRunRows);
+      setChatProcesses(processRows);
+      setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : "Failed to refresh runtime";
+      pushEvent(`Runtime refresh unavailable: ${message}`, "warning");
     }
   }
 
@@ -4511,6 +4884,8 @@ function App() {
             onCloseActivity={() => setActivityDrawerOpen(false)}
             onOpenSettings={toggleConfigTab}
             onRefresh={() => refreshMessages(true)}
+            onRefreshRuntime={refreshRuntimeForTaskRun}
+            onPatchSubagentRuntime={patchSubagentRuntime}
             onSyncProject={handleSyncProject}
             syncingProject={selectedProject ? syncingProjectId === selectedProject.id : false}
             onApproveGate={handleApproveGate}

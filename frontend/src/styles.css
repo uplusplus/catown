@@ -2149,6 +2149,14 @@ a {
   white-space: nowrap;
 }
 
+.process-tree__actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .process-tree__label {
   min-width: 0;
   overflow: hidden;
@@ -2163,6 +2171,18 @@ a {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 9.5px;
+}
+
+.process-tree__meta--chip {
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-hover) 48%, transparent);
+  color: var(--text);
+}
+
+.process-tree__meta--actions {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
 }
 
 .process-tree__state {
@@ -4093,6 +4113,40 @@ a {
   align-items: center;
   flex-wrap: wrap;
   margin-top: 6px;
+}
+
+.message-runtime-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+}
+
+.message-runtime-summary__row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.message-runtime-summary__label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.message-runtime-summary__detail {
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .chat-sender-name {
@@ -6187,6 +6241,85 @@ a {
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   padding: 12px;
+}
+
+.config-memory-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+
+.config-memory-list__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.config-memory-list__header strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.config-memory-list__header span,
+.config-memory-empty,
+.config-memory-more {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.config-memory-empty,
+.config-memory-more {
+  padding: 10px;
+  border: 1px dashed color-mix(in srgb, var(--border) 86%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg) 58%, var(--bg-elevated) 42%);
+}
+
+.config-memory-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg) 48%, var(--bg-elevated) 52%);
+}
+
+.config-memory-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-memory-item__meta .soft-pill {
+  min-height: 22px;
+  height: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.config-memory-item__meta time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.config-memory-item p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .config-agent-card.is-editing {

@@ -21,6 +21,11 @@ from config import settings
 _engine_kwargs = {}
 if settings.SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
+if not settings.SQLALCHEMY_DATABASE_URL.startswith("sqlite:///:memory:"):
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = settings.DB_POOL_SIZE
+    _engine_kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
+    _engine_kwargs["pool_timeout"] = settings.DB_POOL_TIMEOUT
 
 engine = create_engine(
     settings.SQLALCHEMY_DATABASE_URL,
@@ -361,6 +366,43 @@ class ToolExecutionPreference(Base):
 
     project = relationship("Project")
     chatroom = relationship("Chatroom")
+
+
+class ApprovalAuditLog(Base):
+    """Immutable audit log for manual and remembered approval decisions."""
+
+    __tablename__ = "approval_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_kind = Column(String, nullable=False, index=True)
+    decision = Column(String, nullable=False, index=True)
+    source = Column(String, nullable=False, default="runtime", index=True)
+    resolved_by = Column(String, nullable=True, index=True)
+    queue_item_id = Column(Integer, ForeignKey("approval_queue_items.id"), nullable=True, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    pipeline_run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
+    pipeline_stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=True, index=True)
+    preference_id = Column(Integer, ForeignKey("tool_execution_preferences.id"), nullable=True, index=True)
+    agent_name = Column(String, nullable=True, index=True)
+    target_kind = Column(String, nullable=True, index=True)
+    target_name = Column(String, nullable=True, index=True)
+    tool_name = Column(String, nullable=True, index=True)
+    scope = Column(String, nullable=True, index=True)
+    matcher_type = Column(String, nullable=True, index=True)
+    matcher_value = Column(Text, nullable=True)
+    command_preview = Column(Text, nullable=True)
+    reason = Column(Text, nullable=True)
+    request_payload_json = Column(Text, default="{}")
+    resolution_payload_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    queue_item = relationship("ApprovalQueueItem")
+    task_run = relationship("TaskRun")
+    chatroom = relationship("Chatroom")
+    project = relationship("Project")
+    preference = relationship("ToolExecutionPreference")
 
 
 class Memory(Base):
@@ -785,6 +827,61 @@ def init_database():
                     text("UPDATE approval_queue_items SET resume_token = :resume_token WHERE id = :id"),
                     {"resume_token": uuid4().hex, "id": queue_item_id},
                 )
+
+        existing_approval_audit_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(approval_audit_logs)")).fetchall()
+        }
+        if existing_approval_audit_columns:
+            approval_audit_columns = {
+                "event_kind": "VARCHAR",
+                "decision": "VARCHAR",
+                "source": "VARCHAR DEFAULT 'runtime'",
+                "resolved_by": "VARCHAR",
+                "queue_item_id": "INTEGER",
+                "task_run_id": "INTEGER",
+                "chatroom_id": "INTEGER",
+                "project_id": "INTEGER",
+                "pipeline_run_id": "INTEGER",
+                "pipeline_stage_id": "INTEGER",
+                "preference_id": "INTEGER",
+                "agent_name": "VARCHAR",
+                "target_kind": "VARCHAR",
+                "target_name": "VARCHAR",
+                "tool_name": "VARCHAR",
+                "scope": "VARCHAR",
+                "matcher_type": "VARCHAR",
+                "matcher_value": "TEXT",
+                "command_preview": "TEXT",
+                "reason": "TEXT",
+                "request_payload_json": "TEXT DEFAULT '{}'",
+                "resolution_payload_json": "TEXT DEFAULT '{}'",
+                "created_at": "DATETIME",
+            }
+            for column_name, column_type in approval_audit_columns.items():
+                if column_name not in existing_approval_audit_columns:
+                    connection.execute(text(f"ALTER TABLE approval_audit_logs ADD COLUMN {column_name} {column_type}"))
+
+        for index_sql in [
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_event_kind ON approval_audit_logs (event_kind)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_decision ON approval_audit_logs (decision)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_source ON approval_audit_logs (source)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_resolved_by ON approval_audit_logs (resolved_by)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_queue_item_id ON approval_audit_logs (queue_item_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_task_run_id ON approval_audit_logs (task_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_chatroom_id ON approval_audit_logs (chatroom_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_project_id ON approval_audit_logs (project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_pipeline_run_id ON approval_audit_logs (pipeline_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_pipeline_stage_id ON approval_audit_logs (pipeline_stage_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_preference_id ON approval_audit_logs (preference_id)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_agent_name ON approval_audit_logs (agent_name)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_target_kind ON approval_audit_logs (target_kind)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_target_name ON approval_audit_logs (target_name)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_tool_name ON approval_audit_logs (tool_name)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_scope ON approval_audit_logs (scope)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_matcher_type ON approval_audit_logs (matcher_type)",
+            "CREATE INDEX IF NOT EXISTS ix_approval_audit_logs_created_at ON approval_audit_logs (created_at)",
+        ]:
+            connection.execute(text(index_sql))
 
         existing_task_run_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(task_runs)")).fetchall()

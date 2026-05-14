@@ -17,7 +17,7 @@ import uuid
 from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import lru_cache, partial
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -79,12 +79,26 @@ from services.chat_prompt_builder import (
     agent_base_system_prompt as shared_agent_base_system_prompt,
     build_chat_context_selector as shared_build_chat_context_selector,
 )
+from services.agent_lifecycle_runtime import (
+    cancel_runtime_task_run,
+    cancel_runtime_task_run_subagent,
+    close_runtime_task_run_subagent,
+    delegate_runtime_collaboration_task,
+    ensure_runtime_chatroom_collaborators,
+    get_runtime_chatroom_collaboration_status,
+    get_runtime_collaboration_status,
+    get_runtime_collaboration_task,
+    list_runtime_collaboration_tasks,
+    list_runtime_task_run_subagents,
+    observe_runtime_task_run_subagent,
+)
 from services.chat_runtime import (
     PreparedChatTurnRuntime,
     assemble_runtime_chat_messages,
     build_runtime_environment_context,
     build_tool_runtime_kwargs,
     prepare_chat_turn_runtime,
+    resolve_agent_tool_names,
 )
 from services.run_shell_processes import (
     build_tracked_run_shell_result,
@@ -170,17 +184,15 @@ from services.single_agent_session_finalizer import (
 )
 from services.single_agent_session_orchestrator import (
     build_single_agent_raw_runtime_inputs,
-    build_single_agent_runtime_profile_from_raw_inputs,
     build_single_agent_stream_loop_callbacks,
-    build_single_agent_stream_raw_execution_envelope,
     build_single_agent_stream_transport_context,
-    build_single_agent_sync_raw_execution_envelope,
     build_single_agent_stream_failure_policy,
     iter_managed_single_agent_stream_runtime_profile,
     run_managed_single_agent_sync_runtime_profile,
 )
-from services.single_agent_session_runner import (
-    SingleAgentSessionRunnerDeps,
+from services.single_agent_chat_profile import (
+    build_single_agent_stream_chat_profile,
+    build_single_agent_sync_chat_profile,
 )
 from services.stream_transport import (
     iter_rendered_stream_turn_events,
@@ -188,6 +200,7 @@ from services.stream_transport import (
     render_chatroom_runtime_card_sse,
     render_stream_turn_event,
 )
+from services.approval_audit import record_approval_audit
 from services.tool_execution_preferences import (
     AUTH_DECISION_ALLOW,
     AUTH_DECISION_DENY,
@@ -209,19 +222,20 @@ from services.tool_execution_preferences import (
     upsert_authorization_rule,
 )
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
-from services.subagent_lifecycle import (
-    build_subagent_wait_result,
-    cancellable_subagent_handles,
-    cancellable_subagents_from_lifecycle,
-    find_subagent_lifecycle_entry,
-    find_subagent_runtime_handle,
-    wait_timeout_seconds,
+from services.subagent_lifecycle import wait_timeout_seconds
+from services.subagent_runtime_control import (
+    SubagentRuntimeControlError,
+    build_task_run_subagent_projection,
+    cancel_task_run_subagent_handle,
+    cancel_task_run_with_subagents,
+    close_task_run_subagent_handle,
+    observe_task_run_subagent,
 )
+from services.collaboration_task_runtime import CollaborationTaskRuntimeError
 from services.orchestration_events import (
     record_orchestration_started,
     record_scheduler_plan_created,
     record_scheduler_recovery_state_rebuilt,
-    record_scheduler_step_cancelled,
     record_scheduler_step_completed,
     record_scheduler_step_dispatched,
     record_scheduler_step_failed,
@@ -252,32 +266,17 @@ from services.orchestration_finalizer import (
     finalize_orchestration_task_run,
     summarize_orchestration_result,
 )
-from services.orchestration_agent_turn import (
-    OrchestrationAgentTurnDeps,
-    StreamOrchestrationAgentTurnDeps,
-    iter_stream_orchestration_agent_turn_events,
-    run_orchestration_agent_turn,
+from services.orchestration_session_profile import (
+    build_orchestration_session_runtime_profile,
+    build_orchestration_turn_runtime_profile,
 )
 from services.orchestration_step_state import OrchestrationStepOutputState, record_orchestration_step_output
 from services.orchestration_step_completion import complete_orchestration_scheduler_step
-from services.orchestration_runtime_runner import (
-    NonstreamOrchestrationRuntimeDeps,
-    run_nonstream_orchestration_runtime,
-)
-from services.orchestration_recovery_runner import (
-    OrchestrationRecoveryRuntimeDeps,
-    run_orchestration_recovery_runtime,
-)
 from services.orchestration_recovery_prepare import (
     PreparedOrchestrationRecoveryContext,
     prepare_orchestration_recovery_context,
 )
-from services.orchestration_stream_runner import (
-    StreamOrchestrationRuntimeDeps,
-    iter_stream_orchestration_session_events,
-    iter_stream_orchestration_runtime_events,
-    render_stream_runtime_event,
-)
+from services.orchestration_stream_runner import render_stream_runtime_event
 
 logger = logging.getLogger("catown.api")
 
@@ -314,7 +313,7 @@ class TaskRunRecoveryResult:
 class PreparedOrchestrationRuntime:
     targets: List[Any]
     resolved_agents: List[Agent]
-    available_tools: List[str]
+    available_tools: Dict[str, List[str]]
     plan: Any | None
     runner_policy: Any | None
 
@@ -328,6 +327,12 @@ class PreparedStandaloneTurnRuntime:
     recent_messages: List[Any]
     tool_policy_pack: Dict[str, Any]
     turn_state: TurnContextState
+
+
+def _resolve_agent_runtime_tools(agent: Any) -> List[str]:
+    from tools import tool_registry as runtime_tool_registry
+
+    return resolve_agent_tool_names(agent, runtime_tool_registry.list_tools())
 
 class LLMConfigModel(BaseModel):
     """LLM 配置验证模型"""
@@ -558,6 +563,41 @@ def _message_client_turn_id(message_like: Any) -> Optional[str]:
 
     client_turn_id = metadata.get("client_turn_id")
     return client_turn_id if isinstance(client_turn_id, str) and client_turn_id else None
+
+
+def _build_message_runtime_summary(
+    db: Session,
+    *,
+    chatroom_id: int,
+    client_turn_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    normalized_turn_id = str(client_turn_id or "").strip()
+    if not normalized_turn_id:
+        return None
+
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.chatroom_id == chatroom_id, TaskRun.client_turn_id == normalized_turn_id)
+        .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
+        .first()
+    )
+    if task_run is None:
+        return None
+
+    summary = serialize_task_run_summary(task_run)
+    activity = build_task_activity_projection(task_run)
+    runtime_summary = {
+        "task_run_id": task_run.id,
+        "status": task_run.status,
+        "run_kind": task_run.run_kind,
+        "active_subagent_handle": activity.get("active_subagent_handle"),
+        "active_consult_handle": activity.get("active_consult_handle"),
+        "continuation_state_summary": summary.get("continuation_state_summary"),
+        "subagent_handles_summary": summary.get("subagent_handles_summary"),
+    }
+    if not any(value is not None for value in runtime_summary.values()):
+        return None
+    return runtime_summary
 
 
 def _preview_tool_calls(raw_tool_calls: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -856,12 +896,10 @@ async def _trigger_standalone_assistant_response(
     )
 
     await run_managed_single_agent_sync_runtime_profile(
-        build_single_agent_runtime_profile_from_raw_inputs(
+        build_single_agent_sync_chat_profile(
             runtime_inputs=standalone_runtime_inputs,
-            execution_inputs=build_single_agent_sync_raw_execution_envelope(
-                execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
-                on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
-            ),
+            execute_turn=lambda: runtime.llm_client.chat(context_messages, temperature=0.7, max_tokens=1200),
+            on_empty=lambda: logger.debug("[ Standalone assistant returned empty response"),
         )
     )
 
@@ -974,28 +1012,26 @@ async def _stream_standalone_assistant_response(
     )
 
     async for outcome in iter_managed_single_agent_stream_runtime_profile(
-        build_single_agent_runtime_profile_from_raw_inputs(
+        build_single_agent_stream_chat_profile(
             runtime_inputs=standalone_stream_runtime_inputs,
-            execution_inputs=build_single_agent_stream_raw_execution_envelope(
-                llm_client=runtime.llm_client,
-                tools=None,
-                turn_state=runtime.turn_state,
-                loop_callbacks=build_single_agent_stream_loop_callbacks(
-                    assemble_messages=_assemble_standalone_stream_messages,
-                    execute_tool=_execute_standalone_stream_tool,
-                    build_llm_runtime_card=_build_standalone_stream_llm_card,
-                    snapshot_messages=_snapshot_llm_messages,
-                    preview_tool_calls=_preview_tool_calls,
-                    format_prompt_messages=_format_json_block,
-                    tool_result_success=_tool_result_succeeded,
-                ),
-                transport=build_single_agent_stream_transport_context(
-                    serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
-                    store_runtime_card=store_runtime_card,
-                    public_runtime_card_payload=public_runtime_card_payload,
-                ),
-                max_turns=1,
+            llm_client=runtime.llm_client,
+            tools=None,
+            turn_state=runtime.turn_state,
+            loop_callbacks=build_single_agent_stream_loop_callbacks(
+                assemble_messages=_assemble_standalone_stream_messages,
+                execute_tool=_execute_standalone_stream_tool,
+                build_llm_runtime_card=_build_standalone_stream_llm_card,
+                snapshot_messages=_snapshot_llm_messages,
+                preview_tool_calls=_preview_tool_calls,
+                format_prompt_messages=_format_json_block,
+                tool_result_success=_tool_result_succeeded,
             ),
+            transport=build_single_agent_stream_transport_context(
+                serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
+                store_runtime_card=store_runtime_card,
+                public_runtime_card_payload=public_runtime_card_payload,
+            ),
+            max_turns=1,
             stream_failure=build_single_agent_stream_failure_policy(
                 detail_builder=traceback.format_exc,
             ),
@@ -1174,7 +1210,7 @@ async def trigger_agent_response(
             return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
 
         logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
-        available_tools = tool_registry.list_tools()
+        available_tools = _resolve_agent_runtime_tools(target_agent)
         single_agent_policy = _build_single_agent_runner_policy(
             run_kind="project_single_agent",
             agent_name=agent_name_of(target_agent),
@@ -1194,18 +1230,14 @@ async def trigger_agent_response(
             runner_policy=single_agent_policy,
         )
 
-        # 注册 Agent 为协作者（如果尚未注册）
-        from agents.collaboration import collaboration_coordinator, AgentCollaborator
-        # 同时注册项目中所有 agent 为协作者（让 list_collaborators 能看到它们）
-        for agent in agents:
-            if agent.id not in collaboration_coordinator.collaborators:
-                collaborator = AgentCollaborator(
-                    agent_id=agent.id,
-                    agent_name=_agent_type(agent),
-                    chatroom_id=chatroom_id
-                )
-                collaboration_coordinator.register_collaborator(collaborator)
-                logger.info(f"[Collab] Auto-registered collaborator: {_agent_type(agent)}")
+        # Register all project agents as collaborators so collaboration tools see the full room context.
+        registered = ensure_runtime_chatroom_collaborators(
+            agents=agents,
+            chatroom_id=chatroom_id,
+            agent_name_resolver=_agent_type,
+        )
+        for collaborator in registered:
+            logger.info("[Collab] Auto-registered collaborator: %s", collaborator["agent_name"])
         
         visibility = chatroom.message_visibility or "all"
         runtime = await prepare_chat_turn_runtime(
@@ -1394,12 +1426,10 @@ async def trigger_agent_response(
         )
 
         finalized = await run_managed_single_agent_sync_runtime_profile(
-            build_single_agent_runtime_profile_from_raw_inputs(
+            build_single_agent_sync_chat_profile(
                 runtime_inputs=project_single_agent_runtime_inputs,
-                execution_inputs=build_single_agent_sync_raw_execution_envelope(
-                    execute_turn=_execute_project_single_agent_turn,
-                    on_empty=lambda: None if awaiting_tool_approval else logger.error(f"[ LLM returned empty response after all tool iterations"),
-                ),
+                execute_turn=_execute_project_single_agent_turn,
+                on_empty=lambda: None if awaiting_tool_approval else logger.error(f"[ LLM returned empty response after all tool iterations"),
             )
         )
 
@@ -1530,11 +1560,12 @@ def _prepare_orchestration_runtime(
     agent_names: List[str],
     streaming: bool,
 ) -> PreparedOrchestrationRuntime:
-    from tools import tool_registry as runtime_tool_registry
-
     targets = _resolve_orchestration_targets(db, project, agents, agent_names)
     resolved_agents = [agent for _, agent in targets if agent is not None]
-    available_tools = runtime_tool_registry.list_tools()
+    available_tools = {
+        agent_name_of(agent): _resolve_agent_runtime_tools(agent)
+        for agent in resolved_agents
+    }
     if not resolved_agents:
         return PreparedOrchestrationRuntime(
             targets=targets,
@@ -1551,7 +1582,7 @@ def _prepare_orchestration_runtime(
     runner_policy = _build_orchestration_runner_policy(
         plan=plan,
         project_id=project.id if project else None,
-        tool_names=available_tools,
+        tool_names=sorted({tool_name for tool_names in available_tools.values() for tool_name in tool_names}),
         streaming=streaming,
     )
     return PreparedOrchestrationRuntime(
@@ -2523,42 +2554,19 @@ def _resolve_orchestration_targets(
 
 
 def _ensure_collaboration_context(agents: List[Agent], chatroom_id: int) -> None:
-    from agents.collaboration import collaboration_coordinator, AgentCollaborator
-
-    for agent in agents:
-        if getattr(agent, "id", None) in collaboration_coordinator.collaborators:
-            continue
-        collaboration_coordinator.register_collaborator(
-            AgentCollaborator(
-                agent_id=agent.id,
-                agent_name=_agent_type(agent),
-                chatroom_id=chatroom_id,
-            )
-        )
-
-
-
-def _build_stream_orchestration_agent_turn_iterator():
-    deps = StreamOrchestrationAgentTurnDeps(
-        ensure_collaboration_context=_ensure_collaboration_context,
-        prepare_chat_turn_runtime=prepare_chat_turn_runtime,
-        assemble_chat_messages=assemble_runtime_chat_messages,
-        build_llm_card_payload=_build_llm_card_payload,
-        snapshot_messages=_snapshot_llm_messages,
-        preview_tool_calls=_preview_tool_calls,
-        format_prompt_messages=_format_json_block,
-        tool_result_success=_tool_result_succeeded,
-        max_tool_iterations=MAX_TOOL_ITERATIONS,
+    ensure_runtime_chatroom_collaborators(
+        agents=agents,
+        chatroom_id=chatroom_id,
+        agent_name_resolver=_agent_type,
     )
-    return partial(iter_stream_orchestration_agent_turn_events, deps=deps)
 
-
-def _build_orchestration_agent_turn_executor():
-    deps = OrchestrationAgentTurnDeps(
+@lru_cache(maxsize=1)
+def _build_orchestration_turn_runtime_profile():
+    return build_orchestration_turn_runtime_profile(
         ensure_collaboration_context=_ensure_collaboration_context,
         prepare_chat_turn_runtime=prepare_chat_turn_runtime,
-        build_context_compaction_callback=_build_context_compaction_callback,
         assemble_chat_messages=assemble_runtime_chat_messages,
+        build_context_compaction_callback=_build_context_compaction_callback,
         save_message=chatroom_manager.send_message,
         message_metadata=_message_metadata_with_turn,
         schedule_memory_extraction=lambda agent, request, response: schedule_agent_memory_extraction(
@@ -2568,9 +2576,37 @@ def _build_orchestration_agent_turn_executor():
             user_message=request,
             agent_response=response,
         ),
+        build_llm_card_payload=_build_llm_card_payload,
+        snapshot_messages=_snapshot_llm_messages,
+        preview_tool_calls=_preview_tool_calls,
+        format_prompt_messages=_format_json_block,
+        tool_result_success=_tool_result_succeeded,
         max_tool_iterations=MAX_TOOL_ITERATIONS,
     )
-    return partial(run_orchestration_agent_turn, deps=deps)
+
+
+@lru_cache(maxsize=1)
+def _build_orchestration_session_runtime_profile():
+    return build_orchestration_session_runtime_profile(
+        turn_profile=_build_orchestration_turn_runtime_profile(),
+        save_message=chatroom_manager.send_message,
+        publish_message=publish_saved_chat_message,
+        record_turn_completed=record_agent_turn_completed,
+        message_metadata=_message_metadata_with_turn,
+        schedule_memory_extraction=lambda current_agent, request, response: schedule_agent_memory_extraction(
+            extract_agent_memories,
+            agent_id=current_agent.id,
+            agent_type=_agent_type(current_agent),
+            user_message=request,
+            agent_response=response,
+        ),
+        build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
+        find_stage_policy=find_stage_policy,
+        agent_name_of=agent_name_of,
+        fail_task_run=fail_orchestration_task_run,
+        finalize_task_run=finalize_orchestration_task_run,
+        log_agent_type=_agent_type,
+    )
 
 
 async def _run_multi_agent_orchestration(
@@ -2626,8 +2662,7 @@ async def _run_multi_agent_orchestration(
         )
         return
     queue = OrchestrationRuntimeQueue(plan)
-    execute_orchestration_turn = _build_orchestration_agent_turn_executor()
-
+    orchestration_session_profile = _build_orchestration_session_runtime_profile()
     record_orchestration_started(
         db,
         task_run,
@@ -2645,7 +2680,7 @@ async def _run_multi_agent_orchestration(
     )
 
     try:
-        await run_nonstream_orchestration_runtime(
+        await orchestration_session_profile.run_nonstream(
             db=db,
             task_run=task_run,
             queue=queue,
@@ -2658,13 +2693,7 @@ async def _run_multi_agent_orchestration(
             output_state=output_state,
             pending_handoffs=pending_handoffs,
             orchestration_policy=orchestration_policy,
-            deps=NonstreamOrchestrationRuntimeDeps(
-                execute_turn=execute_orchestration_turn,
-                publish_message=publish_saved_chat_message,
-                message_metadata=_message_metadata_with_turn(client_turn_id),
-                build_step_context=lambda step, agent, agent_label: {"extra_context": extra_context},
-                log_agent_type=_agent_type,
-            ),
+            build_step_context=lambda step, agent, agent_label: {"extra_context": extra_context},
         )
     except TaskRunCancelledError:
         logger.info("[Collab] Orchestration task run %s observed cancellation and stopped.", getattr(task_run, "id", None))
@@ -2757,8 +2786,7 @@ async def _resume_interrupted_orchestration_task_run(
         resolved_agents = prepared_recovery.resolved_agents
         plan = prepared_recovery.plan
         orchestration_policy = prepared_recovery.orchestration_policy
-        execute_orchestration_turn = _build_orchestration_agent_turn_executor()
-
+        orchestration_session_profile = _build_orchestration_session_runtime_profile()
         def _before_recovery_step():
             nonlocal lease_expires_at
             lease_expires_at = _renew_task_run_recovery_lease(db, task_run.id)
@@ -2770,7 +2798,7 @@ async def _resume_interrupted_orchestration_task_run(
                 RECOVERY_INSTANCE_ID,
             )
             raise RecoveryLeaseLostError(task_run.id)
-        recovery_result = await run_orchestration_recovery_runtime(
+        recovery_result = await orchestration_session_profile.run_recovery(
             db=db,
             task_run=task_run,
             task_run_id=task_run_id,
@@ -2783,16 +2811,10 @@ async def _resume_interrupted_orchestration_task_run(
             orchestration_policy=orchestration_policy,
             trigger=trigger,
             lease_expires_at=lease_expires_at,
-            deps=OrchestrationRecoveryRuntimeDeps(
-                build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
-                describe_recovery_continuation_state=_describe_recovery_continuation_state,
-                rebuild_recovery_state=_rebuild_orchestration_recovery_state,
-                execute_turn=execute_orchestration_turn,
-                publish_message=publish_saved_chat_message,
-                message_metadata=_message_metadata_with_turn(task_run.client_turn_id),
-                renew_lease=_before_recovery_step,
-                recovery_owner=RECOVERY_INSTANCE_ID,
-            ),
+            describe_recovery_continuation_state=_describe_recovery_continuation_state,
+            rebuild_recovery_state=_rebuild_orchestration_recovery_state,
+            renew_lease=_before_recovery_step,
+            recovery_owner=RECOVERY_INSTANCE_ID,
         )
         return TaskRunRecoveryResult(
             task_run_id=task_run_id,
@@ -2941,28 +2963,9 @@ async def _stream_multi_agent_orchestration(
         else ""
     )
 
-    stream_runtime_deps = StreamOrchestrationRuntimeDeps(
-        iter_agent_events=_build_stream_orchestration_agent_turn_iterator(),
-        save_message=chatroom_manager.send_message,
-        publish_message=publish_saved_chat_message,
-        record_turn_completed=record_agent_turn_completed,
-        message_metadata=_message_metadata_with_turn,
-        schedule_memory_extraction=lambda current_agent, request, response: schedule_agent_memory_extraction(
-            extract_agent_memories,
-            agent_id=current_agent.id,
-            agent_type=_agent_type(current_agent),
-            user_message=request,
-            agent_response=response,
-        ),
-        build_checkpoint_snapshot=build_task_run_checkpoint_snapshot,
-        find_stage_policy=find_stage_policy,
-        agent_name_of=agent_name_of,
-        fail_task_run=fail_orchestration_task_run,
-        finalize_task_run=finalize_orchestration_task_run,
-        set_active_agent=set_active_agent,
-    )
+    orchestration_session_profile = _build_orchestration_session_runtime_profile()
 
-    async for runtime_event in iter_stream_orchestration_session_events(
+    async for runtime_event in orchestration_session_profile.iter_stream_session_events(
         db=db,
         task_run=task_run,
         prepared_runtime=prepared,
@@ -2973,7 +2976,7 @@ async def _stream_multi_agent_orchestration(
         user_message=user_message,
         client_turn_id=client_turn_id,
         standalone_note=standalone_note,
-        deps=stream_runtime_deps,
+        set_active_agent=set_active_agent,
     ):
         yield await render_stream_runtime_event(
             runtime_event,
@@ -3129,6 +3132,7 @@ class ChatProcessNodeInfo(BaseModel):
     timestamp: Optional[str] = None
     pid: Optional[int] = None
     output: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     children: List["ChatProcessNodeInfo"] = Field(default_factory=list)
 
 
@@ -3173,6 +3177,7 @@ class MessageResponse(BaseModel):
     message_type: str
     created_at: str
     client_turn_id: Optional[str] = None
+    runtime_summary: Optional[Dict[str, Any]] = None
 
 
 class ApprovalQueueDecisionRequest(BaseModel):
@@ -3695,6 +3700,12 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
         if not _is_running_browser_task_run(run):
             continue
         timestamp = run.updated_at or run.created_at
+        summary = serialize_task_run_summary(run)
+        checkpoint = summary.get("checkpoint_snapshot") if isinstance(summary.get("checkpoint_snapshot"), dict) else {}
+        active_subagent_handle = checkpoint.get("active_subagent_handle") if isinstance(checkpoint.get("active_subagent_handle"), dict) else None
+        if active_subagent_handle is None:
+            activity = build_task_activity_projection(run)
+            active_subagent_handle = activity.get("active_subagent_handle")
         entries.append(ChatProcessNodeInfo(
             id=f"task-run:{run.id}",
             label=run.title,
@@ -3703,6 +3714,35 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
             status="running",
             timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
         ))
+        if isinstance(active_subagent_handle, dict):
+            handle_step_id = str(active_subagent_handle.get("step_id") or "").strip()
+            handle_agent = str(
+                active_subagent_handle.get("agent_name")
+                or active_subagent_handle.get("agent_type")
+                or active_subagent_handle.get("requested_name")
+                or "subagent"
+            ).strip()
+            dispatch_kind = str(active_subagent_handle.get("dispatch_kind") or "subagent").strip()
+            control_state = str(active_subagent_handle.get("control_state") or active_subagent_handle.get("status") or "running").strip()
+            response_preview = str(active_subagent_handle.get("response_preview") or "").strip()
+            entries.append(
+                ChatProcessNodeInfo(
+                    id=f"subagent:{handle_step_id or run.id}",
+                    label=f"{handle_agent} ({dispatch_kind})",
+                    kind="subagent",
+                    detail=response_preview or control_state.replace("_", " "),
+                    status="running" if control_state in {"await_dependency", "await_dispatch", "await_completion"} else control_state,
+                    parent_id=f"task-run:{run.id}",
+                    timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
+                    metadata={
+                        "step_id": active_subagent_handle.get("step_id"),
+                        "dispatch_kind": active_subagent_handle.get("dispatch_kind"),
+                        "control_state": active_subagent_handle.get("control_state"),
+                        "available_actions": active_subagent_handle.get("available_actions"),
+                        "source": active_subagent_handle.get("source"),
+                    },
+                )
+            )
 
     return sorted(
         _dedupe_process_entries(entries),
@@ -4064,7 +4104,12 @@ async def get_agent_memory(agent_id: int, db: Session = Depends(get_db)):
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    memories = db.query(Memory).filter(Memory.agent_id == agent_id).all()
+    memories = (
+        db.query(Memory)
+        .filter(Memory.agent_id == agent_id)
+        .order_by(Memory.importance.desc(), Memory.created_at.desc())
+        .all()
+    )
     
     return {
         "agent_name": agent.name,
@@ -4073,7 +4118,7 @@ async def get_agent_memory(agent_id: int, db: Session = Depends(get_db)):
             {
                 "id": m.id,
                 "type": m.memory_type,
-                "content": m.content[:200] + "..." if len(m.content) > 200 else m.content,
+                "content": m.content,
                 "importance": m.importance,
                 "created_at": m.created_at.isoformat()
             }
@@ -4419,6 +4464,11 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
             message_type=msg.message_type,
             created_at=msg.created_at.isoformat(),
             client_turn_id=_message_client_turn_id(msg),
+            runtime_summary=_build_message_runtime_summary(
+                db,
+                chatroom_id=chatroom_id,
+                client_turn_id=_message_client_turn_id(msg),
+            ),
         )
         for msg in messages
     ]
@@ -4500,23 +4550,10 @@ async def list_chat_processes(chatroom_id: int, limit: int = CHAT_PROCESSES_LIMI
 @router.get("/task-runs/{task_run_id}/subagents")
 async def list_task_run_subagents(task_run_id: int, db: Session = Depends(get_db)):
     """Return the current subagent lifecycle + handle projection for one task run."""
-    task_run = (
-        db.query(TaskRun)
-        .filter(TaskRun.id == task_run_id)
-        .first()
-    )
-    if not task_run:
-        raise HTTPException(status_code=404, detail="Task run not found")
-
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    return {
-        "task_run_id": task_run.id,
-        "status": task_run.status,
-        "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
-        "subagent_handles_summary": checkpoint_snapshot.get("subagent_handles_summary"),
-        "subagent_lifecycle": checkpoint_snapshot.get("subagent_lifecycle"),
-        "subagent_handles": checkpoint_snapshot.get("subagent_handles"),
-    }
+    try:
+        return list_runtime_task_run_subagents(db, task_run_id)
+    except SubagentRuntimeControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 @router.get("/task-runs/{task_run_id}/subagents/{step_id}/wait")
@@ -4525,63 +4562,40 @@ async def wait_task_run_subagent(
     step_id: str,
     since_event_index: int | None = None,
     timeout_ms: int | None = None,
-    db: Session = Depends(get_db),
 ):
     """Observe one subagent handle and report whether its state changed since an event cursor."""
-    task_run = (
-        db.query(TaskRun)
-        .filter(TaskRun.id == task_run_id)
-        .first()
-    )
-    if not task_run:
-        raise HTTPException(status_code=404, detail="Task run not found")
-
     timeout_seconds = wait_timeout_seconds(timeout_ms, default_ms=0, max_ms=5000)
     poll_interval_seconds = 0.1
     deadline = time.monotonic() + timeout_seconds
     timed_out = False
     handle = None
     wait_result = None
+    response_status = None
 
     while True:
-        db.expire_all()
-        current_task_run = (
-            db.query(TaskRun)
-            .filter(TaskRun.id == task_run_id)
-            .first()
-        )
-        if current_task_run is None:
-            raise HTTPException(status_code=404, detail="Task run not found")
+        db = SessionLocal()
+        try:
+            observed = observe_runtime_task_run_subagent(
+                db,
+                task_run_id,
+                step_id=step_id,
+                since_event_index=since_event_index,
+            )
+            handle = observed["subagent_handle"]
+            wait_result = observed["wait_result"]
+            response_status = observed["status"]
+        except SubagentRuntimeControlError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        finally:
+            db.close()
 
-        checkpoint_snapshot = build_task_run_checkpoint_snapshot(current_task_run)
-        handles = checkpoint_snapshot.get("subagent_handles")
-        handle = find_subagent_runtime_handle(handles, step_id)
-        if handle is None:
-            raise HTTPException(status_code=404, detail="Subagent handle not found.")
-
-        latest_event_index = 0
-        events = list(getattr(current_task_run, "events", []) or [])
-        if events:
-            try:
-                latest_event_index = max(int(getattr(event, "event_index", 0) or 0) for event in events)
-            except (TypeError, ValueError):
-                latest_event_index = 0
-
-        wait_result = build_subagent_wait_result(
-            handle=handle,
-            current_event_index=latest_event_index,
-            since_event_index=since_event_index,
-        )
         if wait_result.get("state_changed"):
-            task_run = current_task_run
             break
         if timeout_seconds <= 0:
-            task_run = current_task_run
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             timed_out = True
-            task_run = current_task_run
             break
         await asyncio.sleep(min(poll_interval_seconds, remaining))
 
@@ -4593,8 +4607,8 @@ async def wait_task_run_subagent(
     if timed_out and not wait_result.get("state_changed"):
         wait_result["suggested_poll"] = "timeout"
     return {
-        "task_run_id": task_run.id,
-        "status": task_run.status,
+        "task_run_id": task_run_id,
+        "status": response_status,
         "step_id": step_id,
         "subagent_handle": handle,
         "wait_result": wait_result,
@@ -4701,97 +4715,18 @@ async def cancel_task_run_subagent(
     db: Session = Depends(get_db),
 ):
     """Cancel one projected subagent handle without immediately cancelling the whole task run."""
-    task_run = (
-        db.query(TaskRun)
-        .filter(TaskRun.id == task_run_id)
-        .first()
-    )
-    if not task_run:
-        raise HTTPException(status_code=404, detail="Task run not found")
-
-    if (task_run.status or "").lower() != "running":
-        raise HTTPException(status_code=409, detail="Only running task runs can cancel subagents.")
-
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    handles = checkpoint_snapshot.get("subagent_handles")
-    lifecycle = checkpoint_snapshot.get("subagent_lifecycle")
-    handle = find_subagent_runtime_handle(handles, step_id)
-    if handle is None:
-        raise HTTPException(status_code=404, detail="Subagent handle not found.")
-    if not handle.get("cancellable"):
-        raise HTTPException(status_code=409, detail="Subagent handle is not cancellable.")
-
-    subagent = find_subagent_lifecycle_entry(lifecycle, step_id)
-    if subagent is None:
-        raise HTTPException(status_code=404, detail="Subagent state not found.")
-
     cancelled_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
     note = ((req.note if req else None) or "").strip()
-
-    record_scheduler_step_cancelled(
-        db,
-        task_run,
-        subagent,
-        cancelled_by=cancelled_by,
-        note=note,
-    )
-    db.refresh(task_run)
-
-    updated_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    updated_handles = updated_snapshot.get("subagent_handles")
-    updated_handle = find_subagent_runtime_handle(updated_handles, step_id)
-    remaining_cancellable_handles = cancellable_subagent_handles(updated_handles)
-    task_run_cancelled = len(remaining_cancellable_handles) == 0
-
-    append_task_event(
-        db,
-        task_run,
-        "task_run_subagent_cancelled",
-        summary=note or f"Cancelled subagent {step_id} from the API.",
-        payload={
-            "task_run_id": task_run.id,
-            "step_id": step_id,
-            "cancelled_by": cancelled_by,
-            "note": note or None,
-            "task_run_cancelled": task_run_cancelled,
-            "remaining_cancellable_subagent_count": len(remaining_cancellable_handles),
-            "subagent_handle": updated_handle,
-        },
-    )
-
-    if task_run_cancelled:
-        append_task_event(
+    try:
+        return cancel_runtime_task_run_subagent(
             db,
-            task_run,
-            "task_run_cancelled",
-            summary=note or f"Task run cancelled after subagent {step_id} was cancelled.",
-            payload={
-                "task_run_id": task_run.id,
-                "run_kind": task_run.run_kind,
-                "cancelled_by": cancelled_by,
-                "cancelled_subagent_count": 1,
-                "cancelled_step_ids": [step_id],
-                "note": note or None,
-                "checkpoint_snapshot": updated_snapshot,
-            },
+            task_run_id,
+            step_id=step_id,
+            cancelled_by=cancelled_by,
+            note=note,
         )
-        complete_task_run(db, task_run, status="cancelled", summary=note or "Task run cancelled.")
-        db.refresh(task_run)
-
-    return {
-        "message": (
-            "Subagent cancelled and task run terminalized."
-            if task_run_cancelled
-            else "Subagent cancelled."
-        ),
-        "cancelled": True,
-        "task_run_cancelled": task_run_cancelled,
-        "task_run_id": task_run.id,
-        "step_id": step_id,
-        "status": task_run.status,
-        "remaining_cancellable_subagent_count": len(remaining_cancellable_handles),
-        "detail": serialize_task_run_detail(task_run),
-    }
+    except SubagentRuntimeControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 @router.post("/task-runs/{task_run_id}/subagents/{step_id}/close")
@@ -4802,56 +4737,18 @@ async def close_task_run_subagent(
     db: Session = Depends(get_db),
 ):
     """Close one terminal subagent handle and archive it from the active handle set."""
-    task_run = (
-        db.query(TaskRun)
-        .filter(TaskRun.id == task_run_id)
-        .first()
-    )
-    if not task_run:
-        raise HTTPException(status_code=404, detail="Task run not found")
-
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    handles = checkpoint_snapshot.get("subagent_handles")
-    handle = find_subagent_runtime_handle(handles, step_id)
-    if handle is None:
-        raise HTTPException(status_code=404, detail="Subagent handle not found.")
-    if not handle.get("terminal"):
-        raise HTTPException(status_code=409, detail="Only terminal subagent handles can be closed.")
-    if handle.get("closed"):
-        raise HTTPException(status_code=409, detail="Subagent handle is already closed.")
-
     closed_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
     note = ((req.note if req else None) or "").strip()
-
-    append_task_event(
-        db,
-        task_run,
-        "subagent_handle_closed",
-        summary=note or f"Closed subagent handle {step_id} from the API.",
-        payload={
-            "task_run_id": task_run.id,
-            "step_id": step_id,
-            "closed_by": closed_by,
-            "note": note or None,
-            "status": handle.get("status"),
-            "control_state": handle.get("control_state"),
-        },
-    )
-    db.refresh(task_run)
-
-    updated_detail = serialize_task_run_detail(task_run)
-    updated_handle = find_subagent_runtime_handle(
-        updated_detail.get("checkpoint_snapshot", {}).get("subagent_handles"),
-        step_id,
-    )
-    return {
-        "message": "Subagent handle closed.",
-        "closed": True,
-        "task_run_id": task_run.id,
-        "step_id": step_id,
-        "subagent_handle": updated_handle,
-        "detail": updated_detail,
-    }
+    try:
+        return close_runtime_task_run_subagent(
+            db,
+            task_run_id,
+            step_id=step_id,
+            closed_by=closed_by,
+            note=note,
+        )
+    except SubagentRuntimeControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 @router.post("/task-runs/{task_run_id}/cancel")
@@ -4861,61 +4758,17 @@ async def cancel_task_run(
     db: Session = Depends(get_db),
 ):
     """Cancel a running task run and terminalize any non-terminal subagent states."""
-    task_run = (
-        db.query(TaskRun)
-        .filter(TaskRun.id == task_run_id)
-        .first()
-    )
-    if not task_run:
-        raise HTTPException(status_code=404, detail="Task run not found")
-
-    if (task_run.status or "").lower() != "running":
-        raise HTTPException(status_code=409, detail="Only running task runs can be cancelled.")
-
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    lifecycle = checkpoint_snapshot.get("subagent_lifecycle")
-    cancellable_subagents = cancellable_subagents_from_lifecycle(lifecycle)
     cancelled_by = ((req.cancelled_by if req else None) or "user").strip() or "user"
     note = ((req.note if req else None) or "").strip()
-
-    for subagent in cancellable_subagents:
-        record_scheduler_step_cancelled(
+    try:
+        return cancel_runtime_task_run(
             db,
-            task_run,
-            subagent,
+            task_run_id,
             cancelled_by=cancelled_by,
             note=note,
         )
-
-    append_task_event(
-        db,
-        task_run,
-        "task_run_cancelled",
-        summary=note or "Task run cancelled from the API.",
-        payload={
-            "task_run_id": task_run.id,
-            "run_kind": task_run.run_kind,
-            "cancelled_by": cancelled_by,
-            "cancelled_subagent_count": len(cancellable_subagents),
-            "cancelled_step_ids": [
-                subagent.get("step_id")
-                for subagent in cancellable_subagents
-                if subagent.get("step_id") is not None
-            ],
-            "note": note or None,
-            "checkpoint_snapshot": checkpoint_snapshot,
-        },
-    )
-    complete_task_run(db, task_run, status="cancelled", summary=note or "Task run cancelled.")
-    db.refresh(task_run)
-    return {
-        "message": "Task run cancelled.",
-        "cancelled": True,
-        "task_run_id": task_run.id,
-        "status": task_run.status,
-        "cancelled_subagent_count": len(cancellable_subagents),
-        "detail": serialize_task_run_detail(task_run),
-    }
+    except SubagentRuntimeControlError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 async def _replay_runtime_blocked_tool_queue_item(
@@ -5137,24 +4990,24 @@ def _persist_timeout_wait_preference_for_queue_item(
     db: Session,
     item: Any,
     request_payload: Dict[str, Any],
-) -> None:
+) -> dict[str, Any] | None:
     if str(request_payload.get("blocked_kind") or "").strip().lower() != "timeout":
-        return
+        return None
     tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
     if tool_name != "run_shell":
-        return
+        return None
 
     arguments_text = resolve_replay_arguments_text(request_payload)
     loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
     if arguments_error is not None or loaded_arguments is None:
-        return
+        return None
 
     command = str(loaded_arguments.get("command") or "").strip()
     if not command:
-        return
+        return None
     cwd = str(loaded_arguments.get("cwd") or ".").strip() or "."
     preference_key = build_run_shell_timeout_preference_key(command, cwd)
-    save_wait_forever_preference(
+    rule = save_wait_forever_preference(
         db,
         tool_name="run_shell",
         preference_key=preference_key,
@@ -5162,6 +5015,7 @@ def _persist_timeout_wait_preference_for_queue_item(
         project_id=getattr(item, "project_id", None),
         chatroom_id=getattr(item, "chatroom_id", None),
     )
+    return serialize_authorization_rule(rule)
 
 
 async def _continue_waiting_for_timeout_queue_item(
@@ -5708,6 +5562,7 @@ async def approve_approval_queue_item(
         raise HTTPException(status_code=409, detail="Only pending approval queue items can be approved.")
 
     request_payload = load_approval_queue_request_payload(item.request_payload_json)
+    request_payload_for_audit = {**request_payload, "request_key": getattr(item, "request_key", None)}
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
     logger.info(
@@ -5738,6 +5593,18 @@ async def approve_approval_queue_item(
         refreshed = get_approval_queue_item(db, item_id)
         if refreshed is None:
             raise HTTPException(status_code=404, detail="Approval queue item not found")
+        record_approval_audit(
+            db,
+            event_kind="queue_item_approved",
+            decision="approve",
+            source="manual",
+            resolved_by=resolved_by,
+            queue_item=refreshed,
+            tool_name=str(request_payload.get("tool_name") or getattr(refreshed, "target_name", "") or "").strip() or None,
+            reason=resolution_note or getattr(refreshed, "summary", None),
+            request_payload=request_payload_for_audit,
+            resolution_payload=load_approval_queue_request_payload(getattr(refreshed, "resolution_payload_json", None)),
+        )
         return serialize_approval_queue_item(refreshed)
 
     resolution_payload = build_queue_replay_resolution_payload(
@@ -5746,7 +5613,9 @@ async def approve_approval_queue_item(
     )
     remembered_rule = None
     if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
-        _persist_timeout_wait_preference_for_queue_item(db, item, request_payload)
+        remembered_rule = _persist_timeout_wait_preference_for_queue_item(db, item, request_payload)
+        if remembered_rule is not None:
+            resolution_payload["remembered_rule"] = remembered_rule
     elif req is not None and req.remember_scope:
         remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
@@ -5766,6 +5635,37 @@ async def approve_approval_queue_item(
         resolution_note=resolution_note or f"Approved {item.target_kind or 'action'} from the API.",
         resolution_payload=resolution_payload,
     )
+    record_approval_audit(
+        db,
+        event_kind="queue_item_approved",
+        decision="approve",
+        source="manual",
+        resolved_by=resolved_by,
+        queue_item=resolved or item,
+        preference=remembered_rule,
+        tool_name=str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip() or None,
+        reason=resolution_note or getattr(item, "summary", None),
+        request_payload=request_payload_for_audit,
+        resolution_payload=resolution_payload,
+    )
+    if remembered_rule is not None:
+        record_approval_audit(
+            db,
+            event_kind="authorization_rule_saved",
+            decision=str(remembered_rule.get("decision_kind") or "allow"),
+            source="remember",
+            resolved_by=resolved_by,
+            queue_item=resolved or item,
+            preference=remembered_rule,
+            tool_name=remembered_rule.get("tool_name"),
+            scope=remembered_rule.get("scope"),
+            matcher_type=remembered_rule.get("matcher_type"),
+            matcher_value=remembered_rule.get("matcher_value"),
+            command_preview=remembered_rule.get("command_preview"),
+            reason=resolution_note or getattr(item, "summary", None),
+            request_payload=request_payload_for_audit,
+            resolution_payload={"remembered_rule": remembered_rule},
+        )
     task_run = get_task_run(db, item.task_run_id)
     append_task_event(
         db,
@@ -5845,6 +5745,7 @@ async def reject_approval_queue_item(
         raise HTTPException(status_code=409, detail="Only pending approval queue items can be rejected.")
 
     request_payload = load_approval_queue_request_payload(item.request_payload_json)
+    request_payload_for_audit = {**request_payload, "request_key": getattr(item, "request_key", None)}
     resolution_note = ((req.note if req else None) or "").strip()
     resolved_by = ((req.resolved_by if req else None) or "user").strip() or "user"
     if not claim_approval_queue_resolution_lease(
@@ -5866,6 +5767,18 @@ async def reject_approval_queue_item(
         refreshed = get_approval_queue_item(db, item_id)
         if refreshed is None:
             raise HTTPException(status_code=404, detail="Approval queue item not found")
+        record_approval_audit(
+            db,
+            event_kind="queue_item_rejected",
+            decision="reject",
+            source="manual",
+            resolved_by=resolved_by,
+            queue_item=refreshed,
+            tool_name=str(request_payload.get("tool_name") or getattr(refreshed, "target_name", "") or "").strip() or None,
+            reason=resolution_note or getattr(refreshed, "summary", None),
+            request_payload=request_payload_for_audit,
+            resolution_payload=load_approval_queue_request_payload(getattr(refreshed, "resolution_payload_json", None)),
+        )
         return serialize_approval_queue_item(refreshed)
 
     resolved = resolve_approval_queue_item(
@@ -5879,6 +5792,8 @@ async def reject_approval_queue_item(
             rollback_to=req.rollback_to if req else None,
         ),
     )
+    rejection_payload = _load_jsonish_payload(getattr(resolved, "resolution_payload_json", None))
+    remembered_rule = None
     if req is not None and req.remember_scope:
         remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
@@ -5898,6 +5813,38 @@ async def reject_approval_queue_item(
             db.add(resolved)
             db.commit()
             db.refresh(resolved)
+            rejection_payload = _load_jsonish_payload(getattr(resolved, "resolution_payload_json", None))
+    record_approval_audit(
+        db,
+        event_kind="queue_item_rejected",
+        decision="reject",
+        source="manual",
+        resolved_by=resolved_by,
+        queue_item=resolved or item,
+        preference=remembered_rule,
+        tool_name=str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip() or None,
+        reason=resolution_note or getattr(item, "summary", None),
+        request_payload=request_payload_for_audit,
+        resolution_payload=rejection_payload,
+    )
+    if remembered_rule is not None:
+        record_approval_audit(
+            db,
+            event_kind="authorization_rule_saved",
+            decision=str(remembered_rule.get("decision_kind") or "deny"),
+            source="remember",
+            resolved_by=resolved_by,
+            queue_item=resolved or item,
+            preference=remembered_rule,
+            tool_name=remembered_rule.get("tool_name"),
+            scope=remembered_rule.get("scope"),
+            matcher_type=remembered_rule.get("matcher_type"),
+            matcher_value=remembered_rule.get("matcher_value"),
+            command_preview=remembered_rule.get("command_preview"),
+            reason=resolution_note or getattr(item, "summary", None),
+            request_payload=request_payload_for_audit,
+            resolution_payload={"remembered_rule": remembered_rule},
+        )
     task_run = get_task_run(db, item.task_run_id)
     append_task_event(
         db,
@@ -6410,7 +6357,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             target_agent_label = agent_name_of(target_agent)
             active_agent_name = target_agent_label
             active_agent_id = target_agent.id
-            available_tools = tool_registry.list_tools()
+            available_tools = _resolve_agent_runtime_tools(target_agent)
             project_single_agent_stream_policy = _build_single_agent_runner_policy(
                 run_kind="project_single_agent_stream",
                 agent_name=target_agent_label,
@@ -6584,29 +6531,27 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             )
 
             async for outcome in iter_managed_single_agent_stream_runtime_profile(
-                build_single_agent_runtime_profile_from_raw_inputs(
+                build_single_agent_stream_chat_profile(
                     runtime_inputs=project_single_agent_stream_runtime_inputs,
-                    execution_inputs=build_single_agent_stream_raw_execution_envelope(
-                        llm_client=runtime.llm_client,
-                        tools=runtime.tool_schemas,
-                        turn_state=runtime.turn_state,
-                        loop_callbacks=build_single_agent_stream_loop_callbacks(
-                            assemble_messages=_assemble_single_agent_stream_messages,
-                            execute_tool=_execute_single_agent_stream_tool,
-                            build_llm_runtime_card=_build_single_agent_stream_llm_card,
-                            snapshot_messages=_snapshot_llm_messages,
-                            preview_tool_calls=_preview_tool_calls,
-                            format_prompt_messages=_format_json_block,
-                            tool_result_success=_tool_result_succeeded,
-                            on_tool_round=_on_single_agent_stream_tool_round,
-                        ),
-                        transport=build_single_agent_stream_transport_context(
-                            serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
-                            store_runtime_card=store_runtime_card,
-                            public_runtime_card_payload=public_runtime_card_payload,
-                        ),
-                        max_turns=MAX_TOOL_ITERATIONS,
+                    llm_client=runtime.llm_client,
+                    tools=runtime.tool_schemas,
+                    turn_state=runtime.turn_state,
+                    loop_callbacks=build_single_agent_stream_loop_callbacks(
+                        assemble_messages=_assemble_single_agent_stream_messages,
+                        execute_tool=_execute_single_agent_stream_tool,
+                        build_llm_runtime_card=_build_single_agent_stream_llm_card,
+                        snapshot_messages=_snapshot_llm_messages,
+                        preview_tool_calls=_preview_tool_calls,
+                        format_prompt_messages=_format_json_block,
+                        tool_result_success=_tool_result_succeeded,
+                        on_tool_round=_on_single_agent_stream_tool_round,
                     ),
+                    transport=build_single_agent_stream_transport_context(
+                        serialize_payload=lambda payload: _json.dumps(payload, ensure_ascii=False),
+                        store_runtime_card=store_runtime_card,
+                        public_runtime_card_payload=public_runtime_card_payload,
+                    ),
+                    max_turns=MAX_TOOL_ITERATIONS,
                     stream_failure=build_single_agent_stream_failure_policy(
                         failure_agent_name=active_agent_name or default_agent_name(DEFAULT_AGENT_TYPE),
                         failure_agent_id=active_agent_id,
@@ -6856,6 +6801,16 @@ async def get_config():
             for policy in config["tools"].get("tool_policies", []):
                 if not policy.get("description"):
                     policy["description"] = description_map.get(policy.get("name", ""), "")
+            config["agent_tools"] = {}
+            for agent_name, agent_data in agents_data.items():
+                effective_tool_names = resolve_agent_tool_names(
+                    SimpleNamespace(tools=agent_data.get("tools")),
+                    available_tools,
+                )
+                config["agent_tools"][agent_name] = tool_registry.get_policy_pack(effective_tool_names)
+                for policy in config["agent_tools"][agent_name].get("tool_policies", []):
+                    if not policy.get("description"):
+                        policy["description"] = description_map.get(policy.get("name", ""), "")
 
             skills_config_file = Path(settings.SKILLS_CONFIG_FILE)
             if skills_config_file.exists():
@@ -7201,55 +7156,24 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]):
 @router.get("/collaboration/status")
 async def get_collaboration_status():
     """获取协作系统状态"""
-    from agents.collaboration import collaboration_coordinator
-    
-    return {
-        "active_collaborators": len(collaboration_coordinator.collaborators),
-        "chatrooms": len(collaboration_coordinator.chatroom_agents),
-        "pending_tasks": collaboration_coordinator.pending_task_count(),
-        "status": "active"
-    }
+    status = get_runtime_collaboration_status()
+    status["status"] = "active"
+    return status
 
 
 @router.get("/collaboration/chatrooms/{chatroom_id}/status")
 async def get_chatroom_collaboration_status(chatroom_id: int):
     """获取聊天室的协作状态"""
-    from agents.collaboration import collaboration_coordinator
-    
-    status = collaboration_coordinator.get_chatroom_status(chatroom_id)
-    return status
+    return get_runtime_chatroom_collaboration_status(chatroom_id)
 
 
 @router.get("/collaboration/tasks/{task_id}")
 async def get_task_status(task_id: str):
     """获取任务状态"""
-    from agents.collaboration import (
-        collaboration_coordinator,
-        enrich_collaboration_task_result_details,
-        normalize_delegated_task_id,
-        rebuild_collaboration_task_from_runtime,
-        refresh_collaboration_task_from_runtime,
-    )
-
-    normalized_task_id = normalize_delegated_task_id(task_id)
-    task = collaboration_coordinator.get_task_status(normalized_task_id)
-    if not task:
-        task = rebuild_collaboration_task_from_runtime(normalized_task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-    task = refresh_collaboration_task_from_runtime(task) or task
-    collaboration_coordinator.task_registry[task.id] = task
-    
-    return {
-        "id": task.id,
-        "title": task.title,
-        "status": task.status,
-        "assigned_to": task.assigned_to_agent_id,
-        "result": task.result,
-        "result_details": enrich_collaboration_task_result_details(task),
-        "created_at": task.created_at.isoformat(),
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None
-    }
+    try:
+        return get_runtime_collaboration_task(task_id)
+    except CollaborationTaskRuntimeError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/collaboration/delegate")
@@ -7261,64 +7185,36 @@ async def delegate_task_to_agent(
     db: Session = Depends(get_db)
 ):
     """委托任务给指定 Agent"""
-    from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus, uuid
-    from tools import tool_registry
-    
-    # 查找目标 Agent
-    target_agent_type = normalize_agent_type(target_agent_name)
-    target_agent = _find_db_agent_by_type(db, target_agent_type)
-    if not target_agent:
-        raise HTTPException(status_code=404, detail=f"Agent '{target_agent_type}' not found")
-    
-    # 创建任务
-    task = CollaborationTask(
-        id=str(uuid.uuid4()),
-        title=task_title,
-        description=task_description,
-        status=TaskStatus.DELEGATED,
-        created_by_agent_id=0,  # User
-        assigned_to_agent_id=target_agent.id,
-        chatroom_id=chatroom_id
+    task, _ = await delegate_runtime_collaboration_task(
+        db=db,
+        target_agent_name=target_agent_name,
+        task_title=task_title,
+        task_description=task_description,
+        chatroom_id=chatroom_id,
+        created_by_agent_id=0,
+        current_agent_name="user",
     )
-    
-    collaboration_coordinator.task_registry[task.id] = task
+    if task is None:
+        normalized_target = normalize_agent_type(target_agent_name)
+        raise HTTPException(status_code=404, detail=f"Agent '{normalized_target}' not found")
     
     return {
         "task_id": task.id,
         "status": "delegated",
-        "assigned_to": target_agent_type
+        "assigned_to": (
+            task.metadata.get("target_agent_name")
+            if isinstance(task.metadata, dict) and task.metadata.get("target_agent_name")
+            else normalize_agent_type(target_agent_name)
+        )
     }
 
 
 @router.get("/collaboration/tasks")
 async def list_collaboration_tasks(chatroom_id: Optional[int] = None):
     """列出协作任务"""
-    from agents.collaboration import collaboration_coordinator, refresh_collaboration_task_from_runtime, enrich_collaboration_task_result_details
-    
-    tasks = list(collaboration_coordinator.task_registry.values())
-    refreshed_tasks = []
-    for task in tasks:
-        refreshed = refresh_collaboration_task_from_runtime(task) or task
-        collaboration_coordinator.task_registry[refreshed.id] = refreshed
-        refreshed_tasks.append(refreshed)
-    tasks = refreshed_tasks
-    
-    if chatroom_id:
-        tasks = [t for t in tasks if t.chatroom_id == chatroom_id]
-    
+    tasks = list_runtime_collaboration_tasks(chatroom_id=chatroom_id)
+
     return {
-        "tasks": [
-            {
-                "id": t.id,
-                "title": t.title,
-                "status": t.status,
-                "assigned_to": t.assigned_to_agent_id,
-                "result": t.result,
-                "result_details": enrich_collaboration_task_result_details(t),
-                "created_at": t.created_at.isoformat(),
-                "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-            }
-            for t in tasks
-        ],
+        "tasks": tasks,
         "count": len(tasks)
     }

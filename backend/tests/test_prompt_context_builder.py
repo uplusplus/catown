@@ -581,8 +581,8 @@ def test_context_selector_can_derive_budget_from_context_window():
 def test_selector_profiles_are_registered_and_distinct():
     profiles = list_selector_profiles()
 
-    assert profiles == ["chat_interactive", "fallback_chat", "query_agent"]
-    assert selector_profile_config("chat_interactive")["max_fragments"] > selector_profile_config("query_agent")["max_fragments"]
+    assert profiles == ["chat_interactive", "fallback_chat", "consult_agent"]
+    assert selector_profile_config("chat_interactive")["max_fragments"] > selector_profile_config("consult_agent")["max_fragments"]
     assert selector_profile_config("fallback_chat")["max_fragments"] < selector_profile_config("chat_interactive")["max_fragments"]
 
 
@@ -600,7 +600,7 @@ def test_chat_context_selector_applies_profile_fragment_caps_without_context_win
         base_system_prompt="identity",
     )
     query_selector = build_chat_context_selector(
-        profile="query_agent",
+        profile="consult_agent",
         agent_name="unknown",
         model_id="",
         base_system_prompt="identity",

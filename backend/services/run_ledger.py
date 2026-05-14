@@ -306,6 +306,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "latest_continuation_event_at": latest_continuation_event.get("created_at") if latest_continuation_event else None,
         "latest_scheduler_runtime": latest_scheduler_runtime,
         "scheduler_runtime_summary": summarize_scheduler_runtime(latest_scheduler_runtime),
+        "latest_subagent_step": checkpoint_snapshot.get("latest_subagent_step"),
         "pipeline_inbox_summary": checkpoint_snapshot.get("pipeline_inbox_summary"),
         "orchestration_handoff_inbox_summary": checkpoint_snapshot.get("orchestration_handoff_inbox_summary"),
         "subagent_lifecycle_summary": checkpoint_snapshot.get("subagent_lifecycle_summary"),
@@ -433,6 +434,14 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         else {}
     )
     latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
+    latest_subagent_event = next(
+        (
+            event for event in reversed(events)
+            if event.event_type in {"scheduler_step_dispatched", "scheduler_step_completed", "scheduler_step_failed"}
+        ),
+        None,
+    )
+    latest_subagent_payload = payload_by_event_id.get(latest_subagent_event.id, {}) if latest_subagent_event is not None else {}
     pipeline_inbox = [
         summarize_pipeline_run_inbox(pipeline_run)
         for pipeline_run in list(getattr(task_run, "pipeline_runs", []) or [])
@@ -500,6 +509,23 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
             "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
+        "latest_subagent_step": (
+            {
+                "event_type": latest_subagent_event.event_type,
+                "step_id": latest_subagent_payload.get("step_id"),
+                "agent_name": latest_subagent_payload.get("agent_name"),
+                "dispatch_kind": latest_subagent_payload.get("dispatch_kind"),
+                "status": (
+                    latest_subagent_payload.get("step_state", {}).get("status")
+                    if isinstance(latest_subagent_payload.get("step_state"), dict)
+                    else None
+                ),
+                "source": latest_subagent_payload.get("source"),
+                "response_preview": latest_subagent_payload.get("response_preview"),
+            }
+            if latest_subagent_event is not None and isinstance(latest_subagent_payload, dict)
+            else None
+        ),
         "pipeline_inbox": pipeline_inbox,
         "pipeline_inbox_summary": summarize_pipeline_inbox_projection(pipeline_inbox),
         "orchestration_handoff_inbox": orchestration_handoff_inbox,
@@ -605,12 +631,19 @@ def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str
         else []
     )
     consumed_layers: list[str] = []
+    latest_subagent_step = (
+        snapshot.get("latest_subagent_step")
+        if isinstance(snapshot.get("latest_subagent_step"), dict)
+        else {}
+    )
     if continuation_cursor.get("resume_strategy") == "rebuild_from_runtime_snapshot":
         consumed_layers.append("runtime_snapshot")
     if protocol_tail_messages:
         consumed_layers.append("protocol_tail")
     if prior_round_summaries:
         consumed_layers.append("prior_round_summaries")
+    if str(latest_subagent_step.get("dispatch_kind") or "").strip() == "consult":
+        consumed_layers.append("consult_subagent")
     return {
         "consumed": bool(consumed_layers),
         "next_action": continuation_cursor.get("next_action"),
@@ -618,6 +651,8 @@ def describe_checkpoint_continuation_state(checkpoint_snapshot: Any) -> dict[str
         "consumed_layers": consumed_layers,
         "protocol_tail_message_count": len(protocol_tail_messages),
         "prior_round_summary_count": len(prior_round_summaries),
+        "latest_subagent_dispatch_kind": latest_subagent_step.get("dispatch_kind"),
+        "latest_subagent_status": latest_subagent_step.get("status"),
     }
 
 

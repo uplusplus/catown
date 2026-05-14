@@ -18,6 +18,7 @@ from models.database import (
 )
 from pipeline.engine import pipeline_engine, event_bus
 from pipeline.config import pipeline_config_manager
+from services.approval_audit import record_approval_audit
 from services.workflow_spec_contracts import WorkflowSpec
 from services.workflow_spec_policy import validate_workflow_spec_for_execution
 
@@ -243,7 +244,28 @@ async def resume_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
 async def approve_pipeline(pipeline_id: int, db: Session = Depends(get_db)):
     """审批通过当前 Gate"""
     try:
+        pipeline = db.query(Pipeline).filter(Pipeline.id == pipeline_id).first()
+        run = (
+            db.query(PipelineRun)
+            .filter(PipelineRun.pipeline_id == pipeline_id)
+            .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+            .first()
+        )
         await pipeline_engine.approve(db, pipeline_id)
+        record_approval_audit(
+            db,
+            event_kind="pipeline_gate_approved",
+            decision="approve",
+            source="pipeline_api",
+            resolved_by="pipeline_api",
+            project_id=getattr(pipeline, "project_id", None),
+            pipeline_run_id=getattr(run, "id", None),
+            target_kind="pipeline_gate",
+            target_name=getattr(pipeline, "pipeline_name", None),
+            reason=f"Approved pipeline {pipeline_id} gate.",
+            request_payload={"pipeline_id": pipeline_id},
+            resolution_payload={"status": "approved"},
+        )
         return {"status": "approved"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -254,7 +276,28 @@ async def reject_pipeline(pipeline_id: int, req: RejectRequest = None, db: Sessi
     """拒绝当前 Gate（打回重做）"""
     try:
         rollback_to = req.rollback_to if req else None
+        pipeline = db.query(Pipeline).filter(Pipeline.id == pipeline_id).first()
+        run = (
+            db.query(PipelineRun)
+            .filter(PipelineRun.pipeline_id == pipeline_id)
+            .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+            .first()
+        )
         await pipeline_engine.reject(db, pipeline_id, rollback_to)
+        record_approval_audit(
+            db,
+            event_kind="pipeline_gate_rejected",
+            decision="reject",
+            source="pipeline_api",
+            resolved_by="pipeline_api",
+            project_id=getattr(pipeline, "project_id", None),
+            pipeline_run_id=getattr(run, "id", None),
+            target_kind="pipeline_gate",
+            target_name=getattr(pipeline, "pipeline_name", None),
+            reason=f"Rejected pipeline {pipeline_id} gate.",
+            request_payload={"pipeline_id": pipeline_id, "rollback_to": rollback_to},
+            resolution_payload={"status": "rejected"},
+        )
         return {"status": "rejected"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

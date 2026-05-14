@@ -230,12 +230,12 @@
   "coordination": {
     "name": "协调",
     "description": "协调多 Agent 协作和任务分配",
-    "required_tools": ["send_message", "query_agent", "read_file"],
+    "required_tools": ["send_message", "consult_agent", "read_file"],
     "category": "development",
     "levels": {
       "hint": "协调: 帮助 Agent 间沟通，分配任务，跟踪进度",
       "guide": "## 协调规范\n- 帮助 Agent 间传递信息\n- 跟踪任务完成状态\n- 发现阻塞时主动介入\n- 向 BOSS 汇报整体进展",
-      "full": "## 协调完整指南\n\n### 职责\n- 任务分配: 将工作拆分给合适的 Agent\n- 进度跟踪: 了解各 Agent 的工作状态\n- 阻塞解除: 发现问题时协调解决\n- 信息传递: 在 Agent 间传递上下文\n\n### 沟通方式\n- send_message: 给指定 Agent 发消息\n- query_agent: 查询 Agent 状态\n- 向 BOSS 汇报: 重大决策和阻塞\n\n### 协调原则\n- 不代替其他 Agent 做决定\n- 只传递信息，不修改内容\n- 发现冲突时升级给 BOSS\n- 保持透明：所有协调行为可追溯\n\n### 常见场景\n- 开发遇到接口问题 → 转给 architect\n- 测试发现 blocker → 转给 developer\n- 多个任务依赖 → 安排优先级"
+      "full": "## 协调完整指南\n\n### 职责\n- 任务分配: 将工作拆分给合适的 Agent\n- 进度跟踪: 了解各 Agent 的工作状态\n- 阻塞解除: 发现问题时协调解决\n- 信息传递: 在 Agent 间传递上下文\n\n### 沟通方式\n- send_message: 给指定 Agent 发消息\n- consult_agent: 咨询其他 Agent 的状态与判断\n- 向 BOSS 汇报: 重大决策和阻塞\n\n### 协调原则\n- 不代替其他 Agent 做决定\n- 只传递信息，不修改内容\n- 发现冲突时升级给 BOSS\n- 保持透明：所有协调行为可追溯\n\n### 常见场景\n- 开发遇到接口问题 → 转给 architect\n- 测试发现 blocker → 转给 developer\n- 多个任务依赖 → 安排优先级"
     }
   }
 }

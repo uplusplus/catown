@@ -31,6 +31,13 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
     steps = [_event_to_step(event, task_run, scheduler_step_statuses) for event in events]
     steps = [step for step in steps if step is not None]
     current_step = _resolve_current_step(steps)
+    active_subagent_handle = _active_subagent_handle(summary)
+    active_consult_handle = (
+        active_subagent_handle
+        if isinstance(active_subagent_handle, dict)
+        and str(active_subagent_handle.get("dispatch_kind") or "").strip() == "consult"
+        else None
+    )
 
     return {
         "task_run_id": task_run.id,
@@ -43,6 +50,8 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         "current_step_id": current_step.get("id") if current_step else None,
         "summary": summary.get("summary") or summary.get("latest_continuation_event_summary") or task_run.summary,
         "background": _background_projection(summary),
+        "active_subagent_handle": active_subagent_handle,
+        "active_consult_handle": active_consult_handle,
         "steps": steps,
     }
 
@@ -264,7 +273,78 @@ def _background_projection(summary: dict[str, Any]) -> dict[str, Any]:
     latest_runtime = summary.get("latest_scheduler_runtime") or checkpoint.get("latest_scheduler_runtime")
     if isinstance(latest_runtime, dict):
         background["latest_scheduler_runtime"] = _compact_ref_dict(latest_runtime)
+    active_subagent_handle = _active_subagent_handle(summary)
+    if isinstance(active_subagent_handle, dict):
+        background["active_subagent_handle"] = active_subagent_handle
+        if str(active_subagent_handle.get("dispatch_kind") or "").strip() == "consult":
+            background["active_consult_handle"] = active_subagent_handle
     return background
+
+
+def _active_subagent_handle(summary: dict[str, Any]) -> dict[str, Any] | None:
+    checkpoint = summary.get("checkpoint_snapshot") if isinstance(summary.get("checkpoint_snapshot"), dict) else {}
+    handles = checkpoint.get("subagent_handles") if isinstance(checkpoint.get("subagent_handles"), dict) else {}
+    entries = handles.get("entries") if isinstance(handles.get("entries"), list) else []
+    lifecycle = checkpoint.get("subagent_lifecycle") if isinstance(checkpoint.get("subagent_lifecycle"), dict) else {}
+    lifecycle_entries = lifecycle.get("subagents") if isinstance(lifecycle.get("subagents"), list) else []
+    lifecycle_by_step_id = {
+        str(entry.get("step_id") or "").strip(): entry
+        for entry in lifecycle_entries
+        if isinstance(entry, dict) and str(entry.get("step_id") or "").strip()
+    }
+    latest_subagent_step = (
+        checkpoint.get("latest_subagent_step")
+        if isinstance(checkpoint.get("latest_subagent_step"), dict)
+        else {}
+    )
+    preferred_step_id = str(latest_subagent_step.get("step_id") or "").strip()
+
+    preferred_handle = None
+    if preferred_step_id:
+        preferred_handle = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry, dict) and str(entry.get("step_id") or "").strip() == preferred_step_id
+            ),
+            None,
+        )
+
+    candidate = preferred_handle
+    if candidate is None:
+        candidate = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry, dict) and not bool(entry.get("closed"))
+            ),
+            None,
+        )
+    if not isinstance(candidate, dict):
+        return None
+
+    step_id = str(candidate.get("step_id") or "").strip()
+    lifecycle_entry = lifecycle_by_step_id.get(step_id, {})
+    projected = {
+        "step_id": candidate.get("step_id"),
+        "agent_name": candidate.get("agent_name"),
+        "agent_type": candidate.get("agent_type"),
+        "dispatch_kind": candidate.get("dispatch_kind"),
+        "status": candidate.get("status"),
+        "control_state": candidate.get("control_state"),
+        "available_actions": candidate.get("available_actions"),
+        "dependency_step_id": candidate.get("dependency_step_id"),
+        "source": lifecycle_entry.get("source") or latest_subagent_step.get("source"),
+        "requested_name": lifecycle_entry.get("requested_name"),
+        "closed": candidate.get("closed"),
+        "terminal": candidate.get("terminal"),
+        "response_preview": (
+            latest_subagent_step.get("response_preview")
+            if step_id and step_id == preferred_step_id
+            else None
+        ),
+    }
+    return {key: value for key, value in projected.items() if value is not None}
 
 
 def _tool_detail_lines(payload: dict[str, Any]) -> list[str]:

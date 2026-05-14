@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
-import { Archive, BookOpen, Boxes, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Workflow } from "lucide-react";
+import { Archive, BookOpen, Bot, Boxes, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Workflow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -335,6 +335,16 @@ type ChatTabProps = {
   onCloseActivity: () => void;
   onOpenSettings: () => void;
   onRefresh: () => Promise<void>;
+  onRefreshRuntime?: (taskRunId: number) => Promise<void>;
+  onPatchSubagentRuntime?: (patch: {
+    taskRunId: number;
+    stepId: string;
+    status?: string;
+    availableActions?: string[];
+    controlState?: string | null;
+    terminal?: boolean;
+    note?: string | null;
+  }) => void;
   onSyncProject: () => Promise<void>;
   syncingProject: boolean;
   onApproveGate: (pipelineId: number) => Promise<void>;
@@ -491,18 +501,22 @@ function ArtifactIcon({ type }: { type: string }) {
 function ProcessIcon({ kind }: { kind: ChatProcessEntry["kind"] }) {
   if (kind === "project") return <FolderTree size={15} />;
   if (kind === "chat") return <Monitor size={15} />;
-  return kind === "command" ? <Shell size={15} /> : <Workflow size={15} />;
+  if (kind === "command") return <Shell size={15} />;
+  if (kind === "subagent") return <Bot size={15} />;
+  return <Workflow size={15} />;
 }
 
 function processKindLabel(kind: ChatProcessEntry["kind"]) {
   if (kind === "project") return "Project";
   if (kind === "chat") return "Chat";
-  return kind === "command" ? "Shell command" : "Task run";
+  if (kind === "command") return "Shell command";
+  if (kind === "subagent") return "Subagent";
+  return "Task run";
 }
 
 function countRuntimeProcessNodes(node: ChatProcessEntry | null): number {
   if (!node) return 0;
-  const selfCount = node.kind === "task" || node.kind === "command" ? 1 : 0;
+  const selfCount = node.kind === "task" || node.kind === "command" || node.kind === "subagent" ? 1 : 0;
   return selfCount + node.children.reduce((total, child) => total + countRuntimeProcessNodes(child), 0);
 }
 
@@ -510,12 +524,48 @@ function processStatusLabel(status: ChatProcessEntry["status"]) {
   return String(status || "running").trim().toLowerCase() === "terminated" ? "Terminated" : "Running";
 }
 
-function ProcessTreeNode({ node, depth = 0 }: { node: ChatProcessEntry; depth?: number }) {
+function ProcessTreeNode({
+  node,
+  depth = 0,
+  activeActionKey,
+  onInspectTaskRun,
+  onWaitSubagent,
+  onCancelSubagent,
+  onCloseSubagent,
+}: {
+  node: ChatProcessEntry;
+  depth?: number;
+  activeActionKey?: string | null;
+  onInspectTaskRun?: (taskRunId: number) => void;
+  onWaitSubagent?: (taskRunId: number, stepId: string) => void;
+  onCancelSubagent?: (taskRunId: number, stepId: string) => void;
+  onCloseSubagent?: (taskRunId: number, stepId: string) => void;
+}) {
   const runtimeChildCount = node.children.reduce((total, child) => total + countRuntimeProcessNodes(child), 0);
-  const isRuntimeNode = node.kind === "task" || node.kind === "command";
+  const isRuntimeNode = node.kind === "task" || node.kind === "command" || node.kind === "subagent";
   const statusLabel = processStatusLabel(node.status);
   const isTerminated = statusLabel === "Terminated";
   const hasOutputDetails = node.kind === "command" && Boolean(node.output?.trim());
+  const metadata = node.metadata && typeof node.metadata === "object" ? node.metadata : null;
+  const processMetaChips = [
+    typeof metadata?.["dispatch_kind"] === "string" ? String(metadata["dispatch_kind"]) : "",
+    typeof metadata?.["control_state"] === "string" ? String(metadata["control_state"]).replace(/_/g, " ") : "",
+    typeof metadata?.["source"] === "string" ? String(metadata["source"]) : "",
+  ].filter(Boolean);
+  const processActions = Array.isArray(metadata?.["available_actions"])
+    ? (metadata?.["available_actions"] as unknown[]).filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const taskRunId =
+    typeof metadata?.["task_run_id"] === "number"
+      ? metadata["task_run_id"]
+      : typeof node.parent_id === "string" && node.parent_id.startsWith("task-run:")
+        ? Number(node.parent_id.slice("task-run:".length))
+        : typeof node.id === "string" && node.id.startsWith("task-run:")
+          ? Number(node.id.slice("task-run:".length))
+          : null;
+  const stepId = typeof metadata?.["step_id"] === "string" ? metadata["step_id"] : null;
+  const canInspect = typeof taskRunId === "number" && Number.isFinite(taskRunId);
+  const actionKeyBase = `${taskRunId ?? "na"}:${stepId ?? node.id}`;
   const rowContent = (
     <>
       <div className="browser-entry__icon"><ProcessIcon kind={node.kind} /></div>
@@ -526,8 +576,71 @@ function ProcessTreeNode({ node, depth = 0 }: { node: ChatProcessEntry; depth?: 
         {typeof node.pid === "number" ? <span className="process-tree__meta">pid {node.pid}</span> : null}
         {runtimeChildCount > 0 ? <span className="process-tree__meta">{runtimeChildCount} child</span> : null}
         {node.timestamp ? <span className="process-tree__meta">{formatTime(node.timestamp)}</span> : null}
+        {processMetaChips.map((chip) => <span key={chip} className="process-tree__meta process-tree__meta--chip">{chip}</span>)}
+        {processActions.length > 0 ? <span className="process-tree__meta process-tree__meta--actions">{processActions.join(" · ")}</span> : null}
       </div>
-      {isRuntimeNode ? <CopyTextButton content={node.label} title="Copy process label" /> : <span aria-hidden="true" />}
+      <div className="process-tree__actions">
+        {canInspect ? (
+          <button
+            type="button"
+            className="chat-copy-inline-btn"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onInspectTaskRun?.(taskRunId as number);
+            }}
+            title="Inspect task run"
+          >
+            Inspect
+          </button>
+        ) : null}
+        {typeof taskRunId === "number" && stepId && processActions.includes("wait") ? (
+          <button
+            type="button"
+            className="chat-copy-inline-btn"
+            disabled={activeActionKey === `${actionKeyBase}:wait`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onWaitSubagent?.(taskRunId, stepId);
+            }}
+            title="Wait for subagent update"
+          >
+            {activeActionKey === `${actionKeyBase}:wait` ? "Waiting" : "Wait"}
+          </button>
+        ) : null}
+        {typeof taskRunId === "number" && stepId && processActions.includes("cancel") ? (
+          <button
+            type="button"
+            className="chat-copy-inline-btn"
+            disabled={activeActionKey === `${actionKeyBase}:cancel`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCancelSubagent?.(taskRunId, stepId);
+            }}
+            title="Cancel subagent handle"
+          >
+            {activeActionKey === `${actionKeyBase}:cancel` ? "Cancelling" : "Cancel"}
+          </button>
+        ) : null}
+        {typeof taskRunId === "number" && stepId && processActions.includes("close") ? (
+          <button
+            type="button"
+            className="chat-copy-inline-btn"
+            disabled={activeActionKey === `${actionKeyBase}:close`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCloseSubagent?.(taskRunId, stepId);
+            }}
+            title="Close subagent handle"
+          >
+            {activeActionKey === `${actionKeyBase}:close` ? "Closing" : "Close"}
+          </button>
+        ) : null}
+        {isRuntimeNode ? <CopyTextButton content={node.label} title="Copy process label" /> : <span aria-hidden="true" />}
+      </div>
     </>
   );
   return (
@@ -550,7 +663,16 @@ function ProcessTreeNode({ node, depth = 0 }: { node: ChatProcessEntry; depth?: 
       {node.children.length > 0 ? (
         <div className="process-tree__children">
           {node.children.map((child) => (
-            <ProcessTreeNode key={child.id} node={child} depth={depth + 1} />
+            <ProcessTreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              activeActionKey={activeActionKey}
+              onInspectTaskRun={onInspectTaskRun}
+              onWaitSubagent={onWaitSubagent}
+              onCancelSubagent={onCancelSubagent}
+              onCloseSubagent={onCloseSubagent}
+            />
           ))}
         </div>
       ) : null}
@@ -1336,6 +1458,48 @@ function summarizeTaskRunInlineStatus(
 
 function backgroundText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function runtimeHandleLabel(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const handle = value as Record<string, unknown>;
+  const agentName = typeof handle["agent_name"] === "string" ? handle["agent_name"] : "";
+  const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "";
+  const controlState = typeof handle["control_state"] === "string" ? String(handle["control_state"]).replace(/_/g, " ") : "";
+  return [agentName, dispatchKind, controlState].filter(Boolean).join(" · ");
+}
+
+function renderMessageRuntimeSummary(message: MessageItem) {
+  const summary = message.runtime_summary;
+  if (!summary) return null;
+
+  const rows = [
+    summary.active_consult_handle
+      ? { key: "consult", label: "Consult", detail: runtimeHandleLabel(summary.active_consult_handle) }
+      : null,
+    summary.active_subagent_handle
+      ? { key: "subagent", label: "Subagent", detail: runtimeHandleLabel(summary.active_subagent_handle) }
+      : null,
+    summary.subagent_handles_summary
+      ? { key: "handles", label: "Handles", detail: summary.subagent_handles_summary }
+      : null,
+    summary.continuation_state_summary
+      ? { key: "continuation", label: "Continuation", detail: summary.continuation_state_summary }
+      : null,
+  ].filter((row): row is { key: string; label: string; detail: string } => Boolean(row && row.detail));
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="message-runtime-summary" aria-label="Message runtime summary">
+      {rows.map((row) => (
+        <div className="message-runtime-summary__row" key={row.key}>
+          <span className="message-runtime-summary__label">{row.label}</span>
+          <span className="message-runtime-summary__detail">{row.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function taskActivityBackgroundRows(activity: TaskActivityProjection | null) {
@@ -2643,6 +2807,8 @@ function cardBadge(card: ThreadCard) {
       return "LLM";
     case "tool_call":
       return "TOOL";
+    case "consult_call":
+      return "ASK";
     case "agent_error":
       return "ERR";
     case "tool_merge":
@@ -2686,6 +2852,8 @@ function cardTitle(card: ThreadCard) {
         return "Open file for user";
       }
       return card.tool || "Tool call";
+    case "consult_call":
+      return `${card.agent || "agent"} consulting ${card.target_agent || "agent"}`;
     case "agent_error":
       return `${card.agent || defaultAgentName(DEFAULT_AGENT_TYPE)} stream failed`;
     case "tool_merge":
@@ -2730,6 +2898,14 @@ function cardSummary(card: ThreadCard) {
           if (fileRequest) return fileRequest.path;
         }
         return card.result || "Tool execution recorded.";
+      case "consult_call":
+        if (card.status === "failed") {
+          return card.error || `Consult with ${card.target_agent || "agent"} failed.`;
+        }
+        if (card.response_preview) {
+          return `${card.target_agent || "agent"}: ${card.response_preview}`;
+        }
+        return card.question_preview || `Consulting ${card.target_agent || "agent"}.`;
       case "agent_error":
         return card.error || card.summary || "Agent stream failed before a final reply was saved.";
       case "tool_merge":
@@ -4057,6 +4233,10 @@ function renderStreamingStatusContent(message: MessageItem, className: string) {
   );
 }
 
+function isConsultCard(card: ThreadCard): card is DecoratedChatCardItem {
+  return card.kind === "consult_call";
+}
+
 function renderCardBody(card: ThreadCard) {
   switch (card.kind) {
     case "llm_call":
@@ -4112,6 +4292,29 @@ function renderCardBody(card: ThreadCard) {
           {isInternalToolPause(card) ? null : card.blocked_kind === "approval" ? (
             <div className="chat-card-summary">
               Approval pending. Open Activity to approve or reject this blocked tool request.
+            </div>
+          ) : null}
+        </>
+      );
+    case "consult_call":
+      return (
+        <>
+          <div className="chat-card-chip-row">
+            <span className="chat-card-chip chat-card-chip--accent">{card.status || "running"}</span>
+            {card.target_agent ? <span className="chat-card-chip">@{card.target_agent}</span> : null}
+          </div>
+          {card.question_preview ? (
+            <div className="chat-card-summary">
+              {card.agent || "agent"} asked {card.target_agent || "another agent"}: {card.question_preview}
+            </div>
+          ) : null}
+          {renderMarkdownContent(card.response_preview || card.error, "message-body chat-card-preview")}
+          {card.consult_step_id ? (
+            <div className="chat-card-chip-row">
+              <span className="chat-card-chip chat-card-chip--accent">{card.consult_step_id}</span>
+              {card.available_actions?.map((action) => (
+                <span key={action} className="chat-card-chip">{action}</span>
+              ))}
             </div>
           ) : null}
         </>
@@ -4365,11 +4568,20 @@ function renderCardSurface(
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
+  onInspectTaskRun?: (taskRunId: number) => void,
+  onWaitSubagent?: (taskRunId: number, stepId: string) => void,
+  onCancelSubagent?: (taskRunId: number, stepId: string) => void,
+  onCloseSubagent?: (taskRunId: number, stepId: string) => void,
+  activeActionKey?: string | null,
 ) {
   const gatePipelineId =
     "pipeline_id" in card && typeof card.pipeline_id === "number" ? card.pipeline_id : null;
   const isBlockingGate = card.kind === "gate_blocked" && gatePipelineId !== null;
   const gateBusy = gatePipelineId !== null && gateActionPipelineId === gatePipelineId;
+  const isConsult = isConsultCard(card);
+  const consultRunId = typeof card.run_id === "number" ? card.run_id : null;
+  const consultStepId = isConsult && typeof card.consult_step_id === "string" ? card.consult_step_id : null;
+  const consultActionKeyBase = `${consultRunId ?? "na"}:${consultStepId ?? card.id}`;
 
   return (
     <article className="chat-tool-card">
@@ -4410,6 +4622,47 @@ function renderCardSurface(
           >
             Reject
           </button>
+        </div>
+      ) : null}
+      {isConsult && consultRunId && consultStepId ? (
+        <div className="chat-card-actions">
+          <button
+            type="button"
+            className="chat-card-action-btn"
+            onClick={() => onInspectTaskRun?.(consultRunId)}
+          >
+            Inspect
+          </button>
+          {card.available_actions?.includes("wait") ? (
+            <button
+              type="button"
+              className="chat-card-action-btn"
+              disabled={activeActionKey === `${consultActionKeyBase}:wait`}
+              onClick={() => onWaitSubagent?.(consultRunId, consultStepId)}
+            >
+              {activeActionKey === `${consultActionKeyBase}:wait` ? "Waiting..." : "Wait"}
+            </button>
+          ) : null}
+          {card.available_actions?.includes("cancel") ? (
+            <button
+              type="button"
+              className="chat-card-action-btn chat-card-action-btn--reject"
+              disabled={activeActionKey === `${consultActionKeyBase}:cancel`}
+              onClick={() => onCancelSubagent?.(consultRunId, consultStepId)}
+            >
+              {activeActionKey === `${consultActionKeyBase}:cancel` ? "Cancelling..." : "Cancel"}
+            </button>
+          ) : null}
+          {card.available_actions?.includes("close") ? (
+            <button
+              type="button"
+              className="chat-card-action-btn chat-card-action-btn--approve"
+              disabled={activeActionKey === `${consultActionKeyBase}:close`}
+              onClick={() => onCloseSubagent?.(consultRunId, consultStepId)}
+            >
+              {activeActionKey === `${consultActionKeyBase}:close` ? "Closing..." : "Close"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </article>
@@ -4614,6 +4867,11 @@ function renderCard(
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
+  onInspectTaskRun?: (taskRunId: number) => void,
+  onWaitSubagent?: (taskRunId: number, stepId: string) => void,
+  onCancelSubagent?: (taskRunId: number, stepId: string) => void,
+  onCloseSubagent?: (taskRunId: number, stepId: string) => void,
+  activeActionKey?: string | null,
 ) {
   const sender = cardActorName(card);
 
@@ -4621,7 +4879,17 @@ function renderCard(
     <div key={card.id} className="chat-card-row">
       <div className="chat-avatar assistant">{initials(sender)}</div>
       <div className="chat-group-messages chat-card-stack">
-        {renderCardSurface(card, gateActionPipelineId, onApproveGate, onRejectGate)}
+        {renderCardSurface(
+          card,
+          gateActionPipelineId,
+          onApproveGate,
+          onRejectGate,
+          onInspectTaskRun,
+          onWaitSubagent,
+          onCancelSubagent,
+          onCloseSubagent,
+          activeActionKey,
+        )}
       </div>
     </div>
   );
@@ -4633,6 +4901,7 @@ function renderActivityBatch(
   isCurrentBatch: boolean,
   currentActivityAgentName: string | null,
   expandedProgressCards: Record<string, StepExpansionValue>,
+  autoExpandCurrentStep: boolean,
   onToggleProgressCard: (groupKey: string, cardId: string, isExpanded: boolean) => void,
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
@@ -4698,7 +4967,15 @@ function renderActivityBatch(
               const isActiveGroup = group.name === fallbackActiveName;
               const orderedCards = group.cards;
               const groupKey = `${batchId}:${group.name}`;
-              const expandedCardId = expandedProgressCards[groupKey] ?? null;
+              const currentCardId =
+                isActiveGroup && isCurrentBatch
+                  ? orderedCards[orderedCards.length - 1]?.id ?? null
+                  : null;
+              const expandedCardId = Object.prototype.hasOwnProperty.call(expandedProgressCards, groupKey)
+                ? expandedProgressCards[groupKey]
+                : autoExpandCurrentStep
+                  ? currentCardId
+                  : null;
               return (
                 <section
                   key={`${batchId}-${group.name}`}
@@ -4724,8 +5001,8 @@ function renderActivityBatch(
                         card,
                         groupKey,
                         index,
-                        isActiveGroup && card.id === group.cards[group.cards.length - 1]?.id && isCurrentBatch,
-                        isActiveGroup && card.id === group.cards[group.cards.length - 1]?.id && isCurrentBatch,
+                        card.id === currentCardId,
+                        card.id === currentCardId,
                         expandedCardId === card.id,
                         onToggleProgressCard,
                         gateActionPipelineId,
@@ -4886,6 +5163,7 @@ function renderMessage(
             <span className="soft-pill">local</span>
           )}
         </div>
+        {renderMessageRuntimeSummary(message)}
       </div>
     </div>
   );
@@ -5159,6 +5437,8 @@ export function ChatTab({
   onCloseActivity,
   onOpenSettings,
   onRefresh,
+  onRefreshRuntime,
+  onPatchSubagentRuntime,
   onSyncProject,
   syncingProject,
   onApproveGate,
@@ -5187,6 +5467,9 @@ export function ChatTab({
   const [approvalActionItemId, setApprovalActionItemId] = useState<number | null>(null);
   const [approvalActionError, setApprovalActionError] = useState("");
   const [approvalActionMessage, setApprovalActionMessage] = useState("");
+  const [subagentActionKey, setSubagentActionKey] = useState<string | null>(null);
+  const [subagentActionMessage, setSubagentActionMessage] = useState("");
+  const [subagentActionError, setSubagentActionError] = useState("");
   const [pendingApprovalItems, setPendingApprovalItems] = useState<ApprovalQueueItem[]>([]);
   const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
   const composerRef = useRef<HTMLDivElement | null>(null);
@@ -5492,6 +5775,9 @@ export function ChatTab({
     setApprovalActionItemId(null);
     setApprovalActionError("");
     setApprovalActionMessage("");
+    setSubagentActionKey(null);
+    setSubagentActionError("");
+    setSubagentActionMessage("");
     setPendingApprovalItems([]);
     setApprovalQueueLoaded(false);
     draftHistoryIndexRef.current = null;
@@ -5624,6 +5910,99 @@ export function ChatTab({
       return next;
     });
   }, []);
+
+  const inspectTaskRun = useCallback((taskRunId: number) => {
+    setSelectedTaskRunId(taskRunId);
+    onOpenActivity();
+  }, [onOpenActivity]);
+
+  const refreshSubagentRuntime = useCallback(async (taskRunId: number) => {
+    invalidateTaskRunDetail(taskRunId);
+    if (onRefreshRuntime) {
+      await onRefreshRuntime(taskRunId);
+      return;
+    }
+    await onRefresh();
+  }, [invalidateTaskRunDetail, onRefresh, onRefreshRuntime]);
+
+  const handleWaitSubagent = useCallback(async (taskRunId: number, stepId: string) => {
+    const actionKey = `${taskRunId}:${stepId}:wait`;
+    setSubagentActionKey(actionKey);
+    setSubagentActionError("");
+    setSubagentActionMessage("");
+    try {
+      onPatchSubagentRuntime?.({
+        taskRunId,
+        stepId,
+        status: "waiting",
+        controlState: "waiting",
+        note: "Waiting for subagent update.",
+      });
+      const result = await api.waitTaskRunSubagent(taskRunId, stepId, { timeoutMs: 1500 });
+      await refreshSubagentRuntime(taskRunId);
+      const waitResult = result["wait_result"] as Record<string, unknown> | undefined;
+      const suggestedPoll = typeof waitResult?.["suggested_poll"] === "string" ? waitResult["suggested_poll"] : "continue";
+      const terminal = waitResult?.["terminal"] === true;
+      setSubagentActionMessage(terminal ? `Subagent ${stepId} reached a terminal state.` : `Wait checked ${stepId} (${suggestedPoll}).`);
+    } catch (error) {
+      await refreshSubagentRuntime(taskRunId);
+      setSubagentActionError(error instanceof Error ? error.message : "Failed to wait for subagent.");
+    } finally {
+      setSubagentActionKey((current) => current === actionKey ? null : current);
+    }
+  }, [onPatchSubagentRuntime, refreshSubagentRuntime]);
+
+  const handleCancelSubagent = useCallback(async (taskRunId: number, stepId: string) => {
+    const actionKey = `${taskRunId}:${stepId}:cancel`;
+    setSubagentActionKey(actionKey);
+    setSubagentActionError("");
+    setSubagentActionMessage("");
+    try {
+      onPatchSubagentRuntime?.({
+        taskRunId,
+        stepId,
+        status: "cancelled",
+        availableActions: [],
+        controlState: "cancelled",
+        terminal: true,
+        note: "Cancelled from chat process tree.",
+      });
+      await api.cancelTaskRunSubagent(taskRunId, stepId, { cancelled_by: "home", note: "Cancelled from chat process tree." });
+      await refreshSubagentRuntime(taskRunId);
+      setSubagentActionMessage(`Cancelled subagent handle ${stepId}.`);
+    } catch (error) {
+      await refreshSubagentRuntime(taskRunId);
+      setSubagentActionError(error instanceof Error ? error.message : "Failed to cancel subagent.");
+    } finally {
+      setSubagentActionKey((current) => current === actionKey ? null : current);
+    }
+  }, [onPatchSubagentRuntime, refreshSubagentRuntime]);
+
+  const handleCloseSubagent = useCallback(async (taskRunId: number, stepId: string) => {
+    const actionKey = `${taskRunId}:${stepId}:close`;
+    setSubagentActionKey(actionKey);
+    setSubagentActionError("");
+    setSubagentActionMessage("");
+    try {
+      onPatchSubagentRuntime?.({
+        taskRunId,
+        stepId,
+        status: "closed",
+        availableActions: [],
+        controlState: "closed",
+        terminal: true,
+        note: "Closed from chat process tree.",
+      });
+      await api.closeTaskRunSubagent(taskRunId, stepId, { cancelled_by: "home", note: "Closed from chat process tree." });
+      await refreshSubagentRuntime(taskRunId);
+      setSubagentActionMessage(`Closed subagent handle ${stepId}.`);
+    } catch (error) {
+      await refreshSubagentRuntime(taskRunId);
+      setSubagentActionError(error instanceof Error ? error.message : "Failed to close subagent.");
+    } finally {
+      setSubagentActionKey((current) => current === actionKey ? null : current);
+    }
+  }, [onPatchSubagentRuntime, refreshSubagentRuntime]);
 
   const handleResolveApprovalQueueItem = useCallback(
     async (item: ApprovalQueueItem, action: "approve" | "reject", remember = false) => {
@@ -6707,6 +7086,7 @@ export function ChatTab({
                     item.id === latestActivityBatchId,
                     item.id === latestActivityBatchId ? currentActivityAgentName : null,
                     expandedProgressCards,
+                    !stepAutoExpansionDisabled,
                     toggleProgressCard,
                     gateActionPipelineId,
                       handleApproveGate,
@@ -6731,7 +7111,17 @@ export function ChatTab({
                         handleResolveApprovalQueueItem,
                         handleAnalyzeFailureStep,
                       )
-                    : renderCard(item.card, gateActionPipelineId, handleApproveGate, handleRejectGate),
+                    : renderCard(
+                        item.card,
+                        gateActionPipelineId,
+                        handleApproveGate,
+                        handleRejectGate,
+                        inspectTaskRun,
+                        handleWaitSubagent,
+                        handleCancelSubagent,
+                        handleCloseSubagent,
+                        subagentActionKey,
+                      ),
           )}
         </>
       );
@@ -7250,10 +7640,19 @@ export function ChatTab({
 
               {projectBrowserTab === "processes" ? (
                 <div className="project-browser__section project-browser__section--processes">
+                  {subagentActionMessage ? <div className="empty-card">{subagentActionMessage}</div> : null}
+                  {subagentActionError ? <div className="empty-card">{subagentActionError}</div> : null}
                   {browserProcessCount === 0 || !browserProcessTree ? (
                     <div className="empty-card">Running background tasks will appear here.</div>
                   ) : (
-                    <ProcessTreeNode node={browserProcessTree} />
+                    <ProcessTreeNode
+                      node={browserProcessTree}
+                      activeActionKey={subagentActionKey}
+                      onInspectTaskRun={inspectTaskRun}
+                      onWaitSubagent={handleWaitSubagent}
+                      onCancelSubagent={handleCancelSubagent}
+                      onCloseSubagent={handleCloseSubagent}
+                    />
                   )}
                 </div>
               ) : null}

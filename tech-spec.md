@@ -128,7 +128,7 @@ Agent 抽象与配置层：
 | `github_manager.py` | GitHub 仓库、分支、PR、Issue、Release、文件操作 |
 | `web_search.py`, `web_fetch.py` | Web 搜索和网页抓取 |
 | `retrieve_memory.py`, `save_memory.py` | 长期记忆读写 |
-| `collaboration_tools.py`, `query_agent.py` | 多 Agent 协作、委派、询问 |
+| `collaboration_tools.py`, `consult_agent.py` | 多 Agent 协作、委派、咨询 |
 | `skill_manager.py` | Catown Skill 管理 |
 
 工具边界清晰，但因为工具具有副作用，需要依赖审批、审计、权限策略来控制风险。

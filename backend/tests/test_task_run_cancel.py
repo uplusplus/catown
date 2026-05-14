@@ -216,6 +216,84 @@ def test_list_task_run_subagent_handles(client):
     assert handles["entries"][1]["dependency_step_id"] == "step-1"
 
 
+def test_consult_subagent_handles_appear_in_runtime_api(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Consult Handle Run", "agent_names": ["analyst", "developer"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Consult subagent handles",
+            user_request="Inspect consult subagent handles.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add(
+            TaskRunEvent(
+                task_run_id=task_run.id,
+                event_index=1,
+                event_type="scheduler_step_dispatched",
+                agent_name="analyst",
+                payload_json=json.dumps(
+                    {
+                        "step_id": "consult-analyst-1",
+                        "position": 0,
+                        "requested_name": "analyst",
+                        "agent_id": "analyst",
+                        "agent_name": "analyst",
+                        "agent_type": "analyst",
+                        "dispatch_kind": "consult",
+                        "wait_for_step_id": None,
+                        "attached_to_step_id": None,
+                        "source": "consult_agent",
+                        "context": {
+                            "requested_by": "boss",
+                            "question_preview": "Summarize the main implementation risk.",
+                        },
+                        "step_state": {
+                            "status": "running",
+                            "dispatch_count": 1,
+                            "completion_count": 0,
+                        },
+                    }
+                ),
+            )
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    listed = client.get(f"/api/task-runs/{task_run_id}/subagents")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["subagent_lifecycle_summary"] == "1 subagents · 1 running"
+    assert payload["subagent_handles_summary"] == "1 handle · 1 await completion · 1 cancellable"
+    handle = payload["subagent_handles"]["entries"][0]
+    assert handle["step_id"] == "consult-analyst-1"
+    assert handle["dispatch_kind"] == "consult"
+    assert handle["agent_name"] == "analyst"
+    assert handle["control_state"] == "await_completion"
+    assert handle["available_actions"] == ["wait", "cancel"]
+
+    waiting = client.get(f"/api/task-runs/{task_run_id}/subagents/consult-analyst-1/wait?since_event_index=1")
+    assert waiting.status_code == 200
+    wait_payload = waiting.json()
+    assert wait_payload["subagent_handle"]["dispatch_kind"] == "consult"
+    assert wait_payload["wait_result"]["awaitable"] is True
+    assert wait_payload["wait_result"]["terminal"] is False
+    assert wait_payload["wait_result"]["state_changed"] is False
+    assert wait_payload["wait_result"]["suggested_poll"] == "continue"
+
+
 def test_cancel_single_task_run_subagent(client):
     from models.database import SessionLocal, TaskRun, TaskRunEvent
 
@@ -311,6 +389,120 @@ def test_cancel_single_task_run_subagent(client):
     assert cancelled_handle["available_actions"] == []
     assert cancelled_handle["terminal"] is True
     assert detail["subagent_handles_summary"] == "2 handles · 1 await completion · 1 cancelled · 1 cancellable"
+
+
+def test_close_completed_consult_subagent_handle(client):
+    from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+    response = client.post("/api/projects", json={"name": "Close Consult Handle Run", "agent_names": ["analyst"]})
+    assert response.status_code == 200
+    chatroom_id = response.json()["chatroom_id"]
+
+    db = SessionLocal()
+    try:
+        task_run = TaskRun(
+            chatroom_id=chatroom_id,
+            run_kind="multi_agent_orchestration",
+            status="running",
+            title="Close consult handle",
+            user_request="Archive finished consult handle.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-analyst-2",
+                            "position": 0,
+                            "requested_name": "analyst",
+                            "agent_id": "analyst",
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "wait_for_step_id": None,
+                            "attached_to_step_id": None,
+                            "source": "consult_agent",
+                            "context": {
+                                "requested_by": "boss",
+                                "question_preview": "Review the plan.",
+                            },
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                ),
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_completed",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-analyst-2",
+                            "position": 0,
+                            "requested_name": "analyst",
+                            "agent_id": "analyst",
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "wait_for_step_id": None,
+                            "attached_to_step_id": None,
+                            "source": "consult_agent",
+                            "context": {
+                                "requested_by": "boss",
+                                "question_preview": "Review the plan.",
+                            },
+                            "response_preview": "The rollout should be staged.",
+                            "step_state": {
+                                "status": "completed",
+                                "dispatch_count": 1,
+                                "completion_count": 1,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    waiting = client.get(f"/api/task-runs/{task_run_id}/subagents/consult-analyst-2/wait?since_event_index=1")
+    assert waiting.status_code == 200
+    wait_payload = waiting.json()
+    assert wait_payload["subagent_handle"]["dispatch_kind"] == "consult"
+    assert wait_payload["wait_result"]["terminal"] is True
+    assert wait_payload["wait_result"]["state_changed"] is True
+    assert wait_payload["wait_result"]["suggested_poll"] == "immediate"
+
+    closed = client.post(
+        f"/api/task-runs/{task_run_id}/subagents/consult-analyst-2/close",
+        json={"note": "Archive this finished consult handle.", "cancelled_by": "tester"},
+    )
+    assert closed.status_code == 200
+    payload = closed.json()
+    assert payload["closed"] is True
+    handle = payload["subagent_handle"]
+    assert handle["dispatch_kind"] == "consult"
+    assert handle["closed"] is True
+    assert handle["closed_by"] == "tester"
+    assert handle["close_note"] == "Archive this finished consult handle."
+    assert handle["available_actions"] == []
+    assert payload["detail"]["checkpoint_snapshot"]["subagent_handles"]["entries"][0]["closed_at"] is not None
+    event_types = [event["event_type"] for event in payload["detail"]["events"]]
+    assert event_types[-1] == "subagent_handle_closed"
 
 
 def test_wait_task_run_subagent_reports_poll_contract(client):

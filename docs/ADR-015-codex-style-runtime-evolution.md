@@ -377,7 +377,7 @@ Catown 当前更接近“协作工具”层：
 
 - `delegate_task`
 - `send_direct_message`
-- `query_agent`
+- `consult_agent`
 
 这些能力可用，但还不是统一的 runtime-managed subagent lifecycle。  
 Monitor 里的 `Sub-Agent Tree` 目前也更像项目 agent 目录，而不是实际运行时子树。

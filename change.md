@@ -30,7 +30,7 @@ The new prompt layout is:
 - `backend/pipeline/engine.py`
 - `backend/routes/api.py`
 - `backend/chatrooms/manager.py`
-- `backend/tools/query_agent.py`
+- `backend/tools/consult_agent.py`
 - `backend/tests/test_prompt_context_builder.py`
 - `backend/tests/test_context_integration.py`
 
@@ -128,11 +128,11 @@ Updated `backend/chatrooms/manager.py`:
 - Fallback `ChatroomManager._call_agent_llm()` now uses the shared chat prompt builder instead of its own partial prompt assembly path.
 - Shared chat assembly now injects task-state fragments ahead of generic runtime fragments, so chat/fallback paths keep the current request, active goal, blocker, and validation checklist in a higher-priority context layer.
 
-### Query Agent Tool
+### Consult Agent Tool
 
-Updated `backend/tools/query_agent.py`:
+Updated `backend/tools/consult_agent.py`:
 
-- `query_agent` now uses `target_agent` as the tool parameter instead of the ambiguous `agent_name`.
+- `consult_agent` now uses `target_agent` as the tool parameter instead of the ambiguous `agent_name`.
 - Runtime caller metadata is now carried separately via `caller_agent_name`.
 - The queried agent now receives the same layered prompt model as other chat entry points.
 - The queried agent now also receives task-state fragments derived from the shared project state and the current query payload.
@@ -167,17 +167,17 @@ Added `backend/tests/test_prompt_context_builder.py` with coverage for:
 
 Added `backend/tests/test_context_integration.py` with coverage for:
 
-- `query_agent` uses layered prompt assembly and the new `target_agent` schema.
+- `consult_agent` uses layered prompt assembly and the new `target_agent` schema.
 - fallback `ChatroomManager._call_agent_llm()` uses the shared chat prompt builder.
-- task-state fragments appear in both `query_agent` and fallback chat assembly.
+- task-state fragments appear in both `consult_agent` and fallback chat assembly.
 
 ## Test Results
 
 Passed:
 
 ```bash
-python -m py_compile backend/services/context_builder.py backend/services/turn_state.py backend/services/chat_prompt_builder.py backend/pipeline/engine.py backend/routes/api.py backend/chatrooms/manager.py backend/tools/query_agent.py backend/tests/test_prompt_context_builder.py backend/tests/test_context_integration.py
-python -m py_compile backend/services/task_state.py backend/services/chat_prompt_builder.py backend/services/context_builder.py backend/tools/query_agent.py backend/tests/test_prompt_context_builder.py backend/tests/test_context_integration.py
+python -m py_compile backend/services/context_builder.py backend/services/turn_state.py backend/services/chat_prompt_builder.py backend/pipeline/engine.py backend/routes/api.py backend/chatrooms/manager.py backend/tools/consult_agent.py backend/tests/test_prompt_context_builder.py backend/tests/test_context_integration.py
+python -m py_compile backend/services/task_state.py backend/services/chat_prompt_builder.py backend/services/context_builder.py backend/tools/consult_agent.py backend/tests/test_prompt_context_builder.py backend/tests/test_context_integration.py
 pytest backend/tests/test_prompt_context_builder.py backend/tests/test_context_integration.py
 ```
 

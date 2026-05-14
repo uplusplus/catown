@@ -16,6 +16,8 @@ import type {
   MonitorTaskRunStep,
   MonitorTaskRunStepsResponse,
   MonitorTaskRunsResponse,
+  MonitorApprovalAuditEntry,
+  MonitorApprovalAuditResponse,
   MonitorApprovalQueueEntry,
   MonitorApprovalQueueResponse,
   MonitorFileEvent,
@@ -352,8 +354,8 @@ function runtimeLabel(type: string) {
 function approvalStatusTone(status: string | null | undefined) {
   const normalized = (status || "").toLowerCase();
   if (normalized === "pending") return "warning";
-  if (normalized === "approved") return "success";
-  if (normalized === "rejected") return "error";
+  if (["approved", "approve", "allow", "allow_no_timeout"].includes(normalized)) return "success";
+  if (["rejected", "reject", "deny"].includes(normalized)) return "error";
   return runtimeTone(normalized);
 }
 
@@ -592,6 +594,22 @@ function monitorStringField(value: unknown) {
 
 function monitorNumberField(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function compactMonitorJson(value: unknown, limit = 420) {
+  if (value === null || value === undefined) return "";
+  let text = "";
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch {
+      text = String(value);
+    }
+  }
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 3).trimEnd()}...`;
 }
 
 function parseRunScheduleStep(value: unknown): RunScheduleStep | null {
@@ -1287,6 +1305,44 @@ function mergeMonitorApprovalQueueItem(
     counts: normalizeMonitorApprovalQueueEntries([incoming, ...current.entries.filter((item) => item.id !== incoming.id)]),
     entries: [incoming],
   });
+}
+
+function compareMonitorApprovalAuditNewest(
+  left: MonitorApprovalAuditEntry,
+  right: MonitorApprovalAuditEntry,
+) {
+  return monitorCreatedAtMs(right.created_at) - monitorCreatedAtMs(left.created_at) || right.id - left.id;
+}
+
+function normalizeMonitorApprovalAuditEntries(entries: MonitorApprovalAuditEntry[]) {
+  return {
+    all: entries.length,
+    approve: entries.filter((item) => (item.decision || "").toLowerCase() === "approve").length,
+    reject: entries.filter((item) => (item.decision || "").toLowerCase() === "reject").length,
+    allow: entries.filter((item) => (item.decision || "").toLowerCase() === "allow").length,
+    deny: entries.filter((item) => (item.decision || "").toLowerCase() === "deny").length,
+    remembered: entries.filter((item) => (item.event_kind || "").toLowerCase() === "authorization_rule_saved").length,
+    automatic: entries.filter((item) => (item.event_kind || "").toLowerCase() === "authorization_rule_matched").length,
+  };
+}
+
+function mergeMonitorApprovalAudit(
+  current: MonitorApprovalAuditResponse | null,
+  incoming: MonitorApprovalAuditResponse,
+): MonitorApprovalAuditResponse {
+  const merged = new Map<number, MonitorApprovalAuditEntry>();
+  (current?.entries ?? []).forEach((item) => {
+    merged.set(item.id, item);
+  });
+  incoming.entries.forEach((item) => {
+    merged.set(item.id, { ...merged.get(item.id), ...item });
+  });
+  const entries = [...merged.values()].sort(compareMonitorApprovalAuditNewest).slice(0, 500);
+  return {
+    ...incoming,
+    counts: { ...incoming.counts, ...normalizeMonitorApprovalAuditEntries(entries) },
+    entries,
+  };
 }
 
 function enrichApprovalQueueItemFromTaskRun(
@@ -3504,6 +3560,8 @@ export function MonitorTab() {
   const [processesResponse, setProcessesResponse] = useState<MonitorProcessesResponse | null>(null);
   const [filesResponse, setFilesResponse] = useState<MonitorFilesResponse | null>(null);
   const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
+  const [approvalAuditResponse, setApprovalAuditResponse] = useState<MonitorApprovalAuditResponse | null>(null);
+  const [approvalAuditFilter, setApprovalAuditFilter] = useState("all");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -3636,7 +3694,8 @@ export function MonitorTab() {
   useEffect(() => {
     if (activePage !== "approvals") return;
     void refreshApprovalQueue();
-  }, [activePage]);
+    void refreshApprovalAudit();
+  }, [activePage, approvalAuditFilter]);
 
   useEffect(() => {
     if (activePage !== "files" || filesResponse) return;
@@ -4487,6 +4546,7 @@ export function MonitorTab() {
     () => approvalQueueResponse?.entries.filter((item) => item.status !== "pending") ?? [],
     [approvalQueueResponse],
   );
+  const approvalAuditEntries = approvalAuditResponse?.entries ?? [];
 
   const limitsRows = useMemo(() => {
     if (!overview) return [] as Array<{ label: string; value: number; max: number; detail: string }>;
@@ -4585,6 +4645,19 @@ export function MonitorTab() {
     }
   }
 
+  async function refreshApprovalAudit() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorApprovalAudit(approvalAuditFilter, 240);
+      setApprovalAuditResponse((current) => mergeMonitorApprovalAudit(current, response));
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load monitor approval audit");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function refreshLogs() {
     try {
       const response = await api.getMonitorLogs();
@@ -4645,7 +4718,7 @@ export function MonitorTab() {
           [item.id]: updated.status === "rejected" ? "Rejected" : "Updated",
         }));
       }
-      await loadMonitor(true);
+      await Promise.all([loadMonitor(true), refreshApprovalQueue(), refreshApprovalAudit()]);
     } catch (nextError) {
       setApprovalQueueActionErrors((current) => ({
         ...current,
@@ -6988,9 +7061,32 @@ export function MonitorTab() {
           </div>
           <div className="inline-actions">
             <span className="small-note">{approvalQueueResponse?.counts.pending ?? approvalsPending.length} pending</span>
-            <button type="button" className="refresh-btn" onClick={() => void refreshApprovalQueue()} disabled={refreshing}>
+            <button
+              type="button"
+              className="refresh-btn"
+              onClick={() => void Promise.all([refreshApprovalQueue(), refreshApprovalAudit()])}
+              disabled={refreshing}
+            >
               ↻ Refresh
             </button>
+          </div>
+        </div>
+        <div className="grid" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-title">Approval Audit</div>
+            <div className="card-value">{formatNumber(approvalAuditResponse?.counts.all ?? approvalAuditEntries.length)}</div>
+            <div className="card-sub">
+              {formatNumber(approvalAuditResponse?.counts.automatic ?? 0)} automatic · {formatNumber(approvalAuditResponse?.counts.remembered ?? 0)} remembered rules
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Manual Decisions</div>
+            <div className="card-value">
+              {formatNumber((approvalAuditResponse?.counts.approve ?? 0) + (approvalAuditResponse?.counts.reject ?? 0))}
+            </div>
+            <div className="card-sub">
+              {formatNumber(approvalAuditResponse?.counts.approve ?? 0)} approved · {formatNumber(approvalAuditResponse?.counts.reject ?? 0)} rejected
+            </div>
           </div>
         </div>
         <div className="card" style={{ marginBottom: 16 }}>
@@ -7048,6 +7144,82 @@ export function MonitorTab() {
             </div>
           ) : (
             <div className="muted-block">No pending approvals right now.</div>
+          )}
+        </div>
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+            <div>
+              <SectionTitle title="Approval Audit Log" />
+              <div className="small-note">All manual approval decisions, remembered rules, and automatic rule matches.</div>
+            </div>
+            <div className="inline-actions">
+              {(["all", "approve", "reject", "allow", "deny"] as const).map((decision) => (
+                <button
+                  key={decision}
+                  type="button"
+                  className={`time-btn ${approvalAuditFilter === decision ? "active" : ""}`}
+                  onClick={() => setApprovalAuditFilter(decision)}
+                >
+                  {decision === "all" ? "all" : titleCaseLabel(decision)}
+                </button>
+              ))}
+            </div>
+          </div>
+          {approvalAuditEntries.length > 0 ? (
+            <div className="feed-list">
+              {approvalAuditEntries.map((item) => (
+                <div key={item.id} className="feed-item">
+                  <div className={`feed-badge feed-badge--${approvalStatusTone(item.decision)}`}>
+                    {titleCaseLabel(item.decision)}
+                  </div>
+                  <div className="feed-body">
+                    <div className="feed-head">
+                      <strong>{titleCaseLabel(item.event_kind)}</strong>
+                      <span className="small-note">{formatTimeAgo(item.created_at)}</span>
+                    </div>
+                    <div className="feed-meta">
+                      <span>{item.source}</span>
+                      {item.resolved_by ? <span>{item.resolved_by}</span> : null}
+                      {item.agent_name ? <span>{item.agent_name}</span> : null}
+                      {item.tool_name ? <span>{item.tool_name}</span> : null}
+                      {item.scope ? <span>{item.scope}</span> : null}
+                    </div>
+                    <div className="feed-preview">
+                      {item.command_preview || item.preview || item.reason || "Approval event recorded."}
+                    </div>
+                    {item.approval_fingerprint ? (
+                      <div className="muted-block" style={{ marginTop: 8 }}>
+                        <strong>Fingerprint</strong>
+                        <div className="mono" style={{ marginTop: 4, overflowWrap: "anywhere" }}>
+                          {item.approval_fingerprint}
+                        </div>
+                        <div className="small-note" style={{ marginTop: 4 }}>
+                          {item.approval_fingerprint_kind || item.matcher_type || "approval fingerprint"}
+                        </div>
+                      </div>
+                    ) : null}
+                    {item.approval_fingerprint_input && Object.keys(item.approval_fingerprint_input).length > 0 ? (
+                      <details className="muted-block" style={{ marginTop: 8 }}>
+                        <summary>Fingerprint input</summary>
+                        <pre className="monitor-pre" style={{ marginTop: 8, maxHeight: 180, overflow: "auto" }}>
+                          {compactMonitorJson(item.approval_fingerprint_input)}
+                        </pre>
+                      </details>
+                    ) : null}
+                    <div className="approval-card__meta" style={{ marginTop: 8 }}>
+                      {item.queue_item_id ? <span className="tag">queue #{item.queue_item_id}</span> : null}
+                      {item.preference_id ? <span className="tag">rule #{item.preference_id}</span> : null}
+                      {item.project_id ? <span className="tag">project #{item.project_id}</span> : null}
+                      {item.chatroom_id ? <span className="tag">chat #{item.chatroom_id}</span> : null}
+                      {item.matcher_type ? <span className="tag">{item.matcher_type}</span> : null}
+                      {item.matcher_value ? <span className="tag mono">matcher {item.matcher_value.slice(0, 10)}</span> : null}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted-block">No approval audit records captured yet.</div>
           )}
         </div>
         <div className="card" style={{ marginBottom: 16 }}>

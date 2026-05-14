@@ -116,12 +116,62 @@ def test_subagent_lifecycle_projects_scheduler_events():
     assert handles["cancellable_count"] == 1
     assert handles["control_state_counts"] == {"completed": 1, "await_dispatch": 1}
     assert handles["entries"][0]["terminal"] is True
-    assert handles["entries"][0]["available_actions"] == []
+    assert handles["entries"][0]["available_actions"] == ["close"]
     assert handles["entries"][1]["awaitable"] is True
-    assert handles["entries"][1]["cancellable"] is True
-    assert handles["entries"][1]["dependency_step_id"] == "step-1"
-    assert handles["entries"][1]["available_actions"] == ["wait", "cancel"]
-    assert summarize_subagent_runtime_handles(handles) == "2 handles · 1 await dispatch · 1 completed · 1 cancellable"
+
+
+def test_subagent_lifecycle_projects_consult_dispatch_events():
+    now = datetime.now()
+    events = [
+        _event(
+            "scheduler_step_dispatched",
+            {
+                "step_id": "consult-1",
+                "position": 0,
+                "agent_name": "Analyst",
+                "agent_type": "analyst",
+                "dispatch_kind": "consult",
+                "source": "consult_agent",
+                "step_state": {
+                    "status": "running",
+                    "dispatch_count": 1,
+                    "completion_count": 0,
+                },
+            },
+            created_at=now,
+        ),
+        _event(
+            "scheduler_step_completed",
+            {
+                "step_id": "consult-1",
+                "position": 0,
+                "agent_name": "Analyst",
+                "agent_type": "analyst",
+                "dispatch_kind": "consult",
+                "source": "consult_agent",
+                "step_state": {
+                    "status": "completed",
+                    "dispatch_count": 1,
+                    "completion_count": 1,
+                },
+            },
+            created_at=now + timedelta(seconds=1),
+        ),
+    ]
+
+    lifecycle = build_subagent_lifecycle_from_events(events)
+
+    assert lifecycle["subagent_count"] == 1
+    assert lifecycle["status_counts"] == {"completed": 1}
+    assert lifecycle["subagents"][0]["dispatch_kind"] == "consult"
+    assert lifecycle["subagents"][0]["source"] == "consult_agent"
+    handles = build_subagent_runtime_handles(lifecycle)
+    assert handles["handle_count"] == 1
+    assert handles["cancellable_count"] == 0
+    assert handles["entries"][0]["dispatch_kind"] == "consult"
+    assert handles["entries"][0]["control_state"] == "completed"
+    assert handles["entries"][0]["available_actions"] == ["close"]
+    assert summarize_subagent_runtime_handles(handles) == "1 handle · 1 completed"
 
 
 def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
@@ -199,6 +249,90 @@ def test_task_checkpoint_includes_subagent_lifecycle(fresh_db):
         assert snapshot["subagent_handles"]["control_state_counts"] == {"await_completion": 1}
         assert snapshot["subagent_handles"]["entries"][0]["available_actions"] == ["wait", "cancel"]
         assert snapshot["subagent_handles_summary"] == "1 handle · 1 await completion · 1 cancellable"
+    finally:
+        db.close()
+
+
+def test_task_checkpoint_marks_consult_subagent_in_continuation_state(fresh_db):
+    from services.run_ledger import build_task_run_checkpoint_snapshot
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Consult continuation")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="project_single_agent",
+            status="running",
+            title="Consult projection",
+            user_request="Ask analyst for help.",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        db.add_all(
+            [
+                fresh_db.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="Analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-1",
+                            "position": 0,
+                            "agent_name": "Analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "source": "consult_agent",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                ),
+                fresh_db.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_step_completed",
+                    agent_name="Analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-1",
+                            "position": 0,
+                            "agent_name": "Analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "source": "consult_agent",
+                            "response_preview": "Short consult answer",
+                            "step_state": {
+                                "status": "completed",
+                                "dispatch_count": 1,
+                                "completion_count": 1,
+                            },
+                        }
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        db.refresh(task_run)
+
+        snapshot = build_task_run_checkpoint_snapshot(task_run)
+        assert snapshot["latest_subagent_step"]["dispatch_kind"] == "consult"
+        assert snapshot["latest_subagent_step"]["status"] == "completed"
+        assert snapshot["latest_subagent_step"]["response_preview"] == "Short consult answer"
+        assert snapshot["continuation_state"]["latest_subagent_dispatch_kind"] == "consult"
+        assert snapshot["continuation_state"]["latest_subagent_status"] == "completed"
+        assert "consult_subagent" in snapshot["continuation_state"]["consumed_layers"]
     finally:
         db.close()
 

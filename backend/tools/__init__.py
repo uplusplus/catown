@@ -16,6 +16,7 @@ from .file_operations import (
     DeleteFileTool, 
     SearchFilesTool
 )
+from . import collaboration_tools
 from .collaboration_tools import (
     DelegateTaskTool,
     BroadcastMessageTool,
@@ -25,7 +26,7 @@ from .collaboration_tools import (
     ListAgentsTool,
     InviteAgentTool
 )
-from .query_agent import QueryAgentTool
+from .consult_agent import ConsultAgentTool
 from .github_manager import GitHubManagerTool
 from .screenshot import ScreenshotTool
 from .browser import BrowserTool
@@ -68,7 +69,7 @@ tool_registry.register(BroadcastMessageTool())
 tool_registry.register(CheckTaskStatusTool())
 tool_registry.register(ListCollaboratorsTool())
 tool_registry.register(SendDirectMessageTool())
-tool_registry.register(QueryAgentTool())
+tool_registry.register(ConsultAgentTool())
 tool_registry.register(ListAgentsTool())
 tool_registry.register(InviteAgentTool())
 tool_registry.register(GitHubManagerTool())
@@ -79,8 +80,7 @@ tool_registry.register(OpenFileForUserTool())
 
 def init_collaboration_tools(coordinator):
     """Initialize collaboration tools with coordinator"""
-    # Update existing collaboration tools with coordinator
-    for tool_name in ['delegate_task', 'broadcast_message', 'check_task_status', 'list_collaborators', 'send_direct_message', 'query_agent']:
+    for tool_name in ['delegate_task', 'broadcast_message', 'check_task_status', 'list_collaborators', 'send_direct_message', 'consult_agent']:
         tool = tool_registry.get(tool_name)
         if tool:
             tool.coordinator = coordinator
@@ -104,7 +104,8 @@ __all__ = [
     'CheckTaskStatusTool',
     'ListCollaboratorsTool',
     'SendDirectMessageTool',
-    'QueryAgentTool',
+    'ConsultAgentTool',
+    'InviteAgentTool',
     'ListAgentsTool',
     'GitHubManagerTool',
     'ScreenshotTool',

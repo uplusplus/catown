@@ -98,7 +98,7 @@ catown/
 | 文件操作 | `read_file`, `write_file`, `list_files`, `delete_file`, `search_files` |
 | 代码执行 | `execute_code`（Python + Node.js 沙箱） |
 | 网络 | `web_search`（DuckDuckGo）, `web_fetch`（网页抓取） |
-| 协作 | `send_direct_message`, `query_agent`, `delegate_task`, `broadcast_message` |
+| 协作 | `send_direct_message`, `consult_agent`, `delegate_task`, `broadcast_message` |
 | 其他 | `retrieve_memory`, `save_memory`, `browser`, `screenshot`, `github_manager` |
 
 ## 🛡️ 安全机制

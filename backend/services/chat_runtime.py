@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import re
 import shutil
@@ -29,7 +30,7 @@ _TOOL_KEYWORD_HINTS: dict[str, list[str]] = {
     "list_agents": ["list agents", "available agents", "who can join", "invite"],
     "list_collaborators": ["list collaborators", "who is in this room", "team members"],
     "delegate_task": ["delegate", "assign", "have tester", "have developer", "ask tester", "ask developer"],
-    "query_agent": ["ask architect", "ask tester", "ask developer", "immediate answer"],
+    "consult_agent": ["ask architect", "ask tester", "ask developer", "immediate answer"],
     "send_direct_message": ["notify", "tell ", "message ", "ping "],
     "skill_manager": ["skill", "技能", "marketplace", "install skill", "enable skill"],
     "github_manager": ["github", "pull request", "repo", "branch", "tag", "release"],
@@ -48,6 +49,31 @@ class PreparedChatTurnRuntime:
     tool_policy_pack: Dict[str, Any]
     runtime_kwargs: Dict[str, Any]
     turn_state: TurnContextState
+
+
+def resolve_agent_tool_names(agent: Any, available_tool_names: List[str]) -> List[str]:
+    """Resolve the effective tool surface for one agent runtime."""
+
+    if agent is None:
+        return list(available_tool_names)
+
+    raw_tools = getattr(agent, "tools", None)
+    if isinstance(raw_tools, str):
+        try:
+            parsed = json.loads(raw_tools or "[]")
+        except (TypeError, json.JSONDecodeError):
+            parsed = []
+    elif isinstance(raw_tools, list):
+        parsed = raw_tools
+    else:
+        parsed = []
+
+    normalized = [str(tool_name).strip() for tool_name in parsed if str(tool_name).strip()]
+    if not normalized:
+        return []
+
+    allowed = set(available_tool_names)
+    return [tool_name for tool_name in normalized if tool_name in allowed]
 
 
 def build_tool_prompt(
@@ -89,7 +115,7 @@ def build_tool_prompt(
                 "Use action='install' with marketplace and source to install a skill, for example marketplace='skillhub-cn' and source='graphify'. "
                 "If the tool returns code='command_not_found', explain that the marketplace CLI is missing and direct the user to install or enable that marketplace CLI from the Skills configuration page."
             )
-        elif tool_name in {"delegate_task", "query_agent", "send_direct_message", "check_task_status", "list_collaborators", "list_agents"}:
+        elif tool_name in {"delegate_task", "consult_agent", "send_direct_message", "check_task_status", "list_collaborators", "list_agents"}:
             if description:
                 guides.append(description)
 
@@ -223,6 +249,8 @@ async def prepare_chat_turn_runtime(
 
     llm_client = get_llm_client_for_agent(agent_type_of(agent))
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
+    all_tool_names = tool_registry.list_tools()
+    available_tools = resolve_agent_tool_names(agent, all_tool_names)
     turn_state = build_turn_state_from_checkpoint_snapshot(
         checkpoint_snapshot,
         previous_agent_work=previous_agent_work or "",
@@ -233,9 +261,9 @@ async def prepare_chat_turn_runtime(
         llm_client=llm_client,
         agent_label=agent_name_of(agent),
         recent_messages=recent_messages,
-        available_tools=tool_registry.list_tools(),
-        tool_schemas=tool_registry.get_schemas(),
-        tool_policy_pack=tool_registry.get_policy_pack(tool_registry.list_tools()),
+        available_tools=available_tools,
+        tool_schemas=tool_registry.get_schemas(available_tools),
+        tool_policy_pack=tool_registry.get_policy_pack(available_tools),
         runtime_kwargs=build_tool_runtime_kwargs(agent, chatroom_id, project),
         turn_state=turn_state,
     )

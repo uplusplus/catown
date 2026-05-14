@@ -87,13 +87,14 @@ export type ProjectBrowserIndex = {
 export type ChatProcessEntry = {
   id: string;
   label: string;
-  kind: "project" | "chat" | "task" | "command";
+  kind: "project" | "chat" | "task" | "command" | "subagent";
   detail: string;
   status?: "running" | "terminated" | string | null;
   parent_id?: string | null;
   timestamp?: string | null;
   pid?: number | null;
   output?: string | null;
+  metadata?: Record<string, unknown> | null;
   children: ChatProcessEntry[];
 };
 
@@ -131,6 +132,15 @@ export type MessageItem = {
   streamSteps?: MessageStreamStep[];
   optimisticKind?: "user" | "assistant_placeholder";
   localOnly?: boolean;
+  runtime_summary?: {
+    task_run_id?: number | null;
+    status?: string | null;
+    run_kind?: string | null;
+    active_subagent_handle?: Record<string, unknown> | null;
+    active_consult_handle?: Record<string, unknown> | null;
+    continuation_state_summary?: string | null;
+    subagent_handles_summary?: string | null;
+  } | null;
 };
 
 export type TaskRunSummary = {
@@ -387,6 +397,54 @@ export type MonitorApprovalQueueResponse = {
   entries: MonitorApprovalQueueEntry[];
 };
 
+export type MonitorApprovalAuditEntry = {
+  id: number;
+  event_kind: string;
+  decision: string;
+  source: string;
+  resolved_by?: string | null;
+  queue_item_id?: number | null;
+  task_run_id?: number | null;
+  chatroom_id?: number | null;
+  project_id?: number | null;
+  pipeline_run_id?: number | null;
+  pipeline_stage_id?: number | null;
+  preference_id?: number | null;
+  agent_name?: string | null;
+  target_kind?: string | null;
+  target_name?: string | null;
+  tool_name?: string | null;
+  scope?: string | null;
+  matcher_type?: string | null;
+  matcher_value?: string | null;
+  approval_fingerprint?: string | null;
+  approval_fingerprint_kind?: string | null;
+  approval_fingerprint_input?: Record<string, unknown>;
+  command_preview?: string | null;
+  reason?: string | null;
+  preview?: string | null;
+  request_payload?: Record<string, unknown>;
+  resolution_payload?: Record<string, unknown>;
+  created_at?: string | null;
+};
+
+export type MonitorApprovalAuditResponse = {
+  captured_at: string;
+  decision: string;
+  event_kind: string;
+  source: string;
+  counts: {
+    all: number;
+    approve: number;
+    reject: number;
+    allow: number;
+    deny: number;
+    remembered: number;
+    automatic: number;
+  };
+  entries: MonitorApprovalAuditEntry[];
+};
+
 export type MonitorCompactionItem = {
   id: number;
   task_run_id?: number | null;
@@ -449,6 +507,7 @@ export type ChatEventItem = {
 export type ChatCardKind =
   | "llm_call"
   | "tool_call"
+  | "consult_call"
   | "agent_error"
   | "stage_start"
   | "stage_end"
@@ -519,6 +578,11 @@ export type ChatCardItem = {
   blocked_kind?: string | null;
   blocked_reason?: string | null;
   result?: string;
+  target_agent?: string;
+  question_preview?: string;
+  response_preview?: string;
+  consult_step_id?: string;
+  available_actions?: string[];
   error?: string;
   tool_call_index?: number;
   tool_call_id?: string | null;

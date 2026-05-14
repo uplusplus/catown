@@ -31,13 +31,19 @@ def _make_app(tmp_path):
     modules_to_clear = [
         'main', 'config', 'models.database', 'agents.registry',
         'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
-        'routes.api', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
+        'routes.api', 'routes.monitor', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
         'services.approval_queue',
         'services.approval_replay',
         'services.runtime_lifecycle',
         'services.monitor_projection',
         'services.run_ledger',
         'services.task_activity_projection',
+        'services.agent_lifecycle_runtime',
+        'services.agent_action_runtime',
+        'services.subagent_runtime_control',
+        'services.collaboration_dispatch_runtime',
+        'services.collaboration_membership_runtime',
+        'services.collaboration_runtime',
         'services.chat_publish',
         'services.chat_runtime',
         'services.orchestration_events',
@@ -58,6 +64,7 @@ def _make_app(tmp_path):
         'services.stream_transport',
         'services.single_agent_stream_session',
         'services.single_agent_stream_finalizer',
+        'services.approval_audit',
         'services.tool_execution_preferences',
     ]
     for mod_name in modules_to_clear:
@@ -235,6 +242,33 @@ class TestAgentEndpoints:
         assert r2.status_code == 200
         assert "memory_count" in r2.json()
 
+    def test_get_agent_memory_returns_full_content(self, client):
+        from models.database import Agent, Memory, SessionLocal
+
+        long_content = "remember " + ("full content " * 30)
+        db = SessionLocal()
+        try:
+            agent = Agent(name="memory-agent", role="assistant", is_active=True)
+            db.add(agent)
+            db.commit()
+            db.refresh(agent)
+            agent_id = agent.id
+            db.add(Memory(
+                agent_id=agent_id,
+                memory_type="context",
+                content=long_content,
+                importance=9,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/agents/{agent_id}/memory")
+
+        assert response.status_code == 200
+        contents = [memory["content"] for memory in response.json()["memories"]]
+        assert long_content in contents
+
 
 # ==================== 工具 API ====================
 
@@ -258,6 +292,18 @@ class TestConfigEndpoint:
         data = r.json()
         assert "llm" in data
         assert "server" in data
+
+    def test_get_config_includes_agent_scoped_tool_policies(self, client):
+        r = client.get("/api/config")
+        assert r.status_code == 200
+        data = r.json()
+        assert "tools" in data
+        assert "agent_tools" in data
+        assert isinstance(data["agent_tools"], dict)
+        developer_tools = data["agent_tools"].get("developer", {})
+        assert "tool_policies" in developer_tools
+        developer_tool_names = [policy.get("name") for policy in developer_tools.get("tool_policies", [])]
+        assert "read_file" in developer_tool_names
 
     def test_update_permissions_config_includes_auto_approve_all(self, tmp_path):
         from fastapi.testclient import TestClient
@@ -490,6 +536,22 @@ class TestConfigEndpoint:
         rules = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
         assert any(rule["decision_kind"] == "allow" and rule["command_preview"] == "touch created.txt @ ." for rule in rules)
         assert any(rule["decision_kind"] == "deny" and rule["command_preview"] == "pwd @ ." for rule in rules)
+
+        audit_rows = client.get("/api/monitor/approval-audit?decision=all&limit=20").json()["entries"]
+        assert any(row["event_kind"] == "queue_item_approved" and row["queue_item_id"] == allow_item_id for row in audit_rows)
+        assert any(row["event_kind"] == "queue_item_rejected" and row["queue_item_id"] == deny_item_id for row in audit_rows)
+        assert any(
+            row["event_kind"] == "authorization_rule_saved"
+            and row["decision"] == "allow"
+            and row["command_preview"] == "touch created.txt @ ."
+            for row in audit_rows
+        )
+        assert any(
+            row["event_kind"] == "authorization_rule_saved"
+            and row["decision"] == "deny"
+            and row["command_preview"] == "pwd @ ."
+            for row in audit_rows
+        )
 
     def test_remembered_run_shell_approval_matches_workspace_cwd_alias(self, client):
         import models.database as db_mod
@@ -1003,6 +1065,73 @@ class TestProjectEndpoints:
         assert task["label"] == "Background implementation"
         assert f"task-run:{run_id}" in ids
         assert f"task-run:{inline_run_id}" not in ids
+
+    def test_chat_processes_surface_active_consult_subagent(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Consult Process Tree", "agent_names": ["analyst"]}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Investigate risk",
+                user_request="Check with analyst",
+                summary="Consult in progress",
+                client_turn_id="turn-consult-process-tree",
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            run_id = run.id
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=run.id,
+                    event_index=1,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-analyst-process-1",
+                            "position": 0,
+                            "requested_name": "analyst",
+                            "agent_id": "analyst",
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "wait_for_step_id": None,
+                            "attached_to_step_id": None,
+                            "source": "consult_agent",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get(f"/api/chatrooms/{chatroom_id}/processes")
+        assert response.status_code == 200
+        data = response.json()
+        chat_node = data["children"][0]
+        task = next(item for item in chat_node["children"] if item["id"] == f"task-run:{run_id}")
+        subagent = next(item for item in task["children"] if item["kind"] == "subagent")
+        assert subagent["label"] == "analyst (consult)"
+        assert subagent["parent_id"] == f"task-run:{run_id}"
+        assert subagent["status"] == "running"
+        assert subagent["metadata"]["step_id"] == "consult-analyst-process-1"
+        assert subagent["metadata"]["dispatch_kind"] == "consult"
+        assert subagent["metadata"]["control_state"] == "await_completion"
+        assert subagent["metadata"]["available_actions"] == ["wait", "cancel"]
 
     def test_chat_processes_keep_terminated_shell_cards(self, client):
         import models.database as db_mod
@@ -1751,6 +1880,79 @@ class TestChatEndpoints:
         assert "### Runtime" in scheduler_step["detail_content"]
         assert "step_state" in scheduler_step["refs"]
 
+    def test_get_task_run_activity_surfaces_active_consult_handle(self, client):
+        from models.database import SessionLocal, TaskRun, TaskRunEvent
+
+        response = client.post("/api/projects", json={"name": "Consult Activity", "agent_names": ["analyst"]})
+        assert response.status_code == 200
+        chatroom_id = response.json()["chatroom_id"]
+
+        db = SessionLocal()
+        try:
+            task_run = TaskRun(
+                chatroom_id=chatroom_id,
+                run_kind="multi_agent_orchestration",
+                status="running",
+                title="Consult foreground activity",
+                user_request="Expose consult handle in activity.",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-analyst-foreground",
+                            "position": 0,
+                            "requested_name": "analyst",
+                            "agent_id": "analyst",
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "wait_for_step_id": None,
+                            "attached_to_step_id": None,
+                            "source": "consult_agent",
+                            "context": {
+                                "requested_by": "boss",
+                                "question_preview": "What is the main risk?",
+                            },
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                )
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        activity = client.get(f"/api/task-runs/{task_run_id}/activity")
+        assert activity.status_code == 200
+        payload = activity.json()
+
+        handle = payload["active_subagent_handle"]
+        assert handle["step_id"] == "consult-analyst-foreground"
+        assert handle["dispatch_kind"] == "consult"
+        assert handle["control_state"] == "await_completion"
+        assert handle["available_actions"] == ["wait", "cancel"]
+        assert handle["source"] == "consult_agent"
+
+        consult_handle = payload["active_consult_handle"]
+        assert consult_handle["step_id"] == "consult-analyst-foreground"
+        assert consult_handle["dispatch_kind"] == "consult"
+        assert consult_handle["source"] == "consult_agent"
+        assert payload["background"]["active_consult_handle"]["step_id"] == "consult-analyst-foreground"
+
     def test_send_message_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
@@ -2438,6 +2640,145 @@ class TestSSEStreaming:
             message.get("agent_name") and message.get("client_turn_id") == "turn-stream-1"
             for message in messages
         )
+
+    def test_runtime_cards_include_consult_calls(self, client):
+        from models.database import Message, SessionLocal
+
+        r = client.post("/api/projects", json={"name": "Consult Runtime Cards", "agent_names": ["analyst", "developer"]})
+        cid = r.json()["chatroom_id"]
+
+        db = SessionLocal()
+        try:
+            db.add_all(
+                [
+                    Message(
+                        chatroom_id=cid,
+                        agent_id=None,
+                        content="consult_call",
+                        message_type="runtime_card",
+                        metadata_json=json.dumps(
+                            {
+                                "card": {
+                                    "type": "consult_call",
+                                    "source": "consult_agent",
+                                    "status": "running",
+                                    "agent": "developer",
+                                    "target_agent": "analyst",
+                                    "question_preview": "What is the main risk?",
+                                    "consult_step_id": "consult-analyst-1",
+                                    "client_turn_id": "turn-consult-runtime",
+                                    "available_actions": ["wait", "cancel"],
+                                }
+                            }
+                        ),
+                    ),
+                    Message(
+                        chatroom_id=cid,
+                        agent_id=None,
+                        content="consult_call",
+                        message_type="runtime_card",
+                        metadata_json=json.dumps(
+                            {
+                                "card": {
+                                    "type": "consult_call",
+                                    "source": "consult_agent",
+                                    "status": "completed",
+                                    "agent": "developer",
+                                    "target_agent": "analyst",
+                                    "question_preview": "What is the main risk?",
+                                    "response_preview": "The main risk is drift.",
+                                    "consult_step_id": "consult-analyst-1",
+                                    "client_turn_id": "turn-consult-runtime",
+                                    "available_actions": ["close"],
+                                }
+                            }
+                        ),
+                    ),
+                ]
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
+        consult_cards = [card for card in cards if card.get("type") == "consult_call"]
+
+        assert len(consult_cards) == 2
+        assert consult_cards[0]["status"] == "running"
+        assert consult_cards[0]["source"] == "consult_agent"
+        assert consult_cards[0]["available_actions"] == ["wait", "cancel"]
+        assert consult_cards[1]["status"] == "completed"
+        assert consult_cards[1]["response_preview"] == "The main risk is drift."
+        assert consult_cards[1]["available_actions"] == ["close"]
+
+    def test_messages_include_consult_runtime_summary(self, client):
+        from models.database import Message, SessionLocal, TaskRun, TaskRunEvent
+
+        r = client.post("/api/projects", json={"name": "Consult Message Summary", "agent_names": ["analyst"]})
+        cid = r.json()["chatroom_id"]
+        turn_id = "turn-consult-message-summary"
+
+        db = SessionLocal()
+        try:
+            task_run = TaskRun(
+                chatroom_id=cid,
+                run_kind="project_single_agent",
+                status="running",
+                title="Consult message summary",
+                user_request="Surface consult state in chat messages.",
+                client_turn_id=turn_id,
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="scheduler_step_dispatched",
+                    agent_name="analyst",
+                    payload_json=json.dumps(
+                        {
+                            "step_id": "consult-analyst-message-1",
+                            "position": 0,
+                            "requested_name": "analyst",
+                            "agent_id": "analyst",
+                            "agent_name": "analyst",
+                            "agent_type": "analyst",
+                            "dispatch_kind": "consult",
+                            "wait_for_step_id": None,
+                            "attached_to_step_id": None,
+                            "source": "consult_agent",
+                            "step_state": {
+                                "status": "running",
+                                "dispatch_count": 1,
+                                "completion_count": 0,
+                            },
+                        }
+                    ),
+                )
+            )
+            db.add(
+                Message(
+                    chatroom_id=cid,
+                    agent_id=None,
+                    content="Please check with the analyst.",
+                    message_type="text",
+                    metadata_json=json.dumps({"client_turn_id": turn_id}),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+        summary_message = next(message for message in messages if message.get("client_turn_id") == turn_id)
+
+        assert summary_message["runtime_summary"]["task_run_id"] is not None
+        assert summary_message["runtime_summary"]["active_subagent_handle"]["dispatch_kind"] == "consult"
+        assert summary_message["runtime_summary"]["active_consult_handle"]["step_id"] == "consult-analyst-message-1"
+        assert summary_message["runtime_summary"]["active_consult_handle"]["control_state"] == "await_completion"
 
     def test_stream_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod
@@ -4188,6 +4529,48 @@ class TestCollaborationEndpoints:
     def test_get_task_not_found(self, client):
         r = client.get("/api/collaboration/tasks/nonexistent")
         assert r.status_code == 404
+
+    def test_delegate_task_endpoint_registers_shared_delegated_task(self, client, fresh_db):
+        from agents.collaboration import collaboration_coordinator
+
+        collaboration_coordinator.task_registry.clear()
+        collaboration_coordinator.collaborators.clear()
+
+        db = fresh_db.SessionLocal()
+        try:
+            agent = fresh_db.Agent(
+                name="Tester",
+                agent_type="tester",
+                role="QA",
+                is_active=True,
+            )
+            db.add(agent)
+            db.commit()
+            db.refresh(agent)
+        finally:
+            db.close()
+
+        r = client.post(
+            "/api/collaboration/delegate",
+            params={
+                "target_agent_name": "tester",
+                "task_title": "Run tests",
+                "task_description": "Run backend tests",
+                "chatroom_id": 1,
+            },
+        )
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "delegated"
+        assert data["assigned_to"] == "tester"
+        task = collaboration_coordinator.task_registry[data["task_id"]]
+        assert task.title == "Run tests"
+        assert task.description == "Run backend tests"
+        assert task.created_by_agent_id == 0
+        assert task.assigned_to_agent_id == agent.id
+        assert task.chatroom_id == 1
+        assert collaboration_coordinator.collaborators[agent.id].assigned_tasks[data["task_id"]].id == data["task_id"]
 
     def test_collaboration_status_counts_only_active_tasks(self, client):
         from agents.collaboration import collaboration_coordinator, CollaborationTask, TaskStatus

@@ -387,6 +387,26 @@ class TestBroadcastMessage:
         result = await tool.execute(message="hi")
         assert "error" in result.lower() or "not available" in result.lower()
 
+    @pytest.mark.asyncio
+    async def test_broadcast_uses_lifecycle_runtime(self, coordinator, monkeypatch):
+        from tools.collaboration_tools import BroadcastMessageTool
+
+        async def fake_broadcast_action(**kwargs):
+            assert kwargs["chatroom_id"] == 100
+            return "[Broadcast] lifecycle"
+
+        monkeypatch.setattr("tools.collaboration_tools.run_broadcast_agent_action", fake_broadcast_action)
+
+        tool = BroadcastMessageTool(collaboration_coordinator=coordinator)
+        result = await tool.execute(
+            message="Hello everyone!",
+            agent_id=1,
+            agent_name="assistant",
+            chatroom_id=100,
+        )
+
+        assert result == "[Broadcast] lifecycle"
+
 
 class TestCheckTaskStatus:
     """CheckTaskStatusTool 测试"""
@@ -496,6 +516,20 @@ class TestListCollaborators:
         result = await tool.execute()
         assert "not available" in result.lower()
 
+    @pytest.mark.asyncio
+    async def test_list_uses_lifecycle_runtime(self, coordinator, monkeypatch):
+        from tools.collaboration_tools import ListCollaboratorsTool
+
+        monkeypatch.setattr(
+            "tools.collaboration_tools.run_list_collaborators_action",
+            lambda **kwargs: "[List Collaborators] lifecycle coder",
+        )
+
+        tool = ListCollaboratorsTool(collaboration_coordinator=coordinator)
+        result = await tool.execute(chatroom_id=100)
+
+        assert "coder" in result
+
 
 class TestSendDirectMessage:
     """SendDirectMessageTool 测试"""
@@ -527,3 +561,132 @@ class TestSendDirectMessage:
         tool = SendDirectMessageTool(collaboration_coordinator=None)
         result = await tool.execute(target_agent_name="x", message="hi")
         assert "error" in result.lower() or "not available" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_dm_uses_lifecycle_runtime(self, coordinator, monkeypatch):
+        from tools.collaboration_tools import SendDirectMessageTool
+
+        async def fake_direct_action(**kwargs):
+            assert kwargs["target_agent_name"] == "coder"
+            return "[Direct Message] lifecycle"
+
+        monkeypatch.setattr("tools.collaboration_tools.run_direct_message_agent_action", fake_direct_action)
+
+        tool = SendDirectMessageTool(collaboration_coordinator=coordinator)
+        result = await tool.execute(
+            target_agent_name="coder",
+            message="Hey coder",
+            agent_id=1,
+            agent_name="assistant",
+            chatroom_id=100,
+        )
+
+        assert result == "[Direct Message] lifecycle"
+
+
+class TestListAgents:
+    @pytest.mark.asyncio
+    async def test_list_external_agents(self, fresh_db):
+        from tools.collaboration_tools import ListAgentsTool
+
+        db = fresh_db.SessionLocal()
+        try:
+            project = fresh_db.Project(name="Invite Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = fresh_db.Chatroom(project_id=project.id, title="Invite Chat", session_type="project-bound")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            in_room = fresh_db.Agent(name="analyst", agent_type="analyst", role="Analyst", soul="{}", config="{}", is_active=True)
+            external = fresh_db.Agent(name="security", agent_type="security", role="Security", soul="{}", config="{}", is_active=True)
+            db.add_all([in_room, external])
+            db.commit()
+            db.refresh(in_room)
+            db.refresh(external)
+            db.add(fresh_db.AgentAssignment(project_id=project.id, agent_id=in_room.id))
+            db.commit()
+
+            tool = ListAgentsTool()
+            result = await tool.execute(chatroom_id=chatroom.id)
+        finally:
+            db.close()
+
+        assert "security" in result.lower()
+        assert "analyst" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_list_agents_uses_lifecycle_runtime(self, monkeypatch):
+        from tools.collaboration_tools import ListAgentsTool
+
+        monkeypatch.setattr(
+            "tools.collaboration_tools.run_list_agents_action",
+            lambda **kwargs: "[Directory] security",
+        )
+
+        tool = ListAgentsTool()
+        result = await tool.execute(chatroom_id=100)
+
+        assert "security" in result.lower()
+
+
+class TestInviteAgent:
+    @pytest.mark.asyncio
+    async def test_invite_agent_adds_assignment(self, fresh_db):
+        from agents.collaboration import collaboration_coordinator
+        from tools.collaboration_tools import InviteAgentTool
+
+        db = fresh_db.SessionLocal()
+        try:
+            project = fresh_db.Project(name="Join Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+            project_id = project.id
+
+            chatroom = fresh_db.Chatroom(project_id=project.id, title="Join Chat", session_type="project-bound")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            chatroom_id = chatroom.id
+
+            target = fresh_db.Agent(name="tester", agent_type="tester", role="Tester", soul="{}", config="{}", is_active=True)
+            db.add(target)
+            db.commit()
+            db.refresh(target)
+            target_id = target.id
+        finally:
+            db.close()
+
+        tool = InviteAgentTool()
+        result = await tool.execute(agent_name="tester", chatroom_id=chatroom_id)
+
+        db = fresh_db.SessionLocal()
+        try:
+            assignment = db.query(fresh_db.AgentAssignment).filter(
+                fresh_db.AgentAssignment.project_id == project_id,
+                fresh_db.AgentAssignment.agent_id == target_id,
+            ).first()
+            assert assignment is not None
+        finally:
+            db.close()
+
+        assert "joined this room" in result.lower()
+        assert target_id in collaboration_coordinator.collaborators
+
+    @pytest.mark.asyncio
+    async def test_invite_agent_uses_lifecycle_runtime(self, monkeypatch):
+        from tools.collaboration_tools import InviteAgentTool
+
+        monkeypatch.setattr(
+            "tools.collaboration_tools.run_invite_agent_action",
+            lambda **kwargs: "[Invite] lifecycle",
+        )
+
+        tool = InviteAgentTool()
+        result = await tool.execute(agent_name="tester", chatroom_id=100)
+
+        assert result == "[Invite] lifecycle"

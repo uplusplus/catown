@@ -46,7 +46,7 @@ _SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
         "max_fragments": 10,
         "max_tokens_cap": 2600,
     },
-    "query_agent": {
+    "consult_agent": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
         "max_fragments": 11,

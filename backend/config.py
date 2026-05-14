@@ -215,6 +215,9 @@ class Settings:
             "DATABASE_URL", str(self.STATE_DIR / "catown.db")
         )
         self.SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(self.DATABASE_URL)
+        self.DB_POOL_SIZE: int = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
+        self.DB_MAX_OVERFLOW: int = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
+        self.DB_POOL_TIMEOUT: int = max(1, int(os.getenv("DB_POOL_TIMEOUT", "30")))
         self.MONITOR_NETWORK_MEMORY_MAX_ENTRIES: int = max(
             100, int(os.getenv("MONITOR_NETWORK_MEMORY_MAX_ENTRIES", "4000"))
         )
@@ -284,6 +287,9 @@ class SettingsProxy:
         "SKILLS_CONFIG_FILE",
         "SKILL_MARKETPLACES_CONFIG_FILE",
         "DATABASE_URL",
+        "DB_POOL_SIZE",
+        "DB_MAX_OVERFLOW",
+        "DB_POOL_TIMEOUT",
         "MONITOR_NETWORK_MEMORY_MAX_ENTRIES",
         "MONITOR_NETWORK_RETENTION_HOURS",
         "MONITOR_NETWORK_MAX_PERSISTED",

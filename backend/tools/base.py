@@ -249,7 +249,7 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "sandbox": {"mode": "runtime_internal"},
         "side_effect_scope": "read_only",
     },
-    "query_agent": {
+    "consult_agent": {
         "risk_level": "medium",
         "sandbox": {"mode": "runtime_internal"},
         "side_effect_scope": "agent_query",
@@ -467,14 +467,24 @@ class ToolRegistry:
     
     def __init__(self):
         self._tools: Dict[str, BaseTool] = {}
+        self._aliases: Dict[str, str] = {}
     
     def register(self, tool: BaseTool):
         """Register a tool"""
         self._tools[tool.name] = tool
-    
+
+    def register_alias(self, alias: str, canonical_name: str):
+        """Register a compatibility alias for an existing tool."""
+        normalized_alias = str(alias or "").strip()
+        normalized_canonical = str(canonical_name or "").strip()
+        if not normalized_alias or not normalized_canonical:
+            return
+        self._aliases[normalized_alias] = normalized_canonical
+
     def get(self, name: str) -> Optional[BaseTool]:
         """Get a tool by name"""
-        return self._tools.get(name)
+        canonical_name = self._aliases.get(name, name)
+        return self._tools.get(canonical_name)
     
     def list_tools(self) -> List[str]:
         """List all registered tool names"""
@@ -537,6 +547,13 @@ class ToolRegistry:
             db.close()
 
         if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_DENY:
+            self._record_authorization_rule_audit(
+                authorization_rule,
+                decision="deny",
+                source="remembered_rule",
+                tool_name=tool_name,
+                arguments=kwargs,
+            )
             result_text = build_blocked_tool_result(
                 "approval_blocked",
                 tool_name,
@@ -552,6 +569,13 @@ class ToolRegistry:
                 blocked_reason=result_text,
             )
         if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_ALLOW:
+            self._record_authorization_rule_audit(
+                authorization_rule,
+                decision="approve",
+                source="remembered_rule",
+                tool_name=tool_name,
+                arguments=kwargs,
+            )
             approval_granted = True
 
         tool_policy = tool.get_policy_payload()
@@ -594,3 +618,41 @@ class ToolRegistry:
             blocked_kind=classification.get("blocked_kind"),
             blocked_reason=classification.get("blocked_reason"),
         )
+
+    @staticmethod
+    def _record_authorization_rule_audit(
+        authorization_rule: Any,
+        *,
+        decision: str,
+        source: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> None:
+        try:
+            from models.database import SessionLocal
+            from services.approval_audit import record_approval_audit
+
+            db = SessionLocal()
+            try:
+                record_approval_audit(
+                    db,
+                    event_kind="authorization_rule_matched",
+                    decision=decision,
+                    source=source,
+                    preference=authorization_rule,
+                    task_run_id=arguments.get("task_run_id") if isinstance(arguments.get("task_run_id"), int) else None,
+                    chatroom_id=arguments.get("chatroom_id") if isinstance(arguments.get("chatroom_id"), int) else getattr(authorization_rule, "chatroom_id", None),
+                    project_id=arguments.get("project_id") if isinstance(arguments.get("project_id"), int) else getattr(authorization_rule, "project_id", None),
+                    agent_name=str(arguments.get("agent_name") or getattr(authorization_rule, "agent_name", "") or "").strip() or None,
+                    target_kind="tool",
+                    target_name=tool_name,
+                    tool_name=tool_name,
+                    command_preview=getattr(authorization_rule, "command_preview", None),
+                    reason="Matched saved authorization rule.",
+                    request_payload={"arguments": arguments},
+                    resolution_payload={"preference_id": getattr(authorization_rule, "id", None)},
+                )
+            finally:
+                db.close()
+        except Exception:
+            return

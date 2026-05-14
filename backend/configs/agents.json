@@ -52,7 +52,7 @@
         "read_file",
         "write_file",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "list_files",
         "execute_code",
         "web_fetch"
@@ -122,7 +122,7 @@
         "read_file",
         "write_file",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "list_files",
         "execute_code",
         "web_fetch"
@@ -196,7 +196,7 @@
         "run_shell",
         "search_files",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "web_fetch"
       ],
       "skills": [
@@ -265,7 +265,7 @@
         "list_files",
         "search_files",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "web_fetch"
       ],
       "skills": [
@@ -333,7 +333,7 @@
         "execute_code",
         "run_shell",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "github_manager",
         "web_fetch"
       ],
@@ -404,7 +404,7 @@
         "search_files",
         "skill_manager",
         "send_direct_message",
-        "query_agent",
+        "consult_agent",
         "execute_code",
         "web_fetch"
       ],

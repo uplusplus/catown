@@ -2,7 +2,16 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
-import type { ConfigAgentDefinition, ConfigResponse, ConfigSection, PermissionsConfigPayload, SkillMarketplace, ToolAuthorizationRule } from "../types";
+import type {
+  AgentInfo,
+  AgentMemoryItem,
+  ConfigAgentDefinition,
+  ConfigResponse,
+  ConfigSection,
+  PermissionsConfigPayload,
+  SkillMarketplace,
+  ToolAuthorizationRule,
+} from "../types";
 import { DEFAULT_AGENT_TYPE, defaultAgentName } from "../utils/agents";
 
 type ConfigTabProps = {
@@ -80,7 +89,7 @@ const COLLABORATION_TOOL_NAMES = [
   "check_task_status",
   "list_collaborators",
   "send_direct_message",
-  "query_agent",
+  "consult_agent",
   "list_agents",
   "invite_agent",
 ] as const;
@@ -178,6 +187,18 @@ function previewContextWindow(value: number | undefined | null, fallback = "Not 
   return value.toLocaleString("en-US");
 }
 
+function formatMemoryDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function PreviewCard({
   title,
   subtitle,
@@ -205,6 +226,77 @@ function PreviewCard({
       </div>
       <div className="config-card-preview__footer">Click to edit</div>
     </button>
+  );
+}
+
+function AgentMemoryCard({
+  displayName,
+  agentType,
+  identity,
+  style,
+  values,
+  memories,
+  memoryCount,
+  runtimeMissing,
+}: {
+  displayName: string;
+  agentType: string;
+  identity: string;
+  style: string;
+  values: string[];
+  memories: AgentMemoryItem[];
+  memoryCount: number;
+  runtimeMissing: boolean;
+}) {
+  const visibleMemories = memories.slice(0, 8);
+  const hiddenMemories = Math.max(memoryCount - visibleMemories.length, 0);
+  return (
+    <div className="config-agent-card config-memory-card">
+      <div className="config-agent-card__header">
+        <div>
+          <h3>{displayName}</h3>
+          <p className="config-agent-card__eyebrow">@{agentType}</p>
+        </div>
+        <span className={`soft-pill ${memoryCount > 0 ? "soft-pill--success" : ""}`}>
+          {runtimeMissing ? "No runtime agent" : `${memoryCount} memories`}
+        </span>
+      </div>
+
+      <PreviewCard
+        title={`${displayName} Persona`}
+        subtitle="Configured identity context"
+        items={[
+          { label: "Identity", value: identity },
+          { label: "Style", value: style },
+          { label: "Values", value: previewList(values, "Not configured") },
+        ]}
+        onActivate={() => undefined}
+      />
+
+      <div className="config-memory-list">
+        <div className="config-memory-list__header">
+          <strong>Long-term memories</strong>
+          <span>{runtimeMissing ? "Unavailable" : `${memoryCount} saved`}</span>
+        </div>
+        {runtimeMissing ? (
+          <div className="config-memory-empty">This configured agent is not present in the runtime agent list.</div>
+        ) : visibleMemories.length === 0 ? (
+          <div className="config-memory-empty">No saved long-term memories yet.</div>
+        ) : (
+          visibleMemories.map((memory) => (
+            <article key={memory.id} className="config-memory-item">
+              <div className="config-memory-item__meta">
+                <span className="soft-pill">{memory.type}</span>
+                <span className="soft-pill">importance {memory.importance}</span>
+                <time>{formatMemoryDate(memory.created_at)}</time>
+              </div>
+              <p>{memory.content}</p>
+            </article>
+          ))
+        )}
+        {hiddenMemories > 0 ? <div className="config-memory-more">+{hiddenMemories} more memories</div> : null}
+      </div>
+    </div>
   );
 }
 
@@ -420,6 +512,11 @@ export function ConfigTab({
   const [marketplaces, setMarketplaces] = useState<SkillMarketplace[]>([]);
   const [marketplaceError, setMarketplaceError] = useState("");
   const [updatingMarketplace, setUpdatingMarketplace] = useState<string | null>(null);
+  const [runtimeAgents, setRuntimeAgents] = useState<AgentInfo[]>([]);
+  const [agentMemories, setAgentMemories] = useState<Record<number, AgentMemoryItem[]>>({});
+  const [memoryCounts, setMemoryCounts] = useState<Record<number, number>>({});
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState("");
 
   const agentEntries = useMemo(() => Object.entries(config?.agents ?? {}), [config]);
   const agentConfigs = config?.agent_llm_configs ?? {};
@@ -480,16 +577,26 @@ export function ConfigTab({
     return namedRows
       .sort((left, right) => left.name.localeCompare(right.name));
   }, [agentEntries, authorizationRules, config?.tools?.tool_policies]);
-  const memoryRows = useMemo(
-    () =>
-      agentEntries.map(([agentName, agentConfig]) => ({
+  const memoryRows = useMemo(() => {
+    const runtimeByType = new Map(runtimeAgents.map((agent) => [agent.type, agent]));
+    return agentEntries.map(([agentName, agentConfig]) => {
+      const runtimeAgent = runtimeByType.get(agentName);
+      const memoryRowsForAgent = runtimeAgent ? (agentMemories[runtimeAgent.id] ?? []) : [];
+      return {
         name: agentConfig.name?.trim() || defaultAgentName(agentName),
         type: agentName,
+        runtimeAgent,
         identity: previewText(agentConfig.soul?.identity, "Not configured"),
         values: agentConfig.soul?.values ?? [],
         style: previewText(agentConfig.soul?.style, "Not configured"),
-      })),
-    [agentEntries],
+        memories: memoryRowsForAgent,
+        memoryCount: runtimeAgent ? (memoryCounts[runtimeAgent.id] ?? memoryRowsForAgent.length) : 0,
+      };
+    });
+  }, [agentEntries, agentMemories, memoryCounts, runtimeAgents]);
+  const totalMemoryCount = useMemo(
+    () => memoryRows.reduce((total, row) => total + row.memoryCount, 0),
+    [memoryRows],
   );
   const hasEditingAgent = useMemo(() => Object.values(editingAgents).some(Boolean), [editingAgents]);
 
@@ -532,6 +639,49 @@ export function ConfigTab({
       }
     }
     void loadMarketplaces();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection !== "memory") return;
+    let cancelled = false;
+
+    async function loadAgentMemories() {
+      try {
+        setMemoryLoading(true);
+        setMemoryError("");
+        const agents = await api.getAgents();
+        if (cancelled) return;
+        setRuntimeAgents(agents);
+
+        const memoryResults = await Promise.all(
+          agents.map(async (agent) => {
+            const response = await api.getAgentMemory(agent.id);
+            return [agent.id, response] as const;
+          }),
+        );
+        if (cancelled) return;
+
+        const nextMemories: Record<number, AgentMemoryItem[]> = {};
+        const nextCounts: Record<number, number> = {};
+        for (const [agentId, response] of memoryResults) {
+          nextMemories[agentId] = response.memories;
+          nextCounts[agentId] = response.memory_count;
+        }
+        setAgentMemories(nextMemories);
+        setMemoryCounts(nextCounts);
+      } catch (nextError) {
+        if (!cancelled) {
+          setMemoryError(nextError instanceof Error ? nextError.message : "Failed to load agent memories");
+        }
+      } finally {
+        if (!cancelled) setMemoryLoading(false);
+      }
+    }
+
+    void loadAgentMemories();
     return () => {
       cancelled = true;
     };
@@ -685,6 +835,33 @@ export function ConfigTab({
       setMarketplaceError(nextError instanceof Error ? nextError.message : "Failed to update marketplace");
     } finally {
       setUpdatingMarketplace(null);
+    }
+  }
+
+  async function handleRefreshMemories() {
+    try {
+      setMemoryLoading(true);
+      setMemoryError("");
+      const agents = await api.getAgents();
+      setRuntimeAgents(agents);
+      const memoryResults = await Promise.all(
+        agents.map(async (agent) => {
+          const response = await api.getAgentMemory(agent.id);
+          return [agent.id, response] as const;
+        }),
+      );
+      const nextMemories: Record<number, AgentMemoryItem[]> = {};
+      const nextCounts: Record<number, number> = {};
+      for (const [agentId, response] of memoryResults) {
+        nextMemories[agentId] = response.memories;
+        nextCounts[agentId] = response.memory_count;
+      }
+      setAgentMemories(nextMemories);
+      setMemoryCounts(nextCounts);
+    } catch (nextError) {
+      setMemoryError(nextError instanceof Error ? nextError.message : "Failed to load agent memories");
+    } finally {
+      setMemoryLoading(false);
     }
   }
 
@@ -948,29 +1125,35 @@ export function ConfigTab({
               <p className="eyebrow">Memory Surface</p>
               <h2>Memory Management</h2>
             </div>
-            <span className="soft-pill">{memoryRows.length} agents</span>
+            <div className="config-actions-row config-actions-row--header">
+              <span className="soft-pill">{memoryRows.length} agents</span>
+              <span className="soft-pill">{totalMemoryCount} memories</span>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                onClick={() => void handleRefreshMemories()}
+                disabled={memoryLoading}
+              >
+                {memoryLoading ? "Loading..." : "Refresh"}
+              </button>
+            </div>
           </div>
+
+          {memoryError ? <div className="config-inline-error">{memoryError}</div> : null}
 
           <AdaptiveCardDeck className="config-agent-stack" itemCount={memoryRows.length} minCardWidth={280} idealCardWidth={320} maxCardWidth={380} maxColumns={5}>
             {memoryRows.map((agent) => (
-              <div key={agent.type} className="config-agent-card">
-                <div className="config-agent-card__header">
-                  <div>
-                    <h3>{agent.name}</h3>
-                    <p className="config-agent-card__eyebrow">@{agent.type}</p>
-                  </div>
-                </div>
-                <PreviewCard
-                  title={`${agent.name} Memory`}
-                  subtitle="Configured identity context used as retained agent memory"
-                  items={[
-                    { label: "Identity", value: agent.identity },
-                    { label: "Style", value: agent.style },
-                    { label: "Values", value: previewList(agent.values, "Not configured") },
-                  ]}
-                  onActivate={() => undefined}
-                />
-              </div>
+              <AgentMemoryCard
+                key={agent.type}
+                displayName={agent.name}
+                agentType={agent.type}
+                identity={agent.identity}
+                style={agent.style}
+                values={agent.values}
+                memories={agent.memories}
+                memoryCount={agent.memoryCount}
+                runtimeMissing={!agent.runtimeAgent}
+              />
             ))}
           </AdaptiveCardDeck>
         </div>

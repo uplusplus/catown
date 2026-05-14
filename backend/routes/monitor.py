@@ -13,10 +13,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from agents.collaboration import collaboration_coordinator
 from models.audit import LLMCall, ToolCall
-from models.database import ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
+from models.database import ApprovalAuditLog, ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
+from services.agent_lifecycle_runtime import get_runtime_collaboration_status
 from monitoring import monitor_log_buffer, monitor_network_buffer
+from services.approval_audit import list_approval_audit_logs, serialize_approval_audit_log
 from services.approval_queue import list_approval_queue_items
 from services.monitor_projection import (
     serialize_monitor_approval_queue_item,
@@ -1291,6 +1292,49 @@ async def get_monitor_approval_queue(
     }
 
 
+@router.get("/approval-audit")
+async def get_monitor_approval_audit(
+    decision: str = Query("all", pattern="^(all|approve|reject|allow|deny|allow_no_timeout)$"),
+    event_kind: str = Query("all"),
+    source: str = Query("all"),
+    tool_name: str = Query("all"),
+    project_id: int | None = None,
+    chatroom_id: int | None = None,
+    limit: int = Query(200, ge=10, le=500),
+    db: Session = Depends(get_db),
+):
+    entries = [
+        serialize_approval_audit_log(row)
+        for row in list_approval_audit_logs(
+            db,
+            decision=decision,
+            event_kind=(event_kind or "all").strip() or "all",
+            source=(source or "all").strip() or "all",
+            tool_name=(tool_name or "all").strip() or "all",
+            project_id=project_id,
+            chatroom_id=chatroom_id,
+            limit=limit,
+        )
+    ]
+    counts = {
+        "all": db.query(ApprovalAuditLog).count(),
+        "approve": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.decision == "approve").count(),
+        "reject": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.decision == "reject").count(),
+        "allow": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.decision == "allow").count(),
+        "deny": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.decision == "deny").count(),
+        "remembered": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.event_kind == "authorization_rule_saved").count(),
+        "automatic": db.query(ApprovalAuditLog).filter(ApprovalAuditLog.event_kind == "authorization_rule_matched").count(),
+    }
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "decision": decision,
+        "event_kind": event_kind,
+        "source": source,
+        "counts": counts,
+        "entries": entries,
+    }
+
+
 @router.get("/files")
 async def get_monitor_files(
     limit: int = Query(200, ge=20, le=1000),
@@ -1642,9 +1686,7 @@ async def get_monitor_overview(
                 "memory_enabled": True,
             },
             "collaboration": {
-                "active_collaborators": len(collaboration_coordinator.collaborators),
-                "chatrooms": len(collaboration_coordinator.chatroom_agents),
-                "pending_tasks": collaboration_coordinator.pending_task_count(),
+                **get_runtime_collaboration_status(),
                 "status": "active",
             },
             "last_message_at": latest_message.created_at.isoformat() if latest_message and latest_message.created_at else None,

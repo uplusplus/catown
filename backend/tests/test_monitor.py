@@ -38,6 +38,7 @@ def _make_app(tmp_path):
         "routes.websocket",
         "pipeline.engine",
         "routes.pipeline",
+        "services.approval_audit",
         "services.approval_queue",
         "services.approval_replay",
         "services.monitor_projection",
@@ -96,6 +97,29 @@ class TestMonitorOverview:
         assert "recent_messages" in data
         assert "recent_compactions" in data
         assert "recent_policy_decisions" in data
+
+    def test_overview_includes_collaboration_summary(self, client):
+        from agents.collaboration import CollaborationTask, TaskStatus, collaboration_coordinator
+
+        collaboration_coordinator.task_registry.clear()
+        task = CollaborationTask(
+            id="monitor-task-1",
+            title="Monitor task",
+            description="Pending collaboration work",
+            status=TaskStatus.IN_PROGRESS,
+            created_by_agent_id=1,
+            assigned_to_agent_id=2,
+            chatroom_id=100,
+        )
+        collaboration_coordinator.task_registry[task.id] = task
+
+        response = client.get("/api/monitor/overview")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "collaboration" in data["system"]
+        assert data["system"]["collaboration"]["pending_tasks"] >= 1
+        assert data["system"]["collaboration"]["status"] == "active"
 
     def test_overview_aggregates_runtime_cards(self, client):
         from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name
@@ -718,6 +742,65 @@ class TestMonitorOverview:
         assert resolved_entry["followup_status"] == "continued"
         assert resolved_entry["followup_message_id"] == 88
 
+    def test_monitor_approval_audit_returns_persisted_records(self, client):
+        from models.database import ApprovalAuditLog, Chatroom, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Approval Audit Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Approval Audit Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            row = ApprovalAuditLog(
+                event_kind="authorization_rule_matched",
+                decision="approve",
+                source="remembered_rule",
+                resolved_by="system",
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                agent_name="Analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                tool_name="run_shell",
+                scope="project",
+                matcher_type="command_fingerprint",
+                matcher_value="audit-fingerprint",
+                command_preview="touch audit.txt @ .",
+                reason="Matched saved authorization rule.",
+                request_payload_json=json.dumps({"arguments": {"command": "touch audit.txt", "cwd": "."}}, ensure_ascii=False),
+                resolution_payload_json=json.dumps({"preference_id": 7}, ensure_ascii=False),
+            )
+            db.add(row)
+            db.commit()
+            row_id = row.id
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/approval-audit?decision=approve&limit=20")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["automatic"] >= 1
+        entry = next(item for item in data["entries"] if item["id"] == row_id)
+        assert entry["event_kind"] == "authorization_rule_matched"
+        assert entry["decision"] == "approve"
+        assert entry["tool_name"] == "run_shell"
+        assert entry["command_preview"] == "touch audit.txt @ ."
+        assert entry["preview"] == "Matched saved authorization rule."
+        assert entry["approval_fingerprint"] == "audit-fingerprint"
+        assert entry["approval_fingerprint_kind"] == "command_fingerprint"
+        assert entry["approval_fingerprint_input"]["command_preview"] == "touch audit.txt @ ."
+
     def test_monitor_task_runs_exposes_continuation_cursor(self, client):
         from models.database import ApprovalQueueItem, Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
 
@@ -1027,6 +1110,107 @@ class TestMonitorOverview:
         assert len(turn_local_state["protocol_tail_messages"]) == 4
         assert len(turn_local_state["prior_round_summaries"]) == 1
         assert turn_local_state["prior_round_summaries"][0]["tool_names"] == ["list_files"]
+
+    def test_monitor_task_runs_surface_consult_subagent_checkpoint_state(self, client):
+        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Consult Monitor Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Consult Monitor Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="project_single_agent",
+                status="running",
+                title="Consult monitor state",
+                user_request="Ask analyst for help.",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add_all(
+                [
+                    TaskRunEvent(
+                        task_run_id=task_run.id,
+                        event_index=1,
+                        event_type="scheduler_step_dispatched",
+                        agent_name="Analyst",
+                        summary="Consultation dispatched to Analyst.",
+                        payload_json=json.dumps(
+                            {
+                                "step_id": "consult-1",
+                                "position": 0,
+                                "agent_name": "Analyst",
+                                "agent_type": "analyst",
+                                "dispatch_kind": "consult",
+                                "source": "consult_agent",
+                                "step_state": {
+                                    "status": "running",
+                                    "dispatch_count": 1,
+                                    "completion_count": 0,
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                    TaskRunEvent(
+                        task_run_id=task_run.id,
+                        event_index=2,
+                        event_type="scheduler_step_completed",
+                        agent_name="Analyst",
+                        summary="Consultation completed by Analyst.",
+                        payload_json=json.dumps(
+                            {
+                                "step_id": "consult-1",
+                                "position": 0,
+                                "agent_name": "Analyst",
+                                "agent_type": "analyst",
+                                "dispatch_kind": "consult",
+                                "source": "consult_agent",
+                                "response_preview": "Short consult answer",
+                                "step_state": {
+                                    "status": "completed",
+                                    "dispatch_count": 1,
+                                    "completion_count": 1,
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ]
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/task-runs?range=24h&limit=20")
+        assert response.status_code == 200
+        data = response.json()
+        entry = next(item for item in data["entries"] if item["id"] == task_run_id)
+        assert entry["latest_subagent_step"]["dispatch_kind"] == "consult"
+        latest_subagent_step = entry["checkpoint_snapshot"]["latest_subagent_step"]
+        assert latest_subagent_step["dispatch_kind"] == "consult"
+        assert latest_subagent_step["status"] == "completed"
+        assert latest_subagent_step["response_preview"] == "Short consult answer"
+        assert entry["continuation_state"]["latest_subagent_dispatch_kind"] == "consult"
+        assert entry["continuation_state"]["latest_subagent_status"] == "completed"
+        assert "consult_subagent" in entry["continuation_state"]["consumed_layers"]
 
     def test_monitor_task_run_steps_merges_runtime_cards_and_events(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent

@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.chat_runtime import assemble_runtime_chat_messages, build_runtime_environment_context, prepare_chat_turn_runtime
+from services.chat_runtime import (
+    assemble_runtime_chat_messages,
+    build_runtime_environment_context,
+    prepare_chat_turn_runtime,
+    resolve_agent_tool_names,
+)
 
 
 def test_assemble_runtime_chat_messages_adds_tool_guidance(monkeypatch):
@@ -72,6 +77,24 @@ def test_assemble_runtime_chat_messages_passes_runtime_context(monkeypatch):
     assert captured["runtime_context"].startswith("## Runtime Environment")
 
 
+def test_resolve_agent_tool_names_uses_agent_whitelist_from_json():
+    resolved = resolve_agent_tool_names(
+        SimpleNamespace(tools='["read_file", "consult_agent", "missing_tool"]'),
+        ["read_file", "consult_agent", "run_shell"],
+    )
+
+    assert resolved == ["read_file", "consult_agent"]
+
+
+def test_resolve_agent_tool_names_returns_empty_when_agent_has_no_tools():
+    resolved = resolve_agent_tool_names(
+        SimpleNamespace(tools=None),
+        ["read_file", "consult_agent"],
+    )
+
+    assert resolved == []
+
+
 @pytest.mark.asyncio
 async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
     llm_client = SimpleNamespace(model="test-model")
@@ -84,11 +107,11 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
 
     from tools import tool_registry
 
-    monkeypatch.setattr(tool_registry, "list_tools", lambda: ["read_file"])
-    monkeypatch.setattr(tool_registry, "get_schemas", lambda: [{"name": "read_file"}])
+    monkeypatch.setattr(tool_registry, "list_tools", lambda: ["read_file", "run_shell"])
+    monkeypatch.setattr(tool_registry, "get_schemas", lambda tool_names=None: [{"name": name} for name in (tool_names or [])])
     monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": [{"name": "read_file", "description": "Read file contents."}]})
 
-    agent = SimpleNamespace(id=7, name="Developer", agent_type="developer")
+    agent = SimpleNamespace(id=7, name="Developer", agent_type="developer", tools='["read_file"]')
     project = SimpleNamespace(id=3)
 
     runtime = await prepare_chat_turn_runtime(

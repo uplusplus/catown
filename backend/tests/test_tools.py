@@ -54,6 +54,14 @@ class TestToolRegistry:
         assert registry.get("web_search") is tool
         assert registry.get("nonexistent") is None
 
+    def test_get_tool_by_alias(self):
+        registry = ToolRegistry()
+        tool = WebSearchTool()
+        registry.register(tool)
+        registry.register_alias("search_web", "web_search")
+
+        assert registry.get("search_web") is tool
+
     def test_get_schemas(self):
         registry = ToolRegistry()
         registry.register(WebSearchTool())
@@ -506,6 +514,19 @@ class TestToolRegistry:
 
         assert result["success"] is True
         assert (tmp_path / "created.txt").exists()
+        db = fresh_db.SessionLocal()
+        try:
+            audit_row = (
+                db.query(fresh_db.ApprovalAuditLog)
+                .filter(fresh_db.ApprovalAuditLog.event_kind == "authorization_rule_matched")
+                .filter(fresh_db.ApprovalAuditLog.decision == "approve")
+                .filter(fresh_db.ApprovalAuditLog.tool_name == "run_shell")
+                .first()
+            )
+            assert audit_row is not None
+            assert audit_row.chatroom_id == chatroom_id
+        finally:
+            db.close()
 
     @pytest.mark.asyncio
     async def test_saved_allow_rule_matches_project_workspace_cwd_alias(self, fresh_db, tmp_path):

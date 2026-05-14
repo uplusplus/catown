@@ -11,6 +11,7 @@ import logging
 
 from agents.identity import DEFAULT_AGENT_TYPE, find_agent_by_type
 from services.chat_prompt_builder import assemble_chat_messages
+from services.agent_lifecycle_runtime import ensure_runtime_chatroom_collaborators
 
 logger = logging.getLogger("catown.chatroom")
 
@@ -232,16 +233,12 @@ class ChatroomManager:
             if not agents:
                 return responses
 
-            # 注册为协作者
-            from agents.collaboration import collaboration_coordinator, AgentCollaborator
-            for agent in agents:
-                if agent.id not in collaboration_coordinator.collaborators:
-                    collaborator = AgentCollaborator(
-                        agent_id=agent.id,
-                        agent_name=agent.type,
-                        chatroom_id=chatroom_id
-                    )
-                    collaboration_coordinator.register_collaborator(collaborator)
+            # Register room agents as collaborators so mentions and collaboration tools share one runtime view.
+            ensure_runtime_chatroom_collaborators(
+                agents=agents,
+                chatroom_id=chatroom_id,
+                agent_name_resolver=lambda agent: getattr(agent, "type", None) or getattr(agent, "name", ""),
+            )
 
             # 解析 @mention
             mentioned_names = re.findall(r'@(\w+)', user_message)
