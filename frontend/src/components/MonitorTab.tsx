@@ -1803,19 +1803,9 @@ function shortTurnToken(turnId: string | null | undefined) {
   return normalized.length > 10 ? normalized.slice(-10) : normalized;
 }
 
-function looksLikeJson(value: string) {
-  const trimmed = value.trim();
-  return trimmed.startsWith("{") || trimmed.startsWith("[");
-}
-
 function markdownCodeFence(content: string, language = "") {
   const normalized = content.replace(/\n+$/g, "");
   return `\`\`\`${language}\n${normalized}\n\`\`\``;
-}
-
-function readCardString(card: Record<string, unknown>, key: string) {
-  const value = card[key];
-  return typeof value === "string" ? value : "";
 }
 
 function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail | null): BrainEventSection[] {
@@ -1854,13 +1844,27 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
 
   if (!detail) return [];
 
+  if (Array.isArray(detail.detail_sections) && detail.detail_sections.length > 0) {
+    const projectedSections = detail.detail_sections
+      .filter((section) => section.phase === "all" || section.phase === event.phase)
+      .map((section) => ({
+        label: section.label,
+        content: section.content,
+        tone: section.tone,
+        format: section.format,
+        variant: section.variant,
+      }));
+    if (projectedSections.length > 0) {
+      return projectedSections;
+    }
+  }
+
   const card = detail.card ?? {};
   const sections: BrainEventSection[] = [];
-  const cardType = typeof card.type === "string" ? card.type : event.runtimeType || "";
   const exchangeMeta = formatUnknownDetail({
     from: event.fromEntity || event.source,
     to: event.toEntity || null,
-    type: cardType || "runtime",
+    type: typeof card.type === "string" ? card.type : event.runtimeType || "runtime",
     model: card.model ?? null,
     tool: card.tool ?? null,
     turn: card.turn ?? null,
@@ -1870,140 +1874,25 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
     success: card.success ?? null,
     client_turn_id: event.clientTurnId || (typeof card.client_turn_id === "string" ? card.client_turn_id : null),
   });
-
-  if (cardType === "llm_call") {
-    const systemPrompt = readCardString(card, "system_prompt");
-    const promptMessages = formatUnknownDetail(card.prompt_messages);
-    const plannedTools = formatUnknownDetail(card.tool_calls);
-    const response = readCardString(card, "response");
-    const rawResponse = formatUnknownDetail(card.raw_response);
-
-    if (event.phase === "outbound") {
-      if (systemPrompt) {
-        sections.push({
-          label: `System Prompt · ${routeLabel}`,
-          content: systemPrompt,
-          tone: "accent",
-          format: "text",
-          variant: "meta",
-        });
-      }
-      if (promptMessages) {
-        sections.push({
-          label: `Raw Prompt Payload · ${routeLabel}`,
-          content: promptMessages,
-          tone: "accent",
-          format: "json",
-          variant: "raw",
-        });
-      }
-      if (plannedTools) {
-        sections.push({
-          label: `Planned Tools · ${routeLabel}`,
-          content: plannedTools,
-          tone: "warning",
-          format: "json",
-          variant: "raw",
-        });
-      }
-    } else {
-      if (response) {
-        sections.push({
-          label: `Response · ${routeLabel}`,
-          content: response,
-          tone: "success",
-          format: "text",
-          variant: "result",
-        });
-      }
-      if (rawResponse) {
-        sections.push({
-          label: `Raw LLM Response · ${routeLabel}`,
-          content: rawResponse,
-          tone: "neutral",
-          format: "json",
-          variant: "raw",
-        });
-      }
-    }
-  } else if (cardType === "tool_call") {
-    const argumentsPayload = formatUnknownDetail(card.arguments);
-    const resultPayload = formatUnknownDetail(card.result);
-    if (event.phase === "outbound") {
-      if (argumentsPayload) {
-        sections.push({
-          label: `Raw Tool Input · ${routeLabel}`,
-          content: argumentsPayload,
-          tone: "accent",
-          format: "json",
-          variant: "raw",
-        });
-      }
-    } else if (resultPayload) {
-      sections.push({
-        label: `${(card.success as boolean | undefined) === false ? "Tool Error" : "Tool Output"} · ${routeLabel}`,
-        content: resultPayload,
-        tone: (card.success as boolean | undefined) === false ? "error" : "success",
-        format: looksLikeJson(resultPayload) ? "json" : "text",
-        variant: "result",
-      });
-    }
-  } else if (cardType === "agent_error") {
-    const summary = readCardString(card, "summary");
-    const errorText = readCardString(card, "error");
-    const detailMarkdown = readCardString(card, "content");
-    if (summary) {
-      sections.push({
-        label: `Failure Summary · ${routeLabel}`,
-        content: summary,
-        tone: "warning",
-        format: "text",
-        variant: "result",
-      });
-    }
-    if (errorText) {
-      sections.push({
-        label: `Error · ${routeLabel}`,
-        content: errorText,
-        tone: "error",
-        format: "text",
-        variant: "result",
-      });
-    }
-    if (detailMarkdown) {
-      sections.push({
-        label: `Failure Detail · ${routeLabel}`,
-        content: detailMarkdown,
-        tone: "error",
-        format: "text",
-        variant: "raw",
-      });
-    }
-  } else {
-    const candidates: Array<
-      [string, unknown, BrainEventSection["tone"], BrainEventSection["format"], BrainEventSection["variant"]]
-    > = [
-      ["Content", card.content, "neutral", "text", "result"],
-      ["Preview", card.content_preview, "neutral", "text", "result"],
-      ["Summary", card.summary, "neutral", "text", "result"],
-      ["Arguments", card.arguments, "accent", "json", "raw"],
-      ["Result", card.result, "success", "text", "result"],
-    ];
-    for (const [label, value, tone, format, variant] of candidates) {
-      const content = formatUnknownDetail(value);
-      if (content) {
-        sections.push({ label, content, tone, format, variant });
-      }
-    }
-  }
-
   if (exchangeMeta) {
-    sections.push({ label: `Exchange Meta · ${routeLabel}`, content: exchangeMeta, tone: "neutral", format: "json", variant: "meta" });
+    sections.push({
+      label: `Exchange Meta · ${routeLabel}`,
+      content: exchangeMeta,
+      tone: "neutral",
+      format: "json",
+      variant: "meta",
+    });
   }
 
   const rawCard = formatUnknownDetail(card);
   if (rawCard) {
-    sections.push({ label: `Raw Event Payload · ${routeLabel}`, content: rawCard, tone: "neutral", format: "json", variant: "raw" });
+    sections.push({
+      label: `Raw Event Payload · ${routeLabel}`,
+      content: rawCard,
+      tone: "neutral",
+      format: "json",
+      variant: "raw",
+    });
   }
   return sections;
 }
@@ -3182,6 +3071,34 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
     clientTurnId: item.client_turn_id || null,
   };
 
+  if (Array.isArray(item.brain_events) && item.brain_events.length > 0) {
+    return item.brain_events.map((event, index) => ({
+      ...common,
+      id: typeof event.id === "string" && event.id.trim() ? event.id : `runtime-${item.id}-${index}`,
+      source: normalizeEntity(event.from_entity || fromEntity, "runtime"),
+      operationLabel: typeof event.operation_label === "string" ? event.operation_label : item.operation_label,
+      fromEntity: normalizeEntity(event.from_entity || fromEntity, "runtime"),
+      toEntity: event.to_entity ? normalizeEntity(event.to_entity, "target") : undefined,
+      phase: event.phase === "outbound" || event.phase === "inbound" || event.phase === "state" ? event.phase : "state",
+      category:
+        event.category === "llm" || event.category === "tool" || event.category === "message" || event.category === "runtime"
+          ? event.category
+          : "runtime",
+      label:
+        typeof event.label === "string" && event.label.trim()
+          ? event.label
+          : (item.title || buildCommunicationLabel(fromEntity, toEntity || undefined)),
+      detail:
+        typeof event.detail === "string" && event.detail.trim()
+          ? event.detail
+          : (runtimePrimaryPreview(item) || item.title),
+      tone:
+        event.tone === "neutral" || event.tone === "success" || event.tone === "warning" || event.tone === "error"
+          ? event.tone
+          : defaultTone,
+    }));
+  }
+
   if (item.type === "llm_call") {
     const llmTarget = "LLM";
     const outboundDetail =
@@ -3196,7 +3113,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
         ...common,
         id: `runtime-${item.id}-outbound`,
         source: fromEntity,
-        operationLabel: "llm",
+        operationLabel: item.operation_label || "llm",
         fromEntity,
         toEntity: llmTarget,
         phase: "outbound",
@@ -3209,7 +3126,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
         ...common,
         id: `runtime-${item.id}-inbound`,
         source: llmTarget,
-        operationLabel: "llm",
+        operationLabel: item.operation_label || "llm",
         fromEntity: llmTarget,
         toEntity: fromEntity,
         phase: "inbound",
@@ -3230,7 +3147,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
         ...common,
         id: `runtime-${item.id}-outbound`,
         source: fromEntity,
-        operationLabel: toolEntity,
+        operationLabel: item.operation_label || toolEntity,
         fromEntity,
         toEntity: toolEntity,
         phase: "outbound",
@@ -3243,7 +3160,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
         ...common,
         id: `runtime-${item.id}-inbound`,
         source: toolEntity,
-        operationLabel: toolEntity,
+        operationLabel: item.operation_label || toolEntity,
         fromEntity: toolEntity,
         toEntity: fromEntity,
         phase: "inbound",
@@ -3263,7 +3180,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
         ...common,
         id: `runtime-${item.id}-error`,
         source: fromEntity,
-        operationLabel: "error",
+        operationLabel: item.operation_label || "error",
         fromEntity,
         toEntity: targetEntity,
         phase: "inbound",
@@ -3280,7 +3197,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
       ...common,
       id: `runtime-${item.id}`,
       source: fromEntity,
-      operationLabel: item.stage || runtimeLabel(item.type),
+      operationLabel: item.operation_label || item.stage || runtimeLabel(item.type),
       fromEntity,
       toEntity: toEntity || undefined,
       phase: "state",
@@ -6775,18 +6692,13 @@ export function MonitorTab() {
                   <div className="simple-row">
                     <strong>Scheduler Runtime</strong>
                     <div className="small-note">
-                      {selectedTaskRunSummary.scheduler_runtime_summary
-                        || schedulerRuntimeSummary(selectedTaskRunSummary.latest_scheduler_runtime ?? selectedTaskRunSummary.checkpoint_snapshot?.latest_scheduler_runtime)
-                        || "No scheduler runtime snapshot recorded."}
+                      {taskRunSchedulerSummary(selectedTaskRunSummary) || "No scheduler runtime snapshot recorded."}
                     </div>
                   </div>
                   <div className="simple-row">
                     <strong>Continuation Cursor</strong>
                     <div className="small-note">
-                      {selectedTaskRunSummary.continuation_cursor_summary
-                        || selectedTaskRunSummary.checkpoint_snapshot?.continuation_cursor_summary
-                        || continuationCursorSummary(selectedTaskRunSummary.continuation_cursor ?? selectedTaskRunSummary.checkpoint_snapshot?.continuation_cursor)
-                        || "No continuation cursor derived."}
+                      {taskRunCursorSummary(selectedTaskRunSummary) || "No continuation cursor derived."}
                     </div>
                   </div>
                   {RESUMABLE_TASK_RUN_KINDS.has(selectedTaskRunSummary.run_kind || "") || selectedTaskRunRecoveryState?.recovery_owner ? (
@@ -6982,24 +6894,13 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Continuation Cursor</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.continuation_cursor_summary
-                            || selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor_summary
-                            || continuationCursorSummary(selectedTaskRunDetail.continuation_cursor ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_cursor)
-                            || "No continuation cursor derived."}
+                          {taskRunCursorSummary(selectedTaskRunDetail) || "No continuation cursor derived."}
                         </div>
                       </div>
                       <div className="simple-row">
                         <strong>Continuation State</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.continuation_state_summary
-                            || selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
-                            || continuationStateSummary(selectedTaskRunDetail.continuation_state ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
-                            ? (
-                                selectedTaskRunDetail.continuation_state_summary
-                                || selectedTaskRunDetail.checkpoint_snapshot.continuation_state_summary
-                                || continuationStateSummary(selectedTaskRunDetail.continuation_state ?? selectedTaskRunDetail.checkpoint_snapshot.continuation_state)
-                              )
-                            : "No continuation-state consumption derived."}
+                          {taskRunContinuationSummary(selectedTaskRunDetail) || "No continuation-state consumption derived."}
                         </div>
                       </div>
                       <div className="simple-row">

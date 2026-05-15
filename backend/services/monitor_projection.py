@@ -39,6 +39,17 @@ def compact_preview(value: Any, limit: int = 220) -> str:
     return compact[:limit]
 
 
+def format_runtime_detail_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(value)
+
+
 def metadata_client_turn_id(metadata: dict[str, Any]) -> str | None:
     client_turn_id = metadata.get("client_turn_id")
     if isinstance(client_turn_id, str) and client_turn_id:
@@ -133,6 +144,333 @@ def build_runtime_title(card: dict[str, Any]) -> str:
     return f"{agent} / {card_type}"
 
 
+def build_runtime_operation_label(card: dict[str, Any]) -> str:
+    card_type = str(card.get("type") or "runtime")
+    if card_type == "llm_call":
+        return "llm"
+    if card_type == "tool_call":
+        return str(card.get("tool") or "tool")
+    if card_type == "agent_error":
+        return "error"
+    if card_type in {"stage_started", "stage_completed"}:
+        return str(card.get("display_name") or card.get("stage") or "stage")
+    return str(card.get("stage") or card.get("display_name") or card_type.replace("_", " "))
+
+
+def build_runtime_brain_events(
+    *,
+    runtime_id: int,
+    card: dict[str, Any],
+    from_entity: str | None,
+    to_entity: str | None,
+    operation_label: str,
+    title: str,
+    preview: str,
+    prompt_preview: str,
+    response_preview: str,
+    arguments_preview: str,
+) -> list[dict[str, Any]]:
+    source_entity = from_entity or str(card.get("agent") or card.get("from_agent") or "runtime")
+    target_entity = to_entity or None
+    card_type = str(card.get("type") or "runtime")
+
+    if card_type == "llm_call":
+        llm_target = "LLM"
+        return [
+            {
+                "id": f"runtime-{runtime_id}-outbound",
+                "phase": "outbound",
+                "category": "llm",
+                "tone": "neutral",
+                "from_entity": source_entity,
+                "to_entity": llm_target,
+                "operation_label": operation_label,
+                "label": f"{source_entity} -> {llm_target}",
+                "detail": prompt_preview or preview or "Prompt payload captured.",
+            },
+            {
+                "id": f"runtime-{runtime_id}-inbound",
+                "phase": "inbound",
+                "category": "llm",
+                "tone": "success",
+                "from_entity": llm_target,
+                "to_entity": source_entity,
+                "operation_label": operation_label,
+                "label": f"{llm_target} -> {source_entity}",
+                "detail": response_preview or preview or "Model response captured.",
+            },
+        ]
+
+    if card_type == "tool_call":
+        tool_target = target_entity or str(card.get("tool") or "tool")
+        success = card.get("success")
+        return [
+            {
+                "id": f"runtime-{runtime_id}-outbound",
+                "phase": "outbound",
+                "category": "tool",
+                "tone": "neutral",
+                "from_entity": source_entity,
+                "to_entity": tool_target,
+                "operation_label": operation_label,
+                "label": f"{source_entity} -> {tool_target}",
+                "detail": arguments_preview or preview or "Tool call issued.",
+            },
+            {
+                "id": f"runtime-{runtime_id}-inbound",
+                "phase": "inbound",
+                "category": "tool",
+                "tone": "error" if success is False else "success",
+                "from_entity": tool_target,
+                "to_entity": source_entity,
+                "operation_label": operation_label,
+                "label": f"{tool_target} -> {source_entity}",
+                "detail": response_preview or preview or "Tool output returned.",
+            },
+        ]
+
+    if card_type == "agent_error":
+        return [
+            {
+                "id": f"runtime-{runtime_id}-error",
+                "phase": "inbound",
+                "category": "runtime",
+                "tone": "error",
+                "from_entity": source_entity,
+                "to_entity": "User",
+                "operation_label": operation_label,
+                "label": f"{source_entity} -> User",
+                "detail": response_preview or preview or "Agent stream failed before a final reply was saved.",
+            }
+        ]
+
+    return [
+        {
+            "id": f"runtime-{runtime_id}",
+            "phase": "state",
+            "category": "runtime",
+            "tone": "error" if card.get("success") is False else "neutral",
+            "from_entity": source_entity,
+            "to_entity": target_entity,
+            "operation_label": operation_label,
+            "label": target_entity and f"{source_entity} -> {target_entity}" or title,
+            "detail": preview or title,
+        }
+    ]
+
+
+def build_runtime_detail_sections(
+    *,
+    runtime_id: int,
+    card: dict[str, Any],
+    operation_label: str,
+    from_entity: str | None,
+    to_entity: str | None,
+    client_turn_id: str | None,
+) -> list[dict[str, Any]]:
+    card_type = str(card.get("type") or "runtime")
+    sections: list[dict[str, Any]] = []
+
+    def append_section(
+        *,
+        phase: str,
+        label: str,
+        content: Any,
+        tone: str,
+        format_name: str,
+        variant: str,
+    ) -> None:
+        normalized_content = format_runtime_detail_value(content)
+        if not normalized_content:
+            return
+        sections.append(
+            {
+                "id": f"runtime-{runtime_id}-section-{len(sections) + 1}",
+                "phase": phase,
+                "label": label,
+                "content": normalized_content,
+                "tone": tone,
+                "format": format_name,
+                "variant": variant,
+            }
+        )
+
+    if card_type == "llm_call":
+        append_section(
+            phase="outbound",
+            label="System Prompt",
+            content=card.get("system_prompt"),
+            tone="accent",
+            format_name="text",
+            variant="meta",
+        )
+        append_section(
+            phase="outbound",
+            label="Raw Prompt Payload",
+            content=card.get("prompt_messages"),
+            tone="accent",
+            format_name="json",
+            variant="raw",
+        )
+        append_section(
+            phase="outbound",
+            label="Planned Tools",
+            content=card.get("tool_calls"),
+            tone="warning",
+            format_name="json",
+            variant="raw",
+        )
+        append_section(
+            phase="inbound",
+            label="Response",
+            content=card.get("response"),
+            tone="success",
+            format_name="text",
+            variant="result",
+        )
+        append_section(
+            phase="inbound",
+            label="Raw LLM Response",
+            content=card.get("raw_response"),
+            tone="neutral",
+            format_name="json",
+            variant="raw",
+        )
+    elif card_type == "tool_call":
+        append_section(
+            phase="outbound",
+            label="Raw Tool Input",
+            content=card.get("arguments"),
+            tone="accent",
+            format_name="json",
+            variant="raw",
+        )
+        append_section(
+            phase="inbound",
+            label="Tool Error" if card.get("success") is False else "Tool Output",
+            content=card.get("result"),
+            tone="error" if card.get("success") is False else "success",
+            format_name="json" if isinstance(card.get("result"), (dict, list)) else "text",
+            variant="result",
+        )
+    elif card_type == "agent_error":
+        append_section(
+            phase="inbound",
+            label="Failure Summary",
+            content=card.get("summary"),
+            tone="warning",
+            format_name="text",
+            variant="result",
+        )
+        append_section(
+            phase="inbound",
+            label="Error",
+            content=card.get("error"),
+            tone="error",
+            format_name="text",
+            variant="result",
+        )
+        append_section(
+            phase="inbound",
+            label="Failure Detail",
+            content=card.get("content"),
+            tone="error",
+            format_name="text",
+            variant="raw",
+        )
+    elif card_type == "consult_call":
+        append_section(
+            phase="outbound",
+            label="Consult Request",
+            content=card.get("question") or card.get("question_preview") or card.get("arguments"),
+            tone="accent",
+            format_name="text",
+            variant="result",
+        )
+        append_section(
+            phase="inbound",
+            label="Consult Response",
+            content=card.get("response") or card.get("response_preview") or card.get("summary_text"),
+            tone="success",
+            format_name="text",
+            variant="result",
+        )
+    elif card_type == "agent_message":
+        append_section(
+            phase="state",
+            label="Agent Message",
+            content=card.get("content") or card.get("content_preview") or card.get("summary"),
+            tone="neutral",
+            format_name="text",
+            variant="result",
+        )
+    elif card_type == "boss_instruction":
+        append_section(
+            phase="state",
+            label="Boss Instruction",
+            content=card.get("content") or card.get("instruction") or card.get("summary"),
+            tone="warning",
+            format_name="text",
+            variant="result",
+        )
+    elif card_type in {"stage_started", "stage_completed"}:
+        append_section(
+            phase="state",
+            label="Stage Status",
+            content=card.get("summary") or card.get("content") or card.get("display_name") or card.get("stage"),
+            tone="success" if card_type == "stage_completed" else "neutral",
+            format_name="text",
+            variant="result",
+        )
+    else:
+        for label, value, tone, format_name, variant in [
+            ("Content", card.get("content"), "neutral", "text", "result"),
+            ("Preview", card.get("content_preview"), "neutral", "text", "result"),
+            ("Summary", card.get("summary"), "neutral", "text", "result"),
+            ("Arguments", card.get("arguments"), "accent", "json", "raw"),
+            ("Result", card.get("result"), "success", "text", "result"),
+        ]:
+            append_section(
+                phase="state",
+                label=label,
+                content=value,
+                tone=tone,
+                format_name=format_name,
+                variant=variant,
+            )
+
+    append_section(
+        phase="all",
+        label="Exchange Meta",
+        content={
+            "from": from_entity,
+            "to": to_entity,
+            "type": card_type,
+            "model": card.get("model"),
+            "tool": card.get("tool"),
+            "turn": card.get("turn"),
+            "tokens_in": card.get("tokens_in"),
+            "tokens_out": card.get("tokens_out"),
+            "duration_ms": card.get("duration_ms"),
+            "success": card.get("success"),
+            "client_turn_id": client_turn_id or card.get("client_turn_id"),
+            "operation_label": operation_label,
+        },
+        tone="neutral",
+        format_name="json",
+        variant="meta",
+    )
+    append_section(
+        phase="all",
+        label="Raw Event Payload",
+        content=card,
+        tone="neutral",
+        format_name="json",
+        variant="raw",
+    )
+    return sections
+
+
 def build_runtime_preview(card: dict[str, Any]) -> str:
     candidates = [
         card.get("error"),
@@ -208,11 +546,18 @@ def serialize_monitor_runtime_item(
     created_value = created_at.isoformat() if hasattr(created_at, "isoformat") else created_at
     normalized_metadata = metadata or {}
     from_entity, to_entity = runtime_entities(card)
+    title = build_runtime_title(card)
+    operation_label = build_runtime_operation_label(card)
+    preview = build_runtime_preview(card)
+    prompt_preview = extract_prompt_preview(card)
+    response_preview = compact_preview(card.get("response") or card.get("result"))
+    arguments_preview = compact_preview(card.get("arguments"))
     return {
         "id": runtime_message_id,
         "type": str(card.get("type") or "runtime"),
-        "title": build_runtime_title(card),
-        "preview": build_runtime_preview(card),
+        "title": title,
+        "operation_label": operation_label,
+        "preview": preview,
         "created_at": created_value,
         "chatroom_id": chatroom_id,
         "chat_title": chat_title,
@@ -230,11 +575,56 @@ def serialize_monitor_runtime_item(
         "duration_ms": int(card.get("duration_ms") or 0),
         "turn": int(card.get("turn") or 0) or None,
         "client_turn_id": metadata_client_turn_id(normalized_metadata),
-        "prompt_preview": extract_prompt_preview(card),
-        "response_preview": compact_preview(card.get("response") or card.get("result")),
-        "arguments_preview": compact_preview(card.get("arguments")),
+        "prompt_preview": prompt_preview,
+        "response_preview": response_preview,
+        "arguments_preview": arguments_preview,
         "stage": card.get("stage") or card.get("display_name"),
+        "brain_events": build_runtime_brain_events(
+            runtime_id=runtime_message_id,
+            card=card,
+            from_entity=from_entity,
+            to_entity=to_entity,
+            operation_label=operation_label,
+            title=title,
+            preview=preview,
+            prompt_preview=prompt_preview,
+            response_preview=response_preview,
+            arguments_preview=arguments_preview,
+        ),
     }
+
+
+def serialize_monitor_runtime_detail(
+    *,
+    runtime_message_id: int,
+    chatroom_id: int,
+    chat_title: str,
+    project_id: int | None,
+    project_name: str | None,
+    card: dict[str, Any],
+    created_at: Any,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = serialize_monitor_runtime_item(
+        runtime_message_id=runtime_message_id,
+        chatroom_id=chatroom_id,
+        chat_title=chat_title,
+        project_id=project_id,
+        project_name=project_name,
+        card=card,
+        created_at=created_at,
+        metadata=metadata,
+    )
+    payload["card"] = card
+    payload["detail_sections"] = build_runtime_detail_sections(
+        runtime_id=runtime_message_id,
+        card=card,
+        operation_label=str(payload.get("operation_label") or ""),
+        from_entity=payload.get("from_entity") if isinstance(payload.get("from_entity"), str) else None,
+        to_entity=payload.get("to_entity") if isinstance(payload.get("to_entity"), str) else None,
+        client_turn_id=payload.get("client_turn_id") if isinstance(payload.get("client_turn_id"), str) else None,
+    )
+    return payload
 
 
 def serialize_monitor_approval_queue_item(

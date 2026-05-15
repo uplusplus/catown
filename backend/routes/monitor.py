@@ -23,6 +23,8 @@ from services.monitor_projection import (
     serialize_monitor_approval_queue_item,
     serialize_monitor_compaction_item,
     serialize_monitor_policy_decision_item,
+    serialize_monitor_runtime_detail,
+    serialize_monitor_runtime_item,
 )
 from services.run_ledger import serialize_monitor_task_run_summary
 from services.run_shell_processes import list_tracked_run_shell_processes
@@ -460,20 +462,6 @@ def _finalize_usage_totals(totals: dict[str, Any]) -> dict[str, Any]:
     return {
         **totals,
         "estimated_cost_usd": round(float(totals["estimated_cost_usd"]), 4),
-    }
-
-
-def _serialize_runtime_card_detail(message: Message, chatroom: Chatroom, project: Project | None, card: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": message.id,
-        "created_at": message.created_at.isoformat() if message.created_at else None,
-        "chatroom_id": chatroom.id,
-        "chat_title": chatroom.title,
-        "project_id": project.id if project else None,
-        "project_name": project.name if project else None,
-        "title": _build_runtime_title(card),
-        "preview": _build_runtime_preview(card),
-        "card": card,
     }
 
 
@@ -1003,7 +991,16 @@ async def get_monitor_runtime_card_detail(message_id: int, db: Session = Depends
     if not card:
         raise HTTPException(status_code=404, detail="Runtime card payload is unavailable")
 
-    return _serialize_runtime_card_detail(message, chatroom, project, card)
+    return serialize_monitor_runtime_detail(
+        runtime_message_id=message.id,
+        chatroom_id=chatroom.id,
+        chat_title=chatroom.title,
+        project_id=project.id if project else None,
+        project_name=project.name if project else None,
+        card=card,
+        created_at=message.created_at,
+        metadata=metadata,
+    )
 
 
 @router.get("/usage")
@@ -1577,35 +1574,17 @@ async def get_monitor_overview(
         card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
         if not card:
             continue
-        from_entity, to_entity = _runtime_entities(card)
         recent_runtime.append(
-            {
-                "id": message.id,
-                "type": str(card.get("type") or message.content or "runtime"),
-                "title": _build_runtime_title(card),
-                "preview": _build_runtime_preview(card),
-                "created_at": message.created_at.isoformat() if message.created_at else None,
-                "chatroom_id": chatroom.id,
-                "chat_title": chatroom.title,
-                "project_id": project.id if project else None,
-                "project_name": project.name if project else None,
-                "agent": card.get("agent") or card.get("from_agent"),
-                "from_entity": from_entity,
-                "to_entity": to_entity,
-                "model": card.get("model"),
-                "tool_name": card.get("tool"),
-                "tool_call_id": card.get("tool_call_id"),
-                "success": card.get("success"),
-                "tokens_in": int(card.get("tokens_in") or 0),
-                "tokens_out": int(card.get("tokens_out") or 0),
-                "duration_ms": int(card.get("duration_ms") or 0),
-                "turn": int(card.get("turn") or 0) or None,
-                "client_turn_id": _metadata_client_turn_id(metadata),
-                "prompt_preview": _extract_prompt_preview(card),
-                "response_preview": _compact_preview(card.get("response") or card.get("result")),
-                "arguments_preview": _compact_preview(card.get("arguments")),
-                "stage": card.get("stage") or card.get("display_name"),
-            }
+            serialize_monitor_runtime_item(
+                runtime_message_id=message.id,
+                chatroom_id=chatroom.id,
+                chat_title=chatroom.title,
+                project_id=project.id if project else None,
+                project_name=project.name if project else None,
+                card=card,
+                created_at=message.created_at,
+                metadata=metadata,
+            )
         )
 
     recent_message_rows = (

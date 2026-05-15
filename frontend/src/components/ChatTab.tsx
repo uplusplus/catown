@@ -29,6 +29,8 @@ import type {
   ChatEventItem,
   ChatProcessEntry,
   ChatSummary,
+  ChatTimelineProjection,
+  ChatTimelineStep,
   MessageItem,
   MessageStreamStep,
   TaskActivityProjection,
@@ -321,6 +323,7 @@ type ChatTabProps = {
   projectBrowserIndex: ProjectBrowserIndex | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   taskActivitiesById: Record<number, TaskActivityProjection>;
+  taskTimelinesById: Record<number, ChatTimelineProjection>;
   loading: boolean;
   sending: boolean;
   refreshing: boolean;
@@ -1113,6 +1116,44 @@ function chatFacingActivityStepDetailContent(step: TaskActivityProjection["steps
   return step.detail_content || visibleDetail;
 }
 
+function timelineStepLabel(step: ChatTimelineStep) {
+  const actor = step.actor?.trim();
+  const kind = (step.kind || "event").replace(/_/g, " ");
+  const phase = (step.phase || step.event_type || "recorded").replace(/_/g, " ");
+  if (actor) return `${actor} ${phase}`;
+  return `${kind} ${phase}`.trim();
+}
+
+function timelineStepToStreamStep(step: ChatTimelineStep, taskRunId: number): MessageStreamStep {
+  const toolName =
+    typeof step.facts?.["tool_name"] === "string"
+      ? step.facts["tool_name"]
+      : typeof step.facts?.["tool"] === "string"
+        ? step.facts["tool"]
+        : undefined;
+  const toolCallId = typeof step.facts?.["tool_call_id"] === "string" ? step.facts["tool_call_id"] : null;
+  const kind = step.kind === "llm"
+    ? step.phase === "request"
+      ? ("llm_outbound" as const)
+      : ("llm_inbound" as const)
+    : step.kind === "tool"
+      ? ("tool_call" as const)
+      : undefined;
+
+  return {
+    id: step.id,
+    label: step.summary || timelineStepLabel(step),
+    detail: step.event_type,
+    detailContent: step.detail_content || step.summary || undefined,
+    state: step.state,
+    kind,
+    agent: step.actor || undefined,
+    tool: toolName,
+    toolCallId,
+    runId: taskRunId,
+  };
+}
+
 function readTaskRunContinuationToolName(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
@@ -1137,12 +1178,25 @@ function readTaskRunContinuationToolName(
 function describeRunningTaskRunFallback(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  activity: TaskActivityProjection | null,
   actorName = "Agent",
   options?: {
     latestEventType?: string | null;
     latestToolName?: string | null;
   },
 ) {
+  const projectedLatestTurn = activity?.latest_agent_turn_preview?.trim();
+  if (projectedLatestTurn) {
+    return oneLinePreview(projectedLatestTurn, `${actorName || "Agent"} is working on your request.`, 132);
+  }
+  const projectedContinuation = activity?.continuation_state_summary?.trim();
+  if (projectedContinuation) {
+    return oneLinePreview(projectedContinuation, `${actorName || "Agent"} is working on your request.`, 132);
+  }
+  const projectedSummary = activity?.summary?.trim();
+  if (projectedSummary) {
+    return oneLinePreview(projectedSummary, `${actorName || "Agent"} is working on your request.`, 132);
+  }
   const eventType = (options?.latestEventType || detail?.checkpoint_snapshot?.latest_event_type || taskRun.latest_continuation_event_type || "")
     .toLowerCase();
   const toolName = readTaskRunContinuationToolName(taskRun, detail, options?.latestToolName);
@@ -1259,6 +1313,7 @@ function rememberedApprovalScope(item: ApprovalQueueItem) {
 function summarizeTaskRunInlineStatus(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  activity: TaskActivityProjection | null,
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
@@ -1348,6 +1403,20 @@ function summarizeTaskRunInlineStatus(
 
   const normalizedStatus = (taskRun.status || "").toLowerCase();
   if (normalizedStatus === "running") {
+    if (activity?.latest_agent_turn_preview?.trim()) {
+      return {
+        tone: "info" as const,
+        label: "Running",
+        detail: oneLinePreview(activity.latest_agent_turn_preview, "Continuing the task.", 132),
+      };
+    }
+    if (activity?.summary?.trim()) {
+      return {
+        tone: "info" as const,
+        label: "Running",
+        detail: oneLinePreview(activity.summary, "Task is running.", 132),
+      };
+    }
     if (latestEventTypeValue === "approval_queue_item_resolved") {
       if (latestResolutionAction === "tool_replayed") {
         return {
@@ -1435,14 +1504,14 @@ function summarizeTaskRunInlineStatus(
     return {
       tone: "info" as const,
       label: latestToolName ? `Running 璺?${latestToolName}` : "Running",
-      detail:
-        chatProjection.userRequest
-          ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
-          : describeRunningTaskRunFallback(taskRun, detail, actorName, {
-            latestEventType: latestEventType || latestEvent?.event_type || null,
-            latestToolName,
-          }),
-    };
+          detail:
+            chatProjection.userRequest
+              ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
+              : describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
+                latestEventType: latestEventType || latestEvent?.event_type || null,
+                latestToolName,
+              }),
+      };
   }
   if (normalizedStatus === "completed") {
     return {
@@ -1627,7 +1696,10 @@ function taskActivityBackgroundRows(activity: TaskActivityProjection | null) {
       label: "Subagent",
       detail: runtimeHandleRichLabel(background.active_subagent_handle),
     },
-    { key: "scheduler_runtime_summary", label: "Scheduler", detail: backgroundText(background.scheduler_runtime_summary) },
+    { key: "scheduler_runtime_summary", label: "Scheduler", detail: activity?.scheduler_runtime_summary || backgroundText(background.scheduler_runtime_summary) },
+    { key: "continuation_state_summary", label: "Continuation", detail: activity?.continuation_state_summary || "" },
+    { key: "continuation_cursor_summary", label: "Cursor", detail: activity?.continuation_cursor_summary || "" },
+    { key: "latest_agent_turn_preview", label: "Latest Turn", detail: activity?.latest_agent_turn_preview || "" },
     { key: "subagent_lifecycle_summary", label: "Agents", detail: backgroundText(background.subagent_lifecycle_summary) },
     { key: "subagent_handles_summary", label: "Handles", detail: backgroundText(background.subagent_handles_summary) },
     { key: "pipeline_inbox_summary", label: "Pipeline", detail: backgroundText(background.pipeline_inbox_summary) },
@@ -1656,9 +1728,16 @@ function renderTaskActivityBackground(activity: TaskActivityProjection | null) {
 function buildTaskRunCardSummary(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
+  activity: TaskActivityProjection | null,
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
+  if ((taskRun.status || "").toLowerCase() === "running") {
+    const projectedSummary = activity?.summary?.trim();
+    if (projectedSummary) {
+      return oneLinePreview(projectedSummary, "Task update.", 160);
+    }
+  }
   const chatProjection = chatFacingTaskRunText(taskRun, detail, actorName);
   const events = detail?.events ?? [];
   const latestEvent = events[events.length - 1] ?? null;
@@ -1771,7 +1850,7 @@ function buildTaskRunCardSummary(
     }
     return chatProjection.userRequest
       ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 140)}`
-      : describeRunningTaskRunFallback(taskRun, detail, actorName, {
+      : describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
       latestEventType: latestEvent?.event_type || taskRun.latest_continuation_event_type || null,
       latestToolName,
     });
@@ -2578,39 +2657,23 @@ function renderTaskRunTrace(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   activity: TaskActivityProjection | null,
+  timeline: ChatTimelineProjection | null,
   expandedStepId: StepExpansionValue | undefined,
   onToggleStep: (taskRunId: number, stepId: string, isExpanded: boolean) => void,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
-  const projectedTraceSteps = activity?.steps.length
-    ? activity.steps
-      .filter((step) => !isInternalTaskActivityStep(step))
-      .map((step) => {
-        const visibleDetail = chatFacingActivityStepText(step, taskRun, detail);
-        return {
-          id: step.id,
-          label: userFacingTaskRunSummary(step.label) || step.label,
-          detail: visibleDetail,
-          detailContent: chatFacingActivityStepDetailContent(step, visibleDetail),
-          state: step.state,
-          kind: step.tool ? ("tool_call" as const) : undefined,
-          agent: step.agent || undefined,
-          tool: step.tool || undefined,
-          runId: taskRun.id,
-        };
-      })
-    : buildTaskRunTraceSteps(taskRun, detail);
-  const syntheticHandleStep = buildSyntheticHandleTraceStep(activity, taskRun);
-  const traceSteps =
-    syntheticHandleStep && !projectedTraceSteps.some((step) => step.state === "live" && step.agent === syntheticHandleStep.agent)
-      ? [...projectedTraceSteps, syntheticHandleStep]
-      : projectedTraceSteps;
+  const timelineTraceSteps = timeline?.steps.length
+    ? [...timeline.steps]
+      .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+      .map((step) => timelineStepToStreamStep(step, taskRun.id))
+    : [];
+  const traceSteps = timelineTraceSteps;
   if (traceSteps.length === 0) return null;
   const currentStepId =
     (
-      activity?.current_step_id && traceSteps.some((step) => step.id === activity.current_step_id)
-        ? activity.current_step_id
-        : syntheticHandleStep?.id ?? null
+      timeline?.current_step_id && traceSteps.some((step) => step.id === timeline.current_step_id)
+        ? timeline.current_step_id
+        : null
     )
     ?? [...traceSteps].reverse().find((step) => step.state === "live")?.id
     ?? traceSteps[traceSteps.length - 1]?.id
@@ -5360,6 +5423,7 @@ function renderTaskRunInlineCard(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   activity: TaskActivityProjection | null,
+  timeline: ChatTimelineProjection | null,
   cards: ThreadCard[],
   agents: AgentInfo[],
   approvalItems: ApprovalQueueItem[],
@@ -5379,7 +5443,7 @@ function renderTaskRunInlineCard(
   const shellStatus = shouldUseLiveActivity ? summarizeTaskRunShellStatus(cards) : null;
   const liveActivity = shouldUseLiveActivity ? shellStatus ?? summarizeTaskRunRuntimeCards(cards) : null;
   const actorName = resolveTaskRunActorName(taskRun, agents);
-  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, pendingApprovalOverride, actorName);
+  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, activity, pendingApprovalOverride, actorName);
   const inlineStatus = liveActivity
     ? {
         tone:
@@ -5391,8 +5455,8 @@ function renderTaskRunInlineCard(
         label: liveActivity.actor ? `${liveActivity.actor} 璺?${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
-    : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride, actorName);
-  const trace = renderTaskRunTrace(taskRun, detail, activity, expandedStepId, onToggleStep, onAnalyzeFailureStep);
+    : summarizeTaskRunInlineStatus(taskRun, detail, activity, pendingApprovalOverride, actorName);
+  const trace = renderTaskRunTrace(taskRun, detail, activity, timeline, expandedStepId, onToggleStep, onAnalyzeFailureStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
     ? (taskRun.client_turn_id || "").trim().slice("delegate-".length)
@@ -5646,6 +5710,7 @@ export function ChatTab({
   projectBrowserIndex,
   liveTaskRunDetailsById,
   taskActivitiesById,
+  taskTimelinesById,
   loading,
   sending,
   refreshing,
@@ -7375,6 +7440,7 @@ export function ChatTab({
                         item.taskRun,
                         item.detail,
                         taskActivitiesById[item.taskRun.id] ?? null,
+                        taskTimelinesById[item.taskRun.id] ?? null,
                         item.cards,
                         agents,
                         pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],

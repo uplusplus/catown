@@ -38,6 +38,11 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         and str(active_subagent_handle.get("dispatch_kind") or "").strip() == "consult"
         else None
     )
+    checkpoint = summary.get("checkpoint_snapshot") if isinstance(summary.get("checkpoint_snapshot"), dict) else {}
+    continuation_state_summary = summary.get("continuation_state_summary") or checkpoint.get("continuation_state_summary")
+    continuation_cursor_summary = summary.get("continuation_cursor_summary") or checkpoint.get("continuation_cursor_summary")
+    scheduler_runtime_summary = summary.get("scheduler_runtime_summary") or checkpoint.get("scheduler_runtime_summary")
+    latest_agent_turn_preview = _latest_agent_turn_preview(summary)
 
     return {
         "task_run_id": task_run.id,
@@ -48,7 +53,17 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         "latest_event_index": latest_event_index,
         "updated_at": task_run.updated_at.isoformat() if task_run.updated_at else None,
         "current_step_id": current_step.get("id") if current_step else None,
-        "summary": summary.get("summary") or summary.get("latest_continuation_event_summary") or task_run.summary,
+        "summary": _activity_summary(
+            task_run=task_run,
+            primary_summary=summary.get("summary") or summary.get("latest_continuation_event_summary") or task_run.summary,
+            latest_agent_turn_preview=latest_agent_turn_preview,
+            continuation_state_summary=continuation_state_summary,
+            scheduler_runtime_summary=scheduler_runtime_summary,
+        ),
+        "continuation_state_summary": continuation_state_summary,
+        "continuation_cursor_summary": continuation_cursor_summary,
+        "scheduler_runtime_summary": scheduler_runtime_summary,
+        "latest_agent_turn_preview": latest_agent_turn_preview,
         "background": _background_projection(summary),
         "active_subagent_handle": active_subagent_handle,
         "active_consult_handle": active_consult_handle,
@@ -279,6 +294,39 @@ def _background_projection(summary: dict[str, Any]) -> dict[str, Any]:
         if str(active_subagent_handle.get("dispatch_kind") or "").strip() == "consult":
             background["active_consult_handle"] = active_subagent_handle
     return background
+
+
+def _latest_agent_turn_preview(summary: dict[str, Any]) -> str | None:
+    checkpoint = summary.get("checkpoint_snapshot") if isinstance(summary.get("checkpoint_snapshot"), dict) else {}
+    latest_turn = checkpoint.get("latest_agent_turn") if isinstance(checkpoint.get("latest_agent_turn"), dict) else {}
+    response_preview = str(latest_turn.get("response_preview") or "").strip()
+    if not response_preview:
+        return None
+    agent_name = str(latest_turn.get("agent_name") or "agent").strip() or "agent"
+    return f"{agent_name} | {response_preview}"
+
+
+def _activity_summary(
+    *,
+    task_run: TaskRun,
+    primary_summary: Any,
+    latest_agent_turn_preview: str | None,
+    continuation_state_summary: str | None,
+    scheduler_runtime_summary: str | None,
+) -> str | None:
+    summary_text = str(primary_summary or "").strip()
+    if summary_text:
+        return summary_text
+    if latest_agent_turn_preview:
+        return latest_agent_turn_preview
+    if continuation_state_summary:
+        return continuation_state_summary
+    if scheduler_runtime_summary:
+        return scheduler_runtime_summary
+    user_request = str(getattr(task_run, "user_request", "") or "").strip()
+    if user_request:
+        return user_request
+    return None
 
 
 def _active_subagent_handle(summary: dict[str, Any]) -> dict[str, Any] | None:

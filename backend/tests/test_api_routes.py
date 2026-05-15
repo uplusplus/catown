@@ -1752,6 +1752,9 @@ class TestChatEndpoints:
         assert run["event_count"] >= 4
 
         detail = client.get(f"/api/task-runs/{run['id']}").json()
+        assert latest_push["entry"]["id"] == run["id"]
+        assert latest_push["entry"]["checkpoint_snapshot"] == detail["checkpoint_snapshot"]
+        assert latest_push["detail"] == detail
         event_types = [event["event_type"] for event in detail["events"]]
         mode_event = next(event for event in detail["events"] if event["event_type"] == "runtime_mode_selected")
 
@@ -1869,7 +1872,9 @@ class TestChatEndpoints:
         assert any(step["event_type"] == "scheduler_plan_created" for step in activity["steps"])
         assert any(step["event_type"] == "scheduler_step_dispatched" for step in activity["steps"])
         assert activity["steps"][-1]["state"] in {"done", "live", "error"}
+        assert activity["summary"]
         assert activity["background"]["scheduler_runtime_summary"]
+        assert activity["scheduler_runtime_summary"]
         assert not [
             step
             for step in activity["steps"]
@@ -1952,6 +1957,7 @@ class TestChatEndpoints:
         assert consult_handle["dispatch_kind"] == "consult"
         assert consult_handle["source"] == "consult_agent"
         assert payload["background"]["active_consult_handle"]["step_id"] == "consult-analyst-foreground"
+        assert payload["latest_agent_turn_preview"] is None
 
     def test_send_message_rebuilds_tool_loop_from_turn_state(self, client):
         import llm.client as llm_mod

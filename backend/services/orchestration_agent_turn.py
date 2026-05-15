@@ -20,6 +20,9 @@ from services.orchestration_chat_profile import (
 )
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
+    record_llm_request_created,
+    record_llm_response_completed,
+    record_llm_response_started,
     record_tool_round as record_runner_tool_round,
     start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
@@ -247,6 +250,55 @@ async def iter_stream_orchestration_agent_turn_events(
     async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
         raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {runtime.agent_label}")
 
+    seen_response_started_turns: set[int] = set()
+
+    async def _record_stream_fact(frame: Any, event: dict[str, Any], _turn_state: TurnContextState) -> None:
+        await _check_cancel()
+        event_type = str(event.get("type") or "")
+        turn_index = int(getattr(frame, "turn_index", 1) or 1)
+        if event_type == "request_sent":
+            record_llm_request_created(
+                db,
+                task_run,
+                agent_name=runtime.agent_label,
+                turn=turn_index,
+                model=getattr(runtime.llm_client, "model", None),
+                client_turn_id=client_turn_id,
+                payload={
+                    "elapsed_ms": event.get("elapsed_ms"),
+                    "step_id": f"llm:{runtime.agent_label}:{turn_index}",
+                },
+            )
+            return
+        if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:
+            seen_response_started_turns.add(turn_index)
+            record_llm_response_started(
+                db,
+                task_run,
+                agent_name=runtime.agent_label,
+                turn=turn_index,
+                client_turn_id=client_turn_id,
+                payload={
+                    "elapsed_ms": event.get("elapsed_ms"),
+                    "step_id": f"llm:{runtime.agent_label}:{turn_index}",
+                },
+            )
+            return
+        if event_type == "done":
+            record_llm_response_completed(
+                db,
+                task_run,
+                agent_name=runtime.agent_label,
+                turn=turn_index,
+                finish_reason=event.get("finish_reason"),
+                client_turn_id=client_turn_id,
+                payload={
+                    "response_preview": str(event.get("full_content") or getattr(frame, "llm_content", "") or "")[:280],
+                    "tool_call_count": len(event.get("tool_calls") or []),
+                    "step_id": f"llm:{runtime.agent_label}:{turn_index}",
+                },
+            )
+
     async def _execute_tool(
         tool_name: str,
         tool_args: dict[str, Any],
@@ -304,7 +356,7 @@ async def iter_stream_orchestration_agent_turn_events(
         tool_result_success=deps.tool_result_success,
         max_turns=deps.max_tool_iterations,
         before_turn=profile.check_cancel,
-        before_event=profile.check_cancel,
+        before_event=_record_stream_fact,
         before_tool_call=profile.check_cancel,
         on_tool_round=profile.on_tool_round,
     ):

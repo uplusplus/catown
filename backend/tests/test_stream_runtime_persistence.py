@@ -63,6 +63,13 @@ async def test_publish_runtime_card_event_notifies_process_projection(monkeypatc
         assert process_message["chatroom_id"] == chatroom.id
         assert process_message["reason"] == "runtime_card"
         assert topic_calls
+        monitor_payload = topic_calls[0][0]["payload"]
+        assert topic_calls[0][0]["type"] == "monitor_runtime"
+        assert monitor_payload["type"] == "tool_call"
+        assert monitor_payload["operation_label"] == "run_shell"
+        assert len(monitor_payload["brain_events"]) == 2
+        assert monitor_payload["brain_events"][0]["phase"] == "outbound"
+        assert monitor_payload["brain_events"][1]["phase"] == "inbound"
     finally:
         db.close()
 

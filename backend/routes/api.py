@@ -129,8 +129,15 @@ from services.run_ledger import (
     update_task_run,
 )
 from services.task_activity_projection import build_task_activity_projection
+from services.chat_timeline_projection import (
+    build_chatroom_timeline_projection,
+    build_task_run_timeline_projection,
+)
 from services.runner_lifecycle import (
     complete_agent_turn as record_agent_turn_completed,
+    record_llm_request_created,
+    record_llm_response_completed,
+    record_llm_response_started,
     record_tool_round as record_runner_tool_round,
     start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
@@ -805,6 +812,62 @@ def _build_llm_card_payload(
         "timings": timings or {},
     }
 
+
+def _build_llm_fact_recorder(
+    db: Session,
+    task_run: Optional[TaskRun],
+    *,
+    agent_name: str,
+    llm_client: Any,
+    client_turn_id: Optional[str],
+):
+    """Build a stream event callback that records factual LLM timeline events."""
+
+    seen_response_started_turns: set[int] = set()
+
+    async def _record(frame: Any, event: Dict[str, Any], _turn_state: TurnContextState) -> None:
+        event_type = str(event.get("type") or "")
+        turn_index = int(getattr(frame, "turn_index", 1) or 1)
+        step_id = f"llm:{agent_name}:{turn_index}"
+        if event_type == "request_sent":
+            record_llm_request_created(
+                db,
+                task_run,
+                agent_name=agent_name,
+                turn=turn_index,
+                model=getattr(llm_client, "model", None),
+                client_turn_id=client_turn_id,
+                payload={"elapsed_ms": event.get("elapsed_ms"), "step_id": step_id},
+            )
+            return
+        if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:
+            seen_response_started_turns.add(turn_index)
+            record_llm_response_started(
+                db,
+                task_run,
+                agent_name=agent_name,
+                turn=turn_index,
+                client_turn_id=client_turn_id,
+                payload={"elapsed_ms": event.get("elapsed_ms"), "step_id": step_id},
+            )
+            return
+        if event_type == "done":
+            record_llm_response_completed(
+                db,
+                task_run,
+                agent_name=agent_name,
+                turn=turn_index,
+                finish_reason=event.get("finish_reason"),
+                client_turn_id=client_turn_id,
+                payload={
+                    "response_preview": str(event.get("full_content") or getattr(frame, "llm_content", "") or "")[:280],
+                    "tool_call_count": len(event.get("tool_calls") or []),
+                    "step_id": step_id,
+                },
+            )
+
+    return _record
+
 async def _trigger_standalone_assistant_response(
     db: Session,
     chatroom_id: int,
@@ -1025,6 +1088,13 @@ async def _stream_standalone_assistant_response(
                 preview_tool_calls=_preview_tool_calls,
                 format_prompt_messages=_format_json_block,
                 tool_result_success=_tool_result_succeeded,
+                before_event=_build_llm_fact_recorder(
+                    db,
+                    task_run,
+                    agent_name=runtime.assistant_name,
+                    llm_client=runtime.llm_client,
+                    client_turn_id=client_turn_id,
+                ),
             ),
             transport=build_single_agent_stream_transport_context(
                 serialize_payload=lambda payload: sse_json.dumps(payload, ensure_ascii=False),
@@ -4515,6 +4585,24 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
     return cards
 
 
+@router.get("/chatrooms/{chatroom_id}/timeline")
+async def get_chatroom_timeline(chatroom_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Return the backend-owned canonical timeline for a chatroom."""
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+
+    bounded_limit = max(1, min(limit, 200))
+    task_runs = (
+        db.query(TaskRun)
+        .filter(TaskRun.chatroom_id == chatroom_id)
+        .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
+        .limit(bounded_limit)
+        .all()
+    )
+    return build_chatroom_timeline_projection(list(reversed(task_runs)), chatroom_id=chatroom_id)
+
+
 @router.get("/chatrooms/{chatroom_id}/task-runs")
 async def list_task_runs(
     chatroom_id: int,
@@ -4645,6 +4733,19 @@ async def get_task_run_activity(task_run_id: int, db: Session = Depends(get_db))
     if not task_run:
         raise HTTPException(status_code=404, detail="Task run not found")
     return build_task_activity_projection(task_run)
+
+
+@router.get("/task-runs/{task_run_id}/timeline")
+async def get_task_run_timeline(task_run_id: int, db: Session = Depends(get_db)):
+    """Return the backend-owned canonical timeline for one task run."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    return build_task_run_timeline_projection(task_run)
 
 
 @router.post("/task-runs/{task_run_id}/resume")
@@ -6546,6 +6647,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         preview_tool_calls=_preview_tool_calls,
                         format_prompt_messages=_format_json_block,
                         tool_result_success=_tool_result_succeeded,
+                        before_event=_build_llm_fact_recorder(
+                            db,
+                            task_run,
+                            agent_name=target_agent_label,
+                            llm_client=runtime.llm_client,
+                            client_turn_id=message.client_turn_id,
+                        ),
                         on_tool_round=_on_single_agent_stream_tool_round,
                     ),
                     transport=build_single_agent_stream_transport_context(

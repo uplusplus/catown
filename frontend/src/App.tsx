@@ -18,6 +18,7 @@ import type {
   ChatEventTone,
   ChatProcessEntry,
   ChatSummary,
+  ChatTimelineProjection,
   ConfigSection,
   ConfigResponse,
   GlobalConfigPayload,
@@ -1485,140 +1486,6 @@ function buildCardStepDetailContent(card: ChatCardItem) {
   }
 }
 
-function applyRuntimeCardStep(message: MessageItem, card: ChatCardItem) {
-  const actor =
-    card.agent ||
-    card.from_agent ||
-    card.to_agent ||
-    message.agent_name ||
-    "agent";
-
-  switch (card.kind) {
-    case "llm_call": {
-      const outboundLabel = llmOutboundStepLabel(actor);
-      const nextMessage = patchMatchingStreamingStep(
-        message,
-        (step) => isActorOutboundStep(step, actor),
-        {
-          detailContent: buildCardLlmPromptDetailContent(card),
-          state: "done",
-          kind: "llm_outbound",
-          agent: actor,
-        },
-        outboundLabel,
-      );
-
-      return patchMatchingStreamingStep(
-        nextMessage,
-        (step) => isActorInboundStep(step, actor),
-        {
-          detail: buildLlmResponseStepDetail(card),
-          detailContent: buildCardLlmResponseDetailContent(card),
-          state: "done",
-          kind: "llm_inbound",
-          agent: actor,
-        },
-        llmInboundStepLabel(actor, card.finish_reason),
-      );
-    }
-    case "tool_call": {
-      const toolName = card.tool || "tool";
-      const toolCallIndex = card.tool_call_index;
-      const toolCallId = card.tool_call_id;
-      const runId = typeof card.run_id === "number" ? card.run_id : undefined;
-      const existingStep = findMatchingStreamStep(message, (step) =>
-        isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
-      );
-      const shouldKeepExistingOutput = streamStepHasToolOutput(existingStep) && !card.result;
-      const nextMessage = patchMatchingStreamingStep(
-        message,
-        (step) => isActorToolCallStepByRef(step, actor, toolName, toolCallIndex, toolCallId),
-        {
-          detail: shouldKeepExistingOutput ? existingStep?.detail : buildUnifiedToolStepDetail(card),
-          detailContent: shouldKeepExistingOutput ? existingStep?.detailContent : buildCardToolStepDetailContent(card),
-          state: streamStepStateFromRuntimeCard(card),
-          kind: "tool_call",
-          agent: actor,
-          tool: toolName,
-          toolCallIndex,
-          toolCallId,
-          runId,
-        },
-        toolCallStepLabel(actor, toolName),
-      );
-
-      return {
-        ...nextMessage,
-        streamSteps: (nextMessage.streamSteps ?? []).filter(
-          (step) => !isActorToolResultStep(step, actor, toolName, toolCallIndex),
-        ),
-      };
-    }
-    case "agent_error": {
-      return pushStreamingStep(
-        message,
-        `${card.agent || actor} failed before finishing the turn`,
-        buildCardStepDetail(card),
-        "error",
-        buildCardStepDetailContent(card),
-      );
-    }
-    case "stage_start": {
-      const label = `${actor} started ${card.display_name || card.stage || "stage"}`;
-      return pushStreamingStep(message, label, buildCardStepDetail(card), "done", buildCardStepDetailContent(card));
-    }
-    case "stage_end": {
-      const label = `${actor} completed ${card.stage || "stage"}`;
-      return pushStreamingStep(message, label, buildCardStepDetail(card), "done", buildCardStepDetailContent(card));
-    }
-    case "skill_inject": {
-      return pushStreamingStep(
-        message,
-        `${actor} loaded skills`,
-        buildCardStepDetail(card),
-        "done",
-        buildCardStepDetailContent(card),
-      );
-    }
-    case "agent_message": {
-      const label = `${card.from_agent || actor} sent a team message`;
-      return pushStreamingStep(message, label, buildCardStepDetail(card), "done", buildCardStepDetailContent(card));
-    }
-    case "boss_instruction": {
-      return pushStreamingStep(
-        message,
-        `Boss instruction for ${card.agent || actor}`,
-        buildCardStepDetail(card),
-        "done",
-        buildCardStepDetailContent(card),
-      );
-    }
-    case "gate_blocked": {
-      return pushStreamingStep(
-        message,
-        `${actor} is waiting for approval`,
-        buildCardStepDetail(card),
-        "error",
-        buildCardStepDetailContent(card),
-      );
-    }
-    case "gate_approved": {
-      return pushStreamingStep(message, `${actor} approved the gate`, buildCardStepDetail(card), "done");
-    }
-    case "gate_rejected": {
-      return pushStreamingStep(
-        message,
-        `${actor} rejected the gate`,
-        buildCardStepDetail(card),
-        "error",
-        buildCardStepDetailContent(card),
-      );
-    }
-    default:
-      return message;
-  }
-}
-
 function sameClientTurn(left?: string, right?: string) {
   return Boolean(left) && Boolean(right) && left === right;
 }
@@ -1989,42 +1856,15 @@ function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: Task
 
 function replayRuntimeCardsForTurn(message: MessageItem, cards: ChatCardItem[]) {
   if (cards.length === 0) return message;
-  let nextMessage = message;
-  for (const card of cards) {
-    nextMessage = applyRuntimeCardStep(nextMessage, card);
-  }
   const lastActor =
     [...cards]
       .reverse()
       .map((card) => card.agent || card.from_agent || card.to_agent)
       .find((actor): actor is string => Boolean(actor)) ?? null;
-  if (lastActor && nextMessage.agent_name !== lastActor) {
-    nextMessage = { ...nextMessage, agent_name: lastActor };
+  if (lastActor && message.agent_name !== lastActor) {
+    return { ...message, agent_name: lastActor };
   }
-  return nextMessage;
-}
-
-function applyRuntimeCardToMatchingPlaceholders(current: MessageItem[], card: ChatCardItem) {
-  if (!card.client_turn_id) return current;
-  let didUpdate = false;
-  const next = current.map((message) => {
-    if (message.optimisticKind !== "assistant_placeholder") return message;
-    if (!sameClientTurn(message.client_turn_id, card.client_turn_id)) return message;
-    didUpdate = true;
-    return applyRuntimeCardStep(
-      {
-        ...message,
-        agent_name:
-          card.agent ||
-          card.from_agent ||
-          card.to_agent ||
-          message.agent_name,
-        isStreaming: true,
-      },
-      card,
-    );
-  });
-  return didUpdate ? next : current;
+  return message;
 }
 
 function finalizeRecoveredPlaceholder(
@@ -2154,6 +1994,7 @@ function App() {
   const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [taskActivitiesById, setTaskActivitiesById] = useState<Record<number, TaskActivityProjection>>({});
+  const [taskTimelinesById, setTaskTimelinesById] = useState<Record<number, ChatTimelineProjection>>({});
   const [chatEvents, setChatEvents] = useState<ChatEventItem[]>([]);
   const [connectionState, setConnectionState] = useState<"connected" | "connecting" | "disconnected">("connecting");
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -2824,6 +2665,18 @@ function App() {
     }));
   }
 
+  function mergeTaskTimelines(entries: ChatTimelineProjection[]) {
+    if (entries.length === 0) return;
+    setTaskTimelinesById((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        entries
+          .filter((entry) => typeof entry.task_run_id === "number")
+          .map((entry) => [entry.task_run_id as number, entry]),
+      ),
+    }));
+  }
+
   async function loadOptionalTaskActivities(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
     const inlineRows = rows.filter(shouldLoadTaskActivity);
     const entries = await Promise.all(
@@ -2840,6 +2693,24 @@ function App() {
       }),
     );
     return entries.filter((entry): entry is TaskActivityProjection => entry !== null);
+  }
+
+  async function loadOptionalTaskTimelines(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
+    const inlineRows = rows.filter(shouldLoadTaskActivity);
+    const entries = await Promise.all(
+      inlineRows.map(async (run) => {
+        try {
+          return await api.getTaskRunTimeline(run.id);
+        } catch (nextError) {
+          if (!options.silent) {
+            const message = nextError instanceof Error ? nextError.message : "Failed to load task timeline";
+            pushEvent(`Task timeline unavailable: ${message}`, "warning");
+          }
+          return null;
+        }
+      }),
+    );
+    return entries.filter((entry): entry is ChatTimelineProjection => entry !== null);
   }
 
   async function loadOptionalRuntimeCards(chatId: number) {
@@ -2902,9 +2773,13 @@ function App() {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const entries = await loadOptionalTaskActivities(activeRuns, { silent: true });
+        const [activityEntries, timelineEntries] = await Promise.all([
+          loadOptionalTaskActivities(activeRuns, { silent: true }),
+          loadOptionalTaskTimelines(activeRuns, { silent: true }),
+        ]);
         if (!cancelled && isCurrentChatRequest(selectedChatId)) {
-          mergeTaskActivities(entries);
+          mergeTaskActivities(activityEntries);
+          mergeTaskTimelines(timelineEntries);
         }
       } finally {
         inFlight = false;
@@ -3219,6 +3094,7 @@ function App() {
       setProjectBrowserIndex(null);
       setLiveTaskRunDetailsById({});
       setTaskActivitiesById({});
+      setTaskTimelinesById({});
       return;
     }
     if (!activeChat) return;
@@ -3236,6 +3112,7 @@ function App() {
         setChatEvents([]);
         setLiveTaskRunDetailsById({});
         setTaskActivitiesById({});
+        setTaskTimelinesById({});
         const [rows, runtimeRows, taskRunRows, processRows] = await Promise.all([
           api.getMessages(activeChatId),
           loadOptionalRuntimeCards(activeChatId),
@@ -3254,6 +3131,16 @@ function App() {
           void loadOptionalTaskActivities(taskRunRows).then((entries) => {
             if (cancelled || !isCurrentChatRequest(activeChatId)) return;
             setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
+          });
+          void loadOptionalTaskTimelines(taskRunRows).then((entries) => {
+            if (cancelled || !isCurrentChatRequest(activeChatId)) return;
+            setTaskTimelinesById(
+              Object.fromEntries(
+                entries
+                  .filter((entry) => typeof entry.task_run_id === "number")
+                  .map((entry) => [entry.task_run_id as number, entry]),
+              ),
+            );
           });
           commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
         }
@@ -3398,24 +3285,6 @@ function App() {
               pushCard(card);
               patchSubagentRuntimeFromCard(card);
               scheduleChatProcessRefresh(selectedChatIdRef.current);
-              commitOptimisticMessages((current) => applyRuntimeCardToMatchingPlaceholders(current, card));
-              if (streamingAssistantIdRef.current !== null) {
-                commitOptimisticMessages((current) =>
-                  updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) =>
-                    applyRuntimeCardStep(
-                      {
-                        ...message,
-                        agent_name:
-                          card.agent ||
-                          card.from_agent ||
-                          card.to_agent ||
-                          message.agent_name,
-                      },
-                      card,
-                    ),
-                  ),
-                );
-              }
             }
             return;
           }
@@ -3445,6 +3314,16 @@ function App() {
                 .catch((nextError) => {
                   const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
                   pushEvent(`Task activity unavailable: ${message}`, "warning");
+                });
+              void api.getTaskRunTimeline(entry.id)
+                .then((timeline) => {
+                  if (!isCurrentChatRequest(entry.chatroom_id)) return;
+                  if (typeof timeline.task_run_id !== "number") return;
+                  setTaskTimelinesById((current) => ({ ...current, [timeline.task_run_id as number]: timeline }));
+                })
+                .catch((nextError) => {
+                  const message = nextError instanceof Error ? nextError.message : "Failed to load task timeline";
+                  pushEvent(`Task timeline unavailable: ${message}`, "warning");
                 });
               if (detail && typeof detail.id === "number") {
                 setLiveTaskRunDetailsById((current) => ({ ...current, [detail.id]: detail }));
@@ -3484,23 +3363,6 @@ function App() {
             });
             if (card && selectedProjectIdRef.current !== null) {
               pushCard(card);
-              if (streamingAssistantIdRef.current !== null) {
-                commitOptimisticMessages((current) =>
-                  updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) =>
-                    applyRuntimeCardStep(
-                      {
-                        ...message,
-                        agent_name:
-                          card.agent ||
-                          card.from_agent ||
-                          card.to_agent ||
-                          message.agent_name,
-                      },
-                      card,
-                    ),
-                  ),
-                );
-              }
             }
 
             switch (pipelineType) {
@@ -3679,6 +3541,16 @@ function App() {
         if (!isCurrentChatRequest(chatId)) return;
         setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
       });
+      void loadOptionalTaskTimelines(taskRunRows).then((entries) => {
+        if (!isCurrentChatRequest(chatId)) return;
+        setTaskTimelinesById(
+          Object.fromEntries(
+            entries
+              .filter((entry) => typeof entry.task_run_id === "number")
+              .map((entry) => [entry.task_run_id as number, entry]),
+          ),
+        );
+      });
       if (showSpinner) {
         pushEvent("Conversation refreshed", "info");
       }
@@ -3695,12 +3567,13 @@ function App() {
     const chatId = selectedChatIdRef.current;
     if (!chatId) return;
     try {
-      const [rows, runtimeRows, taskRunRows, processRows, activity] = await Promise.all([
+      const [rows, runtimeRows, taskRunRows, processRows, activity, timeline] = await Promise.all([
         api.getMessages(chatId),
         loadOptionalRuntimeCards(chatId),
         loadOptionalTaskRuns(chatId),
         loadOptionalChatProcesses(chatId, { silent: true }),
         api.getTaskRunActivity(taskRunId),
+        api.getTaskRunTimeline(taskRunId),
       ]);
       if (!isCurrentChatRequest(chatId)) return;
       const nextCards = runtimeRows
@@ -3712,6 +3585,9 @@ function App() {
       setTaskRuns(taskRunRows);
       setChatProcesses(processRows);
       setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
+      if (typeof timeline.task_run_id === "number") {
+        setTaskTimelinesById((current) => ({ ...current, [timeline.task_run_id as number]: timeline }));
+      }
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : "Failed to refresh runtime";
       pushEvent(`Runtime refresh unavailable: ${message}`, "warning");
@@ -3803,36 +3679,11 @@ function App() {
         pendingContentDelta = "";
         assistantDraftContent = `${assistantDraftContent}${delta}`;
         commitOptimisticMessages((current) =>
-          updateMessage(current, readAssistantMessageId(), (message) => {
-            const settledOutboundMessage = patchMatchingStreamingStep(
-              {
-                ...message,
-                agent_name: message.agent_name || activeAgentName,
-              },
-              (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
-              {
-                state: "done",
-              },
-            );
-
-            const nextMessage = patchMatchingStreamingStep(
-              settledOutboundMessage,
-              (step) => isActorInboundStep(step, activeAgentName),
-              {
-                detail: summarizeStepDetail(assistantDraftContent) || "Streaming tokens from the model.",
-                detailContent: buildLiveLlmResponseDetailContent(assistantDraftContent, undefined, liveLlmTimings),
-                state: "live",
-                kind: "llm_inbound",
-                agent: activeAgentName,
-              },
-              llmInboundStepLabel(activeAgentName),
-            );
-
-            return {
-              ...nextMessage,
-              content: `${nextMessage.content}${delta}`,
-            };
-          }),
+          updateMessage(current, readAssistantMessageId(), (message) => ({
+            ...message,
+            agent_name: message.agent_name || activeAgentName,
+            content: `${message.content}${delta}`,
+          })),
         );
       };
 
@@ -3857,30 +3708,6 @@ function App() {
           flushPendingContent();
         }
 
-        if (typeof data.type === "string") {
-          const card = buildCard(data);
-          if (card) {
-            // Keep runtime cards single-sourced from websocket/refresh so
-            // llm/tool counters do not double count the same persisted card.
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => {
-                const nextAgentName =
-                  card.agent ||
-                  card.from_agent ||
-                  card.to_agent ||
-                  message.agent_name;
-                return applyRuntimeCardStep(
-                  {
-                    ...message,
-                    agent_name: nextAgentName || message.agent_name,
-                  },
-                  card,
-                );
-              }),
-            );
-          }
-        }
-
         switch (data.type) {
           case "user_saved":
             if (typeof data.id === "number") {
@@ -3898,26 +3725,8 @@ function App() {
             liveLlmTimings = {};
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...pushStreamingStep(
-                  {
-                    ...message,
-                    agent_name: activeAgentName,
-                  },
-                  llmOutboundStepLabel(activeAgentName),
-                  buildLlmMetaSummary(liveLlmModel, liveLlmTurn) || "Preparing context and sending prompt.",
-                  "live",
-                  buildLiveLlmPromptDetailContent(content, {
-                    systemPrompt: liveLlmSystemPrompt,
-                    promptMessages: liveLlmPromptMessages,
-                    model: liveLlmModel,
-                    turn: liveLlmTurn,
-                    timings: liveLlmTimings,
-                  }),
-                  {
-                    kind: "llm_outbound",
-                    agent: activeAgentName,
-                  },
-                ),
+                ...message,
+                agent_name: activeAgentName,
               })),
             );
             pushEvent(`${activeAgentName} is responding`, "info");
@@ -3995,7 +3804,6 @@ function App() {
               activeAgentName = data.agent;
             }
             const elapsedMs = typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined;
-            const elapsedText = formatStreamingElapsed(elapsedMs);
             if (data.type === "request_sent" && elapsedMs !== undefined) {
               liveLlmTimings = { ...liveLlmTimings, request_sent_ms: elapsedMs };
             }
@@ -4005,45 +3813,6 @@ function App() {
             if (data.type === "first_content" && elapsedMs !== undefined) {
               liveLlmTimings = { ...liveLlmTimings, first_content_ms: elapsedMs };
             }
-
-            const detail =
-              data.type === "request_sent"
-                ? elapsedText
-                  ? `Request sent 路 ${elapsedText}`
-                  : "Request sent"
-                : data.type === "first_chunk"
-                  ? elapsedText
-                    ? `First stream chunk 路 ${elapsedText}`
-                    : "First stream chunk"
-                  : elapsedText
-                    ? `First content token 路 ${elapsedText}`
-                    : "First content token";
-
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) =>
-                patchMatchingStreamingStep(
-                  {
-                    ...message,
-                    agent_name: message.agent_name || activeAgentName,
-                  },
-                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
-                  {
-                    detail,
-                    detailContent: buildLiveLlmPromptDetailContent(content, {
-                      systemPrompt: liveLlmSystemPrompt,
-                      promptMessages: liveLlmPromptMessages,
-                      model: liveLlmModel,
-                      turn: liveLlmTurn,
-                      timings: liveLlmTimings,
-                    }),
-                    state: "live",
-                    kind: "llm_outbound",
-                    agent: activeAgentName,
-                  },
-                  llmOutboundStepLabel(activeAgentName),
-                ),
-              ),
-            );
             break;
           }
           case "tool_call_delta": {
@@ -4065,26 +3834,10 @@ function App() {
               : `Planning ${toolName}`;
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
-                const baseMessage = patchMatchingStreamingStep(
-                  {
-                    ...message,
-                    agent_name: message.agent_name || activeAgentName,
-                  },
-                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
-                  {
-                    state: "done",
-                    detail: elapsedText ? `Tool planning started 路 ${elapsedText}` : "Tool planning started",
-                    detailContent: buildLiveLlmPromptDetailContent(content, {
-                      systemPrompt: liveLlmSystemPrompt,
-                      promptMessages: liveLlmPromptMessages,
-                      model: liveLlmModel,
-                      turn: liveLlmTurn,
-                      timings: liveLlmTimings,
-                    }),
-                    kind: "llm_outbound",
-                    agent: activeAgentName,
-                  },
-                );
+                const baseMessage = {
+                  ...message,
+                  agent_name: message.agent_name || activeAgentName,
+                };
 
                 const nextMessage = patchMatchingStreamingStep(
                   baseMessage,
@@ -4145,19 +3898,13 @@ function App() {
               const toolArgs = rawToolArgs ? rawToolArgs.slice(0, 120) : "Calling tool.";
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
-                  const settledResponseMessage = patchMatchingStreamingStep(
-                    {
-                      ...message,
-                      agent_name: message.agent_name || activeAgentName,
-                    },
-                    (step) => step.state === "live" && isActorInboundStep(step, activeAgentName),
-                    {
-                      state: "done",
-                    },
-                  );
+                  const baseMessage = {
+                    ...message,
+                    agent_name: message.agent_name || activeAgentName,
+                  };
 
                   const nextMessage = patchMatchingStreamingStep(
-                    settledResponseMessage,
+                    baseMessage,
                     (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
                       label: toolCallStepLabel(activeAgentName, toolName),
@@ -4172,13 +3919,13 @@ function App() {
                     },
                   );
 
-                  if (nextMessage !== settledResponseMessage) {
+                  if (nextMessage !== baseMessage) {
                     return nextMessage;
                   }
 
                   return {
                     ...pushStreamingStep(
-                      settledResponseMessage,
+                      baseMessage,
                       toolCallStepLabel(activeAgentName, toolName),
                       toolArgs,
                       "live",
@@ -4201,52 +3948,6 @@ function App() {
             if (typeof data.agent === "string" && data.agent) {
               activeAgentName = data.agent;
             }
-            const elapsedText = formatStreamingElapsed(
-              typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
-            );
-            const waitStatus = elapsedText ? `Waiting on model 路 ${elapsedText}` : "Waiting on model";
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => {
-                const baseMessage = {
-                  ...message,
-                  agent_name: message.agent_name || activeAgentName,
-                };
-                const inboundMessage = patchMatchingStreamingStep(
-                  baseMessage,
-                  (step) => step.state === "live" && isActorInboundStep(step, activeAgentName),
-                  {
-                    detail: waitStatus,
-                    detailContent: buildLiveLlmResponseDetailContent(assistantDraftContent, waitStatus, liveLlmTimings),
-                    state: "live",
-                    kind: "llm_inbound",
-                    agent: activeAgentName,
-                  },
-                );
-                if (inboundMessage !== baseMessage) {
-                  return inboundMessage;
-                }
-
-                return patchMatchingStreamingStep(
-                  baseMessage,
-                  (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
-                  {
-                    detail: waitStatus,
-                    detailContent: buildLiveLlmPromptDetailContent(content, {
-                      systemPrompt: liveLlmSystemPrompt,
-                      promptMessages: liveLlmPromptMessages,
-                      model: liveLlmModel,
-                      turn: liveLlmTurn,
-                      waitStatus,
-                      timings: liveLlmTimings,
-                    }),
-                    state: "live",
-                    kind: "llm_outbound",
-                    agent: activeAgentName,
-                  },
-                  llmOutboundStepLabel(activeAgentName),
-                );
-              }),
-            );
             break;
           }
           case "tool_wait":
@@ -4354,8 +4055,6 @@ function App() {
                     isStreaming: false,
                   },
                   "done",
-                  "Waiting for approval",
-                  `${pendingTool} is waiting for approval.`,
                 ),
               ),
             );
@@ -4402,8 +4101,6 @@ function App() {
                       isStreaming: false,
                     },
                     "done",
-                    "Completed",
-                    "Agent reply saved.",
                   ),
                 ),
               );
@@ -4418,8 +4115,6 @@ function App() {
                       isStreaming: false,
                     },
                     "done",
-                    "Completed",
-                    "Agent flow finished.",
                   ),
                 ),
               );
@@ -5107,6 +4802,7 @@ function App() {
             projectBrowserIndex={projectBrowserIndex}
             liveTaskRunDetailsById={liveTaskRunDetailsById}
             taskActivitiesById={taskActivitiesById}
+            taskTimelinesById={taskTimelinesById}
             events={chatEvents}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}

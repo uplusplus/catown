@@ -3,6 +3,7 @@ import type {
   AgentConfigPayload,
   AgentInfo,
   ChatSummary,
+  ChatTimelineProjection,
   ChatProcessEntry,
   ConfigResponse,
   GlobalConfigPayload,
@@ -234,6 +235,14 @@ export const api = {
   getRuntimeCards(chatroomId: number) {
     return request<Record<string, unknown>[]>(`/api/chatrooms/${chatroomId}/runtime-cards`);
   },
+  getChatroomTimeline(chatroomId: number, limit?: number) {
+    const params = new URLSearchParams();
+    if (typeof limit === "number") {
+      params.set("limit", String(limit));
+    }
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<ChatTimelineProjection>(`/api/chatrooms/${chatroomId}/timeline${suffix}`);
+  },
   getTaskRuns(chatroomId: number, clientTurnId?: string) {
     const params = new URLSearchParams();
     if (clientTurnId?.trim()) {
@@ -255,6 +264,9 @@ export const api = {
   },
   getTaskRunActivity(taskRunId: number) {
     return request<TaskActivityProjection>(`/api/task-runs/${taskRunId}/activity`);
+  },
+  getTaskRunTimeline(taskRunId: number) {
+    return request<ChatTimelineProjection>(`/api/task-runs/${taskRunId}/timeline`);
   },
   waitTaskRunSubagent(taskRunId: number, stepId: string, params?: { sinceEventIndex?: number; timeoutMs?: number }) {
     const search = new URLSearchParams();

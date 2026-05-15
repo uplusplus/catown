@@ -234,6 +234,9 @@ class TestMonitorOverview:
         llm_runtime = next(item for item in data["recent_runtime"] if item["type"] == "llm_call")
         assert llm_runtime["from_entity"] == agent_name
         assert llm_runtime["to_entity"] == "LLM"
+        assert llm_runtime["operation_label"] == "llm"
+        assert len(llm_runtime["brain_events"]) == 2
+        assert llm_runtime["brain_events"][0]["phase"] == "outbound"
         assert llm_runtime["turn"] == 1
         assert llm_runtime["client_turn_id"] == "turn-monitor-1"
         assert "Summarize the latest monitor status." in llm_runtime["prompt_preview"]
@@ -242,6 +245,9 @@ class TestMonitorOverview:
         tool_runtime = next(item for item in data["recent_runtime"] if item["type"] == "tool_call")
         assert tool_runtime["from_entity"] == agent_name
         assert tool_runtime["to_entity"] == "read_file"
+        assert tool_runtime["operation_label"] == "read_file"
+        assert len(tool_runtime["brain_events"]) == 2
+        assert tool_runtime["brain_events"][1]["phase"] == "inbound"
         assert tool_runtime["client_turn_id"] == "turn-monitor-1"
         assert tool_runtime["tool_call_id"] == "call-monitor-readme"
         assert "README.md" in tool_runtime["arguments_preview"]
@@ -254,6 +260,84 @@ class TestMonitorOverview:
         detail = detail_response.json()
         assert detail["card"]["type"] == "llm_call"
         assert detail["card"]["model"] == "gpt-4.1-mini"
+        assert detail["operation_label"] == "llm"
+        assert len(detail["brain_events"]) == 2
+        assert any(section["phase"] == "outbound" for section in detail["detail_sections"])
+        assert any(section["label"] == "System Prompt" for section in detail["detail_sections"])
+
+    def test_runtime_detail_sections_cover_consult_and_stage_cards(self, client):
+        from models.database import Chatroom, Message, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Runtime Detail Sections", status="active", workspace_path="/tmp/catown-runtime-sections")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Runtime Detail Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            consult_message = Message(
+                chatroom_id=chatroom.id,
+                agent_id=None,
+                content="consult_call",
+                message_type="runtime_card",
+                metadata_json=json.dumps(
+                    {
+                        "client_turn_id": "turn-runtime-sections",
+                        "card": {
+                            "type": "consult_call",
+                            "agent": "Planner",
+                            "target_agent": "Developer",
+                            "question": "How should we split the migration?",
+                            "response_preview": "Split schema first, then runtime wiring.",
+                            "summary_text": "Planner consulted Developer about migration sequencing.",
+                        },
+                    }
+                ),
+            )
+            stage_message = Message(
+                chatroom_id=chatroom.id,
+                agent_id=None,
+                content="stage_completed",
+                message_type="runtime_card",
+                metadata_json=json.dumps(
+                    {
+                        "client_turn_id": "turn-runtime-sections",
+                        "card": {
+                            "type": "stage_completed",
+                            "agent": "Planner",
+                            "stage": "design_review",
+                            "display_name": "Design Review",
+                            "summary": "Design review completed with one follow-up note.",
+                        },
+                    }
+                ),
+            )
+            db.add_all([consult_message, stage_message])
+            db.commit()
+            db.refresh(consult_message)
+            db.refresh(stage_message)
+            consult_id = consult_message.id
+            stage_id = stage_message.id
+        finally:
+            db.close()
+
+        consult_detail = client.get(f"/api/monitor/runtime-cards/{consult_id}").json()
+        assert any(section["label"] == "Consult Request" for section in consult_detail["detail_sections"])
+        assert any(section["label"] == "Consult Response" for section in consult_detail["detail_sections"])
+
+        stage_detail = client.get(f"/api/monitor/runtime-cards/{stage_id}").json()
+        assert any(section["label"] == "Stage Status" for section in stage_detail["detail_sections"])
+        assert any(section["label"] == "Exchange Meta" for section in stage_detail["detail_sections"])
 
     def test_files_endpoint_extracts_file_tool_runtime_cards(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal

@@ -366,8 +366,42 @@ export type TaskActivityProjection = {
   updated_at?: string | null;
   current_step_id?: string | null;
   summary?: string | null;
+  continuation_state_summary?: string | null;
+  continuation_cursor_summary?: string | null;
+  scheduler_runtime_summary?: string | null;
+  latest_agent_turn_preview?: string | null;
   background?: Record<string, unknown>;
   steps: TaskActivityStep[];
+};
+
+export type ChatTimelineStep = {
+  id: string;
+  scope: "task_run" | "chatroom";
+  task_run_id?: number | null;
+  chatroom_id: number;
+  sequence: number;
+  scope_sequence?: number | null;
+  occurred_at?: string | null;
+  recorded_at?: string | null;
+  event_type: string;
+  step_id?: string | null;
+  parent_step_id?: string | null;
+  actor?: string | null;
+  kind: string;
+  phase: string;
+  state: "live" | "done" | "error";
+  facts?: Record<string, unknown>;
+  summary?: string | null;
+  detail_content?: string | null;
+};
+
+export type ChatTimelineProjection = {
+  scope: "task_run" | "chatroom";
+  task_run_id?: number;
+  chatroom_id: number;
+  version: number;
+  current_step_id?: string | null;
+  steps: ChatTimelineStep[];
 };
 
 export type ApprovalQueueItem = {
@@ -859,6 +893,7 @@ export type MonitorRuntimeItem = {
   id: number;
   type: string;
   title: string;
+  operation_label?: string | null;
   preview: string;
   created_at: string;
   chatroom_id: number;
@@ -881,6 +916,17 @@ export type MonitorRuntimeItem = {
   response_preview?: string | null;
   arguments_preview?: string | null;
   stage?: string | null;
+  brain_events?: Array<{
+    id: string;
+    phase?: string | null;
+    category?: string | null;
+    tone?: string | null;
+    from_entity?: string | null;
+    to_entity?: string | null;
+    operation_label?: string | null;
+    label?: string | null;
+    detail?: string | null;
+  }> | null;
 };
 
 export type MonitorMessageItem = {
@@ -904,6 +950,46 @@ export type MonitorRuntimeDetail = {
   chat_title: string;
   project_id?: number | null;
   project_name?: string | null;
+  type?: string;
+  title?: string | null;
+  operation_label?: string | null;
+  preview?: string | null;
+  agent?: string | null;
+  from_entity?: string | null;
+  to_entity?: string | null;
+  model?: string | null;
+  tool_name?: string | null;
+  tool_call_id?: string | null;
+  success?: boolean | null;
+  tokens_in?: number;
+  tokens_out?: number;
+  duration_ms?: number;
+  turn?: number | null;
+  client_turn_id?: string | null;
+  prompt_preview?: string | null;
+  response_preview?: string | null;
+  arguments_preview?: string | null;
+  stage?: string | null;
+  brain_events?: Array<{
+    id: string;
+    phase: string;
+    category: string;
+    tone: string;
+    from_entity?: string | null;
+    to_entity?: string | null;
+    operation_label?: string | null;
+    label: string;
+    detail?: string | null;
+  }>;
+  detail_sections?: Array<{
+    id: string;
+    phase: string;
+    label: string;
+    content: string;
+    tone: "neutral" | "success" | "warning" | "error" | "accent";
+    format: "text" | "json";
+    variant: "meta" | "result" | "raw";
+  }>;
   card: Record<string, unknown>;
 };
 

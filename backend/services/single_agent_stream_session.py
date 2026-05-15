@@ -36,6 +36,7 @@ class SingleAgentStreamSessionDeps:
     public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
     chatroom_id: int
     max_turns: int
+    before_event: Callable[..., Awaitable[None] | None] | None = None
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
@@ -55,6 +56,7 @@ class SingleAgentStreamExecutionContext:
     store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]]
     public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]]
     max_turns: int
+    before_event: Callable[..., Awaitable[None] | None] | None = None
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
@@ -67,6 +69,7 @@ class SingleAgentStreamLoopCallbacks:
     preview_tool_calls: Callable[[Any], list[dict[str, Any]]]
     format_prompt_messages: Callable[[list[dict[str, Any]]], Any]
     tool_result_success: Callable[[str], bool]
+    before_event: Callable[..., Awaitable[None] | None] | None = None
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None
 
 
@@ -96,6 +99,7 @@ def build_single_agent_stream_loop_callbacks(
     preview_tool_calls: Callable[[Any], list[dict[str, Any]]],
     format_prompt_messages: Callable[[list[dict[str, Any]]], Any],
     tool_result_success: Callable[[str], bool],
+    before_event: Callable[..., Awaitable[None] | None] | None = None,
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentStreamLoopCallbacks:
     """Build the loop-level callback group for one stream execution."""
@@ -108,6 +112,7 @@ def build_single_agent_stream_loop_callbacks(
         preview_tool_calls=preview_tool_calls,
         format_prompt_messages=format_prompt_messages,
         tool_result_success=tool_result_success,
+        before_event=before_event,
         on_tool_round=on_tool_round,
     )
 
@@ -164,6 +169,7 @@ def build_single_agent_stream_execution_context(
     store_runtime_card: Callable[[int, Dict[str, Any]], Awaitable[Any]],
     public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
     max_turns: int,
+    before_event: Callable[..., Awaitable[None] | None] | None = None,
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentStreamExecutionContext:
     """Build the stream-specific execution context for one single-agent stream run."""
@@ -183,6 +189,7 @@ def build_single_agent_stream_execution_context(
         store_runtime_card=store_runtime_card,
         public_runtime_card_payload=public_runtime_card_payload,
         max_turns=max_turns,
+        before_event=before_event,
         on_tool_round=on_tool_round,
     )
 
@@ -207,6 +214,7 @@ def build_single_agent_stream_execution_context_from_raw_inputs(
         store_runtime_card=inputs.transport.store_runtime_card,
         public_runtime_card_payload=inputs.transport.public_runtime_card_payload,
         max_turns=inputs.max_turns,
+        before_event=inputs.loop_callbacks.before_event,
         on_tool_round=inputs.loop_callbacks.on_tool_round,
     )
 
@@ -230,6 +238,7 @@ def build_single_agent_stream_session_deps(
     public_runtime_card_payload: Callable[[Dict[str, Any]], Dict[str, Any]],
     chatroom_id: int,
     max_turns: int,
+    before_event: Callable[..., Awaitable[None] | None] | None = None,
     on_tool_round: Callable[..., Awaitable[None] | None] | None = None,
 ) -> SingleAgentStreamSessionDeps:
     """Build the low-level deps bundle for a single-agent streaming session."""
@@ -252,6 +261,7 @@ def build_single_agent_stream_session_deps(
         public_runtime_card_payload=public_runtime_card_payload,
         chatroom_id=chatroom_id,
         max_turns=max_turns,
+        before_event=before_event,
         on_tool_round=on_tool_round,
     )
 
@@ -283,6 +293,7 @@ def build_single_agent_stream_session_deps_from_execution_context(
         public_runtime_card_payload=execution.public_runtime_card_payload,
         chatroom_id=chatroom_id,
         max_turns=execution.max_turns,
+        before_event=execution.before_event,
         on_tool_round=execution.on_tool_round,
     )
 
@@ -307,6 +318,7 @@ async def iter_single_agent_stream_session(
             format_prompt_messages=deps.format_prompt_messages,
             tool_result_success=deps.tool_result_success,
             max_turns=deps.max_turns,
+            before_event=deps.before_event,
             on_tool_round=deps.on_tool_round,
         ),
         chatroom_id=deps.chatroom_id,

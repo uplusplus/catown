@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
@@ -22,6 +23,23 @@ from services.approval_replay import (
 
 logger = logging.getLogger("catown.runner_lifecycle")
 from services.run_ledger import append_task_event, update_task_run
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _merge_fact_payload(base: dict[str, Any], payload: Any = None) -> dict[str, Any]:
+    merged_payload = {
+        **base,
+        "occurred_at": _utc_now_iso(),
+    }
+    if isinstance(payload, dict):
+        merged_payload.update(payload)
+        merged_payload.setdefault("occurred_at", _utc_now_iso())
+    elif payload is not None:
+        merged_payload["details"] = payload
+    return merged_payload
 
 
 def start_agent_turn(
@@ -45,6 +63,91 @@ def start_agent_turn(
         agent_name=agent_name,
         summary=summary,
         payload=payload,
+    )
+
+
+def record_llm_request_created(
+    db: Session,
+    task_run: TaskRun | None,
+    *,
+    agent_name: str,
+    turn: int,
+    model: str | None = None,
+    client_turn_id: str | None = None,
+    summary: str | None = None,
+    payload: Any = None,
+):
+    merged_payload = _merge_fact_payload(
+        {
+            "turn": int(turn),
+            "model": model,
+            "client_turn_id": client_turn_id,
+        },
+        payload,
+    )
+    return append_task_event(
+        db,
+        task_run,
+        "llm_request_created",
+        agent_name=agent_name,
+        summary=summary or f"{agent_name} sent a request to the LLM.",
+        payload=merged_payload,
+    )
+
+
+def record_llm_response_started(
+    db: Session,
+    task_run: TaskRun | None,
+    *,
+    agent_name: str,
+    turn: int,
+    client_turn_id: str | None = None,
+    summary: str | None = None,
+    payload: Any = None,
+):
+    merged_payload = _merge_fact_payload(
+        {
+            "turn": int(turn),
+            "client_turn_id": client_turn_id,
+        },
+        payload,
+    )
+    return append_task_event(
+        db,
+        task_run,
+        "llm_response_started",
+        agent_name=agent_name,
+        summary=summary or f"The LLM started streaming output for {agent_name}.",
+        payload=merged_payload,
+    )
+
+
+def record_llm_response_completed(
+    db: Session,
+    task_run: TaskRun | None,
+    *,
+    agent_name: str,
+    turn: int,
+    finish_reason: str | None = None,
+    client_turn_id: str | None = None,
+    summary: str | None = None,
+    payload: Any = None,
+):
+    merged_payload = _merge_fact_payload(
+        {
+            "turn": int(turn),
+            "finish_reason": finish_reason,
+            "client_turn_id": client_turn_id,
+        },
+        payload,
+    )
+    return append_task_event(
+        db,
+        task_run,
+        "llm_response_completed",
+        agent_name=agent_name,
+        summary=summary or f"The LLM completed output for {agent_name}.",
+        payload=merged_payload,
     )
 
 
