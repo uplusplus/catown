@@ -2906,9 +2906,10 @@ a {
 }
 
 .message-stream-step--live .message-stream-step__state {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 42%, transparent);
+  color: var(--ok);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 16%, transparent);
+  animation: message-stream-step-live-breathe 1.8s ease-in-out infinite;
 }
 
 .message-stream-step--live .message-stream-step__state::before {
@@ -2917,6 +2918,22 @@ a {
   height: 6px;
   border-radius: 999px;
   background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+}
+
+@keyframes message-stream-step-live-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent);
+  }
+
+  50% {
+    transform: scale(1.08);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, currentColor 24%, transparent),
+      0 0 0 6px color-mix(in srgb, currentColor 8%, transparent);
+  }
 }
 
 .message-stream-step--done .message-stream-step__state {
