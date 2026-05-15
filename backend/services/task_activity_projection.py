@@ -344,7 +344,39 @@ def _active_subagent_handle(summary: dict[str, Any]) -> dict[str, Any] | None:
             else None
         ),
     }
+    projected["summary_text"] = _subagent_handle_summary_text(projected)
     return {key: value for key, value in projected.items() if value is not None}
+
+
+def _subagent_handle_summary_text(handle: dict[str, Any]) -> str | None:
+    agent_name = str(
+        handle.get("agent_name")
+        or handle.get("requested_name")
+        or handle.get("agent_type")
+        or ""
+    ).strip()
+    dispatch_kind = str(handle.get("dispatch_kind") or "").strip()
+    control_state = str(handle.get("control_state") or handle.get("status") or "").strip().replace("_", " ")
+    response_preview = str(handle.get("response_preview") or "").strip()
+    dependency_step_id = str(handle.get("dependency_step_id") or "").strip()
+    available_actions = (
+        handle.get("available_actions")
+        if isinstance(handle.get("available_actions"), list)
+        else []
+    )
+    action_labels = [
+        str(action).strip()
+        for action in available_actions
+        if str(action).strip()
+    ]
+    parts = [
+        " ".join(part for part in (agent_name, dispatch_kind, control_state) if part).strip(),
+        response_preview,
+        f"waiting on {dependency_step_id}" if dependency_step_id else "",
+        f"actions: {', '.join(action_labels)}" if action_labels else "",
+    ]
+    summary = " | ".join(part for part in parts if part)
+    return summary or None
 
 
 def _tool_detail_lines(payload: dict[str, Any]) -> list[str]:

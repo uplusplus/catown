@@ -4842,6 +4842,212 @@ class TestCollaborationEndpoints:
         assert data["result_details"]["idle_seconds"] >= 120
 
 
+class TestTaskRunCompactionProjection:
+    def test_task_run_detail_surfaces_context_compaction_projection(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Compaction Detail Projection"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-compaction-detail",
+                run_kind="project_single_agent",
+                status="running",
+                title="Compaction detail projection",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="context_compaction",
+                    agent_name="analyst",
+                    summary="analyst compacted context.",
+                    payload_json=json.dumps(
+                        {
+                            "compacted": True,
+                            "selector_diagnostics": {
+                                "compacted": True,
+                                "selector": {
+                                    "max_fragments": 12,
+                                    "max_tokens": 3200,
+                                    "max_tokens_by_role": {"developer": 1200, "user": 2000},
+                                    "max_tokens_by_scope": {"run": 1800, "turn": 400},
+                                },
+                                "summary": {
+                                    "candidate_count": 9,
+                                    "selected_count": 7,
+                                    "dropped_count": 2,
+                                    "truncated_count": 1,
+                                    "candidate_tokens": 4200,
+                                    "selected_tokens": 3100,
+                                    "by_scope": {
+                                        "run": {
+                                            "candidate_count": 3,
+                                            "selected_count": 2,
+                                            "candidate_tokens": 2200,
+                                            "selected_tokens": 1400,
+                                        },
+                                        "turn": {
+                                            "candidate_count": 2,
+                                            "selected_count": 2,
+                                            "candidate_tokens": 600,
+                                            "selected_tokens": 400,
+                                        },
+                                    },
+                                },
+                                "developer": {"dropped_count": 0, "truncated_count": 0},
+                                "user": {"dropped_count": 2, "truncated_count": 1},
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        compaction_event = next(event for event in detail["events"] if event["event_type"] == "context_compaction")
+
+        assert compaction_event["budget_summary"] == "roles developer 1200 / user 2000 | scopes run 1800 / turn 400"
+        assert "run 2/3 fragments, 1400/2200 tokens" in compaction_event["scope_usage_summary"]
+        assert "Candidates 9 -> selected 7" in compaction_event["detail_summary"]
+        assert compaction_event["max_tokens_by_scope"] == {"run": 1800, "turn": 400}
+        assert detail["checkpoint_snapshot"]["latest_compaction"]["detail_summary"] == compaction_event["detail_summary"]
+
+    def test_task_run_detail_surfaces_handoff_and_runtime_projection(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Runtime Event Projection"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-runtime-detail",
+                run_kind="project_orchestration",
+                status="running",
+                title="Runtime projection",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="handoff_created",
+                    agent_name="planner",
+                    summary="planner handed work to developer.",
+                    payload_json=json.dumps(
+                        {
+                            "from_agent": "planner",
+                            "to_agent": "developer",
+                            "from_step_id": "step-1",
+                            "to_step_id": "step-2",
+                            "attached_to_step_id": "step-1",
+                            "dispatch_kind": "sidecar",
+                            "content_preview": "Implement the API route.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=2,
+                    event_type="scheduler_plan_created",
+                    agent_name="planner",
+                    summary="scheduler plan created.",
+                    payload_json=json.dumps(
+                        {
+                            "mode": "parallel_fanout",
+                            "step_count": 2,
+                            "blocking_step_count": 1,
+                            "sidecar_step_count": 1,
+                            "sidecar_agent_types": ["developer"],
+                            "steps": [
+                                {
+                                    "step_id": "step-1",
+                                    "position": 1,
+                                    "requested_name": "Planner",
+                                    "agent_name": "planner",
+                                    "agent_type": "planner",
+                                    "dispatch_kind": "blocking",
+                                    "status": "planned",
+                                },
+                                {
+                                    "step_id": "step-2",
+                                    "position": 2,
+                                    "requested_name": "Developer",
+                                    "agent_name": "developer",
+                                    "agent_type": "developer",
+                                    "dispatch_kind": "sidecar",
+                                    "status": "planned",
+                                },
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=3,
+                    event_type="scheduler_runtime_updated",
+                    agent_name="planner",
+                    summary="scheduler runtime updated.",
+                    payload_json=json.dumps(
+                        {
+                            "runtime": {
+                                "completed_step_count": 1,
+                                "ready_step_count": 2,
+                                "running_step_count": 1,
+                                "waiting_step_count": 0,
+                                "step_count": 4,
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        handoff_event = next(event for event in detail["events"] if event["event_type"] == "handoff_created")
+        schedule_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_plan_created")
+        runtime_event = next(event for event in detail["events"] if event["event_type"] == "scheduler_runtime_updated")
+
+        assert handoff_event["from_agent"] == "planner"
+        assert handoff_event["to_agent"] == "developer"
+        assert handoff_event["dispatch_kind"] == "sidecar"
+        assert handoff_event["content_preview"] == "Implement the API route."
+        assert schedule_event["schedule_mode"] == "parallel_fanout"
+        assert schedule_event["schedule_step_count"] == 2
+        assert schedule_event["schedule_sidecar_agent_types"] == ["developer"]
+        assert len(schedule_event["schedule_steps"]) == 2
+        assert runtime_event["runtime_snapshot"]["completed_step_count"] == 1
+        assert runtime_event["runtime_snapshot"]["ready_step_count"] == 2
+
+
 # ==================== 多 Agent 流水线 ====================
 
 class TestMultiAgentPipeline:

@@ -3725,12 +3725,13 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
             dispatch_kind = str(active_subagent_handle.get("dispatch_kind") or "subagent").strip()
             control_state = str(active_subagent_handle.get("control_state") or active_subagent_handle.get("status") or "running").strip()
             response_preview = str(active_subagent_handle.get("response_preview") or "").strip()
+            summary_text = str(active_subagent_handle.get("summary_text") or "").strip()
             entries.append(
                 ChatProcessNodeInfo(
                     id=f"subagent:{handle_step_id or run.id}",
                     label=f"{handle_agent} ({dispatch_kind})",
                     kind="subagent",
-                    detail=response_preview or control_state.replace("_", " "),
+                    detail=summary_text or response_preview or control_state.replace("_", " "),
                     status="running" if control_state in {"await_dependency", "await_dispatch", "await_completion"} else control_state,
                     parent_id=f"task-run:{run.id}",
                     timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
@@ -3740,6 +3741,7 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
                         "control_state": active_subagent_handle.get("control_state"),
                         "available_actions": active_subagent_handle.get("available_actions"),
                         "source": active_subagent_handle.get("source"),
+                        "summary_text": active_subagent_handle.get("summary_text"),
                     },
                 )
             )

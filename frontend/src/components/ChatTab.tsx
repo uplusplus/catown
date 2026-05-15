@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
-import { Archive, BookOpen, Bot, Boxes, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Monitor, PackageCheck, ScrollText, Shell, Square, Workflow } from "lucide-react";
+import { Archive, BookOpen, Bot, Boxes, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Menu, Monitor, PackageCheck, PanelRightOpen, ScrollText, SendHorizontal, Settings, Shell, Square, Workflow, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -524,6 +524,11 @@ function processStatusLabel(status: ChatProcessEntry["status"]) {
   return String(status || "running").trim().toLowerCase() === "terminated" ? "Terminated" : "Running";
 }
 
+function processNodeDetail(node: ChatProcessEntry) {
+  if (node.kind !== "subagent") return node.detail;
+  return runtimeHandleRichLabel(node.metadata) || node.detail;
+}
+
 function ProcessTreeNode({
   node,
   depth = 0,
@@ -555,6 +560,7 @@ function ProcessTreeNode({
   const processActions = Array.isArray(metadata?.["available_actions"])
     ? (metadata?.["available_actions"] as unknown[]).filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
+  const processDetail = processNodeDetail(node);
   const taskRunId =
     typeof metadata?.["task_run_id"] === "number"
       ? metadata["task_run_id"]
@@ -573,11 +579,12 @@ function ProcessTreeNode({
         <span className="process-tree__label" title={node.label}>{node.label}</span>
         <span className="process-tree__kind">{processKindLabel(node.kind)}</span>
         {isRuntimeNode ? <span className={`process-tree__state ${isTerminated ? "process-tree__state--terminated" : ""}`}>{statusLabel}</span> : null}
+        {node.kind === "subagent" && processDetail ? <span className="process-tree__meta">{oneLinePreview(processDetail, "", 140)}</span> : null}
         {typeof node.pid === "number" ? <span className="process-tree__meta">pid {node.pid}</span> : null}
         {runtimeChildCount > 0 ? <span className="process-tree__meta">{runtimeChildCount} child</span> : null}
         {node.timestamp ? <span className="process-tree__meta">{formatTime(node.timestamp)}</span> : null}
         {processMetaChips.map((chip) => <span key={chip} className="process-tree__meta process-tree__meta--chip">{chip}</span>)}
-        {processActions.length > 0 ? <span className="process-tree__meta process-tree__meta--actions">{processActions.join(" · ")}</span> : null}
+        {processActions.length > 0 ? <span className="process-tree__meta process-tree__meta--actions">{processActions.join(" 璺?")}</span> : null}
       </div>
       <div className="process-tree__actions">
         {canInspect ? (
@@ -651,7 +658,7 @@ function ProcessTreeNode({
             {rowContent}
           </summary>
           <div className="process-tree__output-panel">
-            <p>{oneLinePreview(node.detail, "Shell process is running.", 160)}</p>
+            <p>{oneLinePreview(processNodeDetail(node), "Shell process is running.", 160)}</p>
             <pre className="browser-entry__output">{node.output}</pre>
           </div>
         </details>
@@ -679,7 +686,6 @@ function ProcessTreeNode({
     </div>
   );
 }
-
 function browserFileTypeLabel(path: string) {
   const normalized = normalizeBrowserPath(path).toLowerCase();
   const name = browserPathBaseName(normalized);
@@ -868,9 +874,9 @@ function isInternalContinuationSummary(value: string | null | undefined) {
     normalized.includes("rebuild_turn_state_from_tool_round") ||
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
-    normalized.includes("continue agent turn · via") ||
+    normalized.includes("continue agent turn 璺?via") ||
     normalized.includes("continue agent turn - via") ||
-    normalized.includes(" · via ") ||
+    normalized.includes(" 璺?via ") ||
     normalized.includes(" - via ")
   );
 }
@@ -1326,7 +1332,7 @@ function summarizeTaskRunInlineStatus(
     if (pendingTimeoutItem) {
       return {
         tone: "info" as const,
-        label: blockedToolName ? `Running · ${blockedToolName}` : "Running command",
+        label: blockedToolName ? `Running 璺?${blockedToolName}` : "Running command",
         detail:
           pendingTimeoutCommand
             ? oneLinePreview(pendingTimeoutCommand, "Command still running.", 132)
@@ -1335,7 +1341,7 @@ function summarizeTaskRunInlineStatus(
     }
     return {
       tone: "warning" as const,
-      label: blockedToolName ? `Waiting for approval · ${blockedToolName}` : "Waiting for approval",
+      label: blockedToolName ? `Waiting for approval 璺?${blockedToolName}` : "Waiting for approval",
       detail: `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
     };
   }
@@ -1346,7 +1352,7 @@ function summarizeTaskRunInlineStatus(
       if (latestResolutionAction === "tool_replayed") {
         return {
           tone: "info" as const,
-          label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
+          label: latestToolName ? `Continuing 璺?${latestToolName}` : "Continuing",
           detail:
             latestReplayStatus === "failed"
               ? "Tool replay failed. Finalizing task state."
@@ -1357,7 +1363,7 @@ function summarizeTaskRunInlineStatus(
       }
       return {
         tone: "info" as const,
-        label: latestToolName ? `Running · ${latestToolName}` : "Running",
+        label: latestToolName ? `Running 璺?${latestToolName}` : "Running",
         detail: latestResumeSupported
           ? "Continuing execution."
           : "Updating task state.",
@@ -1367,7 +1373,7 @@ function summarizeTaskRunInlineStatus(
       const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
       return {
         tone: "info" as const,
-        label: `Running · ${latestStartedToolName}`,
+        label: `Running 璺?${latestStartedToolName}`,
         detail: latestStartedArguments
           ? oneLinePreview(latestStartedArguments, "Tool has started executing.", 132)
           : "Tool has started executing.",
@@ -1376,7 +1382,7 @@ function summarizeTaskRunInlineStatus(
     if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
       return {
         tone: "info" as const,
-        label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
+        label: latestToolName ? `Continuing 璺?${latestToolName}` : "Continuing",
         detail: "Handing the latest tool result back to the agent.",
       };
     }
@@ -1386,14 +1392,14 @@ function summarizeTaskRunInlineStatus(
       if (latestResultStatus === "succeeded" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running · ${latestToolName}`,
+          label: `Running 璺?${latestToolName}`,
           detail: oneLinePreview(latestResultText, "Tool finished, continuing the task.", 132),
         };
       }
       if (latestResultStatus === "failed" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running · ${latestToolName}`,
+          label: `Running 璺?${latestToolName}`,
           detail: oneLinePreview(latestResultText, "Tool returned an error; task is still proceeding.", 132),
         };
       }
@@ -1418,7 +1424,7 @@ function summarizeTaskRunInlineStatus(
       return {
         tone: "info" as const,
         label: chatProjection.subtaskDispatch.agent
-          ? `Subtask · ${chatProjection.subtaskDispatch.agent}`
+          ? `Subtask 璺?${chatProjection.subtaskDispatch.agent}`
           : "Subtask",
         detail: chatProjection.subtaskDispatch.summary ||
           (chatProjection.subtaskDispatch.agent
@@ -1428,7 +1434,7 @@ function summarizeTaskRunInlineStatus(
     }
     return {
       tone: "info" as const,
-      label: latestToolName ? `Running · ${latestToolName}` : "Running",
+      label: latestToolName ? `Running 璺?${latestToolName}` : "Running",
       detail:
         chatProjection.userRequest
           ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
@@ -1478,7 +1484,99 @@ function runtimeHandleLabel(value: unknown) {
   const agentName = typeof handle["agent_name"] === "string" ? handle["agent_name"] : "";
   const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "";
   const controlState = typeof handle["control_state"] === "string" ? String(handle["control_state"]).replace(/_/g, " ") : "";
-  return [agentName, dispatchKind, controlState].filter(Boolean).join(" · ");
+  return [agentName, dispatchKind, controlState].filter(Boolean).join(" 璺?");
+}
+
+function buildSyntheticHandleTraceStep(activity: TaskActivityProjection | null, taskRun: TaskRunSummary): MessageStreamStep | null {
+  const background = activity?.background;
+  if (!background || typeof background !== "object") return null;
+  const handle = (
+    background.active_consult_handle && typeof background.active_consult_handle === "object"
+      ? background.active_consult_handle
+      : background.active_subagent_handle && typeof background.active_subagent_handle === "object"
+        ? background.active_subagent_handle
+        : null
+  ) as Record<string, unknown> | null;
+  if (!handle) return null;
+  const stepId = typeof handle["step_id"] === "string" ? handle["step_id"] : "";
+  const agentName =
+    typeof handle["agent_name"] === "string"
+      ? handle["agent_name"]
+      : typeof handle["requested_name"] === "string"
+        ? handle["requested_name"]
+        : typeof handle["agent_type"] === "string"
+          ? handle["agent_type"]
+          : taskRun.target_agent_name || "subagent";
+  const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "subagent";
+  const controlState =
+    typeof handle["control_state"] === "string"
+      ? handle["control_state"]
+      : typeof handle["status"] === "string"
+        ? handle["status"]
+        : "running";
+  const summaryText = typeof handle["summary_text"] === "string" ? handle["summary_text"].trim() : "";
+  const responsePreview = typeof handle["response_preview"] === "string" ? handle["response_preview"].trim() : "";
+  const dependencyStepId = typeof handle["dependency_step_id"] === "string" ? handle["dependency_step_id"].trim() : "";
+  const availableActions = Array.isArray(handle["available_actions"])
+    ? handle["available_actions"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const detailParts = [
+    responsePreview,
+    !responsePreview ? controlState.replace(/_/g, " ") : "",
+    dependencyStepId ? `waiting on ${dependencyStepId}` : "",
+    availableActions.length > 0 ? `actions: ${availableActions.join(", ")}` : "",
+  ].filter(Boolean);
+  const detailText = summaryText || detailParts.join(" | ");
+  const detailContent = [
+    `Active handle: ${agentName} (${dispatchKind})`,
+    summaryText ? `Summary: ${summaryText}` : "",
+    `State: ${controlState.replace(/_/g, " ")}`,
+    dependencyStepId ? `Dependency: ${dependencyStepId}` : "",
+    availableActions.length > 0 ? `Available actions: ${availableActions.join(", ")}` : "",
+    responsePreview ? `Preview: ${responsePreview}` : "",
+  ].filter(Boolean).join("\n");
+  return {
+    id: `handle:${stepId || dispatchKind}`,
+    label: `${agentName} ${dispatchKind}`,
+    detail: detailText,
+    detailContent,
+    state: "live",
+    agent: agentName,
+    runId: taskRun.id,
+  };
+}
+
+function consultCardBody(card: ThreadCard) {
+  if (card.kind !== "consult_call") return "";
+  return card.summary || card.response_preview || card.error || "";
+}
+
+function runtimeHandleRichLabel(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const handle = value as Record<string, unknown>;
+  const summaryText = typeof handle["summary_text"] === "string" ? handle["summary_text"].trim() : "";
+  if (summaryText) return summaryText;
+  const agentName =
+    typeof handle["agent_name"] === "string"
+      ? handle["agent_name"]
+      : typeof handle["requested_name"] === "string"
+        ? handle["requested_name"]
+        : typeof handle["agent_type"] === "string"
+          ? handle["agent_type"]
+          : "";
+  const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "";
+  const controlState = typeof handle["control_state"] === "string" ? String(handle["control_state"]).replace(/_/g, " ") : "";
+  const responsePreview = typeof handle["response_preview"] === "string" ? handle["response_preview"].trim() : "";
+  const dependencyStepId = typeof handle["dependency_step_id"] === "string" ? handle["dependency_step_id"].trim() : "";
+  const availableActions = Array.isArray(handle["available_actions"])
+    ? handle["available_actions"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  return [
+    [agentName, dispatchKind, controlState].filter(Boolean).join(" "),
+    responsePreview,
+    dependencyStepId ? `waiting on ${dependencyStepId}` : "",
+    availableActions.length > 0 ? `actions: ${availableActions.join(", ")}` : "",
+  ].filter(Boolean).join(" | ");
 }
 
 function renderMessageRuntimeSummary(message: MessageItem) {
@@ -1487,10 +1585,10 @@ function renderMessageRuntimeSummary(message: MessageItem) {
 
   const rows = [
     summary.active_consult_handle
-      ? { key: "consult", label: "Consult", detail: runtimeHandleLabel(summary.active_consult_handle) }
+      ? { key: "consult", label: "Consult", detail: runtimeHandleRichLabel(summary.active_consult_handle) }
       : null,
     summary.active_subagent_handle
-      ? { key: "subagent", label: "Subagent", detail: runtimeHandleLabel(summary.active_subagent_handle) }
+      ? { key: "subagent", label: "Subagent", detail: runtimeHandleRichLabel(summary.active_subagent_handle) }
       : null,
     summary.subagent_handles_summary
       ? { key: "handles", label: "Handles", detail: summary.subagent_handles_summary }
@@ -1519,6 +1617,16 @@ function taskActivityBackgroundRows(activity: TaskActivityProjection | null) {
   if (!background) return [];
 
   const rows = [
+    {
+      key: "active_consult_handle",
+      label: "Consult",
+      detail: runtimeHandleRichLabel(background.active_consult_handle),
+    },
+    {
+      key: "active_subagent_handle",
+      label: "Subagent",
+      detail: runtimeHandleRichLabel(background.active_subagent_handle),
+    },
     { key: "scheduler_runtime_summary", label: "Scheduler", detail: backgroundText(background.scheduler_runtime_summary) },
     { key: "subagent_lifecycle_summary", label: "Agents", detail: backgroundText(background.subagent_lifecycle_summary) },
     { key: "subagent_handles_summary", label: "Handles", detail: backgroundText(background.subagent_handles_summary) },
@@ -1719,7 +1827,7 @@ function readShellCommandPreview(argumentsText: string | undefined) {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const command = typeof parsed.command === "string" ? parsed.command.trim() : "";
     const cwd = typeof parsed.cwd === "string" && parsed.cwd.trim() !== "." ? parsed.cwd.trim() : "";
-    if (command && cwd) return `${oneLinePreview(command, "", 160)} · cwd ${oneLinePreview(cwd, "", 60)}`;
+    if (command && cwd) return `${oneLinePreview(command, "", 160)} 璺?cwd ${oneLinePreview(cwd, "", 60)}`;
     if (command) return oneLinePreview(command, "", 180);
   } catch {
     return oneLinePreview(raw, "", 180);
@@ -1942,7 +2050,7 @@ function renderTaskRunShellOutput(taskRun: TaskRunSummary, cards: ThreadCard[]) 
     shellCards.length > 1 ? `${shellCards.length} updates` : "",
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" 璺?");
 
   return (
     <section className={`task-run-shell-output ${isRunning ? "is-live" : ""} ${isError ? "is-error" : ""}`}>
@@ -2262,6 +2370,9 @@ function buildContextCompactionDetail(payload: Record<string, unknown> | undefin
   const summary = readRecord(diagnostics.summary);
   const developer = readRecord(diagnostics.developer);
   const user = readRecord(diagnostics.user);
+  const roleBudgets = readRecord(selector?.max_tokens_by_role);
+  const scopeBudgets = readRecord(selector?.max_tokens_by_scope);
+  const scopeUsage = readRecord(summary?.by_scope);
 
   const maxFragments = readNumber(selector?.max_fragments);
   const maxTokens = readNumber(selector?.max_tokens);
@@ -2304,6 +2415,12 @@ function buildContextCompactionDetail(payload: Record<string, unknown> | undefin
       [
         `- Dropped sources: ${formatSourceList(droppedSources)}`,
         `- Truncated sources: ${formatSourceList(truncatedSources)}`,
+        roleBudgets ? `- Role budgets: developer ${readNumber(roleBudgets?.developer) ?? "?"} / user ${readNumber(roleBudgets?.user) ?? "?"}` : "",
+        scopeBudgets ? `- Scope budgets: ${Object.entries(scopeBudgets).map(([scope, value]) => `${scope} ${value}`).join(" / ")}` : "",
+        scopeUsage ? `- Scope usage: ${Object.entries(scopeUsage).map(([scope, report]) => {
+          const scopeReport = readRecord(report);
+          return `${scope} ${readNumber(scopeReport?.selected_count) ?? "?"}/${readNumber(scopeReport?.candidate_count) ?? "?"} fragments, ${readNumber(scopeReport?.selected_tokens) ?? "?"}/${readNumber(scopeReport?.candidate_tokens) ?? "?"} tokens`;
+        }).join(" / ")}` : "",
         developer ? `- Developer context: ${readNumber(developer.selected_count) ?? "?"}/${readNumber(developer.candidate_count) ?? "?"} selected, ${readNumber(developer.selected_tokens) ?? "?"}/${readNumber(developer.candidate_tokens) ?? "?"} tokens` : "",
         user ? `- User context: ${readNumber(user.selected_count) ?? "?"}/${readNumber(user.candidate_count) ?? "?"} selected, ${readNumber(user.selected_tokens) ?? "?"}/${readNumber(user.candidate_tokens) ?? "?"} tokens` : "",
       ].filter(Boolean).join("\n"),
@@ -2353,7 +2470,7 @@ function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail |
         formatTaskRunEventType(event.event_type),
         104,
       ),
-      detail: detailBits.join(" · ") || formatTaskRunEventType(event.event_type),
+      detail: detailBits.join(" 璺?") || formatTaskRunEventType(event.event_type),
       detailContent: buildTaskRunTraceDetailContent(event),
       state,
       agent: event.agent_name || taskRun.target_agent_name || undefined,
@@ -2369,9 +2486,9 @@ function clipFailureAnalysisText(value: string | undefined | null, limit = 1800)
 
 function buildFailureStepAnalysisPrompt(step: MessageStreamStep, context: FailureStepAnalysisContext) {
   const sections = [
-    `@${DEFAULT_AGENT_TYPE} 请分析下面这个失败 step 的原因，并给出可验证的排查步骤和修复建议。`,
+    `@${DEFAULT_AGENT_TYPE} Please analyze this failed step and provide verifiable debugging steps and fix suggestions.`,
     [
-      "## 失败 Step",
+      "## Failed Step",
       `- Label: ${step.label}`,
       `- State: ${step.state}`,
       step.agent ? `- Agent: ${step.agent}` : "",
@@ -2430,7 +2547,7 @@ function buildFailureStepAnalysisPrompt(step: MessageStreamStep, context: Failur
     );
   }
 
-  sections.push("请重点说明最可能的根因、还需要查看哪些日志/配置、以及下一步应运行什么验证。");
+  sections.push("Focus on the most likely root cause, which logs or settings still need inspection, and the next validation to run.");
   return sections.join("\n\n");
 }
 
@@ -2465,7 +2582,7 @@ function renderTaskRunTrace(
   onToggleStep: (taskRunId: number, stepId: string, isExpanded: boolean) => void,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
-  const traceSteps = activity?.steps.length
+  const projectedTraceSteps = activity?.steps.length
     ? activity.steps
       .filter((step) => !isInternalTaskActivityStep(step))
       .map((step) => {
@@ -2483,9 +2600,18 @@ function renderTaskRunTrace(
         };
       })
     : buildTaskRunTraceSteps(taskRun, detail);
+  const syntheticHandleStep = buildSyntheticHandleTraceStep(activity, taskRun);
+  const traceSteps =
+    syntheticHandleStep && !projectedTraceSteps.some((step) => step.state === "live" && step.agent === syntheticHandleStep.agent)
+      ? [...projectedTraceSteps, syntheticHandleStep]
+      : projectedTraceSteps;
   if (traceSteps.length === 0) return null;
   const currentStepId =
-    (activity?.current_step_id && traceSteps.some((step) => step.id === activity.current_step_id) ? activity.current_step_id : null)
+    (
+      activity?.current_step_id && traceSteps.some((step) => step.id === activity.current_step_id)
+        ? activity.current_step_id
+        : syntheticHandleStep?.id ?? null
+    )
     ?? [...traceSteps].reverse().find((step) => step.state === "live")?.id
     ?? traceSteps[traceSteps.length - 1]?.id
     ?? null;
@@ -2514,7 +2640,7 @@ function renderTaskRunTrace(
               }}
             >
               <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
+                {step.state === "done" ? "Done" : step.state === "error" ? "!" : ""}
               </span>
               <span className="message-stream-step__copy">
                 <span className="message-stream-step__title-line">
@@ -2526,7 +2652,7 @@ function renderTaskRunTrace(
               <span className="message-stream-step__actions">
                 {renderFailureStepAction(step, { taskRun, taskRunDetail: detail }, onAnalyzeFailureStep)}
                 <span className="message-stream-step__toggle" aria-hidden="true">
-                  ▸
+                  &gt;
                 </span>
               </span>
             </summary>
@@ -2875,11 +3001,11 @@ function cardTitle(card: ThreadCard) {
     case "stage_end":
       return `${card.stage || "Stage"} completed`;
     case "gate_blocked":
-      return `Manual gate · ${card.display_name || card.stage || "approval needed"}`;
+      return `Manual gate 璺?${card.display_name || card.stage || "approval needed"}`;
     case "gate_approved":
-      return `Gate approved · ${card.stage || "pipeline"}`;
+      return `Gate approved 璺?${card.stage || "pipeline"}`;
     case "gate_rejected":
-      return `Gate rejected · ${card.from_stage || "stage"} -> ${card.to_stage || "rollback"}`;
+      return `Gate rejected 璺?${card.from_stage || "stage"} -> ${card.to_stage || "rollback"}`;
     case "skill_inject":
       return `${card.agent || "agent"} skill injection`;
     case "agent_message":
@@ -2911,6 +3037,9 @@ function cardSummary(card: ThreadCard) {
         }
         return card.result || "Tool execution recorded.";
       case "consult_call":
+        if (card.summary) {
+          return card.summary;
+        }
         if (card.status === "failed") {
           return card.error || `Consult with ${card.target_agent || "agent"} failed.`;
         }
@@ -2970,11 +3099,11 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
 function llmInboundStepLabel(actor: string, finishReason?: string) {
   switch (finishReason) {
     case "tool_calls":
-      return `LLM -> ${actor} · requested tools`;
+      return `LLM -> ${actor} 璺?requested tools`;
     case "stop":
-      return `LLM -> ${actor} · final answer`;
+      return `LLM -> ${actor} 璺?final answer`;
     case "length":
-      return `LLM -> ${actor} · partial answer`;
+      return `LLM -> ${actor} 璺?partial answer`;
     default:
       return `LLM -> ${actor}`;
   }
@@ -2985,7 +3114,7 @@ function toolCallStepLabel(actor: string, toolName: string) {
 }
 
 function toolOutputStepLabel(actor: string, toolName: string) {
-  return `Tool Output · ${actor} · ${toolName}`;
+  return `Tool Output 璺?${actor} 璺?${toolName}`;
 }
 
 function compactToolCallId(toolCallId?: string | null) {
@@ -3024,7 +3153,7 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
     typeof turn === "number" ? `turn ${turn}` : "",
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" 璺?");
 }
 
 type LlmUsageSummary = {
@@ -3147,7 +3276,7 @@ function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat
   if (typeof summary.outputTokens === "number") items.push(`out ${formatCompactTokenCount(summary.outputTokens)}`);
   if (typeof summary.totalTokens === "number") items.push(`tok ${formatCompactTokenCount(summary.totalTokens)}`);
   if (summary.contextUsageRatio !== undefined && summary.contextWindow !== undefined) {
-    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} · ${formatCompactTokenCount(summary.contextWindow)}`);
+    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} 璺?${formatCompactTokenCount(summary.contextWindow)}`);
   } else if (summary.contextUsageRatio !== undefined) {
     items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)}`);
   } else if (summary.contextWindow !== undefined) {
@@ -3191,7 +3320,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
         typeof card.duration_ms === "number" ? `${card.duration_ms}ms` : "",
       ]
         .filter(Boolean)
-        .join(" · ");
+        .join(" 璺?");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
       {
         const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
@@ -3948,7 +4077,7 @@ function renderLlmExchangePanel(
 
   const isOutbound = direction === "outbound";
   const badge = isOutbound ? "Prompt" : "Response";
-  const title = isOutbound ? `Prompt · ${actorName} -> LLM` : `Response · LLM -> ${actorName}`;
+  const title = isOutbound ? `Prompt 璺?${actorName} -> LLM` : `Response 璺?LLM -> ${actorName}`;
   const avatarLabel = initials(actorName) || "AG";
 
   return (
@@ -4315,12 +4444,12 @@ function renderCardBody(card: ThreadCard) {
             <span className="chat-card-chip chat-card-chip--accent">{card.status || "running"}</span>
             {card.target_agent ? <span className="chat-card-chip">@{card.target_agent}</span> : null}
           </div>
-          {card.question_preview ? (
+          {!card.summary && card.question_preview ? (
             <div className="chat-card-summary">
               {card.agent || "agent"} asked {card.target_agent || "another agent"}: {card.question_preview}
             </div>
           ) : null}
-          {renderMarkdownContent(card.response_preview || card.error, "message-body chat-card-preview")}
+          {renderMarkdownContent(consultCardBody(card), "message-body chat-card-preview")}
           {card.consult_step_id ? (
             <div className="chat-card-chip-row">
               <span className="chat-card-chip chat-card-chip--accent">{card.consult_step_id}</span>
@@ -4460,7 +4589,7 @@ function renderCompactCardBody(card: ThreadCard) {
         typeof card.duration_ms === "number" ? `${card.duration_ms}ms` : "",
       ]
         .filter(Boolean)
-        .join(" · ");
+        .join(" 璺?");
       const outboundSections = [
         buildLlmTimingsMarkdown(card.timings),
         card.systemPromptPresentation?.markdown || "",
@@ -4544,9 +4673,9 @@ function renderCompactCardBody(card: ThreadCard) {
               <div className="chat-progress-detail-block__header">
                 <span className="chat-json-badge">CALL</span>
                 <span className="chat-progress-detail-block__label">
-                  #{index + 1} · {item.tool || card.tool || "tool"}
-                  {typeof item.duration_ms === "number" ? ` · ${item.duration_ms}ms` : ""}
-                  {isToolCardFailure(item) ? " · failed" : isInternalToolPause(item) ? " · paused" : ""}
+                  #{index + 1} 璺?{item.tool || card.tool || "tool"}
+                  {typeof item.duration_ms === "number" ? ` 璺?${item.duration_ms}ms` : ""}
+                  {isToolCardFailure(item) ? " 璺?failed" : isInternalToolPause(item) ? " 璺?paused" : ""}
                 </span>
               </div>
               <div className="chat-progress-detail-stack chat-progress-detail-stack--nested">
@@ -4605,10 +4734,10 @@ function renderCardSurface(
           </div>
           <div className="chat-tool-card__detail">
             {card.source || "chatroom"}
-            {"model" in card && card.model ? ` · ${card.model}` : ""}
-            {"turn" in card && card.turn ? ` · turn ${card.turn}` : ""}
-            {"duration_ms" in card && typeof card.duration_ms === "number" ? ` · ${card.duration_ms}ms` : ""}
-            {"success" in card && typeof card.success === "boolean" ? ` · ${card.success ? "success" : "failed"}` : ""}
+            {"model" in card && card.model ? ` 璺?${card.model}` : ""}
+            {"turn" in card && card.turn ? ` 璺?turn ${card.turn}` : ""}
+            {"duration_ms" in card && typeof card.duration_ms === "number" ? ` 璺?${card.duration_ms}ms` : ""}
+            {"success" in card && typeof card.success === "boolean" ? ` 璺?${card.success ? "success" : "failed"}` : ""}
           </div>
         </div>
         <div className="chat-tool-card__detail">{formatTime(card.created_at)}</div>
@@ -4690,7 +4819,7 @@ function compactCardMeta(card: ThreadCard) {
   if ("success" in card && typeof card.success === "boolean") {
     bits.push(card.success ? "ok" : "failed");
   }
-  return bits.join(" · ");
+  return bits.join(" 璺?");
 }
 
 function compactCardDefaultOpen(card: ThreadCard, isLive: boolean) {
@@ -4731,7 +4860,7 @@ function compactCardSummary(card: ThreadCard) {
     case "agent_error":
       return oneLinePreview(card.error || card.summary || card.content, "Agent flow failed.");
     case "tool_merge":
-      return `${card.count} calls · ${card.tool || "tool"} · latest ${oneLinePreview(card.items[card.items.length - 1]?.result, "completed")}`;
+      return `${card.count} calls 璺?${card.tool || "tool"} 璺?latest ${oneLinePreview(card.items[card.items.length - 1]?.result, "completed")}`;
     case "llm_call":
       if (card.finish_reason === "tool_calls") {
         return oneLinePreview(
@@ -4825,7 +4954,7 @@ function renderCompactCard(
         }}
       >
         <span className={`chat-progress-item__state chat-progress-item__state--${state}`} aria-hidden="true">
-          {state === "done" ? "✓" : state === "error" ? "!" : state === "blocked" ? "!" : ""}
+          {state === "done" ? "Done" : state === "error" ? "!" : state === "blocked" ? "!" : ""}
         </span>
         <span className="chat-progress-item__index">{itemIndex + 1}</span>
         <span className="chat-progress-item__copy">
@@ -4843,7 +4972,7 @@ function renderCompactCard(
           </span>
         </span>
         <span className="chat-progress-item__toggle" aria-hidden="true">
-          ▸
+          &gt;
         </span>
       </summary>
 
@@ -4965,7 +5094,7 @@ function renderActivityBatch(
                 <span>Agent activity</span>
               </div>
               <div className="chat-tool-card__detail">
-                {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} · {cards.length} action
+                {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} 璺?{cards.length} action
                 {cards.length === 1 ? "" : "s"}
               </div>
             </div>
@@ -4999,7 +5128,7 @@ function renderActivityBatch(
                     <span className="chat-agent-activity__copy">
                       <strong>{group.name}</strong>
                       <small>
-                        {group.cards.length} step{group.cards.length === 1 ? "" : "s"} · {formatTime(group.latestAt)}
+                        {group.cards.length} step{group.cards.length === 1 ? "" : "s"} 璺?{formatTime(group.latestAt)}
                       </small>
                     </span>
                     <span className={`chat-agent-activity__pill ${isActiveGroup ? "is-live" : ""}`}>
@@ -5092,7 +5221,7 @@ function renderMessage(
               }}
             >
               <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
+                {step.state === "done" ? "Done" : step.state === "error" ? "!" : ""}
               </span>
               <span className="message-stream-step__copy">
                 <span className="message-stream-step__title-line">
@@ -5110,7 +5239,7 @@ function renderMessage(
               <span className="message-stream-step__actions">
                 {renderFailureStepAction(step, { message }, onAnalyzeFailureStep)}
                 <span className="message-stream-step__toggle" aria-hidden="true">
-                  ▸
+                  &gt;
                 </span>
               </span>
             </summary>
@@ -5194,7 +5323,7 @@ function renderMessage(
               <button
                 type="button"
                 className={`chat-footer-btn ${selectionMode ? "is-active" : ""}`}
-                onClick={() => onToggleSelected(message)}
+                onClick={selectionMode ? () => onToggleSelected(message) : () => onToggleSelected(message)}
                 aria-pressed={selectionMode ? selected : false}
                 title={selectionMode ? (selected ? "Deselect message" : "Select message") : "Select messages"}
               >
@@ -5259,7 +5388,7 @@ function renderTaskRunInlineCard(
             : liveActivity.state === "blocked"
               ? ("warning" as const)
               : ("info" as const),
-        label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
+        label: liveActivity.actor ? `${liveActivity.actor} 璺?${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
     : summarizeTaskRunInlineStatus(taskRun, detail, pendingApprovalOverride, actorName);
@@ -5284,7 +5413,7 @@ function renderTaskRunInlineCard(
                 <span className="soft-pill">run #{taskRun.id}</span>
               </div>
               <div className="chat-tool-card__detail">
-                {taskIdLabel ? `${actorName} · ${taskRun.title}` : taskRun.title}
+                {taskIdLabel ? `${actorName} 璺?${taskRun.title}` : taskRun.title}
               </div>
             </div>
             <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
@@ -5304,7 +5433,7 @@ function renderTaskRunInlineCard(
           {trace ? trace : (taskRun.status || "").toLowerCase() === "running" && !shellOutput ? (
             <div className="task-run-inline-approvals">
               <div className="task-run-inline-approval">
-                <div className="task-run-detail__summary">Loading live activity…</div>
+                <div className="task-run-detail__summary">Loading live activity...</div>
               </div>
             </div>
           ) : null}
@@ -5318,7 +5447,7 @@ function renderTaskRunInlineCard(
                 {pendingItems.length} pending approval{pendingItems.length === 1 ? "" : "s"}
               </span>
             ) : hasPendingApprovals && !approvalQueueLoaded ? (
-              <span className="task-run-card__approval-pill">loading approvals…</span>
+              <span className="task-run-card__approval-pill">loading approvals...</span>
             ) : null}
           </div>
 
@@ -5378,7 +5507,7 @@ function renderTaskRunInlineCard(
             <div className="task-run-inline-approvals">
               <div className="task-run-inline-approval">
                 <div className="task-run-detail__summary">
-                  Preparing inline approval controls…
+                  Preparing inline approval controls...
                 </div>
               </div>
             </div>
@@ -7414,7 +7543,7 @@ export function ChatTab({
             aria-label="Open chats and projects"
             title="Open sidebar"
           >
-            ☰
+            <Menu size={16} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -7423,7 +7552,7 @@ export function ChatTab({
             aria-label="Open activity"
             title="Open activity"
           >
-            ≣
+            <PanelRightOpen size={16} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -7432,9 +7561,7 @@ export function ChatTab({
             aria-label="Open settings"
             title="Settings"
           >
-            <span className="settings-icon-glyph" aria-hidden="true">
-              ⚙
-            </span>
+            <Settings size={16} aria-hidden="true" />
           </button>
         </div>
       </header>
@@ -7613,7 +7740,7 @@ export function ChatTab({
                         {mentionQuery ? `Results for @${mentionQuery}` : "Choose a teammate"}
                       </div>
                     </div>
-                    <div className="agent-chat__mention-shortcut">↑↓ move · Enter insert</div>
+                    <div className="agent-chat__mention-shortcut">Up/Down move - Enter insert</div>
                   </div>
                   {mentionOptions.length > 0 ? (
                     mentionOptions.map((agent, index) => (
@@ -7629,7 +7756,7 @@ export function ChatTab({
                         <span className="agent-chat__mention-avatar">{initials(getAgentDisplayName(agent))}</span>
                         <span className="agent-chat__mention-copy">
                           <span className="agent-chat__mention-name">@{getAgentType(agent)}</span>
-                          <span className="agent-chat__mention-role">{getAgentDisplayName(agent)} · {agent.role}</span>
+                          <span className="agent-chat__mention-role">{getAgentDisplayName(agent)} 璺?{agent.role}</span>
                         </span>
                         <span className={`agent-chat__mention-state ${agent.is_active ? "is-active" : ""}`}>
                           {agent.is_active ? "online" : "idle"}
@@ -7679,7 +7806,7 @@ export function ChatTab({
                     }}
                     title="Clear draft"
                   >
-                    ×
+                    <X size={14} aria-hidden="true" />
                   </button>
                 </div>
 
@@ -7691,7 +7818,7 @@ export function ChatTab({
                     disabled={sending || draft.trim() === ""}
                     aria-label="Send message"
                   >
-                    {sending ? "..." : "→"}
+                    {sending ? "..." : <SendHorizontal size={16} aria-hidden="true" />}
                   </button>
                 </div>
               </div>
@@ -7717,7 +7844,7 @@ export function ChatTab({
                 aria-label="Close browser"
                 title="Close browser"
               >
-                ×
+                <X size={16} aria-hidden="true" />
               </button>
             </div>
             <div className="sidebar-content project-browser">

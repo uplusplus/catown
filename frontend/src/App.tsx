@@ -974,11 +974,11 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
 function llmInboundStepLabel(actor: string, finishReason?: string) {
   switch (finishReason) {
     case "tool_calls":
-      return `LLM -> ${actor} · requested tools`;
+      return `LLM -> ${actor} 路 requested tools`;
     case "stop":
-      return `LLM -> ${actor} · final answer`;
+      return `LLM -> ${actor} 路 final answer`;
     case "length":
-      return `LLM -> ${actor} · partial answer`;
+      return `LLM -> ${actor} 路 partial answer`;
     default:
       return `LLM -> ${actor}`;
   }
@@ -989,7 +989,7 @@ function toolCallStepLabel(actor: string, toolName: string) {
 }
 
 function toolOutputStepLabel(actor: string, toolName: string) {
-  return `Tool Output · ${actor} · ${toolName}`;
+  return `Tool Output 路 ${actor} 路 ${toolName}`;
 }
 
 function buildToolWaitKey(actor: string, toolCallIndex?: number, toolName?: string) {
@@ -1005,7 +1005,7 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
     typeof turn === "number" ? `turn ${turn}` : "",
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" 路 ");
 }
 
 function buildLlmPlannedToolsMarkdown(toolCalls?: ChatCardItem["tool_calls"]) {
@@ -1032,7 +1032,7 @@ function isActorInboundStep(step: MessageStreamStep, actor: string) {
   return (
     (step.agent === actor && step.kind === "llm_inbound") ||
     step.label === llmInboundStepLabel(actor) ||
-    step.label.startsWith(`LLM -> ${actor} · `)
+    step.label.startsWith(`LLM -> ${actor} 路 `)
   );
 }
 
@@ -1319,7 +1319,7 @@ function buildLlmResponseStepDetail(card: ChatCardItem) {
   }
   if (card.response) bits.push(summarizeStepDetail(card.response));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
-  return bits.filter(Boolean).join(" · ");
+  return bits.filter(Boolean).join(" 路 ");
 }
 
 function buildToolCallStepDetail(card: ChatCardItem) {
@@ -1329,7 +1329,7 @@ function buildToolCallStepDetail(card: ChatCardItem) {
   if (card.result && isRunningToolRuntimeCard(card)) bits.push(summarizeStepDetail(card.result, 140));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
-  return bits.filter(Boolean).join(" · ");
+  return bits.filter(Boolean).join(" 路 ");
 }
 
 function buildToolResultStepDetail(card: ChatCardItem) {
@@ -1337,7 +1337,7 @@ function buildToolResultStepDetail(card: ChatCardItem) {
   if (card.result) bits.push(summarizeStepDetail(card.result));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
-  return bits.filter(Boolean).join(" · ");
+  return bits.filter(Boolean).join(" 路 ");
 }
 
 function buildUnifiedToolStepDetail(card: ChatCardItem) {
@@ -1403,7 +1403,7 @@ function buildCardStepDetail(card: ChatCardItem) {
       break;
   }
 
-  return bits.filter(Boolean).join(" · ");
+  return bits.filter(Boolean).join(" 路 ");
 }
 
 function buildCardStepDetailContent(card: ChatCardItem) {
@@ -1423,7 +1423,7 @@ function buildCardStepDetailContent(card: ChatCardItem) {
               : "",
       ]
         .filter(Boolean)
-        .join(" · ");
+        .join(" 路 ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
       const outcomeSummary = llmOutcomeSummary(card);
       if (outcomeSummary) sections.push(buildStatusMarkdown(outcomeSummary));
@@ -1666,9 +1666,9 @@ function isInternalTaskRunSummary(value: string | null | undefined) {
     normalized.includes("rebuild_turn_state_from_tool_round") ||
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
-    normalized.includes("continue agent turn · via") ||
+    normalized.includes("continue agent turn 路 via") ||
     normalized.includes("continue agent turn - via") ||
-    normalized.includes(" · via ") ||
+    normalized.includes(" 路 via ") ||
     normalized.includes(" - via ") ||
     normalized === "user message saved." ||
     normalized === "user message saved for execution." ||
@@ -1750,6 +1750,10 @@ function taskRunUserRequestPreview(taskRun: TaskRunSummary | TaskRunDetail, limi
     : "";
 }
 
+function taskRunPrimarySummary(taskRun: TaskRunSummary | TaskRunDetail) {
+  return userFacingTaskRunSummary(taskRun.summary) || taskRunUserRequestPreview(taskRun);
+}
+
 function latestTaskRunAgentResponse(taskRun: TaskRunSummary | TaskRunDetail) {
   const events = taskRunDetailEvents(taskRun);
   const responseEvent = [...events].reverse().find((event) => {
@@ -1787,6 +1791,9 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
   const summary = readRecord(diagnostics.summary);
   const developer = readRecord(diagnostics.developer);
   const user = readRecord(diagnostics.user);
+  const roleBudgets = readRecord(selector?.max_tokens_by_role);
+  const scopeBudgets = readRecord(selector?.max_tokens_by_scope);
+  const scopeUsage = readRecord(summary?.by_scope);
   const maxFragments = readNumber(selector?.max_fragments);
   const maxTokens = readNumber(selector?.max_tokens);
   const candidateCount = readNumber(summary?.candidate_count);
@@ -1812,7 +1819,7 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
     candidateTokens !== null && selectedTokens !== null ? `${candidateTokens} -> ${selectedTokens} tokens` : "",
     `${droppedCount} dropped`,
     `${truncatedCount} truncated`,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" 路 ");
   const detailContent = [
     fallbackSummary ? `### Summary\n\n${fallbackSummary}` : "",
     `### Why\n\nThe context selector compacted the prompt${budget ? ` to fit the ${budget} budget` : ""}.`,
@@ -1821,6 +1828,12 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
       "",
       `- Dropped sources: ${formatInlineSourceList(droppedSources)}`,
       `- Truncated sources: ${formatInlineSourceList(truncatedSources)}`,
+      roleBudgets ? `- Role budgets: developer ${readNumber(roleBudgets?.developer) ?? "?"} / user ${readNumber(roleBudgets?.user) ?? "?"}` : "",
+      scopeBudgets ? `- Scope budgets: ${Object.entries(scopeBudgets).map(([scope, value]) => `${scope} ${value}`).join(" / ")}` : "",
+      scopeUsage ? `- Scope usage: ${Object.entries(scopeUsage).map(([scope, report]) => {
+        const scopeReport = readRecord(report);
+        return `${scope} ${readNumber(scopeReport?.selected_count) ?? "?"}/${readNumber(scopeReport?.candidate_count) ?? "?"} fragments, ${readNumber(scopeReport?.selected_tokens) ?? "?"}/${readNumber(scopeReport?.candidate_tokens) ?? "?"} tokens`;
+      }).join(" / ")}` : "",
       developer ? `- Developer context: ${readNumber(developer.selected_count) ?? "?"}/${readNumber(developer.candidate_count) ?? "?"} selected, ${readNumber(developer.selected_tokens) ?? "?"}/${readNumber(developer.candidate_tokens) ?? "?"} tokens` : "",
       user ? `- User context: ${readNumber(user.selected_count) ?? "?"}/${readNumber(user.candidate_count) ?? "?"} selected, ${readNumber(user.selected_tokens) ?? "?"}/${readNumber(user.candidate_tokens) ?? "?"} tokens` : "",
     ].filter(Boolean).join("\n"),
@@ -1852,7 +1865,7 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
 
   if (pendingApprovalCount > 0) {
     return {
-      label: toolName ? `${actor} is waiting for approval · ${toolName}` : `${actor} is waiting for approval`,
+      label: toolName ? `${actor} is waiting for approval 路 ${toolName}` : `${actor} is waiting for approval`,
       detail: statusSummary || `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
       kind: "tool_call" as const,
       tool: toolName || undefined,
@@ -2302,7 +2315,7 @@ function App() {
       return {
         ...node,
         label: taskRun.title || node.label,
-        detail: taskRun.summary || taskRun.user_request || node.detail,
+        detail: taskRunPrimarySummary(taskRun) || node.detail,
         status: taskRunTerminalState(taskRun) ? "terminated" : "running",
         timestamp: taskRun.updated_at || taskRun.created_at || node.timestamp,
         children: nextChildren,
@@ -2319,7 +2332,7 @@ function App() {
               id: `task-run:${taskRun.id}`,
               label: taskRun.title || `Task run ${taskRun.id}`,
               kind: "task",
-              detail: taskRun.summary || taskRun.user_request || "Task run is active.",
+              detail: taskRunPrimarySummary(taskRun) || "Task run is active.",
               status: "running",
               parent_id: node.id,
               timestamp: taskRun.updated_at || taskRun.created_at || new Date().toISOString(),
@@ -2331,6 +2344,134 @@ function App() {
       }
     }
     return childrenChanged ? { ...node, children: nextChildren } : node;
+  }
+
+  function buildSubagentRuntimePatchFromHandle(
+    taskRun: TaskRunSummary | TaskRunDetail,
+    handle: Record<string, unknown>,
+  ) {
+    const stepId = typeof handle["step_id"] === "string" ? handle["step_id"] : "";
+    if (!stepId) return null;
+    const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "subagent";
+    const controlState =
+      typeof handle["control_state"] === "string"
+        ? handle["control_state"]
+        : typeof handle["status"] === "string"
+          ? handle["status"]
+          : null;
+    const availableActions = Array.isArray(handle["available_actions"])
+      ? handle["available_actions"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+    const terminal =
+      handle["terminal"] === true
+      || handle["closed"] === true
+      || isTerminalHandleStatus(typeof handle["status"] === "string" ? handle["status"] : controlState || undefined);
+    const labelActor =
+      typeof handle["agent_name"] === "string"
+        ? handle["agent_name"]
+        : typeof handle["requested_name"] === "string"
+          ? handle["requested_name"]
+          : typeof handle["agent_type"] === "string"
+            ? handle["agent_type"]
+            : "subagent";
+    const responsePreview = typeof handle["response_preview"] === "string" ? handle["response_preview"].trim() : "";
+    const dependencyStepId = typeof handle["dependency_step_id"] === "string" ? handle["dependency_step_id"].trim() : "";
+    const summaryText = typeof handle["summary_text"] === "string" ? handle["summary_text"].trim() : "";
+    const detailParts = [
+      responsePreview,
+      !responsePreview ? controlState : "",
+      dependencyStepId ? `waiting on ${dependencyStepId}` : "",
+      availableActions.length > 0 ? `actions: ${availableActions.join(", ")}` : "",
+    ].filter(Boolean);
+    return {
+      taskRunId: taskRun.id,
+      stepId,
+      status: typeof handle["status"] === "string" ? handle["status"] : controlState || undefined,
+      availableActions,
+      controlState,
+      terminal,
+      label: `${labelActor} (${dispatchKind})`,
+      detail: summaryText || detailParts.join(" | ") || controlState || (typeof handle["status"] === "string" ? handle["status"] : null),
+      dispatchKind,
+      source: typeof handle["source"] === "string" ? handle["source"] : null,
+      timestamp: taskRun.updated_at || taskRun.created_at || null,
+    };
+  }
+
+  function reconcileTaskProcessSubagentEntry(
+    node: ChatProcessEntry | null,
+    taskRun: TaskRunSummary | TaskRunDetail,
+  ): ChatProcessEntry | null {
+    if (!node) return node;
+    const activeHandle = readActiveSubagentHandleFromTaskRun(taskRun);
+    const activePatch = activeHandle ? buildSubagentRuntimePatchFromHandle(taskRun, activeHandle) : null;
+    const activeStepId = activePatch?.stepId ?? null;
+    const terminalizeChild = (child: ChatProcessEntry) => {
+      if (child.kind !== "subagent") return child;
+      const metadata = child.metadata && typeof child.metadata === "object" ? child.metadata : {};
+      return {
+        ...child,
+        status: "terminated",
+        metadata: {
+          ...metadata,
+          available_actions: [],
+          control_state:
+            activePatch || taskRunTerminalState(taskRun)
+              ? "completed"
+              : metadata["control_state"],
+        },
+      };
+    };
+
+    const nextChildren = node.children.map((child) => reconcileTaskProcessSubagentEntry(child, taskRun));
+    const matchesTaskNode = node.kind === "task" && node.id === `task-run:${taskRun.id}`;
+    if (!matchesTaskNode) {
+      const childrenChanged = nextChildren.some((child, index) => child !== node.children[index]);
+      return childrenChanged ? { ...node, children: nextChildren } : node;
+    }
+
+    let sawActiveChild = false;
+    const patchedChildren = nextChildren.map((child) => {
+      if (child.kind !== "subagent") return child;
+      const metadata = child.metadata && typeof child.metadata === "object" ? child.metadata : null;
+      const childStepId = typeof metadata?.["step_id"] === "string" ? metadata["step_id"] : "";
+      if (activePatch && childStepId === activeStepId) {
+        sawActiveChild = true;
+        return patchProcessTreeEntry(child, activePatch) ?? child;
+      }
+      if (taskRunTerminalState(taskRun) || !activePatch || childStepId) {
+        return terminalizeChild(child);
+      }
+      return child;
+    });
+
+    let finalChildren = patchedChildren;
+    if (activePatch && !activePatch.terminal && !sawActiveChild) {
+      finalChildren = [
+        {
+          id: `subagent:${activePatch.stepId}`,
+          label: activePatch.label || `subagent (${activePatch.dispatchKind || "subagent"})`,
+          kind: "subagent",
+          detail: activePatch.detail ?? activePatch.controlState ?? activePatch.status ?? "Subagent is active.",
+          status: activePatch.status || "running",
+          parent_id: `task-run:${taskRun.id}`,
+          timestamp: activePatch.timestamp || new Date().toISOString(),
+          metadata: {
+            task_run_id: activePatch.taskRunId,
+            step_id: activePatch.stepId,
+            dispatch_kind: activePatch.dispatchKind,
+            control_state: activePatch.controlState,
+            available_actions: activePatch.availableActions,
+            source: activePatch.source,
+          },
+          children: [],
+        },
+        ...patchedChildren,
+      ];
+    }
+
+    const childrenChanged = finalChildren.some((child, index) => child !== node.children[index]) || finalChildren.length !== node.children.length;
+    return childrenChanged ? { ...node, children: finalChildren } : node;
   }
 
   function upsertSubagentProcessEntry(
@@ -2507,6 +2648,12 @@ function App() {
   function patchSubagentRuntimeFromCard(card: ChatCardItem) {
     if (card.kind !== "consult_call") return;
     if (typeof card.run_id !== "number" || typeof card.consult_step_id !== "string") return;
+    const detailParts = [
+      card.response_preview || "",
+      !card.response_preview ? (card.status ?? "") : "",
+      card.available_actions && card.available_actions.length > 0 ? `actions: ${card.available_actions.join(", ")}` : "",
+    ].filter(Boolean);
+    const summaryText = typeof card.summary === "string" ? card.summary.trim() : "";
     patchSubagentRuntime({
       taskRunId: card.run_id,
       stepId: card.consult_step_id,
@@ -2516,7 +2663,7 @@ function App() {
       terminal: isTerminalHandleStatus(card.status),
       note: card.error ?? card.response_preview ?? null,
       label: `${card.target_agent || "subagent"} (consult)`,
-      detail: card.response_preview || card.question_preview || card.error || null,
+      detail: summaryText || detailParts.join(" | ") || card.question_preview || card.error || null,
       dispatchKind: "consult",
       source: card.source ?? "runtime_card",
       timestamp: card.created_at,
@@ -2528,6 +2675,19 @@ function App() {
     taskRun: TaskRunSummary | TaskRunDetail,
   ): TaskActivityProjection {
     if (activity.task_run_id !== taskRun.id) return activity;
+    const activeHandle = readActiveSubagentHandleFromTaskRun(taskRun);
+    const nextBackground = activity.background && typeof activity.background === "object"
+      ? { ...activity.background }
+      : {};
+    if (activeHandle) {
+      nextBackground["active_subagent_handle"] = activeHandle;
+      if (String(activeHandle["dispatch_kind"] || "").trim() === "consult") {
+        nextBackground["active_consult_handle"] = activeHandle;
+      }
+    }
+    if (taskRun.subagent_handles_summary !== undefined) {
+      nextBackground["subagent_handles_summary"] = taskRun.subagent_handles_summary;
+    }
     return {
       ...activity,
       status: taskRun.status || activity.status,
@@ -2535,6 +2695,7 @@ function App() {
       run_kind: taskRun.run_kind || activity.run_kind,
       summary: taskRun.summary ?? activity.summary,
       updated_at: taskRun.updated_at ?? activity.updated_at,
+      background: nextBackground,
     };
   }
 
@@ -2551,8 +2712,82 @@ function App() {
         status: taskRun.status ?? summary.status,
         run_kind: taskRun.run_kind ?? summary.run_kind,
         continuation_state_summary: taskRun.continuation_state_summary ?? summary.continuation_state_summary,
+        active_subagent_handle: readActiveSubagentHandleFromTaskRun(taskRun) ?? summary.active_subagent_handle,
+        active_consult_handle: readActiveConsultHandleFromTaskRun(taskRun) ?? summary.active_consult_handle,
+        subagent_handles_summary: taskRun.subagent_handles_summary ?? summary.subagent_handles_summary,
       },
     };
+  }
+
+  function readActiveSubagentHandleFromTaskRun(taskRun: TaskRunSummary | TaskRunDetail) {
+    const checkpoint = taskRun.checkpoint_snapshot && typeof taskRun.checkpoint_snapshot === "object"
+      ? taskRun.checkpoint_snapshot
+      : null;
+    if (!checkpoint) return null;
+    const handles = checkpoint.subagent_handles && typeof checkpoint.subagent_handles === "object"
+      ? checkpoint.subagent_handles as Record<string, unknown>
+      : null;
+    const lifecycle = checkpoint.subagent_lifecycle && typeof checkpoint.subagent_lifecycle === "object"
+      ? checkpoint.subagent_lifecycle as Record<string, unknown>
+      : null;
+    const latestStep = checkpoint.latest_subagent_step && typeof checkpoint.latest_subagent_step === "object"
+      ? checkpoint.latest_subagent_step as Record<string, unknown>
+      : null;
+    const handleEntries = Array.isArray(handles?.["entries"])
+      ? handles?.["entries"] as Record<string, unknown>[]
+      : [];
+    const lifecycleEntries = Array.isArray(lifecycle?.["subagents"])
+      ? lifecycle?.["subagents"] as Record<string, unknown>[]
+      : [];
+    const preferredStepId = typeof latestStep?.["step_id"] === "string" ? latestStep["step_id"] : "";
+    const lifecycleByStepId = new Map<string, Record<string, unknown>>();
+    for (const entry of lifecycleEntries) {
+      const stepId = typeof entry?.["step_id"] === "string" ? entry["step_id"] : "";
+      if (stepId) lifecycleByStepId.set(stepId, entry);
+    }
+    let candidate =
+      (preferredStepId
+        ? handleEntries.find((entry) => typeof entry?.["step_id"] === "string" && entry["step_id"] === preferredStepId)
+        : null)
+      ?? handleEntries.find((entry) => !entry?.["closed"]);
+    if (!candidate || typeof candidate !== "object") return null;
+    const stepId = typeof candidate["step_id"] === "string" ? candidate["step_id"] : "";
+    const lifecycleEntry = lifecycleByStepId.get(stepId) ?? {};
+    const projected: Record<string, unknown> = {
+      step_id: candidate["step_id"],
+      agent_name: candidate["agent_name"],
+      agent_type: candidate["agent_type"],
+      dispatch_kind: candidate["dispatch_kind"],
+      status: candidate["status"],
+      control_state: candidate["control_state"],
+      available_actions: candidate["available_actions"],
+      dependency_step_id: candidate["dependency_step_id"],
+      source:
+        lifecycleEntry["source"]
+        ?? latestStep?.["source"]
+        ?? null,
+      requested_name: lifecycleEntry["requested_name"] ?? null,
+      closed: candidate["closed"],
+      terminal: candidate["terminal"],
+      summary_text: typeof candidate["summary_text"] === "string" ? candidate["summary_text"] : null,
+      response_preview:
+        stepId && preferredStepId && stepId === preferredStepId
+          ? latestStep?.["response_preview"] ?? null
+          : null,
+    };
+    return Object.fromEntries(Object.entries(projected).filter(([, value]) => value !== null && value !== undefined));
+  }
+
+  function readActiveConsultHandleFromTaskRun(taskRun: TaskRunSummary | TaskRunDetail) {
+    const handle = readActiveSubagentHandleFromTaskRun(taskRun);
+    if (!handle) return null;
+    return String(handle["dispatch_kind"] || "").trim() === "consult" ? handle : null;
+  }
+
+  function shouldRefreshProcessTreeAfterTaskRunUpdate(taskRun: TaskRunSummary | TaskRunDetail) {
+    if (taskRunTerminalState(taskRun)) return false;
+    if (readActiveSubagentHandleFromTaskRun(taskRun)) return false;
+    return true;
   }
 
   async function loadOptionalTaskRuns(chatId: number) {
@@ -3190,15 +3425,18 @@ function App() {
             const entry = payload.entry as TaskRunSummary | undefined;
             const detail = payload.detail as TaskRunDetail | undefined;
             if (entry && typeof entry.id === "number") {
+              const nextTaskRun = detail && typeof detail.id === "number" ? detail : entry;
               setTaskRuns((current) => mergeTaskRuns(current, [entry]));
-              setChatProcesses((current) => upsertTaskProcessEntry(current, detail && typeof detail.id === "number" ? detail : entry));
+              setChatProcesses((current) => reconcileTaskProcessSubagentEntry(upsertTaskProcessEntry(current, nextTaskRun), nextTaskRun));
               setTaskActivitiesById((current) => {
                 const activity = current[entry.id];
                 if (!activity) return current;
-                return { ...current, [entry.id]: patchTaskActivityProjectionFromTaskRun(activity, detail && typeof detail.id === "number" ? detail : entry) };
+                return { ...current, [entry.id]: patchTaskActivityProjectionFromTaskRun(activity, nextTaskRun) };
               });
-              setMessages((current) => current.map((message) => patchMessageRuntimeSummaryFromTaskRun(message, detail && typeof detail.id === "number" ? detail : entry)));
-              scheduleChatProcessRefresh(entry.chatroom_id);
+              setMessages((current) => current.map((message) => patchMessageRuntimeSummaryFromTaskRun(message, nextTaskRun)));
+              if (shouldRefreshProcessTreeAfterTaskRunUpdate(nextTaskRun)) {
+                scheduleChatProcessRefresh(entry.chatroom_id);
+              }
               void api.getTaskRunActivity(entry.id)
                 .then((activity) => {
                   if (!isCurrentChatRequest(entry.chatroom_id)) return;
@@ -3771,14 +4009,14 @@ function App() {
             const detail =
               data.type === "request_sent"
                 ? elapsedText
-                  ? `Request sent · ${elapsedText}`
+                  ? `Request sent 路 ${elapsedText}`
                   : "Request sent"
                 : data.type === "first_chunk"
                   ? elapsedText
-                    ? `First stream chunk · ${elapsedText}`
+                    ? `First stream chunk 路 ${elapsedText}`
                     : "First stream chunk"
                   : elapsedText
-                    ? `First content token · ${elapsedText}`
+                    ? `First content token 路 ${elapsedText}`
                     : "First content token";
 
             commitOptimisticMessages((current) =>
@@ -3823,7 +4061,7 @@ function App() {
             }
             liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
             const detail = elapsedText
-              ? `Planning ${toolName} · ${elapsedText}`
+              ? `Planning ${toolName} 路 ${elapsedText}`
               : `Planning ${toolName}`;
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
@@ -3835,7 +4073,7 @@ function App() {
                   (step) => step.state === "live" && isActorOutboundStep(step, activeAgentName),
                   {
                     state: "done",
-                    detail: elapsedText ? `Tool planning started · ${elapsedText}` : "Tool planning started",
+                    detail: elapsedText ? `Tool planning started 路 ${elapsedText}` : "Tool planning started",
                     detailContent: buildLiveLlmPromptDetailContent(content, {
                       systemPrompt: liveLlmSystemPrompt,
                       promptMessages: liveLlmPromptMessages,
@@ -3966,7 +4204,7 @@ function App() {
             const elapsedText = formatStreamingElapsed(
               typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
             );
-            const waitStatus = elapsedText ? `Waiting on model · ${elapsedText}` : "Waiting on model";
+            const waitStatus = elapsedText ? `Waiting on model 路 ${elapsedText}` : "Waiting on model";
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
                 const baseMessage = {
@@ -4022,7 +4260,7 @@ function App() {
               const elapsedText = formatStreamingElapsed(
                 typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
               );
-              const waitStatus = elapsedText ? `Running tool · ${elapsedText}` : "Running tool";
+              const waitStatus = elapsedText ? `Running tool 路 ${elapsedText}` : "Running tool";
               const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {

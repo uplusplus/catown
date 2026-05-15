@@ -385,7 +385,12 @@ class TestMonitorOverview:
                             "compacted": True,
                             "selector_diagnostics": {
                                 "compacted": True,
-                                "selector": {"max_fragments": 12, "max_tokens": 3200},
+                                "selector": {
+                                    "max_fragments": 12,
+                                    "max_tokens": 3200,
+                                    "max_tokens_by_role": {"developer": 1200, "user": 2000},
+                                    "max_tokens_by_scope": {"run": 1800, "turn": 400},
+                                },
                                 "summary": {
                                     "candidate_count": 9,
                                     "selected_count": 7,
@@ -393,6 +398,20 @@ class TestMonitorOverview:
                                     "truncated_count": 1,
                                     "candidate_tokens": 4200,
                                     "selected_tokens": 3100,
+                                    "by_scope": {
+                                        "run": {
+                                            "candidate_count": 3,
+                                            "selected_count": 2,
+                                            "candidate_tokens": 2200,
+                                            "selected_tokens": 1400,
+                                        },
+                                        "turn": {
+                                            "candidate_count": 2,
+                                            "selected_count": 2,
+                                            "candidate_tokens": 600,
+                                            "selected_tokens": 400,
+                                        },
+                                    },
                                 },
                                 "developer": {"dropped_count": 0, "truncated_count": 0},
                                 "user": {"dropped_count": 2, "truncated_count": 1},
@@ -421,6 +440,11 @@ class TestMonitorOverview:
         assert entry["dropped_count"] == 2
         assert entry["truncated_count"] == 1
         assert entry["max_tokens"] == 3200
+        assert entry["max_tokens_by_role"] == {"developer": 1200, "user": 2000}
+        assert entry["max_tokens_by_scope"] == {"run": 1800, "turn": 400}
+        assert entry["scope_usage"]["run"]["selected_tokens"] == 1400
+        assert "roles developer 1200 / user 2000" in entry["budget_summary"]
+        assert "run 2/3 fragments, 1400/2200 tokens" in entry["scope_usage_summary"]
 
     def test_overview_returns_recent_policy_decisions(self, client):
         from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent

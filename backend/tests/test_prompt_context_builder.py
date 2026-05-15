@@ -533,6 +533,96 @@ def test_context_selector_enforces_total_token_budget_across_roles():
     assert "[truncated for token budget]" in messages[2]["content"]
 
 
+def test_context_selector_can_enforce_role_specific_token_budgets():
+    developer_fragment = ContextFragment(
+        role="developer",
+        content="Developer rules\n" + ("A" * 400),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.AGENT,
+        source="developer_rules",
+        priority=10,
+    )
+    user_fragment = ContextFragment(
+        role="user",
+        content="Project state\n" + ("B" * 400),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.GLOBAL,
+        source="project_state",
+        priority=20,
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="base identity",
+        developer_fragments=[developer_fragment],
+        user_fragments=[user_fragment],
+        selector=ContextSelector(
+            max_tokens=320,
+            max_tokens_by_role={
+                "developer": 220,
+                "user": 96,
+            },
+        ),
+    )
+
+    messages = assembly.to_messages()
+    diagnostics = assembly.selector_diagnostics
+
+    assert [message["role"] for message in messages] == ["system", "developer", "user"]
+    assert "[truncated for token budget]" not in messages[1]["content"]
+    assert "[truncated for token budget]" in messages[2]["content"]
+    assert diagnostics["selector"]["max_tokens"] == 320
+    assert diagnostics["selector"]["max_tokens_by_role"] == {"developer": 220, "user": 96}
+    assert diagnostics["developer"]["truncated_count"] == 0
+    assert diagnostics["user"]["truncated_count"] == 1
+
+
+def test_context_selector_reports_scope_usage_diagnostics():
+    developer_fragment = ContextFragment(
+        role="developer",
+        content="Developer rules\n" + ("A" * 400),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.AGENT,
+        source="developer_rules",
+        priority=10,
+    )
+    user_fragment = ContextFragment(
+        role="user",
+        content="Shared facts\n" + ("B" * 240),
+        scope=ContextScope.SHARED_FACT,
+        visibility=ContextVisibility.GLOBAL,
+        source="shared_facts",
+        priority=20,
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="base identity",
+        developer_fragments=[developer_fragment],
+        user_fragments=[user_fragment],
+        selector=ContextSelector(
+            max_tokens=260,
+            max_tokens_by_scope={
+                ContextScope.RUN: 180,
+                ContextScope.SHARED_FACT: 96,
+            },
+        ),
+    )
+
+    diagnostics = assembly.selector_diagnostics
+    by_scope = diagnostics["summary"]["by_scope"]
+
+    assert diagnostics["selector"]["max_tokens_by_scope"] == {
+        ContextScope.RUN: 180,
+        ContextScope.SHARED_FACT: 96,
+    }
+    assert by_scope[ContextScope.RUN]["candidate_count"] == 1
+    assert by_scope[ContextScope.RUN]["selected_count"] == 1
+    assert by_scope[ContextScope.RUN]["candidate_tokens"] >= by_scope[ContextScope.RUN]["selected_tokens"] > 0
+    assert by_scope[ContextScope.SHARED_FACT]["candidate_count"] == 1
+    assert by_scope[ContextScope.SHARED_FACT]["selected_count"] == 1
+    assert by_scope[ContextScope.SHARED_FACT]["candidate_tokens"] >= by_scope[ContextScope.SHARED_FACT]["selected_tokens"] > 0
+    assert by_scope[ContextScope.SHARED_FACT]["selected_tokens"] <= 96
+
+
 def test_assembly_exposes_selector_compaction_diagnostics():
     developer_fragment = ContextFragment(
         role="developer",
@@ -612,6 +702,12 @@ def test_chat_context_selector_applies_profile_fragment_caps_without_context_win
     assert chat_selector.max_tokens == 3200
     assert fallback_selector.max_tokens == 2600
     assert query_selector.max_tokens == 2200
+    assert chat_selector.max_tokens_by_role == {"developer": 1200, "user": 2000}
+    assert fallback_selector.max_tokens_by_role == {"developer": 900, "user": 1700}
+    assert query_selector.max_tokens_by_role == {"developer": 1000, "user": 1200}
+    assert chat_selector.max_tokens_by_scope["run"] == 1800
+    assert fallback_selector.max_tokens_by_scope["stage"] == 420
+    assert query_selector.max_tokens_by_scope["shared_fact"] == 240
 
 
 def test_turn_state_fragments_keep_recent_protocol_and_summarize_older_tool_rounds():

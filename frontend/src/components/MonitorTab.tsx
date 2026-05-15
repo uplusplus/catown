@@ -528,19 +528,6 @@ function schedulerRuntimeSummary(value: unknown): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
-function taskRunEventContinuationSummary(payload: Record<string, unknown> | undefined): string | null {
-  if (!payload) return null;
-  const directRecovery = continuationStateSummary(payload["recovery_continuation_state"]);
-  if (directRecovery) return directRecovery;
-  const directContinuation = continuationStateSummary(payload["continuation_state"]);
-  if (directContinuation) return directContinuation;
-  const checkpointSnapshot = payload["checkpoint_snapshot"];
-  if (checkpointSnapshot && typeof checkpointSnapshot === "object") {
-    return continuationStateSummary((checkpointSnapshot as Record<string, unknown>)["continuation_state"]);
-  }
-  return null;
-}
-
 type RunScheduleStep = {
   stepId: string;
   position: number;
@@ -642,20 +629,16 @@ function extractLatestRunScheduleRuntime(detail: TaskRunDetail | null) {
   if (!detail) return null;
   const runtimeEvent = [...detail.events]
     .reverse()
-    .find((event) => {
-      const payload = asMonitorRecord(event.payload);
-      return Boolean(asMonitorRecord(payload?.runtime));
-    });
-  return asMonitorRecord(asMonitorRecord(runtimeEvent?.payload)?.runtime);
+    .find((event) => Boolean(asMonitorRecord(event.runtime_snapshot)));
+  return asMonitorRecord(runtimeEvent?.runtime_snapshot);
 }
 
 function extractRunSchedulePlan(detail: TaskRunDetail | null): RunSchedulePlan | null {
   if (!detail) return null;
   const scheduleEvent = detail.events.find((event) => event.event_type === "scheduler_plan_created");
-  const payload = asMonitorRecord(scheduleEvent?.payload);
-  if (!payload) return null;
+  if (!scheduleEvent) return null;
 
-  const rawSteps = Array.isArray(payload.steps) ? payload.steps : [];
+  const rawSteps = Array.isArray(scheduleEvent.schedule_steps) ? scheduleEvent.schedule_steps : [];
   const steps = rawSteps
     .map((step) => parseRunScheduleStep(step))
     .filter((step): step is RunScheduleStep => Boolean(step))
@@ -674,16 +657,16 @@ function extractRunSchedulePlan(detail: TaskRunDetail | null): RunSchedulePlan |
   });
 
   return {
-    mode: monitorStringField(payload.mode) ?? "linear_blocking_chain",
-    stepCount: monitorNumberField(payload.step_count) ?? mergedSteps.length,
+    mode: monitorStringField(scheduleEvent.schedule_mode) ?? "linear_blocking_chain",
+    stepCount: monitorNumberField(scheduleEvent.schedule_step_count) ?? mergedSteps.length,
     blockingStepCount:
-      monitorNumberField(payload.blocking_step_count) ??
+      monitorNumberField(scheduleEvent.schedule_blocking_step_count) ??
       mergedSteps.filter((step) => step.dispatchKind === "blocking").length,
     sidecarStepCount:
-      monitorNumberField(payload.sidecar_step_count) ??
+      monitorNumberField(scheduleEvent.schedule_sidecar_step_count) ??
       mergedSteps.filter((step) => step.dispatchKind === "sidecar").length,
-    sidecarAgentTypes: Array.isArray(payload.sidecar_agent_types)
-      ? payload.sidecar_agent_types
+    sidecarAgentTypes: Array.isArray(scheduleEvent.schedule_sidecar_agent_types)
+      ? scheduleEvent.schedule_sidecar_agent_types
           .map((value) => monitorStringField(value))
           .filter((value): value is string => Boolean(value))
       : [],
@@ -708,16 +691,15 @@ function extractRunHandoffs(detail: TaskRunDetail | null): RunHandoffRelation[] 
   return detail.events
     .filter((event) => event.event_type === "handoff_created")
     .map((event) => {
-      const payload = asMonitorRecord(event.payload);
       return {
         id: `${event.id}`,
-        fromAgent: monitorStringField(payload?.from_agent) ?? event.agent_name ?? "agent",
-        toAgent: monitorStringField(payload?.to_agent) ?? "agent",
-        fromStepId: monitorStringField(payload?.from_step_id),
-        toStepId: monitorStringField(payload?.to_step_id),
-        attachedToStepId: monitorStringField(payload?.attached_to_step_id),
-        dispatchKind: monitorStringField(payload?.dispatch_kind) ?? "blocking",
-        contentPreview: monitorStringField(payload?.content_preview) ?? "",
+        fromAgent: monitorStringField(event.from_agent) ?? event.agent_name ?? "agent",
+        toAgent: monitorStringField(event.to_agent) ?? "agent",
+        fromStepId: monitorStringField(event.from_step_id),
+        toStepId: monitorStringField(event.to_step_id),
+        attachedToStepId: monitorStringField(event.attached_to_step_id),
+        dispatchKind: monitorStringField(event.dispatch_kind) ?? "blocking",
+        contentPreview: monitorStringField(event.content_preview) ?? "",
         createdAt: monitorStringField(event.created_at),
       };
     });
@@ -1623,6 +1605,103 @@ function compactMonitorText(value: unknown, limit = 180) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
+function runtimePrimaryPreview(item: MonitorOverview["recent_runtime"][number], limit = 180) {
+  return compactMonitorText(item.preview || item.response_preview || item.arguments_preview || item.prompt_preview, limit);
+}
+
+function runtimeRequestPreview(item: MonitorOverview["recent_runtime"][number], limit = 180) {
+  return compactMonitorText(item.arguments_preview || item.prompt_preview || item.preview, limit);
+}
+
+function runtimeResponsePreview(item: MonitorOverview["recent_runtime"][number], limit = 180) {
+  return compactMonitorText(item.response_preview || item.preview, limit);
+}
+
+function approvalQueuePreview(item: MonitorApprovalQueueEntry, limit = 180) {
+  return compactMonitorText(item.request_preview || item.resolution_preview || item.summary, limit);
+}
+
+function approvalAuditPreview(item: MonitorApprovalAuditEntry, limit = 180) {
+  return compactMonitorText(item.preview || item.command_preview || item.reason, limit);
+}
+
+function taskRunPrimarySummary(run: MonitorTaskRunSummary | TaskRunDetail | null | undefined) {
+  if (!run) return null;
+  const summary = "summary" in run && typeof run.summary === "string" && run.summary.trim() ? run.summary.trim() : "";
+  if (summary) return summary;
+  const userRequest = "user_request" in run && typeof run.user_request === "string" && run.user_request.trim() ? run.user_request.trim() : "";
+  return userRequest || null;
+}
+
+function taskRunContinuationSummary(run: MonitorTaskRunSummary | TaskRunDetail | null | undefined) {
+  if (!run) return null;
+  return (
+    run.continuation_state_summary ||
+    run.checkpoint_snapshot?.continuation_state_summary ||
+    continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)
+  );
+}
+
+function taskRunCursorSummary(run: MonitorTaskRunSummary | TaskRunDetail | null | undefined) {
+  if (!run) return null;
+  return run.continuation_cursor_summary || continuationCursorSummary(run.continuation_cursor ?? run.checkpoint_snapshot?.continuation_cursor);
+}
+
+function taskRunSchedulerSummary(run: MonitorTaskRunSummary | TaskRunDetail | null | undefined) {
+  if (!run) return null;
+  return run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime);
+}
+
+function latestAgentTurnPreview(detail: TaskRunDetail | null | undefined) {
+  const latestTurn = detail?.checkpoint_snapshot?.latest_agent_turn;
+  if (!latestTurn?.response_preview) return null;
+  return `${latestTurn.agent_name || "agent"} · ${latestTurn.response_preview}`;
+}
+
+function formatCompactionScopeUsage(
+  usage: Record<string, { candidate_count?: number | null; selected_count?: number | null; candidate_tokens?: number | null; selected_tokens?: number | null }> | null | undefined,
+) {
+  if (!usage) return "";
+  const parts = Object.entries(usage).map(([scope, report]) => {
+    if (!report || typeof report !== "object") return "";
+    return `${scope} ${report.selected_count ?? "?"}/${report.candidate_count ?? "?"} fragments, ${report.selected_tokens ?? "?"}/${report.candidate_tokens ?? "?"} tokens`;
+  }).filter(Boolean);
+  return parts.join(" / ");
+}
+
+function monitorCompactionPreview(item: MonitorCompactionItem) {
+  return item.detail_summary
+    || [
+      `Candidates ${formatNumber(item.candidate_count ?? 0)} -> selected ${formatNumber(item.selected_count ?? 0)}`,
+      item.max_fragments ? `max fragments ${item.max_fragments}` : "",
+      item.max_tokens ? `max tokens ${formatNumber(item.max_tokens)}` : "",
+      item.budget_summary || "",
+      item.scope_usage_summary || formatCompactionScopeUsage(item.scope_usage),
+    ].filter(Boolean).join(" | ");
+}
+
+function checkpointCompactionPreview(detail: TaskRunDetail | null | undefined) {
+  const latestCompaction = detail?.checkpoint_snapshot?.latest_compaction;
+  if (!latestCompaction?.event_id) return "No compaction event recorded.";
+  return latestCompaction.detail_summary
+    || latestCompaction.summary_text
+    || [
+      `Dropped ${latestCompaction.dropped_count ?? 0}`,
+      `Truncated ${latestCompaction.truncated_count ?? 0}`,
+      latestCompaction.max_tokens ? `Budget ${latestCompaction.max_tokens} tokens` : "",
+      latestCompaction.budget_summary || "",
+      latestCompaction.scope_usage_summary || "",
+      latestCompaction.max_tokens_by_scope
+        ? `Scope budgets ${Object.entries(latestCompaction.max_tokens_by_scope).map(([scope, value]) => `${scope} ${value}`).join(" / ")}`
+        : "",
+      formatCompactionScopeUsage(latestCompaction.scope_usage),
+    ].filter(Boolean).join(" | ");
+}
+
+function taskRunEventDetailPreview(event: TaskRunEvent) {
+  return event.detail_summary || event.continuation_state_summary;
+}
+
 function normalizeEntity(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
@@ -2480,7 +2559,7 @@ function buildFlowTopologyGraph({
     runtimeLastAt = Math.max(runtimeLastAt, lastAt);
     if (lastAt >= latestRuntimeAt) {
       latestRuntimeAt = lastAt;
-      latestRuntimePreview = compactMonitorText(item.preview || item.title, compact ? 88 : 160);
+      latestRuntimePreview = runtimePrimaryPreview(item, compact ? 88 : 160) || compactMonitorText(item.title, compact ? 88 : 160);
     }
 
     const agentName = normalizeEntity(item.agent || item.from_entity, "runtime");
@@ -3049,7 +3128,7 @@ function buildSecurityEvents(overview: MonitorOverview | null) {
         id: `sec-${item.id}`,
         severity: "high",
         title: item.title,
-        detail: item.preview || "Approval rejected before action execution.",
+        detail: runtimePrimaryPreview(item) || "Approval rejected before action execution.",
         createdAt: item.created_at,
       });
     } else if (type === "gate_blocked") {
@@ -3057,7 +3136,7 @@ function buildSecurityEvents(overview: MonitorOverview | null) {
         id: `sec-${item.id}`,
         severity: "medium",
         title: item.title,
-        detail: item.preview || "Action is waiting for operator approval.",
+        detail: runtimePrimaryPreview(item) || "Action is waiting for operator approval.",
         createdAt: item.created_at,
       });
     } else if (type === "tool_call" && item.success === false) {
@@ -3065,7 +3144,7 @@ function buildSecurityEvents(overview: MonitorOverview | null) {
         id: `sec-${item.id}`,
         severity: "critical",
         title: item.title,
-        detail: item.preview || "Tool execution failed.",
+        detail: runtimeResponsePreview(item) || "Tool execution failed.",
         createdAt: item.created_at,
       });
     } else if (type.includes("error")) {
@@ -3073,7 +3152,7 @@ function buildSecurityEvents(overview: MonitorOverview | null) {
         id: `sec-${item.id}`,
         severity: "high",
         title: item.title,
-        detail: item.preview || "Runtime error detected.",
+        detail: runtimeResponsePreview(item) || runtimePrimaryPreview(item) || "Runtime error detected.",
         createdAt: item.created_at,
       });
     }
@@ -3106,11 +3185,11 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
   if (item.type === "llm_call") {
     const llmTarget = "LLM";
     const outboundDetail =
-      compactMonitorText(item.prompt_preview) ||
+      runtimeRequestPreview(item) ||
       [item.model, typeof item.turn === "number" ? `turn ${item.turn}` : ""].filter(Boolean).join(" · ") ||
       "Prompt payload captured.";
     const inboundDetail =
-      compactMonitorText(item.response_preview || item.preview) ||
+      runtimeResponsePreview(item) ||
       "Model response captured.";
     return [
       {
@@ -3144,8 +3223,8 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
 
   if (item.type === "tool_call") {
     const toolEntity = normalizeEntity(item.to_entity || item.tool_name, "tool");
-    const outboundDetail = compactMonitorText(item.arguments_preview) || "Tool call issued.";
-    const inboundDetail = compactMonitorText(item.response_preview || item.preview) || "Tool output returned.";
+    const outboundDetail = runtimeRequestPreview(item) || "Tool call issued.";
+    const inboundDetail = runtimeResponsePreview(item) || "Tool output returned.";
     return [
       {
         ...common,
@@ -3178,7 +3257,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
 
   if (item.type === "agent_error") {
     const targetEntity = "User";
-    const failureDetail = compactMonitorText(item.response_preview || item.preview) || "Agent stream failed before a final reply was saved.";
+    const failureDetail = runtimeResponsePreview(item) || "Agent stream failed before a final reply was saved.";
     return [
       {
         ...common,
@@ -3207,7 +3286,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
       phase: "state",
       category: "runtime",
       label: toEntity ? buildCommunicationLabel(fromEntity, toEntity) : item.title,
-      detail: item.preview || `${item.chat_title} · ${item.stage || runtimeLabel(item.type)}`,
+      detail: runtimePrimaryPreview(item) || item.title,
       tone: defaultTone,
     },
   ];
@@ -4995,7 +5074,7 @@ export function MonitorTab() {
                   {item.duration_ms ? <span>{formatDuration(item.duration_ms)}</span> : null}
                   {item.tokens_in || item.tokens_out ? <span>{formatNumber(item.tokens_in)} / {formatNumber(item.tokens_out)} tok</span> : null}
                 </div>
-                {item.preview ? <div className="feed-preview">{item.preview}</div> : null}
+                {runtimePrimaryPreview(item) ? <div className="feed-preview">{runtimePrimaryPreview(item)}</div> : null}
               </div>
             </div>
           ))}
@@ -5342,7 +5421,7 @@ export function MonitorTab() {
                         <strong>{item.title}</strong>
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
-                      <div className="feed-preview">{item.preview || "Tool execution returned an error."}</div>
+                      <div className="feed-preview">{runtimeResponsePreview(item) || "Tool execution returned an error."}</div>
                     </div>
                   </div>
                 ))}
@@ -6129,11 +6208,7 @@ export function MonitorTab() {
                         {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
                         {item.task_run_title ? ` · ${item.task_run_title}` : ""}
                       </div>
-                      <div className="feed-preview">
-                        Candidates {formatNumber(item.candidate_count)} {"->"} selected {formatNumber(item.selected_count)}
-                        {item.max_fragments ? ` · max fragments ${item.max_fragments}` : ""}
-                        {item.max_tokens ? ` · max tokens ${formatNumber(item.max_tokens)}` : ""}
-                      </div>
+                      <div className="feed-preview">{monitorCompactionPreview(item)}</div>
                     </div>
                   </div>
                 ))}
@@ -6288,7 +6363,7 @@ export function MonitorTab() {
                   </div>
                   <div className="simple-row">
                     <strong>Summary</strong>
-                    <div className="small-note">{selectedTaskRunSummary.summary || "No summary recorded."}</div>
+                    <div className="small-note">{taskRunPrimarySummary(selectedTaskRunSummary) || "No summary recorded."}</div>
                   </div>
                 </div>
 
@@ -6582,19 +6657,19 @@ export function MonitorTab() {
                       <span>{formatTimeAgo(run.created_at)}</span>
                     </div>
                     <div className="feed-preview">
-                      {run.summary || run.user_request || "No summary recorded for this run."}
+                      {taskRunPrimarySummary(run) || "No summary recorded for this run."}
                     </div>
                     <div className="run-history-item__foot">
                       <span>{run.event_count} events</span>
                       {run.latest_event_type ? <span>{titleCaseLabel(run.latest_event_type)}</span> : null}
-                      {run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state) ? (
-                        <span>{run.continuation_state_summary || run.checkpoint_snapshot?.continuation_state_summary || continuationStateSummary(run.continuation_state ?? run.checkpoint_snapshot?.continuation_state)}</span>
+                      {taskRunContinuationSummary(run) ? (
+                        <span>{taskRunContinuationSummary(run)}</span>
                       ) : null}
-                      {run.continuation_cursor_summary || continuationCursorSummary(run.continuation_cursor ?? run.checkpoint_snapshot?.continuation_cursor) ? (
-                        <span>{run.continuation_cursor_summary || continuationCursorSummary(run.continuation_cursor ?? run.checkpoint_snapshot?.continuation_cursor)}</span>
+                      {taskRunCursorSummary(run) ? (
+                        <span>{taskRunCursorSummary(run)}</span>
                       ) : null}
-                      {run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime) ? (
-                        <span>{run.scheduler_runtime_summary || schedulerRuntimeSummary(run.latest_scheduler_runtime ?? run.checkpoint_snapshot?.latest_scheduler_runtime)}</span>
+                      {taskRunSchedulerSummary(run) ? (
+                        <span>{taskRunSchedulerSummary(run)}</span>
                       ) : null}
                       {run.latest_continuation_event_summary ? <span>{run.latest_continuation_event_summary}</span> : null}
                       {run.client_turn_id ? <span>{run.client_turn_id}</span> : null}
@@ -6679,7 +6754,7 @@ export function MonitorTab() {
                   </div>
                   <div className="simple-row">
                     <strong>Summary</strong>
-                    <div className="small-note">{selectedTaskRunSummary.summary || selectedTaskRunSummary.user_request || "No summary recorded."}</div>
+                    <div className="small-note">{taskRunPrimarySummary(selectedTaskRunSummary) || "No summary recorded."}</div>
                   </div>
                   <div className="simple-row">
                     <strong>Latest Continuation Event</strong>
@@ -6889,18 +6964,12 @@ export function MonitorTab() {
                       <div className="simple-row">
                         <strong>Latest Agent Turn</strong>
                         <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn?.response_preview
-                            ? `${selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn.agent_name || "agent"} · ${selectedTaskRunDetail.checkpoint_snapshot.latest_agent_turn.response_preview}`
-                            : "No completed agent turn captured yet."}
+                          {latestAgentTurnPreview(selectedTaskRunDetail) || "No completed agent turn captured yet."}
                         </div>
                       </div>
                       <div className="simple-row">
                         <strong>Latest Compaction</strong>
-                        <div className="small-note">
-                          {selectedTaskRunDetail.checkpoint_snapshot.latest_compaction?.event_id
-                            ? `Dropped ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.dropped_count ?? 0} · Truncated ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.truncated_count ?? 0} · Budget ${selectedTaskRunDetail.checkpoint_snapshot.latest_compaction.max_tokens ?? "?"} tokens`
-                            : "No compaction event recorded."}
-                        </div>
+                        <div className="small-note">{checkpointCompactionPreview(selectedTaskRunDetail)}</div>
                       </div>
                       <div className="simple-row">
                         <strong>Scheduler Runtime</strong>
@@ -7011,9 +7080,9 @@ export function MonitorTab() {
                           {event.agent_name ? <span>{event.agent_name}</span> : null}
                           {event.message_id ? <span>message #{event.message_id}</span> : null}
                         </div>
-                        {event.continuation_state_summary || taskRunEventContinuationSummary(event.payload) ? (
+                        {taskRunEventDetailPreview(event) ? (
                           <div className="small-note" style={{ marginTop: 8 }}>
-                            {event.continuation_state_summary || taskRunEventContinuationSummary(event.payload)}
+                            {taskRunEventDetailPreview(event)}
                           </div>
                         ) : null}
                         {event.payload && Object.keys(event.payload).length > 0 ? (
@@ -7105,7 +7174,7 @@ export function MonitorTab() {
                     {item.task_run_title ? ` · ${item.task_run_title}` : ""}
                   </div>
                   <div className="muted-block" style={{ marginTop: 8 }}>
-                    {item.request_preview || item.summary || "Awaiting operator decision."}
+                    {approvalQueuePreview(item) || "Awaiting operator decision."}
                   </div>
                   <div className="approval-card__meta" style={{ marginTop: 10 }}>
                     <span className="tag">{item.queue_kind}</span>
@@ -7185,7 +7254,7 @@ export function MonitorTab() {
                       {item.scope ? <span>{item.scope}</span> : null}
                     </div>
                     <div className="feed-preview">
-                      {item.command_preview || item.preview || item.reason || "Approval event recorded."}
+                      {approvalAuditPreview(item) || "Approval event recorded."}
                     </div>
                     {item.approval_fingerprint ? (
                       <div className="muted-block" style={{ marginTop: 8 }}>

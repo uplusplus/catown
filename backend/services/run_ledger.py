@@ -17,6 +17,7 @@ from services.approval_replay import (
     build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
 )
+from services.context_compaction_summary import build_context_compaction_projection
 from services.orchestration_inbox import (
     summarize_orchestration_handoff_inbox,
     summarize_orchestration_handoff_projection,
@@ -357,6 +358,42 @@ def serialize_monitor_task_run_summary(
 def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
     raw_payload = _load_payload(event.payload_json)
     continuation_state = _extract_event_continuation_state(raw_payload)
+    diagnostics = (
+        raw_payload.get("selector_diagnostics")
+        if isinstance(raw_payload.get("selector_diagnostics"), dict)
+        else {}
+    )
+    compaction_projection = (
+        build_context_compaction_projection(diagnostics, fallback_summary=event.summary)
+        if event.event_type == "context_compaction"
+        else {}
+    )
+    runtime_snapshot = raw_payload.get("runtime") if isinstance(raw_payload.get("runtime"), dict) else None
+    handoff_projection = (
+        {
+            "from_agent": raw_payload.get("from_agent"),
+            "to_agent": raw_payload.get("to_agent"),
+            "from_step_id": raw_payload.get("from_step_id"),
+            "to_step_id": raw_payload.get("to_step_id"),
+            "attached_to_step_id": raw_payload.get("attached_to_step_id"),
+            "dispatch_kind": raw_payload.get("dispatch_kind"),
+            "content_preview": raw_payload.get("content_preview"),
+        }
+        if event.event_type == "handoff_created"
+        else {}
+    )
+    scheduler_plan_projection = (
+        {
+            "schedule_mode": raw_payload.get("mode"),
+            "schedule_step_count": raw_payload.get("step_count"),
+            "schedule_blocking_step_count": raw_payload.get("blocking_step_count"),
+            "schedule_sidecar_step_count": raw_payload.get("sidecar_step_count"),
+            "schedule_sidecar_agent_types": raw_payload.get("sidecar_agent_types"),
+            "schedule_steps": raw_payload.get("steps"),
+        }
+        if event.event_type == "scheduler_plan_created"
+        else {}
+    )
     return {
         "id": event.id,
         "event_index": event.event_index,
@@ -364,6 +401,10 @@ def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
         "agent_name": event.agent_name,
         "message_id": event.message_id,
         "summary": event.summary,
+        **compaction_projection,
+        **handoff_projection,
+        **scheduler_plan_projection,
+        "runtime_snapshot": runtime_snapshot,
         "payload": raw_payload,
         "continuation_state": continuation_state,
         "continuation_state_summary": summarize_continuation_state(continuation_state),
@@ -433,6 +474,10 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         if isinstance(latest_compaction_payload.get("selector_diagnostics"), dict)
         else {}
     )
+    latest_compaction_projection = build_context_compaction_projection(
+        latest_compaction_diagnostics,
+        fallback_summary=latest_compaction.summary if latest_compaction is not None else None,
+    )
     latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
     latest_subagent_event = next(
         (
@@ -491,21 +536,7 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         },
         "latest_compaction": {
             "event_id": latest_compaction.id if latest_compaction is not None else None,
-            "dropped_count": (
-                latest_compaction_diagnostics.get("summary", {}).get("dropped_count")
-                if isinstance(latest_compaction_diagnostics.get("summary"), dict)
-                else None
-            ),
-            "truncated_count": (
-                latest_compaction_diagnostics.get("summary", {}).get("truncated_count")
-                if isinstance(latest_compaction_diagnostics.get("summary"), dict)
-                else None
-            ),
-            "max_tokens": (
-                latest_compaction_diagnostics.get("selector", {}).get("max_tokens")
-                if isinstance(latest_compaction_diagnostics.get("selector"), dict)
-                else None
-            ),
+            **latest_compaction_projection,
             "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,

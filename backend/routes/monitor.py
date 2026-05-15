@@ -335,6 +335,9 @@ def _build_runtime_title(card: dict[str, Any]) -> str:
     if card_type == "tool_call":
         tool_name = str(card.get("tool") or "tool")
         return f"{agent} used {tool_name}"
+    if card_type == "consult_call":
+        target_agent = str(card.get("target_agent") or "agent")
+        return f"{agent} consulted {target_agent}"
     if card_type == "agent_error":
         return f"{agent} stream failed"
     if card_type == "stage_started":
@@ -362,7 +365,9 @@ def _build_runtime_title(card: dict[str, Any]) -> str:
 
 def _build_runtime_preview(card: dict[str, Any]) -> str:
     candidates = [
+        card.get("summary_text"),
         card.get("error"),
+        card.get("response_preview"),
         card.get("response"),
         card.get("result"),
         card.get("content_preview"),
@@ -466,6 +471,8 @@ def _serialize_runtime_card_detail(message: Message, chatroom: Chatroom, project
         "chat_title": chatroom.title,
         "project_id": project.id if project else None,
         "project_name": project.name if project else None,
+        "title": _build_runtime_title(card),
+        "preview": _build_runtime_preview(card),
         "card": card,
     }
 
@@ -558,7 +565,12 @@ def _serialize_runtime_step(
         "arguments": card.get("arguments") if isinstance(card.get("arguments"), str) else None,
         "result": card.get("result") if isinstance(card.get("result"), str) else None,
         "prompt_preview": _extract_prompt_preview(card),
-        "response_preview": _compact_preview(card.get("response") or card.get("result")),
+        "response_preview": _compact_preview(
+            card.get("summary_text")
+            or card.get("response_preview")
+            or card.get("response")
+            or card.get("result")
+        ),
         "planned_tools": planned_tools,
         "payload": card,
     }

@@ -48,6 +48,8 @@ class ContextSelector:
     allowed_scopes: frozenset[str] | None = None
     max_fragments: int | None = None
     max_tokens: int | None = None
+    max_tokens_by_role: Mapping[str, int] | None = None
+    max_tokens_by_scope: Mapping[str, int] | None = None
     truncate_to_budget: bool = True
     min_tokens_for_truncation: int = 48
 
@@ -56,10 +58,28 @@ class ContextSelector:
             object.__setattr__(self, "allowed_visibilities", frozenset(self.allowed_visibilities))
         if self.allowed_scopes is not None and not isinstance(self.allowed_scopes, frozenset):
             object.__setattr__(self, "allowed_scopes", frozenset(self.allowed_scopes))
+        if self.max_tokens_by_role is not None and not isinstance(self.max_tokens_by_role, dict):
+            object.__setattr__(self, "max_tokens_by_role", dict(self.max_tokens_by_role))
+        if self.max_tokens_by_scope is not None and not isinstance(self.max_tokens_by_scope, dict):
+            object.__setattr__(self, "max_tokens_by_scope", dict(self.max_tokens_by_scope))
         if self.max_fragments is not None and self.max_fragments <= 0:
             object.__setattr__(self, "max_fragments", None)
         if self.max_tokens is not None and self.max_tokens <= 0:
             object.__setattr__(self, "max_tokens", None)
+        if self.max_tokens_by_role is not None:
+            normalized_role_limits = {
+                str(role): int(limit)
+                for role, limit in self.max_tokens_by_role.items()
+                if limit is not None and int(limit) > 0
+            }
+            object.__setattr__(self, "max_tokens_by_role", normalized_role_limits or None)
+        if self.max_tokens_by_scope is not None:
+            normalized_scope_limits = {
+                str(scope): int(limit)
+                for scope, limit in self.max_tokens_by_scope.items()
+                if limit is not None and int(limit) > 0
+            }
+            object.__setattr__(self, "max_tokens_by_scope", normalized_scope_limits or None)
         if self.min_tokens_for_truncation < 1:
             object.__setattr__(self, "min_tokens_for_truncation", 1)
 
@@ -187,14 +207,23 @@ class ContextSelector:
             0: SelectorRoleReport(role="developer"),
             1: SelectorRoleReport(role="user"),
         }
+        role_token_usage = {
+            0: 0,
+            1: 0,
+        }
+        scope_token_usage: dict[str, int] = {}
+        scope_reports: dict[str, SelectorScopeReport] = {}
         for role_order, fragment in ranked:
             role_reports.setdefault(role_order, SelectorRoleReport(role=f"role_{role_order}")).record_candidate(fragment)
+            scope_reports.setdefault(fragment.scope, SelectorScopeReport(scope=fragment.scope)).record_candidate(fragment)
         if self.max_tokens is None and self.max_fragments is None:
             for role_order, fragment in ranked:
                 role_reports[role_order].record_selected(fragment)
+                scope_reports[fragment.scope].record_selected(fragment)
             return ranked, _selector_diagnostics_payload(
                 selector=self,
                 role_reports=role_reports,
+                scope_reports=scope_reports,
                 compaction_applied=False,
             )
 
@@ -206,18 +235,51 @@ class ContextSelector:
                 continue
 
             fragment_tokens = estimate_text_tokens(fragment.content)
-            if self.max_tokens is None or used_tokens + fragment_tokens <= self.max_tokens:
+            role_name = role_reports[role_order].role
+            scope_name = fragment.scope
+            role_max_tokens = (
+                self.max_tokens_by_role.get(role_name)
+                if self.max_tokens_by_role is not None
+                else None
+            )
+            scope_max_tokens = (
+                self.max_tokens_by_scope.get(scope_name)
+                if self.max_tokens_by_scope is not None
+                else None
+            )
+            scope_used_tokens = scope_token_usage.get(scope_name, 0)
+            within_total_budget = self.max_tokens is None or used_tokens + fragment_tokens <= self.max_tokens
+            within_role_budget = role_max_tokens is None or role_token_usage[role_order] + fragment_tokens <= role_max_tokens
+            within_scope_budget = scope_max_tokens is None or scope_used_tokens + fragment_tokens <= scope_max_tokens
+            if within_total_budget and within_role_budget and within_scope_budget:
                 selected.append((role_order, fragment))
                 used_tokens += fragment_tokens
+                role_token_usage[role_order] += fragment_tokens
+                scope_token_usage[scope_name] = scope_used_tokens + fragment_tokens
                 role_reports[role_order].record_selected(fragment)
+                scope_reports[scope_name].record_selected(fragment)
                 continue
 
-            if not self.truncate_to_budget or self.max_tokens is None:
+            if not self.truncate_to_budget:
                 role_reports[role_order].record_dropped(fragment)
                 continue
 
-            remaining_tokens = self.max_tokens - used_tokens
-            if remaining_tokens < self.min_tokens_for_truncation:
+            remaining_total_tokens = self.max_tokens - used_tokens if self.max_tokens is not None else None
+            remaining_role_tokens = (
+                role_max_tokens - role_token_usage[role_order]
+                if role_max_tokens is not None
+                else None
+            )
+            remaining_scope_tokens = (
+                scope_max_tokens - scope_used_tokens
+                if scope_max_tokens is not None
+                else None
+            )
+            remaining_tokens_candidates = [
+                limit for limit in (remaining_total_tokens, remaining_role_tokens, remaining_scope_tokens) if limit is not None
+            ]
+            remaining_tokens = min(remaining_tokens_candidates) if remaining_tokens_candidates else None
+            if remaining_tokens is None or remaining_tokens < self.min_tokens_for_truncation:
                 role_reports[role_order].record_dropped(fragment)
                 continue
 
@@ -231,13 +293,18 @@ class ContextSelector:
 
             truncated_fragment = replace(fragment, content=truncated_content)
             selected.append((role_order, truncated_fragment))
-            used_tokens += estimate_text_tokens(truncated_content)
+            truncated_tokens = estimate_text_tokens(truncated_content)
+            used_tokens += truncated_tokens
+            role_token_usage[role_order] += truncated_tokens
+            scope_token_usage[scope_name] = scope_used_tokens + truncated_tokens
             role_reports[role_order].record_selected(truncated_fragment)
+            scope_reports[scope_name].record_selected(truncated_fragment)
             role_reports[role_order].record_truncated(fragment, truncated_fragment)
 
         return selected, _selector_diagnostics_payload(
             selector=self,
             role_reports=role_reports,
+            scope_reports=scope_reports,
             compaction_applied=any(report.compaction_applied for report in role_reports.values()),
         )
 
@@ -760,19 +827,43 @@ class SelectorRoleReport:
             self.truncated_sources.append(original.source)
 
 
+@dataclass
+class SelectorScopeReport:
+    scope: str
+    candidate_count: int = 0
+    selected_count: int = 0
+    candidate_tokens: int = 0
+    selected_tokens: int = 0
+
+    def record_candidate(self, fragment: ContextFragment) -> None:
+        self.candidate_count += 1
+        self.candidate_tokens += estimate_text_tokens(fragment.content)
+
+    def record_selected(self, fragment: ContextFragment) -> None:
+        self.selected_count += 1
+        self.selected_tokens += estimate_text_tokens(fragment.content)
+
+
 def _selector_diagnostics_payload(
     *,
     selector: ContextSelector,
     role_reports: Mapping[int, SelectorRoleReport],
+    scope_reports: Mapping[str, SelectorScopeReport],
     compaction_applied: bool,
 ) -> dict[str, Any]:
     developer_report = role_reports.get(0, SelectorRoleReport(role="developer"))
     user_report = role_reports.get(1, SelectorRoleReport(role="user"))
+    ordered_scope_reports = {
+        scope: asdict(report)
+        for scope, report in sorted(scope_reports.items(), key=lambda item: (_scope_rank(item[0]), item[0]))
+    }
     return {
         "compacted": compaction_applied,
         "selector": {
             "max_fragments": selector.max_fragments,
             "max_tokens": selector.max_tokens,
+            "max_tokens_by_role": dict(selector.max_tokens_by_role or {}),
+            "max_tokens_by_scope": dict(selector.max_tokens_by_scope or {}),
             "truncate_to_budget": selector.truncate_to_budget,
         },
         "developer": asdict(developer_report),
@@ -784,6 +875,7 @@ def _selector_diagnostics_payload(
             "truncated_count": developer_report.truncated_count + user_report.truncated_count,
             "candidate_tokens": developer_report.candidate_tokens + user_report.candidate_tokens,
             "selected_tokens": developer_report.selected_tokens + user_report.selected_tokens,
+            "by_scope": ordered_scope_reports,
         },
     }
 

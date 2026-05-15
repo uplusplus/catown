@@ -39,18 +39,54 @@ _SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
         "allowed_scopes": None,
         "max_fragments": 12,
         "max_tokens_cap": 3200,
+        "max_tokens_by_role": {
+            "developer": 1200,
+            "user": 2000,
+        },
+        "max_tokens_by_scope": {
+            "session": 240,
+            "run": 1800,
+            "stage": 560,
+            "turn": 500,
+            "shared_fact": 300,
+            "agent_private": 220,
+        },
     },
     "fallback_chat": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
         "max_fragments": 10,
         "max_tokens_cap": 2600,
+        "max_tokens_by_role": {
+            "developer": 900,
+            "user": 1700,
+        },
+        "max_tokens_by_scope": {
+            "session": 180,
+            "run": 1400,
+            "stage": 420,
+            "turn": 420,
+            "shared_fact": 220,
+            "agent_private": 160,
+        },
     },
     "consult_agent": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
         "max_fragments": 11,
         "max_tokens_cap": 2200,
+        "max_tokens_by_role": {
+            "developer": 1000,
+            "user": 1200,
+        },
+        "max_tokens_by_scope": {
+            "session": 180,
+            "run": 1200,
+            "stage": 360,
+            "turn": 380,
+            "shared_fact": 240,
+            "agent_private": 160,
+        },
     },
 }
 

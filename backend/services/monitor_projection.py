@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun, TaskRunEvent
 from services.approval_queue import serialize_approval_queue_item
+from services.context_compaction_summary import build_context_compaction_projection
 from services.policy_decision_contracts import summarize_policy_decision
 
 
@@ -295,8 +296,7 @@ def serialize_monitor_compaction_item(
 ) -> dict[str, Any]:
     payload = parse_metadata(event.payload_json)
     diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
-    summary = diagnostics.get("summary") if isinstance(diagnostics.get("summary"), dict) else {}
-    selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
+    projection = build_context_compaction_projection(diagnostics, fallback_summary=event.summary)
     return {
         "id": event.id,
         "task_run_id": event.task_run_id,
@@ -311,15 +311,7 @@ def serialize_monitor_compaction_item(
         "event_type": event.event_type,
         "summary": event.summary,
         "created_at": event.created_at.isoformat() if event.created_at else None,
-        "compacted": bool(payload.get("compacted") or diagnostics.get("compacted")),
-        "dropped_count": int(summary.get("dropped_count") or 0),
-        "truncated_count": int(summary.get("truncated_count") or 0),
-        "candidate_count": int(summary.get("candidate_count") or 0),
-        "selected_count": int(summary.get("selected_count") or 0),
-        "candidate_tokens": int(summary.get("candidate_tokens") or 0),
-        "selected_tokens": int(summary.get("selected_tokens") or 0),
-        "max_fragments": selector.get("max_fragments"),
-        "max_tokens": selector.get("max_tokens"),
+        **projection,
         "developer": diagnostics.get("developer") if isinstance(diagnostics.get("developer"), dict) else {},
         "user": diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {},
         "payload": payload,

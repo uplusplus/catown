@@ -208,6 +208,90 @@ Observed failures are concentrated in pre-existing/non-context-builder areas:
 
 No failures were observed in the new context builder unit tests or Python syntax checks.
 
+## Next Improvement Plan
+
+### Phase 1: Canonical Runtime Projection
+
+Goal:
+
+- Establish one backend-owned runtime truth source for chat, monitor, process tree, and task detail views.
+- Finish removing frontend-side runtime aggregation where backend summaries already exist.
+
+Planned work:
+
+- Introduce a canonical runtime projection shape for:
+  - task run state
+  - consult/subagent handles
+  - continuation state
+  - scheduler runtime
+  - approval/tool wait state
+- Derive chat `runtime_summary`, monitor runtime cards, process nodes, and task detail panels from the same backend projection.
+- Finish replacing remaining frontend fallback chains such as:
+  - `summary || user_request`
+  - ad-hoc latest agent turn preview rendering
+  - duplicate consult/subagent detail composition
+- Keep frontend focused on projection/rendering, not runtime interpretation.
+
+Expected outcome:
+
+- Chat + monitor share the same runtime semantics.
+- Frontend becomes a thin renderer over backend summaries and handles.
+
+### Phase 2: Explicit Attention Management
+
+Goal:
+
+- Evolve context orchestration from layered assembly into explicit attention budgeting and fragment selection.
+
+Planned work:
+
+- Add per-layer token budgets for:
+  - system
+  - developer
+  - user runtime
+  - history
+- Extend fragment selection with:
+  - freshness
+  - authority
+  - pinned / must-keep semantics
+  - shared vs private visibility constraints
+- Expand diagnostics to explain:
+  - why a fragment was selected
+  - why it was dropped or truncated
+  - which layer budget it consumed
+  - final message composition by role/source
+
+Expected outcome:
+
+- Catown behaves more like a context scheduler than a prompt concatenator.
+- Prompt construction becomes observable and tunable.
+
+### Phase 3: Multi-Agent Runtime Protocol
+
+Goal:
+
+- Make consult/subagent collaboration a first-class runtime protocol rather than a collection of features.
+
+Planned work:
+
+- Unify handle/state models across:
+  - consult
+  - subagent
+  - tool wait
+  - approval wait
+  - process/runtime control surfaces
+- Formalize context inheritance and isolation rules:
+  - raw shared context
+  - summarized shared context
+  - agent-private context
+- Prefer structured turn-state transfer over prompt-text transfer between agents.
+- Expand monitor/chat projections to show collaboration chains, blockers, dependencies, and visibility boundaries.
+
+Expected outcome:
+
+- Catown moves closer to Codex-style runtime orchestration.
+- Multi-agent coordination becomes structured, inspectable, and easier to evolve.
+
 ---
 
 ## Merged From `changed.md`
