@@ -229,7 +229,7 @@ async def handle_stream_orchestration_turn_complete(
         agent_name=agent_name,
         message_id=saved.id,
         response_content=content,
-        summary=f"{agent_name} completed the orchestrated streaming turn.",
+        summary="",
     )
     if schedule_memory_extraction is not None and len(content) > 30:
         schedule_memory_extraction(agent, user_message, content)

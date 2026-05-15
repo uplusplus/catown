@@ -2827,9 +2827,17 @@ a {
 }
 
 .message-streaming-status__copy small {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
+  white-space: normal;
+}
+
+.message-streaming-status__copy small span {
+  overflow-wrap: anywhere;
 }
 
 @keyframes message-streaming-status-pulse {

@@ -127,6 +127,7 @@ function sanitizeOverlayMessage(message: MessageItem): MessageItem {
     agent_name: message.agent_name,
     client_turn_id: message.client_turn_id,
     isStreaming: message.isStreaming,
+    statusDetail: trimOverlayText(message.statusDetail, OVERLAY_MAX_STEP_DETAIL_CHARS),
     optimisticKind: message.optimisticKind,
     localOnly: message.localOnly,
     streamSteps: pickOverlaySteps(message),
@@ -1119,38 +1120,31 @@ function describeRunningTaskRunFallback(
 ) {
   const projectedLatestTurn = activity?.latest_agent_turn_preview?.trim();
   if (projectedLatestTurn) {
-    return oneLinePreview(projectedLatestTurn, `${actorName || "Agent"} is working on your request.`, 132);
+    return oneLinePreview(projectedLatestTurn, "", 132);
   }
   const projectedContinuation = activity?.continuation_state_summary?.trim();
   if (projectedContinuation) {
-    return oneLinePreview(projectedContinuation, `${actorName || "Agent"} is working on your request.`, 132);
+    return oneLinePreview(projectedContinuation, "", 132);
   }
   const projectedSummary = activity?.summary?.trim();
   if (projectedSummary) {
-    return oneLinePreview(projectedSummary, `${actorName || "Agent"} is working on your request.`, 132);
+    return oneLinePreview(projectedSummary, "", 132);
   }
   const eventType = (options?.latestEventType || detail?.checkpoint_snapshot?.latest_event_type || taskRun.latest_continuation_event_type || "")
     .toLowerCase();
   const toolName = readTaskRunContinuationToolName(taskRun, detail, options?.latestToolName);
-  const subject = actorName || "Agent";
 
   if (eventType === "tool_round_recorded" || eventType === "approval_queue_item_followup_triggered") {
-    return toolName
-      ? `${subject} is continuing after ${toolName}.`
-      : `${subject} is continuing after the latest tool result.`;
+    return [`Event: ${eventType}`, toolName ? `Tool: ${toolName}` : ""].filter(Boolean).join("\n");
   }
   if (eventType === "tool_call_started") {
-    return toolName
-      ? `${subject} is running ${toolName}.`
-      : `${subject} is running a tool.`;
+    return [`Event: ${eventType}`, toolName ? `Tool: ${toolName}` : ""].filter(Boolean).join("\n");
   }
   if (eventType.includes("agent_turn")) {
-    return `${subject} is waiting for the next model response.`;
+    return `Event: ${eventType}`;
   }
-  if (toolName) return `${subject} is continuing with ${toolName}.`;
-  return taskRun.user_request
-    ? `Working on: ${oneLinePreview(taskRun.user_request, "your request", 132)}`
-    : `${subject} is working on your request.`;
+  if (toolName) return `Tool: ${toolName}`;
+  return "";
 }
 
 function compareTaskRunsForSidebarSelection(left: TaskRunSummary, right: TaskRunSummary) {
@@ -1338,53 +1332,53 @@ function summarizeTaskRunInlineStatus(
     if (activity?.latest_agent_turn_preview?.trim()) {
       return {
         tone: "info" as const,
-        label: "Running",
-        detail: oneLinePreview(activity.latest_agent_turn_preview, "Continuing the task.", 132),
+        label: "LLM",
+        detail: oneLinePreview(activity.latest_agent_turn_preview, "", 132),
       };
     }
     if (activity?.summary?.trim()) {
       return {
         tone: "info" as const,
-        label: "Running",
-        detail: oneLinePreview(activity.summary, "Task is running.", 132),
+        label: "Runtime",
+        detail: oneLinePreview(activity.summary, "", 132),
       };
     }
     if (latestEventTypeValue === "approval_queue_item_resolved") {
       if (latestResolutionAction === "tool_replayed") {
         return {
           tone: "info" as const,
-          label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
+          label: latestToolName ? `Tool: ${latestToolName}` : "Tool",
           detail:
             latestReplayStatus === "failed"
-              ? "Tool replay failed. Finalizing task state."
+              ? "Status: failed"
               : latestResumeSupported
-                ? "Tool replay completed. Continuing the agent turn."
-                : "Tool replay completed. Updating task state.",
+                ? "Status: tool_replayed"
+                : "Status: tool_replayed",
         };
       }
       return {
         tone: "info" as const,
-        label: latestToolName ? `Running · ${latestToolName}` : "Running",
+        label: latestToolName ? `Tool: ${latestToolName}` : "Runtime",
         detail: latestResumeSupported
-          ? "Continuing execution."
-          : "Updating task state.",
+          ? "Status: resolved"
+          : "Status: resolved",
       };
     }
     if (latestStartedToolName) {
       const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
       return {
         tone: "info" as const,
-        label: `Running · ${latestStartedToolName}`,
+        label: `Tool: ${latestStartedToolName}`,
         detail: latestStartedArguments
-          ? oneLinePreview(latestStartedArguments, "Tool has started executing.", 132)
-          : "Tool has started executing.",
+          ? oneLinePreview(latestStartedArguments, "", 132)
+          : "Status: started",
       };
     }
     if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
       return {
         tone: "info" as const,
-        label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
-        detail: "Handing the latest tool result back to the agent.",
+        label: latestToolName ? `Tool: ${latestToolName}` : "Tool",
+        detail: "Event: approval_queue_item_followup_triggered",
       };
     }
     if (latestToolResult) {
@@ -1393,56 +1387,51 @@ function summarizeTaskRunInlineStatus(
       if (latestResultStatus === "succeeded" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running · ${latestToolName}`,
-          detail: oneLinePreview(latestResultText, "Tool finished, continuing the task.", 132),
+          label: `Tool: ${latestToolName}`,
+          detail: oneLinePreview(latestResultText, "Status: succeeded", 132),
         };
       }
       if (latestResultStatus === "failed" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running · ${latestToolName}`,
-          detail: oneLinePreview(latestResultText, "Tool returned an error; task is still proceeding.", 132),
+          label: `Tool: ${latestToolName}`,
+          detail: oneLinePreview(latestResultText, "Status: failed", 132),
         };
       }
     }
     if ((latestEventType || "").toLowerCase() === "agent_turn_started") {
       return {
         tone: "info" as const,
-        label: "Running LLM query",
-        detail: chatProjection.userRequest
-          ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
-          : "Preparing the next model response.",
+        label: "LLM",
+        detail: "Event: agent_turn_started",
       };
     }
     if (chatProjection.agentResponse) {
       return {
         tone: "info" as const,
-        label: `${chatProjection.agentResponse.agent || actorName} responded`,
-        detail: oneLinePreview(chatProjection.agentResponse.response, "Continuing from the latest response.", 132),
+        label: `Agent: ${chatProjection.agentResponse.agent || actorName}`,
+        detail: oneLinePreview(chatProjection.agentResponse.response, "", 132),
       };
     }
     if (chatProjection.subtaskDispatch) {
       return {
         tone: "info" as const,
         label: chatProjection.subtaskDispatch.agent
-          ? `Subtask · ${chatProjection.subtaskDispatch.agent}`
+          ? `Subtask: ${chatProjection.subtaskDispatch.agent}`
           : "Subtask",
         detail: chatProjection.subtaskDispatch.summary ||
           (chatProjection.subtaskDispatch.agent
-            ? `${actorName} asked ${chatProjection.subtaskDispatch.agent} to help.`
-            : `${actorName} delegated part of the work.`),
+            ? `Agent: ${chatProjection.subtaskDispatch.agent}`
+            : "Event: subtask_dispatch"),
       };
     }
     return {
       tone: "info" as const,
-      label: latestToolName ? `Running · ${latestToolName}` : "Running",
-          detail:
-            chatProjection.userRequest
-              ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
-              : describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
-                latestEventType: latestEventType || latestEvent?.event_type || null,
-                latestToolName,
-              }),
+      label: latestToolName ? `Tool: ${latestToolName}` : "Runtime",
+      detail: describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
+        latestEventType: latestEventType || latestEvent?.event_type || null,
+        latestToolName,
+      }),
       };
   }
   if (normalizedStatus === "completed") {
@@ -1645,7 +1634,7 @@ function buildTaskRunCardSummary(
     const pendingTimeoutItem =
       pendingApprovalCount > 0 ? pendingApprovalItems.find((item) => isTimeoutWaitQueueItem(item)) ?? null : null;
     if (pendingApprovalCount > 0 && blockedToolName && !pendingTimeoutItem) {
-      return `Waiting on approval for ${blockedToolName}.`;
+      return `Approval: ${blockedToolName}\nStatus: pending`;
     }
     if (pendingTimeoutItem) {
       const pendingTimeoutCommand =
@@ -1660,70 +1649,52 @@ function buildTaskRunCardSummary(
             })()
           : null;
       return pendingTimeoutCommand
-        ? `Still running ${oneLinePreview(pendingTimeoutCommand, "command", 120)}.`
-        : `Still running ${blockedToolName || "command"}.`;
+        ? `Tool: ${blockedToolName || "run_shell"}\nCommand: ${oneLinePreview(pendingTimeoutCommand, "command", 120)}\nStatus: running`
+        : `Tool: ${blockedToolName || "command"}\nStatus: running`;
     }
     if (latestEventTypeValue === "approval_queue_item_resolved") {
       if (latestResolutionAction === "tool_replayed") {
         if (latestReplayStatus === "failed") {
-          return latestToolName
-            ? `${latestToolName} replay failed. Finalizing task state.`
-            : "Tool replay failed. Finalizing task state.";
+          return [`Event: approval_queue_item_resolved`, latestToolName ? `Tool: ${latestToolName}` : "", "Status: failed"].filter(Boolean).join("\n");
         }
-        return latestToolName
-          ? latestResumeSupported
-            ? `Continuing the agent turn with ${latestToolName}.`
-            : `${latestToolName} replay completed. Updating task state.`
-          : latestResumeSupported
-            ? "Continuing the agent turn."
-            : "Tool replay completed. Updating task state.";
+        return [`Event: approval_queue_item_resolved`, latestToolName ? `Tool: ${latestToolName}` : "", "Status: tool_replayed"].filter(Boolean).join("\n");
       }
-      return latestToolName
-        ? latestResumeSupported
-          ? `Running ${latestToolName}.`
-          : `Updating task state for ${latestToolName}.`
-        : latestResumeSupported
-          ? "Running."
-          : "Updating task state.";
+      return [`Event: approval_queue_item_resolved`, latestToolName ? `Tool: ${latestToolName}` : "", "Status: resolved"].filter(Boolean).join("\n");
     }
     if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
-      return latestToolName
-        ? `Continuing the agent turn with ${latestToolName}.`
-        : "Continuing the agent turn.";
+      return [`Event: approval_queue_item_followup_triggered`, latestToolName ? `Tool: ${latestToolName}` : ""].filter(Boolean).join("\n");
     }
     if (chatProjection.subtaskResult) {
       return chatProjection.subtaskResult.summary ||
         (chatProjection.subtaskResult.agent
-          ? `${chatProjection.subtaskResult.agent} returned from the subtask.`
-          : "A subtask returned.");
+          ? `Agent: ${chatProjection.subtaskResult.agent}\nEvent: subtask_result`
+          : "Event: subtask_result");
     }
     if (chatProjection.subtaskDispatch) {
       return chatProjection.subtaskDispatch.summary ||
         (chatProjection.subtaskDispatch.agent
-          ? `${actorName} asked ${chatProjection.subtaskDispatch.agent} to help.`
-          : `${actorName} delegated part of the work.`);
+          ? `Agent: ${chatProjection.subtaskDispatch.agent}\nEvent: subtask_dispatch`
+          : "Event: subtask_dispatch");
     }
     if ((latestEvent?.event_type || "").includes("tool")) {
       if ((latestEvent?.event_type || "").toLowerCase() === "tool_call_started") {
         const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
         return latestToolName
-          ? `Executing ${latestToolName}: ${oneLinePreview(latestStartedArguments, "tool call started", 120)}`
-          : "Executing tool call.";
+          ? `Tool: ${latestToolName}\nArgs: ${oneLinePreview(latestStartedArguments, "", 120)}`
+          : "Event: tool_call_started";
       }
       return latestToolName
-        ? `Executing ${latestToolName}.`
-        : "Executing tool work.";
+        ? `Tool: ${latestToolName}\nEvent: ${latestEvent?.event_type}`
+        : `Event: ${latestEvent?.event_type || "tool"}`;
     }
     if ((latestEvent?.event_type || "").includes("agent_turn")) {
       return chatProjection.agentResponse?.response
-        ? oneLinePreview(chatProjection.agentResponse.response, "Running LLM turn.", 140)
+        ? oneLinePreview(chatProjection.agentResponse.response, "", 140)
         : latestResponsePreview
-        ? oneLinePreview(latestResponsePreview, "Running LLM turn.", 140)
-        : `${actorName} is waiting for the next model response.`;
+        ? oneLinePreview(latestResponsePreview, "", 140)
+        : `Agent: ${actorName}\nEvent: ${latestEvent?.event_type}`;
     }
-    return chatProjection.userRequest
-      ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 140)}`
-      : describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
+    return describeRunningTaskRunFallback(taskRun, detail, activity, actorName, {
       latestEventType: latestEvent?.event_type || taskRun.latest_continuation_event_type || null,
       latestToolName,
     });
@@ -2821,6 +2792,7 @@ function mergeVisibleMessagePair(left: MessageItem, right: MessageItem): Message
     message_type: primary.message_type || secondary.message_type,
     client_turn_id: primary.client_turn_id ?? secondary.client_turn_id,
     isStreaming: server ? Boolean(primary.isStreaming) : Boolean(left.isStreaming || right.isStreaming),
+    statusDetail: primary.statusDetail ?? secondary.statusDetail,
     streamSteps:
       primarySteps.length >= secondarySteps.length
         ? primarySteps
@@ -4097,7 +4069,7 @@ function renderStreamingTextContent(content: string | undefined, className: stri
 
 type StreamingStatusDescriptor = {
   mode: "queued" | "llm" | "tool" | "handoff";
-  title: string;
+  title?: string;
   subtitle?: string;
 };
 
@@ -4119,21 +4091,18 @@ function summarizeStreamingStepCurrentDetail(step: MessageStreamStep) {
 function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDescriptor {
   const steps = message.streamSteps ?? [];
   const activeStep = [...steps].reverse().find((step) => step.state === "live") ?? steps[steps.length - 1];
-  const actor = activeStep?.agent || (message.agent_name && message.agent_name !== "pipeline" ? message.agent_name : "Agent");
 
   if (!activeStep) {
     return {
       mode: "queued",
-      title: `${actor} is preparing the next action`,
-      subtitle: "Waiting for the runtime to begin.",
+      subtitle: message.statusDetail,
     };
   }
 
   if (/queued/i.test(activeStep.label)) {
     return {
       mode: "queued",
-      title: `${actor} is queued to respond`,
-      subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting to start the first step.",
+      subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
     };
   }
 
@@ -4142,47 +4111,57 @@ function buildStreamingStatusDescriptor(message: MessageItem): StreamingStatusDe
       if (/^Waiting on model\b/i.test(activeStep.detail ?? "")) {
         return {
           mode: "llm",
-          title: `${actor} is waiting for the model response`,
-          subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting for the first tokens from the model.",
+          subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
         };
       }
       return {
         mode: "llm",
-        title: `${actor} is sending prompt + context to the model`,
-        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Packaging the latest chat, project context, and tool list.",
+        subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
       };
     case "llm_inbound":
       return {
         mode: "llm",
-        title: `${actor} is waiting for the model response`,
-        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Waiting for the first tokens from the model.",
+        subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
       };
     case "tool_call":
       if (/^Planning\b/i.test(activeStep.detail ?? "")) {
         return {
           mode: "tool",
-          title: `${actor} is planning ${activeStep.tool || "a tool"} call`,
-          subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "The model is assembling tool arguments.",
+          subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
         };
       }
       return {
         mode: "tool",
-        title: `${actor} is calling ${activeStep.tool || "a tool"}`,
-        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Executing the tool request now.",
+        subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
       };
     case "tool_result_to_llm":
       return {
         mode: "handoff",
-        title: `${actor} is sending ${activeStep.tool || "tool"} output back to the model`,
-        subtitle: summarizeStreamingStepCurrentDetail(activeStep) || "Tool finished; preparing the next LLM round.",
+        subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
       };
     default:
       return {
         mode: "handoff",
-        title: activeStep.label,
-        subtitle: summarizeStreamingStepCurrentDetail(activeStep),
+        subtitle: message.statusDetail || summarizeStreamingStepCurrentDetail(activeStep),
       };
   }
+}
+
+function renderStreamingStatusSubtitle(subtitle: string | undefined) {
+  if (!subtitle) return null;
+  const lines = subtitle
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  if (lines.length === 0) return null;
+  return (
+    <small>
+      {lines.map((line, index) => (
+        <span key={`${line}-${index}`}>{line}</span>
+      ))}
+    </small>
+  );
 }
 
 function renderStreamingStatusIcon(mode: StreamingStatusDescriptor["mode"]) {
@@ -4252,14 +4231,15 @@ function renderStreamingStatusIcon(mode: StreamingStatusDescriptor["mode"]) {
 
 function renderStreamingStatusContent(message: MessageItem, className: string) {
   const status = buildStreamingStatusDescriptor(message);
+  if (!status.title && !status.subtitle) return null;
   return (
     <div className={`${className} message-streaming-status`} aria-live="polite">
       <span className={`message-streaming-status__icon message-streaming-status__icon--${status.mode}`}>
         {renderStreamingStatusIcon(status.mode)}
       </span>
       <span className="message-streaming-status__copy">
-        <strong>{status.title}</strong>
-        {status.subtitle ? <small>{status.subtitle}</small> : null}
+        {status.title ? <strong>{status.title}</strong> : null}
+        {renderStreamingStatusSubtitle(status.subtitle)}
       </span>
     </div>
   );

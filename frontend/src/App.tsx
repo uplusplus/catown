@@ -200,6 +200,7 @@ function sanitizePersistedMessage(message: MessageItem): MessageItem {
     agent_name: message.agent_name,
     client_turn_id: message.client_turn_id,
     isStreaming: message.isStreaming,
+    statusDetail: trimPersistedText(message.statusDetail, OPTIMISTIC_MAX_STEP_DETAIL_CHARS),
     optimisticKind: message.optimisticKind,
     localOnly: message.localOnly,
     streamSteps: dedupeStreamSteps((message.streamSteps || []).map(sanitizePersistedStep)).slice(-OPTIMISTIC_MAX_STEP_COUNT),
@@ -291,6 +292,7 @@ function writeOptimisticMessageStore(store: Record<string, MessageItem[]>, prefe
             .map((key) => [key, (nextStore[key] ?? []).slice(-2).map((message) => ({
               ...sanitizePersistedMessage(message),
               content: trimPersistedText(message.content, 1200) || "",
+              statusDetail: trimPersistedText(message.statusDetail, 360),
               streamSteps: (message.streamSteps || []).slice(-2).map((step) => ({
                 ...sanitizePersistedStep(step),
                 detail: trimPersistedText(step.detail, 240),
@@ -1633,17 +1635,249 @@ function latestTaskRunAgentResponse(taskRun: TaskRunSummary | TaskRunDetail) {
   return typeof checkpointResponse === "string" && checkpointResponse.trim() ? checkpointResponse.trim() : "";
 }
 
-function taskRunWorkInProgressDetail(taskRun: TaskRunSummary | TaskRunDetail, fallback = "Working on your request.") {
-  const userRequest = taskRunUserRequestPreview(taskRun);
-  return userRequest ? `Working on: ${userRequest}` : fallback;
-}
-
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function readTextField(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readObjectArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+}
+
 function readNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatTaskProgressCounts(runtime: Record<string, unknown> | null) {
+  if (!runtime) return "";
+  const completed = readNumber(runtime.completed_step_count);
+  const running = readNumber(runtime.running_step_count);
+  const ready = readNumber(runtime.ready_step_count);
+  const waiting = readNumber(runtime.waiting_step_count);
+  const total = readNumber(runtime.step_count);
+  const parts = [
+    completed !== null ? `${completed}${total !== null ? `/${total}` : ""} done` : "",
+    running ? `${running} running` : "",
+    ready ? `${ready} ready` : "",
+    waiting ? `${waiting} waiting` : "",
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+function describeSchedulerStep(step: Record<string, unknown> | null) {
+  if (!step) return "";
+  const agent = readTextField(step, "agent_name") || readTextField(step, "requested_name") || "agent";
+  const kind = readTextField(step, "dispatch_kind");
+  const status = readTextField(step, "status");
+  return [agent, kind, status].filter(Boolean).join(" / ");
+}
+
+function describeSchedulerPlan(payload: Record<string, unknown> | null) {
+  const runtime = readRecord(payload?.runtime);
+  const runtimeSteps = readObjectArray(runtime?.steps);
+  const planSteps = readObjectArray(payload?.steps);
+  const steps = runtimeSteps.length > 0 ? runtimeSteps : planSteps;
+  const countSummary = formatTaskProgressCounts(runtime) || [
+    readNumber(payload?.blocking_step_count) !== null ? `${readNumber(payload?.blocking_step_count)} blocking` : "",
+    readNumber(payload?.sidecar_step_count) !== null ? `${readNumber(payload?.sidecar_step_count)} sidecar` : "",
+  ].filter(Boolean).join(", ");
+  const active = steps.find((step) => readTextField(step, "status") === "running")
+    || steps.find((step) => readTextField(step, "status") === "ready")
+    || null;
+  const next = active ? describeSchedulerStep(active) : "";
+  return [countSummary, next ? `current: ${next}` : ""].filter(Boolean).join("; ");
+}
+
+function readToolArgumentSummary(argumentsText: string | null | undefined, fallback = "") {
+  const text = argumentsText?.trim() || "";
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    const record = readRecord(parsed);
+    if (record) {
+      const important = [
+        readTextField(record, "command"),
+        readTextField(record, "path"),
+        readTextField(record, "file_path"),
+        readTextField(record, "filepath"),
+        readTextField(record, "query"),
+        readTextField(record, "pattern"),
+      ].find(Boolean);
+      if (important) return summarizeStepDetail(important, 180);
+    }
+  } catch {
+    // Arguments are often streamed as partial JSON; fall back to a plain preview.
+  }
+  return summarizeStepDetail(text, 180) || fallback;
+}
+
+function collectToolFileHints(toolName: string | null | undefined, argumentsText: string | null | undefined) {
+  const normalizedTool = (toolName || "").toLowerCase();
+  if (!/(read|write|edit|file|search|list|delete)/.test(normalizedTool)) return [];
+  const text = argumentsText?.trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    const record = readRecord(parsed);
+    if (!record) return [];
+    return [
+      readTextField(record, "path"),
+      readTextField(record, "file_path"),
+      readTextField(record, "filepath"),
+      readTextField(record, "directory"),
+      readTextField(record, "target_path"),
+    ].filter((value): value is string => Boolean(value)).slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+function latestTaskRunToolResultPayload(taskRun: TaskRunSummary | TaskRunDetail) {
+  const latestResult = latestTaskRunToolResult(taskRun);
+  if (latestResult) return latestResult;
+  const checkpointResults = taskRun.checkpoint_snapshot?.turn_local_state?.tool_results;
+  const result = Array.isArray(checkpointResults) ? checkpointResults[checkpointResults.length - 1] : null;
+  return readRecord(result);
+}
+
+function latestTaskRunEventOfType(taskRun: TaskRunSummary | TaskRunDetail, eventType: string) {
+  const events = taskRunDetailEvents(taskRun);
+  return [...events].reverse().find((event) => event.event_type === eventType) ?? null;
+}
+
+function buildTaskRunStatusDetail(taskRun: TaskRunSummary | TaskRunDetail, actor = "Agent") {
+  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
+  const payload = readRecord(latestEvent?.payload);
+  const latestEventType = taskRunLatestEventType(taskRun);
+  const lines: string[] = [];
+  const pushLine = (label: string, value: string | null | undefined) => {
+    const detail = value?.trim();
+    if (detail) lines.push(`${label}: ${detail}`);
+  };
+
+  if (latestEventType === "scheduler_plan_created") {
+    pushLine("Plan", describeSchedulerPlan(payload) || eventSummaryFromTaskRunEvent(latestEvent));
+  } else if (latestEventType === "user_message_saved") {
+    pushLine("User", readTextField(payload, "content") || readTextField(payload, "content_preview"));
+  } else if (latestEventType === "target_agent_selected") {
+    pushLine("User", readTextField(readRecord(latestTaskRunEventOfType(taskRun, "user_message_saved")?.payload), "content_preview"));
+    pushLine("Agent", readTextField(payload, "agent_name") || actor);
+    pushLine("Model", readTextField(payload, "model"));
+    const tools = readStringArray(payload?.tool_names);
+    pushLine("Tools", tools.length > 0 ? tools.join(", ") : "");
+  } else if (latestEventType === "target_agents_selected") {
+    pushLine("User", readTextField(readRecord(latestTaskRunEventOfType(taskRun, "user_message_saved")?.payload), "content_preview"));
+    const agents = readStringArray(payload?.agent_names);
+    pushLine("Agents", agents.length > 0 ? agents.join(", ") : "");
+    pushLine("Mode", readTextField(payload, "run_kind"));
+  } else if (latestEventType === "scheduler_step_dispatched" || latestEventType === "scheduler_step_resumed") {
+    const stepState = readRecord(payload?.step_state);
+    pushLine("Plan", describeSchedulerPlan(payload));
+    pushLine("Agent", describeSchedulerStep(stepState) || eventSummaryFromTaskRunEvent(latestEvent));
+  } else if (latestEventType === "scheduler_step_completed") {
+    const released = readNumber(payload?.released_step_count);
+    pushLine("Plan", describeSchedulerPlan(payload));
+    pushLine("Released", released !== null ? String(released) : "");
+  } else if (latestEventType === "approval_queue_item_created" || Number(taskRun.pending_approval_count || 0) > 0) {
+    const tool = readTextField(payload, "target_name") || taskRunContinuationToolName(taskRun);
+    pushLine("Approval", tool || "pending");
+  } else if (latestEventType === "approval_queue_item_resolved") {
+    const tool = readTextField(payload, "target_name") || readTextField(payload, "tool_name") || taskRunContinuationToolName(taskRun);
+    pushLine("Approval", tool || "resolved");
+    pushLine("Status", readTextField(payload, "status"));
+  } else if (latestEventType === "approval_queue_item_followup_triggered") {
+    const tool = readTextField(payload, "tool_name") || taskRunContinuationToolName(taskRun);
+    pushLine("Tool", tool);
+    pushLine("Followup", readTextField(payload, "replay_status") || "triggered");
+  } else if (latestEventType === "tool_call_started") {
+    const tool = readTextField(payload, "tool_name") || taskRunContinuationToolName(taskRun) || "tool";
+    const args = readToolArgumentSummary(readTextField(payload, "arguments"));
+    pushLine("Tool", tool);
+    pushLine("Args", args);
+    const files = collectToolFileHints(tool, readTextField(payload, "arguments"));
+    pushLine("Files", files.join(", "));
+  } else if (latestEventType === "tool_round_recorded" || latestEventType === "tool_call_blocked") {
+    const result = latestTaskRunToolResultPayload(taskRun);
+    const tool = readTextField(result, "tool_name") || readTextField(payload, "tool_name") || taskRunContinuationToolName(taskRun) || "tool";
+    const status = readTextField(result, "status") || readTextField(payload, "status");
+    const resultText = readTextField(result, "blocked_reason") || readTextField(result, "result");
+    pushLine("Tool", tool);
+    pushLine("Status", status);
+    pushLine("Result", resultText ? summarizeStepDetail(resultText, 180) : "");
+    const files = collectToolFileHints(tool, readTextField(result, "arguments"));
+    pushLine("Files", files.join(", "));
+  } else if (latestEventType === "llm_request_created") {
+    const model = readTextField(payload, "model");
+    const turn = readNumber(payload?.turn);
+    pushLine("LLM", "request");
+    pushLine("Model", model);
+    pushLine("Turn", turn !== null ? String(turn) : "");
+  } else if (latestEventType === "llm_response_started") {
+    const turn = readNumber(payload?.turn);
+    pushLine("LLM", "response_started");
+    pushLine("Turn", turn !== null ? String(turn) : "");
+  } else if (latestEventType === "llm_response_completed") {
+    const finishReason = readTextField(payload, "finish_reason");
+    pushLine("LLM", "response_completed");
+    pushLine("Finish", finishReason);
+  } else if (latestEventType === "agent_turn_started") {
+    pushLine("Agent", latestEvent?.agent_name || actor);
+    pushLine("Turn", readNumber(payload?.turn) !== null ? String(readNumber(payload?.turn)) : "");
+  } else if (latestEventType === "agent_turn_completed") {
+    const response = readTextField(payload, "response_preview") || latestTaskRunAgentResponse(taskRun);
+    pushLine("Agent", latestEvent?.agent_name || actor);
+    pushLine("Response", response ? summarizeStepDetail(response, 180) : "");
+  } else {
+    pushLine("Event", latestEventType);
+  }
+
+  const schedulerRuntime =
+    readRecord(payload?.runtime)
+    || readRecord(taskRun.latest_scheduler_runtime)
+    || readRecord(taskRun.checkpoint_snapshot?.latest_scheduler_runtime);
+  const schedulerSummary = formatTaskProgressCounts(schedulerRuntime);
+  if (schedulerSummary && !lines.some((line) => line.startsWith("Plan:"))) {
+    pushLine("Plan", schedulerSummary);
+  }
+
+  const activeHandle = readActiveHandleSummaryFromTaskRun(taskRun);
+  if (activeHandle) pushLine("Background", activeHandle);
+
+  if (lines.length > 0) return lines.slice(0, 4).join("\n");
+
+  return "";
+}
+
+function buildFieldStatusDetail(lines: Array<[string, string | null | undefined]>) {
+  return lines
+    .map(([label, value]) => {
+      const detail = value?.trim();
+      return detail ? `${label}: ${detail}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function eventSummaryFromTaskRunEvent(event: ReturnType<typeof latestTaskRunDetailEvent>) {
+  return userFacingTaskRunSummary(typeof event?.summary === "string" ? event.summary : null) || "";
+}
+
+function readActiveHandleSummaryFromTaskRun(taskRun: TaskRunSummary | TaskRunDetail) {
+  const checkpoint = readRecord(taskRun.checkpoint_snapshot);
+  const handles = readRecord(checkpoint?.subagent_handles);
+  const entries = readObjectArray(handles?.entries);
+  const active = entries.find((entry) => {
+    const status = (readTextField(entry, "status") || readTextField(entry, "control_state") || "").toLowerCase();
+    return status && !["completed", "failed", "cancelled", "closed"].includes(status);
+  });
+  if (!active) return "";
+  return describeSchedulerStep(active);
 }
 
 function formatInlineSourceList(values: string[]) {
@@ -1708,118 +1942,18 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
   return { detail, detailContent };
 }
 
-function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSummary | TaskRunDetail) {
-  const actor = taskRunActorName(taskRun, message.agent_name);
-  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
-  const latestPayload = latestEvent?.payload && typeof latestEvent.payload === "object"
-    ? latestEvent.payload
-    : null;
-  const latestToolResult = latestTaskRunToolResult(taskRun);
-  const eventType = taskRunLatestEventType(taskRun);
-  const toolName =
-    (latestToolResult && typeof latestToolResult.tool_name === "string" ? latestToolResult.tool_name : null) ||
-    (latestPayload && typeof latestPayload.tool_name === "string" ? latestPayload.tool_name : null) ||
-    taskRunContinuationToolName(taskRun);
-  const latestToolResultText = latestToolResult && typeof latestToolResult.result === "string"
-    ? latestToolResult.result
-    : "";
-  const latestAgentResponse = latestTaskRunAgentResponse(taskRun);
-  const statusSummary =
-    userFacingTaskRunSummary(taskRun.summary) ||
-    latestAgentResponse ||
-    taskRunUserRequestPreview(taskRun);
-  const pendingApprovalCount = Number(taskRun.pending_approval_count || 0);
-
-  if (pendingApprovalCount > 0) {
-    return {
-      label: toolName ? `${actor} is waiting for approval · ${toolName}` : `${actor} is waiting for approval`,
-      detail: statusSummary || `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
-      kind: "tool_call" as const,
-      tool: toolName || undefined,
-    };
-  }
-
-  if (eventType === "tool_call_started") {
-    const argumentsText = latestPayload && typeof latestPayload.arguments === "string" ? latestPayload.arguments : "";
-    return {
-      label: toolName ? `${actor} calls ${toolName}` : `${actor} calls a tool`,
-      detail: statusSummary || summarizeStepDetail(argumentsText, 140) || (toolName ? `Running ${toolName}.` : "Running tool."),
-      kind: "tool_call" as const,
-      tool: toolName || undefined,
-    };
-  }
-
-  if (eventType === "tool_round_recorded" || eventType === "approval_queue_item_followup_triggered") {
-    return {
-      label: toolName ? `${actor} calls ${toolName}` : `${actor} calls a tool`,
-      detail:
-        statusSummary ||
-        summarizeStepDetail(latestToolResultText, 140) ||
-        (toolName ? `${toolName} finished.` : "Tool finished."),
-      kind: "tool_call" as const,
-      tool: toolName || undefined,
-    };
-  }
-
-  if (eventType.includes("agent_turn")) {
-    return {
-      label: `LLM -> ${actor}`,
-      detail: latestAgentResponse || taskRunWorkInProgressDetail(taskRun, `${actor} is waiting for the next model response.`),
-      kind: "llm_inbound" as const,
-      tool: undefined,
-    };
-  }
-
-  if (eventType === "context_compaction") {
-    const compaction = buildContextCompactionStepDetail(latestPayload, statusSummary);
-    return {
-      label: `${actor} is compacting context`,
-      detail: compaction.detail,
-      detailContent: compaction.detailContent,
-      kind: "llm_inbound" as const,
-      tool: undefined,
-    };
-  }
-
-  return {
-    label: toolName ? `${actor} continues with ${toolName}` : `${actor} is working`,
-    detail: toolName
-      ? `${actor} is continuing after ${toolName}.`
-      : taskRunWorkInProgressDetail(taskRun),
-    detailContent: undefined,
-    kind: toolName ? ("tool_call" as const) : ("llm_inbound" as const),
-    tool: toolName || undefined,
-  };
-}
-
 function updateRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRunSummary | TaskRunDetail) {
   const actor = taskRunActorName(taskRun, message.agent_name);
-  const step = buildRecoveredTaskRunLiveStep(message, taskRun);
-  const baseMessage = {
+  const detail = buildTaskRunStatusDetail(taskRun, actor);
+  return {
     ...message,
-    content: message.content || step.detail,
+    content: message.content,
+    statusDetail: detail || message.statusDetail,
     agent_name: actor,
     client_turn_id: taskRun.client_turn_id || message.client_turn_id,
     isStreaming: true,
+    streamSteps: [],
   };
-  return patchMatchingStreamingStep(
-    baseMessage,
-    (candidate) =>
-      candidate.state === "live" &&
-      candidate.agent === actor &&
-      candidate.kind === step.kind &&
-      (step.tool ? candidate.tool === step.tool : true),
-    {
-      label: step.label,
-      detail: step.detail,
-      detailContent: step.detailContent,
-      state: "live",
-      kind: step.kind,
-      agent: actor,
-      tool: step.tool,
-    },
-    step.label,
-  );
 }
 
 function messageLooksApprovalHold(message: MessageItem) {
@@ -1833,7 +1967,7 @@ function messageLooksApprovalHold(message: MessageItem) {
 function finalizeRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRunSummary) {
   const status = (taskRun.status || "").toLowerCase();
   const isFailed = status === "failed" || status === "cancelled";
-  const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Continuing";
+  const label = isFailed ? "Failed" : status === "completed" ? "Completed" : "Runtime";
   const detail =
     userFacingTaskRunSummary(taskRun.summary) ||
     latestTaskRunAgentResponse(taskRun) ||
@@ -3638,7 +3772,7 @@ function App() {
             client_turn_id: clientTurnId,
             isStreaming: true,
             optimisticKind: "assistant_placeholder",
-            streamSteps: [buildStreamStep("Queued", "Waiting to start agent response.")],
+            streamSteps: [],
           },
         ]),
       );
@@ -3723,35 +3857,38 @@ function App() {
             liveLlmModel = typeof data.model === "string" ? data.model : "";
             liveLlmTurn = typeof data.turn === "number" ? data.turn : undefined;
             liveLlmTimings = {};
+            const statusDetail = buildFieldStatusDetail([
+              ["Agent", activeAgentName],
+              ["LLM", "request"],
+              ["Model", liveLlmModel],
+              ["Turn", liveLlmTurn !== undefined ? String(liveLlmTurn) : ""],
+            ]);
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => ({
                 ...message,
                 agent_name: activeAgentName,
+                statusDetail,
               })),
             );
-            pushEvent(`${activeAgentName} is responding`, "info");
+            pushEvent(`Agent: ${activeAgentName}`, "info");
             break;
           case "collab_start": {
             const agentNames = readStringArray(data.agents);
+            const statusDetail = buildFieldStatusDetail([
+              ["Agents", agentNames.join(", ")],
+              ["Mode", "multi_agent"],
+            ]);
             activeAgentName = "pipeline";
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...pushStreamingStep(
-                  {
-                    ...message,
-                    agent_name: "pipeline",
-                    content:
-                      agentNames.length > 0
-                        ? `Pipeline: ${agentNames.join(" -> ")}\n\n`
-                        : message.content,
-                  },
-                  "Routing multi-agent flow",
-                  agentNames.length > 0 ? agentNames.join(" -> ") : "Selecting agents.",
-                ),
+                ...message,
+                agent_name: "pipeline",
+                content: agentNames.length > 0 ? `Pipeline: ${agentNames.join(" -> ")}\n\n` : message.content,
+                statusDetail,
               })),
             );
             if (agentNames.length > 0) {
-              pushEvent(`Multi-agent pipeline: ${agentNames.join(" -> ")}`, "info");
+              pushEvent(`Agents: ${agentNames.join(", ")}`, "info");
             }
             break;
           }
@@ -3760,25 +3897,23 @@ function App() {
             activeAgentName = agentName;
             const step = typeof data.step === "number" ? data.step : "?";
             const total = typeof data.total === "number" ? data.total : "?";
+            const statusDetail = buildFieldStatusDetail([
+              ["Plan", `${step}/${total}`],
+              ["Agent", agentName],
+            ]);
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...pushStreamingStep(
-                  {
-                    ...message,
-                    agent_name: "pipeline",
-                    content: `${message.content}\nStep ${step}/${total}: ${agentName}\n\n`,
-                  },
-                  `${agentName} is working`,
-                  `Step ${step}/${total}`,
-                ),
+                ...message,
+                agent_name: "pipeline",
+                statusDetail,
               })),
             );
-            pushEvent(`Step ${step}/${total}: ${agentName}`, "info");
+            pushEvent(statusDetail, "info");
             break;
           }
           case "collab_step_done":
             if (typeof data.agent === "string") {
-              pushEvent(`${data.agent} completed their step`, "success");
+              pushEvent(`Agent: ${data.agent} / Status: completed`, "success");
             }
             break;
           case "collab_skip":
@@ -3813,6 +3948,26 @@ function App() {
             if (data.type === "first_content" && elapsedMs !== undefined) {
               liveLlmTimings = { ...liveLlmTimings, first_content_ms: elapsedMs };
             }
+            const phase =
+              data.type === "request_sent"
+                ? "request"
+                : data.type === "first_chunk"
+                  ? "response_started"
+                  : "content_started";
+            const statusDetail = buildFieldStatusDetail([
+              ["Agent", activeAgentName],
+              ["LLM", phase],
+              ["Model", liveLlmModel],
+              ["Turn", liveLlmTurn !== undefined ? String(liveLlmTurn) : ""],
+              ["Elapsed", elapsedMs !== undefined ? formatStreamingElapsed(elapsedMs) : ""],
+            ]);
+            commitOptimisticMessages((current) =>
+              updateMessage(current, readAssistantMessageId(), (message) => ({
+                ...message,
+                agent_name: message.agent_name || activeAgentName,
+                statusDetail,
+              })),
+            );
             break;
           }
           case "tool_call_delta": {
@@ -3829,14 +3984,24 @@ function App() {
               liveLlmTimings = { ...liveLlmTimings, first_tool_call_ms: elapsedMs };
             }
             liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
-            const detail = elapsedText
-              ? `Planning ${toolName} · ${elapsedText}`
-              : `Planning ${toolName}`;
+            const detail = buildFieldStatusDetail([
+              ["Tool", toolName],
+              ["Status", "args_delta"],
+              ["Elapsed", elapsedText],
+            ]);
+            const fileHints = collectToolFileHints(toolName, rawToolArgs);
+            const statusDetail = buildFieldStatusDetail([
+              ["Tool", toolName],
+              ["Status", "args_delta"],
+              ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
+              ["Files", fileHints.join(", ")],
+            ]);
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
                 const baseMessage = {
                   ...message,
                   agent_name: message.agent_name || activeAgentName,
+                  statusDetail,
                 };
 
                 const nextMessage = patchMatchingStreamingStep(
@@ -3895,12 +4060,24 @@ function App() {
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
               const rawToolArgs = typeof data.args === "string" && data.args.trim() ? data.args.trim() : "";
               liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
-              const toolArgs = rawToolArgs ? rawToolArgs.slice(0, 120) : "Calling tool.";
+              const toolArgs = buildFieldStatusDetail([
+                ["Tool", toolName],
+                ["Status", "started"],
+                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
+              ]);
+              const fileHints = collectToolFileHints(toolName, rawToolArgs);
+              const statusDetail = buildFieldStatusDetail([
+                ["Tool", toolName],
+                ["Status", "started"],
+                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
+                ["Files", fileHints.join(", ")],
+              ]);
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
                   const baseMessage = {
                     ...message,
                     agent_name: message.agent_name || activeAgentName,
+                    statusDetail,
                   };
 
                   const nextMessage = patchMatchingStreamingStep(
@@ -3941,7 +4118,7 @@ function App() {
                   };
                 }),
               );
-              pushEvent(`${activeAgentName} is running ${toolName}`, "warning");
+              pushEvent(`Tool: ${toolName}`, "warning");
             }
             break;
           case "llm_wait": {
@@ -3961,8 +4138,20 @@ function App() {
               const elapsedText = formatStreamingElapsed(
                 typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
               );
-              const waitStatus = elapsedText ? `Running tool · ${elapsedText}` : "Running tool";
+              const waitStatus = buildFieldStatusDetail([
+                ["Tool", toolName],
+                ["Status", "running"],
+                ["Elapsed", elapsedText],
+              ]);
               const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
+              const fileHints = collectToolFileHints(toolName, rawToolArgs);
+              const statusDetail = buildFieldStatusDetail([
+                ["Tool", toolName],
+                ["Status", "running"],
+                ["Elapsed", elapsedText],
+                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
+                ["Files", fileHints.join(", ")],
+              ]);
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
                   const existingStep = findMatchingStreamStep(message, (step) =>
@@ -3973,6 +4162,7 @@ function App() {
                     {
                       ...message,
                       agent_name: message.agent_name || activeAgentName,
+                      statusDetail,
                     },
                     (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
@@ -4012,11 +4202,18 @@ function App() {
               const resultPreview =
                 rawResult.trim()
                   ? rawResult.replace(/\s+/g, " ").trim().slice(0, 140)
-                  : `${toolName} completed.`;
+                  : "";
+              const fileHints = collectToolFileHints(toolName, rawToolArgs);
+              const statusDetail = buildFieldStatusDetail([
+                ["Tool", toolName],
+                ["Status", failed ? "failed" : "completed"],
+                ["Result", resultPreview ? summarizeStepDetail(resultPreview, 180) : ""],
+                ["Files", fileHints.join(", ")],
+              ]);
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
                   return patchMatchingStreamingStep(
-                    message,
+                    { ...message, statusDetail },
                     (step) => isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
                     {
                       detail: resultPreview,
@@ -4035,7 +4232,7 @@ function App() {
                   );
                 }),
               );
-              pushEvent(`${activeAgentName} finished ${toolName}`, failed ? "error" : "success");
+              pushEvent(`Tool: ${toolName} ${failed ? "failed" : "completed"}`, failed ? "error" : "success");
             }
             break;
           case "approval_pending": {
@@ -4053,12 +4250,16 @@ function App() {
                     ...message,
                     agent_name: finalAgentName,
                     isStreaming: false,
+                    statusDetail: buildFieldStatusDetail([
+                      ["Approval", pendingTool],
+                      ["Status", "pending"],
+                    ]),
                   },
                   "done",
                 ),
               ),
             );
-            pushEvent(`${finalAgentName} is waiting for approval on ${pendingTool}`, "warning");
+            pushEvent(`Approval: ${pendingTool}`, "warning");
             break;
           }
           case "done": {

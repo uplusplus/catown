@@ -899,12 +899,22 @@ async def _trigger_standalone_assistant_response(
         streaming=False,
         standalone=True,
     )
+    _record_target_agent_selected(
+        db,
+        task_run,
+        agent_name=runtime.assistant_name,
+        model=getattr(runtime.llm_client, "model", None),
+        tool_names=[],
+        client_turn_id=client_turn_id,
+        project_id=None,
+        run_kind="standalone_assistant",
+    )
 
     record_agent_turn_started(
         db,
         task_run,
         agent_name=runtime.assistant_name,
-        summary=f"{runtime.assistant_name} started a standalone assistant turn.",
+        summary="",
         payload=build_runtime_event_payload(
             client_turn_id=client_turn_id,
             stage_policy=standalone_policy.stages[0] if standalone_policy.stages else None,
@@ -951,7 +961,7 @@ async def _trigger_standalone_assistant_response(
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
         compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-        completion_summary=f"{runtime.assistant_name} completed the standalone turn.",
+        completion_summary="",
         failure_summary=lambda error: f"Agent response failed: {error}",
         extract_memories=extract_agent_memories,
         stream_failure_message_metadata=_message_metadata_with_turn,
@@ -1001,7 +1011,7 @@ async def _stream_standalone_assistant_response(
         db,
         task_run,
         agent_name=runtime.assistant_name,
-        summary=f"{runtime.assistant_name} started a standalone streaming turn.",
+        summary="",
         payload=build_runtime_event_payload(
             client_turn_id=client_turn_id,
             stage_policy=standalone_stream_policy.stages[0] if standalone_stream_policy.stages else None,
@@ -1067,7 +1077,7 @@ async def _stream_standalone_assistant_response(
         record_turn_completed=record_agent_turn_completed,
         message_metadata=_message_metadata_with_turn,
         compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-        completion_summary=f"{runtime.assistant_name} completed the standalone streaming turn.",
+        completion_summary="",
         failure_summary=lambda error: f"Standalone stream failed: {error}",
         extract_memories=extract_agent_memories,
         stream_failure_message_metadata=_message_metadata_with_turn,
@@ -1161,11 +1171,19 @@ async def trigger_agent_response(
                     agent_names=mentioned_names,
                     streaming=False,
                 )
+                _record_target_agents_selected(
+                    db,
+                    task_run,
+                    agent_names=mentioned_names,
+                    client_turn_id=client_turn_id,
+                    project_id=None,
+                    run_kind="multi_agent_orchestration",
+                )
                 _select_task_run_runtime_mode(
                     db,
                     task_run,
                     run_kind="multi_agent_orchestration",
-                    summary="Selected standalone multi-agent orchestration mode.",
+                    summary="",
                     project_id=None,
                     runner_policy=prepared_orchestration.runner_policy,
                     extra_payload={"agents": mentioned_names},
@@ -1198,7 +1216,7 @@ async def trigger_agent_response(
                 db,
                 task_run,
                 run_kind="standalone_assistant",
-                summary="Selected standalone assistant mode.",
+                summary="",
                 project_id=None,
                 target_agent_name=standalone_agent_name,
                 runner_policy=standalone_policy,
@@ -1239,11 +1257,19 @@ async def trigger_agent_response(
                 agent_names=mentioned_names,
                 streaming=False,
             )
+            _record_target_agents_selected(
+                db,
+                task_run,
+                agent_names=mentioned_names,
+                client_turn_id=client_turn_id,
+                project_id=project.id,
+                run_kind="multi_agent_orchestration",
+            )
             _select_task_run_runtime_mode(
                 db,
                 task_run,
                 run_kind="multi_agent_orchestration",
-                summary="Selected project multi-agent orchestration mode.",
+                summary="",
                 project_id=project.id,
                 runner_policy=prepared_orchestration.runner_policy,
                 extra_payload={"agents": mentioned_names},
@@ -1281,6 +1307,7 @@ async def trigger_agent_response(
 
         logger.debug(f"[ Selected agent: {target_agent.name} (role: {target_agent.role})")
         available_tools = _resolve_agent_runtime_tools(target_agent)
+        target_llm_client = get_llm_client_for_agent(_agent_type(target_agent))
         single_agent_policy = _build_single_agent_runner_policy(
             run_kind="project_single_agent",
             agent_name=agent_name_of(target_agent),
@@ -1295,9 +1322,19 @@ async def trigger_agent_response(
             run_kind="project_single_agent",
             target_agent_name=agent_name_of(target_agent),
             agent_name=agent_name_of(target_agent),
-            summary="Selected project single-agent execution mode.",
+            summary="",
             project_id=project.id,
             runner_policy=single_agent_policy,
+        )
+        _record_target_agent_selected(
+            db,
+            task_run,
+            agent_name=agent_name_of(target_agent),
+            model=getattr(target_llm_client, "model", None),
+            tool_names=available_tools,
+            client_turn_id=client_turn_id,
+            project_id=project.id,
+            run_kind="project_single_agent",
         )
 
         # Register all project agents as collaborators so collaboration tools see the full room context.
@@ -1332,13 +1369,13 @@ async def trigger_agent_response(
         record_agent_turn_started(
             db,
             task_run,
-        agent_name=runtime.agent_label,
-        summary=f"{runtime.agent_label} started working on the request.",
-        payload=build_runtime_event_payload(
-            client_turn_id=client_turn_id,
-            stage_policy=single_agent_policy.stages[0] if single_agent_policy.stages else None,
-            target_agent_name=runtime.agent_label,
-        ),
+            agent_name=runtime.agent_label,
+            summary="",
+            payload=build_runtime_event_payload(
+                client_turn_id=client_turn_id,
+                stage_policy=single_agent_policy.stages[0] if single_agent_policy.stages else None,
+                target_agent_name=runtime.agent_label,
+            ),
         )
 
         def _assemble_project_single_agent_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
@@ -1488,7 +1525,7 @@ async def trigger_agent_response(
             record_turn_completed=record_agent_turn_completed,
             message_metadata=_message_metadata_with_turn,
             compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-            completion_summary=f"{agent_name_of(target_agent)} completed the turn.",
+            completion_summary="",
             failure_summary=lambda error: f"Agent response failed: {error}",
             extract_memories=extract_agent_memories,
             stream_failure_message_metadata=_message_metadata_with_turn,
@@ -1673,7 +1710,7 @@ def _select_task_run_runtime_mode(
     task_run: Optional[TaskRun],
     *,
     run_kind: str,
-    summary: str,
+    summary: str = "",
     project_id: Optional[int],
     target_agent_name: Optional[str] = None,
     agent_name: Optional[str] = None,
@@ -1701,8 +1738,60 @@ def _select_task_run_runtime_mode(
         task_run,
         "runtime_mode_selected",
         agent_name=agent_name,
-        summary=summary,
+        summary=summary or "",
         payload=payload,
+    )
+
+
+def _record_target_agent_selected(
+    db: Session,
+    task_run: Optional[TaskRun],
+    *,
+    agent_name: str,
+    model: Optional[str] = None,
+    tool_names: Optional[List[str]] = None,
+    client_turn_id: Optional[str] = None,
+    project_id: Optional[int] = None,
+    run_kind: Optional[str] = None,
+) -> None:
+    append_task_event(
+        db,
+        task_run,
+        "target_agent_selected",
+        agent_name=agent_name,
+        summary="",
+        payload={
+            "agent_name": agent_name,
+            "model": model,
+            "tool_names": tool_names or [],
+            "client_turn_id": client_turn_id,
+            "project_id": project_id,
+            "run_kind": run_kind,
+        },
+    )
+
+
+def _record_target_agents_selected(
+    db: Session,
+    task_run: Optional[TaskRun],
+    *,
+    agent_names: List[str],
+    client_turn_id: Optional[str] = None,
+    project_id: Optional[int] = None,
+    run_kind: Optional[str] = None,
+) -> None:
+    normalized_names = [str(name or "").strip() for name in agent_names if str(name or "").strip()]
+    append_task_event(
+        db,
+        task_run,
+        "target_agents_selected",
+        summary="",
+        payload={
+            "agent_names": normalized_names,
+            "client_turn_id": client_turn_id,
+            "project_id": project_id,
+            "run_kind": run_kind,
+        },
     )
 
 
@@ -6077,8 +6166,10 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         task_run,
         "user_message_saved",
         message_id=response_msg.id,
-        summary="User message saved for execution.",
+        summary="",
         payload={
+            "message_id": response_msg.id,
+            "content": message.content,
             "content_preview": _compact_runtime_text(message.content, limit=220),
             "client_turn_id": message.client_turn_id,
         },
@@ -6286,8 +6377,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 metadata=_message_metadata_with_turn(message.client_turn_id),
             )
 
-            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id, 'client_turn_id': message.client_turn_id})}\n\n"
-
             # 2. 获取聊天室和项目
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
             if not chatroom:
@@ -6310,12 +6399,15 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 task_run,
                 "user_message_saved",
                 message_id=user_msg.id,
-                summary="User message saved for streaming execution.",
+                summary="",
                 payload={
+                    "message_id": user_msg.id,
+                    "content": message.content,
                     "content_preview": _compact_runtime_text(message.content, limit=220),
                     "client_turn_id": message.client_turn_id,
                 },
             )
+            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id, 'client_turn_id': message.client_turn_id, 'task_run_id': task_run.id})}\n\n"
             workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
             if not project:
                 mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)] if '@' in message.content else []
@@ -6328,11 +6420,19 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         agent_names=mentioned_names,
                         streaming=True,
                     )
+                    _record_target_agents_selected(
+                        db,
+                        task_run,
+                        agent_names=mentioned_names,
+                        client_turn_id=message.client_turn_id,
+                        project_id=None,
+                        run_kind="multi_agent_orchestration_stream",
+                    )
                     _select_task_run_runtime_mode(
                         db,
                         task_run,
                         run_kind="multi_agent_orchestration_stream",
-                        summary="Selected standalone multi-agent streaming orchestration mode.",
+                        summary="",
                         project_id=None,
                         runner_policy=prepared_orchestration.runner_policy,
                         extra_payload={"agents": mentioned_names},
@@ -6356,6 +6456,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
                 standalone_target = _resolve_standalone_target_agent(db, message.content)
                 standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
+                standalone_llm_client = get_llm_client_for_agent(standalone_agent_name) if standalone_target else get_default_llm_client()
                 standalone_stream_policy = _build_single_agent_runner_policy(
                     run_kind="standalone_assistant_stream",
                     agent_name=standalone_agent_name,
@@ -6368,10 +6469,20 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     db,
                     task_run,
                     run_kind="standalone_assistant_stream",
-                    summary="Selected standalone assistant streaming mode.",
+                    summary="",
                     project_id=None,
                     target_agent_name=standalone_agent_name,
                     runner_policy=standalone_stream_policy,
+                )
+                _record_target_agent_selected(
+                    db,
+                    task_run,
+                    agent_name=standalone_agent_name,
+                    model=getattr(standalone_llm_client, "model", None),
+                    tool_names=[],
+                    client_turn_id=message.client_turn_id,
+                    project_id=None,
+                    run_kind="standalone_assistant_stream",
                 )
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
@@ -6407,10 +6518,18 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     db,
                     task_run,
                     run_kind="multi_agent_orchestration_stream",
-                    summary="Selected project multi-agent streaming orchestration mode.",
+                    summary="",
                     project_id=project.id,
                     runner_policy=prepared_orchestration.runner_policy,
                     extra_payload={"agents": mentioned_names},
+                )
+                _record_target_agents_selected(
+                    db,
+                    task_run,
+                    agent_names=mentioned_names,
+                    client_turn_id=message.client_turn_id,
+                    project_id=project.id,
+                    run_kind="multi_agent_orchestration_stream",
                 )
                 async for chunk in _stream_multi_agent_orchestration(
                     db=db,
@@ -6461,6 +6580,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             active_agent_name = target_agent_label
             active_agent_id = target_agent.id
             available_tools = _resolve_agent_runtime_tools(target_agent)
+            target_llm_client = get_llm_client_for_agent(_agent_type(target_agent))
             project_single_agent_stream_policy = _build_single_agent_runner_policy(
                 run_kind="project_single_agent_stream",
                 agent_name=target_agent_label,
@@ -6475,9 +6595,19 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 run_kind="project_single_agent_stream",
                 target_agent_name=target_agent_label,
                 agent_name=target_agent_label,
-                summary="Selected project single-agent streaming execution mode.",
+                summary="",
                 project_id=project.id,
                 runner_policy=project_single_agent_stream_policy,
+            )
+            _record_target_agent_selected(
+                db,
+                task_run,
+                agent_name=target_agent_label,
+                model=getattr(target_llm_client, "model", None),
+                tool_names=available_tools,
+                client_turn_id=message.client_turn_id,
+                project_id=project.id,
+                run_kind="project_single_agent_stream",
             )
 
             _ensure_collaboration_context(agents, chatroom_id)
@@ -6505,7 +6635,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 db,
                 task_run,
                 agent_name=target_agent_label,
-                summary=f"{target_agent_label} started a streaming turn.",
+                summary="",
                 payload=build_runtime_event_payload(
                     client_turn_id=message.client_turn_id,
                     stage_policy=(
@@ -6626,7 +6756,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 record_turn_completed=record_agent_turn_completed,
                 message_metadata=_message_metadata_with_turn,
                 compact_summary=lambda content: _compact_runtime_text(content, limit=280),
-                completion_summary=f"{target_agent_label} completed the streaming turn.",
+                completion_summary="",
                 failure_summary=lambda error: f"Streaming execution failed: {error}",
                 extract_memories=extract_agent_memories,
                 stream_failure_message_metadata=_message_metadata_with_turn,

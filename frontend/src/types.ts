@@ -129,6 +129,7 @@ export type MessageItem = {
   agent_name?: string | null;
   client_turn_id?: string;
   isStreaming?: boolean;
+  statusDetail?: string;
   streamSteps?: MessageStreamStep[];
   optimisticKind?: "user" | "assistant_placeholder";
   localOnly?: boolean;

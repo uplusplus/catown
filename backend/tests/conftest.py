@@ -62,6 +62,10 @@ def fresh_db(tmp_path, monkeypatch):
     import importlib
     import models.database as db_mod
     importlib.reload(db_mod)
+    import services.run_ledger as run_ledger_mod
+    importlib.reload(run_ledger_mod)
+    import services.chat_timeline_projection as timeline_mod
+    importlib.reload(timeline_mod)
 
     db_mod.Base.metadata.create_all(bind=db_mod.engine)
     return db_mod

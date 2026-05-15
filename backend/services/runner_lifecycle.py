@@ -47,7 +47,7 @@ def start_agent_turn(
     task_run: TaskRun | None,
     *,
     agent_name: str,
-    summary: str,
+    summary: str = "",
     payload: Any = None,
     target_agent_name: str | None = None,
 ):
@@ -61,7 +61,7 @@ def start_agent_turn(
         task_run,
         "agent_turn_started",
         agent_name=agent_name,
-        summary=summary,
+        summary=summary or "",
         payload=payload,
     )
 
@@ -90,7 +90,7 @@ def record_llm_request_created(
         task_run,
         "llm_request_created",
         agent_name=agent_name,
-        summary=summary or f"{agent_name} sent a request to the LLM.",
+        summary=summary or "",
         payload=merged_payload,
     )
 
@@ -117,7 +117,7 @@ def record_llm_response_started(
         task_run,
         "llm_response_started",
         agent_name=agent_name,
-        summary=summary or f"The LLM started streaming output for {agent_name}.",
+        summary=summary or "",
         payload=merged_payload,
     )
 
@@ -146,7 +146,7 @@ def record_llm_response_completed(
         task_run,
         "llm_response_completed",
         agent_name=agent_name,
-        summary=summary or f"The LLM completed output for {agent_name}.",
+        summary=summary or "",
         payload=merged_payload,
     )
 
@@ -333,7 +333,7 @@ def record_tool_round(
                 task_run,
                 "approval_queue_item_created",
                 agent_name=agent_name,
-                summary=f"Queued {queue_kind} item for {blocked_tool['tool_name']}.",
+                summary="",
                 payload=build_approval_queue_item_created_event_payload(queue_item),
             )
         append_task_event(
@@ -341,7 +341,7 @@ def record_tool_round(
             task_run,
             "tool_call_blocked",
             agent_name=agent_name,
-            summary=f"{blocked_tool['tool_name']} was blocked ({blocked_tool['status']}).",
+            summary="",
             payload={
                 "turn": int(turn),
                 "tool_call_id": blocked_tool.get("tool_call_id"),
@@ -388,7 +388,7 @@ def start_tool_call(
         task_run,
         "tool_call_started",
         agent_name=agent_name,
-        summary=f"Starting {str(tool_name or '').strip() or 'tool'}.",
+        summary="",
         payload=merged_payload,
     )
 
@@ -400,7 +400,7 @@ def complete_agent_turn(
     agent_name: str,
     response_content: str = "",
     message_id: int | None = None,
-    summary: str,
+    summary: str = "",
     payload: Any = None,
 ):
     merged_payload = {
@@ -418,7 +418,7 @@ def complete_agent_turn(
         "agent_turn_completed",
         agent_name=agent_name,
         message_id=message_id,
-        summary=summary,
+        summary=summary or "",
         payload=merged_payload,
     )
 

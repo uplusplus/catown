@@ -106,7 +106,7 @@ async def run_orchestration_agent_turn(
         db,
         task_run,
         agent_name=runtime.agent_label,
-        summary=f"{runtime.agent_label} started an orchestrated turn.",
+        summary="",
         payload=build_runtime_event_payload(
             client_turn_id=client_turn_id,
             inter_agent_message_count=len(inter_agent_messages or []),
@@ -196,7 +196,7 @@ async def run_orchestration_agent_turn(
         agent_name=agent_name_of(agent),
         message_id=agent_msg.id,
         response_content=response_content,
-        summary=f"{agent_name_of(agent)} completed the orchestrated turn.",
+        summary="",
     )
 
     if len(response_content) > 30:
@@ -241,7 +241,7 @@ async def iter_stream_orchestration_agent_turn_events(
         db,
         task_run,
         agent_name=runtime.agent_label,
-        summary=f"{runtime.agent_label} started an orchestrated streaming turn.",
+        summary="",
         payload=build_runtime_event_payload(
             client_turn_id=client_turn_id,
             inter_agent_message_count=len(inter_agent_messages or []),

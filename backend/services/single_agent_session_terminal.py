@@ -41,7 +41,7 @@ async def persist_single_agent_session_success(
     record_turn_completed: RecordTurnCompleted,
     message_metadata: MessageMetadataBuilder,
     compact_summary: CompactSummary,
-    completion_summary: str,
+    completion_summary: str = "",
     schedule_memory_extraction: ScheduleMemoryExtraction | None = None,
     build_payload: BuildPayload | None = None,
     post_publish_success: PostPublishSuccess | None = None,
@@ -76,7 +76,7 @@ async def persist_single_agent_session_success(
         agent_name=agent_name,
         message_id=saved_message.id,
         response_content=resolved_content,
-        summary=completion_summary,
+        summary=completion_summary or "",
     )
     complete_task_run(db, task_run, summary=compact_summary(resolved_content))
     if schedule_memory_extraction is not None:

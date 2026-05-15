@@ -14,6 +14,9 @@ ERROR_MARKERS = ("failed", "error", "cancel")
 
 
 EVENT_KIND_PHASE: dict[str, tuple[str, str]] = {
+    "user_message_saved": ("user", "message"),
+    "target_agent_selected": ("agent", "selected"),
+    "target_agents_selected": ("agent", "selected"),
     "llm_request_created": ("llm", "request"),
     "llm_response_started": ("llm", "response_started"),
     "llm_response_completed": ("llm", "response"),
@@ -252,17 +255,7 @@ def _summary(event: TaskRunEvent, payload: dict[str, Any], event_type: str, *, a
     explicit = str(getattr(event, "summary", "") or payload.get("summary") or "").strip()
     if explicit:
         return explicit
-    subject = actor or "Agent"
-    if kind == "llm" and phase == "request":
-        return f"{subject} sent a request to the LLM."
-    if kind == "llm" and phase.startswith("response"):
-        return f"The LLM returned output for {subject}."
-    if kind == "tool":
-        tool = str(payload.get("tool_name") or payload.get("tool") or payload.get("target_name") or "tool").strip()
-        return f"{subject} {phase} {tool}."
-    if kind == "scheduler":
-        return event_type.replace("_", " ")
-    return event_type.replace("_", " ").title()
+    return ""
 
 
 def _detail_content(event: TaskRunEvent, payload: dict[str, Any], summary: str) -> str:

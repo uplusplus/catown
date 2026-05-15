@@ -2142,6 +2142,36 @@ class TestSSEStreaming:
         assert mode_event["payload"]["runner_policy"]["metadata"]["standalone"] is True
         assert mode_event["payload"]["runner_policy"]["metadata"]["tool_policy_summary"]["tool_count"] == 0
 
+    def test_stream_records_user_and_target_agent_facts_before_llm(self, client):
+        r = client.post("/api/chats", json={"title": "Stream Facts"})
+        cid = r.json()["id"]
+        turn_id = "turn-stream-facts"
+
+        stream = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={"content": "@analyst inspect status", "client_turn_id": turn_id},
+        )
+
+        assert stream.status_code == 200
+        assert '"task_run_id"' in stream.text
+
+        runs = client.get(
+            f"/api/chatrooms/{cid}/task-runs",
+            params={"client_turn_id": turn_id},
+        ).json()
+        assert len(runs) == 1
+
+        detail = client.get(f"/api/task-runs/{runs[0]['id']}").json()
+        event_types = [event["event_type"] for event in detail["events"]]
+        user_event = next(event for event in detail["events"] if event["event_type"] == "user_message_saved")
+        target_event = next(event for event in detail["events"] if event["event_type"] == "target_agent_selected")
+
+        assert event_types.index("user_message_saved") < event_types.index("target_agent_selected")
+        assert user_event["payload"]["content"] == "@analyst inspect status"
+        assert user_event["payload"]["client_turn_id"] == turn_id
+        assert target_event["payload"]["agent_name"] == "analyst"
+        assert "model" in target_event["payload"]
+
     def test_standalone_stream_persists_done_only_full_content(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes

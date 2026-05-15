@@ -1,10 +1,22 @@
 from datetime import datetime, timedelta
 
-from services.chat_timeline_projection import (
-    build_chatroom_timeline_projection,
-    build_task_run_timeline_projection,
-)
-from services.run_ledger import append_task_event
+
+def _append_task_event(*args, **kwargs):
+    from services.run_ledger import append_task_event
+
+    return append_task_event(*args, **kwargs)
+
+
+def _build_task_run_timeline_projection(*args, **kwargs):
+    from services.chat_timeline_projection import build_task_run_timeline_projection
+
+    return build_task_run_timeline_projection(*args, **kwargs)
+
+
+def _build_chatroom_timeline_projection(*args, **kwargs):
+    from services.chat_timeline_projection import build_chatroom_timeline_projection
+
+    return build_chatroom_timeline_projection(*args, **kwargs)
 
 
 def test_task_run_timeline_uses_backend_sequence_over_timestamps(fresh_db):
@@ -27,7 +39,7 @@ def test_task_run_timeline_uses_backend_sequence_over_timestamps(fresh_db):
         db.commit()
         db.refresh(task_run)
 
-        first = append_task_event(
+        first = _append_task_event(
             db,
             task_run,
             "llm_request_created",
@@ -35,7 +47,7 @@ def test_task_run_timeline_uses_backend_sequence_over_timestamps(fresh_db):
             summary="Valet sent prompt.",
             payload={"turn": 1, "occurred_at": "2026-05-15T10:00:02"},
         )
-        second = append_task_event(
+        second = _append_task_event(
             db,
             task_run,
             "llm_response_completed",
@@ -47,7 +59,7 @@ def test_task_run_timeline_uses_backend_sequence_over_timestamps(fresh_db):
         assert second is not None
 
         db.refresh(task_run)
-        timeline = build_task_run_timeline_projection(task_run)
+        timeline = _build_task_run_timeline_projection(task_run)
 
         assert timeline["version"] == 2
         assert [step["event_type"] for step in timeline["steps"]] == [
@@ -91,12 +103,12 @@ def test_chatroom_timeline_aggregates_task_runs_with_server_sequence(fresh_db):
         db.refresh(first_run)
         db.refresh(second_run)
 
-        append_task_event(db, first_run, "agent_turn_started", agent_name="Valet", summary="First start.")
-        append_task_event(db, second_run, "agent_turn_started", agent_name="Coder", summary="Second start.")
+        _append_task_event(db, first_run, "agent_turn_started", agent_name="Valet", summary="First start.")
+        _append_task_event(db, second_run, "agent_turn_started", agent_name="Coder", summary="Second start.")
 
         db.refresh(first_run)
         db.refresh(second_run)
-        timeline = build_chatroom_timeline_projection([first_run, second_run], chatroom_id=chatroom.id)
+        timeline = _build_chatroom_timeline_projection([first_run, second_run], chatroom_id=chatroom.id)
 
         assert timeline["scope"] == "chatroom"
         assert [step["sequence"] for step in timeline["steps"]] == [1, 2]
@@ -125,21 +137,21 @@ def test_task_run_timeline_projects_llm_fact_events(fresh_db):
         db.commit()
         db.refresh(task_run)
 
-        append_task_event(
+        _append_task_event(
             db,
             task_run,
             "llm_request_created",
             agent_name="Valet",
             payload={"turn": 1, "step_id": "llm:Valet:1"},
         )
-        append_task_event(
+        _append_task_event(
             db,
             task_run,
             "llm_response_started",
             agent_name="Valet",
             payload={"turn": 1, "step_id": "llm:Valet:1"},
         )
-        append_task_event(
+        _append_task_event(
             db,
             task_run,
             "llm_response_completed",
@@ -148,7 +160,7 @@ def test_task_run_timeline_projects_llm_fact_events(fresh_db):
         )
 
         db.refresh(task_run)
-        timeline = build_task_run_timeline_projection(task_run)
+        timeline = _build_task_run_timeline_projection(task_run)
 
         assert [step["phase"] for step in timeline["steps"]] == ["request", "response_started", "response"]
         assert all(step["kind"] == "llm" for step in timeline["steps"])
