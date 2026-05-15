@@ -2640,7 +2640,7 @@ function renderTaskRunTrace(
               }}
             >
               <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "Done" : step.state === "error" ? "!" : ""}
+                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
               </span>
               <span className="message-stream-step__copy">
                 <span className="message-stream-step__title-line">
@@ -4954,7 +4954,7 @@ function renderCompactCard(
         }}
       >
         <span className={`chat-progress-item__state chat-progress-item__state--${state}`} aria-hidden="true">
-          {state === "done" ? "Done" : state === "error" ? "!" : state === "blocked" ? "!" : ""}
+          {state === "done" ? "✓" : state === "error" ? "!" : state === "blocked" ? "!" : ""}
         </span>
         <span className="chat-progress-item__index">{itemIndex + 1}</span>
         <span className="chat-progress-item__copy">
@@ -5221,7 +5221,7 @@ function renderMessage(
               }}
             >
               <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "Done" : step.state === "error" ? "!" : ""}
+                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
               </span>
               <span className="message-stream-step__copy">
                 <span className="message-stream-step__title-line">
