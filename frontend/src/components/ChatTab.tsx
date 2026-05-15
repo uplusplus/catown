@@ -587,7 +587,7 @@ function ProcessTreeNode({
         {runtimeChildCount > 0 ? <span className="process-tree__meta">{runtimeChildCount} child</span> : null}
         {node.timestamp ? <span className="process-tree__meta">{formatTime(node.timestamp)}</span> : null}
         {processMetaChips.map((chip) => <span key={chip} className="process-tree__meta process-tree__meta--chip">{chip}</span>)}
-        {processActions.length > 0 ? <span className="process-tree__meta process-tree__meta--actions">{processActions.join(" 璺?")}</span> : null}
+        {processActions.length > 0 ? <span className="process-tree__meta process-tree__meta--actions">{processActions.join(" · ")}</span> : null}
       </div>
       <div className="process-tree__actions">
         {canInspect ? (
@@ -877,9 +877,9 @@ function isInternalContinuationSummary(value: string | null | undefined) {
     normalized.includes("rebuild_turn_state_from_tool_round") ||
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
-    normalized.includes("continue agent turn 璺?via") ||
+    normalized.includes("continue agent turn · via") ||
     normalized.includes("continue agent turn - via") ||
-    normalized.includes(" 璺?via ") ||
+    normalized.includes(" · via ") ||
     normalized.includes(" - via ")
   );
 }
@@ -1046,74 +1046,6 @@ function chatFacingTaskRunText(taskRun: TaskRunSummary, detail: TaskRunDetail | 
   terminalSummary: taskSummary || agentResponse?.response || userRequest,
     actor: agentResponse?.agent || actorName || "Agent",
   };
-}
-
-function canTaskRunEventUpdateChatDetail(eventType: string | null | undefined) {
-  const normalized = (eventType || "").toLowerCase();
-  return new Set([
-    "agent_turn_started",
-    "agent_turn_completed",
-    "tool_call_started",
-    "tool_round_recorded",
-    "approval_queue_item_created",
-    "approval_queue_item_resolved",
-    "approval_queue_item_followup_triggered",
-    "scheduler_step_dispatched",
-    "scheduler_step_resumed",
-    "scheduler_step_completed",
-    "scheduler_step_failed",
-    "handoff_created",
-    "task_run_failed",
-  ]).has(normalized);
-}
-
-function isInternalTaskActivityStep(step: TaskActivityProjection["steps"][number]) {
-  return !canTaskRunEventUpdateChatDetail(step.event_type);
-}
-
-function chatFacingActivityStepText(step: TaskActivityProjection["steps"][number], taskRun: TaskRunSummary, detail: TaskRunDetail | null) {
-  const rawDetail = step.detail || step.summary || "";
-  const detailText = userFacingTaskRunSummary(rawDetail);
-  const projection = chatFacingTaskRunText(taskRun, detail, step.agent || taskRun.target_agent_name || "Agent");
-  const eventType = (step.event_type || "").toLowerCase();
-
-  if (eventType === "agent_turn_completed" && projection.agentResponse?.response) {
-    return oneLinePreview(projection.agentResponse.response, "Agent responded.", 160);
-  }
-  if (eventType === "tool_round_recorded" && projection.toolResult?.result) {
-    return oneLinePreview(projection.toolResult.result, "Tool returned output.", 160);
-  }
-  if (eventType === "tool_call_started" && projection.toolCall?.argumentsText) {
-    return oneLinePreview(projection.toolCall.argumentsText, "Tool call started.", 160);
-  }
-  if (eventType === "scheduler_step_dispatched" || eventType === "scheduler_step_resumed" || eventType === "handoff_created") {
-    return detailText ||
-      (step.agent ? `${projection.actor} asked ${step.agent} to help.` : `${projection.actor} delegated part of the work.`);
-  }
-  if (eventType === "scheduler_step_completed") {
-    return detailText ||
-      (step.agent ? `${step.agent} returned from the subtask.` : "A subtask returned.");
-  }
-  if (eventType === "agent_turn_started") {
-    return projection.userRequest ? `Working on: ${oneLinePreview(projection.userRequest, "your request", 140)}` : "Preparing the next model response.";
-  }
-  if (eventType === "approval_queue_item_created") {
-    return detailText || "Waiting for your approval.";
-  }
-  if (eventType === "approval_queue_item_resolved" || eventType === "approval_queue_item_followup_triggered") {
-    return detailText || "Continuing after approval.";
-  }
-  if (eventType === "task_run_failed" || eventType === "scheduler_step_failed") {
-    return detailText || "Task failed.";
-  }
-  return undefined;
-}
-
-function chatFacingActivityStepDetailContent(step: TaskActivityProjection["steps"][number], visibleDetail: string | undefined) {
-  if (!visibleDetail) return undefined;
-  if (isInternalTaskRunEventSummary(step.detail_content)) return visibleDetail;
-  if (isInternalTaskRunEventSummary(step.detail) || isInternalTaskRunEventSummary(step.summary)) return visibleDetail;
-  return step.detail_content || visibleDetail;
 }
 
 function timelineStepLabel(step: ChatTimelineStep) {
@@ -1387,7 +1319,7 @@ function summarizeTaskRunInlineStatus(
     if (pendingTimeoutItem) {
       return {
         tone: "info" as const,
-        label: blockedToolName ? `Running 璺?${blockedToolName}` : "Running command",
+        label: blockedToolName ? `Running · ${blockedToolName}` : "Running command",
         detail:
           pendingTimeoutCommand
             ? oneLinePreview(pendingTimeoutCommand, "Command still running.", 132)
@@ -1396,7 +1328,7 @@ function summarizeTaskRunInlineStatus(
     }
     return {
       tone: "warning" as const,
-      label: blockedToolName ? `Waiting for approval 璺?${blockedToolName}` : "Waiting for approval",
+      label: blockedToolName ? `Waiting for approval · ${blockedToolName}` : "Waiting for approval",
       detail: `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
     };
   }
@@ -1421,7 +1353,7 @@ function summarizeTaskRunInlineStatus(
       if (latestResolutionAction === "tool_replayed") {
         return {
           tone: "info" as const,
-          label: latestToolName ? `Continuing 璺?${latestToolName}` : "Continuing",
+          label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
           detail:
             latestReplayStatus === "failed"
               ? "Tool replay failed. Finalizing task state."
@@ -1432,7 +1364,7 @@ function summarizeTaskRunInlineStatus(
       }
       return {
         tone: "info" as const,
-        label: latestToolName ? `Running 璺?${latestToolName}` : "Running",
+        label: latestToolName ? `Running · ${latestToolName}` : "Running",
         detail: latestResumeSupported
           ? "Continuing execution."
           : "Updating task state.",
@@ -1442,7 +1374,7 @@ function summarizeTaskRunInlineStatus(
       const latestStartedArguments = typeof latestPayload?.arguments === "string" ? latestPayload.arguments : "";
       return {
         tone: "info" as const,
-        label: `Running 璺?${latestStartedToolName}`,
+        label: `Running · ${latestStartedToolName}`,
         detail: latestStartedArguments
           ? oneLinePreview(latestStartedArguments, "Tool has started executing.", 132)
           : "Tool has started executing.",
@@ -1451,7 +1383,7 @@ function summarizeTaskRunInlineStatus(
     if (latestEventTypeValue === "approval_queue_item_followup_triggered") {
       return {
         tone: "info" as const,
-        label: latestToolName ? `Continuing 璺?${latestToolName}` : "Continuing",
+        label: latestToolName ? `Continuing · ${latestToolName}` : "Continuing",
         detail: "Handing the latest tool result back to the agent.",
       };
     }
@@ -1461,14 +1393,14 @@ function summarizeTaskRunInlineStatus(
       if (latestResultStatus === "succeeded" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running 璺?${latestToolName}`,
+          label: `Running · ${latestToolName}`,
           detail: oneLinePreview(latestResultText, "Tool finished, continuing the task.", 132),
         };
       }
       if (latestResultStatus === "failed" && latestToolName) {
         return {
           tone: "info" as const,
-          label: `Running 璺?${latestToolName}`,
+          label: `Running · ${latestToolName}`,
           detail: oneLinePreview(latestResultText, "Tool returned an error; task is still proceeding.", 132),
         };
       }
@@ -1493,7 +1425,7 @@ function summarizeTaskRunInlineStatus(
       return {
         tone: "info" as const,
         label: chatProjection.subtaskDispatch.agent
-          ? `Subtask 璺?${chatProjection.subtaskDispatch.agent}`
+          ? `Subtask · ${chatProjection.subtaskDispatch.agent}`
           : "Subtask",
         detail: chatProjection.subtaskDispatch.summary ||
           (chatProjection.subtaskDispatch.agent
@@ -1503,7 +1435,7 @@ function summarizeTaskRunInlineStatus(
     }
     return {
       tone: "info" as const,
-      label: latestToolName ? `Running 璺?${latestToolName}` : "Running",
+      label: latestToolName ? `Running · ${latestToolName}` : "Running",
           detail:
             chatProjection.userRequest
               ? `Working on: ${oneLinePreview(chatProjection.userRequest, "your request", 132)}`
@@ -1553,66 +1485,7 @@ function runtimeHandleLabel(value: unknown) {
   const agentName = typeof handle["agent_name"] === "string" ? handle["agent_name"] : "";
   const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "";
   const controlState = typeof handle["control_state"] === "string" ? String(handle["control_state"]).replace(/_/g, " ") : "";
-  return [agentName, dispatchKind, controlState].filter(Boolean).join(" 璺?");
-}
-
-function buildSyntheticHandleTraceStep(activity: TaskActivityProjection | null, taskRun: TaskRunSummary): MessageStreamStep | null {
-  const background = activity?.background;
-  if (!background || typeof background !== "object") return null;
-  const handle = (
-    background.active_consult_handle && typeof background.active_consult_handle === "object"
-      ? background.active_consult_handle
-      : background.active_subagent_handle && typeof background.active_subagent_handle === "object"
-        ? background.active_subagent_handle
-        : null
-  ) as Record<string, unknown> | null;
-  if (!handle) return null;
-  const stepId = typeof handle["step_id"] === "string" ? handle["step_id"] : "";
-  const agentName =
-    typeof handle["agent_name"] === "string"
-      ? handle["agent_name"]
-      : typeof handle["requested_name"] === "string"
-        ? handle["requested_name"]
-        : typeof handle["agent_type"] === "string"
-          ? handle["agent_type"]
-          : taskRun.target_agent_name || "subagent";
-  const dispatchKind = typeof handle["dispatch_kind"] === "string" ? handle["dispatch_kind"] : "subagent";
-  const controlState =
-    typeof handle["control_state"] === "string"
-      ? handle["control_state"]
-      : typeof handle["status"] === "string"
-        ? handle["status"]
-        : "running";
-  const summaryText = typeof handle["summary_text"] === "string" ? handle["summary_text"].trim() : "";
-  const responsePreview = typeof handle["response_preview"] === "string" ? handle["response_preview"].trim() : "";
-  const dependencyStepId = typeof handle["dependency_step_id"] === "string" ? handle["dependency_step_id"].trim() : "";
-  const availableActions = Array.isArray(handle["available_actions"])
-    ? handle["available_actions"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : [];
-  const detailParts = [
-    responsePreview,
-    !responsePreview ? controlState.replace(/_/g, " ") : "",
-    dependencyStepId ? `waiting on ${dependencyStepId}` : "",
-    availableActions.length > 0 ? `actions: ${availableActions.join(", ")}` : "",
-  ].filter(Boolean);
-  const detailText = summaryText || detailParts.join(" | ");
-  const detailContent = [
-    `Active handle: ${agentName} (${dispatchKind})`,
-    summaryText ? `Summary: ${summaryText}` : "",
-    `State: ${controlState.replace(/_/g, " ")}`,
-    dependencyStepId ? `Dependency: ${dependencyStepId}` : "",
-    availableActions.length > 0 ? `Available actions: ${availableActions.join(", ")}` : "",
-    responsePreview ? `Preview: ${responsePreview}` : "",
-  ].filter(Boolean).join("\n");
-  return {
-    id: `handle:${stepId || dispatchKind}`,
-    label: `${agentName} ${dispatchKind}`,
-    detail: detailText,
-    detailContent,
-    state: "live",
-    agent: agentName,
-    runId: taskRun.id,
-  };
+  return [agentName, dispatchKind, controlState].filter(Boolean).join(" · ");
 }
 
 function consultCardBody(card: ThreadCard) {
@@ -1906,7 +1779,7 @@ function readShellCommandPreview(argumentsText: string | undefined) {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const command = typeof parsed.command === "string" ? parsed.command.trim() : "";
     const cwd = typeof parsed.cwd === "string" && parsed.cwd.trim() !== "." ? parsed.cwd.trim() : "";
-    if (command && cwd) return `${oneLinePreview(command, "", 160)} 璺?cwd ${oneLinePreview(cwd, "", 60)}`;
+    if (command && cwd) return `${oneLinePreview(command, "", 160)} · cwd ${oneLinePreview(cwd, "", 60)}`;
     if (command) return oneLinePreview(command, "", 180);
   } catch {
     return oneLinePreview(raw, "", 180);
@@ -2129,7 +2002,7 @@ function renderTaskRunShellOutput(taskRun: TaskRunSummary, cards: ThreadCard[]) 
     shellCards.length > 1 ? `${shellCards.length} updates` : "",
   ]
     .filter(Boolean)
-    .join(" 璺?");
+    .join(" · ");
 
   return (
     <section className={`task-run-shell-output ${isRunning ? "is-live" : ""} ${isError ? "is-error" : ""}`}>
@@ -2510,51 +2383,6 @@ function buildContextCompactionDetail(payload: Record<string, unknown> | undefin
     sections.unshift(markdownSection("Summary", fallbackSummary, { asMarkdown: true }));
   }
   return sections.join("\n\n");
-}
-
-function buildTaskRunTraceSteps(taskRun: TaskRunSummary, detail: TaskRunDetail | null): MessageStreamStep[] {
-  const events = detail?.events ?? [];
-  const visibleEvents = events.filter((event) => canTaskRunEventUpdateChatDetail(event.event_type));
-  const recentEvents = visibleEvents.slice(-6);
-  const isRunning = (taskRun.status || "").toLowerCase() === "running";
-  const latestActiveEventId =
-    [...recentEvents].reverse().find((event) => event.event_type !== "context_compaction")?.id ??
-    recentEvents[recentEvents.length - 1]?.id ??
-    null;
-  const displayEvents =
-    isRunning && latestActiveEventId !== null && recentEvents[recentEvents.length - 1]?.id !== latestActiveEventId
-      ? [
-          ...recentEvents.filter((event) => event.id !== latestActiveEventId),
-          recentEvents.find((event) => event.id === latestActiveEventId),
-        ].filter((event): event is TaskRunEvent => Boolean(event))
-      : recentEvents;
-
-  return displayEvents.map((event) => {
-    const tone = taskRunEventTone(event.event_type);
-    const state: MessageStreamStep["state"] =
-      event.id === latestActiveEventId && isRunning
-        ? "live"
-        : tone === "error"
-          ? "error"
-          : "done";
-    const detailBits = [
-      event.agent_name || null,
-      event.created_at ? formatTime(event.created_at) : null,
-    ].filter(Boolean);
-
-    return {
-      id: `task-run-${taskRun.id}-event-${event.id}`,
-      label: oneLinePreview(
-        event.summary || formatTaskRunEventType(event.event_type),
-        formatTaskRunEventType(event.event_type),
-        104,
-      ),
-      detail: detailBits.join(" 璺?") || formatTaskRunEventType(event.event_type),
-      detailContent: buildTaskRunTraceDetailContent(event),
-      state,
-      agent: event.agent_name || taskRun.target_agent_name || undefined,
-    };
-  });
 }
 
 function clipFailureAnalysisText(value: string | undefined | null, limit = 1800) {
@@ -3064,11 +2892,11 @@ function cardTitle(card: ThreadCard) {
     case "stage_end":
       return `${card.stage || "Stage"} completed`;
     case "gate_blocked":
-      return `Manual gate 璺?${card.display_name || card.stage || "approval needed"}`;
+      return `Manual gate · ${card.display_name || card.stage || "approval needed"}`;
     case "gate_approved":
-      return `Gate approved 璺?${card.stage || "pipeline"}`;
+      return `Gate approved · ${card.stage || "pipeline"}`;
     case "gate_rejected":
-      return `Gate rejected 璺?${card.from_stage || "stage"} -> ${card.to_stage || "rollback"}`;
+      return `Gate rejected · ${card.from_stage || "stage"} -> ${card.to_stage || "rollback"}`;
     case "skill_inject":
       return `${card.agent || "agent"} skill injection`;
     case "agent_message":
@@ -3162,11 +2990,11 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
 function llmInboundStepLabel(actor: string, finishReason?: string) {
   switch (finishReason) {
     case "tool_calls":
-      return `LLM -> ${actor} 璺?requested tools`;
+      return `LLM -> ${actor} · requested tools`;
     case "stop":
-      return `LLM -> ${actor} 璺?final answer`;
+      return `LLM -> ${actor} · final answer`;
     case "length":
-      return `LLM -> ${actor} 璺?partial answer`;
+      return `LLM -> ${actor} · partial answer`;
     default:
       return `LLM -> ${actor}`;
   }
@@ -3177,7 +3005,7 @@ function toolCallStepLabel(actor: string, toolName: string) {
 }
 
 function toolOutputStepLabel(actor: string, toolName: string) {
-  return `Tool Output 璺?${actor} 璺?${toolName}`;
+  return `Tool Output · ${actor} · ${toolName}`;
 }
 
 function compactToolCallId(toolCallId?: string | null) {
@@ -3216,7 +3044,7 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
     typeof turn === "number" ? `turn ${turn}` : "",
   ]
     .filter(Boolean)
-    .join(" 璺?");
+    .join(" · ");
 }
 
 type LlmUsageSummary = {
@@ -3339,7 +3167,7 @@ function renderLlmUsageFooter(summary: LlmUsageSummary | null, className = "chat
   if (typeof summary.outputTokens === "number") items.push(`out ${formatCompactTokenCount(summary.outputTokens)}`);
   if (typeof summary.totalTokens === "number") items.push(`tok ${formatCompactTokenCount(summary.totalTokens)}`);
   if (summary.contextUsageRatio !== undefined && summary.contextWindow !== undefined) {
-    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} 璺?${formatCompactTokenCount(summary.contextWindow)}`);
+    items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)} · ${formatCompactTokenCount(summary.contextWindow)}`);
   } else if (summary.contextUsageRatio !== undefined) {
     items.push(`ctx ${formatUsagePercent(summary.contextUsageRatio)}`);
   } else if (summary.contextWindow !== undefined) {
@@ -3383,7 +3211,7 @@ function messageStepDetailFromCard(card: ThreadCard) {
         typeof card.duration_ms === "number" ? `${card.duration_ms}ms` : "",
       ]
         .filter(Boolean)
-        .join(" 璺?");
+        .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
       {
         const timingsMarkdown = buildLlmTimingsMarkdown(card.timings);
@@ -4140,7 +3968,7 @@ function renderLlmExchangePanel(
 
   const isOutbound = direction === "outbound";
   const badge = isOutbound ? "Prompt" : "Response";
-  const title = isOutbound ? `Prompt 璺?${actorName} -> LLM` : `Response 璺?LLM -> ${actorName}`;
+  const title = isOutbound ? `Prompt · ${actorName} -> LLM` : `Response · LLM -> ${actorName}`;
   const avatarLabel = initials(actorName) || "AG";
 
   return (
@@ -4652,7 +4480,7 @@ function renderCompactCardBody(card: ThreadCard) {
         typeof card.duration_ms === "number" ? `${card.duration_ms}ms` : "",
       ]
         .filter(Boolean)
-        .join(" 璺?");
+        .join(" · ");
       const outboundSections = [
         buildLlmTimingsMarkdown(card.timings),
         card.systemPromptPresentation?.markdown || "",
@@ -4736,9 +4564,9 @@ function renderCompactCardBody(card: ThreadCard) {
               <div className="chat-progress-detail-block__header">
                 <span className="chat-json-badge">CALL</span>
                 <span className="chat-progress-detail-block__label">
-                  #{index + 1} 璺?{item.tool || card.tool || "tool"}
-                  {typeof item.duration_ms === "number" ? ` 璺?${item.duration_ms}ms` : ""}
-                  {isToolCardFailure(item) ? " 璺?failed" : isInternalToolPause(item) ? " 璺?paused" : ""}
+                  #{index + 1} · {item.tool || card.tool || "tool"}
+                  {typeof item.duration_ms === "number" ? ` · ${item.duration_ms}ms` : ""}
+                  {isToolCardFailure(item) ? " · failed" : isInternalToolPause(item) ? " · paused" : ""}
                 </span>
               </div>
               <div className="chat-progress-detail-stack chat-progress-detail-stack--nested">
@@ -4797,10 +4625,10 @@ function renderCardSurface(
           </div>
           <div className="chat-tool-card__detail">
             {card.source || "chatroom"}
-            {"model" in card && card.model ? ` 璺?${card.model}` : ""}
-            {"turn" in card && card.turn ? ` 璺?turn ${card.turn}` : ""}
-            {"duration_ms" in card && typeof card.duration_ms === "number" ? ` 璺?${card.duration_ms}ms` : ""}
-            {"success" in card && typeof card.success === "boolean" ? ` 璺?${card.success ? "success" : "failed"}` : ""}
+            {"model" in card && card.model ? ` · ${card.model}` : ""}
+            {"turn" in card && card.turn ? ` · turn ${card.turn}` : ""}
+            {"duration_ms" in card && typeof card.duration_ms === "number" ? ` · ${card.duration_ms}ms` : ""}
+            {"success" in card && typeof card.success === "boolean" ? ` · ${card.success ? "success" : "failed"}` : ""}
           </div>
         </div>
         <div className="chat-tool-card__detail">{formatTime(card.created_at)}</div>
@@ -4882,7 +4710,7 @@ function compactCardMeta(card: ThreadCard) {
   if ("success" in card && typeof card.success === "boolean") {
     bits.push(card.success ? "ok" : "failed");
   }
-  return bits.join(" 璺?");
+  return bits.join(" · ");
 }
 
 function compactCardDefaultOpen(card: ThreadCard, isLive: boolean) {
@@ -4923,7 +4751,7 @@ function compactCardSummary(card: ThreadCard) {
     case "agent_error":
       return oneLinePreview(card.error || card.summary || card.content, "Agent flow failed.");
     case "tool_merge":
-      return `${card.count} calls 璺?${card.tool || "tool"} 璺?latest ${oneLinePreview(card.items[card.items.length - 1]?.result, "completed")}`;
+      return `${card.count} calls · ${card.tool || "tool"} · latest ${oneLinePreview(card.items[card.items.length - 1]?.result, "completed")}`;
     case "llm_call":
       if (card.finish_reason === "tool_calls") {
         return oneLinePreview(
@@ -5157,7 +4985,7 @@ function renderActivityBatch(
                 <span>Agent activity</span>
               </div>
               <div className="chat-tool-card__detail">
-                {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} 璺?{cards.length} action
+                {orderedGroups.length} agent{orderedGroups.length === 1 ? "" : "s"} · {cards.length} action
                 {cards.length === 1 ? "" : "s"}
               </div>
             </div>
@@ -5191,7 +5019,7 @@ function renderActivityBatch(
                     <span className="chat-agent-activity__copy">
                       <strong>{group.name}</strong>
                       <small>
-                        {group.cards.length} step{group.cards.length === 1 ? "" : "s"} 璺?{formatTime(group.latestAt)}
+                        {group.cards.length} step{group.cards.length === 1 ? "" : "s"} · {formatTime(group.latestAt)}
                       </small>
                     </span>
                     <span className={`chat-agent-activity__pill ${isActiveGroup ? "is-live" : ""}`}>
@@ -5452,7 +5280,7 @@ function renderTaskRunInlineCard(
             : liveActivity.state === "blocked"
               ? ("warning" as const)
               : ("info" as const),
-        label: liveActivity.actor ? `${liveActivity.actor} 璺?${liveActivity.title}` : liveActivity.title,
+        label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
     : summarizeTaskRunInlineStatus(taskRun, detail, activity, pendingApprovalOverride, actorName);
@@ -5477,7 +5305,7 @@ function renderTaskRunInlineCard(
                 <span className="soft-pill">run #{taskRun.id}</span>
               </div>
               <div className="chat-tool-card__detail">
-                {taskIdLabel ? `${actorName} 璺?${taskRun.title}` : taskRun.title}
+                {taskIdLabel ? `${actorName} · ${taskRun.title}` : taskRun.title}
               </div>
             </div>
             <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
@@ -7822,7 +7650,7 @@ export function ChatTab({
                         <span className="agent-chat__mention-avatar">{initials(getAgentDisplayName(agent))}</span>
                         <span className="agent-chat__mention-copy">
                           <span className="agent-chat__mention-name">@{getAgentType(agent)}</span>
-                          <span className="agent-chat__mention-role">{getAgentDisplayName(agent)} 璺?{agent.role}</span>
+                          <span className="agent-chat__mention-role">{getAgentDisplayName(agent)} · {agent.role}</span>
                         </span>
                         <span className={`agent-chat__mention-state ${agent.is_active ? "is-active" : ""}`}>
                           {agent.is_active ? "online" : "idle"}

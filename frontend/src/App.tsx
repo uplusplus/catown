@@ -975,11 +975,11 @@ function llmOutboundStepLabel(actor: string, toolName?: string) {
 function llmInboundStepLabel(actor: string, finishReason?: string) {
   switch (finishReason) {
     case "tool_calls":
-      return `LLM -> ${actor} 路 requested tools`;
+      return `LLM -> ${actor} · requested tools`;
     case "stop":
-      return `LLM -> ${actor} 路 final answer`;
+      return `LLM -> ${actor} · final answer`;
     case "length":
-      return `LLM -> ${actor} 路 partial answer`;
+      return `LLM -> ${actor} · partial answer`;
     default:
       return `LLM -> ${actor}`;
   }
@@ -990,7 +990,7 @@ function toolCallStepLabel(actor: string, toolName: string) {
 }
 
 function toolOutputStepLabel(actor: string, toolName: string) {
-  return `Tool Output 路 ${actor} 路 ${toolName}`;
+  return `Tool Output · ${actor} · ${toolName}`;
 }
 
 function buildToolWaitKey(actor: string, toolCallIndex?: number, toolName?: string) {
@@ -1006,7 +1006,7 @@ function buildLlmMetaSummary(model?: string, turn?: number) {
     typeof turn === "number" ? `turn ${turn}` : "",
   ]
     .filter(Boolean)
-    .join(" 路 ");
+    .join(" · ");
 }
 
 function buildLlmPlannedToolsMarkdown(toolCalls?: ChatCardItem["tool_calls"]) {
@@ -1033,7 +1033,7 @@ function isActorInboundStep(step: MessageStreamStep, actor: string) {
   return (
     (step.agent === actor && step.kind === "llm_inbound") ||
     step.label === llmInboundStepLabel(actor) ||
-    step.label.startsWith(`LLM -> ${actor} 路 `)
+    step.label.startsWith(`LLM -> ${actor} · `)
   );
 }
 
@@ -1320,7 +1320,7 @@ function buildLlmResponseStepDetail(card: ChatCardItem) {
   }
   if (card.response) bits.push(summarizeStepDetail(card.response));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
-  return bits.filter(Boolean).join(" 路 ");
+  return bits.filter(Boolean).join(" · ");
 }
 
 function buildToolCallStepDetail(card: ChatCardItem) {
@@ -1330,7 +1330,7 @@ function buildToolCallStepDetail(card: ChatCardItem) {
   if (card.result && isRunningToolRuntimeCard(card)) bits.push(summarizeStepDetail(card.result, 140));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
-  return bits.filter(Boolean).join(" 路 ");
+  return bits.filter(Boolean).join(" · ");
 }
 
 function buildToolResultStepDetail(card: ChatCardItem) {
@@ -1338,7 +1338,7 @@ function buildToolResultStepDetail(card: ChatCardItem) {
   if (card.result) bits.push(summarizeStepDetail(card.result));
   if (typeof card.duration_ms === "number") bits.push(`${card.duration_ms}ms`);
   if (typeof card.success === "boolean") bits.push(card.success ? "ok" : "failed");
-  return bits.filter(Boolean).join(" 路 ");
+  return bits.filter(Boolean).join(" · ");
 }
 
 function buildUnifiedToolStepDetail(card: ChatCardItem) {
@@ -1404,7 +1404,7 @@ function buildCardStepDetail(card: ChatCardItem) {
       break;
   }
 
-  return bits.filter(Boolean).join(" 路 ");
+  return bits.filter(Boolean).join(" · ");
 }
 
 function buildCardStepDetailContent(card: ChatCardItem) {
@@ -1424,7 +1424,7 @@ function buildCardStepDetailContent(card: ChatCardItem) {
               : "",
       ]
         .filter(Boolean)
-        .join(" 路 ");
+        .join(" · ");
       if (meta) sections.push(`### Meta\n\n- ${meta}`);
       const outcomeSummary = llmOutcomeSummary(card);
       if (outcomeSummary) sections.push(buildStatusMarkdown(outcomeSummary));
@@ -1533,9 +1533,9 @@ function isInternalTaskRunSummary(value: string | null | undefined) {
     normalized.includes("rebuild_turn_state_from_tool_round") ||
     normalized.includes("protocol_tail") ||
     normalized.includes("prior_round_summaries") ||
-    normalized.includes("continue agent turn 路 via") ||
+    normalized.includes("continue agent turn · via") ||
     normalized.includes("continue agent turn - via") ||
-    normalized.includes(" 路 via ") ||
+    normalized.includes(" · via ") ||
     normalized.includes(" - via ") ||
     normalized === "user message saved." ||
     normalized === "user message saved for execution." ||
@@ -1686,7 +1686,7 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
     candidateTokens !== null && selectedTokens !== null ? `${candidateTokens} -> ${selectedTokens} tokens` : "",
     `${droppedCount} dropped`,
     `${truncatedCount} truncated`,
-  ].filter(Boolean).join(" 路 ");
+  ].filter(Boolean).join(" · ");
   const detailContent = [
     fallbackSummary ? `### Summary\n\n${fallbackSummary}` : "",
     `### Why\n\nThe context selector compacted the prompt${budget ? ` to fit the ${budget} budget` : ""}.`,
@@ -1732,7 +1732,7 @@ function buildRecoveredTaskRunLiveStep(message: MessageItem, taskRun: TaskRunSum
 
   if (pendingApprovalCount > 0) {
     return {
-      label: toolName ? `${actor} is waiting for approval 路 ${toolName}` : `${actor} is waiting for approval`,
+      label: toolName ? `${actor} is waiting for approval · ${toolName}` : `${actor} is waiting for approval`,
       detail: statusSummary || `${pendingApprovalCount} pending approval request${pendingApprovalCount === 1 ? "" : "s"}.`,
       kind: "tool_call" as const,
       tool: toolName || undefined,
@@ -3830,7 +3830,7 @@ function App() {
             }
             liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
             const detail = elapsedText
-              ? `Planning ${toolName} 路 ${elapsedText}`
+              ? `Planning ${toolName} · ${elapsedText}`
               : `Planning ${toolName}`;
             commitOptimisticMessages((current) =>
               updateMessage(current, readAssistantMessageId(), (message) => {
@@ -3961,7 +3961,7 @@ function App() {
               const elapsedText = formatStreamingElapsed(
                 typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
               );
-              const waitStatus = elapsedText ? `Running tool 路 ${elapsedText}` : "Running tool";
+              const waitStatus = elapsedText ? `Running tool · ${elapsedText}` : "Running tool";
               const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
               commitOptimisticMessages((current) =>
                 updateMessage(current, readAssistantMessageId(), (message) => {
