@@ -626,12 +626,15 @@ textarea {
 .flow-container {
   min-height: clamp(320px, 46vh, 560px);
   background: linear-gradient(180deg, rgba(15, 111, 255, 0.02), rgba(15, 111, 255, 0));
-  overflow: auto;
+  overflow: visible;
   padding: 14px;
 }
 
 .flow-topology {
   position: relative;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   min-height: clamp(320px, 46vh, 560px);
   padding: 18px;
   border-radius: 16px;
@@ -639,7 +642,7 @@ textarea {
     radial-gradient(120% 80% at 10% 0%, rgba(15, 111, 255, 0.09), transparent 45%),
     radial-gradient(120% 100% at 100% 100%, rgba(16, 185, 129, 0.08), transparent 42%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
-  overflow: auto;
+  overflow: clip;
 }
 
 .flow-topology--compact {
@@ -667,36 +670,68 @@ textarea {
 .flow-topology__lanes {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(var(--flow-topology-columns, 1), max-content);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   column-gap: clamp(16px, 2vw, 28px);
   row-gap: 16px;
   align-items: start;
-  justify-content: space-between;
-  width: max-content;
+  justify-content: stretch;
+  width: 100%;
   min-width: 100%;
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__lanes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--flow-topology-inter-group-gap, clamp(28px, 3vw, 56px));
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: clamp(14px, 1.4vw, 24px);
+  row-gap: clamp(18px, 2vw, 28px);
   width: 100%;
   min-width: 0;
-  justify-content: flex-start;
-  align-items: flex-start;
-  align-content: flex-start;
+  justify-content: stretch;
+  align-items: stretch;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group {
+  min-width: 0;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--entry {
+  grid-column: 1 / 3;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--client {
+  grid-column: 3 / 5;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--platform {
+  grid-column: 5 / 7;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--runtime {
+  grid-column: 7 / 10;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--llm {
+  grid-column: 10 / 13;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--capabilities {
+  grid-column: 1 / 9;
+}
+
+.flow-topology:not(.flow-topology--compact) .flow-topology__group--outside {
+  grid-column: 9 / 13;
 }
 
 .flow-topology__column {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  width: max-content;
+  width: 100%;
   min-width: 0;
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__column {
-  flex: 0 0 auto;
+  flex: none;
 }
 
 .flow-topology__zone {
@@ -707,16 +742,14 @@ textarea {
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__zone {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: var(--flow-zone-min-width, clamp(420px, 28vw, 640px));
+  width: 100%;
+  min-width: 0;
   max-width: none;
   padding: 18px;
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__zone--outside {
-  flex: 0 1 auto;
-  width: fit-content;
+  width: 100%;
 }
 
 .flow-topology__zone::before {
@@ -779,7 +812,7 @@ textarea {
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__zone-grid {
-  padding-left: var(--flow-zone-label-channel, var(--flow-topology-label-channel, 120px));
+  padding-left: clamp(28px, 6vw, var(--flow-zone-label-channel, var(--flow-topology-label-channel, 120px)));
   gap: clamp(18px, 2vw, 30px);
 }
 
@@ -796,12 +829,13 @@ textarea {
 }
 
 .flow-topology:not(.flow-topology--compact) .flow-topology__zone-row {
-  gap: clamp(18px, 2vw, 30px);
-  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: clamp(12px, 1.4vw, 22px);
+  justify-content: flex-start;
 }
 
 .flow-topology__lane {
-  width: max-content;
+  width: 100%;
   min-width: 0;
 }
 
@@ -832,7 +866,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: max-content;
+  width: 100%;
   min-width: 0;
 }
 
@@ -840,8 +874,56 @@ textarea {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: clamp(18px, 2vw, 30px);
-  max-width: min(100%, 40vw);
+  gap: clamp(12px, 1.4vw, 22px);
+  max-width: 100%;
+}
+
+@media (max-width: 1200px) {
+  .flow-topology:not(.flow-topology--compact) .flow-topology__lanes {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--entry {
+    grid-column: 1 / 3;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--client {
+    grid-column: 3 / 5;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--platform {
+    grid-column: 5 / 7;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--runtime {
+    grid-column: 1 / 4;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--llm {
+    grid-column: 4 / 7;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--capabilities {
+    grid-column: 1 / 5;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group--outside {
+    grid-column: 5 / 7;
+  }
+}
+
+@media (max-width: 760px) {
+  .flow-topology:not(.flow-topology--compact) .flow-topology__lanes {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__group {
+    grid-column: 1 / -1;
+  }
+
+  .flow-topology:not(.flow-topology--compact) .flow-topology__zone-grid {
+    padding-left: 0;
+  }
 }
 
 .flow-topology__edge {
@@ -916,8 +998,9 @@ textarea {
   --flow-node-accent: #64748b;
   position: relative;
   z-index: 5;
-  width: fit-content;
-  min-width: clamp(136px, 7vw, 180px);
+  box-sizing: border-box;
+  width: min(100%, var(--flow-node-max-width, 296px));
+  min-width: min(100%, clamp(136px, 7vw, 180px));
   max-width: var(--flow-node-max-width, 296px);
   border: 1px solid color-mix(in srgb, var(--flow-node-accent) 18%, var(--border-primary));
   border-radius: 16px;

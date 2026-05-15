@@ -521,6 +521,10 @@ function displayGroupOrder(group: FlowLaneGroup) {
   return 99;
 }
 
+function groupLayoutClasses(group: FlowLaneGroup) {
+  return group.lanes.map((lane) => `flow-topology__group--${lane.key}`).join(" ");
+}
+
 function measureNodeWidth(node: FlowTopologyNode, compact: boolean) {
   return node.preferredWidth ?? (compact ? 236 : 296);
 }
@@ -574,7 +578,7 @@ function zoneContentWidth(group: FlowLaneGroup, compact: boolean, labelChannelWi
 
 export function FlowTopologyView({ graph, compact = false, className }: FlowTopologyViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const nodeRefs = useRef(new Map<string, HTMLDivElement>());
+  const nodeRefs = useRef(new Map<string, HTMLElement>());
   const [bounds, setBounds] = useState<Record<string, NodeBounds>>({});
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewport, setViewport] = useState<FlowTopologyViewport>({ width: 0, height: 0 });
@@ -617,16 +621,16 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
       const rootRect = container.getBoundingClientRect();
       setContainerWidth(rootRect.width);
       setViewport({
-        width: Math.max(rootRect.width, container.scrollWidth),
-        height: Math.max(rootRect.height, container.scrollHeight),
+        width: rootRect.width,
+        height: rootRect.height,
       });
       const nextBounds: Record<string, NodeBounds> = {};
       graph.nodes.forEach((node) => {
         const element = nodeRefs.current.get(node.id);
         if (!element) return;
         const rect = element.getBoundingClientRect();
-        const left = rect.left - rootRect.left + container.scrollLeft;
-        const top = rect.top - rootRect.top + container.scrollTop;
+        const left = rect.left - rootRect.left;
+        const top = rect.top - rootRect.top;
         nextBounds[node.id] = {
           left,
           top,
@@ -742,8 +746,8 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
       "--flow-zone-min-width": `${minWidth}px`,
       "--flow-zone-width": `${resolvedWidth}px`,
       "--flow-zone-label-channel": `${kind === "outside" ? 0 : labelChannelWidth}px`,
-      width: `${resolvedWidth}px`,
-      flexBasis: `${resolvedWidth}px`,
+      width: "100%",
+      minWidth: `min(100%, ${minWidth}px)`,
       flexGrow: 0,
       flexShrink: 1,
     } as CSSProperties;
@@ -753,9 +757,13 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
     if (compact) {
       return { rows: [group.lanes.flatMap((lane) => lane.nodes)] };
     }
-    const style = zoneGroupStyle(group);
-    const widthSource = style?.width ?? containerWidth ?? 0;
-    const availableWidth = Number.parseFloat(String(widthSource)) || containerWidth;
+    const kind = zoneGroupKind(group);
+    const availableWidth =
+      kind === "capabilities"
+        ? Math.max(360, containerWidth * 0.6)
+        : kind === "outside"
+          ? Math.max(220, containerWidth * 0.28)
+          : containerWidth;
     return buildZoneLayoutPlan(group, compact, availableWidth);
   };
 
@@ -879,6 +887,8 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
             <section
               key={group.id}
               className={[
+                "flow-topology__group",
+                groupLayoutClasses(group),
                 "flow-topology__zone",
                 `flow-topology__zone--${zoneGroupKind(group)}`,
               ].join(" ")}
@@ -906,7 +916,7 @@ export function FlowTopologyView({ graph, compact = false, className }: FlowTopo
               </div>
             </section>
           ) : (
-            <div key={group.id} className="flow-topology__column">
+            <div key={group.id} className={["flow-topology__group", groupLayoutClasses(group), "flow-topology__column"].join(" ")}>
               {group.lanes.map((lane) => (
                 <div
                   key={lane.lane}
