@@ -21,6 +21,7 @@ import type {
   ChatTimelineProjection,
   ConfigSection,
   ConfigResponse,
+  ContextConfigPayload,
   GlobalConfigPayload,
   MessageItem,
   MessageStreamStep,
@@ -89,6 +90,12 @@ const CONFIG_SECTION_META: Record<
     sidebarDescription: "Approval defaults for low-risk read tools",
     title: "Permissions",
     subtitle: "Control whether low-risk read-only tool requests are allowed by default.",
+  },
+  context: {
+    sidebarLabel: "Context",
+    sidebarDescription: "Prompt budgets, selector caps, and compaction thresholds",
+    title: "Context budgets",
+    subtitle: "Tune how much runtime context Catown can inject before fragment dropping or truncation is applied.",
   },
 };
 
@@ -2175,8 +2182,14 @@ function App() {
         label: CONFIG_SECTION_META.permissions.sidebarLabel,
         description: CONFIG_SECTION_META.permissions.sidebarDescription,
       },
+      {
+        id: "context" as const,
+        label: CONFIG_SECTION_META.context.sidebarLabel,
+        description: CONFIG_SECTION_META.context.sidebarDescription,
+        badge: `${Object.keys(config?.context?.selector_profiles ?? {}).length}`,
+      },
     ],
-    [agents],
+    [agents, config?.context?.selector_profiles],
   );
   const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
   const appShellStyle = useMemo(
@@ -3013,6 +3026,7 @@ function App() {
   }
 
   function toggleConfigTab() {
+    setNotice("");
     setActiveTab((currentTab) => (currentTab === "config" ? "chat" : "config"));
   }
 
@@ -3732,7 +3746,6 @@ function App() {
     let chatId = selectedChatId;
     let streamReceivedEvent = false;
     const userTempId = nextTempMessageId();
-    const assistantTempId = nextTempMessageId();
     const createdAt = new Date().toISOString();
     const clientTurnId = options?.clientTurnId;
     let activeAgentName = getAgentDisplayName(primaryAgent);
@@ -3763,20 +3776,8 @@ function App() {
             client_turn_id: clientTurnId,
             optimisticKind: "user",
           },
-          {
-            id: assistantTempId,
-            content: "",
-            message_type: "text",
-            created_at: new Date(Date.now() + 1).toISOString(),
-            agent_name: activeAgentName,
-            client_turn_id: clientTurnId,
-            isStreaming: true,
-            optimisticKind: "assistant_placeholder",
-            streamSteps: [],
-          },
         ]),
       );
-      streamingAssistantIdRef.current = assistantTempId;
       pushEvent(`Sent: ${content.slice(0, 72)}`, "info");
 
       if (!chatId) {
@@ -3805,7 +3806,29 @@ function App() {
       const decoder = new TextDecoder();
       let buffer = "";
 
-      const readAssistantMessageId = () => streamingAssistantIdRef.current ?? assistantTempId;
+      const ensureStreamingAssistantMessage = () => {
+        if (streamingAssistantIdRef.current !== null) {
+          return streamingAssistantIdRef.current;
+        }
+        const assistantMessageId = nextTempMessageId();
+        streamingAssistantIdRef.current = assistantMessageId;
+        commitOptimisticMessages((current) =>
+          mergeMessages(current, [
+            {
+              id: assistantMessageId,
+              content: "",
+              message_type: "text",
+              created_at: new Date().toISOString(),
+              agent_name: activeAgentName,
+              client_turn_id: clientTurnId,
+              isStreaming: true,
+            },
+          ]),
+        );
+        return assistantMessageId;
+      };
+
+      const readAssistantMessageId = () => ensureStreamingAssistantMessage();
 
       const flushPendingContent = () => {
         if (!pendingContentDelta) return;
@@ -3847,6 +3870,9 @@ function App() {
             if (typeof data.id === "number") {
               commitOptimisticMessages((current) => replaceMessageId(current, userTempId, data.id));
             }
+            if (typeof data.task_run_id === "number") {
+              void refreshRuntimeForTaskRun(data.task_run_id);
+            }
             break;
           case "agent_start":
             if (typeof data.agent_name === "string" && data.agent_name) {
@@ -3857,36 +3883,11 @@ function App() {
             liveLlmModel = typeof data.model === "string" ? data.model : "";
             liveLlmTurn = typeof data.turn === "number" ? data.turn : undefined;
             liveLlmTimings = {};
-            const statusDetail = buildFieldStatusDetail([
-              ["Agent", activeAgentName],
-              ["LLM", "request"],
-              ["Model", liveLlmModel],
-              ["Turn", liveLlmTurn !== undefined ? String(liveLlmTurn) : ""],
-            ]);
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...message,
-                agent_name: activeAgentName,
-                statusDetail,
-              })),
-            );
             pushEvent(`Agent: ${activeAgentName}`, "info");
             break;
           case "collab_start": {
             const agentNames = readStringArray(data.agents);
-            const statusDetail = buildFieldStatusDetail([
-              ["Agents", agentNames.join(", ")],
-              ["Mode", "multi_agent"],
-            ]);
             activeAgentName = "pipeline";
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...message,
-                agent_name: "pipeline",
-                content: agentNames.length > 0 ? `Pipeline: ${agentNames.join(" -> ")}\n\n` : message.content,
-                statusDetail,
-              })),
-            );
             if (agentNames.length > 0) {
               pushEvent(`Agents: ${agentNames.join(", ")}`, "info");
             }
@@ -3897,18 +3898,10 @@ function App() {
             activeAgentName = agentName;
             const step = typeof data.step === "number" ? data.step : "?";
             const total = typeof data.total === "number" ? data.total : "?";
-            const statusDetail = buildFieldStatusDetail([
+            pushEvent(buildFieldStatusDetail([
               ["Plan", `${step}/${total}`],
               ["Agent", agentName],
-            ]);
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...message,
-                agent_name: "pipeline",
-                statusDetail,
-              })),
-            );
-            pushEvent(statusDetail, "info");
+            ]), "info");
             break;
           }
           case "collab_step_done":
@@ -3948,26 +3941,6 @@ function App() {
             if (data.type === "first_content" && elapsedMs !== undefined) {
               liveLlmTimings = { ...liveLlmTimings, first_content_ms: elapsedMs };
             }
-            const phase =
-              data.type === "request_sent"
-                ? "request"
-                : data.type === "first_chunk"
-                  ? "response_started"
-                  : "content_started";
-            const statusDetail = buildFieldStatusDetail([
-              ["Agent", activeAgentName],
-              ["LLM", phase],
-              ["Model", liveLlmModel],
-              ["Turn", liveLlmTurn !== undefined ? String(liveLlmTurn) : ""],
-              ["Elapsed", elapsedMs !== undefined ? formatStreamingElapsed(elapsedMs) : ""],
-            ]);
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => ({
-                ...message,
-                agent_name: message.agent_name || activeAgentName,
-                statusDetail,
-              })),
-            );
             break;
           }
           case "tool_call_delta": {
@@ -3979,67 +3952,10 @@ function App() {
             const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
             const rawToolArgs = typeof data.args === "string" ? data.args : "";
             const elapsedMs = typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined;
-            const elapsedText = formatStreamingElapsed(elapsedMs);
             if (elapsedMs !== undefined && liveLlmTimings.first_tool_call_ms === undefined) {
               liveLlmTimings = { ...liveLlmTimings, first_tool_call_ms: elapsedMs };
             }
             liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
-            const detail = buildFieldStatusDetail([
-              ["Tool", toolName],
-              ["Status", "args_delta"],
-              ["Elapsed", elapsedText],
-            ]);
-            const fileHints = collectToolFileHints(toolName, rawToolArgs);
-            const statusDetail = buildFieldStatusDetail([
-              ["Tool", toolName],
-              ["Status", "args_delta"],
-              ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
-              ["Files", fileHints.join(", ")],
-            ]);
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) => {
-                const baseMessage = {
-                  ...message,
-                  agent_name: message.agent_name || activeAgentName,
-                  statusDetail,
-                };
-
-                const nextMessage = patchMatchingStreamingStep(
-                  baseMessage,
-                  (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
-                  {
-                    label: toolCallStepLabel(activeAgentName, toolName),
-                    detail,
-                    detailContent: buildLiveToolCallDetailContent(rawToolArgs, detail),
-                    state: "live",
-                    kind: "tool_call",
-                    agent: activeAgentName,
-                    tool: toolName,
-                    toolCallIndex,
-                    toolCallId,
-                  },
-                );
-
-                if (nextMessage !== baseMessage) {
-                  return nextMessage;
-                }
-
-                return pushStreamingStep(
-                  baseMessage,
-                  toolCallStepLabel(activeAgentName, toolName),
-                  detail,
-                  "live",
-                  buildLiveToolCallDetailContent(rawToolArgs, detail),
-                  {
-                    kind: "tool_call",
-                    agent: activeAgentName,
-                    tool: toolName,
-                    toolCallIndex,
-                    toolCallId,
-                  },
-                );
-              }),
-            );
             break;
           }
           case "tool_call_ready":
@@ -4060,64 +3976,6 @@ function App() {
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
               const rawToolArgs = typeof data.args === "string" && data.args.trim() ? data.args.trim() : "";
               liveToolArgs.set(buildToolWaitKey(activeAgentName, toolCallIndex, toolName), rawToolArgs);
-              const toolArgs = buildFieldStatusDetail([
-                ["Tool", toolName],
-                ["Status", "started"],
-                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
-              ]);
-              const fileHints = collectToolFileHints(toolName, rawToolArgs);
-              const statusDetail = buildFieldStatusDetail([
-                ["Tool", toolName],
-                ["Status", "started"],
-                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
-                ["Files", fileHints.join(", ")],
-              ]);
-              commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) => {
-                  const baseMessage = {
-                    ...message,
-                    agent_name: message.agent_name || activeAgentName,
-                    statusDetail,
-                  };
-
-                  const nextMessage = patchMatchingStreamingStep(
-                    baseMessage,
-                    (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
-                    {
-                      label: toolCallStepLabel(activeAgentName, toolName),
-                      detail: toolArgs,
-                      detailContent: buildLiveToolCallDetailContent(rawToolArgs),
-                      state: "live",
-                      kind: "tool_call",
-                      agent: activeAgentName,
-                      tool: toolName,
-                      toolCallIndex,
-                      toolCallId,
-                    },
-                  );
-
-                  if (nextMessage !== baseMessage) {
-                    return nextMessage;
-                  }
-
-                  return {
-                    ...pushStreamingStep(
-                      baseMessage,
-                      toolCallStepLabel(activeAgentName, toolName),
-                      toolArgs,
-                      "live",
-                      buildLiveToolCallDetailContent(rawToolArgs),
-                      {
-                        kind: "tool_call",
-                        agent: activeAgentName,
-                        tool: toolName,
-                        toolCallIndex,
-                        toolCallId,
-                      },
-                    ),
-                  };
-                }),
-              );
               pushEvent(`Tool: ${toolName}`, "warning");
             }
             break;
@@ -4133,52 +3991,6 @@ function App() {
             }
             if (typeof data.tool === "string") {
               const toolName = data.tool;
-              const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
-              const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
-              const elapsedText = formatStreamingElapsed(
-                typeof data.elapsed_ms === "number" ? data.elapsed_ms : undefined,
-              );
-              const waitStatus = buildFieldStatusDetail([
-                ["Tool", toolName],
-                ["Status", "running"],
-                ["Elapsed", elapsedText],
-              ]);
-              const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
-              const fileHints = collectToolFileHints(toolName, rawToolArgs);
-              const statusDetail = buildFieldStatusDetail([
-                ["Tool", toolName],
-                ["Status", "running"],
-                ["Elapsed", elapsedText],
-                ["Args", rawToolArgs ? summarizeStepDetail(readToolArgumentSummary(rawToolArgs), 180) : ""],
-                ["Files", fileHints.join(", ")],
-              ]);
-              commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) => {
-                  const existingStep = findMatchingStreamStep(message, (step) =>
-                    isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
-                  );
-                  const shouldKeepExistingOutput = streamStepHasToolOutput(existingStep);
-                  return patchMatchingStreamingStep(
-                    {
-                      ...message,
-                      agent_name: message.agent_name || activeAgentName,
-                      statusDetail,
-                    },
-                    (step) => step.state === "live" && isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
-                    {
-                      detail: shouldKeepExistingOutput ? existingStep?.detail : waitStatus,
-                      detailContent: shouldKeepExistingOutput ? existingStep?.detailContent : buildLiveToolCallDetailContent(rawToolArgs, waitStatus),
-                      state: "live",
-                      kind: "tool_call",
-                      agent: activeAgentName,
-                      tool: toolName,
-                      toolCallIndex,
-                      toolCallId,
-                    },
-                    toolCallStepLabel(activeAgentName, toolName),
-                  );
-                }),
-              );
             }
             break;
           case "tool_result":
@@ -4189,7 +4001,6 @@ function App() {
               const toolName = data.tool;
               const toolCallIndex = typeof data.tool_call_index === "number" ? data.tool_call_index : undefined;
               const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : null;
-              const rawToolArgs = liveToolArgs.get(buildToolWaitKey(activeAgentName, toolCallIndex, toolName)) ?? "";
               liveToolArgs.delete(buildToolWaitKey(activeAgentName, toolCallIndex, toolName));
               const rawResult = typeof data.result === "string" ? data.result : "";
               const blockedKind = typeof data.blocked_kind === "string" ? data.blocked_kind.trim().toLowerCase() : "";
@@ -4199,39 +4010,6 @@ function App() {
                 (blockedKind === "approval" || blockedKind === "timeout" || status === "approval_blocked" || status === "timeout_waiting");
               const failed =
                 internalPause ? false : typeof data.success === "boolean" ? data.success === false : isToolResultFailure(rawResult);
-              const resultPreview =
-                rawResult.trim()
-                  ? rawResult.replace(/\s+/g, " ").trim().slice(0, 140)
-                  : "";
-              const fileHints = collectToolFileHints(toolName, rawToolArgs);
-              const statusDetail = buildFieldStatusDetail([
-                ["Tool", toolName],
-                ["Status", failed ? "failed" : "completed"],
-                ["Result", resultPreview ? summarizeStepDetail(resultPreview, 180) : ""],
-                ["Files", fileHints.join(", ")],
-              ]);
-              commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) => {
-                  return patchMatchingStreamingStep(
-                    { ...message, statusDetail },
-                    (step) => isActorToolCallStepByRef(step, activeAgentName, toolName, toolCallIndex, toolCallId),
-                    {
-                      detail: resultPreview,
-                      detailContent: [
-                        buildLiveToolCallDetailContent(rawToolArgs),
-                        buildToolResultToLlmDetailContent(rawResult, failed),
-                      ].filter(Boolean).join("\n\n"),
-                      state: failed ? "error" : "done",
-                      kind: "tool_call",
-                      agent: activeAgentName,
-                      tool: toolName,
-                      toolCallIndex,
-                      toolCallId,
-                    },
-                    toolCallStepLabel(activeAgentName, toolName),
-                  );
-                }),
-              );
               pushEvent(`Tool: ${toolName} ${failed ? "failed" : "completed"}`, failed ? "error" : "success");
             }
             break;
@@ -4243,22 +4021,6 @@ function App() {
                 : activeAgentName;
             const pendingTool =
               typeof data.tool === "string" && data.tool ? data.tool : "tool";
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (message) =>
-                finalizeStreamingTrace(
-                  {
-                    ...message,
-                    agent_name: finalAgentName,
-                    isStreaming: false,
-                    statusDetail: buildFieldStatusDetail([
-                      ["Approval", pendingTool],
-                      ["Status", "pending"],
-                    ]),
-                  },
-                  "done",
-                ),
-              ),
-            );
             pushEvent(`Approval: ${pendingTool}`, "warning");
             break;
           }
@@ -4285,40 +4047,23 @@ function App() {
                   },
                 ]),
               );
-              commitOptimisticMessages((current) =>
-                replaceMessageId(
-                  current,
-                  readAssistantMessageId(),
-                  savedMessageId,
-                  finalizeStreamingTrace(
-                    {
-                      id: savedMessageId,
-                      content: "",
-                      created_at: new Date().toISOString(),
-                      message_type: "text",
-                      ...current.find((item) => item.id === readAssistantMessageId()),
-                      agent_name: finalAgentName,
-                      client_turn_id: savedClientTurnId,
-                      isStreaming: false,
-                    },
-                    "done",
-                  ),
-                ),
-              );
-              streamingAssistantIdRef.current = savedMessageId;
+              if (streamingAssistantIdRef.current !== null) {
+                commitOptimisticMessages((current) =>
+                  current.filter((item) => item.id !== streamingAssistantIdRef.current),
+                );
+              }
+              streamingAssistantIdRef.current = null;
             } else {
-              commitOptimisticMessages((current) =>
-                updateMessage(current, readAssistantMessageId(), (message) =>
-                  finalizeStreamingTrace(
-                    {
-                      ...message,
-                      agent_name: finalAgentName,
-                      isStreaming: false,
-                    },
-                    "done",
-                  ),
-                ),
-              );
+              flushPendingContent();
+              if (streamingAssistantIdRef.current !== null) {
+                commitOptimisticMessages((current) =>
+                  updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) => ({
+                    ...message,
+                    agent_name: finalAgentName,
+                    isStreaming: false,
+                  })),
+                );
+              }
             }
             pushEvent(`${finalAgentName} replied`, "success");
             if (connectionState !== "connected" || joinedRoomRef.current !== chatId) {
@@ -4331,21 +4076,16 @@ function App() {
               typeof data.error === "string" && data.error
                 ? data.error
                 : "Streaming failed";
-            commitOptimisticMessages((current) =>
-              updateMessage(current, readAssistantMessageId(), (item) =>
-                finalizeStreamingTrace(
-                  {
-                    ...item,
-                    content: item.content || `Error: ${message}`,
-                    agent_name: activeAgentName,
-                    isStreaming: false,
-                  },
-                  "error",
-                  "Failed",
-                  message,
-                ),
-              ),
-            );
+            if (streamingAssistantIdRef.current !== null) {
+              commitOptimisticMessages((current) =>
+                updateMessage(current, streamingAssistantIdRef.current ?? 0, (item) => ({
+                  ...item,
+                  content: item.content || `Error: ${message}`,
+                  agent_name: activeAgentName,
+                  isStreaming: false,
+                })),
+              );
+            }
             pushEvent(`Message stream failed: ${message}`, "error");
             setError(message);
             break;
@@ -4388,17 +4128,14 @@ function App() {
       flushPendingContent();
 
       if (!streamCompleted) {
-        commitOptimisticMessages((current) =>
-          updateMessage(current, readAssistantMessageId(), (message) =>
-            finalizeStreamingTrace(
-              {
-                ...message,
-                isStreaming: false,
-              },
-              "done",
-            ),
-          ),
-        );
+        if (streamingAssistantIdRef.current !== null) {
+          commitOptimisticMessages((current) =>
+            updateMessage(current, streamingAssistantIdRef.current ?? 0, (message) => ({
+              ...message,
+              isStreaming: false,
+            })),
+          );
+        }
         if (connectionState !== "connected" || joinedRoomRef.current !== chatId) {
           await refreshMessages(false, chatId);
         }
@@ -4754,6 +4491,24 @@ function App() {
     }
   }
 
+  async function handleSaveContext(payload: ContextConfigPayload) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.saveContextConfig(payload);
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
+      setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
+      setNotice("Context config saved.");
+      pushEvent("Context config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save context config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveAgent(
     agentName: string,
     payload: AgentConfigPayload,
@@ -4889,6 +4644,7 @@ function App() {
         settingsSections={settingsSections}
         selectedSettingsSection={activeConfigSection}
         onSelectSettingsSection={(section) => {
+          setNotice("");
           setActiveConfigSection(section);
           setActiveTab("config");
           setSidebarDrawerOpen(false);
@@ -5054,6 +4810,7 @@ function App() {
             onSaveGlobal={handleSaveGlobal}
             onSaveOrchestration={handleSaveOrchestration}
             onSavePermissions={handleSavePermissions}
+            onSaveContext={handleSaveContext}
             authorizationRules={authorizationRules}
             onRevokeAuthorizationRule={handleRevokeAuthorizationRule}
             onSaveAgent={handleSaveAgent}

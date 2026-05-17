@@ -1168,6 +1168,9 @@ function shouldRenderInlineTaskRun(taskRun: TaskRunSummary) {
   const clientTurnId = (taskRun.client_turn_id || "").trim().toLowerCase();
   if (clientTurnId.startsWith("delegate-")) return true;
 
+  const status = (taskRun.status || "").trim().toLowerCase();
+  if (["pending", "running", "paused", "blocked", "failed", "cancelled"].includes(status)) return true;
+
   const runKind = (taskRun.run_kind || "").trim().toLowerCase();
   return runKind.includes("pipeline") || runKind.includes("orchestration");
 }
