@@ -4,7 +4,6 @@ REM Catown - Windows Launcher
 REM q=quit  r=restart
 REM
 REM Run from any directory. Uvicorn output is visible in this console.
-REM Uses start /B so uvicorn shares this cmd window.
 REM PID is captured immediately after launch for clean restart.
 
 setlocal enabledelayedexpansion
@@ -18,6 +17,8 @@ if not defined CATOWN_STATE_DIR set "CATOWN_STATE_DIR=%CATOWN_HOME%\state"
 if not defined CATOWN_PROJECTS_ROOT set "CATOWN_PROJECTS_ROOT=%CATOWN_HOME%\projects"
 if not defined CATOWN_WORKSPACES_DIR set "CATOWN_WORKSPACES_DIR=%CATOWN_HOME%\workspaces"
 set "CATOWN_ENV_FILE=%CATOWN_HOME%\.env"
+set "RUN_RELOAD_FLAG="
+if "%CATOWN_RELOAD%"=="1" set "RUN_RELOAD_FLAG=--reload"
 
 if not exist "%CATOWN_HOME%" mkdir "%CATOWN_HOME%" >nul 2>&1
 if not exist "%CATOWN_CONFIG_DIR%" mkdir "%CATOWN_CONFIG_DIR%" >nul 2>&1
@@ -63,11 +64,13 @@ pushd "%BACKEND%"
 %PYTHON_CMD% -c "import fastapi" >nul 2>&1
 if errorlevel 1 (
     echo Installing dependencies...
-    %PYTHON_CMD% -m pip install -r requirements.txt
+    call :INSTALL_DEPS
     if errorlevel 1 (
         popd
         echo [ERROR] Dependency installation failed.
-        echo         Check your network or pip index configuration, then retry.
+        echo         PyPI may be blocked by your network or SSL inspection.
+        echo         Try setting a mirror before retrying:
+        echo         set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
         exit /b 1
     )
 )
@@ -95,16 +98,17 @@ echo.
 echo Starting Catown...
 echo   Web:      http://localhost:%RUN_PORT%
 echo   API Docs: http://localhost:%RUN_PORT%/docs
+if defined RUN_RELOAD_FLAG echo   Reload:   enabled
 
 pushd "%BACKEND%"
-start "Catown" /B %PYTHON_CMD% -m uvicorn main:app --reload --host 0.0.0.0 --port %RUN_PORT%
+start "Catown" /B %PYTHON_CMD% -m uvicorn main:app %RUN_RELOAD_FLAG% --host 0.0.0.0 --port %RUN_PORT%
 popd
 
 :: Capture PID (retry a few times for startup delay)
 for /l %%i in (1,1,10) do (
     if not defined PID (
         call :FIND_PID
-        if not defined PID timeout /t 1 /nobreak >nul
+        if not defined PID call :SLEEP_ONE
     )
 )
 
@@ -128,6 +132,7 @@ echo.
 :LOOP
 set "cmd="
 set /p "cmd=? "
+if errorlevel 1 goto :QUIT
 if "!cmd!"=="" goto :LOOP
 if /i "!cmd!"=="q" goto :QUIT
 if /i "!cmd!"=="r" goto :RESTART
@@ -138,9 +143,8 @@ goto :LOOP
 :: ==========================================
 :RESTART
 echo Restarting...
-if defined PID taskkill /PID %PID% /F >nul 2>&1
-set "PID="
-timeout /t 1 /nobreak >nul
+call :STOP_SERVER
+call :SLEEP_ONE
 goto :LAUNCH
 
 :: ==========================================
@@ -148,10 +152,50 @@ goto :LAUNCH
 :: ==========================================
 :QUIT
 echo Stopping...
-if defined PID taskkill /PID %PID% /F >nul 2>&1
-set "PID="
+call :STOP_SERVER
 echo Done.
 exit /b 0
+
+:: ==========================================
+:: Stop all uvicorn processes for the current port
+:: ==========================================
+:STOP_SERVER
+if defined PID taskkill /PID %PID% /T /F >nul 2>&1
+call :KILL_UVICORN_BY_PORT
+call :SLEEP_ONE
+call :KILL_UVICORN_BY_PORT
+set "PID="
+exit /b 0
+
+:SLEEP_ONE
+powershell -NoProfile -Command "Start-Sleep -Seconds 1" >nul 2>&1
+exit /b 0
+
+:KILL_UVICORN_BY_PORT
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter 'Name = ''python.exe''' | Where-Object { $_.CommandLine -like '*uvicorn main:app*' -and $_.CommandLine -like '*--port %RUN_PORT%*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+exit /b 0
+
+:: ==========================================
+:: Install Python dependencies with mirror fallback
+:: ==========================================
+:INSTALL_DEPS
+%PYTHON_CMD% -m pip install -r requirements.txt
+if not errorlevel 1 exit /b 0
+
+if defined PIP_INDEX_URL (
+    echo [ERROR] pip install failed with PIP_INDEX_URL=%PIP_INDEX_URL%
+    exit /b 1
+)
+
+echo Default PyPI failed. Retrying with Tsinghua mirror...
+%PYTHON_CMD% -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+if not errorlevel 1 exit /b 0
+
+echo Tsinghua mirror failed. Retrying with Aliyun mirror...
+%PYTHON_CMD% -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+if not errorlevel 1 exit /b 0
+
+exit /b 1
 
 :: ==========================================
 :: Find PID of our uvicorn process
@@ -159,7 +203,7 @@ exit /b 0
 :FIND_PID
 set "PID="
 for /f "usebackq delims=" %%p in (
-    `powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | Where-Object { $_.CommandLine -like '*uvicorn main:app*' -and $_.CommandLine -like '*--port %RUN_PORT%*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { Write-Output $p }" 2^>nul`
+    `powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter 'Name = ''python.exe''' | Where-Object { $_.CommandLine -like '*uvicorn main:app*' -and $_.CommandLine -like '*--port %RUN_PORT%*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { Write-Output $p }" 2^>nul`
 ) do (
     if not "%%~p"=="" set "PID=%%~p"
 )
@@ -191,22 +235,39 @@ exit /b %errorlevel%
 
 :: ==========================================
 :: Resolve a supported Python runtime
-:: Prefer the current PATH python if it is 3.10+,
-:: otherwise try the Windows launcher.
+:: Prefer an explicit CATOWN_PYTHON, then common Conda installs,
+:: then PATH python / py launcher for first-install machines.
 :: ==========================================
 :RESOLVE_PYTHON
-python -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)" >nul 2>&1
-if not errorlevel 1 (
-    set "PYTHON_CMD=python"
-    exit /b 0
+if defined CATOWN_PYTHON (
+    call :TRY_SUPPORTED_PYTHON "%CATOWN_PYTHON%"
+    if not errorlevel 1 exit /b 0
+    echo [ERROR] CATOWN_PYTHON is set but is not a supported Python 3.10+: %CATOWN_PYTHON%
+    exit /b 1
 )
 
+if exist "%USERPROFILE%\miniconda3\python.exe" (
+    call :TRY_SUPPORTED_PYTHON "%USERPROFILE%\miniconda3\python.exe"
+    if not errorlevel 1 exit /b 0
+)
+if exist "%USERPROFILE%\anaconda3\python.exe" (
+    call :TRY_SUPPORTED_PYTHON "%USERPROFILE%\anaconda3\python.exe"
+    if not errorlevel 1 exit /b 0
+)
+
+call :TRY_SUPPORTED_PYTHON python
+if not errorlevel 1 exit /b 0
+
 for %%v in (3.15 3.14 3.13 3.12 3.11 3.10) do (
-    py -%%v -c "import sys; raise SystemExit(0)" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_CMD=py -%%v"
-        exit /b 0
-    )
+    call :TRY_SUPPORTED_PYTHON py -%%v
+    if not errorlevel 1 exit /b 0
 )
 
 exit /b 1
+
+:TRY_SUPPORTED_PYTHON
+set "CANDIDATE=%*"
+%CANDIDATE% -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)" >nul 2>&1
+if errorlevel 1 exit /b 1
+set "PYTHON_CMD=%CANDIDATE%"
+exit /b 0

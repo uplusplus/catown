@@ -129,7 +129,7 @@ def _load_agent_tools():
     if not os.path.exists(config_file):
         return
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
+        with open(config_file, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         for name, cfg in data.get("agents", {}).items():
             AGENT_TOOLS[name] = cfg.get("tools", [])

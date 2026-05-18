@@ -78,6 +78,8 @@ from services.context_builder import (
 from services.chat_prompt_builder import (
     agent_base_system_prompt as shared_agent_base_system_prompt,
     build_chat_context_selector as shared_build_chat_context_selector,
+    default_selector_profiles,
+    effective_selector_profiles,
 )
 from services.agent_lifecycle_runtime import (
     cancel_runtime_task_run,
@@ -406,6 +408,39 @@ class PermissionsConfigModel(BaseModel):
 
     allow_read_only_tools_without_approval: bool = True
     auto_approve_all: bool = False
+
+
+class ContextSelectorProfileModel(BaseModel):
+    """Runtime context-selector budget config for one profile."""
+
+    allowed_visibilities: Optional[List[str]] = None
+    allowed_scopes: Optional[List[str]] = None
+    max_fragments: Optional[int] = Field(default=None, ge=1, le=500)
+    max_tokens_cap: Optional[int] = Field(default=None, ge=1, le=1000000)
+    max_tokens_by_role: Dict[str, int] = Field(default_factory=dict)
+    max_tokens_by_scope: Dict[str, int] = Field(default_factory=dict)
+    truncate_to_budget: bool = True
+    min_tokens_for_truncation: int = Field(default=48, ge=1, le=10000)
+
+    @field_validator("max_tokens_by_role", "max_tokens_by_scope")
+    @classmethod
+    def validate_positive_budget_map(cls, value: Dict[str, int]) -> Dict[str, int]:
+        normalized: Dict[str, int] = {}
+        for key, raw_limit in (value or {}).items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            limit = int(raw_limit)
+            if limit <= 0:
+                raise ValueError("context budget values must be positive")
+            normalized[label] = limit
+        return normalized
+
+
+class ContextConfigModel(BaseModel):
+    """Runtime context management config stored in agents.json."""
+
+    selector_profiles: Dict[str, ContextSelectorProfileModel] = Field(default_factory=dict)
 
 
 router = APIRouter()
@@ -6967,6 +7002,10 @@ async def get_config():
         },
         "orchestration": _effective_orchestration_config(),
         "permissions": _effective_permissions_config(),
+        "context": {
+            "selector_profiles": effective_selector_profiles(),
+            "default_selector_profiles": default_selector_profiles(),
+        },
         "tools": {
             "tool_names": [],
             "tool_policies": [],
@@ -6988,6 +7027,10 @@ async def get_config():
             config["global_llm"] = agents_config.get("global_llm", {})
             config["orchestration"] = _effective_orchestration_config(agents_config)
             config["permissions"] = _effective_permissions_config(agents_config)
+            config["context"] = {
+                "selector_profiles": effective_selector_profiles(agents_config),
+                "default_selector_profiles": default_selector_profiles(),
+            }
 
             agents_data = dict(agents_config.get("agents", {}))
             if "assistant" in agents_data and DEFAULT_AGENT_TYPE not in agents_data:
@@ -7184,6 +7227,48 @@ async def update_permissions_config(config: PermissionsConfigModel):
         return {"message": "Permissions config updated", "permissions": data["permissions"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update permissions config: {e}")
+
+
+@router.put("/config/context")
+async def update_context_config(config: ContextConfigModel):
+    """
+    Update runtime context-selector limits stored in agents.json.
+
+    Request body:
+    {
+        "selector_profiles": {
+            "chat_interactive": {
+                "max_fragments": 12,
+                "max_tokens_cap": 16000,
+                "max_tokens_by_role": {"developer": 5000, "user": 11000},
+                "max_tokens_by_scope": {"run": 9000, "turn": 2400}
+            }
+        }
+    }
+    """
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["context"] = config.model_dump()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return {
+            "message": "Context config updated",
+            "context": {
+                "selector_profiles": effective_selector_profiles(data),
+                "default_selector_profiles": default_selector_profiles(),
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update context config: {e}")
 
 
 @router.put("/config/agent/{agent_name}")

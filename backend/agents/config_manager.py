@@ -55,7 +55,7 @@ class AgentConfigManager:
             }
         }
         """
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
         
         return self._parse_config_data(data)

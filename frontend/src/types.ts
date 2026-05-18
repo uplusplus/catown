@@ -1,5 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions";
+export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context";
 
 export type AgentSoul = {
   identity?: string;
@@ -560,9 +560,46 @@ export type MonitorCompactionItem = {
   budget_summary?: string | null;
   scope_usage_summary?: string | null;
   detail_summary?: string | null;
+  reasons?: Array<Record<string, unknown>>;
+  reason_summary?: string | null;
+  prompt_total?: {
+    bytes?: number;
+    tokens?: number;
+    message_count?: number;
+  };
+  prompt_components?: Record<string, {
+    bytes?: number;
+    tokens?: number;
+    chars?: number;
+    message_count?: number;
+    fragment_count?: number;
+  }>;
+  prompt_fragments?: Array<{
+    role?: string;
+    scope?: string;
+    visibility?: string;
+    source?: string;
+    priority?: number;
+    selected?: boolean;
+    chars?: number;
+    bytes?: number;
+    tokens?: number;
+  }>;
   developer?: Record<string, unknown>;
   user?: Record<string, unknown>;
   payload?: Record<string, unknown>;
+};
+
+export type MonitorContextCompactionsResponse = {
+  captured_at: string;
+  limit: number;
+  counts: {
+    total: number;
+    returned: number;
+    dropped: number;
+    truncated: number;
+  };
+  entries: MonitorCompactionItem[];
 };
 
 export type TaskRunResumeResponse = {
@@ -716,6 +753,22 @@ export type ConfigPermissionsDefinition = {
   auto_approve_all?: boolean;
 };
 
+export type ContextSelectorProfileConfig = {
+  allowed_visibilities?: string[] | null;
+  allowed_scopes?: string[] | null;
+  max_fragments?: number | null;
+  max_tokens_cap?: number | null;
+  max_tokens_by_role?: Record<string, number>;
+  max_tokens_by_scope?: Record<string, number>;
+  truncate_to_budget?: boolean;
+  min_tokens_for_truncation?: number;
+};
+
+export type ConfigContextDefinition = {
+  selector_profiles?: Record<string, ContextSelectorProfileConfig>;
+  default_selector_profiles?: Record<string, ContextSelectorProfileConfig>;
+};
+
 export type ConfigResponse = {
   global_llm?: {
     provider?: {
@@ -727,6 +780,7 @@ export type ConfigResponse = {
   };
   orchestration?: ConfigOrchestrationDefinition;
   permissions?: ConfigPermissionsDefinition;
+  context?: ConfigContextDefinition;
   tools?: {
     tool_names?: string[];
     tool_policies?: Array<{
@@ -870,6 +924,10 @@ export type OrchestrationConfigPayload = {
 export type PermissionsConfigPayload = {
   allow_read_only_tools_without_approval: boolean;
   auto_approve_all: boolean;
+};
+
+export type ContextConfigPayload = {
+  selector_profiles: Record<string, ContextSelectorProfileConfig>;
 };
 
 export type MonitorToolSummary = {

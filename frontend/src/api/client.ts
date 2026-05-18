@@ -6,6 +6,7 @@ import type {
   ChatTimelineProjection,
   ChatProcessEntry,
   ConfigResponse,
+  ContextConfigPayload,
   GlobalConfigPayload,
   GitHubProjectImportPayload,
   MonitorLogsResponse,
@@ -20,6 +21,7 @@ import type {
   MonitorTaskRunsResponse,
   MessageItem,
   MonitorOverview,
+  MonitorContextCompactionsResponse,
   MonitorUsageResponse,
   OrchestrationConfigPayload,
   PermissionsConfigPayload,
@@ -396,6 +398,9 @@ export const api = {
   getMonitorOverview() {
     return request<MonitorOverview>("/api/monitor/overview?runtime_limit=80&summary_window=400&message_limit=40");
   },
+  getMonitorContextCompactions(limit = 120) {
+    return request<MonitorContextCompactionsResponse>(`/api/monitor/context-compactions?limit=${limit}`);
+  },
   getMonitorLogs(limit = 250) {
     return request<MonitorLogsResponse>(`/api/monitor/logs?limit=${limit}`);
   },
@@ -456,6 +461,12 @@ export const api = {
   },
   savePermissionsConfig(payload: PermissionsConfigPayload) {
     return request<{ message: string }>("/api/config/permissions", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  saveContextConfig(payload: ContextConfigPayload) {
+    return request<{ message: string }>("/api/config/context", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

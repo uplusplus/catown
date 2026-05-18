@@ -780,6 +780,14 @@ def assemble_messages(
             system_content = f"{system_content}\n\n## Developer Context\n{developer_text}"
         developer = []
 
+    selector_diagnostics["prompt"] = _prompt_diagnostics_payload(
+        system_message={"role": "system", "content": system_content},
+        developer_fragments=selected_developer,
+        user_fragments=selected_user,
+        history_messages=history_messages,
+        current_input_messages=current_input_messages,
+    )
+
     return PromptAssembly(
         system_message={"role": "system", "content": system_content},
         developer_messages=developer,
@@ -859,6 +867,12 @@ def _selector_diagnostics_payload(
     }
     return {
         "compacted": compaction_applied,
+        "reasons": _selector_compaction_reasons(
+            selector=selector,
+            developer_report=developer_report,
+            user_report=user_report,
+            scope_reports=ordered_scope_reports,
+        ),
         "selector": {
             "max_fragments": selector.max_fragments,
             "max_tokens": selector.max_tokens,
@@ -878,6 +892,174 @@ def _selector_diagnostics_payload(
             "by_scope": ordered_scope_reports,
         },
     }
+
+
+def _selector_compaction_reasons(
+    *,
+    selector: ContextSelector,
+    developer_report: SelectorRoleReport,
+    user_report: SelectorRoleReport,
+    scope_reports: Mapping[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    reasons: list[dict[str, Any]] = []
+    total_candidate_count = developer_report.candidate_count + user_report.candidate_count
+    total_selected_count = developer_report.selected_count + user_report.selected_count
+    total_candidate_tokens = developer_report.candidate_tokens + user_report.candidate_tokens
+    total_selected_tokens = developer_report.selected_tokens + user_report.selected_tokens
+
+    if selector.max_fragments is not None and total_candidate_count > selector.max_fragments:
+        reasons.append(
+            {
+                "kind": "max_fragments",
+                "limit": selector.max_fragments,
+                "candidate": total_candidate_count,
+                "selected": total_selected_count,
+            }
+        )
+
+    if selector.max_tokens is not None and total_candidate_tokens > selector.max_tokens:
+        reasons.append(
+            {
+                "kind": "max_tokens",
+                "limit": selector.max_tokens,
+                "candidate": total_candidate_tokens,
+                "selected": total_selected_tokens,
+            }
+        )
+
+    if selector.max_tokens_by_role:
+        role_reports = {"developer": developer_report, "user": user_report}
+        for role, limit in selector.max_tokens_by_role.items():
+            report = role_reports.get(role)
+            if report is not None and report.candidate_tokens > limit:
+                reasons.append(
+                    {
+                        "kind": "role_tokens",
+                        "role": role,
+                        "limit": limit,
+                        "candidate": report.candidate_tokens,
+                        "selected": report.selected_tokens,
+                    }
+                )
+
+    if selector.max_tokens_by_scope:
+        for scope, limit in selector.max_tokens_by_scope.items():
+            report = scope_reports.get(scope)
+            if isinstance(report, dict) and int(report.get("candidate_tokens") or 0) > limit:
+                reasons.append(
+                    {
+                        "kind": "scope_tokens",
+                        "scope": scope,
+                        "limit": limit,
+                        "candidate": int(report.get("candidate_tokens") or 0),
+                        "selected": int(report.get("selected_tokens") or 0),
+                    }
+                )
+
+    if developer_report.truncated_count or user_report.truncated_count:
+        reasons.append(
+            {
+                "kind": "truncated",
+                "count": developer_report.truncated_count + user_report.truncated_count,
+                "sources": [*developer_report.truncated_sources, *user_report.truncated_sources],
+            }
+        )
+    if developer_report.dropped_count or user_report.dropped_count:
+        reasons.append(
+            {
+                "kind": "dropped",
+                "count": developer_report.dropped_count + user_report.dropped_count,
+                "sources": [*developer_report.dropped_sources, *user_report.dropped_sources],
+            }
+        )
+    return reasons
+
+
+def _prompt_diagnostics_payload(
+    *,
+    system_message: dict[str, Any],
+    developer_fragments: Iterable[ContextFragment],
+    user_fragments: Iterable[ContextFragment],
+    history_messages: Optional[Iterable[dict[str, Any]]] = None,
+    current_input_messages: Optional[Iterable[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    history_list = list(history_messages or [])
+    current_input_list = list(current_input_messages or [])
+    developer_list = list(developer_fragments or [])
+    user_list = list(user_fragments or [])
+    developer_messages = [fragment.to_message() for fragment in developer_list]
+    user_messages = [fragment.to_message() for fragment in user_list]
+    all_messages = [
+        system_message,
+        *developer_messages,
+        *user_messages,
+        *history_list,
+        *current_input_list,
+    ]
+
+    components = {
+        "system": _message_collection_size([system_message]),
+        "developer": _fragment_collection_size(developer_list),
+        "user_context": _fragment_collection_size(user_list),
+        "history": _message_collection_size(history_list),
+        "current_input": _message_collection_size(current_input_list),
+    }
+    fragments = [
+        _fragment_size_payload(fragment, selected=True)
+        for fragment in [*developer_list, *user_list]
+    ]
+    return {
+        "total": _message_collection_size(all_messages),
+        "components": components,
+        "fragments": fragments,
+        "message_count": len(all_messages),
+    }
+
+
+def _fragment_collection_size(fragments: Iterable[ContextFragment]) -> dict[str, Any]:
+    fragment_list = list(fragments or [])
+    content = "\n\n".join(fragment.content for fragment in fragment_list)
+    return {
+        **_text_size_payload(content),
+        "fragment_count": len(fragment_list),
+    }
+
+
+def _message_collection_size(messages: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    message_list = list(messages or [])
+    return {
+        "bytes": _json_bytes(message_list),
+        "tokens": estimate_messages_tokens(message_list),
+        "message_count": len(message_list),
+    }
+
+
+def _fragment_size_payload(fragment: ContextFragment, *, selected: bool) -> dict[str, Any]:
+    return {
+        "role": fragment.role,
+        "scope": fragment.scope,
+        "visibility": fragment.visibility,
+        "source": fragment.source,
+        "priority": fragment.priority,
+        "selected": selected,
+        **_text_size_payload(fragment.content),
+    }
+
+
+def _text_size_payload(value: Any) -> dict[str, int]:
+    text = _clean_text(value)
+    return {
+        "chars": len(text),
+        "bytes": len(text.encode("utf-8")),
+        "tokens": estimate_text_tokens(text),
+    }
+
+
+def _json_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    except TypeError:
+        return len(str(value).encode("utf-8"))
 
 
 def _scope_rank(scope: str) -> int:

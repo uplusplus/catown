@@ -25,6 +25,8 @@ import type {
   MonitorLogEntry,
   MonitorNetworkEvent,
   MonitorOverview,
+  MonitorCompactionItem,
+  MonitorContextCompactionsResponse,
   MonitorProcessEntry,
   MonitorProcessesResponse,
   MonitorRuntimeDetail,
@@ -67,6 +69,7 @@ const PRIMARY_PAGES = [
 const MORE_PAGES = [
   { id: "skills", label: "Skills" },
   { id: "models", label: "Models" },
+  { id: "compactions", label: "Compactions" },
   { id: "context", label: "Context" },
   { id: "subagents", label: "Subagents" },
   { id: "tasks", label: "Tasks" },
@@ -1678,6 +1681,238 @@ function monitorCompactionPreview(item: MonitorCompactionItem) {
       item.budget_summary || "",
       item.scope_usage_summary || formatCompactionScopeUsage(item.scope_usage),
     ].filter(Boolean).join(" | ");
+}
+
+function compactionComponentLabel(name: string) {
+  const labels: Record<string, string> = {
+    system: "System prompt",
+    developer: "Developer context",
+    user_context: "User context",
+    history: "Recent history",
+    current_input: "Current input",
+  };
+  return labels[name] ?? name.replace(/_/g, " ");
+}
+
+function compactionComponentEntries(item: MonitorCompactionItem) {
+  const components = item.prompt_components;
+  if (!components) return [];
+  const order = ["system", "developer", "user_context", "history", "current_input"];
+  return Object.entries(components).sort(([left], [right]) => {
+    const leftIndex = order.indexOf(left);
+    const rightIndex = order.indexOf(right);
+    if (leftIndex === -1 && rightIndex === -1) return left.localeCompare(right);
+    if (leftIndex === -1) return 1;
+    if (rightIndex === -1) return -1;
+    return leftIndex - rightIndex;
+  });
+}
+
+function readCompactionReasonNumber(reason: Record<string, unknown>, key: string) {
+  const value = reason[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readCompactionReasonText(reason: Record<string, unknown>, key: string) {
+  const value = reason[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function readCompactionReasonSources(reason: Record<string, unknown>) {
+  const sources = reason.sources;
+  if (!Array.isArray(sources)) return [];
+  return sources.map((source) => String(source)).filter(Boolean);
+}
+
+function describeCompactionReason(reason: Record<string, unknown>) {
+  const kind = readCompactionReasonText(reason, "kind") || "reason";
+  const limit = readCompactionReasonNumber(reason, "limit");
+  const candidate = readCompactionReasonNumber(reason, "candidate");
+  const selected = readCompactionReasonNumber(reason, "selected");
+  const count = readCompactionReasonNumber(reason, "count");
+  const role = readCompactionReasonText(reason, "role");
+  const scope = readCompactionReasonText(reason, "scope");
+  const subject = role || scope;
+
+  if (kind === "max_fragments") {
+    return {
+      label: "Fragment cap",
+      detail: `${formatNumber(candidate)} candidate fragments exceeded the ${formatNumber(limit)} fragment limit; ${formatNumber(selected)} were selected.`,
+    };
+  }
+  if (kind === "max_tokens") {
+    return {
+      label: "Token budget",
+      detail: `${formatNumber(candidate)} candidate tokens exceeded the ${formatNumber(limit)} token cap; ${formatNumber(selected)} were selected.`,
+    };
+  }
+  if (kind === "role_tokens") {
+    return {
+      label: `${subject || "Role"} budget`,
+      detail: `${formatNumber(candidate)} candidate tokens for ${subject || "this role"} exceeded the ${formatNumber(limit)} token cap; ${formatNumber(selected)} were selected.`,
+    };
+  }
+  if (kind === "scope_tokens") {
+    return {
+      label: `${subject || "Scope"} budget`,
+      detail: `${formatNumber(candidate)} candidate tokens in ${subject || "this scope"} exceeded the ${formatNumber(limit)} token cap; ${formatNumber(selected)} were selected.`,
+    };
+  }
+  if (kind === "truncated") {
+    return {
+      label: "Truncated fragments",
+      detail: `${formatNumber(count)} selected fragments were shortened to fit the active budget.`,
+    };
+  }
+  if (kind === "dropped") {
+    return {
+      label: "Dropped fragments",
+      detail: `${formatNumber(count)} candidate fragments were left out after ranking and budget checks.`,
+    };
+  }
+  return {
+    label: kind.replace(/_/g, " "),
+    detail: compactMonitorJson(reason, 240),
+  };
+}
+
+function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
+  const componentEntries = compactionComponentEntries(item);
+  const fragmentEntries = item.prompt_fragments ?? [];
+  const visibleFragments = fragmentEntries.slice(0, 18);
+  const reasons = item.reasons ?? [];
+  const promptTokens = item.prompt_total?.tokens ?? 0;
+  const selectionPercent = item.candidate_tokens
+    ? Math.round(((item.selected_tokens ?? 0) / Math.max(item.candidate_tokens, 1)) * 100)
+    : undefined;
+
+  return (
+    <div className="compaction-detail">
+      <div className="compaction-detail__context">
+        <span>{item.chat_title || "Unknown chat"}</span>
+        {item.project_name ? <span>{item.project_name}</span> : null}
+        {item.task_run_title ? <span>{item.task_run_title}</span> : null}
+      </div>
+
+      <div className="compaction-detail__summary-grid">
+        <div className="compaction-detail__metric">
+          <span>Prompt total</span>
+          <strong>{formatNumber(promptTokens)} tok</strong>
+          <small>{formatBytes(item.prompt_total?.bytes)}</small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Selection</span>
+          <strong>{formatNumber(item.selected_tokens)} / {formatNumber(item.candidate_tokens)}</strong>
+          <small>{selectionPercent !== undefined ? `${selectionPercent}% kept` : "tokens"}</small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Fragments</span>
+          <strong>{formatNumber(item.selected_count)} / {formatNumber(item.candidate_count)}</strong>
+          <small>{formatNumber(item.dropped_count)} dropped, {formatNumber(item.truncated_count)} truncated</small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Limits</span>
+          <strong>{item.max_tokens ? `${formatNumber(item.max_tokens)} tok` : "--"}</strong>
+          <small>{item.max_fragments ? `${formatNumber(item.max_fragments)} fragments` : "no fragment cap"}</small>
+        </div>
+      </div>
+
+      <div className="compaction-detail__section">
+        <div className="compaction-detail__section-head">
+          <strong>Reasons</strong>
+          <span>{reasons.length ? `${formatNumber(reasons.length)} trigger${reasons.length === 1 ? "" : "s"}` : "legacy summary"}</span>
+        </div>
+        {reasons.length ? (
+          <div className="compaction-reason-list">
+            {reasons.map((reason, index) => {
+              const described = describeCompactionReason(reason);
+              const sources = readCompactionReasonSources(reason);
+              return (
+                <div key={`${item.id}-reason-${index}`} className="compaction-reason">
+                  <div className="compaction-reason__kind">{described.label}</div>
+                  <div className="compaction-reason__text">{described.detail}</div>
+                  {sources.length ? (
+                    <div className="compaction-source-list">
+                      {sources.slice(0, 5).map((source) => <span key={`${item.id}-${index}-${source}`}>{source}</span>)}
+                      {sources.length > 5 ? <span>+{formatNumber(sources.length - 5)} more</span> : null}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="muted-block">{item.reason_summary || monitorCompactionPreview(item)}</div>
+        )}
+      </div>
+
+      {componentEntries.length ? (
+        <div className="compaction-detail__section">
+          <div className="compaction-detail__section-head">
+            <strong>Prompt Modules</strong>
+            <span>estimated tokens and UTF-8 bytes</span>
+          </div>
+          <div className="usage-table usage-table--compact compaction-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Module</th>
+                  <th>Tokens</th>
+                  <th>Bytes</th>
+                  <th>Share</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {componentEntries.map(([name, size]) => (
+                  <tr key={`${item.id}-${name}`}>
+                    <td>{compactionComponentLabel(name)}</td>
+                    <td>{formatNumber(size.tokens)}</td>
+                    <td>{formatBytes(size.bytes)}</td>
+                    <td>{promptTokens ? formatPercent(((size.tokens ?? 0) / promptTokens) * 100) : "--"}</td>
+                    <td>{formatNumber(size.fragment_count ?? size.message_count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {visibleFragments.length ? (
+        <div className="compaction-detail__section">
+          <div className="compaction-detail__section-head">
+            <strong>Selected Fragments</strong>
+            <span>{formatNumber(visibleFragments.length)} shown{fragmentEntries.length > visibleFragments.length ? ` of ${formatNumber(fragmentEntries.length)}` : ""}</span>
+          </div>
+          <div className="usage-table usage-table--compact compaction-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Role</th>
+                  <th>Scope</th>
+                  <th>Tokens</th>
+                  <th>Bytes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleFragments.map((fragment, index) => (
+                  <tr key={`${item.id}-fragment-${index}`}>
+                    <td>{fragment.source || "--"}</td>
+                    <td>{fragment.role || "--"}</td>
+                    <td>{fragment.scope || "--"}</td>
+                    <td>{formatNumber(fragment.tokens)}</td>
+                    <td>{formatBytes(fragment.bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function checkpointCompactionPreview(detail: TaskRunDetail | null | undefined) {
@@ -3555,6 +3790,7 @@ export function MonitorTab() {
   const [taskRunsResponse, setTaskRunsResponse] = useState<MonitorTaskRunsResponse | null>(null);
   const [processesResponse, setProcessesResponse] = useState<MonitorProcessesResponse | null>(null);
   const [filesResponse, setFilesResponse] = useState<MonitorFilesResponse | null>(null);
+  const [contextCompactionsResponse, setContextCompactionsResponse] = useState<MonitorContextCompactionsResponse | null>(null);
   const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
   const [approvalAuditResponse, setApprovalAuditResponse] = useState<MonitorApprovalAuditResponse | null>(null);
   const [approvalAuditFilter, setApprovalAuditFilter] = useState("all");
@@ -3686,6 +3922,11 @@ export function MonitorTab() {
     if (activePage !== "tasks") return;
     void refreshTaskRuns();
   }, [activePage, historyRange]);
+
+  useEffect(() => {
+    if (activePage !== "compactions" || contextCompactionsResponse) return;
+    void refreshContextCompactions();
+  }, [activePage, contextCompactionsResponse]);
 
   useEffect(() => {
     if (activePage !== "approvals") return;
@@ -4410,6 +4651,8 @@ export function MonitorTab() {
     : 0;
   const contextWindow = resolveConfiguredContextWindow(config, modelRows[0]?.name ?? config?.global_llm?.default_model);
   const contextUsage = overview ? clamp((overview.usage_window.total_tokens / contextWindow) * 100, 0, 100) : 0;
+  const contextCompactionEntries = contextCompactionsResponse?.entries ?? overview?.recent_compactions ?? [];
+  const latestCompaction = contextCompactionEntries[0];
   const pendingApprovalCount = approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending ?? 0;
   const approvalQueueTotal = approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total ?? 0;
   const overviewFlowGraph = useMemo(
@@ -4623,6 +4866,19 @@ export function MonitorTab() {
       setError("");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load monitor task runs");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshContextCompactions() {
+    setRefreshing(true);
+    try {
+      const response = await api.getMonitorContextCompactions(160);
+      setContextCompactionsResponse(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load context compactions");
     } finally {
       setRefreshing(false);
     }
@@ -6038,6 +6294,164 @@ export function MonitorTab() {
         </div>
         <div style={{ marginTop: 16 }}>
           <EmptyCard title="Model switch history" detail="TODO: capture model handoffs and fallback transitions as first-class runtime events." />
+        </div>
+      </section>
+
+      <section className={pageClass("compactions", "page--dashboard-wide")} id="page-compactions">
+        <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
+          <div>
+            <div className="section-title">Context Compaction Ledger</div>
+            <div className="section-subtitle">Why compaction happened, and how large each prompt module was at the time.</div>
+          </div>
+          <button type="button" className="refresh-btn" onClick={() => void refreshContextCompactions()} disabled={refreshing}>
+            鈫?Refresh
+          </button>
+        </div>
+
+        <div className="grid" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-title">Compactions</div>
+            <div className="card-value">{formatNumber(contextCompactionsResponse?.counts.total ?? overview?.system.stats.context_compactions)}</div>
+            <div className="card-sub">{formatNumber(contextCompactionEntries.length)} shown</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Latest Prompt</div>
+            <div className="card-value">{formatNumber(latestCompaction?.prompt_total?.tokens)}</div>
+            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)} · {formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Dropped / Truncated</div>
+            <div className="card-value">{formatNumber(contextCompactionsResponse?.counts.dropped ?? contextCompactionEntries.reduce((total, item) => total + (item.dropped_count ?? 0), 0))}</div>
+            <div className="card-sub">truncated {formatNumber(contextCompactionsResponse?.counts.truncated ?? contextCompactionEntries.reduce((total, item) => total + (item.truncated_count ?? 0), 0))}</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Configured Window</div>
+            <div className="card-value">{formatNumber(contextWindow)}</div>
+            <div className="card-sub">{modelPrimary}</div>
+          </div>
+        </div>
+
+        <div className="split-panels">
+          <div className="card">
+            <SectionTitle title="Latest Prompt Composition" />
+            {latestCompaction?.prompt_components ? (
+              <div className="simple-list">
+                {Object.entries(latestCompaction.prompt_components).map(([name, size]) => (
+                  <div key={name} className="metric-row">
+                    <span>{name.replace(/_/g, " ")}</span>
+                    <strong>{formatNumber(size.tokens)} tok · {formatBytes(size.bytes)}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">No prompt-size diagnostics captured yet. New compaction events will include them.</div>
+            )}
+          </div>
+          <div className="card">
+            <SectionTitle title="Latest Reasons" />
+            {latestCompaction?.reasons?.length ? (
+              <div className="simple-list">
+                {latestCompaction.reasons.map((reason, index) => (
+                  <div key={`${latestCompaction.id}-${index}`} className="simple-row">
+                    <strong>{String(reason.kind || "reason").replace(/_/g, " ")}</strong>
+                    <div className="small-note">{compactMonitorJson(reason, 260)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">{latestCompaction?.reason_summary || "No structured reason diagnostics captured yet."}</div>
+            )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 16 }}>
+          <SectionTitle title="Compaction Events" subtitle="Newest first. Expand an event to inspect module and fragment sizes." />
+          {contextCompactionEntries.length > 0 ? (
+            <div className="feed-list">
+              {contextCompactionEntries.map((item) => (
+                <details key={item.id} className="feed-item compaction-event-card">
+                  <summary className="feed-head" style={{ cursor: "pointer" }}>
+                    <div className={`feed-badge feed-badge--${item.truncated_count ? "warning" : "neutral"}`}>
+                      drop {item.dropped_count ?? 0} / trunc {item.truncated_count ?? 0}
+                    </div>
+                    <span className="compaction-event-card__summary">
+                      <strong>{item.summary || `${item.agent_name || "agent"} compacted context`}</strong>
+                      <span className="small-note">
+                        {formatTimeAgo(item.created_at)}
+                        {item.prompt_total?.tokens ? ` | ${formatNumber(item.prompt_total.tokens)} prompt tokens` : ""}
+                        {item.reason_summary ? ` | ${item.reason_summary}` : ""}
+                      </span>
+                    </span>
+                  </summary>
+                  <div className="feed-body compaction-event-card__body">
+                    <CompactionEventDetail item={item} />
+                    <div className="compaction-event-card__legacy">
+                    <div className="small-note" style={{ marginBottom: 6 }}>
+                      {item.chat_title || "Unknown chat"} {item.project_name ? `路 ${item.project_name}` : ""}
+                      {item.task_run_title ? ` 路 ${item.task_run_title}` : ""}
+                    </div>
+                    <div className="feed-preview">
+                      {item.reason_summary || monitorCompactionPreview(item)}
+                      {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens · {formatBytes(item.prompt_total?.bytes)} · selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
+                    </div>
+                    {item.prompt_components ? (
+                      <div className="usage-table" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Component</th>
+                              <th>Tokens</th>
+                              <th>Bytes</th>
+                              <th>Count</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(item.prompt_components).map(([name, size]) => (
+                              <tr key={`${item.id}-${name}`}>
+                                <td>{name.replace(/_/g, " ")}</td>
+                                <td>{formatNumber(size.tokens)}</td>
+                                <td>{formatBytes(size.bytes)}</td>
+                                <td>{formatNumber(size.fragment_count ?? size.message_count)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                    {item.prompt_fragments?.length ? (
+                      <div className="usage-table" style={{ marginTop: 10 }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Source</th>
+                              <th>Role</th>
+                              <th>Scope</th>
+                              <th>Tokens</th>
+                              <th>Bytes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {item.prompt_fragments.slice(0, 18).map((fragment, index) => (
+                              <tr key={`${item.id}-fragment-${index}`}>
+                                <td>{fragment.source || "--"}</td>
+                                <td>{fragment.role || "--"}</td>
+                                <td>{fragment.scope || "--"}</td>
+                                <td>{formatNumber(fragment.tokens)}</td>
+                                <td>{formatBytes(fragment.bytes)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                    </div>
+                  </div>
+                </details>
+              ))}
+            </div>
+          ) : (
+            <div className="muted-block">No compactions captured yet.</div>
+          )}
         </div>
       </section>
 

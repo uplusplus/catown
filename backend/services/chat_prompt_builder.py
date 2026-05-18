@@ -33,7 +33,7 @@ from skills import load_skill_registry
 logger = logging.getLogger("catown.chat_prompt_builder")
 
 
-_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
+_DEFAULT_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
     "chat_interactive": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
@@ -88,6 +88,17 @@ _SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
             "agent_private": 160,
         },
     },
+}
+
+_SELECTOR_PROFILE_FIELDS = {
+    "allowed_visibilities",
+    "allowed_scopes",
+    "max_fragments",
+    "max_tokens_cap",
+    "max_tokens_by_role",
+    "max_tokens_by_scope",
+    "truncate_to_budget",
+    "min_tokens_for_truncation",
 }
 
 
@@ -374,9 +385,66 @@ def build_chat_context_selector(
 
 def selector_profile_config(profile: str) -> Dict[str, Any]:
     normalized_profile = str(profile or "chat_interactive").strip() or "chat_interactive"
-    config = _SELECTOR_PROFILES.get(normalized_profile) or _SELECTOR_PROFILES["chat_interactive"]
+    profiles = effective_selector_profiles()
+    config = profiles.get(normalized_profile) or profiles["chat_interactive"]
     return dict(config)
 
 
 def list_selector_profiles() -> List[str]:
-    return list(_SELECTOR_PROFILES.keys())
+    return list(effective_selector_profiles().keys())
+
+
+def default_selector_profiles() -> Dict[str, Dict[str, Any]]:
+    return {name: dict(config) for name, config in _DEFAULT_SELECTOR_PROFILES.items()}
+
+
+def effective_selector_profiles(config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    profiles = default_selector_profiles()
+    payload = config_data if config_data is not None else _load_agent_config_data()
+    context_data = payload.get("context") if isinstance(payload, dict) else None
+    selector_profiles = (
+        context_data.get("selector_profiles")
+        if isinstance(context_data, dict) and isinstance(context_data.get("selector_profiles"), dict)
+        else {}
+    )
+    for profile_name, override in selector_profiles.items():
+        if not isinstance(override, dict):
+            continue
+        normalized_name = str(profile_name or "").strip()
+        if not normalized_name:
+            continue
+        base = dict(profiles.get(normalized_name) or {})
+        for key, value in override.items():
+            if key in _SELECTOR_PROFILE_FIELDS:
+                base[key] = value
+        if base:
+            profiles[normalized_name] = _normalize_selector_profile_config(base)
+    return profiles
+
+
+def _normalize_selector_profile_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(config)
+    for key in ("max_fragments", "max_tokens_cap", "min_tokens_for_truncation"):
+        value = normalized.get(key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            normalized[key] = parsed
+    for key in ("max_tokens_by_role", "max_tokens_by_scope"):
+        value = normalized.get(key)
+        if not isinstance(value, dict):
+            continue
+        budget: dict[str, int] = {}
+        for budget_key, budget_value in value.items():
+            try:
+                parsed = int(budget_value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                budget[str(budget_key)] = parsed
+        normalized[key] = budget
+    if "truncate_to_budget" in normalized:
+        normalized["truncate_to_budget"] = bool(normalized["truncate_to_budget"])
+    return normalized

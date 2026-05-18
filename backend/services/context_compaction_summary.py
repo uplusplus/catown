@@ -14,6 +14,11 @@ def build_context_compaction_projection(
     diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
     summary = diagnostics.get("summary") if isinstance(diagnostics.get("summary"), dict) else {}
     selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
+    prompt = diagnostics.get("prompt") if isinstance(diagnostics.get("prompt"), dict) else {}
+    prompt_total = prompt.get("total") if isinstance(prompt.get("total"), dict) else {}
+    prompt_components = prompt.get("components") if isinstance(prompt.get("components"), dict) else {}
+    prompt_fragments = prompt.get("fragments") if isinstance(prompt.get("fragments"), list) else []
+    reasons = diagnostics.get("reasons") if isinstance(diagnostics.get("reasons"), list) else []
     role_budgets = selector.get("max_tokens_by_role") if isinstance(selector.get("max_tokens_by_role"), dict) else {}
     scope_budgets = selector.get("max_tokens_by_scope") if isinstance(selector.get("max_tokens_by_scope"), dict) else {}
     scope_usage = summary.get("by_scope") if isinstance(summary.get("by_scope"), dict) else {}
@@ -52,6 +57,9 @@ def build_context_compaction_projection(
         detail_summary_parts.append(" | ".join(budget_summary_parts))
     if scope_usage_summary:
         detail_summary_parts.append(f"usage {scope_usage_summary}")
+    reason_summary = _format_reason_summary(reasons)
+    if reason_summary:
+        detail_summary_parts.append(f"reasons {reason_summary}")
 
     return {
         "compacted": bool(diagnostics.get("compacted")),
@@ -69,5 +77,39 @@ def build_context_compaction_projection(
         "budget_summary": " | ".join(budget_summary_parts),
         "scope_usage_summary": scope_usage_summary,
         "detail_summary": " | ".join(part for part in detail_summary_parts if part),
+        "reasons": reasons,
+        "reason_summary": reason_summary,
+        "prompt_total": prompt_total,
+        "prompt_components": prompt_components,
+        "prompt_fragments": prompt_fragments,
         "summary_text": fallback_summary if isinstance(fallback_summary, str) and fallback_summary.strip() else None,
     }
+
+
+def _format_reason_summary(reasons: list[Any]) -> str:
+    parts: list[str] = []
+    for reason in reasons:
+        if not isinstance(reason, dict):
+            continue
+        kind = str(reason.get("kind") or "").strip()
+        if kind == "max_fragments":
+            parts.append(
+                f"fragment cap {reason.get('candidate') or 0}>{reason.get('limit') or 0}"
+            )
+        elif kind == "max_tokens":
+            parts.append(
+                f"total tokens {reason.get('candidate') or 0}>{reason.get('limit') or 0}"
+            )
+        elif kind == "role_tokens":
+            parts.append(
+                f"{reason.get('role') or 'role'} tokens {reason.get('candidate') or 0}>{reason.get('limit') or 0}"
+            )
+        elif kind == "scope_tokens":
+            parts.append(
+                f"{reason.get('scope') or 'scope'} tokens {reason.get('candidate') or 0}>{reason.get('limit') or 0}"
+            )
+        elif kind == "truncated":
+            parts.append(f"truncated {reason.get('count') or 0}")
+        elif kind == "dropped":
+            parts.append(f"dropped {reason.get('count') or 0}")
+    return " / ".join(parts)

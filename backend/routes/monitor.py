@@ -1344,6 +1344,44 @@ async def get_monitor_approval_audit(
     }
 
 
+@router.get("/context-compactions")
+async def get_monitor_context_compactions(
+    limit: int = Query(120, ge=10, le=500),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
+        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRunEvent.event_type == "context_compaction")
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(limit)
+        .all()
+    )
+    entries = [
+        serialize_monitor_compaction_item(
+            event,
+            task_run=task_run,
+            chat_title=chatroom.title,
+            project_name=project.name if project else None,
+        )
+        for event, task_run, chatroom, project in rows
+    ]
+    total = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "limit": limit,
+        "counts": {
+            "total": total,
+            "returned": len(entries),
+            "dropped": sum(int(item.get("dropped_count") or 0) for item in entries),
+            "truncated": sum(int(item.get("truncated_count") or 0) for item in entries),
+        },
+        "entries": entries,
+    }
+
+
 @router.get("/files")
 async def get_monitor_files(
     limit: int = Query(200, ge=20, le=1000),

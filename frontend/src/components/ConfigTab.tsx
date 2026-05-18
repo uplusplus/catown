@@ -6,6 +6,7 @@ import type {
   AgentInfo,
   AgentMemoryItem,
   ConfigAgentDefinition,
+  ContextConfigPayload,
   ConfigResponse,
   ConfigSection,
   PermissionsConfigPayload,
@@ -45,6 +46,7 @@ type ConfigTabProps = {
   ) => Promise<void>;
   onSaveOrchestration: (payload: { sidecar_agent_types: string[] }) => Promise<void>;
   onSavePermissions: (payload: PermissionsConfigPayload) => Promise<void>;
+  onSaveContext: (payload: ContextConfigPayload) => Promise<void>;
   authorizationRules: ToolAuthorizationRule[];
   onRevokeAuthorizationRule: (ruleId: number) => Promise<void>;
   onReload: () => Promise<void>;
@@ -65,6 +67,10 @@ type OrchestrationDraft = {
 type PermissionsDraft = {
   allowReadOnlyToolsWithoutApproval: boolean;
   autoApproveAll: boolean;
+};
+
+type ContextDraft = {
+  selectorProfilesJson: string;
 };
 
 type AgentDraft = {
@@ -119,6 +125,12 @@ function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft 
   return {
     allowReadOnlyToolsWithoutApproval: config?.permissions?.allow_read_only_tools_without_approval ?? true,
     autoApproveAll: config?.permissions?.auto_approve_all ?? false,
+  };
+}
+
+function buildContextDraft(config: ConfigResponse | null): ContextDraft {
+  return {
+    selectorProfilesJson: JSON.stringify(config?.context?.selector_profiles ?? {}, null, 2),
   };
 }
 
@@ -492,6 +504,7 @@ export function ConfigTab({
   onSaveGlobal,
   onSaveOrchestration,
   onSavePermissions,
+  onSaveContext,
   authorizationRules,
   onRevokeAuthorizationRule,
   onSaveAgent,
@@ -504,10 +517,13 @@ export function ConfigTab({
   const [globalContextWindow, setGlobalContextWindow] = useState("");
   const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
   const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
+  const [contextDraft, setContextDraft] = useState<ContextDraft>(() => buildContextDraft(config));
+  const [contextDraftError, setContextDraftError] = useState("");
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
   const [editingGlobal, setEditingGlobal] = useState(false);
   const [editingOrchestration, setEditingOrchestration] = useState(false);
+  const [editingContext, setEditingContext] = useState(false);
   const [editingAgents, setEditingAgents] = useState<Record<string, boolean>>({});
   const [marketplaces, setMarketplaces] = useState<SkillMarketplace[]>([]);
   const [marketplaceError, setMarketplaceError] = useState("");
@@ -614,6 +630,11 @@ export function ConfigTab({
 
   useEffect(() => {
     setPermissionsDraft(buildPermissionsDraft(config));
+  }, [config]);
+
+  useEffect(() => {
+    setContextDraft(buildContextDraft(config));
+    setContextDraftError("");
   }, [config]);
 
   useEffect(() => {
@@ -751,6 +772,33 @@ export function ConfigTab({
       sidecar_agent_types: readMultilineList(orchestrationDraft.sidecarAgentTypes),
     });
     setEditingOrchestration(false);
+  }
+
+  function startEditingContext() {
+    setContextDraft(buildContextDraft(config));
+    setContextDraftError("");
+    setEditingContext(true);
+  }
+
+  function cancelEditingContext() {
+    setContextDraft(buildContextDraft(config));
+    setContextDraftError("");
+    setEditingContext(false);
+  }
+
+  async function handleContextSubmit(event: FormEvent) {
+    event.preventDefault();
+    try {
+      const parsed = JSON.parse(contextDraft.selectorProfilesJson || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Selector profiles must be a JSON object.");
+      }
+      await onSaveContext({ selector_profiles: parsed });
+      setContextDraftError("");
+      setEditingContext(false);
+    } catch (nextError) {
+      setContextDraftError(nextError instanceof Error ? nextError.message : "Invalid selector profile JSON.");
+    }
   }
 
   function updateAgentDraft(agentName: string, patch: Partial<AgentDraft>) {
@@ -922,6 +970,22 @@ export function ConfigTab({
       },
     ],
     [permissionsDraft.allowReadOnlyToolsWithoutApproval, permissionsDraft.autoApproveAll],
+  );
+  const contextProfileRows = useMemo(
+    () => Object.entries(config?.context?.selector_profiles ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    [config?.context?.selector_profiles],
+  );
+  const contextPreviewItems = useMemo(
+    () => {
+      const chatProfile = config?.context?.selector_profiles?.chat_interactive;
+      return [
+        { label: "Profiles", value: String(contextProfileRows.length) },
+        { label: "Interactive cap", value: chatProfile?.max_tokens_cap ? previewContextWindow(chatProfile.max_tokens_cap) : "Not set" },
+        { label: "Fragments", value: chatProfile?.max_fragments ? String(chatProfile.max_fragments) : "Not set" },
+        { label: "Truncate", value: chatProfile?.truncate_to_budget === false ? "Disabled" : "Enabled" },
+      ];
+    },
+    [config?.context?.selector_profiles, contextProfileRows.length],
   );
 
   if (activeSection === "skills") {
@@ -1156,6 +1220,88 @@ export function ConfigTab({
               />
             ))}
           </AdaptiveCardDeck>
+        </div>
+      </section>
+    );
+  }
+
+  if (activeSection === "context") {
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className="panel-card panel-card--full">
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Prompt Budgets</p>
+              <h2>Context Selector Profiles</h2>
+            </div>
+            <div className="config-actions-row config-actions-row--header">
+              {editingContext ? (
+                <>
+                  <button type="submit" form="context-config-form" className="primary-button compact-button" disabled={saving}>
+                    {saving ? "Saving..." : "Save"}
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={cancelEditingContext} disabled={saving}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="primary-button compact-button" onClick={startEditingContext} disabled={saving}>
+                  Edit
+                </button>
+              )}
+            </div>
+          </div>
+
+          {editingContext ? (
+            <form id="context-config-form" className="project-form project-form--compact config-form settings-form" onSubmit={handleContextSubmit}>
+              <label className="settings-form__field">
+                <span>Selector profiles JSON</span>
+                <textarea
+                  rows={18}
+                  value={contextDraft.selectorProfilesJson}
+                  onChange={(event) => setContextDraft({ selectorProfilesJson: event.target.value })}
+                  spellCheck={false}
+                />
+              </label>
+              {contextDraftError ? <p className="small-note" style={{ color: "var(--danger, #ef4444)" }}>{contextDraftError}</p> : null}
+              <p className="small-note">
+                Budgets are estimated tokens. `max_tokens_cap` caps runtime context fragments after fixed system/history/current input costs are considered.
+              </p>
+            </form>
+          ) : (
+            <>
+              <PreviewCard
+                title="Context selector"
+                subtitle="Runtime fragment budgets used before compaction events are emitted"
+                items={contextPreviewItems}
+                onActivate={startEditingContext}
+              />
+              <div className="usage-table" style={{ marginTop: 18 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Profile</th>
+                      <th>Max Tokens</th>
+                      <th>Fragments</th>
+                      <th>Role Budgets</th>
+                      <th>Scope Budgets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contextProfileRows.map(([profileName, profile]) => (
+                      <tr key={profileName}>
+                        <td>{profileName}</td>
+                        <td>{profile.max_tokens_cap ? previewContextWindow(profile.max_tokens_cap) : "--"}</td>
+                        <td>{profile.max_fragments ?? "--"}</td>
+                        <td>{Object.entries(profile.max_tokens_by_role ?? {}).map(([key, value]) => `${key} ${value}`).join(" / ") || "--"}</td>
+                        <td>{Object.entries(profile.max_tokens_by_scope ?? {}).map(([key, value]) => `${key} ${value}`).join(" / ") || "--"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       </section>
     );
