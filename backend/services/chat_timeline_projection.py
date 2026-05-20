@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from models.database import TaskRun, TaskRunEvent
+from services.user_visible_step_projection import build_user_visible_runtime_steps
 
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
@@ -56,15 +57,12 @@ LIVE_EVENT_TYPES = {
 def build_task_run_timeline_projection(task_run: TaskRun) -> dict[str, Any]:
     """Return the canonical timeline projection for one task run."""
 
-    events = _ordered_events(list(getattr(task_run, "events", []) or []))
-    scheduler_statuses = _scheduler_step_statuses(events)
-    steps = [
-        _event_to_step(event, task_run=task_run, scheduler_statuses=scheduler_statuses)
-        for event in events
-    ]
-    steps = [step for step in steps if step is not None]
+    steps = build_user_visible_runtime_steps(task_run)
     current_step = _current_step(steps)
-    version = max((int(step.get("sequence") or 0) for step in steps), default=0)
+    version = max(
+        (int(getattr(event, "event_index", 0) or 0) for event in getattr(task_run, "events", []) or []),
+        default=0,
+    )
 
     return {
         "scope": "task_run",

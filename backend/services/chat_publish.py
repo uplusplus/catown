@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from models.database import Chatroom
 from routes.websocket import websocket_manager
 from services.monitor_projection import (
     resolve_chatroom_project as monitor_resolve_chatroom_project,
@@ -39,7 +38,9 @@ async def publish_saved_chat_message(
     }
     await websocket_manager.broadcast_to_room(room_payload, chatroom_id)
 
-    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    from models import database as db_models
+
+    chatroom = db.query(db_models.Chatroom).filter(db_models.Chatroom.id == chatroom_id).first()
     if not chatroom:
         return
 

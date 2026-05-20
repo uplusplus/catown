@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { Archive, BookOpen, Bot, Boxes, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Menu, Monitor, PackageCheck, PanelRightOpen, ScrollText, SendHorizontal, Settings, Shell, Square, Workflow, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -52,6 +52,8 @@ const OVERLAY_MAX_CONTENT_CHARS = 1200;
 const OVERLAY_MAX_STEP_COUNT = 1;
 const OVERLAY_MAX_STEP_LABEL_CHARS = 120;
 const OVERLAY_MAX_STEP_DETAIL_CHARS = 180;
+const STREAM_TRACE_RECENT_STEP_COUNT = 5;
+const STREAM_TRACE_HISTORY_ID_PREFIX = "__stream-history__";
 const TASK_RUN_SHELL_TAIL_MAX_CHARS = 5000;
 const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
 const DRAFT_HISTORY_MAX_CHATS = 30;
@@ -331,6 +333,7 @@ type ChatTabProps = {
   creatingProjectFromChat: boolean;
   connectionState: "connected" | "connecting" | "disconnected";
   events: ChatEventItem[];
+  expandCurrentStepByDefault: boolean;
   onSend: (content: string, options?: { clientTurnId?: string }) => Promise<void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
@@ -374,6 +377,7 @@ type FailureStepAnalysisContext = {
 };
 
 type FailureStepAnalysisHandler = (step: MessageStreamStep, context: FailureStepAnalysisContext) => void;
+type TraceStepRenderMode = "message" | "task-run";
 
 type DecoratedChatCardItem = ChatCardItem & {
   systemPromptPresentation?: SystemPromptPresentation;
@@ -2505,6 +2509,203 @@ function renderFailureStepAction(
   );
 }
 
+function streamTraceHistoryId(scope: string | number) {
+  return `${STREAM_TRACE_HISTORY_ID_PREFIX}${scope}`;
+}
+
+function splitTraceSteps(steps: MessageStreamStep[]) {
+  if (steps.length <= STREAM_TRACE_RECENT_STEP_COUNT) {
+    return { historySteps: [] as MessageStreamStep[], recentSteps: steps };
+  }
+  return {
+    historySteps: steps.slice(0, -STREAM_TRACE_RECENT_STEP_COUNT),
+    recentSteps: steps.slice(-STREAM_TRACE_RECENT_STEP_COUNT),
+  };
+}
+
+function renderTraceStepDetail(step: MessageStreamStep, mode: TraceStepRenderMode) {
+  const detailSource = step.detailContent || step.detail || "";
+  if (!detailSource) return null;
+
+  if (mode === "task-run") {
+    return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+  }
+
+  const isLlmStep = isLikelyLlmStep(step.label, detailSource);
+  if (isLlmStep) {
+    const llmDetail = parseLlmConversationMarkdown(detailSource);
+    const structuredDetail = renderLlmDetailLayout(inferAgentNameFromLlmStepLabel(step.label), llmDetail, {
+      className: "message-stream-step__detail-content llm-exchange-stack",
+    });
+    return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+  }
+
+  if (step.kind === "tool_call") {
+    return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+  }
+
+  if (step.state === "live") {
+    return renderStreamingTextContent(detailSource, "message-stream-step__detail-content");
+  }
+
+  return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
+}
+
+function renderTraceStep({
+  step,
+  isExpanded,
+  onToggle,
+  detailSummary,
+  analysisContext,
+  onAnalyzeFailureStep,
+  mode,
+}: {
+  step: MessageStreamStep;
+  isExpanded: boolean;
+  onToggle: (stepId: string, isExpanded: boolean) => void;
+  detailSummary?: ReactNode;
+  analysisContext: FailureStepAnalysisContext;
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler;
+  mode: TraceStepRenderMode;
+}) {
+  return (
+    <details
+      key={step.id}
+      className={`message-stream-step message-stream-step--${step.state}`}
+      open={isExpanded}
+    >
+      <summary
+        className="message-stream-step__summary"
+        onClick={(event) => {
+          event.preventDefault();
+          onToggle(step.id, isExpanded);
+        }}
+      >
+        <span className="message-stream-step__state" aria-hidden="true">
+          {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
+        </span>
+        <span className="message-stream-step__copy">
+          <span className="message-stream-step__title-line">
+            <strong>{step.label}</strong>
+            {renderStepIdBadges(step)}
+          </span>
+          {detailSummary}
+        </span>
+        <span className="message-stream-step__actions">
+          {renderFailureStepAction(step, analysisContext, onAnalyzeFailureStep)}
+          <span className="message-stream-step__toggle" aria-hidden="true">
+            &gt;
+          </span>
+        </span>
+      </summary>
+      {isExpanded && (step.detailContent || step.detail) ? (
+        <div className="message-stream-step__detail">
+          {renderTraceStepDetail(step, mode)}
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+function renderTraceHistoryCard({
+  historyId,
+  steps,
+  expandedStepId,
+  onToggleStep,
+  analysisContext,
+  onAnalyzeFailureStep,
+  mode,
+}: {
+  historyId: string;
+  steps: MessageStreamStep[];
+  expandedStepId: StepExpansionValue;
+  onToggleStep: (stepId: string, isExpanded: boolean) => void;
+  analysisContext: FailureStepAnalysisContext;
+  onAnalyzeFailureStep?: FailureStepAnalysisHandler;
+  mode: TraceStepRenderMode;
+}) {
+  if (steps.length === 0) return null;
+  const isHistoryExpanded = expandedStepId === historyId || steps.some((step) => step.id === expandedStepId);
+  const errorCount = steps.filter((step) => step.state === "error").length;
+  const liveCount = steps.filter((step) => step.state === "live").length;
+  const firstStep = steps[0];
+  const lastStep = steps[steps.length - 1];
+  const summary = [
+    `${steps.length} older steps`,
+    liveCount > 0 ? `${liveCount} live` : "",
+    errorCount > 0 ? `${errorCount} failed` : "",
+    firstStep && lastStep ? `${firstStep.label} -> ${lastStep.label}` : "",
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <details
+      key={historyId}
+      className="message-stream-step message-stream-step--history"
+      open={isHistoryExpanded}
+    >
+      <summary
+        className="message-stream-step__summary"
+        onClick={(event) => {
+          event.preventDefault();
+          onToggleStep(historyId, isHistoryExpanded);
+        }}
+      >
+        <span className="message-stream-step__state" aria-hidden="true">
+          {steps.length}
+        </span>
+        <span className="message-stream-step__copy">
+          <span className="message-stream-step__title-line">
+            <strong>History</strong>
+            <span className="message-stream-step__id">older steps</span>
+          </span>
+          <small>{summary}</small>
+        </span>
+        <span className="message-stream-step__actions">
+          <span className="message-stream-step__toggle" aria-hidden="true">
+            &gt;
+          </span>
+        </span>
+      </summary>
+      {isHistoryExpanded ? (
+        <div className="message-stream-step__detail message-stream-step__detail--history">
+          <div className="message-stream-history-list">
+            {steps.map((step) =>
+              renderTraceStep({
+                step,
+                isExpanded: expandedStepId === step.id,
+                onToggle: onToggleStep,
+                detailSummary:
+                  mode === "task-run"
+                    ? step.detail
+                      ? <small>{step.detail}</small>
+                      : null
+                    : (() => {
+                        const detail = summarizeStreamingDetail(step.detail);
+                        return detail ? <small>{detail}</small> : null;
+                      })(),
+                analysisContext,
+                onAnalyzeFailureStep,
+                mode,
+              }),
+            )}
+          </div>
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+function resolveTraceExpandedStepId(
+  steps: MessageStreamStep[],
+  expandedStepId: StepExpansionValue | undefined,
+  currentStepId: string | null,
+  historyId: string,
+) {
+  if (expandedStepId === undefined) return currentStepId;
+  if (expandedStepId === historyId) return historyId;
+  return expandedStepId && steps.some((step) => step.id === expandedStepId) ? expandedStepId : null;
+}
+
 function renderTaskRunTrace(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
@@ -2530,57 +2731,32 @@ function renderTaskRunTrace(
     ?? [...traceSteps].reverse().find((step) => step.state === "live")?.id
     ?? traceSteps[traceSteps.length - 1]?.id
     ?? null;
-  const resolvedExpandedStepId =
-    expandedStepId === undefined
-      ? currentStepId
-      : expandedStepId && traceSteps.some((step) => step.id === expandedStepId)
-        ? expandedStepId
-        : null;
+  const historyId = streamTraceHistoryId(`task-run:${taskRun.id}`);
+  const resolvedExpandedStepId = resolveTraceExpandedStepId(traceSteps, expandedStepId, currentStepId, historyId);
+  const { historySteps, recentSteps } = splitTraceSteps(traceSteps);
+  const renderStep = (step: MessageStreamStep) =>
+    renderTraceStep({
+      step,
+      isExpanded: resolvedExpandedStepId === step.id,
+      onToggle: (stepId, isExpanded) => onToggleStep(taskRun.id, stepId, isExpanded),
+      detailSummary: step.detail ? <small>{step.detail}</small> : null,
+      analysisContext: { taskRun, taskRunDetail: detail },
+      onAnalyzeFailureStep,
+      mode: "task-run",
+    });
 
   return (
     <div className="message-stream-trace message-stream-trace--task-run">
-      {traceSteps.map((step) => {
-        const isExpanded = resolvedExpandedStepId === step.id;
-        return (
-          <details
-            key={step.id}
-            className={`message-stream-step message-stream-step--${step.state}`}
-            open={isExpanded}
-          >
-            <summary
-              className="message-stream-step__summary"
-              onClick={(event) => {
-                event.preventDefault();
-                onToggleStep(taskRun.id, step.id, isExpanded);
-              }}
-            >
-              <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
-              </span>
-              <span className="message-stream-step__copy">
-                <span className="message-stream-step__title-line">
-                  <strong>{step.label}</strong>
-                  {renderStepIdBadges(step)}
-                </span>
-                {step.detail ? <small>{step.detail}</small> : null}
-              </span>
-              <span className="message-stream-step__actions">
-                {renderFailureStepAction(step, { taskRun, taskRunDetail: detail }, onAnalyzeFailureStep)}
-                <span className="message-stream-step__toggle" aria-hidden="true">
-                  &gt;
-                </span>
-              </span>
-            </summary>
-            {isExpanded && (step.detailContent || step.detail) ? (
-              <div className="message-stream-step__detail">
-                {renderMarkdownContent(step.detailContent || step.detail || "", "message-stream-step__detail-content", {
-                  highlight: false,
-                })}
-              </div>
-            ) : null}
-          </details>
-        );
+      {renderTraceHistoryCard({
+        historyId,
+        steps: historySteps,
+        expandedStepId: resolvedExpandedStepId,
+        onToggleStep: (stepId, isExpanded) => onToggleStep(taskRun.id, stepId, isExpanded),
+        analysisContext: { taskRun, taskRunDetail: detail },
+        onAnalyzeFailureStep,
+        mode: "task-run",
       })}
+      {recentSteps.map(renderStep)}
     </div>
   );
 }
@@ -5123,12 +5299,24 @@ function renderMessage(
   const hasStreamSteps = streamSteps.length > 0;
   const currentStreamStepId =
     [...streamSteps].reverse().find((step) => step.state === "live")?.id ?? streamSteps[streamSteps.length - 1]?.id ?? null;
-  const resolvedExpandedStepId =
-    expandedStepId === undefined
-      ? currentStreamStepId
-      : expandedStepId && streamSteps.some((step) => step.id === expandedStepId)
-        ? expandedStepId
-        : null;
+  const historyId = streamTraceHistoryId(`message:${message.id}`);
+  const resolvedExpandedStepId = resolveTraceExpandedStepId(streamSteps, expandedStepId, currentStreamStepId, historyId);
+  const { historySteps, recentSteps } = splitTraceSteps(streamSteps);
+  const renderMessageTraceStep = (step: MessageStreamStep) => {
+    const detail =
+      step.id === currentStreamStepId
+        ? summarizeStreamingStepCurrentDetail(step)
+        : summarizeStreamingDetail(step.detail);
+    return renderTraceStep({
+      step,
+      isExpanded: resolvedExpandedStepId === step.id,
+      onToggle: (stepId, isExpanded) => onToggleStep(message.id, stepId, isExpanded),
+      detailSummary: detail ? <small>{detail}</small> : null,
+      analysisContext: { message },
+      onAnalyzeFailureStep,
+      mode: "message",
+    });
+  };
   const showReplyAfterTrace = isAssistant && hasStreamSteps;
   const messageBodyContent = message.content;
   const messageBodyClassName = `message-body ${message.isStreaming ? "message-body--streaming" : ""} ${
@@ -5141,72 +5329,16 @@ function renderMessage(
     : renderMarkdownContent(messageBodyContent, messageBodyClassName);
   const messageTrace = hasStreamSteps ? (
     <div className={`message-stream-trace ${showReplyAfterTrace ? "message-stream-trace--top" : ""}`}>
-      {streamSteps.map((step: MessageStreamStep) => {
-        const isExpanded = resolvedExpandedStepId === step.id;
-        return (
-          <details
-            key={step.id}
-            className={`message-stream-step message-stream-step--${step.state}`}
-            open={isExpanded}
-          >
-            <summary
-              className="message-stream-step__summary"
-              onClick={(event) => {
-                event.preventDefault();
-                onToggleStep(message.id, step.id, isExpanded);
-              }}
-            >
-              <span className="message-stream-step__state" aria-hidden="true">
-                {step.state === "done" ? "✓" : step.state === "error" ? "!" : ""}
-              </span>
-              <span className="message-stream-step__copy">
-                <span className="message-stream-step__title-line">
-                  <strong>{step.label}</strong>
-                  {renderStepIdBadges(step)}
-                </span>
-                {(() => {
-                  const detail =
-                    step.id === currentStreamStepId
-                      ? summarizeStreamingStepCurrentDetail(step)
-                      : summarizeStreamingDetail(step.detail);
-                  return detail ? <small>{detail}</small> : null;
-                })()}
-              </span>
-              <span className="message-stream-step__actions">
-                {renderFailureStepAction(step, { message }, onAnalyzeFailureStep)}
-                <span className="message-stream-step__toggle" aria-hidden="true">
-                  &gt;
-                </span>
-              </span>
-            </summary>
-            {isExpanded && (step.detailContent || step.detail) ? (
-              <div className="message-stream-step__detail">
-                {(() => {
-                  const detailSource = step.detailContent || step.detail || "";
-                  const isLlmStep = isLikelyLlmStep(step.label, detailSource);
-                  if (isLlmStep) {
-                    const llmDetail = parseLlmConversationMarkdown(detailSource);
-                    const structuredDetail = renderLlmDetailLayout(inferAgentNameFromLlmStepLabel(step.label), llmDetail, {
-                      className: "message-stream-step__detail-content llm-exchange-stack",
-                    });
-                    return structuredDetail || renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-                  }
-
-                  if (step.kind === "tool_call") {
-                    return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-                  }
-
-                  if (step.state === "live") {
-                    return renderStreamingTextContent(detailSource, "message-stream-step__detail-content");
-                  }
-
-                  return renderMarkdownContent(detailSource, "message-stream-step__detail-content", { highlight: false });
-                })()}
-              </div>
-            ) : null}
-          </details>
-        );
+      {renderTraceHistoryCard({
+        historyId,
+        steps: historySteps,
+        expandedStepId: resolvedExpandedStepId,
+        onToggleStep: (stepId, isExpanded) => onToggleStep(message.id, stepId, isExpanded),
+        analysisContext: { message },
+        onAnalyzeFailureStep,
+        mode: "message",
       })}
+      {recentSteps.map(renderMessageTraceStep)}
     </div>
   ) : null;
   const messageUsageFooter =
@@ -5594,6 +5726,7 @@ export function ChatTab({
   creatingProjectFromChat,
   connectionState,
   events,
+  expandCurrentStepByDefault,
   onSend,
   onOpenWorkspace,
   onOpenSidebar,
@@ -6203,17 +6336,8 @@ export function ChatTab({
             remember_scope: remember ? rememberedApprovalScope(item) : undefined,
           });
         }
-        if (chat?.id) {
-          const nextPending = await api.getApprovalQueue({
-            chatroom_id: chat.id,
-            status: "pending",
-            limit: 100,
-          });
-          setPendingApprovalItems(nextPending);
-          setApprovalQueueLoaded(true);
-        }
-        invalidateTaskRunDetail(item.task_run_id ?? selectedTaskRunSummary?.id ?? null);
-        await onRefresh();
+        setPendingApprovalItems((current) => current.filter((pendingItem) => pendingItem.id !== item.id));
+        setApprovalQueueLoaded(true);
         setApprovalActionMessage(
           action === "approve"
             ? updated.status === "approved"
@@ -6223,13 +6347,32 @@ export function ChatTab({
               ? `${remember ? "Rejected and remembered" : "Rejected"} ${item.target_name || item.target_kind || "request"}.`
               : "Approval updated.",
         );
+        if (chat?.id) {
+          void api.getApprovalQueue({
+            chatroom_id: chat.id,
+            status: "pending",
+            limit: 100,
+          }).then((nextPending) => {
+            setPendingApprovalItems(nextPending);
+            setApprovalQueueLoaded(true);
+          }).catch((error) => {
+            setApprovalActionError(error instanceof Error ? error.message : "Failed to refresh approvals");
+          });
+        }
+        invalidateTaskRunDetail(item.task_run_id ?? selectedTaskRunSummary?.id ?? null);
+        const refreshTaskRunId = item.task_run_id ?? selectedTaskRunSummary?.id ?? null;
+        if (onRefreshRuntime && typeof refreshTaskRunId === "number") {
+          void onRefreshRuntime(refreshTaskRunId);
+        } else {
+          void onRefresh();
+        }
       } catch (error) {
         setApprovalActionError(error instanceof Error ? error.message : `Failed to ${action} request`);
       } finally {
         setApprovalActionItemId((current) => (current === item.id ? null : current));
       }
     },
-    [approvalActionItemId, chat?.id, invalidateTaskRunDetail, onRefresh, selectedTaskRunSummary?.id],
+    [approvalActionItemId, chat?.id, invalidateTaskRunDetail, onRefresh, onRefreshRuntime, selectedTaskRunSummary?.id],
   );
 
   const fallbackStepCardsByMessageId = useMemo(() => {
@@ -7256,7 +7399,7 @@ export function ChatTab({
     const resolveExpandedMessageStepId = (message: MessageItem) => {
       return Object.prototype.hasOwnProperty.call(expandedMessageSteps, message.id)
         ? expandedMessageSteps[message.id]
-        : stepAutoExpansionDisabled
+        : !expandCurrentStepByDefault || stepAutoExpansionDisabled
           ? null
           : undefined;
     };
@@ -7312,7 +7455,7 @@ export function ChatTab({
                     item.id === latestActivityBatchId,
                     item.id === latestActivityBatchId ? currentActivityAgentName : null,
                     expandedProgressCards,
-                    !stepAutoExpansionDisabled,
+                    expandCurrentStepByDefault && !stepAutoExpansionDisabled,
                     toggleProgressCard,
                     gateActionPipelineId,
                       handleApproveGate,
@@ -7331,7 +7474,7 @@ export function ChatTab({
                         approvalActionItemId,
                         Object.prototype.hasOwnProperty.call(expandedTaskRunSteps, item.taskRun.id)
                           ? expandedTaskRunSteps[item.taskRun.id]
-                          : stepAutoExpansionDisabled
+                          : !expandCurrentStepByDefault || stepAutoExpansionDisabled
                             ? null
                             : undefined,
                         toggleTaskRunStep,
@@ -7382,6 +7525,7 @@ export function ChatTab({
     currentActivityAgentName,
     expandedMessageSteps,
     expandedProgressCards,
+    expandCurrentStepByDefault,
     expandedTaskRunSteps,
     fallbackStepCardsByMessageId,
     gateActionPipelineId,

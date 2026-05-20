@@ -11,9 +11,6 @@ from services.single_agent_session_orchestrator import (
     SingleAgentStreamFailurePolicy,
     SingleAgentStreamLoopCallbacks,
     SingleAgentStreamTransportContext,
-    build_single_agent_runtime_profile_from_raw_inputs,
-    build_single_agent_stream_raw_execution_envelope,
-    build_single_agent_sync_raw_execution_envelope,
 )
 
 
@@ -24,6 +21,11 @@ def build_single_agent_sync_chat_profile(
     on_empty: Callable[[], Awaitable[Any] | Any] | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build a managed sync runtime profile for one single-agent chat turn."""
+
+    from services.single_agent_session_orchestrator import (
+        build_single_agent_runtime_profile_from_raw_inputs,
+        build_single_agent_sync_raw_execution_envelope,
+    )
 
     return build_single_agent_runtime_profile_from_raw_inputs(
         runtime_inputs=runtime_inputs,
@@ -46,6 +48,11 @@ def build_single_agent_stream_chat_profile(
     stream_failure: SingleAgentStreamFailurePolicy | None = None,
 ) -> SingleAgentRuntimeProfile:
     """Build a managed stream runtime profile for one single-agent chat turn."""
+
+    from services.single_agent_session_orchestrator import (
+        build_single_agent_runtime_profile_from_raw_inputs,
+        build_single_agent_stream_raw_execution_envelope,
+    )
 
     return build_single_agent_runtime_profile_from_raw_inputs(
         runtime_inputs=runtime_inputs,

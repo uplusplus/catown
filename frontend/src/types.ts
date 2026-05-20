@@ -1,5 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context";
+export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context" | "interface";
 
 export type AgentSoul = {
   identity?: string;
@@ -769,6 +769,12 @@ export type ConfigContextDefinition = {
   default_selector_profiles?: Record<string, ContextSelectorProfileConfig>;
 };
 
+export type ConfigUiDefinition = {
+  chat_cards?: {
+    expand_current_step_by_default?: boolean;
+  };
+};
+
 export type ConfigResponse = {
   global_llm?: {
     provider?: {
@@ -781,6 +787,7 @@ export type ConfigResponse = {
   orchestration?: ConfigOrchestrationDefinition;
   permissions?: ConfigPermissionsDefinition;
   context?: ConfigContextDefinition;
+  ui?: ConfigUiDefinition;
   tools?: {
     tool_names?: string[];
     tool_policies?: Array<{
@@ -929,6 +936,8 @@ export type PermissionsConfigPayload = {
 export type ContextConfigPayload = {
   selector_profiles: Record<string, ContextSelectorProfileConfig>;
 };
+
+export type UiConfigPayload = ConfigUiDefinition;
 
 export type MonitorToolSummary = {
   tool_name: string;

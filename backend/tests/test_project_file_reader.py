@@ -15,7 +15,7 @@ def test_read_project_workspace_file_returns_text(tmp_path):
 
     assert result.path == "src/app.py"
     assert result.name == "app.py"
-    assert result.content == "print('ok')\n"
+    assert result.content == "print('ok')\n".replace("\n", os.linesep)
     assert result.binary is False
     assert result.truncated is False
 
@@ -65,7 +65,7 @@ def test_write_project_workspace_file_saves_text(tmp_path):
         ProjectFileWriteRequest(path="notes.md", content="new\n", expected_mtime=opened.mtime),
     )
 
-    assert result.content == "new\n"
+    assert result.content == "new\n".replace("\n", os.linesep)
     assert target.read_text(encoding="utf-8") == "new\n"
 
 

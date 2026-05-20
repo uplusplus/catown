@@ -112,6 +112,20 @@ catown/
 - Pipeline 测试：27/27 ✅（含 8 个安全专项测试）
 - E2E 集成测试：35/35 ✅
 
+### 测试执行
+
+默认后端测试：
+
+```bash
+python -m pytest
+```
+
+并行提速（推荐先用保守并发，尤其是 Windows 本地环境）：
+
+```bash
+python -m pytest -n 2 --dist loadscope
+```
+
 ## 📋 实施进度
 
 | 模块 | 状态 | 日期 |

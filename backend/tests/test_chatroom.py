@@ -110,7 +110,7 @@ class TestSendMessage:
     async def test_send_agent_message(self, fresh_db):
         from chatrooms.manager import ChatroomManager
 
-        agent = fresh_db.Agent(name="sender", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="sender", role="r", soul='{"identity": "s"}')
         project = fresh_db.Project(name="AgentMsgP")
         db = fresh_db.SessionLocal()
         db.add_all([agent, project])

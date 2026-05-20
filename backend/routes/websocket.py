@@ -68,7 +68,7 @@ class WebSocketManager:
     async def broadcast(self, message: Dict):
         """广播消息给所有连接"""
         dead = []
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception:
@@ -80,7 +80,7 @@ class WebSocketManager:
         """广播消息到特定聊天室"""
         if chatroom_id in self.room_connections:
             dead = []
-            for connection in self.room_connections[chatroom_id]:
+            for connection in list(self.room_connections[chatroom_id]):
                 try:
                     await connection.send_json(message)
                 except Exception:
@@ -94,7 +94,7 @@ class WebSocketManager:
         if normalized_topic not in self.topic_connections:
             return
         dead = []
-        for connection in self.topic_connections[normalized_topic]:
+        for connection in list(self.topic_connections[normalized_topic]):
             try:
                 await connection.send_json(message)
             except Exception:

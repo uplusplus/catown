@@ -10,12 +10,10 @@ from typing import Any, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models.database import TaskRun
-
 
 @dataclass(frozen=True)
 class RecoveryLeaseClaimResult:
-    task_run: TaskRun | None
+    task_run: Any | None
     reason: str
     status: str | None = None
     detail: str | None = None
@@ -40,6 +38,8 @@ def claim_recovery_lease(
     lease_seconds: int,
     now: datetime | None = None,
 ) -> RecoveryLeaseClaimResult:
+    from models.database import TaskRun
+
     current_time = now or datetime.now()
     lease_expires_at = current_time + timedelta(seconds=lease_seconds)
     updated = (
@@ -117,6 +117,8 @@ def renew_recovery_lease(
     lease_seconds: int,
     now: datetime | None = None,
 ) -> datetime | None:
+    from models.database import TaskRun
+
     current_time = now or datetime.now()
     lease_expires_at = current_time + timedelta(seconds=lease_seconds)
     updated = (

@@ -5,10 +5,50 @@ import pytest
 import os
 import sys
 import asyncio
+import importlib
 from unittest.mock import AsyncMock, MagicMock
 
 # 确保 backend 在 path 中
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+_APP_RESET_SKIP_RELOAD = {
+    "services.task_run_control",
+    "services.orchestration_recovery_lease",
+}
+
+
+def reset_app_modules(module_names):
+    """Reload app modules for a new test environment without orphaning collected imports."""
+
+    requested = [module_name for module_name in module_names if module_name not in _APP_RESET_SKIP_RELOAD]
+    if "main" in requested and "services.runtime_lifecycle" not in requested:
+        requested.append("services.runtime_lifecycle")
+    if "models.database" in requested:
+        from sqlalchemy.orm import clear_mappers
+
+        clear_mappers()
+    ordered = sorted(
+        requested,
+        key=lambda module_name: (
+            0 if module_name == "config"
+            else 1 if module_name == "models.database"
+            else 2 if module_name.startswith("models.")
+            else 3 if module_name == "pipeline.config"
+            else 3 if module_name.startswith("services.")
+            else 4 if module_name.startswith("agents.") or module_name in {"tools", "llm.client", "chatrooms.manager", "pipeline.engine"}
+            else 5 if module_name.startswith("routes.")
+            else 6 if module_name == "main"
+            else 7,
+            module_name,
+        ),
+    )
+    for module_name in ordered:
+        if module_name in _APP_RESET_SKIP_RELOAD:
+            continue
+        module = sys.modules.get(module_name)
+        if module is not None:
+            importlib.reload(module)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +63,13 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
     db_path = str(tmp_path / "test.db")
     monkeypatch.setenv("DATABASE_URL", db_path)
+    monkeypatch.delenv("AGENT_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("PIPELINE_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("SKILLS_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("SKILL_MARKETPLACES_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("CATOWN_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CATOWN_PROJECTS_ROOT", raising=False)
+    monkeypatch.delenv("CATOWN_WORKSPACES_DIR", raising=False)
 
 
 @pytest.fixture
@@ -60,15 +107,52 @@ def fresh_db(tmp_path, monkeypatch):
 
     # 重新导入以使用新的 DATABASE_URL
     import importlib
+    from sqlalchemy.orm import clear_mappers
+
+    clear_mappers()
     import models.database as db_mod
     importlib.reload(db_mod)
-    import services.run_ledger as run_ledger_mod
-    importlib.reload(run_ledger_mod)
-    import services.chat_timeline_projection as timeline_mod
-    importlib.reload(timeline_mod)
+    _reload_model_bound_service_modules(importlib)
 
     db_mod.Base.metadata.create_all(bind=db_mod.engine)
     return db_mod
+
+
+def _reload_model_bound_service_modules(importlib_module):
+    """Refresh service globals that hold SQLAlchemy model classes after DB reload."""
+
+    module_names = [
+        "services.runtime_lifecycle",
+        "services.run_ledger",
+        "services.runner_lifecycle",
+        "services.approval_queue",
+        "services.approval_audit",
+        "services.chat_publish",
+        "services.chat_prompt_builder",
+        "services.chat_timeline_projection",
+        "services.task_activity_projection",
+        "services.user_visible_step_projection",
+        "services.monitor_projection",
+        "services.agent_lifecycle_runtime",
+        "services.agent_action_runtime",
+        "services.collaboration_dispatch_runtime",
+        "services.orchestration_events",
+        "services.orchestration_handoffs",
+        "services.orchestration_inbox",
+        "services.orchestration_finalizer",
+        "services.orchestration_guards",
+        "services.orchestration_step_completion",
+        "services.orchestration_agent_turn",
+        "services.orchestration_step_runner",
+        "services.orchestration_runtime_runner",
+        "services.orchestration_recovery_prepare",
+        "services.orchestration_recovery_runner",
+        "services.orchestration_stream_runner",
+    ]
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            importlib_module.reload(module)
 
 
 @pytest.fixture

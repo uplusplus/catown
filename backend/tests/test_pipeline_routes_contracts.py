@@ -58,9 +58,8 @@ def _make_app(tmp_path):
         "pipeline.config",
         "routes.pipeline",
     ]
-    for mod_name in modules_to_clear:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    from tests.conftest import reset_app_modules
+    reset_app_modules(modules_to_clear)
 
     import llm.client as llm_mod
     from unittest.mock import AsyncMock, MagicMock

@@ -12,6 +12,7 @@ import type {
   PermissionsConfigPayload,
   SkillMarketplace,
   ToolAuthorizationRule,
+  UiConfigPayload,
 } from "../types";
 import { DEFAULT_AGENT_TYPE, defaultAgentName } from "../utils/agents";
 
@@ -47,6 +48,7 @@ type ConfigTabProps = {
   onSaveOrchestration: (payload: { sidecar_agent_types: string[] }) => Promise<void>;
   onSavePermissions: (payload: PermissionsConfigPayload) => Promise<void>;
   onSaveContext: (payload: ContextConfigPayload) => Promise<void>;
+  onSaveUi: (payload: UiConfigPayload) => Promise<void>;
   authorizationRules: ToolAuthorizationRule[];
   onRevokeAuthorizationRule: (ruleId: number) => Promise<void>;
   onReload: () => Promise<void>;
@@ -71,6 +73,10 @@ type PermissionsDraft = {
 
 type ContextDraft = {
   selectorProfilesJson: string;
+};
+
+type UiDraft = {
+  expandCurrentStepByDefault: boolean;
 };
 
 type AgentDraft = {
@@ -144,6 +150,12 @@ function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft 
 function buildContextDraft(config: ConfigResponse | null): ContextDraft {
   return {
     selectorProfilesJson: JSON.stringify(config?.context?.selector_profiles ?? {}, null, 2),
+  };
+}
+
+function buildUiDraft(config: ConfigResponse | null): UiDraft {
+  return {
+    expandCurrentStepByDefault: config?.ui?.chat_cards?.expand_current_step_by_default ?? false,
   };
 }
 
@@ -518,6 +530,7 @@ export function ConfigTab({
   onSaveOrchestration,
   onSavePermissions,
   onSaveContext,
+  onSaveUi,
   authorizationRules,
   onRevokeAuthorizationRule,
   onSaveAgent,
@@ -531,6 +544,7 @@ export function ConfigTab({
   const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
   const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
   const [contextDraft, setContextDraft] = useState<ContextDraft>(() => buildContextDraft(config));
+  const [uiDraft, setUiDraft] = useState<UiDraft>(() => buildUiDraft(config));
   const [contextDraftError, setContextDraftError] = useState("");
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
@@ -648,6 +662,10 @@ export function ConfigTab({
   useEffect(() => {
     setContextDraft(buildContextDraft(config));
     setContextDraftError("");
+  }, [config]);
+
+  useEffect(() => {
+    setUiDraft(buildUiDraft(config));
   }, [config]);
 
   useEffect(() => {
@@ -999,6 +1017,19 @@ export function ConfigTab({
       ];
     },
     [config?.context?.selector_profiles, contextProfileRows.length],
+  );
+  const uiPreviewItems = useMemo(
+    () => [
+      {
+        label: "Current step",
+        value: uiDraft.expandCurrentStepByDefault ? "Auto expand" : "Collapsed",
+      },
+      {
+        label: "Scope",
+        value: "Chat cards and runtime traces",
+      },
+    ],
+    [uiDraft.expandCurrentStepByDefault],
   );
 
   if (activeSection === "skills") {
@@ -1450,6 +1481,78 @@ export function ConfigTab({
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (activeSection === "interface") {
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className="panel-card panel-card--full">
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Display Defaults</p>
+              <h2>Interface</h2>
+            </div>
+            <div className="config-actions-row config-actions-row--header">
+              <button
+                type="submit"
+                form="ui-config-form"
+                className="primary-button compact-button"
+                disabled={saving}
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={saving}
+                onClick={() => setUiDraft(buildUiDraft(config))}
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <form
+            id="ui-config-form"
+            className="project-form project-form--compact config-form settings-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSaveUi({
+                chat_cards: {
+                  expand_current_step_by_default: uiDraft.expandCurrentStepByDefault,
+                },
+              });
+            }}
+          >
+            <label className="config-toggle-row">
+              <input
+                type="checkbox"
+                checked={uiDraft.expandCurrentStepByDefault}
+                onChange={(event) =>
+                  setUiDraft((current) => ({
+                    ...current,
+                    expandCurrentStepByDefault: event.target.checked,
+                  }))
+                }
+              />
+              <span>Expand the current step in chat cards by default</span>
+            </label>
+            <p className="small-note">
+              When disabled, step details start collapsed until you open one manually.
+            </p>
+          </form>
+
+          <div style={{ marginTop: 16 }}>
+            <PreviewCard
+              title="Chat card behavior"
+              subtitle="Default expansion state for runtime step details"
+              items={uiPreviewItems}
+              onActivate={() => undefined}
+            />
           </div>
         </div>
       </section>

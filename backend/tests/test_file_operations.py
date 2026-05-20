@@ -312,7 +312,7 @@ class TestSearchFilesTool:
 
         docs_dir = tmp_path / "docs"
         docs_dir.mkdir()
-        (docs_dir / "PRD.md").write_text("### 已完成\n")
+        (docs_dir / "PRD.md").write_text("### 已完成\n", encoding="utf-8")
 
         tool = SearchFilesTool(workspace=str(tmp_path))
         result = await tool.execute(search_term="已完成", directory="docs", file_pattern="*.md")

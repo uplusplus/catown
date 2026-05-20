@@ -220,6 +220,17 @@ class RunShellTool(BaseTool):
     @staticmethod
     def _shell_invocation(command: str) -> list[str] | None:
         if os.name == "nt":
+            powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+            if powershell:
+                return [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    command,
+                ]
             comspec = os.environ.get("COMSPEC") or shutil.which("cmd")
             return [comspec or "cmd.exe", "/d", "/s", "/c", command]
 

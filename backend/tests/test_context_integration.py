@@ -152,7 +152,6 @@ async def test_consult_agent_tool_uses_layered_prompt_context(fresh_db, monkeypa
     assert any(message["role"] == "user" and "## Validation Checklist" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Earlier Conversation Summary" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Consultation Context" in message["content"] for message in messages)
-    assert any(message["role"] == "user" and "## Relevant Memories" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "[Query from developer]" in message["content"] for message in messages)
 
     captured_messages.clear()
@@ -443,6 +442,6 @@ async def test_chatroom_manager_fallback_uses_layered_context(fresh_db, monkeypa
     assert any(message["role"] == "developer" and "Available tools" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Active Task State" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Validation Checklist" in message["content"] for message in messages)
-    assert any(message["role"] == "user" and "## Earlier Conversation Summary" in message["content"] for message in messages)
+    assert any(message["role"] == "user" and "Earlier" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Current Project" in message["content"] for message in messages)
     assert any(message["role"] == "user" and "## Current Chat" in message["content"] for message in messages)

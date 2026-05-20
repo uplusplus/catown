@@ -3,11 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy.orm import Session
-
-from models.database import TaskRun
 
 
 class TaskRunCancelledError(RuntimeError):
@@ -22,19 +18,21 @@ class TaskRunCancelledError(RuntimeError):
         super().__init__(detail)
 
 
-def task_run_status(db: Session, task_run: TaskRun | int | None) -> str | None:
+def task_run_status(db: Session, task_run: object | int | None) -> str | None:
     """Read the latest persisted task-run status."""
 
     task_run_id = _task_run_id(task_run)
     if task_run_id is None:
         return None
+    from models.database import TaskRun
+
     status = db.query(TaskRun.status).filter(TaskRun.id == task_run_id).scalar()
     return str(status or "").strip().lower() or None
 
 
 def raise_if_task_run_cancelled(
     db: Session,
-    task_run: TaskRun | int | None,
+    task_run: object | int | None,
     *,
     context: str = "",
 ) -> None:
@@ -44,7 +42,7 @@ def raise_if_task_run_cancelled(
         raise TaskRunCancelledError(_task_run_id(task_run), context=context)
 
 
-def _task_run_id(task_run: TaskRun | int | None) -> int | None:
+def _task_run_id(task_run: object | int | None) -> int | None:
     if isinstance(task_run, int):
         return task_run if task_run > 0 else None
     raw_id = getattr(task_run, "id", None)

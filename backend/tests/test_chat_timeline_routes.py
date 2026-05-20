@@ -32,9 +32,8 @@ def _make_app(tmp_path):
         "services.task_activity_projection",
         "services.chat_timeline_projection",
     ]
-    for mod_name in modules_to_clear:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    from tests.conftest import reset_app_modules
+    reset_app_modules(modules_to_clear)
 
     import llm.client as llm_mod
 
@@ -115,11 +114,14 @@ def test_task_run_timeline_route_returns_canonical_steps(client):
     payload = response.json()
     assert payload["scope"] == "task_run"
     assert payload["version"] == 2
-    assert [step["event_type"] for step in payload["steps"]] == [
+    assert [step["event_type"] for step in payload["steps"]] == ["llm_response_completed"]
+    assert [step["sequence"] for step in payload["steps"]] == [1]
+    assert payload["steps"][0]["kind"] == "llm"
+    assert payload["steps"][0]["phase"] == "response"
+    assert [event["event_type"] for event in payload["steps"][0]["event_refs"]] == [
         "llm_request_created",
         "llm_response_completed",
     ]
-    assert [step["sequence"] for step in payload["steps"]] == [1, 2]
 
 
 def test_chatroom_timeline_route_returns_aggregated_steps(client):

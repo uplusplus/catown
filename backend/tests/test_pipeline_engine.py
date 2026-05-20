@@ -353,13 +353,16 @@ async def test_run_agent_stage_rebuilds_messages_from_turn_state(fresh_db, tmp_p
         )
         assert [event.event_type for event in task_events] == [
             "agent_turn_started",
+            "tool_call_started",
             "tool_round_recorded",
+            "tool_call_started",
             "tool_round_recorded",
             "agent_turn_completed",
         ]
         assert task_events[-1].agent_name == "analyst"
-        assert json.loads(task_events[1].payload_json)["tool_names"] == ["list_files"]
-        assert json.loads(task_events[2].payload_json)["tool_names"] == ["read_file"]
+        round_events = [event for event in task_events if event.event_type == "tool_round_recorded"]
+        assert json.loads(round_events[0].payload_json)["tool_names"] == ["list_files"]
+        assert json.loads(round_events[1].payload_json)["tool_names"] == ["read_file"]
 
         second_call_messages = seen_messages[1]
         third_call_messages = seen_messages[2]
@@ -526,14 +529,18 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
 
         assert [event.event_type for event in task_events] == [
             "agent_turn_started",
+            "tool_call_started",
             "tool_round_recorded",
             "approval_queue_item_created",
             "tool_call_blocked",
         ]
 
-        round_payload = json.loads(task_events[1].payload_json)
-        queue_payload = json.loads(task_events[2].payload_json)
-        blocked_payload = json.loads(task_events[3].payload_json)
+        round_event = next(event for event in task_events if event.event_type == "tool_round_recorded")
+        queue_event = next(event for event in task_events if event.event_type == "approval_queue_item_created")
+        blocked_event = next(event for event in task_events if event.event_type == "tool_call_blocked")
+        round_payload = json.loads(round_event.payload_json)
+        queue_payload = json.loads(queue_event.payload_json)
+        blocked_payload = json.loads(blocked_event.payload_json)
         queue_item = (
             db.query(fresh_db.ApprovalQueueItem)
             .filter(fresh_db.ApprovalQueueItem.task_run_id == task_run.id)
@@ -935,6 +942,7 @@ async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path)
         assert [event.event_type for event in events] == [
             "pipeline_stage_started",
             "agent_turn_started",
+            "tool_call_started",
             "tool_round_recorded",
             "approval_queue_item_created",
             "tool_call_blocked",

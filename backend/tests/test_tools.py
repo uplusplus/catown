@@ -36,6 +36,24 @@ from tools.file_operations import DeleteFileTool
 from tools.user_file_interaction import OpenFileForUserTool
 
 
+def _read_only_probe_command() -> str:
+    return "echo ok"
+
+
+def _mutating_probe_command() -> str:
+    if os.name == "nt":
+        return "mkdir created-dir"
+    return "touch created.txt"
+
+
+def _python_command(code: str) -> str:
+    return subprocess.list2cmdline([sys.executable, "-c", code])
+
+
+def _shell_path(path) -> str:
+    return subprocess.list2cmdline([str(path)])
+
+
 # ==================== BaseTool & ToolRegistry ====================
 
 class TestToolRegistry:
@@ -256,7 +274,7 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command="printf ok",
+            command=_read_only_probe_command(),
             __catown_approval_granted=True,
         )
 
@@ -271,7 +289,7 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command="pwd && printf ok",
+            command=_read_only_probe_command(),
         )
 
         assert result["success"] is True
@@ -285,7 +303,7 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command="touch created.txt",
+            command=_mutating_probe_command(),
         )
 
         assert result["success"] is False
@@ -330,7 +348,7 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command=f'{sys.executable} -c "import time; time.sleep(2)"',
+            command=_python_command("import time; time.sleep(2)"),
             timeout_seconds=1,
             chatroom_id=1,
             __catown_approval_granted=True,
@@ -381,11 +399,8 @@ class TestToolRegistry:
     async def test_run_shell_wait_forever_emits_progress(self, fresh_db, tmp_path, monkeypatch):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
-        command = (
-            f'{sys.executable} -c "import time; '
-            "print('line 1', flush=True); "
-            "time.sleep(0.3); "
-            "print('line 2', flush=True)\""
+        command = _python_command(
+            "import time; print('line 1', flush=True); time.sleep(0.3); print('line 2', flush=True)"
         )
         monkeypatch.setattr("tools.run_shell.TAIL_PROGRESS_INTERVAL_SECONDS", 0.1)
 
@@ -428,16 +443,46 @@ class TestToolRegistry:
         assert any("line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
+    async def test_run_shell_progress_callback_failure_does_not_fail_process(self, fresh_db, tmp_path, monkeypatch):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+        command = _python_command(
+            "import time; print('line 1', flush=True); time.sleep(0.2); print('line 2', flush=True)"
+        )
+        monkeypatch.setattr("tools.run_shell.TAIL_PROGRESS_INTERVAL_SECONDS", 0.1)
+
+        calls = 0
+
+        async def progress_callback(_payload):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("publish failed")
+
+        result = await registry.execute(
+            "run_shell",
+            command=command,
+            timeout_seconds=2,
+            __catown_approval_granted=True,
+            progress_callback=progress_callback,
+        )
+
+        assert result["success"] is True
+        assert result["status"] == "succeeded"
+        assert "line 2" in result["result"]
+        assert calls >= 1
+
+    @pytest.mark.asyncio
     async def test_run_shell_progress_tails_redirected_output(self, fresh_db, tmp_path, monkeypatch):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
         output_path = tmp_path / "pytest.log"
         command = (
-            f'{sys.executable} -c "import time; '
-            "print(\'redirected line 1\', flush=True); "
-            "time.sleep(0.3); "
-            "print(\'redirected line 2\', flush=True)\" "
-            f"> {output_path} 2>&1"
+            _python_command(
+                "import time; print('redirected line 1', flush=True); "
+                "time.sleep(0.3); print('redirected line 2', flush=True)"
+            )
+            + f" > {_shell_path(output_path)} 2>&1"
         )
         monkeypatch.setattr("tools.run_shell.TAIL_PROGRESS_INTERVAL_SECONDS", 0.1)
 
@@ -486,7 +531,7 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command=f'{sys.executable} -c "import time; time.sleep(2); print(\'done\')"',
+            command=_python_command("import time; time.sleep(2); print('done')"),
             timeout_seconds=1,
             __catown_approval_granted=True,
         )

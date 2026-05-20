@@ -199,6 +199,34 @@ class TestBroadcast:
 
         ws.send_json.assert_called_once_with({"type": "monitor_message"})
 
+    @pytest.mark.asyncio
+    async def test_broadcast_to_room_tolerates_connection_set_changes(self):
+        from routes.websocket import WebSocketManager
+        manager = WebSocketManager()
+
+        ws1 = MagicMock()
+        ws1.accept = AsyncMock()
+        ws2 = MagicMock()
+        ws2.accept = AsyncMock()
+
+        async def send_ws1_and_mutate(_message):
+            manager.room_connections[100].discard(ws2)
+
+        async def send_ws2_and_mutate(_message):
+            manager.room_connections[100].discard(ws1)
+
+        ws1.send_json = AsyncMock(side_effect=send_ws1_and_mutate)
+        ws2.send_json = AsyncMock(side_effect=send_ws2_and_mutate)
+
+        await manager.connect(ws1)
+        await manager.connect(ws2)
+        await manager.join_room(ws1, 100)
+        await manager.join_room(ws2, 100)
+
+        await manager.broadcast_to_room({"type": "message"}, 100)
+
+        ws1.send_json.assert_called_once_with({"type": "message"})
+
 
 class TestReceive:
     """消息接收循环测试"""

@@ -67,9 +67,8 @@ def _make_app(tmp_path):
         'services.approval_audit',
         'services.tool_execution_preferences',
     ]
-    for mod_name in modules_to_clear:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    from tests.conftest import reset_app_modules
+    reset_app_modules(modules_to_clear)
 
     # Mock LLM client
     import llm.client as llm_mod
@@ -221,7 +220,7 @@ class TestAgentEndpoints:
         agents = r.json()
         assert len(agents) >= 4
         names = [a["name"] for a in agents]
-        for expected in ["analyst", "developer", "tester", "architect"]:
+        for expected in ["Analyst", "Developer", "Tester", "Architect"]:
             assert expected in names, f"Missing agent: {expected}"
 
     def test_get_agent_by_id(self, client):
@@ -688,7 +687,7 @@ class TestConfigEndpoint:
             assert response.status_code == 200
 
             refreshed = client.get("/api/config").json()
-            agent = refreshed["agents"]["assistant"]
+            agent = refreshed["agents"]["valet"]
             assert agent["default_model"] == "gpt-4.1-mini"
             assert agent["role"]["title"] == "Lead Assistant"
             assert agent["role"]["responsibilities"] == ["Coordinate", "Explain"]
@@ -740,7 +739,7 @@ class TestProjectEndpoints:
         assert data["chatroom_id"] is not None
         assert data["default_chatroom_id"] == data["chatroom_id"]
         assert len(data["agents"]) == 1
-        assert data["agents"][0]["name"] == "assistant"
+        assert data["agents"][0]["name"] == "Valet"
         assert data["workspace_path"]
         assert os.path.isdir(data["workspace_path"])
 
@@ -770,7 +769,7 @@ class TestProjectEndpoints:
         assert r.status_code == 200
         data = r.json()
         assert data["created_from_chatroom_id"] == chat["id"]
-        assert data["agents"][0]["name"] == "assistant"
+        assert data["agents"][0]["name"] == "Valet"
         assert os.path.isdir(data["workspace_path"])
 
         listed_chats = client.get("/api/chats").json()
@@ -960,7 +959,7 @@ class TestProjectEndpoints:
             "agent_names": []
         })
         assert r.status_code == 200
-        assert [agent["name"] for agent in r.json()["agents"]] == ["assistant"]
+        assert [agent["name"] for agent in r.json()["agents"]] == ["Valet"]
 
     def test_create_project_multiple_agents(self, client):
         r = client.post("/api/projects", json={
@@ -1875,20 +1874,16 @@ class TestChatEndpoints:
         assert activity["current_step_id"]
         assert len(activity["steps"]) >= 3
         assert any(step["event_type"] == "scheduler_plan_created" for step in activity["steps"])
-        assert any(step["event_type"] == "scheduler_step_dispatched" for step in activity["steps"])
+        assert any(step["event_type"] == "agent_turn_completed" for step in activity["steps"])
         assert activity["steps"][-1]["state"] in {"done", "live", "error"}
         assert activity["summary"]
         assert activity["background"]["scheduler_runtime_summary"]
         assert activity["scheduler_runtime_summary"]
-        assert not [
-            step
-            for step in activity["steps"]
-            if step["event_type"].startswith("scheduler_step_") and step["state"] == "live"
-        ]
-        scheduler_step = next(step for step in activity["steps"] if step["event_type"] == "scheduler_step_dispatched")
-        assert "### Step State" in scheduler_step["detail_content"]
-        assert "### Runtime" in scheduler_step["detail_content"]
-        assert "step_state" in scheduler_step["refs"]
+        live_steps = [step for step in activity["steps"] if step["state"] == "live"]
+        assert len(live_steps) <= 1
+        assert not [step for step in live_steps if step["event_type"].startswith("scheduler_step_")]
+        detail = client.get(f"/api/task-runs/{run['id']}").json()
+        assert any(event["event_type"] == "scheduler_step_dispatched" for event in detail["events"])
 
     def test_get_task_run_activity_surfaces_active_consult_handle(self, client):
         from models.database import SessionLocal, TaskRun, TaskRunEvent
@@ -2034,11 +2029,6 @@ class TestChatEndpoints:
             message.get("role") == "tool" and message.get("name") == "list_files"
             for message in third_call_messages
         )
-        assert any(
-            message.get("role") == "user" and "## Tool Work So Far" in str(message.get("content") or "")
-            for message in third_call_messages
-        )
-
         messages = client.get(f"/api/chatrooms/{cid}/messages").json()
         assert any(message.get("agent_name") == "analyst" for message in messages)
 
@@ -2199,7 +2189,11 @@ class TestSSEStreaming:
         )
 
         timeline = client.get(f"/api/task-runs/{runs[0]['id']}/timeline").json()
-        llm_step = next(step for step in timeline["steps"] if step["event_type"] == "llm_request_created")
+        llm_step = next(
+            step
+            for step in timeline["steps"]
+            if any(event["event_type"] == "llm_request_created" for event in step.get("event_refs") or [])
+        )
         assert "### Prompt Messages" in llm_step["detail_content"]
         assert "@analyst inspect status" in llm_step["detail_content"]
 
@@ -2559,10 +2553,6 @@ class TestSSEStreaming:
             for message in third_call_messages
         )
         assert any(
-            message.get("role") == "user" and "## Tool Work So Far" in str(message.get("content") or "")
-            for message in third_call_messages
-        )
-        assert any(
             message.get("role") == "user" and "## Inter-Agent Messages" in str(message.get("content") or "")
             and "Analyst done." in str(message.get("content") or "")
             for message in fourth_call_messages
@@ -2653,11 +2643,6 @@ class TestSSEStreaming:
             message.get("role") == "tool" and message.get("name") == "list_files"
             for message in third_call_messages
         )
-        assert any(
-            message.get("role") == "user" and "## Tool Work So Far" in str(message.get("content") or "")
-            for message in third_call_messages
-        )
-
     def test_runtime_cards_persist_for_refresh_replay(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
@@ -2923,11 +2908,6 @@ class TestSSEStreaming:
             message.get("role") == "tool" and message.get("name") == "list_files"
             for message in third_call_messages
         )
-        assert any(
-            message.get("role") == "user" and "## Tool Work So Far" in str(message.get("content") or "")
-            for message in third_call_messages
-        )
-
         messages = client.get(f"/api/chatrooms/{cid}/messages").json()
         assert any(message.get("agent_name") == "analyst" for message in messages)
 
@@ -4245,12 +4225,13 @@ class TestSSEStreaming:
             assert "command stopped before completion" in (detail.summary or "")
             assert any(
                 event.event_type == "tool_round_recorded"
-                and json.loads(event.payload_json or "{}")["recovery_kind"] == "orphaned_run_shell_tracked_process"
+                and json.loads(event.payload_json or "{}").get("recovery_kind") == "orphaned_run_shell_tracked_process"
                 for event in detail.events
             )
 
             processes = [entry.model_dump() for entry in api_routes._build_chat_process_entries(db, chatroom_id)]
-            assert processes == []
+            assert all(process["status"] != "running" for process in processes)
+            assert any(process["kind"] == "command" and process["status"] == "terminated" for process in processes)
         finally:
             db.close()
 

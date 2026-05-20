@@ -38,7 +38,7 @@ def _default_catown_home() -> Path:
 load_dotenv(_default_catown_home() / ".env")
 
 from config import settings
-from monitoring import monitor_network_buffer
+from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.runtime_lifecycle import mark_runtime_starting, mark_runtime_shutting_down
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -97,6 +97,8 @@ def _configure_logging() -> None:
             logger.addHandler(app_file_handler)
         if logger_name == "uvicorn.error" and error_file_handler not in logger.handlers:
             logger.addHandler(error_file_handler)
+
+    monitor_log_buffer.install()
 
 
 _configure_logging()

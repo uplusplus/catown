@@ -18,7 +18,6 @@ from agents.core import Agent, AgentConfig
 from agents.config_models import AgentConfigV2, create_agent_config_from_provider
 from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name, legacy_default_agent_names, normalize_agent_type
 from config import settings
-from models.database import SessionLocal, Agent as DBAgent
 import json
 import os
 
@@ -159,6 +158,8 @@ def register_builtin_agents():
     实际工具调用通过 routes/api.py 的 trigger_agent_response
     从 tool_registry 获取 schema 并执行。
     """
+    registry.agents.clear()
+    registry.configs.clear()
     configs = get_builtin_agent_configs()
     
     for config in configs:
@@ -167,20 +168,22 @@ def register_builtin_agents():
         registry.register(config, agent)
         
         # 同步到数据库
-        db = SessionLocal()
+        from models import database as db_models
+
+        db = db_models.SessionLocal()
         try:
             candidate_names = {config.name, config.type, default_agent_name(config.type)}
             candidate_names.update({value.title() for value in legacy_default_agent_names(config.type)})
             candidate_names.update(legacy_default_agent_names(config.type))
             existing = (
-                db.query(DBAgent)
+                db.query(db_models.Agent)
                 .filter(
                     or_(
-                        DBAgent.agent_type == config.type,
-                        DBAgent.name.in_(sorted(candidate_names)),
+                        db_models.Agent.agent_type == config.type,
+                        db_models.Agent.name.in_(sorted(candidate_names)),
                     )
                 )
-                .order_by(DBAgent.id.asc())
+                .order_by(db_models.Agent.id.asc())
                 .first()
             )
             payload = {
@@ -198,7 +201,7 @@ def register_builtin_agents():
                     setattr(existing, key, value)
                 db.add(existing)
             else:
-                db.add(DBAgent(**payload))
+                db.add(db_models.Agent(**payload))
             db.commit()
         except Exception as e:
             db.rollback()

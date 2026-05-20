@@ -184,6 +184,8 @@ def test_close_task_run_subagent_handle_marks_closed(monkeypatch):
 
 
 def test_close_task_run_subagent_handle_rejects_non_terminal_handle(monkeypatch):
+    from services import subagent_runtime_control as runtime_control
+
     monkeypatch.setattr(
         "services.run_ledger.build_task_run_checkpoint_snapshot",
         lambda task_run: {
@@ -195,8 +197,8 @@ def test_close_task_run_subagent_handle_rejects_non_terminal_handle(monkeypatch)
         },
     )
 
-    with pytest.raises(SubagentRuntimeControlError) as excinfo:
-        close_task_run_subagent_handle(
+    with pytest.raises(runtime_control.SubagentRuntimeControlError) as excinfo:
+        runtime_control.close_task_run_subagent_handle(
             SimpleNamespace(refresh=lambda task_run: None),
             _task_run(),
             step_id="step-1",

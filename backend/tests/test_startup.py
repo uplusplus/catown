@@ -31,9 +31,8 @@ def _make_app(tmp_path):
         'services.approval_queue', 'services.approval_replay', 'services.monitor_projection',
         'services.tool_execution_preferences',
     ]
-    for mod_name in modules_to_clear:
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
+    from tests.conftest import reset_app_modules
+    reset_app_modules(modules_to_clear)
 
     import llm.client as llm_mod
     mock_llm = MagicMock()
@@ -103,7 +102,7 @@ class TestStartupDataLoad:
         # agents.json 中定义了 6 个角色
         assert len(agents) == 6
         names = {a["name"] for a in agents}
-        assert names == {"analyst", "architect", "developer", "tester", "release", "assistant"}
+        assert names == {"Analyst", "Architect", "Developer", "Tester", "Release", "Valet"}
 
     def test_load_projects_empty_on_fresh_start(self, client):
         """全新启动时 projects 为空"""
@@ -140,7 +139,7 @@ class TestStartupDataLoad:
         """创建项目后 loadProjects 能拿到数据"""
         # 创建项目
         r = client.post("/api/projects", json={
-            "name": "Startup Project", "agent_names": ["assistant"]
+            "name": "Startup Project", "agent_names": ["valet"]
         })
         assert r.status_code == 200
 
@@ -158,10 +157,10 @@ class TestRetryAndIdempotency:
     def test_create_project_idempotent_names(self, client):
         """同名项目可以创建多次（业务允许），每次返回不同 ID"""
         r1 = client.post("/api/projects", json={
-            "name": "Same Name", "agent_names": ["assistant"]
+            "name": "Same Name", "agent_names": ["valet"]
         })
         r2 = client.post("/api/projects", json={
-            "name": "Same Name", "agent_names": ["assistant"]
+            "name": "Same Name", "agent_names": ["valet"]
         })
         assert r1.status_code == 200
         assert r2.status_code == 200
@@ -187,7 +186,7 @@ class TestWebSocketStartupFlow:
         """WebSocket join room 后可以正常加载消息"""
         # 创建项目（模拟前端收到数据后创建）
         r = client.post("/api/projects", json={
-            "name": "WS Test", "agent_names": ["assistant"]
+            "name": "WS Test", "agent_names": ["valet"]
         })
         cid = r.json()["chatroom_id"]
 
@@ -212,7 +211,7 @@ class TestWebSocketStartupFlow:
         names = ["Project A", "Project B", "Project C"]
         for name in names:
             client.post("/api/projects", json={
-                "name": name, "agent_names": ["assistant"]
+                "name": name, "agent_names": ["valet"]
             })
 
         r = client.get("/api/projects")
@@ -247,7 +246,7 @@ class TestDelayedBackendScenario:
     def test_create_project_then_immediately_use(self, client):
         """创建项目后立即使用（无延迟）"""
         r = client.post("/api/projects", json={
-            "name": "Instant Use", "agent_names": ["assistant", "developer"]
+            "name": "Instant Use", "agent_names": ["valet", "developer"]
         })
         assert r.status_code == 200
         data = r.json()
@@ -265,7 +264,7 @@ class TestDelayedBackendScenario:
     def test_sse_stream_after_startup(self, client):
         """启动后 SSE 流式端点可用"""
         r = client.post("/api/projects", json={
-            "name": "SSE Startup", "agent_names": ["assistant"]
+            "name": "SSE Startup", "agent_names": ["valet"]
         })
         cid = r.json()["chatroom_id"]
 

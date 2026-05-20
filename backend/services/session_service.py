@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -16,7 +17,15 @@ from sqlalchemy.orm import Session
 from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name, legacy_default_agent_names, normalize_agent_type
 from chatrooms.manager import ChatroomInstance, chatroom_manager
 from config import settings
-from models.database import Agent, AgentAssignment, Chatroom, Message, Project
+
+if TYPE_CHECKING:
+    from models.database import Agent, Chatroom, Project
+
+
+def _db_models():
+    from models import database as db_models
+
+    return db_models
 
 
 class SessionService:
@@ -28,36 +37,40 @@ class SessionService:
         self.db = db
 
     def list_visible_chats(self) -> list[Chatroom]:
+        db_models = _db_models()
         return (
-            self.db.query(Chatroom)
+            self.db.query(db_models.Chatroom)
             .filter(
-                Chatroom.session_type == "standalone",
-                Chatroom.is_visible_in_chat_list == True,
+                db_models.Chatroom.session_type == "standalone",
+                db_models.Chatroom.is_visible_in_chat_list == True,
             )
-            .order_by(Chatroom.created_at.desc(), Chatroom.id.desc())
+            .order_by(db_models.Chatroom.created_at.desc(), db_models.Chatroom.id.desc())
             .all()
         )
 
     def get_or_create_default_standalone_chat(self, title: str | None = None) -> Chatroom:
+        db_models = _db_models()
         chatroom = (
-            self.db.query(Chatroom)
+            self.db.query(db_models.Chatroom)
             .filter(
-                Chatroom.session_type == "standalone",
-                Chatroom.is_visible_in_chat_list == True,
+                db_models.Chatroom.session_type == "standalone",
+                db_models.Chatroom.is_visible_in_chat_list == True,
             )
-            .order_by(Chatroom.created_at.asc(), Chatroom.id.asc())
+            .order_by(db_models.Chatroom.created_at.asc(), db_models.Chatroom.id.asc())
             .first()
         )
         return chatroom or self.create_standalone_chat(title=title)
 
     def _next_project_display_order(self) -> int:
-        latest = self.db.query(Project).order_by(Project.display_order.desc(), Project.id.desc()).first()
+        db_models = _db_models()
+        latest = self.db.query(db_models.Project).order_by(db_models.Project.display_order.desc(), db_models.Project.id.desc()).first()
         if not latest:
             return 0
         return int(latest.display_order or 0) + 1
 
     def create_standalone_chat(self, title: str | None = None) -> Chatroom:
-        chatroom = Chatroom(
+        db_models = _db_models()
+        chatroom = db_models.Chatroom(
             project_id=None,
             title=(title or "").strip() or "New Chat",
             session_type="standalone",
@@ -70,11 +83,12 @@ class SessionService:
         return chatroom
 
     def get_or_create_self_bootstrap_project(self) -> tuple[Project, Chatroom, list[Agent]]:
+        db_models = _db_models()
         workspace_path = str(self._self_workspace_root())
         project = (
-            self.db.query(Project)
-            .filter(Project.workspace_path == workspace_path)
-            .order_by(Project.id.asc())
+            self.db.query(db_models.Project)
+            .filter(db_models.Project.workspace_path == workspace_path)
+            .order_by(db_models.Project.id.asc())
             .first()
         )
         if project:
@@ -98,7 +112,8 @@ class SessionService:
         title: str,
         source_chatroom_id: int | None = None,
     ) -> Chatroom:
-        chatroom = Chatroom(
+        db_models = _db_models()
+        chatroom = db_models.Chatroom(
             project_id=project_id,
             title=title.strip() or "Project Chat",
             session_type="project-bound",
@@ -111,20 +126,21 @@ class SessionService:
         return chatroom
 
     def create_project_subchat(self, project_id: int, title: str | None = None) -> Chatroom:
-        project = self.db.query(Project).filter(Project.id == project_id).first()
+        db_models = _db_models()
+        project = self.db.query(db_models.Project).filter(db_models.Project.id == project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
         project_chat = self.get_project_chat(project_id)
         existing_count = (
-            self.db.query(Chatroom)
+            self.db.query(db_models.Chatroom)
             .filter(
-                Chatroom.source_chatroom_id == project_chat.id,
-                Chatroom.is_visible_in_chat_list == True,
+                db_models.Chatroom.source_chatroom_id == project_chat.id,
+                db_models.Chatroom.is_visible_in_chat_list == True,
             )
             .count()
         )
-        chatroom = Chatroom(
+        chatroom = db_models.Chatroom(
             project_id=None,
             title=(title or "").strip() or f"{project.name} Chat {existing_count + 1}",
             session_type="standalone",
@@ -138,16 +154,18 @@ class SessionService:
         return chatroom
 
     def get_chatroom_or_404(self, chatroom_id: int) -> Chatroom:
-        chatroom = self.db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+        db_models = _db_models()
+        chatroom = self.db.query(db_models.Chatroom).filter(db_models.Chatroom.id == chatroom_id).first()
         if not chatroom:
             raise HTTPException(status_code=404, detail="Chatroom not found")
         return chatroom
 
     def get_project_chat(self, project_id: int) -> Chatroom:
+        db_models = _db_models()
         project_chat = (
-            self.db.query(Chatroom)
-            .filter(Chatroom.project_id == project_id, Chatroom.session_type == "project-bound")
-            .order_by(Chatroom.id.asc())
+            self.db.query(db_models.Chatroom)
+            .filter(db_models.Chatroom.project_id == project_id, db_models.Chatroom.session_type == "project-bound")
+            .order_by(db_models.Chatroom.id.asc())
             .first()
         )
         if not project_chat:
@@ -161,7 +179,8 @@ class SessionService:
         agent_names: list[str],
         workspace_path: str | None = None,
     ) -> tuple[Project, Chatroom, list[Agent]]:
-        project = Project(
+        db_models = _db_models()
+        project = db_models.Project(
             name=name,
             description=description,
             display_order=self._next_project_display_order(),
@@ -226,7 +245,8 @@ class SessionService:
             raise
 
     def sync_github_project(self, project_id: int) -> tuple[Project, dict[str, str | bool | None]]:
-        project = self.db.query(Project).filter(Project.id == project_id).first()
+        db_models = _db_models()
+        project = self.db.query(db_models.Project).filter(db_models.Project.id == project_id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         if project.source_type != "github":
@@ -279,7 +299,8 @@ class SessionService:
         if source_chatroom.session_type != "standalone":
             raise HTTPException(status_code=400, detail="Only standalone chats can be converted into projects")
 
-        project = Project(
+        db_models = _db_models()
+        project = db_models.Project(
             name=name,
             description=description,
             display_order=self._next_project_display_order(),
@@ -305,17 +326,18 @@ class SessionService:
         return project, project_chat, assigned_agents
 
     def copy_chat_context(self, source_chatroom_id: int, target_chatroom_id: int) -> None:
+        db_models = _db_models()
         source_messages = (
-            self.db.query(Message)
-            .filter(Message.chatroom_id == source_chatroom_id)
-            .order_by(Message.created_at.desc(), Message.id.desc())
+            self.db.query(db_models.Message)
+            .filter(db_models.Message.chatroom_id == source_chatroom_id)
+            .order_by(db_models.Message.created_at.desc(), db_models.Message.id.desc())
             .limit(self.SEED_MESSAGE_LIMIT)
             .all()
         )
         source_messages = list(reversed(source_messages))
 
         self.db.add(
-            Message(
+            db_models.Message(
                 chatroom_id=target_chatroom_id,
                 agent_id=None,
                 content=(
@@ -328,7 +350,7 @@ class SessionService:
         )
         for source_message in source_messages:
             self.db.add(
-                Message(
+                db_models.Message(
                     chatroom_id=target_chatroom_id,
                     agent_id=source_message.agent_id,
                     content=source_message.content,
@@ -340,6 +362,7 @@ class SessionService:
         self.db.flush()
 
     def _assign_agents(self, project_id: int, chatroom_id: int, agent_names: list[str]) -> list[Agent]:
+        db_models = _db_models()
         assigned_agents: list[Agent] = []
         project_chat = chatroom_manager.get_chatroom(chatroom_id)
 
@@ -349,20 +372,20 @@ class SessionService:
             candidate_names.update({value.title() for value in legacy_default_agent_names(agent_type)})
             candidate_names.update(legacy_default_agent_names(agent_type))
             agent = (
-                self.db.query(Agent)
+                self.db.query(db_models.Agent)
                 .filter(
                     or_(
-                        Agent.agent_type == agent_type,
-                        Agent.name.in_(sorted(candidate_names)),
+                        db_models.Agent.agent_type == agent_type,
+                        db_models.Agent.name.in_(sorted(candidate_names)),
                     )
                 )
-                .order_by(Agent.id.asc())
+                .order_by(db_models.Agent.id.asc())
                 .first()
             )
             if not agent:
                 continue
 
-            self.db.add(AgentAssignment(project_id=project_id, agent_id=agent.id))
+            self.db.add(db_models.AgentAssignment(project_id=project_id, agent_id=agent.id))
             assigned_agents.append(agent)
 
             if project_chat:
@@ -372,11 +395,12 @@ class SessionService:
         return assigned_agents
 
     def _project_agents(self, project_id: int) -> list[Agent]:
-        assignments = self.db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).all()
+        db_models = _db_models()
+        assignments = self.db.query(db_models.AgentAssignment).filter(db_models.AgentAssignment.project_id == project_id).all()
         agent_ids = [assignment.agent_id for assignment in assignments]
         if not agent_ids:
             return []
-        return self.db.query(Agent).filter(Agent.id.in_(agent_ids)).order_by(Agent.id.asc()).all()
+        return self.db.query(db_models.Agent).filter(db_models.Agent.id.in_(agent_ids)).order_by(db_models.Agent.id.asc()).all()
 
     def _register_chatroom_instance(self, chatroom: Chatroom, project_name: str) -> None:
         if chatroom.id in chatroom_manager.chatrooms:
@@ -454,10 +478,11 @@ class SessionService:
         }
 
     def _find_existing_github_project(self, repo_full_name: str, ref: str | None) -> Project | None:
+        db_models = _db_models()
         candidates = (
-            self.db.query(Project)
-            .filter(Project.source_type == "github", Project.repo_full_name == repo_full_name)
-            .order_by(Project.id.asc())
+            self.db.query(db_models.Project)
+            .filter(db_models.Project.source_type == "github", db_models.Project.repo_full_name == repo_full_name)
+            .order_by(db_models.Project.id.asc())
             .all()
         )
         wanted_ref = (ref or "").strip()
@@ -659,10 +684,11 @@ class SessionService:
         return Path(__file__).resolve().parent.parent.parent
 
     def _default_self_project_agent_names(self) -> list[str]:
+        db_models = _db_models()
         active_agents = (
-            self.db.query(Agent)
-            .filter(Agent.is_active == True)
-            .order_by(Agent.id.asc())
+            self.db.query(db_models.Agent)
+            .filter(db_models.Agent.is_active == True)
+            .order_by(db_models.Agent.id.asc())
             .all()
         )
         names = [agent.agent_type for agent in active_agents if agent.agent_type]

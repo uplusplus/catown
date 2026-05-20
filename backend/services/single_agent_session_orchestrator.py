@@ -469,7 +469,7 @@ def build_single_agent_runtime_profile(
 ) -> SingleAgentRuntimeProfile:
     """Build the top-level single-agent runtime profile from shared runtime and execution context."""
 
-    if isinstance(execution, SingleAgentSyncExecutionContext):
+    if isinstance(execution, SingleAgentSyncExecutionContext) or _looks_like_sync_execution_context(execution):
         return SingleAgentRuntimeProfile(
             session=build_managed_single_agent_sync_session_spec(
                 execution=execution,
@@ -498,7 +498,7 @@ def build_single_agent_runtime_profile(
             )
         )
 
-    if isinstance(execution, SingleAgentStreamExecutionContext):
+    if isinstance(execution, SingleAgentStreamExecutionContext) or _looks_like_stream_execution_context(execution):
         resolved_stream_failure = stream_failure or SingleAgentStreamFailurePolicy()
         return SingleAgentRuntimeProfile(
             session=build_managed_single_agent_stream_session_spec(
@@ -550,6 +550,20 @@ def build_single_agent_runtime_profile(
         )
 
     raise TypeError("Unsupported single-agent execution context.")
+
+
+def _looks_like_sync_execution_context(execution: Any) -> bool:
+    return callable(getattr(execution, "execute_turn", None))
+
+
+def _looks_like_stream_execution_context(execution: Any) -> bool:
+    return (
+        hasattr(execution, "llm_client")
+        and hasattr(execution, "turn_state")
+        and callable(getattr(execution, "assemble_messages", None))
+        and callable(getattr(execution, "execute_tool", None))
+        and callable(getattr(execution, "serialize_payload", None))
+    )
 
 
 def build_single_agent_runtime_profile_from_raw_inputs(

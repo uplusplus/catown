@@ -6,12 +6,21 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from models.database import Chatroom, Project, TaskRun, TaskRunEvent
+if TYPE_CHECKING:
+    from models.database import Chatroom, Project, TaskRun, TaskRunEvent
+
+
+def _db_models():
+    from models import database as db_models
+
+    return db_models
+
+
 from services.approval_queue import serialize_approval_queue_item
 from services.approval_replay import (
     build_pending_approval_continuation_cursor,
@@ -40,7 +49,8 @@ from services.subagent_lifecycle import (
 def get_task_run(db: Session, task_run_id: int | None) -> Optional[TaskRun]:
     if not task_run_id:
         return None
-    return db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+    db_models = _db_models()
+    return db.query(db_models.TaskRun).filter(db_models.TaskRun.id == task_run_id).first()
 
 
 def create_task_run(
@@ -56,16 +66,17 @@ def create_task_run(
     target_agent_name: str | None = None,
     title: str | None = None,
 ) -> TaskRun:
+    db_models = _db_models()
     if origin_message_id is not None:
         existing = (
-            db.query(TaskRun)
-            .filter(TaskRun.origin_message_id == origin_message_id)
+            db.query(db_models.TaskRun)
+            .filter(db_models.TaskRun.origin_message_id == origin_message_id)
             .first()
         )
         if existing is not None:
             return existing
 
-    task_run = TaskRun(
+    task_run = db_models.TaskRun(
         chatroom_id=chatroom_id,
         project_id=project_id,
         origin_message_id=origin_message_id,
@@ -164,14 +175,15 @@ def append_task_event(
     if task_run is None:
         return None
 
+    db_models = _db_models()
     next_index = (
-        db.query(func.max(TaskRunEvent.event_index))
-        .filter(TaskRunEvent.task_run_id == task_run.id)
+        db.query(func.max(db_models.TaskRunEvent.event_index))
+        .filter(db_models.TaskRunEvent.task_run_id == task_run.id)
         .scalar()
         or 0
     ) + 1
 
-    event = TaskRunEvent(
+    event = db_models.TaskRunEvent(
         task_run_id=task_run.id,
         event_index=next_index,
         event_type=event_type,
@@ -1105,11 +1117,12 @@ def _build_monitor_task_run_payload(
     if not task_run_id:
         return None
 
+    db_models = _db_models()
     row = (
-        db.query(TaskRun, Chatroom, Project)
-        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
-        .outerjoin(Project, TaskRun.project_id == Project.id)
-        .filter(TaskRun.id == task_run_id)
+        db.query(db_models.TaskRun, db_models.Chatroom, db_models.Project)
+        .join(db_models.Chatroom, db_models.TaskRun.chatroom_id == db_models.Chatroom.id)
+        .outerjoin(db_models.Project, db_models.TaskRun.project_id == db_models.Project.id)
+        .filter(db_models.TaskRun.id == task_run_id)
         .first()
     )
     if row is None:

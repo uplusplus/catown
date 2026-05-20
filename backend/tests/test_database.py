@@ -15,7 +15,7 @@ class TestAgentModel:
     def test_create_agent(self, db_session, fresh_db):
         agent = fresh_db.Agent(
             name="test_agent", role="测试员",
-            system_prompt="You test things.", tools='["web_search"]', is_active=True
+            tools='["web_search"]', is_active=True
         )
         db_session.add(agent)
         db_session.commit()
@@ -28,17 +28,17 @@ class TestAgentModel:
         assert agent.created_at is not None
 
     def test_agent_unique_name(self, db_session, fresh_db):
-        a1 = fresh_db.Agent(name="dup", role="r1", system_prompt="s1")
+        a1 = fresh_db.Agent(name="dup", role="r1")
         db_session.add(a1)
         db_session.commit()
 
-        a2 = fresh_db.Agent(name="dup", role="r2", system_prompt="s2")
+        a2 = fresh_db.Agent(name="dup", role="r2")
         db_session.add(a2)
         with pytest.raises(Exception):  # IntegrityError
             db_session.commit()
 
     def test_agent_inactive(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="inactive", role="x", system_prompt="x", is_active=False)
+        agent = fresh_db.Agent(name="inactive", role="x", is_active=False)
         db_session.add(agent)
         db_session.commit()
         found = db_session.query(fresh_db.Agent).filter(fresh_db.Agent.name == "inactive").first()
@@ -46,7 +46,7 @@ class TestAgentModel:
 
     def test_agent_query_active(self, db_session, fresh_db):
         for i in range(3):
-            db_session.add(fresh_db.Agent(name=f"agent_{i}", role="r", system_prompt="s", is_active=i != 2))
+            db_session.add(fresh_db.Agent(name=f"agent_{i}", role="r", is_active=i != 2))
         db_session.commit()
 
         active = db_session.query(fresh_db.Agent).filter(fresh_db.Agent.is_active == True).all()
@@ -148,7 +148,7 @@ class TestMessageModel:
         assert msg.content == "Hello!"
 
     def test_create_agent_message(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="msg_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="msg_agent", role="r")
         project = fresh_db.Project(name="MP2")
         db_session.add_all([agent, project])
         db_session.commit()
@@ -201,7 +201,7 @@ class TestMemoryModel:
     """Memory 表测试"""
 
     def test_create_memory(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="mem_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="mem_agent", role="r")
         db_session.add(agent)
         db_session.commit()
         db_session.refresh(agent)
@@ -219,7 +219,7 @@ class TestMemoryModel:
         assert mem.created_at is not None
 
     def test_memory_query_by_importance(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="imp_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="imp_agent", role="r")
         db_session.add(agent)
         db_session.commit()
         db_session.refresh(agent)
@@ -240,7 +240,7 @@ class TestMemoryModel:
         assert top[2].importance == 6
 
     def test_memory_agent_relationship(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="rel_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="rel_agent", role="r")
         db_session.add(agent)
         db_session.commit()
         db_session.refresh(agent)
@@ -257,7 +257,7 @@ class TestAgentAssignment:
     """AgentAssignment 表测试"""
 
     def test_assign_agent_to_project(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="assign_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="assign_agent", role="r")
         project = fresh_db.Project(name="AssignP")
         db_session.add_all([agent, project])
         db_session.commit()
@@ -280,7 +280,7 @@ class TestAgentAssignment:
         db_session.refresh(project)
 
         for i in range(4):
-            agent = fresh_db.Agent(name=f"multi_{i}", role="r", system_prompt="s")
+            agent = fresh_db.Agent(name=f"multi_{i}", role="r")
             db_session.add(agent)
             db_session.commit()
             db_session.refresh(agent)
@@ -297,7 +297,7 @@ class TestCascadeDelete:
     """删除测试（模型未配置级联，验证实际行为）"""
 
     def test_delete_agent_removes_from_db(self, db_session, fresh_db):
-        agent = fresh_db.Agent(name="del_agent", role="r", system_prompt="s")
+        agent = fresh_db.Agent(name="del_agent", role="r")
         db_session.add(agent)
         db_session.commit()
         db_session.refresh(agent)

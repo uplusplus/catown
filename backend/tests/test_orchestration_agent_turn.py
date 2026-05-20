@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -246,7 +247,8 @@ async def test_iter_stream_orchestration_agent_turn_events_records_start_and_yie
         assert events[-1]["content"] == "Streamed orchestration response."
         db.refresh(task_run)
         assert task_run.events[0].event_type == "agent_turn_started"
-        assert task_run.events[0].summary == "Developer started an orchestrated streaming turn."
+        assert task_run.events[0].summary is None
+        assert json.loads(task_run.events[0].payload_json)["client_turn_id"] == "stream-turn"
     finally:
         db.close()
 

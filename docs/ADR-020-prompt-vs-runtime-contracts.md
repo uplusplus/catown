@@ -30,6 +30,13 @@ Runtime-critical behavior must be represented as software-owned contracts and ev
 Prompts may explain those contracts to agents, but the backend must enforce and record
 the facts that make the contracts true.
 
+Parent/child relationships are not an agent hierarchy. They represent ownership transfer
+inside one user objective: a coordinator or current owner may transfer a bounded piece of
+work to another agent, and the child run becomes the accountable owner for that delegated
+work. The parent remains accountable for the original user objective and cannot complete
+until required child-owner results exist, or until the objective is explicitly blocked,
+failed, cancelled, or returned to the user.
+
 ## Boundary
 
 Prompt guidance is appropriate for soft constraints:
@@ -70,17 +77,23 @@ software-owned.
    It must not be able to satisfy specialized work by producing a final answer when the
    specialized owner has not produced the required result.
 
-3. Consultation is not task dispatch.
+3. Parent/child runs encode responsibility transfer, not social rank.
+   Agents can still collaborate as peers in chat. The parent/child structure exists at
+   the run/task layer so the backend can answer: who owns the original objective, who now
+   owns each delegated work item, what result is required, and whether the parent is still
+   waiting on a child owner.
+
+4. Consultation is not task dispatch.
    `consult_agent` asks for synchronous advice and may intentionally disable target-agent
    tools. It must not be used as a substitute for durable work assignment when the target
    needs tools, progress tracking, approvals, or a result that gates completion.
 
-4. Chat mentions are not enough as durable dispatch.
+5. Chat mentions are not enough as durable dispatch.
    A message such as `@Tester please test this` is a conversation event. It can be used
    as an input to routing, but the backend must still create or link a durable target run
    if the work is meant to be executed and waited on.
 
-5. Completion must be objective-scoped.
+6. Completion must be objective-scoped.
    A parent or coordinator run must not be marked completed merely because the
    coordinator generated a final message. It completes only when the user objective's
    required owner results exist, or it must enter a blocked/failed/needs-user-input state.
@@ -91,6 +104,8 @@ Future work should move toward a common runtime protocol:
 
 - Represent agent capabilities and ownership in backend-readable configuration.
 - Give coordinator runs explicit child-run handles and waiting state.
+- Treat delegation as a factual owner-transfer event with a parent owner, child owner,
+  requested work, required result, and child run identifier.
 - Record durable dispatch facts such as target agent, dispatch kind, parent run,
   requested work, required result, and completion criteria.
 - Treat target-agent execution as a real run when the task requires tools or progress.
@@ -105,4 +120,3 @@ Future work should move toward a common runtime protocol:
   ownership/dispatch contract.
 - Do not make the frontend infer missing dispatch or completion facts.
 - Do not use final assistant text as proof that the requested work was completed.
-

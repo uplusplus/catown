@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -20,6 +22,8 @@ from typing import Any, Awaitable, Callable
 from config import settings
 from services.tool_governance import build_structured_tool_result
 
+
+logger = logging.getLogger("catown.run_shell")
 
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 2.0
 DEFAULT_TAIL_CHARS = 4000
@@ -150,24 +154,26 @@ async def wait_for_tracked_run_shell(
         snapshot = read_tracked_run_shell_tail(record, max_chars=tail_chars)
         if progress_callback is not None and snapshot and snapshot != last_snapshot:
             last_snapshot = snapshot
-            await progress_callback(
+            await _emit_progress_safely(
+                progress_callback,
                 {
                     "tail_output": snapshot,
                     "duration_ms": int((time.monotonic() - started) * 1000),
                     "pid": record.get("pid"),
                     "tracked_process": _public_handle(record),
-                }
+                },
             )
 
         if tracked_run_shell_has_exit(record):
             if progress_callback is not None and snapshot:
-                await progress_callback(
+                await _emit_progress_safely(
+                    progress_callback,
                     {
                         "tail_output": snapshot,
                         "duration_ms": int((time.monotonic() - started) * 1000),
                         "pid": record.get("pid"),
                         "tracked_process": _public_handle(record),
-                    }
+                    },
                 )
             return build_tracked_run_shell_result(record, max_chars=result_chars)
 
@@ -208,6 +214,22 @@ async def wait_for_tracked_run_shell(
                 continue
             sleep_seconds = min(sleep_seconds, max(0.1, remaining))
         await asyncio.sleep(sleep_seconds)
+
+
+async def _emit_progress_safely(
+    progress_callback: Callable[[dict[str, Any]], Awaitable[None]],
+    payload: dict[str, Any],
+) -> None:
+    try:
+        await progress_callback(payload)
+    except Exception:
+        tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
+        logger.warning(
+            "run_shell progress callback failed; continuing tracked process wait token=%s pid=%s",
+            tracked.get("token"),
+            payload.get("pid"),
+            exc_info=True,
+        )
 
 
 def tracked_run_shell_has_exit(record: dict[str, Any]) -> bool:
@@ -334,13 +356,29 @@ def read_tracked_run_shell_tail(record_or_handle: Any, *, max_chars: int = DEFAU
             size = log_file.tell()
             read_bytes = min(size, max(4096, int(max_chars) * 4))
             log_file.seek(max(0, size - read_bytes))
-            text = log_file.read(read_bytes).decode("utf-8", errors="replace")
+            text = _decode_shell_output(log_file.read(read_bytes))
     except OSError:
         return ""
     text = text.strip()
     if len(text) > max_chars:
         return text[-max_chars:]
     return text
+
+
+def _decode_shell_output(data: bytes) -> str:
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16", errors="replace")
+        except UnicodeError:
+            pass
+    if b"\x00" in data[: min(len(data), 256)]:
+        try:
+            return data.decode("utf-16", errors="replace")
+        except UnicodeError:
+            pass
+    return data.decode("utf-8", errors="replace")
 
 
 def _resolve_readable_tail_path(record: dict[str, Any]) -> Path | None:
@@ -465,7 +503,29 @@ def _write_record(record: dict[str, Any]) -> None:
     payload = json.dumps(record, ensure_ascii=False, indent=2)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(payload, encoding="utf-8")
-    tmp_path.replace(path)
+    try:
+        _replace_with_retry(tmp_path, path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 8, delay_seconds: float = 0.025) -> None:
+    last_error: OSError | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(delay_seconds * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def _append_bounded_log(log_path: Path, chunk: bytes, *, max_bytes: int = DEFAULT_LOG_MAX_BYTES) -> None:
@@ -504,7 +564,7 @@ def _path_has_content(path: Path) -> bool:
 
 def _detect_redirected_output_path(command: str, cwd: str) -> str | None:
     try:
-        tokens = shlex.split(str(command or ""), posix=True)
+        tokens = shlex.split(str(command or ""), posix=(os.name != "nt"))
     except ValueError:
         return None
 
@@ -585,11 +645,29 @@ def _coerce_int(value: Any) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
         return False
     return True
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _process_group_id(pid: int) -> int:
@@ -603,6 +681,17 @@ def _process_group_id(pid: int) -> int:
 
 def _shell_invocation(command: str) -> list[str] | None:
     if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+        if powershell:
+            return [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ]
         comspec = os.environ.get("COMSPEC") or shutil.which("cmd")
         return [comspec or "cmd.exe", "/d", "/s", "/c", command]
 

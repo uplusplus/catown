@@ -8,6 +8,7 @@ from typing import Any
 
 from models.database import TaskRun, TaskRunEvent
 from services.run_ledger import serialize_task_run_summary
+from services.user_visible_step_projection import build_user_visible_runtime_steps
 
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
@@ -29,9 +30,7 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
     events = list(getattr(task_run, "events", []) or [])
     latest_event_index = max((int(getattr(event, "event_index", 0) or 0) for event in events), default=0)
     summary = serialize_task_run_summary(task_run)
-    scheduler_step_statuses = _scheduler_step_statuses(events)
-    steps = [_event_to_step(event, task_run, scheduler_step_statuses) for event in events]
-    steps = [step for step in steps if step is not None]
+    steps = [_timeline_step_to_activity_step(step) for step in build_user_visible_runtime_steps(task_run)]
     current_step = _resolve_current_step(steps)
     active_subagent_handle = _active_subagent_handle(summary)
     active_consult_handle = (
@@ -101,6 +100,73 @@ def _event_to_step(
         "created_at": event.created_at.isoformat() if event.created_at else None,
         "refs": _step_refs(payload),
     }
+
+
+def _timeline_step_to_activity_step(step: dict[str, Any]) -> dict[str, Any]:
+    facts = step.get("facts") if isinstance(step.get("facts"), dict) else {}
+    tool_name = _read_tool_name(facts)
+    return {
+        "id": str(step.get("id") or ""),
+        "event_index": step.get("sequence"),
+        "event_type": step.get("event_type") or "",
+        "label": _activity_label_from_timeline_step(step, tool_name=tool_name),
+        "state": step.get("state") or "done",
+        "agent": step.get("actor"),
+        "tool": tool_name,
+        "summary": step.get("summary") or "",
+        "detail": step.get("summary") or "",
+        "detail_content": step.get("detail_content") or "",
+        "created_at": step.get("recorded_at") or step.get("occurred_at"),
+        "refs": _activity_refs_from_timeline_step(step),
+    }
+
+
+def _activity_label_from_timeline_step(step: dict[str, Any], *, tool_name: str | None) -> str:
+    kind = str(step.get("kind") or "event")
+    phase = str(step.get("phase") or "")
+    actor = str(step.get("actor") or "Agent")
+    if kind == "tool":
+        return f"{actor} {phase.replace('_', ' ')} {tool_name or 'tool'}".strip()
+    if kind == "llm":
+        return f"{actor} model {phase.replace('_', ' ')}".strip()
+    if kind == "scheduler" and phase == "parallel_running":
+        return "Parallel agent work running"
+    if kind == "scheduler" and phase == "planned":
+        return "Scheduler planned work"
+    if kind == "approval":
+        return "Approval requested" if step.get("state") == "live" else "Approval resolved"
+    if actor and kind in {"agent", "delegation"}:
+        return f"{actor} {phase.replace('_', ' ')}".strip()
+    return str(step.get("summary") or step.get("event_type") or "Step")
+
+
+def _activity_refs_from_timeline_step(step: dict[str, Any]) -> dict[str, Any]:
+    facts = step.get("facts") if isinstance(step.get("facts"), dict) else {}
+    refs = {
+        "task_run_id": step.get("task_run_id"),
+        "step_id": step.get("step_id"),
+        "parent_step_id": step.get("parent_step_id"),
+        "event_type": step.get("event_type"),
+        "event_refs": step.get("event_refs"),
+    }
+    for key in (
+        "tool_call_id",
+        "tool_call_index",
+        "agent_type",
+        "dispatch_kind",
+        "wait_for_step_id",
+        "attached_to_step_id",
+        "task_id",
+        "child_client_turn_id",
+        "children",
+        "running_count",
+        "waiting_count",
+        "ready_count",
+        "completed_count",
+    ):
+        if facts.get(key) is not None:
+            refs[key] = facts.get(key)
+    return {key: value for key, value in refs.items() if value is not None}
 
 
 def _step_state(

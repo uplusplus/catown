@@ -445,6 +445,18 @@ class ContextConfigModel(BaseModel):
     selector_profiles: Dict[str, ContextSelectorProfileModel] = Field(default_factory=dict)
 
 
+class UiChatCardsConfigModel(BaseModel):
+    """Runtime chat card display preferences."""
+
+    expand_current_step_by_default: bool = False
+
+
+class UiConfigModel(BaseModel):
+    """Runtime UI preferences stored in agents.json."""
+
+    chat_cards: UiChatCardsConfigModel = Field(default_factory=UiChatCardsConfigModel)
+
+
 router = APIRouter()
 
 
@@ -716,6 +728,23 @@ def _effective_permissions_config(config_data: Optional[Dict[str, Any]] = None) 
             permissions_data.get("allow_read_only_tools_without_approval", True)
         ),
         "auto_approve_all": bool(permissions_data.get("auto_approve_all", False)),
+    }
+
+
+def _effective_ui_config(config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = config_data if config_data is not None else _load_agent_config_data()
+    ui_data = payload.get("ui") if isinstance(payload, dict) else None
+    if not isinstance(ui_data, dict):
+        ui_data = {}
+    chat_cards_data = ui_data.get("chat_cards")
+    if not isinstance(chat_cards_data, dict):
+        chat_cards_data = {}
+    return {
+        "chat_cards": {
+            "expand_current_step_by_default": bool(
+                chat_cards_data.get("expand_current_step_by_default", False)
+            ),
+        },
     }
 
 
@@ -2971,7 +3000,7 @@ async def _resume_interrupted_orchestration_task_run(
             recover_agent_names=_recover_orchestration_agent_names,
             prepare_orchestration_runtime=_prepare_orchestration_runtime,
         )
-        if not isinstance(prepared_recovery, PreparedOrchestrationRecoveryContext):
+        if hasattr(prepared_recovery, "reason"):
             return TaskRunRecoveryResult(
                 task_run_id=task_run_id,
                 resumed=False,
@@ -4402,9 +4431,20 @@ async def update_chat(chat_id: int, chat_update: ChatUpdate, db: Session = Depen
     return _serialize_chat(db, chatroom)
 
 
-def _validate_agent_names(agent_names: List[str]) -> None:
+def _valid_agent_names(db: Session | None = None) -> List[str]:
     registry = get_registry()
-    valid_agent_names = registry.list_agents()
+    names = {normalize_agent_type(name) for name in registry.list_agents()}
+    if db is not None:
+        from models import database as db_models
+
+        rows = db.query(db_models.Agent).filter(db_models.Agent.is_active == True).all()
+        for row in rows:
+            names.add(normalize_agent_type(getattr(row, "agent_type", None) or getattr(row, "name", "")))
+    return sorted(name for name in names if name)
+
+
+def _validate_agent_names(agent_names: List[str], db: Session | None = None) -> None:
+    valid_agent_names = _valid_agent_names(db)
 
     for agent_name in agent_names:
         normalized = normalize_agent_type(agent_name)
@@ -4413,6 +4453,14 @@ def _validate_agent_names(agent_names: List[str]) -> None:
                 status_code=400,
                 detail=f"Invalid agent type: {agent_name}. Valid agents: {valid_agent_names}",
             )
+
+
+def _subagent_runtime_control_http_error(exc: Exception) -> HTTPException | None:
+    status_code = getattr(exc, "status_code", None)
+    detail = getattr(exc, "detail", None)
+    if isinstance(status_code, int) and detail is not None:
+        return HTTPException(status_code=status_code, detail=str(detail))
+    return None
 
 
 def _normalize_agent_names(agent_names: List[str] | None) -> List[str]:
@@ -4425,7 +4473,7 @@ def _normalize_agent_names(agent_names: List[str] | None) -> List[str]:
 async def create_project(project_create: ProjectCreate, db: Session = Depends(get_db)):
     """创建新项目"""
     agent_names = _normalize_agent_names(project_create.agent_names)
-    _validate_agent_names(agent_names)
+    _validate_agent_names(agent_names, db)
     service = SessionService(db)
     project, _, _ = service.create_project_directly(
         name=project_create.name,
@@ -4440,7 +4488,7 @@ async def create_project(project_create: ProjectCreate, db: Session = Depends(ge
 async def create_project_from_github(project_create: GitHubProjectCreate, db: Session = Depends(get_db)):
     """Import a GitHub repository into a managed Catown workspace and create a project."""
     agent_names = _normalize_agent_names(project_create.agent_names)
-    _validate_agent_names(agent_names)
+    _validate_agent_names(agent_names, db)
     service = SessionService(db)
     project, _, _ = service.create_project_from_github(
         repo_url=project_create.repo_url,
@@ -4500,7 +4548,7 @@ async def reorder_projects(payload: ProjectReorderRequest, db: Session = Depends
 async def create_project_from_chat(project_create: ProjectFromChatCreate, db: Session = Depends(get_db)):
     """Create a project from the current standalone chat and copy its context."""
     agent_names = _normalize_agent_names(project_create.agent_names)
-    _validate_agent_names(agent_names)
+    _validate_agent_names(agent_names, db)
     service = SessionService(db)
     project, _, _ = service.create_project_from_chat(
         source_chatroom_id=project_create.source_chatroom_id,
@@ -4774,8 +4822,11 @@ async def list_task_run_subagents(task_run_id: int, db: Session = Depends(get_db
     """Return the current subagent lifecycle + handle projection for one task run."""
     try:
         return list_runtime_task_run_subagents(db, task_run_id)
-    except SubagentRuntimeControlError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except Exception as exc:
+        http_error = _subagent_runtime_control_http_error(exc)
+        if http_error is not None:
+            raise http_error
+        raise
 
 
 @router.get("/task-runs/{task_run_id}/subagents/{step_id}/wait")
@@ -4806,8 +4857,11 @@ async def wait_task_run_subagent(
             handle = observed["subagent_handle"]
             wait_result = observed["wait_result"]
             response_status = observed["status"]
-        except SubagentRuntimeControlError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        except Exception as exc:
+            http_error = _subagent_runtime_control_http_error(exc)
+            if http_error is not None:
+                raise http_error
+            raise
         finally:
             db.close()
 
@@ -4960,8 +5014,11 @@ async def cancel_task_run_subagent(
             cancelled_by=cancelled_by,
             note=note,
         )
-    except SubagentRuntimeControlError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except Exception as exc:
+        http_error = _subagent_runtime_control_http_error(exc)
+        if http_error is not None:
+            raise http_error
+        raise
 
 
 @router.post("/task-runs/{task_run_id}/subagents/{step_id}/close")
@@ -4982,8 +5039,11 @@ async def close_task_run_subagent(
             closed_by=closed_by,
             note=note,
         )
-    except SubagentRuntimeControlError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except Exception as exc:
+        http_error = _subagent_runtime_control_http_error(exc)
+        if http_error is not None:
+            raise http_error
+        raise
 
 
 @router.post("/task-runs/{task_run_id}/cancel")
@@ -5002,8 +5062,11 @@ async def cancel_task_run(
             cancelled_by=cancelled_by,
             note=note,
         )
-    except SubagentRuntimeControlError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except Exception as exc:
+        http_error = _subagent_runtime_control_http_error(exc)
+        if http_error is not None:
+            raise http_error
+        raise
 
 
 async def _replay_runtime_blocked_tool_queue_item(
@@ -7010,6 +7073,7 @@ async def get_config():
         },
         "orchestration": _effective_orchestration_config(),
         "permissions": _effective_permissions_config(),
+        "ui": _effective_ui_config(),
         "context": {
             "selector_profiles": effective_selector_profiles(),
             "default_selector_profiles": default_selector_profiles(),
@@ -7035,6 +7099,7 @@ async def get_config():
             config["global_llm"] = agents_config.get("global_llm", {})
             config["orchestration"] = _effective_orchestration_config(agents_config)
             config["permissions"] = _effective_permissions_config(agents_config)
+            config["ui"] = _effective_ui_config(agents_config)
             config["context"] = {
                 "selector_profiles": effective_selector_profiles(agents_config),
                 "default_selector_profiles": default_selector_profiles(),
@@ -7279,6 +7344,31 @@ async def update_context_config(config: ContextConfigModel):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update context config: {e}")
+
+
+@router.put("/config/ui")
+async def update_ui_config(config: UiConfigModel):
+    """Update runtime UI preferences stored in agents.json."""
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["ui"] = config.model_dump()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return {
+            "message": "UI config updated",
+            "ui": data["ui"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update UI config: {e}")
 
 
 @router.put("/config/agent/{agent_name}")

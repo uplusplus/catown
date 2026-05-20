@@ -15,3 +15,4 @@ alembic>=1.13  # Database migrations
 httpx
 pytest>=8.0
 pytest-asyncio>=0.23
+pytest-xdist>=3.6

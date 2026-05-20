@@ -33,6 +33,7 @@ import type {
   TaskRunDetail,
   TaskRunSummary,
   ToolAuthorizationRule,
+  UiConfigPayload,
 } from "./types";
 
 const LAST_CHAT_STORAGE_KEY = "catown:last-chat-id";
@@ -96,6 +97,12 @@ const CONFIG_SECTION_META: Record<
     sidebarDescription: "Prompt budgets, selector caps, and compaction thresholds",
     title: "Context budgets",
     subtitle: "Tune how much runtime context Catown can inject before fragment dropping or truncation is applied.",
+  },
+  interface: {
+    sidebarLabel: "Interface",
+    sidebarDescription: "Chat card display defaults",
+    title: "Interface",
+    subtitle: "Control how chat cards and runtime traces open by default.",
   },
 };
 
@@ -2187,6 +2194,11 @@ function App() {
         label: CONFIG_SECTION_META.context.sidebarLabel,
         description: CONFIG_SECTION_META.context.sidebarDescription,
         badge: `${Object.keys(config?.context?.selector_profiles ?? {}).length}`,
+      },
+      {
+        id: "interface" as const,
+        label: CONFIG_SECTION_META.interface.sidebarLabel,
+        description: CONFIG_SECTION_META.interface.sidebarDescription,
       },
     ],
     [agents, config?.context?.selector_profiles],
@@ -4517,6 +4529,24 @@ function App() {
     }
   }
 
+  async function handleSaveUi(payload: UiConfigPayload) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.saveUiConfig(payload);
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
+      setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
+      setNotice("Interface config saved.");
+      pushEvent("Interface config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save interface config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveAgent(
     agentName: string,
     payload: AgentConfigPayload,
@@ -4769,6 +4799,7 @@ function App() {
             taskActivitiesById={taskActivitiesById}
             taskTimelinesById={taskTimelinesById}
             events={chatEvents}
+            expandCurrentStepByDefault={config?.ui?.chat_cards?.expand_current_step_by_default ?? false}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSidebar={() => {
@@ -4819,6 +4850,7 @@ function App() {
             onSaveOrchestration={handleSaveOrchestration}
             onSavePermissions={handleSavePermissions}
             onSaveContext={handleSaveContext}
+            onSaveUi={handleSaveUi}
             authorizationRules={authorizationRules}
             onRevokeAuthorizationRule={handleRevokeAuthorizationRule}
             onSaveAgent={handleSaveAgent}

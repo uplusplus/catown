@@ -2954,6 +2954,21 @@ a {
   color: var(--danger);
 }
 
+.message-stream-step--history {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--bg-elevated) 46%, var(--card) 54%);
+}
+
+.message-stream-step--history .message-stream-step__state {
+  width: auto;
+  min-width: 22px;
+  padding: 0 5px;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-strong));
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .message-stream-step__copy {
   min-width: 0;
   display: flex;
@@ -3056,6 +3071,21 @@ a {
 .message-stream-step__detail {
   border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   background: color-mix(in srgb, var(--card) 94%, var(--secondary) 6%);
+}
+
+.message-stream-step__detail--history {
+  padding: 8px;
+  background: color-mix(in srgb, var(--bg) 36%, var(--card) 64%);
+}
+
+.message-stream-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message-stream-history-list .message-stream-step {
+  background: color-mix(in srgb, var(--card) 86%, var(--bg-elevated) 14%);
 }
 
 .message-stream-step__detail-content {

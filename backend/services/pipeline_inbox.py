@@ -3,22 +3,30 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models.database import PipelineMessage, PipelineMessageDelivery, PipelineRun
+if TYPE_CHECKING:
+    from models.database import PipelineMessage, PipelineMessageDelivery, PipelineRun
+
+
+def _db_models():
+    from models import database as db_models
+
+    return db_models
 
 
 def enqueue_message_delivery(db: Session, message: PipelineMessage) -> Optional[PipelineMessageDelivery]:
     """Create a durable inbox entry for a direct pipeline message."""
 
+    db_models = _db_models()
     recipient = str(message.to_agent or "").strip()
     if not recipient:
         return None
 
-    delivery = PipelineMessageDelivery(
+    delivery = db_models.PipelineMessageDelivery(
         message_id=message.id,
         run_id=message.run_id,
         to_agent=recipient,
@@ -76,7 +84,8 @@ def claim_messages_for_agent(
 def mark_delivery_consumed(db: Session, *, delivery_id: int, lease_owner: str | None = None) -> bool:
     """Ack an inflight delivery after successful processing."""
 
-    delivery = db.query(PipelineMessageDelivery).filter(PipelineMessageDelivery.id == delivery_id).first()
+    db_models = _db_models()
+    delivery = db.query(db_models.PipelineMessageDelivery).filter(db_models.PipelineMessageDelivery.id == delivery_id).first()
     if delivery is None or delivery.status == "consumed":
         return False
     if lease_owner is not None and delivery.lease_owner != lease_owner:
@@ -101,7 +110,8 @@ def mark_delivery_failed(
 ) -> bool:
     """Release or dead-letter an inflight delivery after a processing failure."""
 
-    delivery = db.query(PipelineMessageDelivery).filter(PipelineMessageDelivery.id == delivery_id).first()
+    db_models = _db_models()
+    delivery = db.query(db_models.PipelineMessageDelivery).filter(db_models.PipelineMessageDelivery.id == delivery_id).first()
     if delivery is None or delivery.status == "consumed":
         return False
     if lease_owner is not None and delivery.lease_owner != lease_owner:
@@ -157,15 +167,16 @@ def pop_instruction_texts_for_agent(db: Session, *, run_id: int, agent_name: str
 def consume_legacy_instruction_texts_for_agent(db: Session, *, run_id: int, agent_name: str) -> List[str]:
     """Backfill consumed deliveries for legacy HUMAN_INSTRUCT rows without deliveries."""
 
+    db_models = _db_models()
     legacy_messages = (
-        db.query(PipelineMessage)
+        db.query(db_models.PipelineMessage)
         .filter(
-            PipelineMessage.run_id == run_id,
-            PipelineMessage.message_type == "HUMAN_INSTRUCT",
-            PipelineMessage.to_agent == agent_name,
-            ~PipelineMessage.deliveries.any(),
+            db_models.PipelineMessage.run_id == run_id,
+            db_models.PipelineMessage.message_type == "HUMAN_INSTRUCT",
+            db_models.PipelineMessage.to_agent == agent_name,
+            ~db_models.PipelineMessage.deliveries.any(),
         )
-        .order_by(PipelineMessage.created_at)
+        .order_by(db_models.PipelineMessage.created_at)
         .all()
     )
     if not legacy_messages:
@@ -174,7 +185,7 @@ def consume_legacy_instruction_texts_for_agent(db: Session, *, run_id: int, agen
     now = datetime.now()
     results: List[str] = []
     for message in legacy_messages:
-        delivery = PipelineMessageDelivery(
+        delivery = db_models.PipelineMessageDelivery(
             message_id=message.id,
             run_id=message.run_id,
             to_agent=agent_name,
@@ -273,24 +284,25 @@ def _claimable_deliveries_for_agent(
     message_type: str | None = None,
     exclude_message_type: str | None = None,
 ) -> List[PipelineMessageDelivery]:
+    db_models = _db_models()
     query = (
-        db.query(PipelineMessageDelivery)
-        .join(PipelineMessage, PipelineMessage.id == PipelineMessageDelivery.message_id)
+        db.query(db_models.PipelineMessageDelivery)
+        .join(db_models.PipelineMessage, db_models.PipelineMessage.id == db_models.PipelineMessageDelivery.message_id)
         .filter(
-            PipelineMessageDelivery.run_id == run_id,
-            PipelineMessageDelivery.to_agent == agent_name,
+            db_models.PipelineMessageDelivery.run_id == run_id,
+            db_models.PipelineMessageDelivery.to_agent == agent_name,
             or_(
-                PipelineMessageDelivery.status == "pending",
+                db_models.PipelineMessageDelivery.status == "pending",
                 (
-                    (PipelineMessageDelivery.status == "inflight")
-                    & (PipelineMessageDelivery.lease_expires_at.isnot(None))
-                    & (PipelineMessageDelivery.lease_expires_at < now)
+                    (db_models.PipelineMessageDelivery.status == "inflight")
+                    & (db_models.PipelineMessageDelivery.lease_expires_at.isnot(None))
+                    & (db_models.PipelineMessageDelivery.lease_expires_at < now)
                 ),
             ),
         )
     )
     if message_type:
-        query = query.filter(PipelineMessage.message_type == message_type)
+        query = query.filter(db_models.PipelineMessage.message_type == message_type)
     if exclude_message_type:
-        query = query.filter(PipelineMessage.message_type != exclude_message_type)
-    return query.order_by(PipelineMessage.created_at.asc(), PipelineMessageDelivery.id.asc()).all()
+        query = query.filter(db_models.PipelineMessage.message_type != exclude_message_type)
+    return query.order_by(db_models.PipelineMessage.created_at.asc(), db_models.PipelineMessageDelivery.id.asc()).all()

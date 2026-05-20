@@ -15,7 +15,7 @@ from services.subagent_lifecycle import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class SubagentRuntimeControlError(Exception):
     """Service-layer error for invalid subagent runtime operations."""
 

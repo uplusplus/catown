@@ -40,6 +40,7 @@ import type {
   TaskRunResumeResponse,
   TaskRunSummary,
   ToolAuthorizationRule,
+  UiConfigPayload,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
 import { DEFAULT_AGENT_TYPE } from "../utils/agents";
@@ -467,6 +468,12 @@ export const api = {
   },
   saveContextConfig(payload: ContextConfigPayload) {
     return request<{ message: string }>("/api/config/context", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  saveUiConfig(payload: UiConfigPayload) {
+    return request<{ message: string }>("/api/config/ui", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

@@ -375,9 +375,8 @@ class TestConfigAPIEndpoints:
             'services.approval_queue', 'services.approval_replay', 'services.monitor_projection',
             'services.tool_execution_preferences',
         ]
-        for mod_name in modules_to_clear:
-            if mod_name in sys.modules:
-                del sys.modules[mod_name]
+        from tests.conftest import reset_app_modules
+        reset_app_modules(modules_to_clear)
 
         # Mock LLM
         import llm.client as llm_mod
@@ -447,7 +446,7 @@ class TestConfigAPIEndpoints:
         assert "global_llm" in r.json()
 
         # 验证文件已更新
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             saved = json.load(f)
         assert saved["global_llm"]["provider"]["baseUrl"] == "http://new-global.com/v1"
         assert saved["global_llm"]["default_model"] == "claude-3"
@@ -467,7 +466,7 @@ class TestConfigAPIEndpoints:
         assert r.status_code == 200
 
         # 验证文件已更新
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             saved = json.load(f)
         assert saved["agents"]["coder"]["provider"]["baseUrl"] == "http://coder-new.com/v1"
         assert saved["agents"]["coder"]["default_model"] == "deepseek-coder"
@@ -491,7 +490,7 @@ class TestConfigAPIEndpoints:
         assert r.status_code == 200
         assert r.json()["orchestration"]["sidecar_agent_types"] == ["developer", "tester"]
 
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             saved = json.load(f)
         assert saved["orchestration"]["sidecar_agent_types"] == ["developer", "tester"]
 

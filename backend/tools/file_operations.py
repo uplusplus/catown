@@ -388,7 +388,7 @@ class DeleteFileTool(BaseTool):
             return f"[Delete File] Error: Unknown file type: '{file_path}'"
             
         except OSError as e:
-            if "not empty" in str(e).lower():
+            if getattr(e, "winerror", None) == 145 or getattr(e, "errno", None) in {39, 66} or "not empty" in str(e).lower():
                 return f"[Delete File] Error: Directory not empty. Use force=true to delete non-empty directories."
             return f"[Delete File] Error: {str(e)}"
         except Exception as e:
