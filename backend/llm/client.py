@@ -681,7 +681,7 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
     agent_type = normalize_agent_type(agent_name)
 
     try:
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_file, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
 
         # 先尝试 Agent 自身配置
@@ -717,7 +717,7 @@ def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
         if not os.path.exists(config_file):
             return None
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         except Exception:
             return None
@@ -851,7 +851,7 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
         return None
 
     try:
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_file, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
 
         for agent_name, agent_data in data.get("agents", {}).items():

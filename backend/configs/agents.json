@@ -51,7 +51,6 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_direct_message",
         "consult_agent",
         "list_files",
         "execute_code",
@@ -121,7 +120,6 @@
         "retrieve_memory",
         "read_file",
         "write_file",
-        "send_direct_message",
         "consult_agent",
         "list_files",
         "execute_code",
@@ -195,7 +193,6 @@
         "execute_code",
         "run_shell",
         "search_files",
-        "send_direct_message",
         "consult_agent",
         "web_fetch"
       ],
@@ -264,7 +261,6 @@
         "run_shell",
         "list_files",
         "search_files",
-        "send_direct_message",
         "consult_agent",
         "web_fetch"
       ],
@@ -332,7 +328,6 @@
         "list_files",
         "execute_code",
         "run_shell",
-        "send_direct_message",
         "consult_agent",
         "github_manager",
         "web_fetch"
@@ -398,14 +393,10 @@
       "tools": [
         "web_search",
         "retrieve_memory",
-        "read_file",
-        "write_file",
-        "list_files",
-        "search_files",
         "skill_manager",
-        "send_direct_message",
+        "delegate_task",
+        "check_task_status",
         "consult_agent",
-        "execute_code",
         "web_fetch"
       ],
       "skills": [
@@ -436,6 +427,25 @@
             "contextWindow": 400000
           }
         ]
+      },
+      "metadata": {
+        "runtime_contract": {
+          "mode": "coordinator",
+          "owns": [
+            "coordination"
+          ],
+          "must_dispatch_specialized_work": true,
+          "dispatch_tools": [
+            "delegate_task"
+          ],
+          "status_tools": [
+            "check_task_status"
+          ],
+          "consult_tools": [
+            "consult_agent"
+          ],
+          "completion_rule": "Do not mark specialized work complete until the owning agent has produced a result."
+        }
       }
     }
   }

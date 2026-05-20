@@ -19,6 +19,7 @@ from services.orchestration_chat_profile import (
     build_orchestration_sync_turn_profile,
 )
 from services.runner_lifecycle import (
+    build_llm_request_prompt_payload,
     complete_agent_turn as record_agent_turn_completed,
     record_llm_request_created,
     record_llm_response_completed,
@@ -250,13 +251,16 @@ async def iter_stream_orchestration_agent_turn_events(
     async def _check_cancel(*_args: Any, **_kwargs: Any) -> None:
         raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {runtime.agent_label}")
 
+    seen_request_turns: set[int] = set()
     seen_response_started_turns: set[int] = set()
 
     async def _record_stream_fact(frame: Any, event: dict[str, Any], _turn_state: TurnContextState) -> None:
         await _check_cancel()
         event_type = str(event.get("type") or "")
         turn_index = int(getattr(frame, "turn_index", 1) or 1)
-        if event_type == "request_sent":
+        if event_type in {"agent_start", "request_sent"} and turn_index not in seen_request_turns:
+            seen_request_turns.add(turn_index)
+            step_id = f"llm:{runtime.agent_label}:{turn_index}"
             record_llm_request_created(
                 db,
                 task_run,
@@ -264,10 +268,11 @@ async def iter_stream_orchestration_agent_turn_events(
                 turn=turn_index,
                 model=getattr(runtime.llm_client, "model", None),
                 client_turn_id=client_turn_id,
-                payload={
-                    "elapsed_ms": event.get("elapsed_ms"),
-                    "step_id": f"llm:{runtime.agent_label}:{turn_index}",
-                },
+                payload=build_llm_request_prompt_payload(
+                    frame,
+                    elapsed_ms=event.get("elapsed_ms"),
+                    step_id=step_id,
+                ),
             )
             return
         if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:

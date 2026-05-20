@@ -1821,7 +1821,7 @@ class PipelineEngine:
             agent_data_skills = []
             try:
                 config_file = settings.AGENT_CONFIG_FILE
-                with open(config_file, "r", encoding="utf-8") as f:
+                with open(config_file, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 agent_data_skills = data.get("agents", {}).get(stage_cfg.agent, {}).get("skills", [])
             except Exception:
@@ -2777,7 +2777,7 @@ class PipelineEngine:
 
     def _get_agent_config_data(self, agent_name: str) -> Dict[str, Any]:
         try:
-            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             return data.get("agents", {}).get(agent_name, {})
         except Exception:
@@ -2799,7 +2799,7 @@ class PipelineEngine:
 
     def _get_agent_context_window(self, agent_name: str, model_id: str) -> Optional[int]:
         try:
-            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
         except Exception:
             return None
@@ -2842,7 +2842,7 @@ class PipelineEngine:
         """
         config_file = settings.AGENT_CONFIG_FILE
         try:
-            with open(config_file, "r", encoding="utf-8") as f:
+            with open(config_file, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             agent_skills = data.get("agents", {}).get(agent_name, {}).get("skills", [])
         except Exception:

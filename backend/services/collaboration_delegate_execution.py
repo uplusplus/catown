@@ -76,6 +76,7 @@ async def publish_delegate_task_card(
     to_agent: str,
     content: str,
     client_turn_id: str,
+    parent_task_run_id: int | None,
     store_runtime_card_fn: Callable[[int, dict[str, Any]], Awaitable[Any]],
 ) -> None:
     """Publish the delegated task runtime card, ignoring card-store failures."""
@@ -90,6 +91,7 @@ async def publish_delegate_task_card(
                 "to_agent": to_agent,
                 "content": content,
                 "client_turn_id": client_turn_id,
+                "parent_task_run_id": parent_task_run_id,
             },
         )
     except Exception:
@@ -106,6 +108,7 @@ async def run_delegated_task_in_chat(
     current_agent_name: str,
     client_turn_id: str,
     task_metadata: dict[str, Any],
+    parent_task_run_id: int | None,
     send_message_fn: Callable[..., Awaitable[Any]],
     publish_saved_chat_message_fn: Callable[..., Awaitable[Any]],
     trigger_agent_response_fn: Callable[..., Awaitable[Any]],
@@ -135,6 +138,7 @@ async def run_delegated_task_in_chat(
             metadata={
                 "client_turn_id": client_turn_id,
                 "delegated_task": task_metadata,
+                "parent_task_run_id": parent_task_run_id,
             },
             agent_name=current_agent_name,
         )
@@ -149,6 +153,7 @@ async def run_delegated_task_in_chat(
             metadata={
                 "client_turn_id": client_turn_id,
                 "delegated_task": task_metadata,
+                "parent_task_run_id": parent_task_run_id,
             },
         )
 
@@ -237,6 +242,7 @@ async def kick_off_delegated_task_execution(
     trigger_agent_response_fn: Callable[..., Awaitable[Any]],
     create_task_fn: Callable[[Awaitable[Any]], Any],
     mark_interrupted_fn: Callable[..., None],
+    parent_task_run_id: int | None = None,
 ) -> str:
     """Publish the delegated task card and spawn the delegated execution coroutine."""
 
@@ -247,6 +253,7 @@ async def kick_off_delegated_task_execution(
         to_agent=target_agent_type,
         content=delegate_task_card_content(task_title, task_description, context, task.id),
         client_turn_id=client_turn_id,
+        parent_task_run_id=parent_task_run_id,
         store_runtime_card_fn=store_runtime_card_fn,
     )
     create_task_fn(
@@ -259,6 +266,7 @@ async def kick_off_delegated_task_execution(
             current_agent_name=current_agent_name,
             client_turn_id=client_turn_id,
             task_metadata=task_metadata,
+            parent_task_run_id=parent_task_run_id,
             send_message_fn=send_message_fn,
             publish_saved_chat_message_fn=publish_saved_chat_message_fn,
             trigger_agent_response_fn=trigger_agent_response_fn,

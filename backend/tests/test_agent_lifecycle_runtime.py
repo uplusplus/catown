@@ -81,9 +81,11 @@ async def test_delegate_runtime_collaboration_task_uses_default_coordinator(monk
     assert result_text == "delegated"
 
 
-def test_get_runtime_collaboration_task_status_text_delegates_to_runtime():
-    runtime_module.get_collaboration_task_status_text = (
-        lambda task_id, coordinator=None: f"status:{task_id}"
+def test_get_runtime_collaboration_task_status_text_delegates_to_runtime(monkeypatch):
+    monkeypatch.setattr(
+        runtime_module,
+        "get_collaboration_task_status_text",
+        lambda task_id, coordinator=None: f"status:{task_id}",
     )
     assert runtime_module.get_runtime_collaboration_task_status_text("task-7") == "status:task-7"
 

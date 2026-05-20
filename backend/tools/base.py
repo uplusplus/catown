@@ -302,7 +302,7 @@ def _load_permissions_override() -> Dict[str, Any]:
     if not config_file.exists():
         return {}
     try:
-        with config_file.open("r", encoding="utf-8") as handle:
+        with config_file.open("r", encoding="utf-8-sig") as handle:
             payload = json.load(handle)
         permissions = payload.get("permissions")
         return permissions if isinstance(permissions, dict) else {}
@@ -432,6 +432,7 @@ class BaseTool(ABC):
     
     name: str = ""
     description: str = ""
+    system_only: bool = False
     
     @abstractmethod
     async def execute(self, **kwargs) -> Any:
@@ -459,7 +460,9 @@ class BaseTool(ABC):
 
     def get_policy_payload(self) -> Dict[str, Any]:
         """Return a structured approval/sandbox/escalation snapshot for this tool."""
-        return build_tool_policy_payload(self.name, description=self.description)
+        payload = build_tool_policy_payload(self.name, description=self.description)
+        payload["system_only"] = bool(self.system_only)
+        return payload
 
 
 class ToolRegistry:
@@ -489,6 +492,19 @@ class ToolRegistry:
     def list_tools(self) -> List[str]:
         """List all registered tool names"""
         return list(self._tools.keys())
+
+    def list_agent_tools(self) -> List[str]:
+        """List tools that can be exposed to agent LLM calls."""
+        return [name for name, tool in self._tools.items() if not bool(getattr(tool, "system_only", False))]
+
+    def list_system_tools(self) -> List[str]:
+        """List tools reserved for backend/system use."""
+        return [name for name, tool in self._tools.items() if bool(getattr(tool, "system_only", False))]
+
+    def is_system_tool(self, name: str) -> bool:
+        """Return whether a tool is reserved for backend/system use."""
+        tool = self.get(name)
+        return bool(tool and getattr(tool, "system_only", False))
     
     def get_schemas(self, tool_names: List[str] = None) -> List[Dict[str, Any]]:
         """Get schemas for specified tools (or all if not specified)"""
@@ -525,6 +541,22 @@ class ToolRegistry:
         tool = self.get(tool_name)
         if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
+        system_tool_call = bool(kwargs.pop("__catown_system_tool_call", False))
+        if bool(getattr(tool, "system_only", False)) and not system_tool_call:
+            result_text = build_blocked_tool_result(
+                "system_tool_only",
+                tool_name,
+                f"Tool '{tool_name}' is reserved for backend system calls and is not available to agents.",
+            )
+            return build_structured_tool_result(
+                tool_name=tool_name,
+                result_text=result_text,
+                success=False,
+                status="system_tool_only",
+                blocked=True,
+                blocked_kind="tool_scope",
+                blocked_reason=result_text,
+            )
         approval_granted = bool(kwargs.pop("__catown_approval_granted", False))
         project_id = kwargs.get("project_id")
         chatroom_id = kwargs.get("chatroom_id")

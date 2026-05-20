@@ -36,9 +36,9 @@ def _merge_json_file(src: Path, dst: Path, merge_key: str) -> None:
     if not src.exists() or not dst.exists():
         return
     try:
-        with src.open("r", encoding="utf-8") as f:
+        with src.open("r", encoding="utf-8-sig") as f:
             src_data = json.load(f)
-        with dst.open("r", encoding="utf-8") as f:
+        with dst.open("r", encoding="utf-8-sig") as f:
             dst_data = json.load(f)
     except Exception:
         return
@@ -83,7 +83,7 @@ def _ensure_agent_tool(config_file: Path, agent_name: str, tool_name: str) -> No
     if not config_file.exists():
         return
     try:
-        with config_file.open("r", encoding="utf-8") as f:
+        with config_file.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except Exception:
         return
@@ -102,7 +102,7 @@ def _ensure_agent_rule(config_file: Path, agent_name: str, rule: str) -> None:
     if not config_file.exists():
         return
     try:
-        with config_file.open("r", encoding="utf-8") as f:
+        with config_file.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except Exception:
         return
@@ -124,7 +124,7 @@ def _seed_skill_packages_if_missing(src: Path, dst_dir: Path) -> None:
     if not src.exists() or any(dst_dir.glob("*/SKILL.md")):
         return
 
-    with src.open("r", encoding="utf-8") as f:
+    with src.open("r", encoding="utf-8-sig") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         return

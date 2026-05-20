@@ -15,6 +15,8 @@ ERROR_EVENT_MARKERS = ("failed", "error", "cancel")
 LIVE_EVENT_TYPES = {
     "agent_turn_started",
     "tool_call_started",
+    "delegated_task_dispatched",
+    "task_run_waiting_for_delegated_work",
     "scheduler_step_dispatched",
     "scheduler_step_resumed",
     "approval_queue_item_followup_triggered",
@@ -148,6 +150,11 @@ def _step_label(event_type: str, *, agent_name: str, tool_name: str | None, payl
         return f"{agent_name or 'Agent'} responds"
     if event_type == "tool_call_started":
         return f"{agent_name or 'Agent'} calls {tool_name or 'tool'}"
+    if event_type == "delegated_task_dispatched":
+        target = str(payload.get("to_agent") or payload.get("target_agent_name") or "agent").strip()
+        return f"{agent_name or 'Agent'} delegates to {target}"
+    if event_type == "task_run_waiting_for_delegated_work":
+        return "Waiting for delegated work"
     if event_type == "tool_round_recorded":
         return f"{agent_name or 'Agent'} records tool output"
     if event_type == "approval_queue_item_created":
@@ -170,6 +177,22 @@ def _step_detail(event: TaskRunEvent, payload: dict[str, Any], event_type: str) 
     if event_type == "tool_round_recorded":
         tool_names = payload.get("tool_names") if isinstance(payload.get("tool_names"), list) else []
         return ", ".join(str(name) for name in tool_names if str(name).strip()) or "Tool output recorded."
+    if event_type == "delegated_task_dispatched":
+        title = str(payload.get("task_title") or "").strip()
+        target = str(payload.get("to_agent") or payload.get("target_agent_name") or "").strip()
+        if title and target:
+            return f"Delegated '{title}' to {target}."
+        if title:
+            return f"Delegated '{title}'."
+        return "Delegated task dispatched."
+    if event_type == "task_run_waiting_for_delegated_work":
+        pending = payload.get("pending_delegated_work") if isinstance(payload.get("pending_delegated_work"), list) else []
+        if pending:
+            first = pending[0] if isinstance(pending[0], dict) else {}
+            title = str(first.get("task_title") or "delegated task").strip()
+            target = str(first.get("target_agent_name") or "agent").strip()
+            return f"Waiting for '{title}' from {target}."
+        return "Waiting for delegated work."
     return event_type.replace("_", " ")
 
 
@@ -209,6 +232,10 @@ def _step_refs(payload: dict[str, Any]) -> dict[str, Any]:
         "dispatch_kind",
         "wait_for_step_id",
         "attached_to_step_id",
+        "task_id",
+        "child_client_turn_id",
+        "parent_task_run_id",
+        "parent_client_turn_id",
     ):
         if payload.get(key) is not None:
             refs[key] = payload.get(key)

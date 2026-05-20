@@ -18,7 +18,7 @@ def load_marketplaces(config_file: str | Path | None = None) -> Dict[str, Any]:
     path = Path(config_file or settings.SKILL_MARKETPLACES_CONFIG_FILE)
     if not path.exists():
         return {"default": "builtin", "marketplaces": {}}
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         data = json.load(f)
     return data if isinstance(data, dict) else {"default": "builtin", "marketplaces": {}}
 
@@ -281,7 +281,7 @@ def _annotate_marketplace_source(skill_id: str, skills_dir: str | Path, adapter:
     manifest_path = Path(skills_dir) / skill_id / "skill.json"
     if not manifest_path.exists():
         return
-    with manifest_path.open("r", encoding="utf-8") as f:
+    with manifest_path.open("r", encoding="utf-8-sig") as f:
         manifest = json.load(f)
     current_source = dict(manifest.get("source") or {})
     current_source.update({"marketplace": adapter, "url": source})

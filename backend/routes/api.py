@@ -99,6 +99,7 @@ from services.chat_runtime import (
     assemble_runtime_chat_messages,
     build_runtime_environment_context,
     build_tool_runtime_kwargs,
+    canonical_tool_names,
     prepare_chat_turn_runtime,
     resolve_agent_tool_names,
 )
@@ -136,6 +137,7 @@ from services.chat_timeline_projection import (
     build_task_run_timeline_projection,
 )
 from services.runner_lifecycle import (
+    build_llm_request_prompt_payload,
     complete_agent_turn as record_agent_turn_completed,
     record_llm_request_created,
     record_llm_response_completed,
@@ -341,7 +343,7 @@ class PreparedStandaloneTurnRuntime:
 def _resolve_agent_runtime_tools(agent: Any) -> List[str]:
     from tools import tool_registry as runtime_tool_registry
 
-    return resolve_agent_tool_names(agent, runtime_tool_registry.list_tools())
+    return resolve_agent_tool_names(agent, runtime_tool_registry.list_agent_tools())
 
 class LLMConfigModel(BaseModel):
     """LLM 配置验证模型"""
@@ -666,7 +668,7 @@ def _agent_base_system_prompt(agent: Optional[Agent], fallback_name: str, fallba
 
 @lru_cache(maxsize=8)
 def _load_agent_config_snapshot(config_path: str, modified_ns: int) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as handle:
+    with open(config_path, "r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 
@@ -858,13 +860,15 @@ def _build_llm_fact_recorder(
 ):
     """Build a stream event callback that records factual LLM timeline events."""
 
+    seen_request_turns: set[int] = set()
     seen_response_started_turns: set[int] = set()
 
     async def _record(frame: Any, event: Dict[str, Any], _turn_state: TurnContextState) -> None:
         event_type = str(event.get("type") or "")
         turn_index = int(getattr(frame, "turn_index", 1) or 1)
         step_id = f"llm:{agent_name}:{turn_index}"
-        if event_type == "request_sent":
+        if event_type in {"agent_start", "request_sent"} and turn_index not in seen_request_turns:
+            seen_request_turns.add(turn_index)
             record_llm_request_created(
                 db,
                 task_run,
@@ -872,7 +876,11 @@ def _build_llm_fact_recorder(
                 turn=turn_index,
                 model=getattr(llm_client, "model", None),
                 client_turn_id=client_turn_id,
-                payload={"elapsed_ms": event.get("elapsed_ms"), "step_id": step_id},
+                payload=build_llm_request_prompt_payload(
+                    frame,
+                    elapsed_ms=event.get("elapsed_ms"),
+                    step_id=step_id,
+                ),
             )
             return
         if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:
@@ -7020,7 +7028,7 @@ async def get_config():
     agents_config_file = Path(settings.AGENT_CONFIG_FILE)
     if agents_config_file.exists():
         try:
-            with open(agents_config_file, 'r', encoding='utf-8') as f:
+            with open(agents_config_file, 'r', encoding='utf-8-sig') as f:
                 agents_config = json.load(f)
 
             # 全局 LLM 配置
@@ -7042,6 +7050,7 @@ async def get_config():
                     if is_legacy_default_agent_name(raw_name, agent_type)
                     else str(raw_name).strip()
                 )
+                agent_data["tools"] = canonical_tool_names(agent_data.get("tools"))
             config["agents"] = agents_data
 
             # 全局 provider 摘要（用于显示 fallback 来源）
@@ -7075,12 +7084,13 @@ async def get_config():
                     "source": "agent" if has_own_provider else "global"
                 }
 
-            available_tools = tool_registry.list_tools()
+            available_tools = tool_registry.list_agent_tools()
             description_map = {
                 tool_name: (tool_registry.get(tool_name).description if tool_registry.get(tool_name) else "")
                 for tool_name in available_tools
             }
             config["tools"] = tool_registry.get_policy_pack(available_tools)
+            config["system_tools"] = tool_registry.get_policy_pack(tool_registry.list_system_tools())
             for policy in config["tools"].get("tool_policies", []):
                 if not policy.get("description"):
                     policy["description"] = description_map.get(policy.get("name", ""), "")
@@ -7097,7 +7107,7 @@ async def get_config():
 
             skills_config_file = Path(settings.SKILLS_CONFIG_FILE)
             if skills_config_file.exists():
-                with open(skills_config_file, "r", encoding="utf-8") as f:
+                with open(skills_config_file, "r", encoding="utf-8-sig") as f:
                     skills_config = json.load(f)
                 config["skills_catalog"] = skills_config if isinstance(skills_config, dict) else {}
         except Exception as e:
@@ -7144,7 +7154,7 @@ async def update_global_llm_config(config: Dict[str, Any]):
     try:
         # 读取现有配置
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         else:
             data = {"agents": {}}
@@ -7181,7 +7191,7 @@ async def update_orchestration_config(config: OrchestrationConfigModel):
     config_file = Path(settings.AGENT_CONFIG_FILE)
     try:
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         else:
             data = {"agents": {}}
@@ -7213,7 +7223,7 @@ async def update_permissions_config(config: PermissionsConfigModel):
     config_file = Path(settings.AGENT_CONFIG_FILE)
     try:
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         else:
             data = {"agents": {}}
@@ -7249,7 +7259,7 @@ async def update_context_config(config: ContextConfigModel):
     config_file = Path(settings.AGENT_CONFIG_FILE)
     try:
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         else:
             data = {"agents": {}}
@@ -7295,7 +7305,7 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
     agent_name = normalize_agent_type(agent_name)
     try:
         if config_file.exists():
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
         else:
             data = {"agents": {}}
@@ -7309,7 +7319,7 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
         # 更新 Agent 的完整配置字段
         for field_name in ("provider", "default_model", "role", "soul", "tools", "skills"):
             if field_name in config:
-                agents[agent_name][field_name] = config[field_name]
+                agents[agent_name][field_name] = canonical_tool_names(config[field_name]) if field_name == "tools" else config[field_name]
 
         config_file.parent.mkdir(parents=True, exist_ok=True)
         with open(config_file, 'w', encoding='utf-8') as f:
@@ -7452,12 +7462,13 @@ async def list_tools():
     from tools import tool_registry
     
     tools = []
-    for name in tool_registry.list_tools():
+    for name in tool_registry.list_agent_tools():
         tool = tool_registry.get(name)
         if tool:
             tools.append({
                 "name": tool.name,
                 "description": tool.description,
+                "system_only": bool(getattr(tool, "system_only", False)),
                 "schema": tool.get_schema()
             })
     

@@ -73,6 +73,7 @@ async def test_kick_off_delegated_task_execution_publishes_card_and_spawns_runne
                 "to_agent": "coder",
                 "content": "**Task: Run tests**\n\nRun the backend suite\n\nContext: Focus on flaky cases\n\nTask ID: task-123",
                 "client_turn_id": "delegate-task-123",
+                "parent_task_run_id": None,
             },
         )
     ]

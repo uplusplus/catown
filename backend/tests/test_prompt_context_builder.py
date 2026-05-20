@@ -9,6 +9,7 @@ from services.chat_prompt_builder import (  # noqa: E402
     build_chat_context_selector,
     list_selector_profiles,
     selector_profile_config,
+    team_member_lines,
 )
 from services.context_builder import (  # noqa: E402
     ContextFragment,
@@ -87,6 +88,37 @@ def test_base_system_prompt_uses_structured_db_agent_config_not_legacy_prompt():
     assert "Keep runtime context out of system" in system_prompt
     assert "OLD MONOLITHIC PROMPT" not in system_prompt
     assert "Legacy soul field" not in system_prompt
+
+
+def test_team_member_lines_include_runtime_contract():
+    agent = SimpleNamespace(
+        name="Valet",
+        agent_type="valet",
+        role="assistant",
+        config=json.dumps(
+            {
+                "metadata": {
+                    "runtime_contract": {
+                        "mode": "coordinator",
+                        "owns": ["coordination"],
+                        "must_dispatch_specialized_work": True,
+                        "dispatch_tools": ["delegate_task"],
+                        "status_tools": ["check_task_status"],
+                        "completion_rule": "Wait for owner result.",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    lines = team_member_lines([agent])
+
+    assert len(lines) == 1
+    assert "runtime contract" in lines[0]
+    assert "mode=coordinator" in lines[0]
+    assert "must_dispatch_specialized_work=true" in lines[0]
+    assert "dispatch_tools=delegate_task" in lines[0]
 
 
 def test_assembly_orders_context_layers_before_history_and_current_input():
@@ -340,6 +372,7 @@ def test_runtime_user_fragments_are_structured_and_prioritized():
         "project_context",
         "project_status",
         "chatroom_context",
+        "chat_routing",
         "chatroom_lineage",
         "runtime_context",
         "team_members",
@@ -348,8 +381,11 @@ def test_runtime_user_fragments_are_structured_and_prioritized():
         "previous_agent_work",
     ]
     assert fragments[0].visibility == "global"
-    assert fragments[3].content.startswith("## Chat Lineage")
-    assert fragments[6].scope == "shared_fact"
+    assert fragments[3].content.startswith("## Chat Routing")
+    assert "`@agent_name`" in fragments[3].content
+    assert "normal chat message" in fragments[3].content
+    assert fragments[4].content.startswith("## Chat Lineage")
+    assert fragments[7].scope == "shared_fact"
     assert "Current focus" not in fragments[1].content
     assert "Blocking reason" not in fragments[1].content
     assert "Latest summary" not in fragments[1].content
@@ -373,6 +409,7 @@ def test_runtime_user_fragments_can_split_standalone_note_and_source_chat():
         "standalone_note",
         "project_context",
         "chatroom_context",
+        "chat_routing",
         "chatroom_lineage",
     ]
     assert fragments[0].content.startswith("## Session Instructions")

@@ -254,6 +254,7 @@ async def delegate_runtime_collaboration_task(
     trigger_agent_response_fn: Callable[..., Awaitable[Any]] | None = None,
     create_task_fn: Callable[[Awaitable[Any]], Any] | None = None,
     coordinator: Any | None = None,
+    parent_task_run: TaskRun | None = None,
 ) -> tuple[Any | None, str]:
     """Create and register one delegated collaboration task using the default runtime coordinator."""
 
@@ -273,6 +274,7 @@ async def delegate_runtime_collaboration_task(
         publish_saved_chat_message_fn=publish_saved_chat_message_fn,
         trigger_agent_response_fn=trigger_agent_response_fn,
         create_task_fn=create_task_fn,
+        parent_task_run=parent_task_run,
     )
 
 

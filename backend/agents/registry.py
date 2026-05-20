@@ -100,7 +100,18 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
             soul={"identity": "一个万能打杂的助手", "values": ["能帮就帮"], "style": "友好随和"},
             role={"title": "助理", "responsibilities": ["回答问题", "协助处理一般任务"], "rules": ["不确定时提问"]},
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory"]
+            tools=["web_search", "retrieve_memory", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
+            metadata={
+                "runtime_contract": {
+                    "mode": "coordinator",
+                    "owns": ["coordination"],
+                    "must_dispatch_specialized_work": True,
+                    "dispatch_tools": ["delegate_task"],
+                    "status_tools": ["check_task_status"],
+                    "consult_tools": ["consult_agent"],
+                    "completion_rule": "Do not mark specialized work complete until the owning agent has produced a result.",
+                }
+            },
         ),
         create_agent_config_from_provider(
             agent_type="analyst",

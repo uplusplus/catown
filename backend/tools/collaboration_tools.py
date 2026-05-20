@@ -52,6 +52,7 @@ class DelegateTaskTool(BaseTool):
         current_agent_id = kwargs.get("agent_id", 0)
         current_agent_name = kwargs.get("agent_name", "unknown")
         chatroom_id = kwargs.get("chatroom_id", 0)
+        task_run_id = kwargs.get("task_run_id")
 
         return await run_delegate_agent_action(
             coordinator=self.coordinator,
@@ -62,6 +63,7 @@ class DelegateTaskTool(BaseTool):
             current_agent_id=current_agent_id,
             current_agent_name=current_agent_name,
             chatroom_id=chatroom_id,
+            task_run_id=task_run_id,
             store_runtime_card_fn=store_runtime_card,
             send_message_fn=chatroom_manager.send_message,
             publish_saved_chat_message_fn=publish_saved_chat_message,
@@ -166,7 +168,7 @@ class ListCollaboratorsTool(BaseTool):
     name = "list_collaborators"
     description = (
         "List all available agents for collaboration in the current chatroom, plus guidance on when to use "
-        "delegate_task, consult_agent, send_direct_message, or @mentions."
+        "delegate_task, consult_agent, or @mentions."
     )
 
     def __init__(self, collaboration_coordinator=None):
@@ -188,9 +190,10 @@ class SendDirectMessageTool(BaseTool):
     """Tool for sending direct messages to specific agents."""
 
     name = "send_direct_message"
+    system_only = True
     description = (
         "Send a one-way direct message to a specific agent without creating a tracked task. "
-        "Use this for notifications or context sharing when you do not need an immediate response."
+        "Reserved for backend system calls; agent messages must be routed through chat."
     )
 
     def __init__(self, collaboration_coordinator=None):

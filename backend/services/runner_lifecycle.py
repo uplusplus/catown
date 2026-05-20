@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -40,6 +41,80 @@ def _merge_fact_payload(base: dict[str, Any], payload: Any = None) -> dict[str, 
     elif payload is not None:
         merged_payload["details"] = payload
     return merged_payload
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(item) for item in value]
+        return str(value)
+
+
+def build_llm_request_prompt_payload(
+    frame: Any,
+    *,
+    elapsed_ms: Any = None,
+    step_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if elapsed_ms is not None:
+        payload["elapsed_ms"] = elapsed_ms
+    if step_id:
+        payload["step_id"] = step_id
+
+    prompt_messages = getattr(frame, "prompt_snapshot", None)
+    if prompt_messages is None:
+        prompt_messages = getattr(frame, "messages", None)
+    if prompt_messages is not None:
+        safe_messages = _json_safe(prompt_messages)
+        payload["prompt_messages"] = safe_messages
+        if isinstance(safe_messages, list):
+            payload["prompt_message_count"] = len(safe_messages)
+            prompt_preview = _prompt_messages_preview(safe_messages)
+            if prompt_preview:
+                payload["prompt_preview"] = prompt_preview
+
+    system_prompt = str(getattr(frame, "system_prompt", "") or "")
+    if system_prompt:
+        payload["system_prompt"] = system_prompt
+
+    return payload
+
+
+def _prompt_messages_preview(messages: list[Any], limit: int = 280) -> str:
+    for item in reversed(messages):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role == "system":
+            continue
+        content = item.get("content")
+        text = _content_preview(content)
+        if text:
+            return text[:limit]
+    return ""
+
+
+def _content_preview(content: Any) -> str:
+    if isinstance(content, str):
+        return " ".join(content.split())
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if value:
+                    parts.append(str(value))
+            elif item is not None:
+                parts.append(str(item))
+        return " ".join(" ".join(parts).split())
+    if content is None:
+        return ""
+    return " ".join(str(content).split())
 
 
 def start_agent_turn(

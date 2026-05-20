@@ -1281,6 +1281,21 @@ def _chatroom_context_fragments(chatroom: Any, *, project: Any = None, source_ch
                 priority=25,
             )
         )
+        fragments.append(
+            ContextFragment(
+                role="user",
+                content=(
+                    "## Chat Routing\n"
+                    "- Messages in this chat are shared conversation events.\n"
+                    "- Agents can send a lightweight message to another agent by writing a normal chat message that mentions `@agent_name`.\n"
+                    "- Use chat mentions for agent-to-agent notifications or context handoffs; use tracked task tools only when the work needs task tracking."
+                ),
+                scope=ContextScope.RUN,
+                visibility=ContextVisibility.GLOBAL,
+                source="chat_routing",
+                priority=26,
+            )
+        )
 
     lineage_lines: list[str] = []
     chat_role = _chat_role(chatroom, project)

@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict
 
 from services.run_ledger import append_task_event, complete_task_run
+from services.delegated_task_guard import (
+    build_pending_delegated_work_summary,
+    find_incomplete_delegated_child_runs,
+)
 
 
 SaveMessage = Callable[..., Awaitable[Any]]
@@ -78,7 +82,19 @@ async def persist_single_agent_session_success(
         response_content=resolved_content,
         summary=completion_summary or "",
     )
-    complete_task_run(db, task_run, summary=compact_summary(resolved_content))
+    pending_delegated_work = find_incomplete_delegated_child_runs(db, task_run)
+    if pending_delegated_work:
+        pending_summary = build_pending_delegated_work_summary(pending_delegated_work)
+        append_task_event(
+            db,
+            task_run,
+            "task_run_waiting_for_delegated_work",
+            agent_name=agent_name,
+            summary=pending_summary,
+            payload={"pending_delegated_work": pending_delegated_work},
+        )
+    else:
+        complete_task_run(db, task_run, summary=compact_summary(resolved_content))
     if schedule_memory_extraction is not None:
         schedule_memory_extraction()
     return SingleAgentSessionTerminalResult(

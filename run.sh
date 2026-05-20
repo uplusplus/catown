@@ -8,8 +8,10 @@ set -e
 
 BACKEND="$(cd "$(dirname "$0")/backend" && pwd)"
 PID=""
+PGID=""
 RUN_HOST="${RUN_HOST:-0.0.0.0}"
 RUN_PORT="${RUN_PORT:-8000}"
+CATOWN_RELOAD="${CATOWN_RELOAD:-0}"
 BASE_PYTHON="${PYTHON:-python3}"
 PYTHON_CMD=""
 VENV_DIR="${CATOWN_VENV_DIR:-}"
@@ -21,6 +23,7 @@ CATOWN_WORKSPACES_DIR="${CATOWN_WORKSPACES_DIR:-$CATOWN_HOME/workspaces}"
 CATOWN_ENV_FILE="$CATOWN_HOME/.env"
 
 cleanup() {
+    trap - EXIT INT TERM
     if [ -n "$PID" ]; then
         echo "Stopping (PID $PID)..."
     fi
@@ -54,7 +57,52 @@ find_port_pids() {
     fi
     if command -v fuser >/dev/null 2>&1; then
         fuser "$RUN_PORT"/tcp 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u
+        return
     fi
+    find_windows_uvicorn_pids || true
+}
+
+is_windows_shell() {
+    case "$(uname -s 2>/dev/null || true)" in
+        CYGWIN*|MINGW*|MSYS*) return 0 ;;
+    esac
+    return 1
+}
+
+powershell_command() {
+    if command -v powershell.exe >/dev/null 2>&1; then
+        echo "powershell.exe"
+        return 0
+    fi
+    if command -v powershell >/dev/null 2>&1; then
+        echo "powershell"
+        return 0
+    fi
+    return 1
+}
+
+find_windows_uvicorn_pids() {
+    if ! is_windows_shell; then
+        return 1
+    fi
+
+    local ps_cmd
+    ps_cmd="$(powershell_command)" || return 1
+    "$ps_cmd" -NoProfile -Command \
+        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | Select-Object -ExpandProperty ProcessId" \
+        2>/dev/null | tr -d '\r' | sed '/^$/d' | sort -u
+}
+
+kill_windows_uvicorn_by_port() {
+    if ! is_windows_shell; then
+        return 1
+    fi
+
+    local ps_cmd
+    ps_cmd="$(powershell_command)" || return 1
+    "$ps_cmd" -NoProfile -Command \
+        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" \
+        >/dev/null 2>&1
 }
 
 wait_for_port_free() {
@@ -70,16 +118,24 @@ wait_for_port_free() {
 
 stop_server() {
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-        kill "$PID" 2>/dev/null || true
+        if [ -n "$PGID" ]; then
+            kill -TERM "-$PGID" 2>/dev/null || kill "$PID" 2>/dev/null || true
+        else
+            kill "$PID" 2>/dev/null || true
+        fi
         wait "$PID" 2>/dev/null || true
     fi
     PID=""
+    PGID=""
 
     if wait_for_port_free 5; then
         return
     fi
 
     echo "Port $RUN_PORT is still in use; terminating leftover listener..."
+    kill_windows_uvicorn_by_port || true
+    wait_for_port_free 3 && return
+
     local pids
     pids="$(find_port_pids || true)"
     if [ -n "$pids" ]; then
@@ -196,9 +252,17 @@ install_dependencies() {
 }
 
 start_server() {
+    local reload_args=()
+    if [ "$CATOWN_RELOAD" = "1" ]; then
+        reload_args=(--reload)
+    fi
+
     echo "Starting Catown..."
     echo "  Web:      http://localhost:$RUN_PORT"
     echo "  API Docs: http://localhost:$RUN_PORT/docs"
+    if [ "$CATOWN_RELOAD" = "1" ]; then
+        echo "  Reload:   enabled"
+    fi
     echo ""
 
     if ! wait_for_port_free 10; then
@@ -206,8 +270,16 @@ start_server() {
         return 1
     fi
 
-    (cd "$BACKEND" && "$PYTHON_CMD" -m uvicorn main:app --reload --host "$RUN_HOST" --port "$RUN_PORT" --timeout-graceful-shutdown 5 < /dev/null) &
+    if command -v setsid >/dev/null 2>&1; then
+        (cd "$BACKEND" && exec setsid "$PYTHON_CMD" -m uvicorn main:app "${reload_args[@]}" --host "$RUN_HOST" --port "$RUN_PORT" --timeout-graceful-shutdown 5 < /dev/null) &
+    else
+        (cd "$BACKEND" && exec "$PYTHON_CMD" -m uvicorn main:app "${reload_args[@]}" --host "$RUN_HOST" --port "$RUN_PORT" --timeout-graceful-shutdown 5 < /dev/null) &
+    fi
     PID=$!
+    PGID="$(ps -o pgid= -p "$PID" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ -z "$PGID" ] || [ "$PGID" = "$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]' || true)" ]; then
+        PGID=""
+    fi
     echo "  PID: $PID"
     echo ""
 }

@@ -281,6 +281,7 @@ class TestToolsEndpoint:
         tool_names = [t["name"] for t in data["tools"]]
         for t in ["web_search", "execute_code", "run_shell", "delegate_task", "save_memory", "read_file"]:
             assert t in tool_names, f"Missing tool: {t}"
+        assert "send_direct_message" not in tool_names
 
 
 # ==================== 配置 API ====================
@@ -304,6 +305,10 @@ class TestConfigEndpoint:
         assert "tool_policies" in developer_tools
         developer_tool_names = [policy.get("name") for policy in developer_tools.get("tool_policies", [])]
         assert "read_file" in developer_tool_names
+        assert "send_direct_message" not in developer_tool_names
+        assert "system_tools" in data
+        system_tool_names = [policy.get("name") for policy in data["system_tools"].get("tool_policies", [])]
+        assert "send_direct_message" in system_tool_names
 
     def test_update_permissions_config_includes_auto_approve_all(self, tmp_path):
         from fastapi.testclient import TestClient
@@ -2143,6 +2148,20 @@ class TestSSEStreaming:
         assert mode_event["payload"]["runner_policy"]["metadata"]["tool_policy_summary"]["tool_count"] == 0
 
     def test_stream_records_user_and_target_agent_facts_before_llm(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        async def stream_without_request_sent(messages, tools=None):
+            yield {"type": "content", "delta": "Hello!"}
+            yield {"type": "done", "full_content": "Hello!", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_stream = stream_without_request_sent
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
         r = client.post("/api/chats", json={"title": "Stream Facts"})
         cid = r.json()["id"]
         turn_id = "turn-stream-facts"
@@ -2165,12 +2184,24 @@ class TestSSEStreaming:
         event_types = [event["event_type"] for event in detail["events"]]
         user_event = next(event for event in detail["events"] if event["event_type"] == "user_message_saved")
         target_event = next(event for event in detail["events"] if event["event_type"] == "target_agent_selected")
+        llm_event = next(event for event in detail["events"] if event["event_type"] == "llm_request_created")
 
         assert event_types.index("user_message_saved") < event_types.index("target_agent_selected")
         assert user_event["payload"]["content"] == "@analyst inspect status"
         assert user_event["payload"]["client_turn_id"] == turn_id
         assert target_event["payload"]["agent_name"] == "analyst"
         assert "model" in target_event["payload"]
+        assert llm_event["payload"]["prompt_message_count"] >= 1
+        assert "@analyst inspect status" in llm_event["payload"]["prompt_preview"]
+        assert any(
+            "@analyst inspect status" in str(message.get("content") or "")
+            for message in llm_event["payload"]["prompt_messages"]
+        )
+
+        timeline = client.get(f"/api/task-runs/{runs[0]['id']}/timeline").json()
+        llm_step = next(step for step in timeline["steps"] if step["event_type"] == "llm_request_created")
+        assert "### Prompt Messages" in llm_step["detail_content"]
+        assert "@analyst inspect status" in llm_step["detail_content"]
 
     def test_standalone_stream_persists_done_only_full_content(self, client):
         import llm.client as llm_mod

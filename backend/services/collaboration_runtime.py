@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.orm import Session
@@ -27,10 +28,15 @@ from services.collaboration_task_runtime import (
     require_collaboration_task_payload,
     resolve_collaboration_task,
 )
+from services.run_ledger import append_task_event
 
 
 def _available_collaborator_names(coordinator: Any) -> list[str]:
     return [collab.agent_name for collab in coordinator.collaborators.values()]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def get_collaboration_status_payload(*, coordinator: Any) -> dict[str, Any]:
@@ -67,6 +73,7 @@ async def delegate_collaboration_task(
     trigger_agent_response_fn: Callable[..., Awaitable[Any]] | None = None,
     create_task_fn: Callable[[Awaitable[Any]], Any] | None = None,
     mark_interrupted_fn: Callable[..., None] | None = None,
+    parent_task_run: Any | None = None,
 ) -> tuple[Any | None, str]:
     """Resolve the target, register the task, route the task request, and optionally kick off execution."""
 
@@ -91,6 +98,8 @@ async def delegate_collaboration_task(
         created_by_agent_id=created_by_agent_id,
         context=context,
         delegator=current_agent_name,
+        parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
+        parent_client_turn_id=getattr(parent_task_run, "client_turn_id", None) if parent_task_run is not None else None,
     )
     register_delegated_collaboration_task(task, coordinator=coordinator)
     await route_delegated_task_request(
@@ -100,6 +109,19 @@ async def delegate_collaboration_task(
         from_agent_name=current_agent_name,
         to_agent_id=target_agent_id,
         to_agent_name=target_agent_type,
+        context=context,
+    )
+
+    client_turn_id = f"delegate-{task.id}"
+    _record_delegated_task_dispatched(
+        db,
+        parent_task_run,
+        task=task,
+        child_client_turn_id=client_turn_id,
+        from_agent=current_agent_name,
+        to_agent=target_agent_type,
+        task_title=task_title,
+        task_description=task_description,
         context=context,
     )
 
@@ -129,6 +151,8 @@ async def delegate_collaboration_task(
                 context=context,
                 delegator=current_agent_name,
                 target_agent_name=target_agent_type,
+                parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
+                parent_client_turn_id=getattr(parent_task_run, "client_turn_id", None) if parent_task_run is not None else None,
             ),
             store_runtime_card_fn=store_runtime_card_fn,
             send_message_fn=send_message_fn,
@@ -136,11 +160,52 @@ async def delegate_collaboration_task(
             trigger_agent_response_fn=trigger_agent_response_fn,
             create_task_fn=create_task_fn,
             mark_interrupted_fn=mark_interrupted_fn or mark_delegated_task_run_interrupted,
+            parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
         )
 
     return task, (
         f"[Delegate Task] Task '{task_title}' delegated to {target_agent_type}. "
         f"Task ID: {task.id}"
+    )
+
+
+def _record_delegated_task_dispatched(
+    db: Session,
+    parent_task_run: Any | None,
+    *,
+    task: Any,
+    child_client_turn_id: str,
+    from_agent: str,
+    to_agent: str,
+    task_title: str,
+    task_description: str,
+    context: str,
+) -> None:
+    """Record the durable parent-run fact for one delegated task dispatch."""
+
+    if parent_task_run is None:
+        return
+    append_task_event(
+        db,
+        parent_task_run,
+        "delegated_task_dispatched",
+        agent_name=from_agent,
+        summary=f"{from_agent} delegated '{task_title}' to {to_agent}.",
+        payload={
+            "dispatch_kind": "delegate_task",
+            "occurred_at": _utc_now_iso(),
+            "parent_task_run_id": getattr(parent_task_run, "id", None),
+            "parent_client_turn_id": getattr(parent_task_run, "client_turn_id", None),
+            "task_id": getattr(task, "id", None),
+            "child_client_turn_id": child_client_turn_id,
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "target_agent_name": to_agent,
+            "assigned_to_agent_id": getattr(task, "assigned_to_agent_id", None),
+            "task_title": task_title,
+            "task_description": task_description,
+            "context": context,
+        },
     )
 
 

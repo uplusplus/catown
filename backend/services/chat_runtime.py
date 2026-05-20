@@ -31,12 +31,38 @@ _TOOL_KEYWORD_HINTS: dict[str, list[str]] = {
     "list_collaborators": ["list collaborators", "who is in this room", "team members"],
     "delegate_task": ["delegate", "assign", "have tester", "have developer", "ask tester", "ask developer"],
     "consult_agent": ["ask architect", "ask tester", "ask developer", "immediate answer"],
-    "send_direct_message": ["notify", "tell ", "message ", "ping "],
     "skill_manager": ["skill", "技能", "marketplace", "install skill", "enable skill"],
     "github_manager": ["github", "pull request", "repo", "branch", "tag", "release"],
     "browser": ["browser", "web page", "click", "fill", "navigate"],
     "screenshot": ["screenshot", "capture page", "screen capture"],
 }
+
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "query_agent": "consult_agent",
+}
+
+
+def canonical_tool_name(tool_name: Any) -> str:
+    """Return the current public name for a tool, including legacy aliases."""
+
+    normalized = str(tool_name or "").strip()
+    return TOOL_NAME_ALIASES.get(normalized, normalized)
+
+
+def canonical_tool_names(tool_names: Any) -> List[str]:
+    """Normalize a tool list and remove duplicates while preserving order."""
+
+    if not isinstance(tool_names, list):
+        return []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw_tool_name in tool_names:
+        tool_name = canonical_tool_name(raw_tool_name)
+        if not tool_name or tool_name in seen:
+            continue
+        normalized.append(tool_name)
+        seen.add(tool_name)
+    return normalized
 
 
 @dataclass
@@ -68,7 +94,7 @@ def resolve_agent_tool_names(agent: Any, available_tool_names: List[str]) -> Lis
     else:
         parsed = []
 
-    normalized = [str(tool_name).strip() for tool_name in parsed if str(tool_name).strip()]
+    normalized = canonical_tool_names(parsed)
     if not normalized:
         return []
 
@@ -115,7 +141,17 @@ def build_tool_prompt(
                 "Use action='install' with marketplace and source to install a skill, for example marketplace='skillhub-cn' and source='graphify'. "
                 "If the tool returns code='command_not_found', explain that the marketplace CLI is missing and direct the user to install or enable that marketplace CLI from the Skills configuration page."
             )
-        elif tool_name in {"delegate_task", "consult_agent", "send_direct_message", "check_task_status", "list_collaborators", "list_agents"}:
+        elif tool_name == "delegate_task":
+            guides.append(
+                "delegate_task: use this for specialized work that another agent must actually execute. "
+                "Delegation creates tracked work with progress/status semantics; use it when the result gates completion."
+            )
+        elif tool_name == "consult_agent":
+            guides.append(
+                "consult_agent: use this only for synchronous advice or expertise. "
+                "Do not use consult_agent as a substitute for durable task dispatch when the target agent needs tools, progress tracking, or a result that gates completion."
+            )
+        elif tool_name in {"check_task_status", "list_collaborators", "list_agents"}:
             if description:
                 guides.append(description)
 
@@ -249,7 +285,7 @@ async def prepare_chat_turn_runtime(
 
     llm_client = get_llm_client_for_agent(agent_type_of(agent))
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
-    all_tool_names = tool_registry.list_tools()
+    all_tool_names = tool_registry.list_agent_tools()
     available_tools = resolve_agent_tool_names(agent, all_tool_names)
     turn_state = build_turn_state_from_checkpoint_snapshot(
         checkpoint_snapshot,

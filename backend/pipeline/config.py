@@ -56,7 +56,7 @@ class PipelineConfigManager:
         if not os.path.exists(self.config_file):
             return {}
 
-        with open(self.config_file, 'r', encoding='utf-8') as f:
+        with open(self.config_file, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
 
         self.configs = {}

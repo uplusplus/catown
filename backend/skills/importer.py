@@ -211,7 +211,7 @@ def _extract_zip(archive: Path, target: Path) -> Path:
 def _read_frontmatter(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
@@ -230,7 +230,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:

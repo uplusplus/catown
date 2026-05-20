@@ -21,10 +21,12 @@ def build_delegated_task_metadata(
     context: str,
     delegator: str,
     target_agent_name: str,
+    parent_task_run_id: int | None = None,
+    parent_client_turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the normalized metadata stored alongside a delegated task."""
 
-    return {
+    metadata = {
         "task_id": task_id,
         "task_title": task_title,
         "task_description": task_description,
@@ -32,6 +34,11 @@ def build_delegated_task_metadata(
         "delegator": delegator,
         "target_agent_name": target_agent_name,
     }
+    if parent_task_run_id is not None:
+        metadata["parent_task_run_id"] = parent_task_run_id
+    if parent_client_turn_id:
+        metadata["parent_client_turn_id"] = parent_client_turn_id
+    return metadata
 
 
 def create_delegated_collaboration_task(
@@ -43,6 +50,8 @@ def create_delegated_collaboration_task(
     created_by_agent_id: int,
     context: str = "",
     delegator: str = "",
+    parent_task_run_id: int | None = None,
+    parent_client_turn_id: str | None = None,
 ):
     """Create one normalized delegated collaboration task."""
 
@@ -54,6 +63,10 @@ def create_delegated_collaboration_task(
             "context": context,
             "delegator": delegator,
         }
+    if parent_task_run_id is not None:
+        metadata["parent_task_run_id"] = parent_task_run_id
+    if parent_client_turn_id:
+        metadata["parent_client_turn_id"] = parent_client_turn_id
 
     return CollaborationTask(
         id=str(uuid.uuid4()),

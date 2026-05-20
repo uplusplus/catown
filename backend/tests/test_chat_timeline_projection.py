@@ -142,7 +142,16 @@ def test_task_run_timeline_projects_llm_fact_events(fresh_db):
             task_run,
             "llm_request_created",
             agent_name="Valet",
-            payload={"turn": 1, "step_id": "llm:Valet:1"},
+            payload={
+                "turn": 1,
+                "step_id": "llm:Valet:1",
+                "system_prompt": "System rules",
+                "prompt_messages": [
+                    {"role": "system", "content": "System rules"},
+                    {"role": "user", "content": "actual user request"},
+                ],
+                "prompt_message_count": 2,
+            },
         )
         _append_task_event(
             db,
@@ -166,6 +175,62 @@ def test_task_run_timeline_projects_llm_fact_events(fresh_db):
         assert all(step["kind"] == "llm" for step in timeline["steps"])
         assert all(step["step_id"] == "llm:Valet:1" for step in timeline["steps"])
         assert timeline["steps"][0]["state"] == "done"
+        assert "### Prompt Messages" in timeline["steps"][0]["detail_content"]
+        assert "actual user request" in timeline["steps"][0]["detail_content"]
+        assert "prompt_messages" not in timeline["steps"][0]["facts"]
+        assert timeline["steps"][0]["facts"]["prompt_message_count"] == 2
+        assert timeline["steps"][0]["facts"]["prompt_preview"] == "actual user request"
         assert timeline["steps"][-1]["facts"]["response_preview"] == "Done."
+    finally:
+        db.close()
+
+
+def test_task_run_timeline_projects_delegated_task_dispatch_fact(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Delegation Timeline")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="project_single_agent_stream",
+            status="running",
+            title="Delegation run",
+            client_turn_id="parent-turn",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        _append_task_event(
+            db,
+            task_run,
+            "delegated_task_dispatched",
+            agent_name="Valet",
+            payload={
+                "task_id": "task-123",
+                "task_title": "Verify behavior",
+                "task_description": "Run the verification.",
+                "from_agent": "Valet",
+                "to_agent": "Tester",
+                "child_client_turn_id": "delegate-task-123",
+                "parent_task_run_id": task_run.id,
+            },
+        )
+
+        db.refresh(task_run)
+        timeline = _build_task_run_timeline_projection(task_run)
+        step = timeline["steps"][0]
+
+        assert step["kind"] == "delegation"
+        assert step["phase"] == "dispatched"
+        assert step["state"] == "live"
+        assert step["actor"] == "Valet"
+        assert step["summary"] == "Valet delegated 'Verify behavior' to Tester."
+        assert step["facts"]["child_client_turn_id"] == "delegate-task-123"
+        assert step["facts"]["task_description"] == "Run the verification."
     finally:
         db.close()

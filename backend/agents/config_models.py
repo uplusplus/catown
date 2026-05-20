@@ -233,7 +233,8 @@ def create_agent_config_from_provider(
     skills: List[str] = None,
     memory: Dict[str, Any] = None,
     sleep: Dict[str, Any] = None,
-    default_model: str = None
+    default_model: str = None,
+    metadata: Dict[str, Any] = None,
 ) -> AgentConfigV2:
     """从 provider 配置创建 Agent 配置"""
     provider = parse_agent_config(provider_config)
@@ -249,5 +250,6 @@ def create_agent_config_from_provider(
         memory=MemoryConfig(**(memory or {})),
         sleep=SleepConfig(**(sleep or {})),
         provider=provider,
-        default_model=default_model
+        default_model=default_model,
+        metadata=dict(metadata or {}),
     )

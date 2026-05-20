@@ -102,6 +102,73 @@ async def test_delegate_collaboration_task_registers_and_optionally_kicks_off(mo
 
 
 @pytest.mark.asyncio
+async def test_delegate_collaboration_task_records_parent_dispatch_fact(monkeypatch, fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    coordinator = DummyCoordinator()
+    monkeypatch.setattr(
+        runtime_module,
+        "ensure_collaboration_target",
+        lambda **kwargs: (2, "tester"),
+    )
+
+    async def fake_route_request(**kwargs):
+        return None
+
+    monkeypatch.setattr(runtime_module, "route_delegated_task_request", fake_route_request)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Delegation facts")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        parent_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="project_single_agent_stream",
+            status="running",
+            title="Parent run",
+            client_turn_id="parent-turn",
+        )
+        db.add(parent_run)
+        db.commit()
+        db.refresh(parent_run)
+
+        task, result_text = await runtime_module.delegate_collaboration_task(
+            coordinator=coordinator,
+            db=db,
+            target_agent_name="tester",
+            task_title="Verify behavior",
+            task_description="Run the verification and report facts.",
+            chatroom_id=chatroom.id,
+            created_by_agent_id=1,
+            current_agent_name="Valet",
+            context="Use current chat context.",
+            parent_task_run=parent_run,
+        )
+
+        assert task is not None
+        assert "delegated" in result_text.lower()
+        db.refresh(parent_run)
+        events = list(parent_run.events)
+        assert [event.event_type for event in events] == ["delegated_task_dispatched"]
+
+        import json
+
+        payload = json.loads(events[0].payload_json)
+        assert payload["dispatch_kind"] == "delegate_task"
+        assert payload["task_id"] == task.id
+        assert payload["child_client_turn_id"] == f"delegate-{task.id}"
+        assert payload["from_agent"] == "Valet"
+        assert payload["to_agent"] == "tester"
+        assert payload["task_description"] == "Run the verification and report facts."
+        assert task.metadata["parent_task_run_id"] == parent_run.id
+        assert task.metadata["parent_client_turn_id"] == "parent-turn"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_send_collaboration_broadcast_returns_status(monkeypatch):
     coordinator = DummyCoordinator()
     calls = []

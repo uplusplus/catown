@@ -1051,10 +1051,30 @@ function chatFacingTaskRunText(taskRun: TaskRunSummary, detail: TaskRunDetail | 
 
 function timelineStepLabel(step: ChatTimelineStep) {
   const actor = step.actor?.trim();
+  if (step.kind === "llm") {
+    const resolvedActor = actor || "Agent";
+    if (step.phase === "request") return llmOutboundStepLabel(resolvedActor);
+    return llmInboundStepLabel(resolvedActor);
+  }
   const kind = (step.kind || "event").replace(/_/g, " ");
   const phase = (step.phase || step.event_type || "recorded").replace(/_/g, " ");
   if (actor) return `${actor} ${phase}`;
   return `${kind} ${phase}`.trim();
+}
+
+function timelineStepDetail(step: ChatTimelineStep) {
+  const facts = step.facts || {};
+  if (step.kind === "llm" && step.phase === "request") {
+    const parts: string[] = [];
+    const model = typeof facts["model"] === "string" ? facts["model"].trim() : "";
+    const messageCount = typeof facts["prompt_message_count"] === "number" ? facts["prompt_message_count"] : null;
+    const promptPreview = typeof facts["prompt_preview"] === "string" ? facts["prompt_preview"].trim() : "";
+    if (model) parts.push(`Model: ${model}`);
+    if (messageCount !== null) parts.push(`Messages: ${messageCount}`);
+    if (promptPreview) parts.push(`User: ${oneLinePreview(promptPreview, "", 120)}`);
+    if (parts.length > 0) return parts.join(" · ");
+  }
+  return step.event_type;
 }
 
 function timelineStepToStreamStep(step: ChatTimelineStep, taskRunId: number): MessageStreamStep {
@@ -1076,7 +1096,7 @@ function timelineStepToStreamStep(step: ChatTimelineStep, taskRunId: number): Me
   return {
     id: step.id,
     label: step.summary || timelineStepLabel(step),
-    detail: step.event_type,
+    detail: timelineStepDetail(step),
     detailContent: step.detail_content || step.summary || undefined,
     state: step.state,
     kind,
@@ -1168,11 +1188,41 @@ function shouldRenderInlineTaskRun(taskRun: TaskRunSummary) {
   const clientTurnId = (taskRun.client_turn_id || "").trim().toLowerCase();
   if (clientTurnId.startsWith("delegate-")) return true;
 
-  const status = (taskRun.status || "").trim().toLowerCase();
-  if (["pending", "running", "paused", "blocked", "failed", "cancelled"].includes(status)) return true;
-
   const runKind = (taskRun.run_kind || "").trim().toLowerCase();
-  return runKind.includes("pipeline") || runKind.includes("orchestration");
+  const isWorkflowRun = runKind.includes("pipeline") || runKind.includes("orchestration");
+  if (isWorkflowRun) return true;
+
+  const status = (taskRun.status || "").trim().toLowerCase();
+  return ["paused", "blocked", "failed", "cancelled"].includes(status);
+}
+
+function shouldRenderTaskRunLiveChatCard(taskRun: TaskRunSummary) {
+  if (shouldRenderInlineTaskRun(taskRun)) return false;
+  const status = (taskRun.status || "").trim().toLowerCase();
+  return status === "pending" || status === "running";
+}
+
+function buildTaskRunLiveMessage(taskRun: TaskRunSummary, agents: AgentInfo[]): MessageItem {
+  const actorName = resolveTaskRunActorName(taskRun, agents);
+  const status = (taskRun.status || "running").trim() || "running";
+  return {
+    id: -900000000 - taskRun.id,
+    content: "",
+    message_type: "text",
+    created_at: taskRun.created_at || taskRun.updated_at || new Date().toISOString(),
+    agent_name: actorName,
+    client_turn_id: taskRun.client_turn_id || undefined,
+    isStreaming: true,
+    statusDetail: `Run: #${taskRun.id}\nStatus: ${status}`,
+    localOnly: true,
+    runtime_summary: {
+      task_run_id: taskRun.id,
+      status: taskRun.status,
+      run_kind: taskRun.run_kind,
+      continuation_state_summary: taskRun.continuation_state_summary,
+      subagent_handles_summary: taskRun.subagent_handles_summary,
+    },
+  };
 }
 
 function formatApprovalQueueStatus(value: string | undefined) {
@@ -5049,14 +5099,26 @@ function renderMessage(
   onCopySelectedMessages: () => Promise<void>,
   expandedStepId: StepExpansionValue | undefined,
   onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void,
+  messageTimeline: ChatTimelineProjection | null = null,
   fallbackCards: ThreadCard[] = [],
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const isAssistant = Boolean(message.agent_name);
   const sender = message.agent_name || "You";
+  const timelineTaskRunId =
+    messageTimeline && typeof messageTimeline.task_run_id === "number"
+      ? messageTimeline.task_run_id
+      : message.runtime_summary?.task_run_id ?? 0;
+  const timelineSteps = messageTimeline?.steps.length
+    ? [...messageTimeline.steps]
+      .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+      .map((step) => timelineStepToStreamStep(step, timelineTaskRunId))
+    : [];
   const streamSteps =
     message.streamSteps && message.streamSteps.length > 0
       ? message.streamSteps.map((step) => ({ ...step }))
+      : timelineSteps.length > 0
+        ? timelineSteps
       : fallbackCards.flatMap((card, index) => buildMessageStepsFromCard(card, message.id, index));
   const hasStreamSteps = streamSteps.length > 0;
   const currentStreamStepId =
@@ -5451,6 +5513,7 @@ type MessageRowProps = {
   onCopySelectedMessages: () => Promise<void>;
   expandedStepId: StepExpansionValue | undefined;
   onToggleStep: (messageId: number, stepId: string, isExpanded: boolean) => void;
+  messageTimeline: ChatTimelineProjection | null;
   fallbackStepCards: ThreadCard[];
   onAnalyzeFailureStep?: FailureStepAnalysisHandler;
 };
@@ -5469,6 +5532,7 @@ const MessageRow = memo(
     onCopySelectedMessages,
     expandedStepId,
     onToggleStep,
+    messageTimeline,
     fallbackStepCards,
     onAnalyzeFailureStep,
   }: MessageRowProps) {
@@ -5485,6 +5549,7 @@ const MessageRow = memo(
       onCopySelectedMessages,
       expandedStepId,
       onToggleStep,
+      messageTimeline,
       fallbackStepCards,
       onAnalyzeFailureStep,
     );
@@ -5499,6 +5564,7 @@ const MessageRow = memo(
       prev.selectedMessageCount === next.selectedMessageCount &&
       prev.copiedSelection === next.copiedSelection &&
       prev.expandedStepId === next.expandedStepId &&
+      prev.messageTimeline === next.messageTimeline &&
       prev.fallbackStepCards === next.fallbackStepCards &&
       prev.onToggleSelected === next.onToggleSelected &&
       prev.onCancelSelection === next.onCancelSelection &&
@@ -6273,12 +6339,21 @@ export function ChatTab({
   );
 
   const threadItems = useMemo<ThreadItem[]>(() => {
-    const hasLiveMessage = visibleMessages.some((message) => Boolean(message.isStreaming));
     const anchoredAssistantTurnIds = new Set(
       visibleMessages
         .filter((message) => Boolean(message.agent_name) && Boolean(message.client_turn_id))
-        .map((message) => message.client_turn_id as string),
+        .map((message) => normalizeClientTurnId(message.client_turn_id))
+        .filter((value): value is string => Boolean(value)),
     );
+    const liveTaskRunMessages = taskRuns
+      .filter((run) => shouldRenderTaskRunLiveChatCard(run))
+      .filter((run) => {
+        const turnId = normalizeClientTurnId(run.client_turn_id);
+        return !turnId || !anchoredAssistantTurnIds.has(turnId);
+      })
+      .map((run) => buildTaskRunLiveMessage(run, agents));
+    const hasLiveMessage =
+      visibleMessages.some((message) => Boolean(message.isStreaming)) || liveTaskRunMessages.length > 0;
     const taskRunCardsById = new Map<number, ThreadCard[]>();
     const claimedTaskCardIds = new Set<string>();
 
@@ -6314,6 +6389,12 @@ export function ChatTab({
 
     const orderedItems: ThreadItem[] = [
       ...visibleMessages.map((message) => ({
+        id: `message-${message.id}`,
+        sortKey: message.created_at,
+        kind: "message" as const,
+        message,
+      })),
+      ...liveTaskRunMessages.map((message) => ({
         id: `message-${message.id}`,
         sortKey: message.created_at,
         kind: "message" as const,
@@ -6444,7 +6525,15 @@ export function ChatTab({
 
     flushActivityBatch();
     return batchedItems;
-  }, [cardsWithPromptPresentation, consumedFallbackCardIds, liveTaskRunDetailsById, taskRunDetailsById, taskRuns, visibleMessages]);
+  }, [
+    agents,
+    cardsWithPromptPresentation,
+    consumedFallbackCardIds,
+    liveTaskRunDetailsById,
+    taskRunDetailsById,
+    taskRuns,
+    visibleMessages,
+  ]);
 
   const currentActivityAgentName = useMemo(() => {
     const streamingAgent =
@@ -6825,28 +6914,9 @@ export function ChatTab({
       optimisticKind: "user",
       localOnly: true,
     };
-    const assistantLocalMessage: MessageItem = {
-      id: baseId - 1,
-      content: "",
-      message_type: "text",
-      created_at: new Date(now.getTime() + 1).toISOString(),
-      agent_name: getAgentDisplayName(primaryAgent),
-      client_turn_id: clientTurnId,
-      isStreaming: true,
-      streamSteps: [
-        {
-          id: `${now.getTime()}-queued`,
-          label: "Queued",
-          detail: "Waiting for server response.",
-          state: "live",
-        },
-      ],
-      optimisticKind: "assistant_placeholder",
-      localOnly: true,
-    };
     flushSync(() => {
       setLocalOverlayMessages((current) => {
-        const nextMessages = [...current, userLocalMessage, assistantLocalMessage].sort(
+        const nextMessages = [...current, userLocalMessage].sort(
           (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
         );
         writeOverlayMessages(chat?.id ?? null, nextMessages);
@@ -6858,22 +6928,19 @@ export function ChatTab({
       void onSend(next, { clientTurnId }).catch((error) => {
         const message = error instanceof Error ? error.message : "Send failed";
         setLocalOverlayMessages((current) => {
-          const nextMessages = current.map((item) =>
-            item.id === assistantLocalMessage.id
-              ? {
-                  ...item,
-                  isStreaming: false,
-                  content: item.content || `Error: ${message}`,
-                  streamSteps: [
-                    {
-                      id: `${Date.now()}-failed`,
-                      label: "Failed",
-                      detail: message,
-                      state: "error",
-                    },
-                  ],
-                }
-              : item,
+          const failedAt = new Date();
+          const failureMessage: MessageItem = {
+            id: -Math.floor(failedAt.getTime()) - 1,
+            content: `Error: ${message}`,
+            message_type: "text",
+            created_at: failedAt.toISOString(),
+            agent_name: getAgentDisplayName(primaryAgent),
+            client_turn_id: clientTurnId,
+            optimisticKind: "assistant_placeholder",
+            localOnly: true,
+          };
+          const nextMessages = [...current, failureMessage].sort(
+            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
           );
           writeOverlayMessages(chat?.id ?? null, nextMessages);
           return nextMessages;
@@ -7229,6 +7296,11 @@ export function ChatTab({
                     onCopySelectedMessages={handleCopySelectedMessages}
                     expandedStepId={resolveExpandedMessageStepId(item.message)}
                     onToggleStep={toggleMessageStep}
+                    messageTimeline={
+                      item.message.agent_name && typeof item.message.runtime_summary?.task_run_id === "number"
+                        ? taskTimelinesById[item.message.runtime_summary.task_run_id] ?? null
+                        : null
+                    }
                     fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
                     onAnalyzeFailureStep={handleAnalyzeFailureStep}
                   />

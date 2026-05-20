@@ -100,6 +100,19 @@ const COLLABORATION_TOOL_NAMES = [
   "invite_agent",
 ] as const;
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  query_agent: "consult_agent",
+};
+
+function canonicalToolName(toolName: string): string {
+  const normalized = toolName.trim();
+  return TOOL_NAME_ALIASES[normalized] ?? normalized;
+}
+
+function canonicalToolNames(toolNames: string[]): string[] {
+  return Array.from(new Set(toolNames.map(canonicalToolName).filter(Boolean)));
+}
+
 function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
   const provider = config?.global_llm?.provider;
   const defaultModel = config?.global_llm?.default_model ?? provider?.models?.[0]?.id ?? "";
@@ -156,7 +169,7 @@ function buildAgentDraft(
     soulStyle: agentConfig?.soul?.style ?? "",
     soulValues: (agentConfig?.soul?.values ?? []).join("\n"),
     soulQuirks: agentConfig?.soul?.quirks ?? "",
-    tools: (agentConfig?.tools ?? []).join("\n"),
+    tools: canonicalToolNames(agentConfig?.tools ?? []).join("\n"),
     skills: (agentConfig?.skills ?? []).join("\n"),
   };
 }
@@ -562,7 +575,7 @@ export function ConfigTab({
     const rows = new Map<string, string[]>();
     for (const [agentName, agentConfig] of agentEntries) {
       for (const tool of agentConfig.tools ?? []) {
-        const normalized = tool.trim();
+        const normalized = canonicalToolName(tool);
         if (!normalized) continue;
         rows.set(normalized, [...(rows.get(normalized) ?? []), agentConfig.name?.trim() || defaultAgentName(agentName)]);
       }
@@ -853,7 +866,7 @@ export function ConfigTab({
         values: readMultilineList(draft.soulValues),
         quirks: draft.soulQuirks.trim(),
       },
-      tools: readMultilineList(draft.tools),
+      tools: canonicalToolNames(readMultilineList(draft.tools)),
       skills: readMultilineList(draft.skills),
     });
     setEditingAgents((current) => ({ ...current, [agentName]: false }));

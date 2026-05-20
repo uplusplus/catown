@@ -11,6 +11,7 @@ from models.database import TaskRun, TaskRunEvent
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 ERROR_MARKERS = ("failed", "error", "cancel")
+DETAIL_TEXT_LIMIT = 12000
 
 
 EVENT_KIND_PHASE: dict[str, tuple[str, str]] = {
@@ -24,6 +25,8 @@ EVENT_KIND_PHASE: dict[str, tuple[str, str]] = {
     "agent_turn_completed": ("agent", "completed"),
     "tool_call_started": ("tool", "started"),
     "tool_round_recorded": ("tool", "completed"),
+    "delegated_task_dispatched": ("delegation", "dispatched"),
+    "task_run_waiting_for_delegated_work": ("delegation", "waiting"),
     "scheduler_plan_created": ("scheduler", "planned"),
     "scheduler_step_dispatched": ("scheduler", "dispatched"),
     "scheduler_step_resumed": ("scheduler", "resumed"),
@@ -41,6 +44,8 @@ LIVE_EVENT_TYPES = {
     "llm_response_started",
     "agent_turn_started",
     "tool_call_started",
+    "delegated_task_dispatched",
+    "task_run_waiting_for_delegated_work",
     "scheduler_step_dispatched",
     "scheduler_step_resumed",
     "approval_queue_item_created",
@@ -224,7 +229,6 @@ def _actor(event: TaskRunEvent, payload: dict[str, Any]) -> str | None:
         payload.get("agent"),
         payload.get("agent_type"),
         payload.get("from_agent"),
-        payload.get("to_agent"),
     ):
         text = str(value or "").strip()
         if text:
@@ -255,6 +259,21 @@ def _summary(event: TaskRunEvent, payload: dict[str, Any], event_type: str, *, a
     explicit = str(getattr(event, "summary", "") or payload.get("summary") or "").strip()
     if explicit:
         return explicit
+    if event_type == "delegated_task_dispatched":
+        from_agent = str(payload.get("from_agent") or actor or "Agent").strip()
+        to_agent = str(payload.get("to_agent") or payload.get("target_agent_name") or "agent").strip()
+        title = str(payload.get("task_title") or "").strip()
+        if title:
+            return f"{from_agent} delegated '{title}' to {to_agent}."
+        return f"{from_agent} delegated a task to {to_agent}."
+    if event_type == "task_run_waiting_for_delegated_work":
+        pending = payload.get("pending_delegated_work") if isinstance(payload.get("pending_delegated_work"), list) else []
+        if pending:
+            first = pending[0] if isinstance(pending[0], dict) else {}
+            title = str(first.get("task_title") or "delegated task").strip()
+            target = str(first.get("target_agent_name") or "agent").strip()
+            return f"Waiting for '{title}' from {target}."
+        return "Waiting for delegated work."
     return ""
 
 
@@ -268,6 +287,13 @@ def _detail_content(event: TaskRunEvent, payload: dict[str, Any], summary: str) 
         lines.append(f"- Actor: `{event.agent_name}`")
     if summary:
         lines.append(f"- Summary: {summary}")
+    if event.event_type == "llm_request_created":
+        system_prompt = str(payload.get("system_prompt") or "")
+        prompt_messages = payload.get("prompt_messages")
+        if system_prompt:
+            lines.extend(["", "### System Prompt", f"```text\n{_compact_text(system_prompt)}\n```"])
+        if prompt_messages is not None:
+            lines.extend(["", "### Prompt Messages", f"```json\n{_json_block(prompt_messages)}\n```"])
     facts = _facts(payload)
     if facts:
         lines.extend(["", "### Facts", f"```json\n{json.dumps(facts, ensure_ascii=False, indent=2)}\n```"])
@@ -276,11 +302,62 @@ def _detail_content(event: TaskRunEvent, payload: dict[str, Any], summary: str) 
 
 def _facts(payload: dict[str, Any]) -> dict[str, Any]:
     omitted = {"system_prompt", "prompt_messages", "raw_response"}
-    return {
+    facts = {
         key: value
         for key, value in payload.items()
         if value is not None and key not in omitted
     }
+    if not facts.get("prompt_preview") and isinstance(payload.get("prompt_messages"), list):
+        prompt_preview = _prompt_messages_preview(payload.get("prompt_messages") or [])
+        if prompt_preview:
+            facts["prompt_preview"] = prompt_preview
+    return facts
+
+
+def _json_block(value: Any) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    except TypeError:
+        text = str(value)
+    return _compact_text(text)
+
+
+def _compact_text(value: str, limit: int = DETAIL_TEXT_LIMIT) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n...[truncated {len(text) - limit} chars]"
+
+
+def _prompt_messages_preview(messages: list[Any], limit: int = 280) -> str:
+    for item in reversed(messages):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role == "system":
+            continue
+        text = _message_content_preview(item.get("content"))
+        if text:
+            return text[:limit]
+    return ""
+
+
+def _message_content_preview(content: Any) -> str:
+    if isinstance(content, str):
+        return " ".join(content.split())
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if value:
+                    parts.append(str(value))
+            elif item is not None:
+                parts.append(str(item))
+        return " ".join(" ".join(parts).split())
+    if content is None:
+        return ""
+    return " ".join(str(content).split())
 
 
 def _current_step(steps: list[dict[str, Any]]) -> dict[str, Any] | None:

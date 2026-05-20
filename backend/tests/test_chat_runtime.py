@@ -41,6 +41,35 @@ def test_assemble_runtime_chat_messages_adds_tool_guidance(monkeypatch):
     assert "When you need to use a tool" in captured["tool_guidance"]
 
 
+def test_tool_guidance_distinguishes_delegate_from_consult(monkeypatch):
+    captured = {}
+
+    def fake_shared_assemble_chat_messages(**kwargs):
+        captured.update(kwargs)
+        return [{"role": "system", "content": "ok"}]
+
+    monkeypatch.setattr("services.chat_runtime.shared_assemble_chat_messages", fake_shared_assemble_chat_messages)
+
+    assemble_runtime_chat_messages(
+        db=object(),
+        agent=None,
+        agent_name="Valet",
+        user_message="Coordinate work with Tester",
+        available_tools=["delegate_task", "consult_agent"],
+        tool_policy_pack={
+            "tool_policies": [
+                {"name": "delegate_task", "description": "Delegate tracked async work."},
+                {"name": "consult_agent", "description": "Consult another agent."},
+            ]
+        },
+    )
+
+    guidance = captured["tool_guidance"]
+    assert "delegate_task: use this for specialized work" in guidance
+    assert "consult_agent: use this only for synchronous advice" in guidance
+    assert "Do not use consult_agent as a substitute for durable task dispatch" in guidance
+
+
 def test_runtime_environment_context_prefers_current_python(monkeypatch):
     monkeypatch.setattr("services.chat_runtime.sys.executable", "/opt/catown/venv/bin/python3")
     monkeypatch.setattr(
@@ -86,6 +115,15 @@ def test_resolve_agent_tool_names_uses_agent_whitelist_from_json():
     assert resolved == ["read_file", "consult_agent"]
 
 
+def test_resolve_agent_tool_names_canonicalizes_legacy_query_agent():
+    resolved = resolve_agent_tool_names(
+        SimpleNamespace(tools='["read_file", "query_agent", "consult_agent"]'),
+        ["read_file", "consult_agent", "run_shell"],
+    )
+
+    assert resolved == ["read_file", "consult_agent"]
+
+
 def test_resolve_agent_tool_names_returns_empty_when_agent_has_no_tools():
     resolved = resolve_agent_tool_names(
         SimpleNamespace(tools=None),
@@ -107,7 +145,7 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
 
     from tools import tool_registry
 
-    monkeypatch.setattr(tool_registry, "list_tools", lambda: ["read_file", "run_shell"])
+    monkeypatch.setattr(tool_registry, "list_agent_tools", lambda: ["read_file", "run_shell"])
     monkeypatch.setattr(tool_registry, "get_schemas", lambda tool_names=None: [{"name": name} for name in (tool_names or [])])
     monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": [{"name": "read_file", "description": "Read file contents."}]})
 
@@ -136,3 +174,32 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
     }
     assert runtime.turn_state.previous_agent_work == "Prior work"
     assert runtime.turn_state.inter_agent_messages == [{"message_type": "handoff", "content": "Use this."}]
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_runtime_excludes_system_only_tools(monkeypatch):
+    llm_client = SimpleNamespace(model="test-model")
+
+    async def fake_get_messages(chatroom_id, limit):
+        return []
+
+    monkeypatch.setattr("services.chat_runtime.get_llm_client_for_agent", lambda agent_type: llm_client)
+    monkeypatch.setattr("services.chat_runtime.chatroom_manager.get_messages", fake_get_messages)
+
+    from tools import tool_registry
+
+    monkeypatch.setattr(tool_registry, "list_agent_tools", lambda: ["read_file", "run_shell"])
+    monkeypatch.setattr(tool_registry, "get_schemas", lambda tool_names=None: [{"name": name} for name in (tool_names or [])])
+    monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": []})
+
+    agent = SimpleNamespace(
+        id=7,
+        name="Developer",
+        agent_type="developer",
+        tools='["read_file", "send_direct_message"]',
+    )
+
+    runtime = await prepare_chat_turn_runtime(agent=agent, chatroom_id=11, project=None)
+
+    assert runtime.available_tools == ["read_file"]
+    assert runtime.tool_schemas == [{"name": "read_file"}]

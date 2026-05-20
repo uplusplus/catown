@@ -128,10 +128,57 @@ def agent_skill_ids(agent: Any) -> List[str]:
 
 
 def team_member_lines(agents: List[Any]) -> List[str]:
-    return [
-        f"- **{agent_name_of(agent)}** (type: `{getattr(agent, 'type', agent_name_of(agent))}`, role: {getattr(agent, 'role', 'assistant')})"
-        for agent in agents
-    ]
+    lines: List[str] = []
+    for agent in agents:
+        agent_type = getattr(agent, "agent_type", None) or getattr(agent, "type", agent_name_of(agent))
+        line = f"- **{agent_name_of(agent)}** (type: `{agent_type}`, role: {getattr(agent, 'role', 'assistant')})"
+        contract = _agent_runtime_contract(agent)
+        if contract:
+            details = _runtime_contract_line(contract)
+            if details:
+                line = f"{line} - runtime contract: {details}"
+        lines.append(line)
+    return lines
+
+
+def _agent_runtime_contract(agent: Any) -> Dict[str, Any]:
+    raw_config = getattr(agent, "config", None)
+    if isinstance(raw_config, str):
+        try:
+            config_data = json.loads(raw_config or "{}")
+        except (TypeError, json.JSONDecodeError):
+            config_data = {}
+    elif isinstance(raw_config, dict):
+        config_data = raw_config
+    else:
+        config_data = {}
+    metadata = config_data.get("metadata") if isinstance(config_data, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = getattr(agent, "metadata", None) if isinstance(getattr(agent, "metadata", None), dict) else {}
+    contract = metadata.get("runtime_contract") if isinstance(metadata, dict) else None
+    return contract if isinstance(contract, dict) else {}
+
+
+def _runtime_contract_line(contract: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    mode = str(contract.get("mode") or "").strip()
+    owns = contract.get("owns")
+    dispatch_tools = contract.get("dispatch_tools")
+    status_tools = contract.get("status_tools")
+    completion_rule = str(contract.get("completion_rule") or "").strip()
+    if mode:
+        parts.append(f"mode={mode}")
+    if isinstance(owns, list) and owns:
+        parts.append("owns=" + ",".join(str(item) for item in owns if item))
+    if contract.get("must_dispatch_specialized_work") is True:
+        parts.append("must_dispatch_specialized_work=true")
+    if isinstance(dispatch_tools, list) and dispatch_tools:
+        parts.append("dispatch_tools=" + ",".join(str(item) for item in dispatch_tools if item))
+    if isinstance(status_tools, list) and status_tools:
+        parts.append("status_tools=" + ",".join(str(item) for item in status_tools if item))
+    if completion_rule:
+        parts.append(f"completion_rule={completion_rule}")
+    return "; ".join(parts)
 
 
 def memory_context_lines(db: Session, target_agent: Any, agents: List[Any]) -> List[str]:
@@ -292,7 +339,7 @@ def assemble_chat_messages(
 
 @lru_cache(maxsize=8)
 def _load_agent_config_snapshot(config_path: str, modified_ns: int) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as handle:
+    with open(config_path, "r", encoding="utf-8-sig") as handle:
         return json.load(handle)
 
 

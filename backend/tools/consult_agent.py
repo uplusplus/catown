@@ -227,8 +227,8 @@ class ConsultAgentTool(BaseTool):
     """
     Synchronously consult another agent and get an immediate response.
 
-    Unlike delegate_task (async fire-and-forget) or send_direct_message (one-way),
-    this tool calls the target agent's LLM right now and returns the answer.
+    Unlike delegate_task (async fire-and-forget), this tool calls the target
+    agent's LLM right now and returns the answer.
 
     Safety: the consulted agent runs with tools DISABLED to prevent infinite loops
     (Agent A queries Agent B who queries Agent A...).

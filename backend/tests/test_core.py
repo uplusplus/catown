@@ -79,6 +79,7 @@ class TestToolRegistry:
         ]
         for name in expected:
             assert name in tool_names, f"Tool '{name}' not registered"
+        assert "send_direct_message" not in tool_registry.list_agent_tools()
 
     def test_tool_schemas_valid(self):
         from tools import tool_registry

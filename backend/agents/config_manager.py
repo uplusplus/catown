@@ -86,6 +86,7 @@ class AgentConfigManager:
             memory = agent_data.get("memory", {})
             sleep = agent_data.get("sleep", {})
             default_model = agent_data.get("default_model")
+            metadata = agent_data.get("metadata", {})
 
             # 提取 provider 配置
             provider_data = agent_data.get("provider", {})
@@ -103,7 +104,8 @@ class AgentConfigManager:
                     skills=skills,
                     memory=memory,
                     sleep=sleep,
-                    default_model=default_model
+                    default_model=default_model,
+                    metadata=metadata,
                 )
             else:
                 config = AgentConfigV2(
@@ -116,6 +118,7 @@ class AgentConfigManager:
                     memory=MemoryConfig(**memory),
                     sleep=SleepConfig(**sleep),
                     default_model=default_model,
+                    metadata=dict(metadata or {}),
                 )
 
             configs[agent_type] = config
@@ -147,6 +150,8 @@ class AgentConfigManager:
                 "memory": config.memory.model_dump(),
                 "sleep": config.sleep.model_dump(),
             }
+            if config.metadata:
+                agent_data["metadata"] = config.metadata
             
             if config.default_model:
                 agent_data["default_model"] = config.default_model
@@ -182,7 +187,18 @@ class AgentConfigManager:
                         "responsibilities": ["回答问题", "协助处理一般任务"],
                         "rules": ["不确定时提问"]
                     },
-                    "tools": ["web_search", "retrieve_memory"]
+                    "tools": ["web_search", "retrieve_memory", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
+                    "metadata": {
+                        "runtime_contract": {
+                            "mode": "coordinator",
+                            "owns": ["coordination"],
+                            "must_dispatch_specialized_work": True,
+                            "dispatch_tools": ["delegate_task"],
+                            "status_tools": ["check_task_status"],
+                            "consult_tools": ["consult_agent"],
+                            "completion_rule": "Do not mark specialized work complete until the owning agent has produced a result."
+                        }
+                    }
                 }
             }
         }

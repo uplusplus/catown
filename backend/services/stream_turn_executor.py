@@ -65,7 +65,7 @@ async def iter_stream_turn_events(
         )
         tool_calls_found = False
 
-        yield {
+        agent_start_event = {
             "type": "agent_start",
             "agent_name": agent_name,
             "model": getattr(llm_client, "model", ""),
@@ -73,6 +73,9 @@ async def iter_stream_turn_events(
             "prompt_payload_omitted": True,
             "client_turn_id": client_turn_id,
         }
+        if before_event is not None:
+            await _maybe_await(before_event(frame, agent_start_event, turn_state))
+        yield agent_start_event
 
         async for event in _iter_with_heartbeat(llm_client.chat_stream(messages, tools or None)):
             if before_event is not None:

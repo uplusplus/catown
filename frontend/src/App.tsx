@@ -2843,7 +2843,15 @@ function App() {
   }
 
   async function loadOptionalTaskTimelines(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
-    const inlineRows = rows.filter(shouldLoadTaskActivity);
+    const inlineRows = rows.filter((run) => {
+      const runKind = (run.run_kind || "").trim().toLowerCase();
+      return (
+        shouldLoadTaskActivity(run) ||
+        runKind === "project_single_agent_stream" ||
+        runKind === "standalone_assistant_stream" ||
+        runKind === "chat_turn"
+      );
+    });
     const entries = await Promise.all(
       inlineRows.map(async (run) => {
         try {

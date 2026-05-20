@@ -30,6 +30,7 @@ from services.context_builder import (
 from services.task_state import build_task_state, build_task_state_fragments
 from skills import load_skill_registry
 from services.chat_prompt_builder import build_chat_context_selector
+from services.run_ledger import get_task_run
 
 
 def _open_db_session() -> tuple[Any, Any]:
@@ -82,6 +83,7 @@ async def run_delegate_agent_action(
     current_agent_id: int,
     current_agent_name: str,
     chatroom_id: int,
+    task_run_id: int | None = None,
     store_runtime_card_fn: Callable[[int, dict[str, Any]], Awaitable[Any]] | None = None,
     send_message_fn: Callable[..., Awaitable[Any]] | None = None,
     publish_saved_chat_message_fn: Callable[..., Awaitable[Any]] | None = None,
@@ -95,6 +97,7 @@ async def run_delegate_agent_action(
 
     db, close_db = _open_db_session()
     try:
+        parent_task_run = get_task_run(db, task_run_id)
         try:
             _, result_text = await delegate_runtime_collaboration_task(
                 db=db,
@@ -112,6 +115,7 @@ async def run_delegate_agent_action(
                 trigger_agent_response_fn=trigger_agent_response_fn,
                 create_task_fn=create_task_fn or asyncio.create_task,
                 coordinator=coordinator,
+                parent_task_run=parent_task_run,
             )
             return result_text
         except Exception:
@@ -192,8 +196,7 @@ def run_list_collaborators_action(*, coordinator: Any | None, chatroom_id: int) 
         "\nSelection guide:\n"
         "- Use delegate_task for tracked async work.\n"
         "- Use consult_agent for an immediate expert answer.\n"
-        "- Use send_direct_message for notification-only delivery.\n"
-        "- Use @agent_name in normal chat when you want a lightweight live handoff."
+        "- Use @agent_name in normal chat when you want a lightweight live handoff or notification."
     )
     return result
 

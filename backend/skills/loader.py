@@ -102,7 +102,7 @@ def _load_package_registry(path: Path) -> SkillRegistry:
 
 
 def _load_skill_package(skill_dir: Path, skill_file: Path) -> Dict[str, Any]:
-    raw = skill_file.read_text(encoding="utf-8")
+    raw = skill_file.read_text(encoding="utf-8-sig")
     frontmatter, body = _split_frontmatter(raw)
     manifest = _load_manifest(skill_dir)
 
@@ -153,7 +153,7 @@ def _load_manifest(skill_dir: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:

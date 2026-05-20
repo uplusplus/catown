@@ -232,6 +232,28 @@ class TestCreateAgentConfigFromProvider:
         )
         assert c.get_effective_model() == "m2"
 
+    def test_preserves_metadata(self):
+        from agents.config_models import create_agent_config_from_provider
+        c = create_agent_config_from_provider(
+            agent_type="valet",
+            soul=_soul("Coordinates work."),
+            role=_role("Coordinator"),
+            provider_config={
+                "baseUrl": "http://x",
+                "apiKey": "k",
+                "models": [{"id": "m1", "name": "M1"}],
+            },
+            metadata={
+                "runtime_contract": {
+                    "mode": "coordinator",
+                    "dispatch_tools": ["delegate_task"],
+                }
+            },
+        )
+
+        assert c.metadata["runtime_contract"]["mode"] == "coordinator"
+        assert c.metadata["runtime_contract"]["dispatch_tools"] == ["delegate_task"]
+
     def test_multiple_models(self):
         from agents.config_models import create_agent_config_from_provider
         c = create_agent_config_from_provider(

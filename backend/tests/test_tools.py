@@ -81,6 +81,46 @@ class TestToolRegistry:
         assert len(schemas) == 1
         assert schemas[0]["function"]["name"] == "web_search"
 
+    def test_system_only_tools_are_not_agent_visible(self):
+        registry = ToolRegistry()
+
+        class SystemOnlyTool(BaseTool):
+            name = "system_only_tool"
+            description = "Backend only"
+            system_only = True
+
+            async def execute(self) -> str:
+                return "ok"
+
+        registry.register(WebSearchTool())
+        registry.register(SystemOnlyTool())
+
+        assert "system_only_tool" in registry.list_tools()
+        assert "system_only_tool" in registry.list_system_tools()
+        assert "system_only_tool" not in registry.list_agent_tools()
+        assert registry.get("system_only_tool").get_policy_payload()["system_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_blocks_system_only_tools_without_system_marker(self):
+        registry = ToolRegistry()
+
+        class SystemOnlyTool(BaseTool):
+            name = "system_only_tool"
+            description = "Backend only"
+            system_only = True
+
+            async def execute(self) -> str:
+                return "ok"
+
+        registry.register(SystemOnlyTool())
+
+        result = await registry.execute("system_only_tool")
+
+        assert result["success"] is False
+        assert result["status"] == "system_tool_only"
+        assert result["blocked"] is True
+        assert result["blocked_kind"] == "tool_scope"
+
     @pytest.mark.asyncio
     async def test_execute_allows_payload_name_for_github_manager(self, monkeypatch):
         registry = ToolRegistry()
