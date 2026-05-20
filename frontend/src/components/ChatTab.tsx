@@ -5488,16 +5488,7 @@ function renderTaskRunInlineCard(
             <div className="chat-tool-card__detail">{taskRun.updated_at ? formatTime(taskRun.updated_at) : "--"}</div>
           </div>
 
-          {shouldShowInlineStatus ? (
-            <div className={`task-run-inline-status task-run-inline-status--${inlineStatus.tone}`}>
-              <strong>{inlineStatus.label}</strong>
-              <span>{inlineStatus.detail}</span>
-            </div>
-          ) : null}
-
           {renderTaskActivityBackground(activity)}
-
-          {shellOutput}
 
           {trace ? trace : (taskRun.status || "").toLowerCase() === "running" && !shellOutput ? (
             <div className="task-run-inline-approvals">
@@ -5506,6 +5497,15 @@ function renderTaskRunInlineCard(
               </div>
             </div>
           ) : null}
+
+          {shouldShowInlineStatus ? (
+            <div className={`task-run-inline-status task-run-inline-status--${inlineStatus.tone}`}>
+              <strong>{inlineStatus.label}</strong>
+              <span>{inlineStatus.detail}</span>
+            </div>
+          ) : null}
+
+          {shellOutput}
 
           {!shouldHideSummary ? <div className="chat-card-summary">{summary}</div> : null}
 
