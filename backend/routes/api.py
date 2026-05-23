@@ -6663,6 +6663,7 @@ def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> O
     validate_transition(task_run.status, "running")
     task_run.status = "running"
     task_run.completed_at = None
+    task_run.blocked_by_queue_item_id = None
     db.add(task_run)
     db.commit()
     db.refresh(task_run)

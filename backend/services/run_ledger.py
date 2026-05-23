@@ -305,6 +305,7 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
         "user_request": task_run.user_request,
         "initiator": task_run.initiator,
         "target_agent_name": task_run.target_agent_name,
+        "blocked_by_queue_item_id": task_run.blocked_by_queue_item_id,
         "recovery_owner": task_run.recovery_owner,
         "recovery_claimed_at": task_run.recovery_claimed_at.isoformat() if task_run.recovery_claimed_at else None,
         "recovery_lease_expires_at": (

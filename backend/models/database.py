@@ -224,6 +224,7 @@ class TaskRun(Base):
     user_request = Column(Text)
     initiator = Column(String, nullable=True)
     target_agent_name = Column(String, nullable=True, index=True)
+    blocked_by_queue_item_id = Column(Integer, ForeignKey("approval_queue_items.id"), nullable=True, index=True)
     recovery_owner = Column(String, nullable=True, index=True)
     recovery_claimed_at = Column(DateTime, nullable=True, index=True)
     recovery_lease_expires_at = Column(DateTime, nullable=True, index=True)

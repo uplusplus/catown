@@ -395,6 +395,7 @@ def record_tool_round(
             )
             validate_transition(task_run.status, "paused")
             task_run.status = "paused"
+            task_run.blocked_by_queue_item_id = queue_item.id
             task_run.summary = f"Paused awaiting approval for {blocked_tool['tool_name']}."
             db.add(task_run)
             db.commit()
