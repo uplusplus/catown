@@ -341,6 +341,49 @@ class TestConfigEndpoint:
             else:
                 os.environ["AGENT_CONFIG_FILE"] = previous_config_file
 
+    def test_update_context_config_accepts_ratio_budgets(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(json.dumps({"agents": {}}, ensure_ascii=False), encoding="utf-8")
+        previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        try:
+            os.environ["AGENT_CONFIG_FILE"] = str(config_path)
+            client = TestClient(
+                _make_app(tmp_path),
+                base_url="http://testserver",
+                headers={"X-Catown-Client": "test"},
+            )
+
+            response = client.put(
+                "/api/config/context",
+                json={
+                    "selector_profiles": {
+                        "chat_interactive": {
+                            "max_fragments": 24,
+                            "max_tokens_cap": 32000,
+                            "max_tokens_cap_ratio": 0.2,
+                            "max_tokens_by_role_ratio": {"system": 0.1, "user": 0.25},
+                            "max_tokens_by_scope_ratio": {"history": 0.35, "memory": 0.1},
+                            "truncate_to_budget": True,
+                        }
+                    }
+                },
+            )
+
+            assert response.status_code == 200
+            refreshed = client.get("/api/config").json()
+            profile = refreshed["context"]["selector_profiles"]["chat_interactive"]
+            assert profile["max_tokens_cap"] == 32000
+            assert profile["max_tokens_cap_ratio"] == 0.2
+            assert profile["max_tokens_by_role_ratio"] == {"system": 0.1, "user": 0.25}
+            assert profile["max_tokens_by_scope_ratio"] == {"history": 0.35, "memory": 0.1}
+        finally:
+            if previous_config_file is None:
+                os.environ.pop("AGENT_CONFIG_FILE", None)
+            else:
+                os.environ["AGENT_CONFIG_FILE"] = previous_config_file
+
     def test_llm_card_payload_includes_usage_context(self, tmp_path):
         config_path = tmp_path / "agents.json"
         config_path.write_text(
@@ -1020,9 +1063,14 @@ class TestProjectEndpoints:
         assert len(payloads) >= 2
         assert payloads[0]["type"] == "ready"
         assert payloads[0]["changed"] is False
+        assert payloads[0]["files"] == []
+        assert payloads[0]["artifacts"] == []
+        assert payloads[0]["removed_paths"] == []
         assert payloads[1]["type"] == "refresh_needed"
         assert payloads[1]["changed"] is True
         assert "docs/PRD.md" in payloads[1]["changed_paths"]
+        assert any(item["path"] == "docs/PRD.md" for item in payloads[1]["files"])
+        assert any(item["path"] == "docs/PRD.md" for item in payloads[1]["artifacts"])
 
     def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod

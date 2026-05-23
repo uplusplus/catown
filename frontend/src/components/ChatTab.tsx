@@ -2233,7 +2233,7 @@ function classifyBrowserArtifact(value: string) {
   if (/(^|\/)adr[-_./]|\badr[-_ ]?\d+|\barchitecture[-_ ]decision/.test(normalized)) return "ADR";
   if (/\bprd\b|product[-_ ]requirements?|requirements?[-_ ]doc/.test(normalized)) return "PRD";
   if (/\btech[-_ ]?spec\b|\bspecification\b|\bspec\b|design[-_ ]doc|proposal/.test(normalized)) return "Spec";
-  if (/test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification/.test(normalized)) return "Test";
+  if (/(^|\/)reports\/tests(\/|$)|test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification/.test(normalized)) return "Test";
   if (/\breport\b|audit|review/.test(normalized)) return "Report";
   if (/changelog|change[-_ ]?log|release[-_ ]?notes?/.test(normalized)) return "Release";
   if (/readme|docs?\//.test(normalized)) return "Doc";

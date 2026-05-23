@@ -48,6 +48,11 @@ class ContextSelector:
     allowed_scopes: frozenset[str] | None = None
     max_fragments: int | None = None
     max_tokens: int | None = None
+    context_window: int | None = None
+    input_window: int | None = None
+    reserved_completion_tokens: int | None = None
+    prompt_overhead_tokens: int = 256
+    static_tokens: int | None = None
     max_tokens_by_role: Mapping[str, int] | None = None
     max_tokens_by_scope: Mapping[str, int] | None = None
     truncate_to_budget: bool = True
@@ -66,6 +71,12 @@ class ContextSelector:
             object.__setattr__(self, "max_fragments", None)
         if self.max_tokens is not None and self.max_tokens <= 0:
             object.__setattr__(self, "max_tokens", None)
+        for attr in ("context_window", "input_window", "reserved_completion_tokens", "static_tokens"):
+            value = getattr(self, attr)
+            if value is not None and value <= 0:
+                object.__setattr__(self, attr, None)
+        if self.prompt_overhead_tokens < 0:
+            object.__setattr__(self, "prompt_overhead_tokens", 0)
         if self.max_tokens_by_role is not None:
             normalized_role_limits = {
                 str(role): int(limit)
@@ -113,7 +124,15 @@ class ContextSelector:
         if configured_max_tokens is not None:
             available_tokens = min(available_tokens, configured_max_tokens)
 
-        return cls(max_tokens=available_tokens, **kwargs)
+        return cls(
+            max_tokens=available_tokens,
+            context_window=context_window,
+            input_window=max(context_window - completion_reserve, 1),
+            reserved_completion_tokens=completion_reserve,
+            prompt_overhead_tokens=max(prompt_overhead_tokens, 0),
+            static_tokens=static_tokens,
+            **kwargs,
+        )
 
     def select_fragments(
         self,
@@ -878,6 +897,15 @@ def _selector_diagnostics_payload(
         "selector": {
             "max_fragments": selector.max_fragments,
             "max_tokens": selector.max_tokens,
+            "context_window": selector.context_window,
+            "input_window": selector.input_window,
+            "reserved_completion_tokens": selector.reserved_completion_tokens,
+            "prompt_overhead_tokens": selector.prompt_overhead_tokens,
+            "static_tokens": selector.static_tokens,
+            "usage_band": _selector_usage_band(
+                selected_tokens=developer_report.selected_tokens + user_report.selected_tokens,
+                selector=selector,
+            ),
             "max_tokens_by_role": dict(selector.max_tokens_by_role or {}),
             "max_tokens_by_scope": dict(selector.max_tokens_by_scope or {}),
             "truncate_to_budget": selector.truncate_to_budget,
@@ -975,6 +1003,28 @@ def _selector_compaction_reasons(
             }
         )
     return reasons
+
+
+def _selector_usage_band(*, selected_tokens: int, selector: ContextSelector) -> dict[str, Any]:
+    input_window = selector.input_window or selector.context_window
+    if not input_window:
+        return {}
+    total_prompt_tokens = selected_tokens + int(selector.static_tokens or 0)
+    ratio = total_prompt_tokens / max(input_window, 1)
+    if ratio > 0.82:
+        band = "red"
+    elif ratio > 0.70:
+        band = "orange"
+    elif ratio > 0.55:
+        band = "yellow"
+    else:
+        band = "green"
+    return {
+        "band": band,
+        "ratio": round(ratio, 6),
+        "prompt_tokens": total_prompt_tokens,
+        "input_window": input_window,
+    }
 
 
 def _prompt_diagnostics_payload(

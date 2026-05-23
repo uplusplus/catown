@@ -21,6 +21,7 @@ def build_context_compaction_projection(
     reasons = diagnostics.get("reasons") if isinstance(diagnostics.get("reasons"), list) else []
     role_budgets = selector.get("max_tokens_by_role") if isinstance(selector.get("max_tokens_by_role"), dict) else {}
     scope_budgets = selector.get("max_tokens_by_scope") if isinstance(selector.get("max_tokens_by_scope"), dict) else {}
+    usage_band = selector.get("usage_band") if isinstance(selector.get("usage_band"), dict) else {}
     scope_usage = summary.get("by_scope") if isinstance(summary.get("by_scope"), dict) else {}
 
     budget_summary_parts: list[str] = []
@@ -71,6 +72,11 @@ def build_context_compaction_projection(
         "selected_tokens": int(summary.get("selected_tokens") or 0),
         "max_fragments": selector.get("max_fragments"),
         "max_tokens": selector.get("max_tokens"),
+        "context_window": selector.get("context_window"),
+        "input_window": selector.get("input_window"),
+        "reserved_completion_tokens": selector.get("reserved_completion_tokens"),
+        "static_tokens": selector.get("static_tokens"),
+        "usage_band": usage_band,
         "max_tokens_by_role": role_budgets,
         "max_tokens_by_scope": scope_budgets,
         "scope_usage": scope_usage,

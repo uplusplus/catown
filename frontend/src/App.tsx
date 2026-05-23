@@ -2229,6 +2229,7 @@ function App() {
   const projectBrowserRefreshInFlightRef = useRef(false);
   const projectBrowserRefreshQueuedRef = useRef(false);
   const lastProjectBrowserSnapshotIdRef = useRef<string | null>(null);
+  const lastProjectBrowserPollAtRef = useRef<number>(0);
   function isCurrentChatRequest(chatId: number | null | undefined) {
     return Boolean(chatId) && selectedChatIdRef.current === chatId;
   }
@@ -3017,18 +3018,47 @@ function App() {
     };
   }
 
+  function applyProjectBrowserWatchPatch(
+    current: ProjectBrowserIndex | null,
+    event: ProjectBrowserWatchEvent,
+  ): ProjectBrowserIndex {
+    const workspacePath = event.workspace_path || current?.workspace_path || "";
+    const fileMap = new Map((current?.files ?? []).map((item) => [item.path, item]));
+    const artifactMap = new Map((current?.artifacts ?? []).map((item) => [item.path, item]));
+
+    for (const removedPath of event.removed_paths ?? []) {
+      fileMap.delete(removedPath);
+      artifactMap.delete(removedPath);
+    }
+    for (const item of event.files ?? []) {
+      fileMap.set(item.path, item);
+    }
+    const artifactPathsInPatch = new Set((event.artifacts ?? []).map((item) => item.path));
+    for (const changedPath of event.changed_paths ?? []) {
+      if (!artifactPathsInPatch.has(changedPath) && fileMap.has(changedPath)) {
+        artifactMap.delete(changedPath);
+      }
+    }
+    for (const item of event.artifacts ?? []) {
+      artifactMap.set(item.path, item);
+    }
+
+    return {
+      workspace_path: workspacePath,
+      files: Array.from(fileMap.values()).sort((left, right) => left.path.localeCompare(right.path)),
+      artifacts: Array.from(artifactMap.values()).sort((left, right) =>
+        left.type === right.type ? left.path.localeCompare(right.path) : left.type.localeCompare(right.type),
+      ),
+      truncated: Boolean(event.truncated || current?.truncated),
+    };
+  }
+
   async function reloadProjectBrowserSnapshot(
     projectId: number,
     workspacePath?: string | null,
     signal?: AbortSignal,
   ) {
     if (signal?.aborted) return;
-    setProjectBrowserIndex({
-      workspace_path: workspacePath || "",
-      files: [],
-      artifacts: [],
-      truncated: false,
-    });
     await api.streamProjectBrowser(
       projectId,
       (batch) => {
@@ -3267,6 +3297,7 @@ function App() {
     if (!bootstrapped || !selectedProject) {
       setProjectBrowserIndex(null);
       lastProjectBrowserSnapshotIdRef.current = null;
+      lastProjectBrowserPollAtRef.current = 0;
       return undefined;
     }
 
@@ -3275,6 +3306,7 @@ function App() {
     projectBrowserRefreshInFlightRef.current = false;
     projectBrowserRefreshQueuedRef.current = false;
     lastProjectBrowserSnapshotIdRef.current = null;
+    lastProjectBrowserPollAtRef.current = 0;
 
     void scheduleProjectBrowserReload(
       selectedProject.id,
@@ -3301,11 +3333,11 @@ function App() {
           pushEvent("Project browser auto-refresh is active", "info");
           announcedLiveRefresh = true;
         }
-        void scheduleProjectBrowserReload(
-          selectedProject.id,
-          selectedProject.workspace_path,
-          controller.signal,
-        );
+        if ((event.files?.length ?? 0) > 0 || (event.artifacts?.length ?? 0) > 0 || (event.removed_paths?.length ?? 0) > 0) {
+          setProjectBrowserIndex((current) => applyProjectBrowserWatchPatch(current, event));
+          return;
+        }
+        void scheduleProjectBrowserReload(selectedProject.id, selectedProject.workspace_path, controller.signal);
       },
       controller.signal,
     ).catch((nextError) => {
@@ -3314,7 +3346,22 @@ function App() {
       pushEvent(`Project browser live refresh unavailable: ${message}`, "warning");
     });
 
-    return () => controller.abort();
+    const fallbackPoll = window.setInterval(() => {
+      if (controller.signal.aborted) return;
+      const now = Date.now();
+      if (now - lastProjectBrowserPollAtRef.current < 29500) return;
+      lastProjectBrowserPollAtRef.current = now;
+      void scheduleProjectBrowserReload(
+        selectedProject.id,
+        selectedProject.workspace_path,
+        controller.signal,
+      );
+    }, 30000);
+
+    return () => {
+      window.clearInterval(fallbackPoll);
+      controller.abort();
+    };
   }, [bootstrapped, selectedProject]);
 
   useEffect(() => {

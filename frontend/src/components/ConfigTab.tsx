@@ -7,6 +7,7 @@ import type {
   AgentMemoryItem,
   ConfigAgentDefinition,
   ContextConfigPayload,
+  ContextSelectorProfileConfig,
   ConfigResponse,
   ConfigSection,
   PermissionsConfigPayload,
@@ -74,6 +75,8 @@ type PermissionsDraft = {
 type ContextDraft = {
   selectorProfilesJson: string;
 };
+
+type SelectorProfilesDraft = Record<string, ContextSelectorProfileConfig>;
 
 type UiDraft = {
   expandCurrentStepByDefault: boolean;
@@ -200,6 +203,61 @@ function readPositiveInteger(value: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function readOptionalNumber(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readOptionalPositiveNumber(value: string) {
+  const parsed = readOptionalNumber(value);
+  return typeof parsed === "number" && parsed > 0 ? parsed : undefined;
+}
+
+function formatDraftNumber(value: number | undefined | null) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function normalizeBudgetMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "number" && Number.isFinite(item)) normalized[key] = item;
+  }
+  return normalized;
+}
+
+function budgetMapToLines(value: Record<string, number> | undefined | null) {
+  return Object.entries(normalizeBudgetMap(value))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${key}: ${item}`)
+    .join("\n");
+}
+
+function parseBudgetMapLines(value: string) {
+  const next: Record<string, number> = {};
+  for (const rawLine of value.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const separatorIndex = line.includes(":") ? line.indexOf(":") : line.search(/\s/);
+    if (separatorIndex <= 0) continue;
+    const key = line.slice(0, separatorIndex).trim();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    const parsed = Number(rawValue);
+    if (key && Number.isFinite(parsed)) next[key] = parsed;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function parseSelectorProfilesJson(value: string): SelectorProfilesDraft {
+  const parsed = JSON.parse(value || "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Selector profiles must be a JSON object.");
+  }
+  return parsed as SelectorProfilesDraft;
+}
+
 function previewText(value: string | undefined | null, fallback = "Not configured") {
   const normalized = (value ?? "").trim();
   return normalized || fallback;
@@ -222,6 +280,21 @@ function previewSecret(value: string | undefined | null, fallback = "Not configu
 function previewContextWindow(value: number | undefined | null, fallback = "Not configured") {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
   return value.toLocaleString("en-US");
+}
+
+function previewBudgetValue(value: number | undefined | null, ratio: number | undefined | null) {
+  const parts: string[] = [];
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) parts.push(previewContextWindow(value));
+  if (typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0) parts.push(`${Math.round(ratio * 100)}%`);
+  return parts.join(" / ") || "--";
+}
+
+function previewBudgetMap(values?: Record<string, number>, ratios?: Record<string, number>) {
+  const keys = new Set([...Object.keys(values ?? {}), ...Object.keys(ratios ?? {})]);
+  return Array.from(keys)
+    .sort((left, right) => left.localeCompare(right))
+    .map((key) => `${key} ${previewBudgetValue(values?.[key], ratios?.[key])}`)
+    .join(" / ") || "--";
 }
 
 function formatMemoryDate(value: string) {
@@ -406,6 +479,131 @@ function ToolGalleryCard({
             : "This tool is registered in the system but is not currently assigned to any agent."}
       </div>
     </div>
+  );
+}
+
+function ContextProfileEditor({
+  profileName,
+  profile,
+  onChange,
+}: {
+  profileName: string;
+  profile: ContextSelectorProfileConfig;
+  onChange: (nextProfile: ContextSelectorProfileConfig) => void;
+}) {
+  const patchProfile = (patch: Partial<ContextSelectorProfileConfig>) => {
+    onChange({ ...profile, ...patch });
+  };
+
+  return (
+    <article className="context-profile-editor">
+      <div className="context-profile-editor__header">
+        <div>
+          <strong>{profileName}</strong>
+          <span>{previewBudgetValue(profile.max_tokens_cap, profile.max_tokens_cap_ratio)} token budget</span>
+        </div>
+        <span className="soft-pill">{profile.truncate_to_budget === false ? "No truncate" : "Truncate"}</span>
+      </div>
+
+      <div className="context-profile-editor__grid">
+        <label>
+          <span>Max fragments</span>
+          <input
+            value={formatDraftNumber(profile.max_fragments)}
+            inputMode="numeric"
+            onChange={(event) => patchProfile({ max_fragments: readPositiveInteger(event.target.value) ?? null })}
+            placeholder="24"
+          />
+        </label>
+        <label>
+          <span>Max tokens cap</span>
+          <input
+            value={formatDraftNumber(profile.max_tokens_cap)}
+            inputMode="numeric"
+            onChange={(event) => patchProfile({ max_tokens_cap: readPositiveInteger(event.target.value) ?? null })}
+            placeholder="32000"
+          />
+        </label>
+        <label>
+          <span>Max tokens ratio</span>
+          <input
+            value={formatDraftNumber(profile.max_tokens_cap_ratio)}
+            inputMode="decimal"
+            onChange={(event) => patchProfile({ max_tokens_cap_ratio: readOptionalPositiveNumber(event.target.value) ?? null })}
+            placeholder="0.2"
+          />
+        </label>
+        <label>
+          <span>Min truncation tokens</span>
+          <input
+            value={formatDraftNumber(profile.min_tokens_for_truncation)}
+            inputMode="numeric"
+            onChange={(event) => patchProfile({ min_tokens_for_truncation: readPositiveInteger(event.target.value) ?? undefined })}
+            placeholder="256"
+          />
+        </label>
+        <label className="config-toggle-row context-profile-editor__toggle">
+          <input
+            type="checkbox"
+            checked={profile.truncate_to_budget !== false}
+            onChange={(event) => patchProfile({ truncate_to_budget: event.target.checked })}
+          />
+          <span>Truncate fragments to budget</span>
+        </label>
+        <label>
+          <span>Allowed visibilities</span>
+          <input
+            value={(profile.allowed_visibilities ?? []).join(", ")}
+            onChange={(event) => patchProfile({ allowed_visibilities: readMultilineList(event.target.value.replaceAll(",", "\n")) })}
+            placeholder="default, debug"
+          />
+        </label>
+        <label>
+          <span>Allowed scopes</span>
+          <input
+            value={(profile.allowed_scopes ?? []).join(", ")}
+            onChange={(event) => patchProfile({ allowed_scopes: readMultilineList(event.target.value.replaceAll(",", "\n")) })}
+            placeholder="conversation, memory"
+          />
+        </label>
+        <label>
+          <span>Role budgets</span>
+          <textarea
+            rows={4}
+            value={budgetMapToLines(profile.max_tokens_by_role)}
+            onChange={(event) => patchProfile({ max_tokens_by_role: parseBudgetMapLines(event.target.value) })}
+            placeholder={"system: 8000\nuser: 12000"}
+          />
+        </label>
+        <label>
+          <span>Role ratios</span>
+          <textarea
+            rows={4}
+            value={budgetMapToLines(profile.max_tokens_by_role_ratio)}
+            onChange={(event) => patchProfile({ max_tokens_by_role_ratio: parseBudgetMapLines(event.target.value) })}
+            placeholder={"system: 0.1\nuser: 0.2"}
+          />
+        </label>
+        <label>
+          <span>Scope budgets</span>
+          <textarea
+            rows={4}
+            value={budgetMapToLines(profile.max_tokens_by_scope)}
+            onChange={(event) => patchProfile({ max_tokens_by_scope: parseBudgetMapLines(event.target.value) })}
+            placeholder={"history: 18000\nmemory: 8000"}
+          />
+        </label>
+        <label>
+          <span>Scope ratios</span>
+          <textarea
+            rows={4}
+            value={budgetMapToLines(profile.max_tokens_by_scope_ratio)}
+            onChange={(event) => patchProfile({ max_tokens_by_scope_ratio: parseBudgetMapLines(event.target.value) })}
+            placeholder={"history: 0.35\nmemory: 0.1"}
+          />
+        </label>
+      </div>
+    </article>
   );
 }
 
@@ -817,13 +1015,26 @@ export function ConfigTab({
     setEditingContext(false);
   }
 
+  function updateContextProfiles(nextProfiles: SelectorProfilesDraft) {
+    setContextDraft({ selectorProfilesJson: JSON.stringify(nextProfiles, null, 2) });
+    setContextDraftError("");
+  }
+
+  function updateContextProfile(profileName: string, nextProfile: ContextSelectorProfileConfig) {
+    try {
+      updateContextProfiles({
+        ...parseSelectorProfilesJson(contextDraft.selectorProfilesJson),
+        [profileName]: nextProfile,
+      });
+    } catch (nextError) {
+      setContextDraftError(nextError instanceof Error ? nextError.message : "Invalid selector profile JSON.");
+    }
+  }
+
   async function handleContextSubmit(event: FormEvent) {
     event.preventDefault();
     try {
-      const parsed = JSON.parse(contextDraft.selectorProfilesJson || "{}");
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("Selector profiles must be a JSON object.");
-      }
+      const parsed = parseSelectorProfilesJson(contextDraft.selectorProfilesJson);
       await onSaveContext({ selector_profiles: parsed });
       setContextDraftError("");
       setEditingContext(false);
@@ -1006,12 +1217,20 @@ export function ConfigTab({
     () => Object.entries(config?.context?.selector_profiles ?? {}).sort(([left], [right]) => left.localeCompare(right)),
     [config?.context?.selector_profiles],
   );
+  const contextDraftProfiles = useMemo(() => {
+    try {
+      return Object.entries(parseSelectorProfilesJson(contextDraft.selectorProfilesJson))
+        .sort(([left], [right]) => left.localeCompare(right));
+    } catch {
+      return [] as Array<[string, ContextSelectorProfileConfig]>;
+    }
+  }, [contextDraft.selectorProfilesJson]);
   const contextPreviewItems = useMemo(
     () => {
       const chatProfile = config?.context?.selector_profiles?.chat_interactive;
       return [
         { label: "Profiles", value: String(contextProfileRows.length) },
-        { label: "Interactive cap", value: chatProfile?.max_tokens_cap ? previewContextWindow(chatProfile.max_tokens_cap) : "Not set" },
+        { label: "Interactive cap", value: previewBudgetValue(chatProfile?.max_tokens_cap, chatProfile?.max_tokens_cap_ratio) },
         { label: "Fragments", value: chatProfile?.max_fragments ? String(chatProfile.max_fragments) : "Not set" },
         { label: "Truncate", value: chatProfile?.truncate_to_budget === false ? "Disabled" : "Enabled" },
       ];
@@ -1298,18 +1517,37 @@ export function ConfigTab({
 
           {editingContext ? (
             <form id="context-config-form" className="project-form project-form--compact config-form settings-form" onSubmit={handleContextSubmit}>
+              <div className="context-profile-editor-list">
+                {contextDraftProfiles.length > 0 ? (
+                  contextDraftProfiles.map(([profileName, profile]) => (
+                    <ContextProfileEditor
+                      key={profileName}
+                      profileName={profileName}
+                      profile={profile}
+                      onChange={(nextProfile) => updateContextProfile(profileName, nextProfile)}
+                    />
+                  ))
+                ) : (
+                  <div className="context-profile-editor context-profile-editor--empty">
+                    No selector profiles found. Use the advanced JSON editor below to add a profile object.
+                  </div>
+                )}
+              </div>
               <label className="settings-form__field">
-                <span>Selector profiles JSON</span>
+                <span>Advanced selector profiles JSON</span>
                 <textarea
-                  rows={18}
+                  rows={12}
                   value={contextDraft.selectorProfilesJson}
-                  onChange={(event) => setContextDraft({ selectorProfilesJson: event.target.value })}
+                  onChange={(event) => {
+                    setContextDraft({ selectorProfilesJson: event.target.value });
+                    setContextDraftError("");
+                  }}
                   spellCheck={false}
                 />
               </label>
               {contextDraftError ? <p className="small-note" style={{ color: "var(--danger, #ef4444)" }}>{contextDraftError}</p> : null}
               <p className="small-note">
-                Budgets are estimated tokens. `max_tokens_cap` caps runtime context fragments after fixed system/history/current input costs are considered.
+                Budgets are estimated tokens. Absolute caps and ratio caps can be combined; ratios are materialized from the resolved model input window.
               </p>
             </form>
           ) : (
@@ -1335,10 +1573,10 @@ export function ConfigTab({
                     {contextProfileRows.map(([profileName, profile]) => (
                       <tr key={profileName}>
                         <td>{profileName}</td>
-                        <td>{profile.max_tokens_cap ? previewContextWindow(profile.max_tokens_cap) : "--"}</td>
+                        <td>{previewBudgetValue(profile.max_tokens_cap, profile.max_tokens_cap_ratio)}</td>
                         <td>{profile.max_fragments ?? "--"}</td>
-                        <td>{Object.entries(profile.max_tokens_by_role ?? {}).map(([key, value]) => `${key} ${value}`).join(" / ") || "--"}</td>
-                        <td>{Object.entries(profile.max_tokens_by_scope ?? {}).map(([key, value]) => `${key} ${value}`).join(" / ") || "--"}</td>
+                        <td>{previewBudgetMap(profile.max_tokens_by_role, profile.max_tokens_by_role_ratio)}</td>
+                        <td>{previewBudgetMap(profile.max_tokens_by_scope, profile.max_tokens_by_scope_ratio)}</td>
                       </tr>
                     ))}
                   </tbody>

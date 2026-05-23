@@ -27,7 +27,7 @@ def classify_workspace_artifact_path(path: str | Path | None) -> str | None:
         return "PRD"
     if re.search(r"\btech[-_ ]?spec\b|\bspecification\b|\bspec\b|design[-_ ]doc|proposal", normalized):
         return "Spec"
-    if re.search(r"test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification", normalized):
+    if re.search(r"(^|/)reports/tests(/|$)|test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification", normalized):
         return "Test"
     if re.search(r"\breport\b|audit|review", normalized):
         return "Report"

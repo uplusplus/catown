@@ -4980,6 +4980,92 @@ a {
   padding-top: 2px;
 }
 
+.context-profile-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.context-profile-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-elevated) 84%, var(--bg) 16%);
+}
+
+.context-profile-editor--empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.context-profile-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.context-profile-editor__header div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.context-profile-editor__header strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.context-profile-editor__header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.context-profile-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.context-profile-editor__grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.context-profile-editor__grid input,
+.context-profile-editor__grid textarea {
+  width: 100%;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 78%, var(--bg-elevated) 22%);
+  color: var(--text);
+  padding: 7px 10px;
+  box-shadow: inset 0 1px 0 var(--card-highlight);
+}
+
+.context-profile-editor__grid textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.context-profile-editor__grid input:focus,
+.context-profile-editor__grid textarea:focus {
+  border-color: var(--ring);
+  box-shadow: var(--focus-ring);
+}
+
+.context-profile-editor__toggle {
+  justify-content: center;
+}
+
 .project-form span,
 .field-label {
   font-size: 13px;

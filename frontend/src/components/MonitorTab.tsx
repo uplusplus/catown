@@ -1785,6 +1785,9 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
   const selectionPercent = item.candidate_tokens
     ? Math.round(((item.selected_tokens ?? 0) / Math.max(item.candidate_tokens, 1)) * 100)
     : undefined;
+  const usageBand = item.usage_band;
+  const usageBandLabel = usageBand?.band ? usageBand.band.toUpperCase() : "--";
+  const usageRatio = typeof usageBand?.ratio === "number" ? usageBand.ratio * 100 : undefined;
 
   return (
     <div className="compaction-detail">
@@ -1814,6 +1817,18 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
           <span>Limits</span>
           <strong>{item.max_tokens ? `${formatNumber(item.max_tokens)} tok` : "--"}</strong>
           <small>{item.max_fragments ? `${formatNumber(item.max_fragments)} fragments` : "no fragment cap"}</small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Usage band</span>
+          <strong>{usageBandLabel}</strong>
+          <small>
+            {usageRatio !== undefined ? `${formatPercent(usageRatio, 1)} of input window` : "not captured"}
+          </small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Model window</span>
+          <strong>{formatNumber(item.input_window || item.context_window)}</strong>
+          <small>{item.reserved_completion_tokens ? `${formatNumber(item.reserved_completion_tokens)} reserved` : "input/context tokens"}</small>
         </div>
       </div>
 

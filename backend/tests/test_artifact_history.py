@@ -7,6 +7,7 @@ from services.artifact_history import (
 def test_classify_workspace_artifact_path_recognizes_named_deliverables():
     assert classify_workspace_artifact_path("PRD.md") == "PRD"
     assert classify_workspace_artifact_path("reports/test_report.md") == "Test"
+    assert classify_workspace_artifact_path("reports/tests/20260523T101010000000Z--task-45--backend-pytest.md") == "Test"
     assert classify_workspace_artifact_path("notes/todo.txt") is None
 
 

@@ -775,6 +775,35 @@ def test_context_selector_default_completion_reserve_scales_for_large_windows():
 
     assert selector.max_tokens is not None
     assert selector.max_tokens < 360_000
+    assert selector.reserved_completion_tokens == 50_000
+    assert selector.input_window == 350_000
+
+
+def test_context_selector_reports_usage_band_in_diagnostics():
+    fragment = ContextFragment(
+        role="user",
+        content="A" * 500,
+        scope=ContextScope.TURN,
+        visibility=ContextVisibility.GLOBAL,
+        source="turn_context",
+        priority=10,
+    )
+    selector = ContextSelector(
+        max_tokens=200,
+        context_window=1000,
+        input_window=200,
+        static_tokens=80,
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="identity",
+        user_fragments=[fragment],
+        selector=selector,
+    )
+
+    usage_band = assembly.selector_diagnostics["selector"]["usage_band"]
+    assert usage_band["band"] in {"yellow", "orange", "red"}
+    assert usage_band["input_window"] == 200
 
 
 def test_selector_profile_ratio_budget_materializes_from_model_context():

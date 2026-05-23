@@ -4166,6 +4166,9 @@ class ProjectBrowserWatchEvent(BaseModel):
     changed: bool = False
     reason: Optional[str] = None
     changed_paths: List[str] = Field(default_factory=list)
+    files: List[ProjectBrowserFileInfo] = Field(default_factory=list)
+    artifacts: List[ProjectBrowserArtifactInfo] = Field(default_factory=list)
+    removed_paths: List[str] = Field(default_factory=list)
     truncated: bool = False
     snapshot_id: Optional[str] = None
 
@@ -4585,9 +4588,28 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
         if previous_files.get(path) != current_files.get(path)
     )
     changed = bool(changed_paths) or bool(previous.get("truncated")) != bool(current.get("truncated"))
+    workspace = Path(current.get("workspace_path") or "").expanduser().resolve()
+    file_updates: list[ProjectBrowserFileInfo] = []
+    artifact_updates: list[ProjectBrowserArtifactInfo] = []
+    removed_paths = [path for path in changed_paths if path not in current_files]
+
+    for path in changed_paths:
+        if path not in current_files:
+            continue
+        records = _project_browser_file_records(workspace, workspace / path)
+        if not records:
+            continue
+        file_info, artifact_info = records
+        file_updates.append(file_info)
+        if artifact_info is not None:
+            artifact_updates.append(artifact_info)
+
     return {
         "changed": changed,
         "changed_paths": changed_paths[:64],
+        "files": [item.model_dump() for item in file_updates],
+        "artifacts": [item.model_dump() for item in artifact_updates],
+        "removed_paths": removed_paths[:64],
         "truncated": bool(current.get("truncated")),
         "snapshot_id": current.get("snapshot_id"),
     }
@@ -4609,6 +4631,9 @@ async def _stream_project_browser_watch_events(
             changed=False,
             reason="initial_snapshot",
             changed_paths=[],
+            files=[],
+            artifacts=[],
+            removed_paths=[],
             truncated=bool(previous.get("truncated")),
             snapshot_id=previous.get("snapshot_id"),
         ).model_dump(),
@@ -4634,6 +4659,9 @@ async def _stream_project_browser_watch_events(
                     changed=True,
                     reason="workspace_changed",
                     changed_paths=diff["changed_paths"],
+                    files=[ProjectBrowserFileInfo(**item) for item in diff.get("files", [])],
+                    artifacts=[ProjectBrowserArtifactInfo(**item) for item in diff.get("artifacts", [])],
+                    removed_paths=diff.get("removed_paths", []),
                     truncated=diff["truncated"],
                     snapshot_id=diff["snapshot_id"],
                 ).model_dump(),

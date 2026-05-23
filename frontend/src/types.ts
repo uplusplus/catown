@@ -110,6 +110,9 @@ export type ProjectBrowserWatchEvent = {
   changed: boolean;
   reason?: string | null;
   changed_paths: string[];
+  files: ProjectBrowserFileItem[];
+  artifacts: ProjectBrowserArtifactItem[];
+  removed_paths: string[];
   truncated: boolean;
   snapshot_id?: string | null;
 };
@@ -316,6 +319,16 @@ export type TaskRunEvent = {
   selected_tokens?: number;
   max_fragments?: number | null;
   max_tokens?: number | null;
+  context_window?: number | null;
+  input_window?: number | null;
+  reserved_completion_tokens?: number | null;
+  static_tokens?: number | null;
+  usage_band?: {
+    band?: string;
+    ratio?: number;
+    prompt_tokens?: number;
+    input_window?: number;
+  };
   max_tokens_by_role?: Record<string, number>;
   max_tokens_by_scope?: Record<string, number>;
   scope_usage?: Record<string, { candidate_count?: number; selected_count?: number; candidate_tokens?: number; selected_tokens?: number }>;
@@ -772,8 +785,11 @@ export type ContextSelectorProfileConfig = {
   allowed_scopes?: string[] | null;
   max_fragments?: number | null;
   max_tokens_cap?: number | null;
+  max_tokens_cap_ratio?: number | null;
   max_tokens_by_role?: Record<string, number>;
+  max_tokens_by_role_ratio?: Record<string, number>;
   max_tokens_by_scope?: Record<string, number>;
+  max_tokens_by_scope_ratio?: Record<string, number>;
   truncate_to_budget?: boolean;
   min_tokens_for_truncation?: number;
 };
