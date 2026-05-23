@@ -24,6 +24,7 @@ from services.approval_replay import (
 
 logger = logging.getLogger("catown.runner_lifecycle")
 from services.run_ledger import append_task_event, update_task_run
+from services.task_status_transition import validate_transition
 
 
 def _utc_now_iso() -> str:
@@ -392,6 +393,7 @@ def record_tool_round(
                 pipeline_run_id=pipeline_run_id,
                 pipeline_stage_id=pipeline_stage_id,
             )
+            validate_transition(task_run.status, "paused")
             task_run.status = "paused"
             task_run.summary = f"Paused awaiting approval for {blocked_tool['tool_name']}."
             db.add(task_run)

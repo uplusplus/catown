@@ -184,6 +184,7 @@ from services.test_runner_contract import (
     normalize_test_runner_result,
 )
 from services.artifact_naming import build_timestamped_artifact_path, slug_artifact_subject
+from services.task_status_transition import validate_transition
 from services.artifact_history import (
     archive_workspace_artifact_snapshot,
     classify_workspace_artifact_path,
@@ -6659,6 +6660,7 @@ def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str,
 def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:
     if task_run is None:
         return None
+    validate_transition(task_run.status, "running")
     task_run.status = "running"
     task_run.completed_at = None
     db.add(task_run)

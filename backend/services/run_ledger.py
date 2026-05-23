@@ -22,6 +22,7 @@ def _db_models():
 
 
 from services.approval_queue import serialize_approval_queue_item
+from services.task_status_transition import validate_transition, InvalidTaskRunStatusTransition
 from services.approval_replay import (
     build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
@@ -114,6 +115,7 @@ def update_task_run(
         task_run.run_kind = run_kind
         changed = True
     if status and task_run.status != status:
+        validate_transition(task_run.status, status)
         task_run.status = status
         changed = True
     if title and task_run.title != title:
