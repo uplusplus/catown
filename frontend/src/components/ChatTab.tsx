@@ -397,7 +397,30 @@ type ToolMergeCard = {
 };
 
 type ThreadCard = DecoratedChatCardItem | ToolMergeCard;
-type ProjectBrowserTab = "files" | "artifacts" | "processes";
+type ProjectBrowserTab = "files" | "artifacts" | "processes" | "runtime";
+type RuntimeMonitorActionState = "running" | "waiting" | "done" | "failed";
+type RuntimeMonitorEventType = "message" | "delegate" | "approval" | "tool" | "background" | "handoff" | "consult" | "task";
+type RuntimeMonitorEvent = {
+  id: string;
+  taskRunId?: number | null;
+  from: string;
+  action: string;
+  to: string;
+  result: string;
+  type: RuntimeMonitorEventType;
+  timestamp: string;
+  state: RuntimeMonitorActionState;
+};
+type RuntimeMonitorSummary = {
+  activeAgents: number;
+  pendingApprovals: number;
+  runningActions: number;
+  backgroundTasks: number;
+};
+type RuntimeMonitorViewModel = {
+  events: RuntimeMonitorEvent[];
+  summary: RuntimeMonitorSummary;
+};
 type BrowserFileEntry = {
   id: string;
   path: string;
@@ -529,6 +552,11 @@ function countRuntimeProcessNodes(node: ChatProcessEntry | null): number {
   if (!node) return 0;
   const selfCount = node.kind === "task" || node.kind === "command" || node.kind === "subagent" ? 1 : 0;
   return selfCount + node.children.reduce((total, child) => total + countRuntimeProcessNodes(child), 0);
+}
+
+function flattenRuntimeProcessNodes(node: ChatProcessEntry | null): ChatProcessEntry[] {
+  if (!node) return [];
+  return [node, ...node.children.flatMap((child) => flattenRuntimeProcessNodes(child))];
 }
 
 function processStatusLabel(status: ChatProcessEntry["status"]) {
@@ -839,6 +867,408 @@ function rememberLlmConversationMarkdown(content: string, parsed: ParsedLlmConve
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function isKnownMonitorActor(value: string | null | undefined) {
+  const normalized = (value || "").trim().toLowerCase();
+  return normalized.length > 0 && normalized !== "system" && normalized !== "user";
+}
+
+function runtimeMonitorActorLabel(value: string | null | undefined, agents: AgentInfo[]) {
+  const normalized = (value || "").trim();
+  if (!normalized) return "System";
+  if (normalized.toLowerCase() === "user") return "User";
+  return resolveAgentLabel(normalized, agents);
+}
+
+function runtimeMonitorActionStateLabel(state: RuntimeMonitorActionState) {
+  switch (state) {
+    case "running":
+      return "running";
+    case "waiting":
+      return "waiting";
+    case "failed":
+      return "failed";
+    default:
+      return "done";
+  }
+}
+
+function runtimeMonitorStateFromTimeline(step: ChatTimelineStep): RuntimeMonitorActionState {
+  if (step.state === "error" || step.phase === "failed") return "failed";
+  if (step.kind === "approval" && ["requested", "continued"].includes(step.phase)) return "waiting";
+  if (["started", "request", "response_started", "dispatched", "resumed", "waiting", "created"].includes(step.phase)) return "running";
+  return "done";
+}
+
+function runtimeMonitorStateFromCard(card: ThreadCard): RuntimeMonitorActionState {
+  const state = compactCardState(card, false);
+  if (state === "error") return "failed";
+  if (state === "blocked") return "waiting";
+  if (state === "live") return isInternalToolPause(card) ? "waiting" : "running";
+  return "done";
+}
+
+function buildRuntimeMonitorViewModel({
+  agents,
+  taskRuns,
+  taskActivitiesById,
+  taskTimelinesById,
+  cards,
+  processes,
+  pendingApprovalItemsByTaskRunId,
+}: {
+  agents: AgentInfo[];
+  taskRuns: TaskRunSummary[];
+  taskActivitiesById: Record<number, TaskActivityProjection>;
+  taskTimelinesById: Record<number, ChatTimelineProjection>;
+  cards: ThreadCard[];
+  processes: ChatProcessEntry | null;
+  pendingApprovalItemsByTaskRunId: Record<number, ApprovalQueueItem[]>;
+}): RuntimeMonitorViewModel {
+  const events: RuntimeMonitorEvent[] = [];
+  const seenEventIds = new Set<string>();
+
+  const pushEvent = (event: RuntimeMonitorEvent | null) => {
+    if (!event || seenEventIds.has(event.id)) return;
+    seenEventIds.add(event.id);
+    events.push(event);
+  };
+
+  const normalizeEventFrom = (value: string | null | undefined) => value?.trim() || "System";
+  const normalizeEventTo = (value: string | null | undefined) => value?.trim() || "Runtime";
+
+  for (const run of taskRuns) {
+    const timeline = taskTimelinesById[run.id];
+    const activity = taskActivitiesById[run.id];
+    const pendingApprovals = pendingApprovalItemsByTaskRunId[run.id] ?? [];
+    const fallbackActor = resolveTaskRunActorName(run, agents);
+
+    for (const step of timeline?.steps ?? []) {
+      const actor = (step.actor || fallbackActor || "").trim();
+      const facts = readRecord(step.facts);
+      const timestamp = step.occurred_at || step.recorded_at || run.updated_at || run.created_at || new Date().toISOString();
+
+      if (step.event_type === "agent_message" || step.event_type === "handoff_created") {
+        const fromAgent =
+          readTextField(facts, "from_agent")
+          || readTextField(facts, "agent_name")
+          || actor
+          || fallbackActor;
+        const toAgent =
+          readTextField(facts, "to_agent")
+          || readTextField(facts, "target_agent_name")
+          || readTextField(facts, "agent")
+          || "Agent";
+        pushEvent({
+          id: `timeline:${run.id}:${step.id}:message`,
+          taskRunId: run.id,
+          from: normalizeEventFrom(fromAgent),
+          action: step.event_type === "handoff_created" ? "delegate" : "msg",
+          to: normalizeEventTo(toAgent),
+          result: oneLinePreview(
+            readTextField(facts, "content_preview")
+            || step.summary
+            || step.detail_content
+            || timelineStepDetail(step),
+            step.event_type === "handoff_created" ? "Delegated work dispatched." : "Agent message recorded.",
+            180,
+          ),
+          type: step.event_type === "handoff_created" ? "delegate" : "message",
+          timestamp,
+          state: step.event_type === "handoff_created" ? "running" : "done",
+        });
+      }
+
+      if (step.event_type === "delegated_task_dispatched") {
+        const fromAgent = readTextField(facts, "from_agent") || actor || fallbackActor;
+        const toAgent = readTextField(facts, "to_agent") || readTextField(facts, "target_agent_name") || "Agent";
+        const taskTitle = readTextField(facts, "task_title") || "Delegated task";
+        pushEvent({
+          id: `timeline:${run.id}:${step.id}:delegate`,
+          taskRunId: run.id,
+          from: normalizeEventFrom(fromAgent),
+          action: "delegate",
+          to: normalizeEventTo(toAgent),
+          result: oneLinePreview(step.summary || readTextField(facts, "task_description") || taskTitle, "Delegated work dispatched.", 180),
+          type: "delegate",
+          timestamp,
+          state: step.phase === "waiting" ? "waiting" : runtimeMonitorStateFromTimeline(step),
+        });
+      }
+
+      if (step.kind === "tool") {
+        const toolName = readTextField(facts, "tool_name") || readTextField(facts, "tool") || "Tool";
+        pushEvent({
+          id: `timeline:${run.id}:${step.id}:tool`,
+          taskRunId: run.id,
+          from: normalizeEventFrom(actor || fallbackActor),
+          action: toolName.toLowerCase() === "run_shell" ? "background" : "tool",
+          to: normalizeEventTo(toolName),
+          result: oneLinePreview(step.summary || step.detail_content || timelineStepDetail(step), `${toolName} recorded.`, 180),
+          type: toolName.toLowerCase() === "run_shell" ? "background" : "tool",
+          timestamp,
+          state: runtimeMonitorStateFromTimeline(step),
+        });
+      }
+
+      if (step.kind === "approval") {
+        pushEvent({
+          id: `timeline:${run.id}:${step.id}:approval`,
+          taskRunId: run.id,
+          from: normalizeEventFrom(actor || fallbackActor),
+          action: "approval",
+          to: "User",
+          result: oneLinePreview(step.summary || step.detail_content || timelineStepDetail(step), "Approval requested.", 180),
+          type: "approval",
+          timestamp,
+          state: runtimeMonitorStateFromTimeline(step),
+        });
+      }
+
+      if (step.event_type === "task_run_waiting_for_delegated_work") {
+        pushEvent({
+          id: `timeline:${run.id}:${step.id}:waiting`,
+          taskRunId: run.id,
+          from: normalizeEventFrom(actor || fallbackActor),
+          action: "wait",
+          to: "Delegated work",
+          result: oneLinePreview(step.summary || "Waiting for delegated work.", "Waiting for delegated work.", 180),
+          type: "task",
+          timestamp,
+          state: "waiting",
+        });
+      }
+    }
+
+    for (const item of pendingApprovals) {
+      const actor = item.agent_name?.trim() || fallbackActor;
+      const timestamp = item.updated_at || item.created_at || run.updated_at || run.created_at || new Date().toISOString();
+      pushEvent({
+        id: `approval-item:${item.id}`,
+        taskRunId: run.id,
+        from: normalizeEventFrom(actor),
+        action: "approval",
+        to: "User",
+        result: oneLinePreview(item.summary || item.title || "Approval requested.", "Approval requested.", 180),
+        type: "approval",
+        timestamp,
+        state: "waiting",
+      });
+    }
+
+    for (const row of taskActivityBackgroundRows(activity)) {
+      const timestamp = activity?.updated_at || run.updated_at || run.created_at || new Date().toISOString();
+      const actionType: RuntimeMonitorEventType =
+        row.key.includes("consult")
+          ? "consult"
+          : row.key.includes("subagent")
+            ? "handoff"
+            : row.key.includes("pipeline") || row.key.includes("handoff")
+              ? "task"
+              : "background";
+      pushEvent({
+        id: `activity:${run.id}:${row.key}`,
+        taskRunId: run.id,
+        from: normalizeEventFrom(fallbackActor),
+        action: row.label.toLowerCase(),
+        to: row.label,
+        result: oneLinePreview(row.detail, `${row.label} active.`, 180),
+        type: actionType,
+        timestamp,
+        state: actionType === "task" ? "waiting" : "running",
+      });
+    }
+  }
+
+  for (const card of cards) {
+    const actor = cardActorName(card);
+    if (!isKnownMonitorActor(actor)) continue;
+    const timestamp = card.created_at || new Date().toISOString();
+    if (card.kind === "agent_message") {
+      pushEvent({
+        id: `card:${card.id}:message`,
+        taskRunId: typeof card.run_id === "number" ? card.run_id : null,
+        from: normalizeEventFrom(card.from_agent || actor),
+        action: "msg",
+        to: normalizeEventTo(card.to_agent || "Agent"),
+        result: oneLinePreview(card.content || card.summary, "Agent handoff.", 180),
+        type: "message",
+        timestamp,
+        state: "done",
+      });
+      continue;
+    }
+    if (card.kind === "consult_call") {
+      pushEvent({
+        id: `card:${card.id}:consult`,
+        taskRunId: typeof card.run_id === "number" ? card.run_id : null,
+        from: normalizeEventFrom(actor),
+        action: "consult",
+        to: normalizeEventTo(card.target_agent || "Consult"),
+        result: oneLinePreview(consultCardBody(card), "Consult request recorded.", 180),
+        type: "consult",
+        timestamp,
+        state: runtimeMonitorStateFromCard(card),
+      });
+      continue;
+    }
+    if (card.kind === "tool_call" || card.kind === "tool_merge") {
+      const toolName = card.tool || "Tool";
+      pushEvent({
+        id: `card:${card.id}:tool`,
+        taskRunId: typeof card.run_id === "number" ? card.run_id : null,
+        from: normalizeEventFrom(actor),
+        action: toolName.toLowerCase() === "run_shell" ? "background" : "tool",
+        to: normalizeEventTo(toolName),
+        result: oneLinePreview(compactCardSummary(card), `${toolName} recorded.`, 180),
+        type: toolName.toLowerCase() === "run_shell" ? "background" : "tool",
+        timestamp,
+        state: runtimeMonitorStateFromCard(card),
+      });
+      continue;
+    }
+    if (card.kind === "agent_error") {
+      pushEvent({
+        id: `card:${card.id}:error`,
+        taskRunId: typeof card.run_id === "number" ? card.run_id : null,
+        from: normalizeEventFrom(actor),
+        action: "error",
+        to: "Runtime",
+        result: oneLinePreview(card.error || card.summary || card.content, "Agent error recorded.", 180),
+        type: "task",
+        timestamp,
+        state: "failed",
+      });
+    }
+  }
+
+  for (const node of flattenRuntimeProcessNodes(processes)) {
+    if (!["task", "command", "subagent"].includes(node.kind)) continue;
+    const actor =
+      (node.agent_name || "").trim()
+      || (readTextField(readRecord(node.metadata), "agent_name") || "")
+      || (node.kind === "subagent" ? readTextField(readRecord(node.metadata), "requested_name") || "" : "")
+      || "System";
+    const metadata = readRecord(node.metadata);
+    const timestamp = node.timestamp || new Date().toISOString();
+    const state = String(node.status || "").trim().toLowerCase() === "terminated" ? "done" : "running";
+    const type: RuntimeMonitorEventType =
+      node.kind === "command"
+        ? "background"
+        : node.kind === "subagent"
+          ? "handoff"
+          : "task";
+    pushEvent({
+      id: `process:${node.id}`,
+      taskRunId:
+        readNumber(metadata?.task_run_id)
+        ?? (typeof node.id === "string" && node.id.startsWith("task-run:") ? Number(node.id.slice("task-run:".length)) : null),
+      from: normalizeEventFrom(actor),
+      action: node.kind === "command" ? "background" : node.kind,
+      to: normalizeEventTo(node.label),
+      result: oneLinePreview(processNodeDetail(node), node.detail || "Runtime process active.", 180),
+      type,
+      timestamp,
+      state,
+    });
+  }
+
+  const orderedEvents = [...events].sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
+  const summary = orderedEvents.reduce<RuntimeMonitorSummary>((acc, event) => {
+    if (event.state === "running" || event.state === "waiting") acc.runningActions += 1;
+    if (event.type === "approval" && event.state === "waiting") acc.pendingApprovals += 1;
+    if (event.type === "background" && event.state === "running") acc.backgroundTasks += 1;
+    return acc;
+  }, {
+    activeAgents: new Set(orderedEvents.filter((event) => event.from && event.from !== "System").map((event) => event.from)).size,
+    pendingApprovals: 0,
+    runningActions: 0,
+    backgroundTasks: 0,
+  });
+
+  return {
+    events: orderedEvents.slice(0, 40),
+    summary,
+  };
+}
+
+function RuntimeMonitorSection({
+  viewModel,
+  agents,
+  onInspectTaskRun,
+}: {
+  viewModel: RuntimeMonitorViewModel;
+  agents: AgentInfo[];
+  onInspectTaskRun?: (taskRunId: number) => void;
+}) {
+  if (viewModel.events.length === 0) {
+    return <div className="empty-card">Runtime relationships will appear after agents start exchanging messages, tools, approvals, or background work.</div>;
+  }
+
+  return (
+    <>
+      <div className="runtime-monitor__summary" aria-label="Runtime summary">
+        {[
+          { key: "agents", label: "Active agents", value: viewModel.summary.activeAgents },
+          { key: "approvals", label: "Pending approvals", value: viewModel.summary.pendingApprovals },
+          { key: "actions", label: "Running actions", value: viewModel.summary.runningActions },
+          { key: "background", label: "Background tasks", value: viewModel.summary.backgroundTasks },
+        ].map((item) => (
+          <div key={item.key} className="runtime-monitor__summary-card">
+            <strong>{item.value}</strong>
+            <span>{item.label}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="runtime-monitor__timeline" aria-label="Runtime timeline">
+        {viewModel.events.map((event) => (
+          <article
+            key={event.id}
+            className={`runtime-monitor__timeline-item runtime-monitor__timeline-item--${event.state} runtime-monitor__timeline-item--${event.type}`}
+            style={buildAgentThemeStyle(event.from, agents)}
+          >
+            <div className="runtime-monitor__timeline-time">
+              <strong>{formatTime(event.timestamp)}</strong>
+              {typeof event.taskRunId === "number" ? (
+                <button
+                  type="button"
+                  className="chat-copy-inline-btn"
+                  onClick={() => onInspectTaskRun?.(event.taskRunId)}
+                  title="Inspect task run"
+                >
+                  Run {event.taskRunId}
+                </button>
+              ) : null}
+            </div>
+            <div className="runtime-monitor__timeline-grid">
+              <div className="runtime-monitor__quad">
+                <span>from</span>
+                <strong>{runtimeMonitorActorLabel(event.from, agents)}</strong>
+              </div>
+              <div className="runtime-monitor__quad">
+                <span>action</span>
+                <strong>{event.action}</strong>
+              </div>
+              <div className="runtime-monitor__quad">
+                <span>to</span>
+                <strong>{runtimeMonitorActorLabel(event.to, agents)}</strong>
+              </div>
+              <div className="runtime-monitor__quad runtime-monitor__quad--result">
+                <span>result</span>
+                <strong>{event.result}</strong>
+              </div>
+            </div>
+            <div className="runtime-monitor__timeline-footer">
+              <span className={`runtime-monitor__state-pill runtime-monitor__state-pill--${event.state}`}>{runtimeMonitorActionStateLabel(event.state)}</span>
+              <span className="runtime-monitor__timeline-type">{event.type}</span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </>
+  );
 }
 
 function formatMessageCopyBlock(message: MessageItem) {
@@ -6311,6 +6741,27 @@ export function ChatTab({
     });
     return grouped;
   }, [pendingApprovalItems]);
+  const runtimeMonitorViewModel = useMemo(
+    () =>
+      buildRuntimeMonitorViewModel({
+        agents,
+        taskRuns,
+        taskActivitiesById,
+        taskTimelinesById,
+        cards: cardsWithPromptPresentation,
+        processes: browserProcessTree,
+        pendingApprovalItemsByTaskRunId,
+      }),
+    [
+      agents,
+      browserProcessTree,
+      cardsWithPromptPresentation,
+      pendingApprovalItemsByTaskRunId,
+      taskActivitiesById,
+      taskRuns,
+      taskTimelinesById,
+    ],
+  );
   const selectedApprovalItems = useMemo(
     () => (selectedTaskRunSummary?.id ? pendingApprovalItemsByTaskRunId[selectedTaskRunSummary.id] ?? [] : []),
     [pendingApprovalItemsByTaskRunId, selectedTaskRunSummary?.id],
@@ -8221,19 +8672,20 @@ export function ChatTab({
               </button>
             </div>
             <div className="sidebar-content project-browser">
-              <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
-                {[
-                  {
-                    id: "files" as const,
-                    label: "Files",
-                    count: projectBrowserIndex?.truncated ? `${browserFileEntries.length}+` : browserFileEntries.length,
-                    Icon: FolderTree,
-                  },
-                  { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
-                  { id: "processes" as const, label: "Processes", count: browserProcessCount, Icon: Monitor },
-                ].map(({ id, label, count, Icon }) => (
-                  <button
-                    key={id}
+                <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
+                  {[
+                    {
+                      id: "files" as const,
+                      label: "Files",
+                      count: projectBrowserIndex?.truncated ? `${browserFileEntries.length}+` : browserFileEntries.length,
+                      Icon: FolderTree,
+                    },
+                    { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
+                    { id: "processes" as const, label: "Processes", count: browserProcessCount, Icon: Monitor },
+                    { id: "runtime" as const, label: "Runtime", count: runtimeMonitorViewModel.summary.runningActions, Icon: Workflow },
+                  ].map(({ id, label, count, Icon }) => (
+                    <button
+                      key={id}
                     type="button"
                     className={`project-browser__tab ${projectBrowserTab === id ? "is-active" : ""}`}
                     onClick={() => setProjectBrowserTab(id)}
@@ -8313,6 +8765,16 @@ export function ChatTab({
                       onCloseSubagent={handleCloseSubagent}
                     />
                   )}
+                </div>
+              ) : null}
+
+              {projectBrowserTab === "runtime" ? (
+                <div className="project-browser__section project-browser__section--runtime">
+                  <RuntimeMonitorSection
+                    viewModel={runtimeMonitorViewModel}
+                    agents={agents}
+                    onInspectTaskRun={inspectTaskRun}
+                  />
                 </div>
               ) : null}
             </div>

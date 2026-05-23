@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api/client";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import { FlowTopologyView } from "./FlowTopologyView";
+import { MonitorRuntimeMap } from "./MonitorRuntimeMap";
 import type { FlowTopologyGraph, FlowTopologyNode, FlowTopologyStatus } from "./FlowTopologyView";
 import type {
   ApprovalQueueItem,
@@ -69,6 +70,7 @@ const PRIMARY_PAGES = [
 const MORE_PAGES = [
   { id: "skills", label: "Skills" },
   { id: "models", label: "Models" },
+  { id: "runtime-map", label: "Runtime Map" },
   { id: "compactions", label: "Compactions" },
   { id: "context", label: "Context" },
   { id: "subagents", label: "Subagents" },
@@ -6310,6 +6312,10 @@ export function MonitorTab() {
         <div style={{ marginTop: 16 }}>
           <EmptyCard title="Model switch history" detail="TODO: capture model handoffs and fallback transitions as first-class runtime events." />
         </div>
+      </section>
+
+      <section className={pageClass("runtime-map", "page--dashboard-wide")} id="page-runtime-map">
+        <MonitorRuntimeMap overview={overview} agents={agents} />
       </section>
 
       <section className={pageClass("compactions", "page--dashboard-wide")} id="page-compactions">
