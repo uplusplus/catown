@@ -242,6 +242,12 @@ class TaskRun(Base):
         cascade="all, delete-orphan",
         order_by="TaskRunEvent.event_index.asc()",
     )
+    checkpoints = relationship(
+        "TaskRunCheckpoint",
+        back_populates="task_run",
+        cascade="all, delete-orphan",
+        order_by="TaskRunCheckpoint.event_index.desc()",
+    )
     approval_queue_items = relationship(
         "ApprovalQueueItem",
         back_populates="task_run",
@@ -280,6 +286,20 @@ class TaskRunEvent(Base):
 
     task_run = relationship("TaskRun", back_populates="events")
     message = relationship("Message", foreign_keys=[message_id])
+
+
+class TaskRunCheckpoint(Base):
+    """Periodic state snapshots for fast recovery of long-running task runs."""
+
+    __tablename__ = "task_run_checkpoints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=False, index=True)
+    event_index = Column(Integer, nullable=False, default=0)
+    snapshot_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    task_run = relationship("TaskRun", back_populates="checkpoints")
 
 
 class OrchestrationHandoffDelivery(Base):
