@@ -255,23 +255,22 @@ def record_tool_round(
     for result in normalized_tool_results:
         status = str(getattr(result, "status", "") or ("succeeded" if getattr(result, "success", True) else "failed"))
         status_counts[status] = status_counts.get(status, 0) + 1
-        serialized_tool_results.append(
-            {
-                "tool_call_id": str(getattr(result, "tool_call_id", "") or ""),
-                "tool_name": str(getattr(result, "tool_name", "") or "tool"),
-                "arguments": str(getattr(result, "arguments", "") or "{}"),
-                "result": compact_runtime_text(getattr(result, "result", "") or "", limit=1200),
-                "success": bool(getattr(result, "success", False)),
-                "status": status,
-                "blocked": bool(getattr(result, "blocked", False)),
-                "blocked_kind": getattr(result, "blocked_kind", None),
-                "blocked_reason": compact_runtime_text(
-                    getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
-                    limit=220,
-                ),
-                "metadata": dict(getattr(result, "metadata", {}) or {}),
-            }
-        )
+        result_payload = {
+            "tool_call_id": str(getattr(result, "tool_call_id", "") or ""),
+            "tool_name": str(getattr(result, "tool_name", "") or "tool"),
+            "arguments": str(getattr(result, "arguments", "") or "{}"),
+            "result": compact_runtime_text(getattr(result, "result", "") or "", limit=1200),
+            "success": bool(getattr(result, "success", False)),
+            "status": status,
+            "blocked": bool(getattr(result, "blocked", False)),
+            "blocked_kind": getattr(result, "blocked_kind", None),
+            "blocked_reason": compact_runtime_text(
+                getattr(result, "blocked_reason", "") or getattr(result, "result", ""),
+                limit=220,
+            ),
+            "metadata": dict(getattr(result, "metadata", {}) or {}),
+        }
+        serialized_tool_results.append(result_payload)
         if bool(getattr(result, "blocked", False)):
             blocked_tools.append(
                 {
@@ -393,6 +392,11 @@ def record_tool_round(
                 pipeline_run_id=pipeline_run_id,
                 pipeline_stage_id=pipeline_stage_id,
             )
+            task_run.status = "paused"
+            task_run.summary = f"Paused awaiting approval for {blocked_tool['tool_name']}."
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
             logger.info(
                 "[ApprovalFlow] queue-created task_run_id=%s queue_item_id=%s queue_kind=%s tool=%s blocked_kind=%s resume_supported=%s turn=%s",
                 getattr(task_run, "id", None),

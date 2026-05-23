@@ -26,7 +26,7 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
                     "agent": "tester",
                     "gate": "auto",
                     "timeout_minutes": 30,
-                    "expected_artifacts": ["test_report.md"],
+                    "expected_artifacts": ["reports/tests/"],
                     "context_prompt": "Run tests.",
                     "rollback_on_blocker": True,
                     "max_rollback_count": 3,
@@ -62,5 +62,6 @@ def test_compile_pipeline_template_to_workflow_spec_preserves_current_stage_shap
     assert testing.rollback.enabled is True
     assert testing.rollback.max_attempts == 3
     assert testing.rollback.target_stage_name == "development"
+    assert testing.delivery.expected_artifacts == ["reports/tests/"]
     assert testing.skills.hint_only == ["security-testing"]
     assert testing.evaluation.rubric_refs == ["rubric-testing"]

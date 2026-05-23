@@ -51,11 +51,11 @@ def test_blocked_tool_queue_helpers_preserve_request_semantics():
     assert blocked_tool_queue_kind("sandbox") == "escalation"
     assert blocked_tool_queue_title("delete_file", queue_kind="approval") == "Approval needed for delete_file"
     assert blocked_tool_queue_title("delete_file", queue_kind="escalation") == "Escalation needed for delete_file"
-    assert blocked_tool_queue_title("run_shell", queue_kind="approval", blocked_kind="timeout") == "Continue waiting for run_shell"
+    assert blocked_tool_queue_title("run_shell", queue_kind="approval", blocked_kind="timeout") == "run_shell is running in the background"
     assert blocked_tool_resume_supported(blocked_kind="approval", blocked_reason="delete_file requires approval") is True
     assert blocked_tool_resume_supported(blocked_kind="sandbox", blocked_reason="sandbox blocked") is False
     assert blocked_tool_resume_supported(blocked_kind="approval", blocked_reason="unauthorized tool") is False
-    assert blocked_tool_resume_supported(blocked_kind="timeout", blocked_reason="timed out") is True
+    assert blocked_tool_resume_supported(blocked_kind="timeout", blocked_reason="timed out") is False
 
     request_key = build_blocked_tool_request_key(
         task_run_id=7,

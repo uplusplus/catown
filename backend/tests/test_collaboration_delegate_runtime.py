@@ -29,6 +29,7 @@ def test_build_delegated_task_metadata_returns_normalized_shape():
         "context": "Focus on flaky tests",
         "delegator": "assistant",
         "target_agent_name": "tester",
+        "required_outputs": ["test_report"],
     }
 
 
@@ -39,6 +40,7 @@ def test_create_delegated_collaboration_task_preserves_context_fields():
         chatroom_id=42,
         assigned_to_agent_id=9,
         created_by_agent_id=1,
+        target_agent_name="tester",
         context="Focus on flaky tests",
         delegator="assistant",
     )
@@ -51,6 +53,7 @@ def test_create_delegated_collaboration_task_preserves_context_fields():
     assert task.metadata == {
         "context": "Focus on flaky tests",
         "delegator": "assistant",
+        "required_outputs": ["test_report"],
     }
 
 

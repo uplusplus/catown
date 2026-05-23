@@ -26,6 +26,7 @@ class NonStreamTurnFrame:
 class NonStreamTurnLoopResult:
     final_content: str = ""
     awaiting_tool_approval: bool = False
+    awaiting_background_tool: bool = False
 
 
 async def execute_non_stream_turn_loop(
@@ -98,7 +99,13 @@ async def execute_non_stream_turn_loop(
                 )
 
             if on_tool_round is not None and (tool_results or blocked_tool_result is not None):
-                await _maybe_await(on_tool_round(frame, tool_results, turn_state))
+                tool_round_decision = await _maybe_await(on_tool_round(frame, tool_results, turn_state))
+                if isinstance(tool_round_decision, dict) and tool_round_decision.get("stop"):
+                    return NonStreamTurnLoopResult(
+                        final_content=str(tool_round_decision.get("final_content") or ""),
+                        awaiting_tool_approval=False,
+                        awaiting_background_tool=bool(tool_round_decision.get("awaiting_background_tool")),
+                    )
             if blocked_tool_result is not None:
                 return NonStreamTurnLoopResult(awaiting_tool_approval=True)
             continue

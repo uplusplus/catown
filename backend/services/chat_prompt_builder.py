@@ -27,6 +27,11 @@ from services.context_builder import (
     build_turn_state_developer_fragments,
     build_turn_state_user_fragments,
 )
+from services.model_context import (
+    ModelContextMetadata,
+    context_window_from_provider,
+    resolve_model_context_metadata,
+)
 from services.task_state import build_task_state, build_task_state_fragments
 from skills import load_skill_registry
 
@@ -95,8 +100,11 @@ _SELECTOR_PROFILE_FIELDS = {
     "allowed_scopes",
     "max_fragments",
     "max_tokens_cap",
+    "max_tokens_cap_ratio",
     "max_tokens_by_role",
+    "max_tokens_by_role_ratio",
     "max_tokens_by_scope",
+    "max_tokens_by_scope_ratio",
     "truncate_to_budget",
     "min_tokens_for_truncation",
 }
@@ -356,56 +364,45 @@ def _load_agent_config_data() -> Dict[str, Any]:
 
 
 def _context_window_from_provider(provider_data: Any, model_id: str) -> Optional[int]:
-    if not isinstance(provider_data, dict):
-        return None
-    models = provider_data.get("models", [])
-    if not isinstance(models, list):
-        return None
-    for model in models:
-        if not isinstance(model, dict) or model.get("id") != model_id:
-            continue
-        context_window = model.get("contextWindow")
-        if isinstance(context_window, (int, float)) and context_window > 0:
-            return int(context_window)
-    return None
+    return context_window_from_provider(provider_data, model_id)
 
 
-def resolve_llm_context_window(agent_name: str, model_id: str) -> Optional[int]:
+def resolve_llm_context_metadata(agent_name: str, model_id: str) -> Optional[ModelContextMetadata]:
     if not model_id:
         return None
 
     registry = get_registry()
     registered_agent = registry.get(agent_name) if agent_name else None
+    registry_model_info: Optional[Dict[str, Any]] = None
     if registered_agent:
         try:
             model_info = registered_agent.get_model_info(model_id)
         except Exception:
             model_info = None
         if isinstance(model_info, dict):
-            context_window = model_info.get("context_window")
-            if isinstance(context_window, (int, float)) and context_window > 0:
-                return int(context_window)
+            registry_model_info = model_info
 
     config_data = _load_agent_config_data()
-    if not config_data:
-        return None
+    agents_data = config_data.get("agents", {}) if isinstance(config_data, dict) else {}
+    agent_provider = (agents_data.get(agent_name) or {}).get("provider") if agent_name and isinstance(agents_data, dict) else None
+    global_provider = (config_data.get("global_llm") or {}).get("provider") if isinstance(config_data, dict) else None
+    peer_providers = [
+        agent_data.get("provider")
+        for agent_data in agents_data.values()
+        if isinstance(agent_data, dict)
+    ] if isinstance(agents_data, dict) else []
+    return resolve_model_context_metadata(
+        model_id=model_id,
+        registry_model_info=registry_model_info,
+        agent_provider=agent_provider,
+        global_provider=global_provider,
+        peer_providers=peer_providers,
+    )
 
-    agents_data = config_data.get("agents", {})
-    if agent_name:
-        context_window = _context_window_from_provider((agents_data.get(agent_name) or {}).get("provider"), model_id)
-        if context_window:
-            return context_window
 
-    context_window = _context_window_from_provider((config_data.get("global_llm") or {}).get("provider"), model_id)
-    if context_window:
-        return context_window
-
-    for agent_data in agents_data.values():
-        context_window = _context_window_from_provider(agent_data.get("provider"), model_id)
-        if context_window:
-            return context_window
-
-    return None
+def resolve_llm_context_window(agent_name: str, model_id: str) -> Optional[int]:
+    metadata = resolve_llm_context_metadata(agent_name, model_id)
+    return metadata.context_window if metadata else None
 
 
 def build_chat_context_selector(
@@ -418,16 +415,106 @@ def build_chat_context_selector(
     current_input_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> ContextSelector:
     profile_config = selector_profile_config(profile)
-    max_tokens_cap = profile_config.pop("max_tokens_cap", None)
+    model_context = resolve_llm_context_metadata(agent_name, model_id)
+    materialized_profile = materialize_selector_profile_config(profile_config, model_context)
+    max_tokens_cap = materialized_profile.pop("max_tokens_cap", None)
+    reserved_completion_tokens = materialized_profile.pop("reserved_completion_tokens", None)
     selector = ContextSelector.for_context_window(
-        context_window=resolve_llm_context_window(agent_name, model_id),
+        context_window=model_context.context_window if model_context else None,
         base_system_prompt=base_system_prompt,
         history_messages=history_messages,
         current_input_messages=current_input_messages,
+        reserved_completion_tokens=reserved_completion_tokens,
         max_tokens=max_tokens_cap,
-        **profile_config,
+        **materialized_profile,
     )
     return selector
+
+
+def materialize_selector_profile_config(
+    profile_config: Dict[str, Any],
+    model_context: Optional[ModelContextMetadata],
+) -> Dict[str, Any]:
+    materialized = dict(profile_config)
+    input_window = _profile_input_window(model_context)
+    if input_window is None:
+        _drop_ratio_fields(materialized)
+        return materialized
+
+    cap_ratio = _ratio(materialized.pop("max_tokens_cap_ratio", None))
+    if cap_ratio is not None:
+        ratio_cap = max(1, int(input_window * cap_ratio))
+        configured_cap = _positive_int(materialized.get("max_tokens_cap"))
+        materialized["max_tokens_cap"] = min(configured_cap, ratio_cap) if configured_cap else ratio_cap
+
+    _materialize_budget_ratio_map(materialized, "max_tokens_by_role", "max_tokens_by_role_ratio", input_window)
+    _materialize_budget_ratio_map(materialized, "max_tokens_by_scope", "max_tokens_by_scope_ratio", input_window)
+    if model_context and model_context.output_reserve:
+        materialized["reserved_completion_tokens"] = model_context.output_reserve
+    return materialized
+
+
+def _profile_input_window(model_context: Optional[ModelContextMetadata]) -> Optional[int]:
+    if model_context is None:
+        return None
+    return model_context.input_window or max(
+        model_context.context_window - (model_context.output_reserve or 0),
+        1,
+    )
+
+
+def _materialize_budget_ratio_map(
+    materialized: Dict[str, Any],
+    budget_key: str,
+    ratio_key: str,
+    input_window: int,
+) -> None:
+    ratio_map = materialized.pop(ratio_key, None)
+    if not isinstance(ratio_map, dict):
+        return
+    configured = materialized.get(budget_key)
+    configured_map = configured if isinstance(configured, dict) else {}
+    budget: dict[str, int] = {}
+    for key, raw_ratio in ratio_map.items():
+        ratio = _ratio(raw_ratio)
+        if ratio is None:
+            continue
+        ratio_budget = max(1, int(input_window * ratio))
+        configured_budget = _positive_int(configured_map.get(key))
+        budget[str(key)] = min(configured_budget, ratio_budget) if configured_budget else ratio_budget
+    if configured_map:
+        for key, value in configured_map.items():
+            if str(key) not in budget:
+                parsed = _positive_int(value)
+                if parsed:
+                    budget[str(key)] = parsed
+    if budget:
+        materialized[budget_key] = budget
+
+
+def _drop_ratio_fields(config: Dict[str, Any]) -> None:
+    for key in ("max_tokens_cap_ratio", "max_tokens_by_role_ratio", "max_tokens_by_scope_ratio"):
+        config.pop(key, None)
+
+
+def _ratio(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return min(parsed, 1.0)
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def selector_profile_config(profile: str) -> Dict[str, Any]:
@@ -492,6 +579,20 @@ def _normalize_selector_profile_config(config: Dict[str, Any]) -> Dict[str, Any]
             if parsed > 0:
                 budget[str(budget_key)] = parsed
         normalized[key] = budget
+    for key in ("max_tokens_cap_ratio",):
+        ratio = _ratio(normalized.get(key))
+        if ratio is not None:
+            normalized[key] = ratio
+    for key in ("max_tokens_by_role_ratio", "max_tokens_by_scope_ratio"):
+        value = normalized.get(key)
+        if not isinstance(value, dict):
+            continue
+        ratios: dict[str, float] = {}
+        for ratio_key, ratio_value in value.items():
+            ratio = _ratio(ratio_value)
+            if ratio is not None:
+                ratios[str(ratio_key)] = ratio
+        normalized[key] = ratios
     if "truncate_to_budget" in normalized:
         normalized["truncate_to_budget"] = bool(normalized["truncate_to_budget"])
     return normalized

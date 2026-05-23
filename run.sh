@@ -11,7 +11,7 @@ PID=""
 PGID=""
 RUN_HOST="${RUN_HOST:-0.0.0.0}"
 RUN_PORT="${RUN_PORT:-8000}"
-CATOWN_RELOAD="${CATOWN_RELOAD:-0}"
+CATOWN_RELOAD="${CATOWN_RELOAD:-1}"
 BASE_PYTHON="${PYTHON:-python3}"
 PYTHON_CMD=""
 VENV_DIR="${CATOWN_VENV_DIR:-}"
@@ -89,7 +89,7 @@ find_windows_uvicorn_pids() {
     local ps_cmd
     ps_cmd="$(powershell_command)" || return 1
     "$ps_cmd" -NoProfile -Command \
-        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | Select-Object -ExpandProperty ProcessId" \
+        "\$uvicorn = Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | Select-Object -ExpandProperty ProcessId; \$listeners = Get-NetTCPConnection -LocalPort $RUN_PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; \$listenerPython = \$listeners | ForEach-Object { Get-CimInstance Win32_Process -Filter \"ProcessId = \$_\" -ErrorAction SilentlyContinue } | Where-Object { \$_.Name -eq 'python.exe' -or \$_.Name -eq 'python3.exe' } | Select-Object -ExpandProperty ProcessId; @(\$uvicorn; \$listenerPython) | Where-Object { \$_ } | Sort-Object -Unique" \
         2>/dev/null | tr -d '\r' | sed '/^$/d' | sort -u
 }
 
@@ -101,7 +101,7 @@ kill_windows_uvicorn_by_port() {
     local ps_cmd
     ps_cmd="$(powershell_command)" || return 1
     "$ps_cmd" -NoProfile -Command \
-        "Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" \
+        "\$uvicorn = Get-CimInstance Win32_Process -Filter \"Name = 'python.exe' OR Name = 'python3.exe'\" | Where-Object { \$_.CommandLine -like '*uvicorn main:app*' -and \$_.CommandLine -like '*--port $RUN_PORT*' } | Select-Object -ExpandProperty ProcessId; \$listeners = Get-NetTCPConnection -LocalPort $RUN_PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; \$listenerPython = \$listeners | ForEach-Object { Get-CimInstance Win32_Process -Filter \"ProcessId = \$_\" -ErrorAction SilentlyContinue } | Where-Object { \$_.Name -eq 'python.exe' -or \$_.Name -eq 'python3.exe' } | Select-Object -ExpandProperty ProcessId; @(\$uvicorn; \$listenerPython) | Where-Object { \$_ } | Sort-Object -Unique | ForEach-Object { Stop-Process -Id \$_ -Force -ErrorAction SilentlyContinue }" \
         >/dev/null 2>&1
 }
 

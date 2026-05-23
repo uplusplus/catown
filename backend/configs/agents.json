@@ -251,7 +251,7 @@
           "测试边界条件：空输入、超长字符串、特殊字符",
           "测试错误路径：未授权访问、无效数据、缺失字段",
           "安全问题标记为 blocker",
-          "写入 test_report.md"
+          "写入 reports/tests/<timestamp>--<subject>.md"
         ]
       },
       "tools": [
@@ -308,13 +308,13 @@
       "role": {
         "title": "发布经理",
         "responsibilities": [
-          "审查 test_report.md 确认无 blocker",
+          "审查 reports/tests/ 中的最新测试报告，确认无 blocker",
           "审查代码变更",
           "生成 CHANGELOG.md",
           "创建 Git tag"
         ],
         "rules": [
-          "test_report.md 有 blocker 则不发布",
+          "reports/tests/ 中的最新测试报告有 blocker 则不发布",
           "使用语义化版本号：MAJOR.MINOR.PATCH",
           "CHANGELOG 用用户语言，不用技术术语",
           "写入 CHANGELOG.md",

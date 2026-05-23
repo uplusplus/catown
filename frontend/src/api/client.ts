@@ -29,6 +29,7 @@ import type {
   ProjectFromChatPayload,
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
+  ProjectBrowserWatchEvent,
   ProjectFileReadResponse,
   ProjectFileWritePayload,
   ProjectSyncResponse,
@@ -211,6 +212,47 @@ export const api = {
       onBatch(JSON.parse(buffer.trim()) as ProjectBrowserStreamBatch);
     }
   },
+  async watchProjectBrowser(
+    projectId: number,
+    onEvent: (event: ProjectBrowserWatchEvent) => void,
+    signal?: AbortSignal,
+    pollInterval = 2,
+  ) {
+    const response = await fetch(`/api/projects/${projectId}/browser/watch?poll_interval=${encodeURIComponent(String(pollInterval))}`, {
+      cache: "no-store",
+      signal,
+      headers: {
+        "X-Catown-Client": getClientSource(),
+        "X-Catown-UI-Version": UI_VERSION,
+      },
+    });
+    handleServerVersionHeaders(response.headers, `api:/api/projects/${projectId}/browser/watch`);
+
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status}`);
+    }
+    if (!response.body) return;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        onEvent(JSON.parse(trimmed) as ProjectBrowserWatchEvent);
+      });
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      onEvent(JSON.parse(buffer.trim()) as ProjectBrowserWatchEvent);
+    }
+  },
   createProjectSubchat(projectId: number, title?: string) {
     return request<ChatSummary>(`/api/projects/${projectId}/subchats`, {
       method: "POST",
@@ -267,9 +309,6 @@ export const api = {
   },
   getTaskRunActivity(taskRunId: number) {
     return request<TaskActivityProjection>(`/api/task-runs/${taskRunId}/activity`);
-  },
-  getTaskRunTimeline(taskRunId: number) {
-    return request<ChatTimelineProjection>(`/api/task-runs/${taskRunId}/timeline`);
   },
   waitTaskRunSubagent(taskRunId: number, stepId: string, params?: { sinceEventIndex?: number; timeoutMs?: number }) {
     const search = new URLSearchParams();

@@ -7,6 +7,7 @@ import re
 import json
 import os
 import asyncio
+import hashlib
 import threading
 import socket
 import shutil
@@ -40,6 +41,7 @@ from models.database import (
     get_db,
     Agent,
     Project,
+    Asset,
     Chatroom,
     AgentAssignment,
     Message,
@@ -80,7 +82,9 @@ from services.chat_prompt_builder import (
     build_chat_context_selector as shared_build_chat_context_selector,
     default_selector_profiles,
     effective_selector_profiles,
+    resolve_llm_context_window,
 )
+from services.model_context import context_window_from_provider
 from services.agent_lifecycle_runtime import (
     cancel_runtime_task_run,
     cancel_runtime_task_run_subagent,
@@ -106,6 +110,7 @@ from services.chat_runtime import (
 from services.run_shell_processes import (
     build_tracked_run_shell_result,
     load_tracked_run_shell_handle,
+    list_tracked_run_shell_processes,
     read_tracked_run_shell_tail,
     run_shell_process_state_dir,
     terminate_tracked_run_shell,
@@ -168,9 +173,19 @@ from services.approval_replay import (
     load_approval_queue_request_payload,
     parse_replay_arguments,
     build_replay_tool_result_record,
-    replay_result_is_actionable,
+    replay_result_non_actionable_reason,
     resolve_replay_arguments_text,
     resolve_replay_tool_name,
+)
+from services.test_runner_contract import (
+    extract_pytest_failure_summary,
+    is_valid_test_runner_result,
+    normalize_test_runner_result,
+)
+from services.artifact_naming import build_timestamped_artifact_path, slug_artifact_subject
+from services.artifact_history import (
+    archive_workspace_artifact_snapshot,
+    classify_workspace_artifact_path,
 )
 from services.tool_governance import tool_result_succeeded as shared_tool_result_succeeded
 from services.task_run_control import TaskRunCancelledError, raise_if_task_run_cancelled
@@ -223,12 +238,10 @@ from services.tool_execution_preferences import (
     AUTH_SCOPE_GLOBAL,
     AUTH_SCOPE_PROJECT,
     authorization_matchers_for_tool,
-    build_run_shell_timeout_preference_key,
     build_tool_target_matcher_value,
     list_authorization_rules,
     normalize_authorization_scope,
     revoke_authorization_rule,
-    save_wait_forever_preference,
     serialize_authorization_rule,
     upsert_authorization_rule,
 )
@@ -419,8 +432,11 @@ class ContextSelectorProfileModel(BaseModel):
     allowed_scopes: Optional[List[str]] = None
     max_fragments: Optional[int] = Field(default=None, ge=1, le=500)
     max_tokens_cap: Optional[int] = Field(default=None, ge=1, le=1000000)
+    max_tokens_cap_ratio: Optional[float] = Field(default=None, gt=0, le=1)
     max_tokens_by_role: Dict[str, int] = Field(default_factory=dict)
+    max_tokens_by_role_ratio: Dict[str, float] = Field(default_factory=dict)
     max_tokens_by_scope: Dict[str, int] = Field(default_factory=dict)
+    max_tokens_by_scope_ratio: Dict[str, float] = Field(default_factory=dict)
     truncate_to_budget: bool = True
     min_tokens_for_truncation: int = Field(default=48, ge=1, le=10000)
 
@@ -436,6 +452,20 @@ class ContextSelectorProfileModel(BaseModel):
             if limit <= 0:
                 raise ValueError("context budget values must be positive")
             normalized[label] = limit
+        return normalized
+
+    @field_validator("max_tokens_by_role_ratio", "max_tokens_by_scope_ratio")
+    @classmethod
+    def validate_positive_ratio_map(cls, value: Dict[str, float]) -> Dict[str, float]:
+        normalized: Dict[str, float] = {}
+        for key, raw_ratio in (value or {}).items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            ratio = float(raw_ratio)
+            if ratio <= 0 or ratio > 1:
+                raise ValueError("context budget ratios must be in the range (0, 1]")
+            normalized[label] = ratio
         return normalized
 
 
@@ -757,56 +787,11 @@ def _configured_sidecar_agent_types(config_data: Optional[Dict[str, Any]] = None
 
 
 def _context_window_from_provider(provider_data: Any, model_id: str) -> Optional[int]:
-    if not isinstance(provider_data, dict):
-        return None
-    models = provider_data.get("models", [])
-    if not isinstance(models, list):
-        return None
-    for model in models:
-        if not isinstance(model, dict) or model.get("id") != model_id:
-            continue
-        context_window = model.get("contextWindow")
-        if isinstance(context_window, (int, float)) and context_window > 0:
-            return int(context_window)
-    return None
+    return context_window_from_provider(provider_data, model_id)
 
 
 def _resolve_llm_context_window(agent_name: str, model_id: str) -> Optional[int]:
-    if not model_id:
-        return None
-
-    registry = get_registry()
-    registered_agent = registry.get(agent_name) if agent_name else None
-    if registered_agent:
-        try:
-            model_info = registered_agent.get_model_info(model_id)
-        except Exception:
-            model_info = None
-        if isinstance(model_info, dict):
-            context_window = model_info.get("context_window")
-            if isinstance(context_window, (int, float)) and context_window > 0:
-                return int(context_window)
-
-    config_data = _load_agent_config_data()
-    if not config_data:
-        return None
-
-    agents_data = config_data.get("agents", {})
-    if agent_name:
-        context_window = _context_window_from_provider((agents_data.get(agent_name) or {}).get("provider"), model_id)
-        if context_window:
-            return context_window
-
-    context_window = _context_window_from_provider((config_data.get("global_llm") or {}).get("provider"), model_id)
-    if context_window:
-        return context_window
-
-    for agent_data in agents_data.values():
-        context_window = _context_window_from_provider(agent_data.get("provider"), model_id)
-        if context_window:
-            return context_window
-
-    return None
+    return resolve_llm_context_window(agent_name, model_id)
 
 
 def _build_chat_context_selector(
@@ -1361,7 +1346,9 @@ async def trigger_agent_response(
             )
             return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
 
-        target_agent_name = mentioned_names[0] if mentioned_names else None
+        target_agent_name = mentioned_names[0] if mentioned_names else (
+            str(getattr(task_run, "target_agent_name", "") or "").strip() or None
+        )
         logger.debug(f"[ Target agent name: {target_agent_name}")
 
         # 4. 确定响应的 Agent
@@ -1492,6 +1479,7 @@ async def trigger_agent_response(
                 turn=frame.turn_index + 1,
                 tool_name=tool_name,
                 arguments=tool_args_str,
+                payload={"tool_call_id": tool_call.get("id")},
             )
             async def emit_tool_progress(progress: dict[str, Any]) -> None:
                 await store_runtime_card(
@@ -1567,10 +1555,69 @@ async def trigger_agent_response(
                 summary=f"{runtime.agent_label} completed a tool round.",
                 assistant_content=frame.content,
             )
+            background_result = next((tool_result for tool_result in tool_results if _tool_result_is_background_running(tool_result)), None)
+            if background_result is not None:
+                tracked_process = (
+                    getattr(background_result, "metadata", {}).get("tracked_process")
+                    if isinstance(getattr(background_result, "metadata", None), dict)
+                    else {}
+                ) or {}
+                _spawn_background_tracked_run_shell_watch(
+                    task_run.id,
+                    {
+                        "type": "tool_call",
+                        "source": "non_stream_background_wait",
+                        "agent": runtime.agent_label,
+                        "tool": "run_shell",
+                        "arguments": str(getattr(background_result, "arguments", "") or "{}"),
+                        "success": None,
+                        "status": "running",
+                        "blocked": False,
+                        "result": str(getattr(background_result, "result", "") or "").strip() or "run_shell is running.",
+                        "tracked_process": tracked_process,
+                        "tool_call_id": getattr(background_result, "tool_call_id", None),
+                        "client_turn_id": getattr(task_run, "client_turn_id", None),
+                        "run_id": getattr(task_run, "id", None),
+                        "turn": frame.turn_index + 1,
+                    },
+                )
+                return {
+                    "stop": True,
+                    "final_content": "",
+                    "awaiting_background_tool": True,
+                }
+            if blocked_tool_result is None:
+                parent_context = _find_delegated_parent_context(db, task_run)
+                if parent_context is not None:
+                    required_outputs = parent_context.get("required_outputs") if isinstance(parent_context.get("required_outputs"), list) else []
+                    is_tester = str(parent_context.get("target_agent_name") or runtime.agent_label or "").strip().lower() == "tester"
+                    if "test_report" in required_outputs or is_tester:
+                        for tool_result in tool_results:
+                            if str(getattr(tool_result, "tool_name", "") or "").strip().lower() != "run_shell":
+                                continue
+                            reported = await _report_delegated_child_result_to_parent(
+                                db,
+                                task_run,
+                                parent_context=parent_context,
+                                tool_result=tool_result,
+                                arguments=str(getattr(tool_result, "arguments", "") or "{}"),
+                                tracked_process=(
+                                    getattr(tool_result, "metadata", {}).get("tracked_process")
+                                    if isinstance(getattr(tool_result, "metadata", None), dict)
+                                    else {}
+                                )
+                                or {},
+                            )
+                            if reported:
+                                return {
+                                    "stop": True,
+                                    "final_content": f"{runtime.agent_label} produced required test_report and returned ownership to {parent_context.get('delegator') or 'the parent owner'}.",
+                                }
         awaiting_tool_approval = False
+        awaiting_background_tool = False
 
         async def _execute_project_single_agent_turn():
-            nonlocal awaiting_tool_approval
+            nonlocal awaiting_tool_approval, awaiting_background_tool
             loop_result = await execute_non_stream_turn_loop(
                 llm_client=runtime.llm_client,
                 tools=runtime.tool_schemas,
@@ -1581,6 +1628,7 @@ async def trigger_agent_response(
                 on_tool_round=_on_project_single_agent_tool_round,
             )
             awaiting_tool_approval = loop_result.awaiting_tool_approval
+            awaiting_background_tool = loop_result.awaiting_background_tool
             return loop_result.final_content or None
 
         project_single_agent_runtime_inputs = build_single_agent_raw_runtime_inputs(
@@ -1608,7 +1656,7 @@ async def trigger_agent_response(
             build_single_agent_sync_chat_profile(
                 runtime_inputs=project_single_agent_runtime_inputs,
                 execute_turn=_execute_project_single_agent_turn,
-                on_empty=lambda: None if awaiting_tool_approval else logger.error(f"[ LLM returned empty response after all tool iterations"),
+                on_empty=lambda: None if awaiting_tool_approval or awaiting_background_tool else logger.error(f"[ LLM returned empty response after all tool iterations"),
             )
         )
 
@@ -1620,6 +1668,7 @@ async def trigger_agent_response(
         return {
             "completed": False,
             "awaiting_tool_approval": awaiting_tool_approval,
+            "awaiting_background_tool": awaiting_background_tool,
             "task_run_id": getattr(task_run, "id", None),
         }
 
@@ -1648,6 +1697,35 @@ def _tool_result_text(value: Any) -> str:
     if isinstance(value, dict) and value.get("__catown_tool_result__") is True:
         return str(value.get("result") or "(no output)")
     return str(value) if value is not None else "(no output)"
+
+
+def _tool_result_is_background_running(tool_result: Any) -> bool:
+    if str(getattr(tool_result, "tool_name", "") or "").strip().lower() != "run_shell":
+        return False
+    return str(getattr(tool_result, "status", "") or "").strip().lower() == "background_running"
+
+
+_TRACKED_RUN_SHELL_WATCH_LOCK = threading.Lock()
+_TRACKED_RUN_SHELL_WATCH_TOKENS: set[str] = set()
+
+
+def _claim_tracked_run_shell_watch(token: str | None) -> bool:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return False
+    with _TRACKED_RUN_SHELL_WATCH_LOCK:
+        if normalized in _TRACKED_RUN_SHELL_WATCH_TOKENS:
+            return False
+        _TRACKED_RUN_SHELL_WATCH_TOKENS.add(normalized)
+        return True
+
+
+def _release_tracked_run_shell_watch(token: str | None) -> None:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return
+    with _TRACKED_RUN_SHELL_WATCH_LOCK:
+        _TRACKED_RUN_SHELL_WATCH_TOKENS.discard(normalized)
 
 
 def _load_jsonish_payload(raw_value: Any) -> Dict[str, Any]:
@@ -2123,6 +2201,148 @@ def _tracked_run_shell_final_card_payload(card: Dict[str, Any], record: Dict[str
     return next_card
 
 
+def _build_tracked_run_shell_progress_card(
+    *,
+    task_run: TaskRun,
+    base_card: Dict[str, Any],
+    progress: Dict[str, Any],
+) -> Dict[str, Any]:
+    tracked = progress.get("tracked_process") if isinstance(progress.get("tracked_process"), dict) else {}
+    return {
+        "type": "tool_call",
+        "source": "tracked_background_watch",
+        "agent": str(base_card.get("agent") or task_run.target_agent_name or "agent").strip() or "agent",
+        "tool": "run_shell",
+        "arguments": str(base_card.get("arguments") or "{}"),
+        "success": None,
+        "status": "running",
+        "blocked": False,
+        "result": str(progress.get("tail_output") or "").strip() or "run_shell is running.",
+        "duration_ms": progress.get("duration_ms"),
+        "pid": progress.get("pid"),
+        "tracked_process": tracked,
+        "tool_call_id": base_card.get("tool_call_id") or tracked.get("tool_call_id"),
+        "client_turn_id": task_run.client_turn_id,
+        "run_id": task_run.id,
+        "turn": base_card.get("turn"),
+    }
+
+
+def _append_tracked_run_shell_completed_event(
+    db: Session,
+    task_run: TaskRun | None,
+    next_card: Dict[str, Any],
+) -> bool:
+    if task_run is None:
+        return False
+    if str(getattr(task_run, "status", "") or "").strip().lower() != "running":
+        return False
+    token = (
+        str((next_card.get("tracked_process") or {}).get("token") or "").strip()
+        if isinstance(next_card.get("tracked_process"), dict)
+        else ""
+    ) or None
+    tool_call_id = str(next_card.get("tool_call_id") or "").strip() or None
+    if _task_run_has_tracked_shell_followup(
+        task_run,
+        token=token,
+        tool_call_id=tool_call_id,
+        include_completed_marker=True,
+    ):
+        return False
+    if _task_run_has_terminal_tool_round_result(task_run, token=token, tool_call_id=tool_call_id):
+        return False
+    append_task_event(
+        db,
+        task_run,
+        "tracked_run_shell_completed",
+        agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or None,
+        summary="Tracked run_shell completed; agent follow-up will analyze the result.",
+        payload={
+            "tool_name": "run_shell",
+            "tool_call_id": next_card.get("tool_call_id"),
+            "tool_status": next_card.get("status"),
+            "tool_success": bool(next_card.get("success")),
+            "tracked_process": next_card.get("tracked_process"),
+        },
+    )
+    return True
+
+
+async def _watch_background_tracked_run_shell_async(task_run_id: int, base_card: Dict[str, Any]) -> None:
+    tracked = base_card.get("tracked_process") if isinstance(base_card.get("tracked_process"), dict) else {}
+    token = str(tracked.get("token") or "").strip() or None
+    if not _claim_tracked_run_shell_watch(token):
+        return
+    db = SessionLocal()
+    try:
+        task_run = get_task_run(db, task_run_id)
+        if task_run is None or not isinstance(getattr(task_run, "chatroom_id", None), int):
+            return
+        handle = load_tracked_run_shell_handle(tracked) or tracked
+        if not isinstance(handle, dict):
+            return
+
+        async def emit_progress(progress: dict[str, Any]) -> None:
+            await store_runtime_card(
+                task_run.chatroom_id,
+                _build_tracked_run_shell_progress_card(
+                    task_run=task_run,
+                    base_card=base_card,
+                    progress=progress,
+                ),
+            )
+
+        result = await wait_for_tracked_run_shell(
+            handle,
+            progress_callback=emit_progress,
+            timeout_seconds=None,
+            progress_interval_seconds=2.0,
+            tail_chars=4000,
+            result_chars=50000,
+        )
+        record = load_tracked_run_shell_handle(handle) or handle
+        next_card = _tracked_run_shell_final_card_payload(base_card, record)
+        if next_card is None:
+            next_card = {
+                **base_card,
+                "success": bool(result.get("success")) if isinstance(result, dict) else False,
+                "status": str(result.get("status") or "failed") if isinstance(result, dict) else "failed",
+                "blocked": bool(result.get("blocked")) if isinstance(result, dict) else False,
+                "blocked_kind": result.get("blocked_kind") if isinstance(result, dict) else None,
+                "blocked_reason": result.get("blocked_reason") if isinstance(result, dict) else None,
+                "result": str(result.get("result") or "").strip() if isinstance(result, dict) else "Tracked run_shell finished without output.",
+                "tracked_process": record,
+            }
+        await store_runtime_card(task_run.chatroom_id, next_card)
+        task_run = get_task_run(db, task_run_id)
+        if _append_tracked_run_shell_completed_event(db, task_run, next_card):
+            db.commit()
+            _spawn_tracked_run_shell_followup(task_run_id, dict(next_card))
+        else:
+            db.commit()
+    except Exception as exc:
+        logger.exception("Tracked run_shell background watch failed for task_run_id=%s: %s", task_run_id, exc)
+    finally:
+        db.close()
+        _release_tracked_run_shell_watch(token)
+
+
+def _spawn_background_tracked_run_shell_watch(task_run_id: int, base_card: Dict[str, Any]) -> None:
+    def _runner() -> None:
+        try:
+            asyncio.run(_watch_background_tracked_run_shell_async(task_run_id, dict(base_card)))
+        except Exception as exc:
+            logger.exception("Tracked run_shell background watcher crashed for task_run_id=%s: %s", task_run_id, exc)
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"tracked-run-shell-watch-{task_run_id}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _runtime_card_is_running_tracked_run_shell(card: Dict[str, Any]) -> bool:
     return (
         str(card.get("type") or "").strip().lower() == "tool_call"
@@ -2133,22 +2353,11 @@ def _runtime_card_is_running_tracked_run_shell(card: Dict[str, Any]) -> bool:
     )
 
 
-def _task_run_has_pending_timeout_approval(task_run: TaskRun | None) -> bool:
-    if task_run is None:
-        return False
-    for item in list(getattr(task_run, "approval_queue_items", []) or []):
-        if str(getattr(item, "status", "") or "").strip().lower() != "pending":
-            continue
-        request_payload = load_approval_queue_request_payload(getattr(item, "request_payload_json", None))
-        if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
-            return True
-    return False
-
-
 def _task_run_has_tracked_shell_followup(
     task_run: TaskRun | None,
     *,
     token: str | None = None,
+    tool_call_id: str | None = None,
     include_completed_marker: bool = False,
 ) -> bool:
     if task_run is None:
@@ -2160,6 +2369,30 @@ def _task_run_has_tracked_shell_followup(
     ]
     if include_completed_marker:
         event_types.append("tracked_run_shell_completed")
+    if token or tool_call_id:
+        event_types.append("run_shell_continuation_claimed")
+    normalized_token = str(token or "").strip()
+    normalized_tool_call_id = str(tool_call_id or "").strip()
+
+    def _event_matches(payload: Dict[str, Any]) -> bool:
+        tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
+        event_status = str(payload.get("status") or "").strip().lower()
+        event_type = str(payload.get("event_type") or "").strip().lower()
+        if event_status == "claimed":
+            return False
+        action_taken = str(payload.get("action_taken") or "").strip().lower()
+        tool_status = str(payload.get("tool_status") or "").strip().lower()
+        if action_taken == "run_shell_continued_after_approval" and event_status == "completed":
+            if tool_status in {"", "background_running", "running", "approval_blocked"}:
+                return False
+        if normalized_token and tracked.get("token") == normalized_token:
+            return True
+        if normalized_tool_call_id and str(payload.get("tool_call_id") or "").strip() == normalized_tool_call_id:
+            return True
+        if normalized_tool_call_id and str(tracked.get("tool_call_id") or "").strip() == normalized_tool_call_id:
+            return True
+        return False
+
     query_session = object_session(task_run)
     if query_session is not None:
         query = (
@@ -2169,12 +2402,11 @@ def _task_run_has_tracked_shell_followup(
                 TaskRunEvent.event_type.in_(event_types),
             )
         )
-        if not token:
+        if not normalized_token and not normalized_tool_call_id:
             return query.first() is not None
         for event in query.all():
             payload = _task_run_event_payload(event)
-            tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
-            if tracked.get("token") == token:
+            if _event_matches(payload):
                 return True
         return False
 
@@ -2182,12 +2414,616 @@ def _task_run_has_tracked_shell_followup(
         if event.event_type not in event_types:
             continue
         payload = _task_run_event_payload(event)
-        if not token:
+        if not normalized_token and not normalized_tool_call_id:
             return True
+        if _event_matches(payload):
+            return True
+    return False
+
+
+def _task_run_has_terminal_tool_round_result(
+    task_run: TaskRun | None,
+    *,
+    tool_call_id: str | None = None,
+    token: str | None = None,
+) -> bool:
+    if task_run is None:
+        return False
+    normalized_tool_call_id = str(tool_call_id or "").strip()
+    normalized_token = str(token or "").strip()
+    if not normalized_tool_call_id and not normalized_token:
+        return False
+
+    def _result_matches(result: Any) -> bool:
+        if not isinstance(result, dict):
+            return False
+        if str(result.get("tool_name") or "").strip().lower() != "run_shell":
+            return False
+        status = str(result.get("status") or "").strip().lower()
+        if status in {"", "background_running", "running", "approval_blocked"}:
+            return False
+        if bool(result.get("blocked")):
+            return False
+        if normalized_tool_call_id and str(result.get("tool_call_id") or "").strip() == normalized_tool_call_id:
+            return True
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        tracked = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else {}
+        if normalized_token and str(tracked.get("token") or "").strip() == normalized_token:
+            return True
+        if normalized_tool_call_id and str(tracked.get("tool_call_id") or "").strip() == normalized_tool_call_id:
+            return True
+        return False
+
+    def _event_matches(event: TaskRunEvent) -> bool:
+        payload = _task_run_event_payload(event)
+        turn_state = payload.get("turn_local_state") if isinstance(payload.get("turn_local_state"), dict) else {}
+        tool_results = turn_state.get("tool_results") if isinstance(turn_state.get("tool_results"), list) else []
+        return any(_result_matches(result) for result in tool_results)
+
+    query_session = object_session(task_run)
+    if query_session is not None:
+        query = (
+            query_session.query(TaskRunEvent)
+            .filter(
+                TaskRunEvent.task_run_id == task_run.id,
+                TaskRunEvent.event_type == "tool_round_recorded",
+            )
+        )
+        return any(_event_matches(event) for event in query.all())
+
+    return any(
+        event.event_type == "tool_round_recorded" and _event_matches(event)
+        for event in list(getattr(task_run, "events", []) or [])
+    )
+
+
+def _task_run_has_delegated_result_report(task_run: TaskRun | None, *, token: str | None = None) -> bool:
+    if task_run is None:
+        return False
+    query_session = object_session(task_run)
+    events: list[TaskRunEvent]
+    if query_session is not None:
+        events = (
+            query_session.query(TaskRunEvent)
+            .filter(
+                TaskRunEvent.task_run_id == task_run.id,
+                TaskRunEvent.event_type == "delegated_task_result_reported",
+            )
+            .all()
+        )
+    else:
+        events = [
+            event
+            for event in list(getattr(task_run, "events", []) or [])
+            if getattr(event, "event_type", None) == "delegated_task_result_reported"
+        ]
+    if not token:
+        return bool(events)
+    for event in events:
+        payload = _task_run_event_payload(event)
         tracked = payload.get("tracked_process") if isinstance(payload.get("tracked_process"), dict) else {}
         if tracked.get("token") == token:
             return True
     return False
+
+
+def _find_delegated_parent_context(db: Session, child_task_run: TaskRun) -> dict[str, Any] | None:
+    child_client_turn_id = str(getattr(child_task_run, "client_turn_id", "") or "").strip()
+    if not child_client_turn_id.startswith("delegate-"):
+        return None
+
+    rows = (
+        db.query(Message)
+        .filter(Message.chatroom_id == child_task_run.chatroom_id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(200)
+        .all()
+    )
+    for row in rows:
+        metadata = _load_jsonish_payload(getattr(row, "metadata_json", None))
+        if str(metadata.get("client_turn_id") or "").strip() != child_client_turn_id:
+            continue
+        delegated_task = metadata.get("delegated_task") if isinstance(metadata.get("delegated_task"), dict) else {}
+        parent_task_run_id = metadata.get("parent_task_run_id") or delegated_task.get("parent_task_run_id")
+        if not parent_task_run_id:
+            continue
+        parent_task_run = get_task_run(db, parent_task_run_id)
+        if parent_task_run is None:
+            continue
+        return {
+            "parent_task_run": parent_task_run,
+            "task_id": delegated_task.get("task_id"),
+            "task_title": delegated_task.get("task_title") or child_task_run.title,
+            "task_description": delegated_task.get("task_description"),
+            "delegator": delegated_task.get("delegator") or parent_task_run.target_agent_name,
+            "target_agent_name": delegated_task.get("target_agent_name") or child_task_run.target_agent_name,
+            "child_client_turn_id": child_client_turn_id,
+            "required_outputs": delegated_task.get("required_outputs") if isinstance(delegated_task.get("required_outputs"), list) else [],
+        }
+
+    parent_events = (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.event_type == "delegated_task_dispatched")
+        .order_by(TaskRunEvent.id.desc())
+        .limit(500)
+        .all()
+    )
+    for event in parent_events:
+        payload = _task_run_event_payload(event)
+        if str(payload.get("child_client_turn_id") or "").strip() != child_client_turn_id:
+            continue
+        parent_task_run = get_task_run(db, getattr(event, "task_run_id", None))
+        if parent_task_run is None:
+            continue
+        return {
+            "parent_task_run": parent_task_run,
+            "task_id": payload.get("task_id"),
+            "task_title": payload.get("task_title") or child_task_run.title,
+            "task_description": payload.get("task_description"),
+            "delegator": payload.get("from_agent") or parent_task_run.target_agent_name,
+            "target_agent_name": payload.get("target_agent_name") or payload.get("to_agent") or child_task_run.target_agent_name,
+            "child_client_turn_id": child_client_turn_id,
+            "required_outputs": payload.get("required_outputs") if isinstance(payload.get("required_outputs"), list) else [],
+        }
+    return None
+
+
+def _parse_run_shell_arguments(arguments: str) -> dict[str, str]:
+    try:
+        parsed_arguments = json.loads(arguments or "{}")
+        if isinstance(parsed_arguments, dict):
+            return {
+                "command": str(parsed_arguments.get("command") or "").strip(),
+                "cwd": str(parsed_arguments.get("cwd") or "").strip(),
+            }
+    except Exception:
+        pass
+    return {"command": "", "cwd": ""}
+
+
+def _build_required_test_report(
+    *,
+    child_task_run: TaskRun,
+    parent_context: dict[str, Any],
+    tool_result: Any,
+    arguments: str,
+) -> dict[str, Any]:
+    parsed_arguments = _parse_run_shell_arguments(arguments)
+    raw_result = str(getattr(tool_result, "result", "") or "")
+    runner_result = normalize_test_runner_result(
+        command=parsed_arguments.get("command"),
+        cwd=parsed_arguments.get("cwd"),
+        status=getattr(tool_result, "status", None),
+        success=getattr(tool_result, "success", None),
+        result_text=raw_result,
+    )
+    counts = runner_result.get("counts") if isinstance(runner_result.get("counts"), dict) else {}
+    status = str(runner_result.get("test_status") or getattr(tool_result, "status", None) or "unknown").strip()
+    success = bool(getattr(tool_result, "success", False))
+    failed_count = counts.get("failed") or 0
+    error_count = counts.get("errors") or 0
+    valid_test_result = is_valid_test_runner_result(runner_result)
+    severity = "blocker" if (valid_test_result and (not success or failed_count or error_count)) else "none"
+    return {
+        "kind": "test_report",
+        "version": 1,
+        "runner_result": runner_result,
+        "task_id": parent_context.get("task_id"),
+        "task_title": parent_context.get("task_title") or child_task_run.title,
+        "producer": {
+            "agent_name": parent_context.get("target_agent_name") or child_task_run.target_agent_name,
+            "agent_type": "tester",
+        },
+        "command": parsed_arguments.get("command"),
+        "cwd": parsed_arguments.get("cwd"),
+        "status": status,
+        "success": success,
+        "counts": counts,
+        "severity": severity,
+        "blocked": severity == "blocker",
+        "failure_summary": extract_pytest_failure_summary(raw_result),
+        "raw_output_preview": _compact_runtime_text(raw_result, limit=3000),
+        "suggested_next_step": (
+            "Open a blocker/bug item and let the parent owner decide whether to route to Developer or adjust scope."
+            if severity == "blocker"
+            else "Parent owner may accept the test result or request additional validation."
+        ),
+    }
+
+
+def _delegated_test_report_context(
+    *,
+    child_task_run: TaskRun,
+    parent_context: dict[str, Any],
+    test_report: dict[str, Any],
+) -> tuple[str, str]:
+    task_title = str(test_report.get("task_title") or child_task_run.title or "delegated task").strip()
+    child_agent = str(parent_context.get("target_agent_name") or child_task_run.target_agent_name or "Tester").strip()
+    parent_agent = str(parent_context.get("delegator") or "owner").strip()
+    status = str(test_report.get("status") or "unknown").strip()
+    success = bool(test_report.get("success"))
+    counts = test_report.get("counts") if isinstance(test_report.get("counts"), dict) else {}
+    summary = f"{child_agent} produced required test_report for '{task_title}' and reported it to {parent_agent}: {status}."
+    lines = [
+        f"@{parent_agent} Test report from {child_agent}.",
+        "",
+        f"Task: {task_title}",
+        "Required output: test_report",
+        f"Status: {status}",
+        f"Success: {str(success).lower()}",
+        f"Severity: {test_report.get('severity') or 'unknown'}",
+        f"Blocked: {str(bool(test_report.get('blocked'))).lower()}",
+    ]
+    if test_report.get("command"):
+        lines.append(f"Command: {test_report.get('command')}")
+    if test_report.get("cwd"):
+        lines.append(f"Working directory: {test_report.get('cwd')}")
+    count_parts = []
+    for key in ("passed", "failed", "skipped", "errors"):
+        if counts.get(key) is not None:
+            count_parts.append(f"{key}={counts.get(key)}")
+    if count_parts:
+        lines.append(f"Counts: {', '.join(count_parts)}")
+    lines.extend(
+        [
+            "",
+            "Failure summary:",
+            str(test_report.get("failure_summary") or "(none)"),
+            "",
+            "Suggested next step:",
+            str(test_report.get("suggested_next_step") or "Parent owner decides next action."),
+            "",
+            f"{parent_agent} owns the next-step decision.",
+        ]
+    )
+    return summary, "\n".join(lines)
+
+
+def _persist_test_report_asset(
+    db: Session,
+    *,
+    child_task_run: TaskRun,
+    parent_context: dict[str, Any],
+    test_report: dict[str, Any],
+    report_content: str,
+) -> Asset | None:
+    project_id = getattr(child_task_run, "project_id", None)
+    if not isinstance(project_id, int):
+        return None
+    project = getattr(child_task_run, "project", None)
+    child_agent_name = str(parent_context.get("target_agent_name") or child_task_run.target_agent_name or "Tester").strip() or "Tester"
+    task_title = str(test_report.get("task_title") or child_task_run.title or "Test report").strip() or "Test report"
+    task_ref = str(parent_context.get("task_id") or getattr(child_task_run, "client_turn_id", None) or child_task_run.id)
+    pipeline_run_id = getattr(child_task_run, "pipeline_run_id", None)
+    counts = test_report.get("counts") if isinstance(test_report.get("counts"), dict) else {}
+    failure_summary = str(test_report.get("failure_summary") or "").strip()
+    front_matter = [
+        "# Test Report",
+        "",
+        f"- Task: {task_title}",
+        f"- Producer: {child_agent_name}",
+        f"- Status: {test_report.get('status') or 'unknown'}",
+        f"- Success: {str(bool(test_report.get('success'))).lower()}",
+        f"- Severity: {test_report.get('severity') or 'unknown'}",
+        f"- Blocked: {str(bool(test_report.get('blocked'))).lower()}",
+    ]
+    if test_report.get("command"):
+        front_matter.append(f"- Command: `{test_report.get('command')}`")
+    if test_report.get("cwd"):
+        front_matter.append(f"- Working directory: `{test_report.get('cwd')}`")
+    count_parts = [f"{key}={counts.get(key)}" for key in ("passed", "failed", "skipped", "errors") if counts.get(key) is not None]
+    if count_parts:
+        front_matter.append(f"- Counts: {', '.join(count_parts)}")
+    markdown = "\n".join(front_matter) + "\n\n## Report\n\n" + report_content.strip()
+    if failure_summary:
+        markdown += "\n\n## Failure Summary\n\n```text\n" + failure_summary + "\n```"
+    storage_path = build_timestamped_artifact_path(
+        directory="reports/tests",
+        subject=slug_artifact_subject(task_title) or "test-report",
+        run_ref=str(pipeline_run_id) if pipeline_run_id is not None else None,
+        task_ref=task_ref,
+        extension=".md",
+    )
+    _materialize_project_asset_workspace_file(project, storage_path, markdown)
+    asset = Asset(
+        project_id=project_id,
+        asset_type="document.test_report",
+        title=f"Test report - {task_title}",
+        summary=str(test_report.get("suggested_next_step") or "").strip() or f"Structured test report for {task_title}.",
+        content_json=json.dumps(test_report, ensure_ascii=False),
+        content_markdown=markdown,
+        status="current",
+        is_current=True,
+        owner_agent=child_agent_name,
+        source_input_refs_json=json.dumps(
+            [
+                str(parent_context.get("task_id") or ""),
+                str(getattr(child_task_run, "client_turn_id", None) or ""),
+            ],
+            ensure_ascii=False,
+        ),
+        storage_path=storage_path,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
+
+
+def _materialize_project_asset_workspace_file(
+    project: Project | None,
+    relative_path: str,
+    content: str,
+) -> str | None:
+    workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
+    normalized_relative = str(relative_path or "").replace("\\", "/").strip().lstrip("/")
+    if not workspace_path or not normalized_relative:
+        return None
+    try:
+        workspace = Path(workspace_path).expanduser().resolve()
+        if not workspace.exists() or not workspace.is_dir():
+            return None
+        target = (workspace / normalized_relative).resolve()
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            return None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        archive_workspace_artifact_snapshot(workspace, normalized_relative, next_content=content)
+        target.write_text(content, encoding="utf-8")
+        return normalized_relative
+    except OSError:
+        logger.warning("Failed to materialize project asset at %s", normalized_relative, exc_info=True)
+        return None
+
+
+def _save_chat_message_in_session(
+    db: Session,
+    *,
+    chatroom_id: int,
+    agent_id: int | None,
+    content: str,
+    message_type: str,
+    metadata: dict[str, Any] | None = None,
+) -> Message:
+    message = Message(
+        chatroom_id=chatroom_id,
+        agent_id=agent_id,
+        content=content,
+        message_type=message_type,
+        metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+    )
+    db.add(message)
+    db.flush()
+    db.refresh(message)
+    return message
+
+
+async def _report_delegated_child_result_to_parent(
+    db: Session,
+    child_task_run: TaskRun,
+    *,
+    parent_context: dict[str, Any],
+    tool_result: Any,
+    arguments: str,
+    tracked_process: dict[str, Any],
+) -> bool:
+    parent_task_run = parent_context.get("parent_task_run")
+    if parent_task_run is None:
+        return False
+    parent_status = str(getattr(parent_task_run, "status", "") or "").strip().lower()
+    if parent_status == "cancelled":
+        return False
+    token = str(tracked_process.get("token") or "").strip() or None
+    if _task_run_has_delegated_result_report(child_task_run, token=token):
+        return True
+
+    required_outputs = parent_context.get("required_outputs") if isinstance(parent_context.get("required_outputs"), list) else []
+    test_report = (
+        _build_required_test_report(
+            child_task_run=child_task_run,
+            parent_context=parent_context,
+            tool_result=tool_result,
+            arguments=arguments,
+        )
+        if "test_report" in required_outputs
+        or str(parent_context.get("target_agent_name") or child_task_run.target_agent_name or "").strip().lower() == "tester"
+        else None
+    )
+    if test_report is not None:
+        runner_result = test_report.get("runner_result") if isinstance(test_report.get("runner_result"), dict) else {}
+        if not is_valid_test_runner_result(runner_result):
+            append_task_event(
+                db,
+                child_task_run,
+                "test_runner_result_classified",
+                agent_name=parent_context.get("target_agent_name") or child_task_run.target_agent_name,
+                summary="Tester classified the tool result as a runner issue, not a valid test result.",
+                payload={
+                    "task_id": parent_context.get("task_id"),
+                    "task_title": parent_context.get("task_title") or child_task_run.title,
+                    "runner_result": runner_result,
+                },
+            )
+            return False
+        summary, report_content = _delegated_test_report_context(
+            child_task_run=child_task_run,
+            parent_context=parent_context,
+            test_report=test_report,
+        )
+        test_report_asset = _persist_test_report_asset(
+            db,
+            child_task_run=child_task_run,
+            parent_context=parent_context,
+            test_report=test_report,
+            report_content=report_content,
+        )
+    else:
+        test_report_asset = None
+        parsed = _parse_run_shell_arguments(arguments)
+        test_report = {
+            "kind": "delegated_tool_result",
+            "version": 1,
+            "task_title": parent_context.get("task_title") or child_task_run.title,
+            "command": parsed.get("command"),
+            "cwd": parsed.get("cwd"),
+            "status": getattr(tool_result, "status", None),
+            "success": getattr(tool_result, "success", None),
+            "result_preview": _compact_runtime_text(getattr(tool_result, "result", ""), limit=3000),
+        }
+        parent_agent = str(parent_context.get("delegator") or "owner").strip()
+        child_agent = str(parent_context.get("target_agent_name") or child_task_run.target_agent_name or "Agent").strip()
+        summary = (
+            f"{child_agent} reported delegated task '{test_report['task_title']}' result to {parent_agent}: "
+            f"{test_report.get('status') or 'unknown'}."
+        )
+        report_lines = [
+            f"@{parent_agent} Delegated task result from {child_agent}.",
+            "",
+            f"Task: {test_report['task_title']}",
+            f"Status: {test_report.get('status') or 'unknown'}",
+            f"Success: {str(bool(test_report.get('success'))).lower()}",
+        ]
+        if test_report.get("command"):
+            report_lines.append(f"Command: {test_report.get('command')}")
+        if test_report.get("cwd"):
+            report_lines.append(f"Working directory: {test_report.get('cwd')}")
+        report_lines.extend(["", "Result:", test_report["result_preview"] or "(no output)", "", f"{parent_agent} owns the next-step decision."])
+        report_content = "\n".join(report_lines)
+    parsed_arguments = _parse_run_shell_arguments(arguments)
+    summary_for_payload = summary
+    result_payload_preview = _compact_runtime_text(getattr(tool_result, "result", ""), limit=3000)
+    child_agent_name = str(parent_context.get("target_agent_name") or child_task_run.target_agent_name or "").strip()
+    child_agent = _find_db_agent_by_type(db, child_agent_name)
+    parent_agent_name = str(parent_context.get("delegator") or parent_task_run.target_agent_name or "").strip()
+    metadata = {
+        "client_turn_id": getattr(parent_task_run, "client_turn_id", None),
+        "delegated_task_result": {
+            "task_id": parent_context.get("task_id"),
+            "task_title": parent_context.get("task_title") or child_task_run.title,
+            "parent_task_run_id": getattr(parent_task_run, "id", None),
+            "child_task_run_id": getattr(child_task_run, "id", None),
+            "child_client_turn_id": getattr(child_task_run, "client_turn_id", None),
+            "from_agent": child_agent_name or child_task_run.target_agent_name,
+            "to_agent": parent_context.get("delegator") or parent_task_run.target_agent_name,
+            "tool_name": getattr(tool_result, "tool_name", None),
+            "tool_status": getattr(tool_result, "status", None),
+            "tool_success": getattr(tool_result, "success", None),
+            "tracked_process": tracked_process,
+            "required_outputs": required_outputs,
+            "produced_outputs": ["test_report"] if test_report.get("kind") == "test_report" else [],
+            "artifact_asset_id": getattr(test_report_asset, "id", None),
+        },
+        "test_report": test_report if test_report.get("kind") == "test_report" else None,
+    }
+    if test_report_asset is not None:
+        metadata["test_report_artifact"] = {
+            "asset_id": test_report_asset.id,
+            "asset_type": test_report_asset.asset_type,
+            "title": test_report_asset.title,
+            "storage_path": test_report_asset.storage_path,
+        }
+    if metadata["test_report"] is None:
+        metadata.pop("test_report", None)
+    saved_message = _save_chat_message_in_session(
+        db,
+        chatroom_id=child_task_run.chatroom_id,
+        agent_id=getattr(child_agent, "id", None),
+        content=report_content,
+        message_type="text",
+        metadata=metadata,
+    )
+    db.commit()
+    await publish_saved_chat_message(
+        db,
+        child_task_run.chatroom_id,
+        message_id=saved_message.id,
+        content=report_content,
+        agent_name=child_agent_name or child_task_run.target_agent_name,
+        message_type=saved_message.message_type,
+        created_at=saved_message.created_at,
+        metadata=metadata,
+    )
+    if parent_agent_name:
+        await _publish_agent_handoff_card(
+            chatroom_id=child_task_run.chatroom_id,
+            from_agent=child_agent_name or child_task_run.target_agent_name or "agent",
+            to_agent=parent_agent_name,
+            content=report_content,
+            client_turn_id=getattr(parent_task_run, "client_turn_id", None) or getattr(child_task_run, "client_turn_id", None) or "",
+            extra_metadata={
+                "handoff_kind": "delegated_task_result",
+                "message_id": getattr(saved_message, "id", None),
+                "parent_task_run_id": getattr(parent_task_run, "id", None),
+                "child_task_run_id": getattr(child_task_run, "id", None),
+                "required_outputs": required_outputs,
+            },
+        )
+    event_payload = {
+        "task_id": parent_context.get("task_id"),
+        "task_title": parent_context.get("task_title") or child_task_run.title,
+        "parent_task_run_id": getattr(parent_task_run, "id", None),
+        "child_task_run_id": getattr(child_task_run, "id", None),
+        "child_client_turn_id": getattr(child_task_run, "client_turn_id", None),
+        "message_id": getattr(saved_message, "id", None),
+        "tool_name": getattr(tool_result, "tool_name", None),
+        "tool_status": getattr(tool_result, "status", None),
+        "tool_success": getattr(tool_result, "success", None),
+        "tool_command": parsed_arguments.get("command"),
+        "tool_cwd": parsed_arguments.get("cwd"),
+        "tool_result_preview": result_payload_preview,
+        "tracked_process": tracked_process,
+        "required_outputs": required_outputs,
+        "produced_outputs": ["test_report"] if test_report.get("kind") == "test_report" else [],
+        "test_report": test_report if test_report.get("kind") == "test_report" else None,
+    }
+    if event_payload["test_report"] is None:
+        event_payload.pop("test_report", None)
+    if test_report.get("kind") == "test_report":
+        append_task_event(
+            db,
+            child_task_run,
+            "test_report_produced",
+            agent_name=child_agent_name or child_task_run.target_agent_name,
+            message_id=getattr(saved_message, "id", None),
+            summary=f"{child_agent_name or child_task_run.target_agent_name} produced required test_report.",
+            payload={
+                **event_payload,
+                "output_kind": "test_report",
+            },
+        )
+    append_task_event(
+        db,
+        child_task_run,
+        "delegated_task_result_reported",
+        agent_name=child_agent_name or child_task_run.target_agent_name,
+        message_id=getattr(saved_message, "id", None),
+        summary=summary_for_payload,
+        payload=event_payload,
+    )
+    append_task_event(
+        db,
+        parent_task_run,
+        "delegated_task_result_reported",
+        agent_name=child_agent_name or child_task_run.target_agent_name,
+        message_id=getattr(saved_message, "id", None),
+        summary=summary_for_payload,
+        payload=event_payload,
+    )
+    complete_task_run(db, child_task_run, status="completed", summary=summary_for_payload)
+    _reopen_task_run_for_followup(db, parent_task_run)
+    await trigger_agent_response(
+        child_task_run.chatroom_id,
+        "",
+        getattr(parent_task_run, "client_turn_id", None),
+        task_run_id=getattr(parent_task_run, "id", None),
+        extra_context=(
+            f"A new agent handoff message from {child_agent_name or child_task_run.target_agent_name or 'agent'} "
+            f"to {parent_agent_name or 'the parent owner'} was just saved in chat history. "
+            "Read that message and decide the next step."
+        ),
+        checkpoint_snapshot=build_task_run_checkpoint_snapshot(parent_task_run),
+    )
+    return True
 
 
 async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_card: Dict[str, Any]) -> None:
@@ -2200,7 +3036,10 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
             return
         tracked_process = next_card.get("tracked_process") if isinstance(next_card.get("tracked_process"), dict) else {}
         token = str(tracked_process.get("token") or "").strip() or None
-        if _task_run_has_tracked_shell_followup(task_run, token=token):
+        tool_call_id = str(next_card.get("tool_call_id") or tracked_process.get("tool_call_id") or "").strip() or None
+        if _task_run_has_tracked_shell_followup(task_run, token=token, tool_call_id=tool_call_id):
+            return
+        if _task_run_has_terminal_tool_round_result(task_run, token=token, tool_call_id=tool_call_id):
             return
 
         arguments = str(next_card.get("arguments") or "{}")
@@ -2224,6 +3063,7 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
             arguments=arguments,
             result=result_payload,
             success=bool(next_card.get("success")),
+            max_result_chars=50000,
         )
         record_runner_tool_round(
             db,
@@ -2238,6 +3078,18 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
                 "tracked_process": tracked_process,
             },
         )
+        parent_context = _find_delegated_parent_context(db, task_run)
+        if parent_context is not None:
+            reported = await _report_delegated_child_result_to_parent(
+                db,
+                task_run,
+                parent_context=parent_context,
+                tool_result=tool_result,
+                arguments=arguments,
+                tracked_process=tracked_process,
+            )
+            if reported:
+                return
         append_task_event(
             db,
             task_run,
@@ -2328,6 +3180,8 @@ def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | No
             continue
         if not tracked_run_shell_has_exit(record) and tracked_run_shell_is_active(record):
             continue
+        if not tracked_run_shell_has_exit(record) and not tracked_run_shell_is_active(record):
+            continue
         next_card = _tracked_run_shell_final_card_payload(card, record)
         if next_card is None:
             continue
@@ -2338,34 +3192,7 @@ def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | No
 
         task_run_id = next_card.get("run_id") or record.get("task_run_id")
         task_run = get_task_run(db, task_run_id)
-        if (
-            task_run is not None
-            and str(getattr(task_run, "status", "") or "").strip().lower() == "running"
-            and not _task_run_has_pending_timeout_approval(task_run)
-            and not _task_run_has_tracked_shell_followup(
-                task_run,
-                token=(
-                    str((next_card.get("tracked_process") or {}).get("token") or "").strip()
-                    if isinstance(next_card.get("tracked_process"), dict)
-                    else None
-                ),
-                include_completed_marker=True,
-            )
-        ):
-            append_task_event(
-                db,
-                task_run,
-                "tracked_run_shell_completed",
-                agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or None,
-                summary="Tracked run_shell completed; agent follow-up will analyze the result.",
-                payload={
-                    "tool_name": "run_shell",
-                    "tool_call_id": next_card.get("tool_call_id"),
-                    "tool_status": next_card.get("status"),
-                    "tool_success": bool(next_card.get("success")),
-                    "tracked_process": next_card.get("tracked_process"),
-                },
-            )
+        if _append_tracked_run_shell_completed_event(db, task_run, next_card):
             _spawn_tracked_run_shell_followup(task_run.id, dict(next_card))
     if updated:
         db.commit()
@@ -2503,29 +3330,30 @@ async def _recover_tracked_single_agent_run_shell_task_run(
 ) -> bool:
     if str(task_run.status or "").strip().lower() != "running":
         return False
-    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
-    approval_items = [
-        item
-        for item in list(getattr(task_run, "approval_queue_items", []) or [])
-        if str(getattr(item, "status", "") or "").strip().lower() == "pending"
-    ]
-    pending_timeout_item = next(
-        (
-            item for item in reversed(approval_items)
-            if str(getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
-            and str(load_approval_queue_request_payload(getattr(item, "request_payload_json", None)).get("blocked_kind") or "").strip().lower() == "timeout"
-        ),
-        None,
-    )
-    if pending_timeout_item is None:
-        return False
-
-    request_payload = load_approval_queue_request_payload(getattr(pending_timeout_item, "request_payload_json", None))
-    metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
-    tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else {}
-    tracked_handle = load_tracked_run_shell_handle(tracked_process)
+    tracked_handle, source_payload = _find_tracked_run_shell_for_task_run(db, task_run)
     if tracked_handle is None:
         return False
+    if tracked_run_shell_is_active(tracked_handle) and not tracked_run_shell_has_exit(tracked_handle):
+        return False
+    token = str(tracked_handle.get("token") or "").strip() or None
+    tool_call_id = str(tracked_handle.get("tool_call_id") or "").strip() or None
+    if _task_run_has_tracked_shell_followup(
+        task_run,
+        token=token,
+        tool_call_id=tool_call_id,
+        include_completed_marker=True,
+    ):
+        return False
+
+    arguments = json.dumps(
+        {
+            "command": tracked_handle.get("command") or "",
+            "cwd": tracked_handle.get("cwd") or ".",
+            "timeout_seconds": tracked_handle.get("timeout_seconds"),
+        },
+        ensure_ascii=False,
+    )
+    turn = max(1, int(tracked_handle.get("turn") or 1))
 
     append_task_event(
         db,
@@ -2537,8 +3365,9 @@ async def _recover_tracked_single_agent_run_shell_task_run(
             "task_run_id": task_run.id,
             "trigger": trigger,
             "recovery_kind": "run_shell_tracked_process",
-            "tracked_process": tracked_process,
-            "checkpoint_snapshot": checkpoint_snapshot,
+            "tracked_process": tracked_handle,
+            "checkpoint_snapshot": build_task_run_checkpoint_snapshot(task_run),
+            **source_payload,
         },
     )
 
@@ -2554,9 +3383,9 @@ async def _recover_tracked_single_agent_run_shell_task_run(
         )
 
     tool_result = build_tool_result_record(
-        tool_call_id=request_payload.get("tool_call_id"),
+        tool_call_id=tracked_handle.get("tool_call_id"),
         tool_name="run_shell",
-        arguments=resolve_replay_arguments_text(request_payload),
+        arguments=arguments,
         result=result,
         success=bool(result.get("success")) if isinstance(result, dict) and result.get("__catown_tool_result__") is True else False,
     )
@@ -2564,14 +3393,15 @@ async def _recover_tracked_single_agent_run_shell_task_run(
         db,
         task_run,
         agent_name=(task_run.target_agent_name or "").strip() or "agent",
-        turn=max(1, int(request_payload.get("turn") or 1)),
+        turn=turn,
         tool_names=["run_shell"],
         tool_results=[tool_result],
         summary="Recovered tracked run_shell result after backend restart.",
         payload={
             "recovery": True,
             "recovery_kind": "run_shell_tracked_process",
-            "tracked_process": tracked_process,
+            "tracked_process": tracked_handle,
+            **source_payload,
         },
     )
 
@@ -2585,47 +3415,20 @@ async def _recover_tracked_single_agent_run_shell_task_run(
         blocked_kind=tool_result.blocked_kind,
         blocked_reason=tool_result.blocked_reason,
     )
-    resolution_payload = build_queue_replay_resolution_payload(
-        request_payload=request_payload,
-        replay_result=recovery_replay_result,
-        action_taken="startup_recovered",
+    fake_item = SimpleNamespace(
+        id=None,
+        task_run_id=task_run.id,
+        chatroom_id=task_run.chatroom_id,
+        project_id=task_run.project_id,
+        agent_name=task_run.target_agent_name,
+        target_name="run_shell",
+        target_kind="tool",
     )
-    resolution_payload.update(
-        await _continue_runtime_after_approved_tool_replay(
-            db,
-            pending_timeout_item,
-            request_payload,
-            recovery_replay_result,
-        )
-    )
-    resolved_item = resolve_approval_queue_item(
+    followup_payload = await _continue_runtime_after_approved_tool_replay(
         db,
-        pending_timeout_item,
-        status="approved",
-        resolved_by=f"startup:{trigger}",
-        resolution_note="Recovered tracked run_shell result after backend restart.",
-        resolution_payload=resolution_payload,
-    )
-    append_task_event(
-        db,
-        task_run,
-        "approval_queue_item_resolved",
-        agent_name=pending_timeout_item.agent_name,
-        summary="Recovered timeout queue item after backend restart.",
-        payload=build_approval_queue_item_resolved_event_payload(
-            resolved_item or pending_timeout_item,
-            status="approved",
-            resolved_by=f"startup:{trigger}",
-            request_payload=request_payload,
-            resolution_payload=resolution_payload,
-        ),
-    )
-    _finalize_noncontinuable_approval_task_run(
-        db,
-        get_task_run(db, task_run.id),
-        item=resolved_item or pending_timeout_item,
-        replay_result=recovery_replay_result,
-        resolution_payload=resolution_payload,
+        fake_item,
+        {},
+        recovery_replay_result,
     )
     append_task_event(
         db,
@@ -2637,9 +3440,10 @@ async def _recover_tracked_single_agent_run_shell_task_run(
             "task_run_id": task_run.id,
             "trigger": trigger,
             "recovery_kind": "run_shell_tracked_process",
-            "tracked_process": tracked_process,
-            "followup_status": resolution_payload.get("followup_status"),
-            "followup_reason": resolution_payload.get("followup_reason"),
+            "tracked_process": tracked_handle,
+            "followup_status": followup_payload.get("followup_status"),
+            "followup_reason": followup_payload.get("followup_reason"),
+            **source_payload,
         },
     )
     return True
@@ -3142,10 +3946,12 @@ async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
                     task_run = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                     if task_run is None or str(task_run.status or "").strip().lower() != "running":
                         skipped += 1
-                    elif await _recover_tracked_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
-                        recovered += 1
                     elif await _recover_orphaned_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
                         recovered += 1
+                    elif await _recover_tracked_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
+                        recovered += 1
+                    elif _task_run_has_tracked_shell_followup(task_run, include_completed_marker=True):
+                        skipped += 1
                     elif _terminalize_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
                         interrupted += 1
                     else:
@@ -3342,6 +4148,7 @@ class ProjectBrowserArtifactInfo(BaseModel):
     path: str
     name: str
     type: str
+    agent_name: Optional[str] = None
     size: Optional[int] = None
     mtime: Optional[float] = None
 
@@ -3353,11 +4160,22 @@ class ProjectBrowserInfo(BaseModel):
     truncated: bool = False
 
 
+class ProjectBrowserWatchEvent(BaseModel):
+    type: str
+    workspace_path: str
+    changed: bool = False
+    reason: Optional[str] = None
+    changed_paths: List[str] = Field(default_factory=list)
+    truncated: bool = False
+    snapshot_id: Optional[str] = None
+
+
 class ChatProcessNodeInfo(BaseModel):
     id: str
     label: str
     kind: str
     detail: str = ""
+    agent_name: Optional[str] = None
     status: Optional[str] = None
     parent_id: Optional[str] = None
     timestamp: Optional[str] = None
@@ -3408,6 +4226,7 @@ class MessageResponse(BaseModel):
     message_type: str
     created_at: str
     client_turn_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     runtime_summary: Optional[Dict[str, Any]] = None
 
 
@@ -3551,28 +4370,7 @@ CHAT_PROCESS_TASK_STALE_SECONDS = 120
 
 
 def _project_browser_artifact_type(path: str) -> Optional[str]:
-    normalized = path.replace("\\", "/").lower()
-    if not normalized or re.match(r"^@[\w.-]+\b", normalized):
-        return None
-    if re.search(r"(^|/)adr[-_./]|\badr[-_ ]?\d+|\barchitecture[-_ ]decision", normalized):
-        return "ADR"
-    if re.search(r"\bprd\b|product[-_ ]requirements?|requirements?[-_ ]doc", normalized):
-        return "PRD"
-    if re.search(r"\btech[-_ ]?spec\b|\bspecification\b|\bspec\b|design[-_ ]doc|proposal", normalized):
-        return "Spec"
-    if re.search(r"test[-_ ]?(plan|report|result|summary)|qa[-_ ]?report|verification", normalized):
-        return "Test"
-    if re.search(r"\breport\b|audit|review", normalized):
-        return "Report"
-    if re.search(r"changelog|change[-_ ]?log|release[-_ ]?notes?", normalized):
-        return "Release"
-    if re.search(r"readme|docs?/", normalized):
-        return "Doc"
-    if "artifact" in normalized:
-        return "Artifact"
-    if re.search(r"\.(md|mdx|pdf|docx?)$", normalized) and re.search(r"plan|summary|guide|notes|decision|migration|deploy", normalized):
-        return "Doc"
-    return None
+    return classify_workspace_artifact_path(path)
 
 
 def _project_browser_file_records(workspace: Path, file_path: Path) -> tuple[ProjectBrowserFileInfo, Optional[ProjectBrowserArtifactInfo]] | None:
@@ -3716,6 +4514,137 @@ def _scan_project_browser(workspace_path: str) -> ProjectBrowserInfo:
     )
 
 
+def _project_browser_watch_snapshot(workspace_path: str) -> dict[str, Any]:
+    workspace = Path(workspace_path).expanduser().resolve()
+    if not workspace.exists() or not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="Workspace path not found")
+
+    files: Dict[str, tuple[int, int]] = {}
+    visited_dirs = 0
+    emitted_files = 0
+    truncated = False
+
+    for root, dirnames, filenames in os.walk(workspace):
+        root_path = Path(root)
+        visited_dirs += 1
+        if visited_dirs > PROJECT_BROWSER_MAX_DIRS:
+            truncated = True
+            dirnames[:] = []
+            break
+
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames
+            if dirname not in PROJECT_BROWSER_IGNORED_DIRS and not dirname.startswith(".catown-")
+        )
+
+        for filename in sorted(filenames):
+            if filename.startswith(".") and filename not in {".env.example"}:
+                continue
+            file_path = root_path / filename
+            try:
+                if not file_path.is_file():
+                    continue
+                stat = file_path.stat()
+                relative_path = file_path.relative_to(workspace).as_posix()
+            except (OSError, ValueError):
+                continue
+            files[relative_path] = (int(stat.st_mtime_ns), int(stat.st_size))
+            emitted_files += 1
+            if emitted_files >= PROJECT_BROWSER_MAX_FILES:
+                truncated = True
+                dirnames[:] = []
+                break
+        if truncated:
+            break
+
+    snapshot_hash = hashlib.sha1()
+    for path, (mtime_ns, size) in sorted(files.items()):
+        snapshot_hash.update(path.encode("utf-8", errors="ignore"))
+        snapshot_hash.update(b"\0")
+        snapshot_hash.update(str(mtime_ns).encode("ascii"))
+        snapshot_hash.update(b"\0")
+        snapshot_hash.update(str(size).encode("ascii"))
+        snapshot_hash.update(b"\0")
+    snapshot_hash.update(b"truncated:")
+    snapshot_hash.update(b"1" if truncated else b"0")
+
+    return {
+        "workspace_path": str(workspace),
+        "files": files,
+        "truncated": truncated,
+        "snapshot_id": snapshot_hash.hexdigest(),
+    }
+
+
+def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    previous_files = previous.get("files", {})
+    current_files = current.get("files", {})
+    changed_paths = sorted(
+        path
+        for path in set(previous_files.keys()) | set(current_files.keys())
+        if previous_files.get(path) != current_files.get(path)
+    )
+    changed = bool(changed_paths) or bool(previous.get("truncated")) != bool(current.get("truncated"))
+    return {
+        "changed": changed,
+        "changed_paths": changed_paths[:64],
+        "truncated": bool(current.get("truncated")),
+        "snapshot_id": current.get("snapshot_id"),
+    }
+
+
+async def _stream_project_browser_watch_events(
+    workspace_path: str,
+    request: Request,
+    poll_interval_seconds: float = 2.0,
+    max_events: Optional[int] = None,
+):
+    interval = min(max(poll_interval_seconds, 0.75), 10.0)
+    emitted_events = 0
+    previous = _project_browser_watch_snapshot(workspace_path)
+    yield json.dumps(
+        ProjectBrowserWatchEvent(
+            type="ready",
+            workspace_path=previous["workspace_path"],
+            changed=False,
+            reason="initial_snapshot",
+            changed_paths=[],
+            truncated=bool(previous.get("truncated")),
+            snapshot_id=previous.get("snapshot_id"),
+        ).model_dump(),
+        ensure_ascii=False,
+    ) + "\n"
+    emitted_events += 1
+    if max_events is not None and emitted_events >= max_events:
+        return
+
+    while True:
+        if runtime_is_shutting_down() or await request.is_disconnected():
+            break
+        await asyncio.sleep(interval)
+        if runtime_is_shutting_down() or await request.is_disconnected():
+            break
+        current = _project_browser_watch_snapshot(workspace_path)
+        diff = _diff_project_browser_watch_snapshots(previous, current)
+        if diff["changed"]:
+            yield json.dumps(
+                ProjectBrowserWatchEvent(
+                    type="refresh_needed",
+                    workspace_path=current["workspace_path"],
+                    changed=True,
+                    reason="workspace_changed",
+                    changed_paths=diff["changed_paths"],
+                    truncated=diff["truncated"],
+                    snapshot_id=diff["snapshot_id"],
+                ).model_dump(),
+                ensure_ascii=False,
+            ) + "\n"
+            emitted_events += 1
+            previous = current
+            if max_events is not None and emitted_events >= max_events:
+                break
+
+
 def _one_line_preview(value: Any, fallback: str, limit: int = 96) -> str:
     text = str(value or "").strip()
     if not text:
@@ -3768,7 +4697,7 @@ def _is_internal_tool_pause(card: Dict[str, Any]) -> bool:
         return False
     blocked_kind = str(card.get("blocked_kind") or "").strip().lower()
     status = str(card.get("status") or "").strip().lower()
-    return blocked_kind in {"approval", "timeout"} or status in {"approval_blocked", "timeout_waiting"}
+    return blocked_kind == "approval" or status == "approval_blocked"
 
 
 def _is_shell_process_card(card: Dict[str, Any]) -> bool:
@@ -3873,7 +4802,7 @@ def _is_running_browser_task_run(task_run: TaskRun) -> bool:
     checkpoint = build_task_run_checkpoint_snapshot(task_run)
     cursor = checkpoint.get("continuation_cursor")
     blocked_kind = str((cursor or {}).get("blocked_kind") or "").strip().lower() if isinstance(cursor, dict) else ""
-    return blocked_kind not in {"approval", "timeout"}
+    return blocked_kind != "approval"
 
 
 def _dedupe_process_entries(entries: List[ChatProcessNodeInfo]) -> List[ChatProcessNodeInfo]:
@@ -3913,6 +4842,7 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
             label=command,
             kind="command",
             detail=str(card_payload.get("summary") or _one_line_preview(output or card_payload.get("result"), "Shell process is running.", 140)),
+            agent_name=str(card_payload.get("agent") or "").strip() or None,
             status=process_status,
             parent_id=_running_shell_process_parent_id(card_payload),
             timestamp=created_at.isoformat() if hasattr(created_at, "isoformat") else None,
@@ -3942,6 +4872,7 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
             label=run.title,
             kind="task",
             detail=run.summary or run.user_request or f"{len(getattr(run, 'events', []) or [])} events",
+            agent_name=(run.target_agent_name or "").strip() or None,
             status="running",
             timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
         ))
@@ -3963,6 +4894,7 @@ def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = C
                     label=f"{handle_agent} ({dispatch_kind})",
                     kind="subagent",
                     detail=summary_text or response_preview or control_state.replace("_", " "),
+                    agent_name=handle_agent or None,
                     status="running" if control_state in {"await_dependency", "await_dispatch", "await_completion"} else control_state,
                     parent_id=f"task-run:{run.id}",
                     timestamp=timestamp.isoformat() if hasattr(timestamp, "isoformat") else None,
@@ -4119,6 +5051,7 @@ def _write_project_workspace_file(workspace_path: str, request: ProjectFileWrite
     if len(request.content) > PROJECT_FILE_WRITE_MAX_CHARS:
         raise HTTPException(status_code=400, detail="File content is too large to save from chat")
 
+    workspace = Path(workspace_path).expanduser().resolve()
     file_path = _resolve_project_workspace_file(workspace_path, request.path)
     stat = file_path.stat()
     if request.expected_mtime is not None and abs(stat.st_mtime - request.expected_mtime) > 0.0001:
@@ -4128,6 +5061,7 @@ def _write_project_workspace_file(workspace_path: str, request: ProjectFileWrite
     if b"\x00" in current_preview:
         raise HTTPException(status_code=400, detail="Binary files cannot be edited from chat")
 
+    archive_workspace_artifact_snapshot(workspace, request.path, next_content=request.content)
     file_path.write_text(request.content, encoding="utf-8")
     return _read_project_workspace_file(workspace_path, request.path)
 
@@ -4591,6 +5525,36 @@ async def stream_project_browser(project_id: int, db: Session = Depends(get_db))
     return StreamingResponse(_stream_project_browser(project.workspace_path), media_type="application/x-ndjson")
 
 
+@router.get("/projects/{project_id}/browser/watch")
+async def watch_project_browser(
+    project_id: int,
+    request: Request,
+    poll_interval: float = Query(2.0, ge=0.5, le=10.0),
+    max_events: Optional[int] = Query(None, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Stream bounded workspace change notifications for the project browser."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+    return StreamingResponse(
+        _stream_project_browser_watch_events(
+            project.workspace_path,
+            request=request,
+            poll_interval_seconds=poll_interval,
+            max_events=max_events,
+        ),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/projects/{project_id}/files/read", response_model=ProjectFileReadInfo)
 async def read_project_file(project_id: int, path: str, db: Session = Depends(get_db)):
     """Return a bounded, workspace-scoped read-only preview of a project file."""
@@ -4716,6 +5680,7 @@ async def get_messages(chatroom_id: int, limit: int = 50, db: Session = Depends(
             message_type=msg.message_type,
             created_at=msg.created_at.isoformat(),
             client_turn_id=_message_client_turn_id(msg),
+            metadata=getattr(msg, "metadata", {}) or {},
             runtime_summary=_build_message_runtime_summary(
                 db,
                 chatroom_id=chatroom_id,
@@ -4898,6 +5863,15 @@ async def get_task_run_detail(
     db: Session = Depends(get_db),
 ):
     """Get a single orchestration/task run with ordered ledger events."""
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    reconcile_tracked_run_shell_runtime_cards(db, task_run.chatroom_id, limit=200)
+    db.expire_all()
     task_run = (
         db.query(TaskRun)
         .filter(TaskRun.id == task_run_id)
@@ -5206,6 +6180,282 @@ async def _replay_blocked_tool_queue_item(
     return await _replay_runtime_blocked_tool_queue_item(db, item, request_payload)
 
 
+async def _start_approved_run_shell_queue_item(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+):
+    from tools import tool_registry
+    from tools.file_operations import reset_active_workspace, set_active_workspace
+
+    tool_name = "run_shell"
+    arguments_text = resolve_replay_arguments_text(request_payload)
+    loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
+    if arguments_error is not None or loaded_arguments is None:
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result=f"Error starting approved run_shell: invalid arguments ({arguments_error}).",
+            success=False,
+            request_payload=request_payload,
+        )
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == getattr(item, "chatroom_id", None)).first()
+    if chatroom is None:
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error starting approved run_shell: chatroom no longer exists.",
+            success=False,
+            request_payload=request_payload,
+        )
+
+    project = _resolve_chatroom_project(db, chatroom)
+    agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
+    agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    runtime_kwargs = build_tool_runtime_kwargs(
+        agent,
+        chatroom.id,
+        project,
+        task_run_id=getattr(item, "task_run_id", None),
+        client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+    )
+    workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
+    logger.info(
+        "[ApprovalFlow] run-shell-approved-start queue_item_id=%s task_run_id=%s chatroom_id=%s project_id=%s workspace=%s",
+        getattr(item, "id", None),
+        getattr(item, "task_run_id", None),
+        getattr(item, "chatroom_id", None),
+        getattr(item, "project_id", None),
+        project.workspace_path if project and getattr(project, "workspace_path", None) else None,
+    )
+
+    async def emit_tool_progress(progress: dict[str, Any]) -> None:
+        chatroom_id = getattr(item, "chatroom_id", None)
+        if not isinstance(chatroom_id, int):
+            return
+        task_run = get_task_run(db, getattr(item, "task_run_id", None))
+        await store_runtime_card(
+            chatroom_id,
+            {
+                "type": "tool_call",
+                "source": "approval_continuation",
+                "agent": (getattr(item, "agent_name", None) or "").strip() or "agent",
+                "tool": tool_name,
+                "arguments": arguments_text,
+                "success": None,
+                "status": "running",
+                "blocked": False,
+                "result": str(progress.get("tail_output") or "").strip() or "run_shell is running.",
+                "duration_ms": progress.get("duration_ms"),
+                "pid": progress.get("pid"),
+                "tracked_process": progress.get("tracked_process"),
+                "tool_call_id": request_payload.get("tool_call_id"),
+                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                "turn": request_payload.get("turn"),
+            },
+        )
+
+    try:
+        tool_result = await tool_registry.execute(
+            tool_name,
+            **loaded_arguments,
+            **runtime_kwargs,
+            __catown_approval_granted=True,
+            tool_call_id=request_payload.get("tool_call_id"),
+            turn=request_payload.get("turn"),
+            progress_callback=emit_tool_progress,
+        )
+        tool_success = _tool_result_succeeded(tool_result)
+    except Exception as exc:
+        tool_result = f"Error starting approved run_shell: {exc}"
+        tool_success = False
+    finally:
+        reset_active_workspace(workspace_token)
+    logger.info(
+        "[ApprovalFlow] run-shell-approved-finished queue_item_id=%s success=%s result_preview=%s",
+        getattr(item, "id", None),
+        tool_success,
+        _compact_runtime_text(_tool_result_text(tool_result), limit=200),
+    )
+    return build_replay_tool_result_record(
+        item,
+        tool_name=tool_name,
+        arguments=arguments_text,
+        result=tool_result,
+        success=tool_success,
+        request_payload=request_payload,
+    )
+
+
+def _tracked_run_shell_tokens_match(left: Any, right: Any) -> bool:
+    left_token = str((left or {}).get("token") or "").strip() if isinstance(left, dict) else ""
+    right_token = str((right or {}).get("token") or "").strip() if isinstance(right, dict) else ""
+    return bool(left_token and right_token and left_token == right_token)
+
+
+def _active_tracked_run_shell_records_for_task_run(task_run_id: Any) -> list[dict[str, Any]]:
+    try:
+        resolved_task_run_id = int(task_run_id)
+    except (TypeError, ValueError):
+        return []
+
+    active: list[dict[str, Any]] = []
+    for entry in list_tracked_run_shell_processes(limit=500, tail_chars=0):
+        if entry.get("task_run_id") != resolved_task_run_id:
+            continue
+        record = load_tracked_run_shell_handle(entry)
+        if record is None:
+            continue
+        if tracked_run_shell_has_exit(record):
+            continue
+        if tracked_run_shell_is_active(record):
+            active.append(record)
+    return active
+
+
+def _latest_run_shell_continuation_claim(task_run: Any) -> dict[str, Any] | None:
+    if task_run is None:
+        return None
+    events = list(getattr(task_run, "events", []) or [])
+    for event in reversed(events):
+        if getattr(event, "event_type", None) != "run_shell_continuation_claimed":
+            continue
+        payload = _load_jsonish_payload(getattr(event, "payload_json", None))
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"completed", "skipped", "failed"}:
+            return None
+        return payload
+    return None
+
+
+def _run_shell_conflict_detail(
+    reason: str,
+    *,
+    cursor: Dict[str, Any] | None = None,
+    active_records: list[dict[str, Any]] | None = None,
+    active_claim: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {"reason": reason}
+    if cursor is not None:
+        detail["continuation_cursor"] = cursor
+    if active_claim is not None:
+        detail["active_claim"] = active_claim
+    if active_records:
+        detail["active_tracked_processes"] = [
+            {
+                "token": record.get("token"),
+                "pid": record.get("pid"),
+                "worker_pid": record.get("worker_pid"),
+                "tool_call_id": record.get("tool_call_id"),
+                "status": record.get("status"),
+            }
+            for record in active_records
+        ]
+    return detail
+
+
+def _validate_run_shell_approval_can_continue(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+) -> None:
+    if (getattr(item, "target_kind", None) or "") != "tool":
+        return
+    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
+    if tool_name != "run_shell":
+        return
+    if not bool(request_payload.get("resume_supported")):
+        return
+
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    if task_run is None:
+        return
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    cursor = checkpoint_snapshot.get("continuation_cursor")
+    cursor = cursor if isinstance(cursor, dict) else {}
+    active_records = _active_tracked_run_shell_records_for_task_run(getattr(item, "task_run_id", None))
+    active_claim = _latest_run_shell_continuation_claim(task_run)
+
+    if active_claim is not None and active_claim.get("queue_item_id") != getattr(item, "id", None):
+        raise HTTPException(
+            status_code=409,
+            detail=_run_shell_conflict_detail(
+                "run_shell_continuation_already_claimed",
+                cursor=cursor,
+                active_records=active_records,
+                active_claim=active_claim,
+            ),
+        )
+    cursor_queue_item_id = cursor.get("queue_item_id")
+    if cursor_queue_item_id != getattr(item, "id", None):
+        raise HTTPException(
+            status_code=409,
+            detail=_run_shell_conflict_detail(
+                "run_shell_approval_not_current_task_cursor",
+                cursor=cursor,
+                active_records=active_records,
+            ),
+        )
+
+    if active_records:
+        raise HTTPException(
+            status_code=409,
+            detail=_run_shell_conflict_detail(
+                "task_run_already_has_active_run_shell",
+                cursor=cursor,
+                active_records=active_records,
+            ),
+        )
+
+
+def _is_resumable_run_shell_queue_item(item: Any, request_payload: Dict[str, Any]) -> bool:
+    return (
+        (getattr(item, "target_kind", None) or "") == "tool"
+        and str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
+        and bool(request_payload.get("resume_supported"))
+    )
+
+
+def _append_run_shell_continuation_claimed_event(
+    db: Session,
+    item: Any,
+    request_payload: Dict[str, Any],
+    *,
+    resolved_by: str,
+) -> None:
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    if task_run is None:
+        return
+    append_task_event(
+        db,
+        task_run,
+        "run_shell_continuation_claimed",
+        agent_name=getattr(item, "agent_name", None),
+        summary=f"run_shell continuation claimed by approval item {getattr(item, 'id', None)}.",
+        payload={
+            "queue_item_id": getattr(item, "id", None),
+            "tool_name": "run_shell",
+            "tool_call_id": request_payload.get("tool_call_id"),
+            "blocked_kind": str(request_payload.get("blocked_kind") or "").strip().lower() or None,
+            "action_taken": "run_shell_continued_after_approval",
+            "status": "claimed",
+            "resolved_by": resolved_by,
+            "tracked_process": (
+                request_payload.get("metadata", {}).get("tracked_process")
+                if isinstance(request_payload.get("metadata"), dict)
+                else None
+            ),
+        },
+    )
+
+
 def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str, Any]:
     return describe_checkpoint_continuation_state(checkpoint_snapshot)
 
@@ -5235,15 +6485,14 @@ def _finalize_noncontinuable_approval_task_run(
     followup_status = str(resolution_payload.get("followup_status") or "").strip().lower()
     if followup_status == "continued":
         return
+    if followup_status == "skipped" and str(resolution_payload.get("followup_reason") or "").strip().lower() == "background_running":
+        return
 
     tool_name = str(
         getattr(replay_result, "tool_name", None)
         or getattr(item, "target_name", None)
         or "tool"
     ).strip() or "tool"
-    if bool(getattr(replay_result, "blocked", False)) and str(getattr(replay_result, "blocked_kind", "")).strip().lower() == "timeout":
-        return
-
     if followup_status == "skipped":
         followup_reason = str(resolution_payload.get("followup_reason") or "").strip() or "follow_up_skipped"
         if followup_reason == "replay_not_actionable":
@@ -5281,142 +6530,6 @@ def _finalize_noncontinuable_approval_task_run(
         task_run,
         status="failed",
         summary=summary,
-    )
-
-
-def _persist_timeout_wait_preference_for_queue_item(
-    db: Session,
-    item: Any,
-    request_payload: Dict[str, Any],
-) -> dict[str, Any] | None:
-    if str(request_payload.get("blocked_kind") or "").strip().lower() != "timeout":
-        return None
-    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
-    if tool_name != "run_shell":
-        return None
-
-    arguments_text = resolve_replay_arguments_text(request_payload)
-    loaded_arguments, arguments_error = parse_replay_arguments(arguments_text)
-    if arguments_error is not None or loaded_arguments is None:
-        return None
-
-    command = str(loaded_arguments.get("command") or "").strip()
-    if not command:
-        return None
-    cwd = str(loaded_arguments.get("cwd") or ".").strip() or "."
-    preference_key = build_run_shell_timeout_preference_key(command, cwd)
-    rule = save_wait_forever_preference(
-        db,
-        tool_name="run_shell",
-        preference_key=preference_key,
-        command_preview=f"{command} @ {cwd}",
-        project_id=getattr(item, "project_id", None),
-        chatroom_id=getattr(item, "chatroom_id", None),
-    )
-    return serialize_authorization_rule(rule)
-
-
-async def _continue_waiting_for_timeout_queue_item(
-    db: Session,
-    item: Any,
-    request_payload: Dict[str, Any],
-):
-    metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
-    tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else {}
-    handle = load_tracked_run_shell_handle(tracked_process)
-    if handle is None:
-        return build_replay_tool_result_record(
-            item,
-            tool_name=request_payload.get("tool_name") or getattr(item, "target_name", None) or "run_shell",
-            arguments=resolve_replay_arguments_text(request_payload),
-            result="[Run Shell] Error: tracked timeout process is missing.",
-            success=False,
-            request_payload=request_payload,
-        )
-
-    tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", None) or "run_shell").strip() or "run_shell"
-    tool_arguments = resolve_replay_arguments_text(request_payload)
-    task_run = get_task_run(db, getattr(item, "task_run_id", None))
-    replay_turn = max(1, int(request_payload.get("turn") or 1))
-    record_tool_call_started(
-        db,
-        task_run,
-        agent_name=(item.agent_name or "").strip() or "agent",
-        turn=replay_turn,
-        tool_name=tool_name,
-        arguments=tool_arguments,
-        payload={
-            "tool_call_id": request_payload.get("tool_call_id"),
-            "replay": False,
-            "approval_continue_waiting": True,
-            "queue_item_id": getattr(item, "id", None),
-            "tracked_process": tracked_process,
-        },
-    )
-
-    chatroom_id = getattr(item, "chatroom_id", None)
-
-    async def emit_tool_progress(progress: dict[str, Any]) -> None:
-        if not isinstance(chatroom_id, int):
-            return
-        await store_runtime_card(
-            chatroom_id,
-            {
-                "type": "tool_call",
-                "source": "approval_replay",
-                "agent": (item.agent_name or "").strip() or "agent",
-                "tool": tool_name,
-                "arguments": tool_arguments,
-                "success": None,
-                "status": "running",
-                "blocked": False,
-                "result": str(progress.get("tail_output") or "").strip() or "Tool is running.",
-                "duration_ms": progress.get("duration_ms"),
-                "pid": progress.get("pid"),
-                "tool_call_id": request_payload.get("tool_call_id"),
-                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
-                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                "turn": replay_turn,
-            },
-        )
-
-    if isinstance(chatroom_id, int):
-        tail = read_tracked_run_shell_tail(handle, max_chars=4000)
-        await store_runtime_card(
-            chatroom_id,
-            {
-                "type": "tool_call",
-                "source": "approval_replay",
-                "agent": (item.agent_name or "").strip() or "agent",
-                "tool": tool_name,
-                "arguments": tool_arguments,
-                "success": None,
-                "status": "running",
-                "blocked": False,
-                "result": tail or "Approved. Continuing to wait for the existing process.",
-                "pid": handle.get("pid"),
-                "tool_call_id": request_payload.get("tool_call_id"),
-                "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
-                "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                "turn": replay_turn,
-            },
-        )
-
-    result = await wait_for_tracked_run_shell(
-        handle,
-        progress_callback=emit_tool_progress,
-        timeout_seconds=None,
-        progress_interval_seconds=2.0,
-        tail_chars=4000,
-        result_chars=50000,
-    )
-    return build_replay_tool_result_record(
-        item,
-        tool_name=tool_name,
-        arguments=tool_arguments,
-        result=result,
-        success=bool(result.get("success")) if isinstance(result, dict) and result.get("__catown_tool_result__") is True else False,
-        request_payload=request_payload,
     )
 
 
@@ -5496,15 +6609,41 @@ async def _continue_runtime_after_approved_tool_replay(
         return build_followup_skipped_payload("chatroom_missing")
     if approval_queue_item_has_pipeline_cursor(item, request_payload):
         return build_followup_skipped_payload("pipeline_queue_item")
-    if not replay_result_is_actionable(replay_result):
+    non_actionable_reason = replay_result_non_actionable_reason(replay_result)
+    if non_actionable_reason is not None:
+        if non_actionable_reason == "background_running" and str(getattr(replay_result, "tool_name", "") or "").strip().lower() == "run_shell":
+            _spawn_background_tracked_run_shell_watch(
+                task_run.id,
+                {
+                    "type": "tool_call",
+                    "source": "approval_continuation",
+                    "agent": (item.agent_name or "").strip() or "agent",
+                    "tool": "run_shell",
+                    "arguments": resolve_replay_arguments_text(request_payload),
+                    "success": None,
+                    "status": "running",
+                    "blocked": False,
+                    "result": str(getattr(replay_result, "result", "") or "").strip() or "run_shell is running.",
+                    "tracked_process": (
+                        getattr(replay_result, "metadata", {}).get("tracked_process")
+                        if isinstance(getattr(replay_result, "metadata", None), dict)
+                        else {}
+                    ) or {},
+                    "tool_call_id": getattr(replay_result, "tool_call_id", None),
+                    "client_turn_id": getattr(task_run, "client_turn_id", None),
+                    "run_id": getattr(task_run, "id", None),
+                    "turn": request_payload.get("turn"),
+                },
+            )
         logger.info(
-            "[ApprovalFlow] runtime-followup-skipped queue_item_id=%s tool=%s reason=replay_not_actionable replay_status=%s replay_blocked=%s",
+            "[ApprovalFlow] runtime-followup-skipped queue_item_id=%s tool=%s reason=%s replay_status=%s replay_blocked=%s",
             getattr(item, "id", None),
             getattr(replay_result, "tool_name", None),
+            non_actionable_reason,
             getattr(replay_result, "status", None),
             getattr(replay_result, "blocked", None),
         )
-        return build_followup_skipped_payload("replay_not_actionable")
+        return build_followup_skipped_payload(non_actionable_reason)
 
     followup_context = build_tool_replay_followup_context(item, replay_result)
     _reopen_task_run_for_followup(db, task_run)
@@ -5565,8 +6704,9 @@ async def _continue_pipeline_after_approved_tool_replay(
     pipeline_run_id = getattr(item, "pipeline_run_id", None) or request_payload.get("pipeline_run_id")
     if not pipeline_run_id:
         return build_followup_skipped_payload("pipeline_run_missing")
-    if not replay_result_is_actionable(replay_result):
-        return build_followup_skipped_payload("replay_not_actionable")
+    non_actionable_reason = replay_result_non_actionable_reason(replay_result)
+    if non_actionable_reason is not None:
+        return build_followup_skipped_payload(non_actionable_reason)
 
     from models.database import Pipeline, PipelineRun
 
@@ -5671,13 +6811,12 @@ async def _finalize_approved_queue_item_followup_async(
             logger.info("[ApprovalFlow] followup-skipped-during-shutdown queue_item_id=%s", item_id)
             return
 
-        if (
-            str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout"
-            and str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
-        ):
-            replay_result = await _continue_waiting_for_timeout_queue_item(db, item, request_payload)
+        if str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell":
+            replay_result = await _start_approved_run_shell_queue_item(db, item, request_payload)
+            action_taken = "run_shell_continued_after_approval"
         else:
             replay_result = await _replay_blocked_tool_queue_item(db, item, request_payload)
+            action_taken = "tool_replayed"
         task_run = get_task_run(db, item.task_run_id)
         try:
             replay_turn = max(1, int(request_payload.get("turn") or 1))
@@ -5685,41 +6824,42 @@ async def _finalize_approved_queue_item_followup_async(
             replay_turn = 1
         tool_name = str(getattr(replay_result, "tool_name", None) or getattr(item, "target_name", None) or "tool").strip() or "tool"
         tool_arguments = resolve_replay_arguments_text(request_payload)
-        record_tool_call_started(
-            db,
-            task_run,
-            agent_name=(item.agent_name or "").strip() or "agent",
-            turn=replay_turn,
-            tool_name=tool_name,
-            arguments=tool_arguments,
-            payload={
-                "tool_call_id": getattr(replay_result, "tool_call_id", None),
-                "replay": True,
-                "replay_of_queue_item_id": getattr(item, "id", None),
-                "resumed_after_approval": True,
-            },
-        )
-        chatroom_id = getattr(item, "chatroom_id", None)
-        if isinstance(chatroom_id, int):
-            await store_runtime_card(
-                chatroom_id,
-                {
-                    "type": "tool_call",
-                    "source": "approval_replay",
-                    "agent": (item.agent_name or "").strip() or "agent",
-                    "tool": tool_name,
-                    "arguments": tool_arguments,
-                    "success": None,
-                    "status": "running",
-                    "blocked": False,
-                    "result": "Resumed after approval. Tool is running.",
-                    "pid": getattr(replay_result, "pid", None),
+        if action_taken == "tool_replayed":
+            record_tool_call_started(
+                db,
+                task_run,
+                agent_name=(item.agent_name or "").strip() or "agent",
+                turn=replay_turn,
+                tool_name=tool_name,
+                arguments=tool_arguments,
+                payload={
                     "tool_call_id": getattr(replay_result, "tool_call_id", None),
-                    "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
-                    "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                    "turn": replay_turn,
+                    "replay": True,
+                    "replay_of_queue_item_id": getattr(item, "id", None),
+                    "resumed_after_approval": True,
                 },
             )
+            chatroom_id = getattr(item, "chatroom_id", None)
+            if isinstance(chatroom_id, int):
+                await store_runtime_card(
+                    chatroom_id,
+                    {
+                        "type": "tool_call",
+                        "source": "approval_replay",
+                        "agent": (item.agent_name or "").strip() or "agent",
+                        "tool": tool_name,
+                        "arguments": tool_arguments,
+                        "success": None,
+                        "status": "running",
+                        "blocked": False,
+                        "result": "Resumed after approval. Tool is running.",
+                        "pid": getattr(replay_result, "pid", None),
+                        "tool_call_id": getattr(replay_result, "tool_call_id", None),
+                        "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+                        "run_id": getattr(task_run, "id", None) if task_run is not None else None,
+                        "turn": replay_turn,
+                    },
+                )
         record_runner_tool_round(
             db,
             task_run,
@@ -5733,7 +6873,7 @@ async def _finalize_approved_queue_item_followup_async(
         resolution_payload = build_queue_replay_resolution_payload(
             request_payload=request_payload,
             replay_result=replay_result,
-            action_taken="tool_replayed",
+            action_taken=action_taken,
         )
         if approval_queue_item_has_pipeline_cursor(item, request_payload):
             resolution_payload.update(
@@ -5762,6 +6902,29 @@ async def _finalize_approved_queue_item_followup_async(
         db.refresh(item)
 
         task_run = get_task_run(db, item.task_run_id)
+        if action_taken == "run_shell_continued_after_approval":
+            append_task_event(
+                db,
+                task_run,
+                "run_shell_continuation_claimed",
+                agent_name=item.agent_name,
+                summary=f"run_shell continuation finished for approval item {getattr(item, 'id', None)}.",
+                payload={
+                    "queue_item_id": getattr(item, "id", None),
+                    "tool_name": "run_shell",
+                    "tool_call_id": getattr(replay_result, "tool_call_id", None),
+                    "action_taken": action_taken,
+                    "status": "completed",
+                    "tool_status": getattr(replay_result, "status", None),
+                    "tool_success": bool(getattr(replay_result, "success", False)),
+                    "tool_blocked": bool(getattr(replay_result, "blocked", False)),
+                    "tracked_process": (
+                        getattr(replay_result, "metadata", {}).get("tracked_process")
+                        if isinstance(getattr(replay_result, "metadata", None), dict)
+                        else None
+                    ),
+                },
+            )
         append_task_event(
             db,
             task_run,
@@ -5785,6 +6948,29 @@ async def _finalize_approved_queue_item_followup_async(
         )
     except Exception as exc:
         logger.exception("Approval queue async follow-up failed for item %s: %s", item_id, exc)
+        try:
+            item = get_approval_queue_item(db, item_id)
+            task_run = get_task_run(db, getattr(item, "task_run_id", None) if item is not None else None)
+            if (
+                item is not None
+                and str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
+            ):
+                append_task_event(
+                    db,
+                    task_run,
+                    "run_shell_continuation_claimed",
+                    agent_name=getattr(item, "agent_name", None),
+                    summary=f"run_shell continuation failed for approval item {item_id}.",
+                    payload={
+                        "queue_item_id": item_id,
+                        "tool_name": "run_shell",
+                        "tool_call_id": request_payload.get("tool_call_id"),
+                        "status": "failed",
+                        "error": str(exc),
+                    },
+                )
+        except Exception:
+            logger.exception("Failed to release run_shell continuation claim for item %s", item_id)
     finally:
         db.close()
 
@@ -5879,6 +7065,22 @@ async def approve_approval_queue_item(
     ):
         raise HTTPException(status_code=409, detail="Approval queue item is leased by another resolver.")
 
+    requires_run_shell_continuation = (
+        (item.target_kind or "") == "tool"
+        and bool(request_payload.get("resume_supported"))
+        and getattr(item, "task_run_id", None) is not None
+        and str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell"
+    )
+    if requires_run_shell_continuation:
+        try:
+            _validate_run_shell_approval_can_continue(db, item, request_payload)
+        except HTTPException:
+            item.resolution_owner = None
+            item.resolution_lease_expires_at = None
+            db.add(item)
+            db.commit()
+            raise
+
     if (item.target_kind or "") == "pipeline_gate":
         pipeline_id = request_payload.get("pipeline_id")
         if not pipeline_id:
@@ -5910,11 +7112,7 @@ async def approve_approval_queue_item(
         action_taken="queue_resolved_only",
     )
     remembered_rule = None
-    if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
-        remembered_rule = _persist_timeout_wait_preference_for_queue_item(db, item, request_payload)
-        if remembered_rule is not None:
-            resolution_payload["remembered_rule"] = remembered_rule
-    elif req is not None and req.remember_scope:
+    if req is not None and req.remember_scope:
         remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
             item,
@@ -5986,7 +7184,7 @@ async def approve_approval_queue_item(
         getattr(item, "target_name", None),
         resolution_payload.get("action_taken"),
     )
-    if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")):
+    if (item.target_kind or "") == "tool" and bool(request_payload.get("resume_supported")) and getattr(resolved or item, "task_run_id", None) is not None:
         if runtime_is_shutting_down():
             shutdown_followup = build_followup_skipped_payload("runtime_shutting_down")
             resolution_payload.update(shutdown_followup)
@@ -6015,6 +7213,16 @@ async def approve_approval_queue_item(
                 getattr(item, "target_name", None),
             )
         else:
+            if str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower() == "run_shell":
+                task_run = _reopen_task_run_for_followup(db, task_run)
+                _append_run_shell_continuation_claimed_event(
+                    db,
+                    resolved or item,
+                    request_payload,
+                    resolved_by=resolved_by,
+                )
+            else:
+                task_run = _reopen_task_run_for_followup(db, task_run)
             _spawn_approval_followup_worker(
                 item.id,
                 request_payload=request_payload,
@@ -6156,18 +7364,6 @@ async def reject_approval_queue_item(
             resolved_by=resolved_by,
             request_payload=request_payload,
         ),
-    )
-    if str(request_payload.get("blocked_kind") or "").strip().lower() == "timeout":
-        metadata = request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {}
-        tracked_process = metadata.get("tracked_process") if isinstance(metadata.get("tracked_process"), dict) else None
-        if tracked_process:
-            terminate_tracked_run_shell(tracked_process)
-        tool_name = str(request_payload.get("tool_name") or item.target_name or "tool").strip() or "tool"
-        complete_task_run(
-            db,
-            task_run,
-            status="failed",
-            summary=f"{tool_name} timed out and user chose not to continue waiting.",
     )
     return serialize_approval_queue_item(resolved or item)
 
@@ -6655,7 +7851,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 return
 
             # 单 Agent 模式（原有逻辑）
-            target_agent_name = mentioned_names[0] if mentioned_names else None
+            target_agent_name = mentioned_names[0] if mentioned_names else (
+                str(getattr(task_run, "target_agent_name", "") or "").strip() or None
+            )
 
             # 4. 获取项目 Agents
             assignments = db.query(AgentAssignment).filter(

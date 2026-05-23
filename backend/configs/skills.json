@@ -186,8 +186,8 @@
     "category": "release",
     "levels": {
       "hint": "发布管理: 确认测试通过 → 生成 changelog → 打 tag → 推送",
-      "guide": "## 发布管理规范\n- 确认 test_report 无 blocker\n- 生成 CHANGELOG.md\n- 打 Git tag\n- 推送到远程仓库",
-      "full": "## 发布管理完整指南\n\n### 发布检查清单\n- [ ] test_report.md 无 blocker\n- [ ] CHANGELOG.md 已更新\n- [ ] 版本号已更新\n- [ ] 所有代码已 commit\n- [ ] 分支为 main/master\n\n### 发布流程\n1. 审查 test_report.md\n2. 生成 CHANGELOG.md（changelog-generation skill）\n3. 更新版本号\n4. Git commit\n5. Git tag（version-tagging skill）\n6. Git push + push tags\n\n### 回滚策略\n- 发现严重问题 → 立即 revert tag\n- 通知 BOSS 决定是否 hotfix 或回滚\n- hotfix 从 tag 创建分支"
+      "guide": "## 发布管理规范\n- 确认 reports/tests/ 中的最新测试报告无 blocker\n- 生成 CHANGELOG.md\n- 打 Git tag\n- 推送到远程仓库",
+      "full": "## 发布管理完整指南\n\n### 发布检查清单\n- [ ] reports/tests/ 中的最新测试报告无 blocker\n- [ ] CHANGELOG.md 已更新\n- [ ] 版本号已更新\n- [ ] 所有代码已 commit\n- [ ] 分支为 main/master\n\n### 发布流程\n1. 审查 reports/tests/ 中的最新测试报告\n2. 生成 CHANGELOG.md（changelog-generation skill）\n3. 更新版本号\n4. Git commit\n5. Git tag（version-tagging skill）\n6. Git push + push tags\n\n### 回滚策略\n- 发现严重问题 → 立即 revert tag\n- 通知 BOSS 决定是否 hotfix 或回滚\n- hotfix 从 tag 创建分支"
     }
   },
 

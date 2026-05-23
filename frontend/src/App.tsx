@@ -28,6 +28,7 @@ import type {
   PermissionsConfigPayload,
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
+  ProjectBrowserWatchEvent,
   ProjectSummary,
   TaskActivityProjection,
   TaskRunDetail,
@@ -213,6 +214,7 @@ function sanitizePersistedMessage(message: MessageItem): MessageItem {
     created_at: message.created_at,
     agent_name: message.agent_name,
     client_turn_id: message.client_turn_id,
+    metadata: message.metadata ?? null,
     isStreaming: message.isStreaming,
     statusDetail: trimPersistedText(message.statusDetail, OPTIMISTIC_MAX_STEP_DETAIL_CHARS),
     optimisticKind: message.optimisticKind,
@@ -2030,6 +2032,7 @@ function finalizeRecoveredPlaceholder(
       message_type: savedMessage.message_type,
       agent_name: savedMessage.agent_name || message.agent_name,
       client_turn_id: savedMessage.client_turn_id || message.client_turn_id,
+      metadata: savedMessage.metadata ?? message.metadata ?? null,
       isStreaming: false,
     },
     "done",
@@ -2223,6 +2226,9 @@ function App() {
   const sendAbortRef = useRef<AbortController | null>(null);
   const processRefreshTimerRef = useRef<number | null>(null);
   const lastProcessRefreshByChatRef = useRef<Record<number, number>>({});
+  const projectBrowserRefreshInFlightRef = useRef(false);
+  const projectBrowserRefreshQueuedRef = useRef(false);
+  const lastProjectBrowserSnapshotIdRef = useRef<string | null>(null);
   function isCurrentChatRequest(chatId: number | null | undefined) {
     return Boolean(chatId) && selectedChatIdRef.current === chatId;
   }
@@ -2261,6 +2267,7 @@ function App() {
     patch: {
       taskRunId: number;
       stepId: string;
+      agentName?: string | null;
       status?: string;
       availableActions?: string[];
       controlState?: string | null;
@@ -2291,12 +2298,14 @@ function App() {
     if (patch.availableActions) nextMetadata["available_actions"] = patch.availableActions;
     if (patch.controlState !== undefined) nextMetadata["control_state"] = patch.controlState;
     nextMetadata["task_run_id"] = patch.taskRunId;
+    if (patch.agentName !== undefined) nextMetadata["agent_name"] = patch.agentName;
     if (patch.dispatchKind !== undefined) nextMetadata["dispatch_kind"] = patch.dispatchKind;
     if (patch.source !== undefined) nextMetadata["source"] = patch.source;
     return {
       ...node,
       label: patch.label || node.label,
       detail: patch.detail ?? node.detail,
+      agent_name: patch.agentName ?? node.agent_name,
       status: patch.terminal ? "terminated" : (patch.status || node.status),
       metadata: nextMetadata,
       timestamp: patch.timestamp || node.timestamp,
@@ -2387,6 +2396,7 @@ function App() {
       taskRunId: taskRun.id,
       stepId,
       status: typeof handle["status"] === "string" ? handle["status"] : controlState || undefined,
+      agentName: labelActor,
       availableActions,
       controlState,
       terminal,
@@ -2459,6 +2469,7 @@ function App() {
           metadata: {
             task_run_id: activePatch.taskRunId,
             step_id: activePatch.stepId,
+            agent_name: activePatch.agentName,
             dispatch_kind: activePatch.dispatchKind,
             control_state: activePatch.controlState,
             available_actions: activePatch.availableActions,
@@ -2480,6 +2491,7 @@ function App() {
       taskRunId: number;
       stepId: string;
       status?: string;
+      agentName?: string | null;
       availableActions?: string[];
       controlState?: string | null;
       terminal?: boolean;
@@ -2517,6 +2529,7 @@ function App() {
           metadata: {
             task_run_id: patch.taskRunId,
             step_id: patch.stepId,
+            agent_name: patch.agentName,
             dispatch_kind: patch.dispatchKind,
             control_state: patch.controlState,
             available_actions: patch.availableActions,
@@ -2534,6 +2547,7 @@ function App() {
     patch: {
       stepId: string;
       status?: string;
+      agentName?: string | null;
       availableActions?: string[];
       controlState?: string | null;
       note?: string | null;
@@ -2555,6 +2569,7 @@ function App() {
       taskRunId: number;
       stepId: string;
       status?: string;
+      agentName?: string | null;
       availableActions?: string[];
       controlState?: string | null;
       terminal?: boolean;
@@ -2663,6 +2678,7 @@ function App() {
       terminal: isTerminalHandleStatus(card.status),
       note: card.error ?? card.response_preview ?? null,
       label: `${card.target_agent || "subagent"} (consult)`,
+      agentName: card.target_agent || card.agent || null,
       detail: summaryText || detailParts.join(" | ") || card.question_preview || card.error || null,
       dispatchKind: "consult",
       source: card.source ?? "runtime_card",
@@ -2808,7 +2824,10 @@ function App() {
       Number(run.pending_approval_count || 0) > 0 ||
       clientTurnId.startsWith("delegate-") ||
       runKind.includes("pipeline") ||
-      runKind.includes("orchestration")
+      runKind.includes("orchestration") ||
+      runKind === "project_single_agent_stream" ||
+      runKind === "standalone_assistant_stream" ||
+      runKind === "chat_turn"
     );
   }
 
@@ -2836,6 +2855,15 @@ function App() {
     }));
   }
 
+  function mergeTaskActivityTimelines(entries: TaskActivityProjection[]) {
+    const timelines = entries
+      .map((entry) => entry.timeline)
+      .filter((timeline): timeline is ChatTimelineProjection =>
+        Boolean(timeline && typeof timeline.task_run_id === "number"),
+      );
+    mergeTaskTimelines(timelines);
+  }
+
   async function loadOptionalTaskActivities(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
     const inlineRows = rows.filter(shouldLoadTaskActivity);
     const entries = await Promise.all(
@@ -2852,32 +2880,6 @@ function App() {
       }),
     );
     return entries.filter((entry): entry is TaskActivityProjection => entry !== null);
-  }
-
-  async function loadOptionalTaskTimelines(rows: TaskRunSummary[], options: { silent?: boolean } = {}) {
-    const inlineRows = rows.filter((run) => {
-      const runKind = (run.run_kind || "").trim().toLowerCase();
-      return (
-        shouldLoadTaskActivity(run) ||
-        runKind === "project_single_agent_stream" ||
-        runKind === "standalone_assistant_stream" ||
-        runKind === "chat_turn"
-      );
-    });
-    const entries = await Promise.all(
-      inlineRows.map(async (run) => {
-        try {
-          return await api.getTaskRunTimeline(run.id);
-        } catch (nextError) {
-          if (!options.silent) {
-            const message = nextError instanceof Error ? nextError.message : "Failed to load task timeline";
-            pushEvent(`Task timeline unavailable: ${message}`, "warning");
-          }
-          return null;
-        }
-      }),
-    );
-    return entries.filter((entry): entry is ChatTimelineProjection => entry !== null);
   }
 
   async function loadOptionalRuntimeCards(chatId: number) {
@@ -2940,13 +2942,10 @@ function App() {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        const [activityEntries, timelineEntries] = await Promise.all([
-          loadOptionalTaskActivities(activeRuns, { silent: true }),
-          loadOptionalTaskTimelines(activeRuns, { silent: true }),
-        ]);
+        const activityEntries = await loadOptionalTaskActivities(activeRuns, { silent: true });
         if (!cancelled && isCurrentChatRequest(selectedChatId)) {
           mergeTaskActivities(activityEntries);
-          mergeTaskTimelines(timelineEntries);
+          mergeTaskActivityTimelines(activityEntries);
         }
       } finally {
         inFlight = false;
@@ -3016,6 +3015,50 @@ function App() {
       ),
       truncated: Boolean(current?.truncated || batch.truncated),
     };
+  }
+
+  async function reloadProjectBrowserSnapshot(
+    projectId: number,
+    workspacePath?: string | null,
+    signal?: AbortSignal,
+  ) {
+    if (signal?.aborted) return;
+    setProjectBrowserIndex({
+      workspace_path: workspacePath || "",
+      files: [],
+      artifacts: [],
+      truncated: false,
+    });
+    await api.streamProjectBrowser(
+      projectId,
+      (batch) => {
+        if (signal?.aborted) return;
+        setProjectBrowserIndex((current) => mergeProjectBrowserBatch(current, batch));
+      },
+      signal,
+    );
+  }
+
+  async function scheduleProjectBrowserReload(
+    projectId: number,
+    workspacePath?: string | null,
+    signal?: AbortSignal,
+  ) {
+    if (signal?.aborted) return;
+    if (projectBrowserRefreshInFlightRef.current) {
+      projectBrowserRefreshQueuedRef.current = true;
+      return;
+    }
+    projectBrowserRefreshInFlightRef.current = true;
+    try {
+      await reloadProjectBrowserSnapshot(projectId, workspacePath, signal);
+    } finally {
+      projectBrowserRefreshInFlightRef.current = false;
+      if (projectBrowserRefreshQueuedRef.current && !signal?.aborted) {
+        projectBrowserRefreshQueuedRef.current = false;
+        void scheduleProjectBrowserReload(projectId, workspacePath, signal);
+      }
+    }
   }
 
   function applyChatSelection(nextChatId: number | null, nextProjectId: number | null) {
@@ -3223,28 +3266,52 @@ function App() {
   useEffect(() => {
     if (!bootstrapped || !selectedProject) {
       setProjectBrowserIndex(null);
+      lastProjectBrowserSnapshotIdRef.current = null;
       return undefined;
     }
 
     const controller = new AbortController();
-    setProjectBrowserIndex({
-      workspace_path: selectedProject.workspace_path || "",
-      files: [],
-      artifacts: [],
-      truncated: false,
-    });
+    let announcedLiveRefresh = false;
+    projectBrowserRefreshInFlightRef.current = false;
+    projectBrowserRefreshQueuedRef.current = false;
+    lastProjectBrowserSnapshotIdRef.current = null;
 
-    api.streamProjectBrowser(
+    void scheduleProjectBrowserReload(
       selectedProject.id,
-      (batch) => {
-        if (controller.signal.aborted) return;
-        setProjectBrowserIndex((current) => mergeProjectBrowserBatch(current, batch));
-      },
+      selectedProject.workspace_path,
       controller.signal,
     ).catch((nextError) => {
       if (controller.signal.aborted) return;
       const message = nextError instanceof Error ? nextError.message : "Failed to scan workspace";
       pushEvent(`Project browser scan unavailable: ${message}`, "warning");
+    });
+
+    void api.watchProjectBrowser(
+      selectedProject.id,
+      (event: ProjectBrowserWatchEvent) => {
+        if (controller.signal.aborted) return;
+        if (event.snapshot_id && event.snapshot_id === lastProjectBrowserSnapshotIdRef.current) {
+          return;
+        }
+        if (event.snapshot_id) {
+          lastProjectBrowserSnapshotIdRef.current = event.snapshot_id;
+        }
+        if (event.type !== "refresh_needed" || !event.changed) return;
+        if (!announcedLiveRefresh) {
+          pushEvent("Project browser auto-refresh is active", "info");
+          announcedLiveRefresh = true;
+        }
+        void scheduleProjectBrowserReload(
+          selectedProject.id,
+          selectedProject.workspace_path,
+          controller.signal,
+        );
+      },
+      controller.signal,
+    ).catch((nextError) => {
+      if (controller.signal.aborted) return;
+      const message = nextError instanceof Error ? nextError.message : "Project browser live refresh unavailable";
+      pushEvent(`Project browser live refresh unavailable: ${message}`, "warning");
     });
 
     return () => controller.abort();
@@ -3299,14 +3366,14 @@ function App() {
           void loadOptionalTaskActivities(taskRunRows).then((entries) => {
             if (cancelled || !isCurrentChatRequest(activeChatId)) return;
             setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
-          });
-          void loadOptionalTaskTimelines(taskRunRows).then((entries) => {
-            if (cancelled || !isCurrentChatRequest(activeChatId)) return;
             setTaskTimelinesById(
               Object.fromEntries(
                 entries
-                  .filter((entry) => typeof entry.task_run_id === "number")
-                  .map((entry) => [entry.task_run_id as number, entry]),
+                  .map((entry) => entry.timeline)
+                  .filter((timeline): timeline is ChatTimelineProjection =>
+                    Boolean(timeline && typeof timeline.task_run_id === "number"),
+                  )
+                  .map((timeline) => [timeline.task_run_id as number, timeline]),
               ),
             );
           });
@@ -3379,6 +3446,9 @@ function App() {
               created_at: typeof data.created_at === "string" ? data.created_at : new Date().toISOString(),
               client_turn_id:
                 typeof data.client_turn_id === "string" ? data.client_turn_id : undefined,
+              metadata: data.metadata && typeof data.metadata === "object"
+                ? data.metadata as Record<string, unknown>
+                : null,
             };
             setMessages((current) => {
               const streamingId = streamingAssistantIdRef.current;
@@ -3478,20 +3548,16 @@ function App() {
                 .then((activity) => {
                   if (!isCurrentChatRequest(entry.chatroom_id)) return;
                   setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
+                  if (activity.timeline && typeof activity.timeline.task_run_id === "number") {
+                    setTaskTimelinesById((current) => ({
+                      ...current,
+                      [activity.timeline!.task_run_id as number]: activity.timeline!,
+                    }));
+                  }
                 })
                 .catch((nextError) => {
                   const message = nextError instanceof Error ? nextError.message : "Failed to load task activity";
                   pushEvent(`Task activity unavailable: ${message}`, "warning");
-                });
-              void api.getTaskRunTimeline(entry.id)
-                .then((timeline) => {
-                  if (!isCurrentChatRequest(entry.chatroom_id)) return;
-                  if (typeof timeline.task_run_id !== "number") return;
-                  setTaskTimelinesById((current) => ({ ...current, [timeline.task_run_id as number]: timeline }));
-                })
-                .catch((nextError) => {
-                  const message = nextError instanceof Error ? nextError.message : "Failed to load task timeline";
-                  pushEvent(`Task timeline unavailable: ${message}`, "warning");
                 });
               if (detail && typeof detail.id === "number") {
                 setLiveTaskRunDetailsById((current) => ({ ...current, [detail.id]: detail }));
@@ -3708,14 +3774,14 @@ function App() {
       void loadOptionalTaskActivities(taskRunRows).then((entries) => {
         if (!isCurrentChatRequest(chatId)) return;
         setTaskActivitiesById(Object.fromEntries(entries.map((entry) => [entry.task_run_id, entry])));
-      });
-      void loadOptionalTaskTimelines(taskRunRows).then((entries) => {
-        if (!isCurrentChatRequest(chatId)) return;
         setTaskTimelinesById(
           Object.fromEntries(
             entries
-              .filter((entry) => typeof entry.task_run_id === "number")
-              .map((entry) => [entry.task_run_id as number, entry]),
+              .map((entry) => entry.timeline)
+              .filter((timeline): timeline is ChatTimelineProjection =>
+                Boolean(timeline && typeof timeline.task_run_id === "number"),
+              )
+              .map((timeline) => [timeline.task_run_id as number, timeline]),
           ),
         );
       });
@@ -3735,13 +3801,12 @@ function App() {
     const chatId = selectedChatIdRef.current;
     if (!chatId) return;
     try {
-      const [rows, runtimeRows, taskRunRows, processRows, activity, timeline] = await Promise.all([
+      const [rows, runtimeRows, taskRunRows, processRows, activity] = await Promise.all([
         api.getMessages(chatId),
         loadOptionalRuntimeCards(chatId),
         loadOptionalTaskRuns(chatId),
         loadOptionalChatProcesses(chatId, { silent: true }),
         api.getTaskRunActivity(taskRunId),
-        api.getTaskRunTimeline(taskRunId),
       ]);
       if (!isCurrentChatRequest(chatId)) return;
       const nextCards = runtimeRows
@@ -3753,8 +3818,8 @@ function App() {
       setTaskRuns(taskRunRows);
       setChatProcesses(processRows);
       setTaskActivitiesById((current) => ({ ...current, [activity.task_run_id]: activity }));
-      if (typeof timeline.task_run_id === "number") {
-        setTaskTimelinesById((current) => ({ ...current, [timeline.task_run_id as number]: timeline }));
+      if (activity.timeline && typeof activity.timeline.task_run_id === "number") {
+        setTaskTimelinesById((current) => ({ ...current, [activity.timeline!.task_run_id as number]: activity.timeline! }));
       }
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : "Failed to refresh runtime";

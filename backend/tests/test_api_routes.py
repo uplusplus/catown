@@ -998,6 +998,32 @@ class TestProjectEndpoints:
         assert "node_modules/ignored.js" not in file_paths
         assert "docs/ADR-001-browser.md" in artifact_paths
 
+    def test_project_browser_watch_stream_reports_workspace_changes(self, client):
+        project = client.post("/api/projects", json={"name": "BrowserWatch"}).json()
+        workspace = Path(project["workspace_path"])
+        (workspace / "docs").mkdir()
+        watched = workspace / "docs" / "PRD.md"
+        watched.write_text("# Initial\n", encoding="utf-8")
+
+        def mutate_file():
+            time.sleep(1.0)
+            watched.write_text("# Updated\n", encoding="utf-8")
+
+        worker = threading.Thread(target=mutate_file, daemon=True)
+        worker.start()
+
+        with client.stream("GET", f"/api/projects/{project['id']}/browser/watch?poll_interval=0.5&max_events=2") as response:
+            assert response.status_code == 200
+            payloads = [json.loads(line) for line in response.iter_lines() if line]
+
+        worker.join(timeout=3.0)
+        assert len(payloads) >= 2
+        assert payloads[0]["type"] == "ready"
+        assert payloads[0]["changed"] is False
+        assert payloads[1]["type"] == "refresh_needed"
+        assert payloads[1]["changed"] is True
+        assert "docs/PRD.md" in payloads[1]["changed_paths"]
+
     def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod
         import routes.api as api_mod
@@ -1495,6 +1521,327 @@ class TestProjectEndpoints:
             for event in detail["events"]
         )
 
+    def test_runtime_cards_do_not_refollow_terminal_tool_round_run_shell(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime
+        from services.runner_lifecycle import record_tool_round
+        from services.run_shell_processes import create_tracked_run_shell_handle
+        from services.turn_state import build_tool_result_record
+
+        project = client.post("/api/projects", json={"name": "Terminal Tool Round Reconcile"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Tracked shell already consumed",
+                user_request="Run command",
+                target_agent_name="tester",
+            )
+            db.add(task_run)
+            db.flush()
+            handle = create_tracked_run_shell_handle(
+                command="git status --short",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                task_run_id=task_run.id,
+                client_turn_id="turn-terminal-tool-round",
+                tool_call_id="call_terminal_round",
+                turn=1,
+                agent_name="tester",
+            )
+            record = api_mod.load_tracked_run_shell_handle(handle)
+            assert record is not None
+            Path(record["log_path"]).write_text("clean\n", encoding="utf-8")
+            Path(record["exit_path"]).write_text(
+                json.dumps({"exit_code": 0, "finished_at": datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+            record.update({"status": "completed", "exit_code": 0, "finished_at": datetime.now().isoformat()})
+            Path(record["state_path"]).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            tool_result = build_tool_result_record(
+                tool_call_id="call_terminal_round",
+                tool_name="run_shell",
+                arguments=json.dumps({"command": "git status --short"}),
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "run_shell",
+                    "success": True,
+                    "status": "succeeded",
+                    "blocked": False,
+                    "result": "clean\n",
+                    "metadata": {"tracked_process": handle},
+                },
+                success=True,
+            )
+            record_tool_round(
+                db,
+                task_run,
+                agent_name="tester",
+                turn=1,
+                tool_names=["run_shell"],
+                tool_results=[tool_result],
+                summary="tester completed a tool round.",
+            )
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "git status --short"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "stale running output",
+                        "pid": 97009,
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_terminal_round",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        def fake_spawn_followup(task_run_id, next_card):
+            followup_calls.append({"task_run_id": task_run_id, "next_card": next_card})
+
+        with patch.object(api_mod, "_spawn_tracked_run_shell_followup", side_effect=fake_spawn_followup):
+            cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
+        shell_card = next(card for card in cards if card.get("tool") == "run_shell")
+        assert shell_card["status"] == "succeeded"
+        assert shell_card["success"] is True
+        assert "clean" in shell_card["result"]
+        assert followup_calls == []
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert not any(
+            event["event_type"] == "tracked_run_shell_completed"
+            and event["payload"].get("tool_call_id") == "call_terminal_round"
+            for event in detail["events"]
+        )
+
+    def test_runtime_cards_do_not_refollow_approval_continued_run_shell(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime
+        from services.run_shell_processes import create_tracked_run_shell_handle
+
+        project = client.post("/api/projects", json={"name": "Approval Continued Shell"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-approval-continued",
+                run_kind="project_single_agent",
+                status="running",
+                title="Approval continued shell",
+                user_request="Run approved shell",
+                target_agent_name="Tester",
+            )
+            db.add(task_run)
+            db.flush()
+            handle = create_tracked_run_shell_handle(
+                command="python -m pytest backend/tests -q",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                task_run_id=task_run.id,
+                client_turn_id="turn-approval-continued",
+                tool_call_id="call_approved_continue",
+                turn=1,
+                agent_name="tester",
+            )
+            record = api_mod.load_tracked_run_shell_handle(handle)
+            assert record is not None
+            Path(record["log_path"]).write_text("tests failed\n", encoding="utf-8")
+            Path(record["exit_path"]).write_text(
+                json.dumps({"exit_code": 1, "finished_at": datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+            record.update({"status": "failed", "exit_code": 1, "finished_at": datetime.now().isoformat()})
+            Path(record["state_path"]).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            api_mod.append_task_event(
+                db,
+                task_run,
+                "run_shell_continuation_claimed",
+                agent_name="Tester",
+                payload={
+                    "queue_item_id": 123,
+                    "tool_name": "run_shell",
+                    "tool_call_id": "call_approved_continue",
+                    "action_taken": "run_shell_continued_after_approval",
+                    "status": "completed",
+                    "tool_status": "failed",
+                    "tracked_process": {"token": "different-token", "tool_call_id": "call_approved_continue"},
+                },
+            )
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "stale running output",
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_approved_continue",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        def fake_spawn_followup(task_run_id, next_card):
+            followup_calls.append({"task_run_id": task_run_id, "next_card": next_card})
+
+        with patch.object(api_mod, "_spawn_tracked_run_shell_followup", side_effect=fake_spawn_followup):
+            cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
+        shell_card = next(card for card in cards if card.get("tool") == "run_shell")
+        assert shell_card["status"] == "failed"
+        assert shell_card["success"] is False
+        assert followup_calls == []
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert not any(
+            event["event_type"] == "tracked_run_shell_completed"
+            and event["payload"].get("tool_call_id") == "call_approved_continue"
+            for event in detail["events"]
+        )
+
+    def test_runtime_cards_refollow_approval_continued_background_running_run_shell(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from datetime import datetime
+        from services.run_shell_processes import create_tracked_run_shell_handle
+
+        project = client.post("/api/projects", json={"name": "Approval Background Continued Shell"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-approval-background-continued",
+                run_kind="project_single_agent",
+                status="running",
+                title="Approval continued shell to background",
+                user_request="Run approved shell to background",
+                target_agent_name="Tester",
+            )
+            db.add(task_run)
+            db.flush()
+            handle = create_tracked_run_shell_handle(
+                command="python -m pytest backend/tests -q",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                task_run_id=task_run.id,
+                client_turn_id="turn-approval-background-continued",
+                tool_call_id="call_approved_background",
+                turn=1,
+                agent_name="tester",
+            )
+            record = api_mod.load_tracked_run_shell_handle(handle)
+            assert record is not None
+            Path(record["log_path"]).write_text("tests failed\n", encoding="utf-8")
+            Path(record["exit_path"]).write_text(
+                json.dumps({"exit_code": 1, "finished_at": datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+            record.update({"status": "failed", "exit_code": 1, "finished_at": datetime.now().isoformat()})
+            Path(record["state_path"]).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            api_mod.append_task_event(
+                db,
+                task_run,
+                "run_shell_continuation_claimed",
+                agent_name="Tester",
+                payload={
+                    "queue_item_id": 124,
+                    "tool_name": "run_shell",
+                    "tool_call_id": "call_approved_background",
+                    "action_taken": "run_shell_continued_after_approval",
+                    "status": "completed",
+                    "tool_status": "background_running",
+                    "tool_success": False,
+                    "tracked_process": {"token": "different-token", "tool_call_id": "call_approved_background"},
+                },
+            )
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "stale running output",
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_approved_background",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        def fake_spawn_followup(task_run_id, next_card):
+            followup_calls.append({"task_run_id": task_run_id, "next_card": next_card})
+
+        with patch.object(api_mod, "_spawn_tracked_run_shell_followup", side_effect=fake_spawn_followup):
+            cards = client.get(f"/api/chatrooms/{chatroom_id}/runtime-cards").json()
+        shell_card = next(card for card in cards if card.get("tool") == "run_shell")
+        assert shell_card["status"] == "failed"
+        assert shell_card["success"] is False
+        assert len(followup_calls) == 1
+        assert followup_calls[0]["task_run_id"] == task_run_id
+        assert followup_calls[0]["next_card"]["tool_call_id"] == "call_approved_background"
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert any(
+            event["event_type"] == "tracked_run_shell_completed"
+            and event["payload"].get("tool_call_id") == "call_approved_background"
+            for event in detail["events"]
+        )
+
     def test_tracked_run_shell_followup_calls_agent_with_result_context(self, tmp_path, client):
         import models.database as db_mod
         import routes.api as api_mod
@@ -1777,6 +2124,491 @@ class TestChatEndpoints:
             for policy in mode_event["payload"]["runner_policy"]["metadata"]["tool_policies"]
         )
 
+    def test_delegated_tester_valid_test_result_stops_before_second_turn(self, client):
+        import llm.client as llm_mod
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        async def first_turn_returns_pytest_failure(messages, tools=None):
+            return {
+                "content": "Running backend tests.",
+                "tool_calls": [
+                    {
+                        "id": "call_pytest_once",
+                        "type": "function",
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": json.dumps(
+                                {
+                                    "command": "python -m pytest backend/tests -q --tb=short --disable-warnings -r fE",
+                                    "cwd": ".",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ],
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_with_tools = AsyncMock(side_effect=first_turn_returns_pytest_failure)
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        project = client.post(
+            "/api/projects",
+            json={"name": "Delegated Tester Contract", "agent_names": ["valet", "tester"]},
+        ).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            parent_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                client_turn_id="parent-test-contract",
+                run_kind="project_single_agent",
+                status="running",
+                title="Test project",
+                user_request="test the project",
+                initiator="user",
+                target_agent_name="Valet",
+            )
+            child_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                client_turn_id="delegate-test-contract",
+                run_kind="project_single_agent",
+                status="running",
+                title="@tester Test project",
+                user_request="@tester Test project",
+                initiator="user",
+                target_agent_name="Tester",
+            )
+            db.add_all([parent_run, child_run])
+            db.commit()
+            db.refresh(parent_run)
+            db.refresh(child_run)
+            api_routes.append_task_event(
+                db,
+                parent_run,
+                "delegated_task_dispatched",
+                agent_name="Valet",
+                payload={
+                    "task_id": "test-contract",
+                    "task_title": "Test project",
+                    "task_description": "Run tests and report results.",
+                    "from_agent": "Valet",
+                    "target_agent_name": "Tester",
+                    "child_client_turn_id": "delegate-test-contract",
+                    "required_outputs": ["test_report"],
+                },
+            )
+            db.add(
+                db_mod.Message(
+                    chatroom_id=cid,
+                    agent_id=None,
+                    content="@tester Test project",
+                    message_type="text",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "delegate-test-contract",
+                            "parent_task_run_id": parent_run.id,
+                            "delegated_task": {
+                                "task_id": "test-contract",
+                                "task_title": "Test project",
+                                "task_description": "Run tests and report results.",
+                                "delegator": "Valet",
+                                "target_agent_name": "Tester",
+                                "parent_task_run_id": parent_run.id,
+                                "parent_client_turn_id": "parent-test-contract",
+                                "required_outputs": ["test_report"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            child_run_id = child_run.id
+            parent_run_id = parent_run.id
+        finally:
+            db.close()
+
+        async def fake_execute(tool_name, **kwargs):
+            assert tool_name == "run_shell"
+            return {
+                "__catown_tool_result__": True,
+                "tool_name": "run_shell",
+                "success": False,
+                "status": "failed",
+                "blocked": False,
+                "result": (
+                    "...............................................................F........ [  9%]\n"
+                    "........................................................................ [100%]\n"
+                    "=================================== FAILURES ===================================\n"
+                    "backend/tests/test_api_routes.py:537: in test_example\n"
+                    "    assert approved[\"status\"] == \"approved\"\n"
+                    "E   KeyError: 'status'\n"
+                    "=========================== short test summary info ============================\n"
+                    "FAILED backend/tests/test_api_routes.py::test_example\n"
+                    "5 failed, 764 passed in 305.94s"
+                ),
+            }
+
+        parent_followups = []
+
+        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+            parent_followups.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "task_run_id": task_run_id,
+                    "extra_context": extra_context,
+                }
+            )
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": task_run_id}
+
+        original_trigger_agent_response = api_routes.trigger_agent_response
+
+        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+            if task_run_id == child_run_id:
+                return await original_trigger_agent_response(
+                    chatroom_id,
+                    user_message,
+                    client_turn_id=client_turn_id,
+                    task_run_id=task_run_id,
+                    extra_context=extra_context,
+                    checkpoint_snapshot=checkpoint_snapshot,
+                )
+            return await fake_parent_followup(
+                chatroom_id,
+                user_message,
+                client_turn_id=client_turn_id,
+                task_run_id=task_run_id,
+                extra_context=extra_context,
+                checkpoint_snapshot=checkpoint_snapshot,
+            )
+
+        with patch("tools.tool_registry.execute", side_effect=fake_execute), patch.object(api_routes, "trigger_agent_response", side_effect=wrapped_trigger_agent_response):
+            result = asyncio.run(
+                api_routes.trigger_agent_response(
+                    cid,
+                    "@tester Test project",
+                    client_turn_id="delegate-test-contract",
+                    task_run_id=child_run_id,
+                )
+            )
+
+        assert result["completed"] is True
+        assert mock_llm.chat_with_tools.await_count == 1
+        assert len(parent_followups) == 1
+        assert parent_followups[0]["user_message"] == ""
+        assert parent_followups[0]["client_turn_id"] == "parent-test-contract"
+        assert parent_followups[0]["task_run_id"] == parent_run_id
+        assert "agent handoff message from Tester to Valet" in parent_followups[0]["extra_context"]
+
+        detail = client.get(f"/api/task-runs/{child_run_id}").json()
+        assert detail["status"] == "completed"
+        assert any(event["event_type"] == "test_report_produced" for event in detail["events"])
+        assert not any(
+            event["event_type"] == "tool_call_started"
+            and event["payload"].get("tool_call_id") != "call_pytest_once"
+            for event in detail["events"]
+        )
+
+    def test_delegated_tester_background_running_waits_for_tracked_shell_completion(self, client):
+        import llm.client as llm_mod
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        async def first_turn_starts_pytest(messages, tools=None):
+            return {
+                "content": "Running backend tests.",
+                "tool_calls": [
+                    {
+                        "id": "call_pytest_background",
+                        "type": "function",
+                        "function": {
+                            "name": "run_shell",
+                            "arguments": json.dumps(
+                                {
+                                    "command": "python -m pytest backend/tests -q --tb=short --disable-warnings -r fE",
+                                    "cwd": ".",
+                                    "timeout_seconds": 60,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ],
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_with_tools = AsyncMock(side_effect=first_turn_starts_pytest)
+        llm_mod._llm_client = mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        project = client.post(
+            "/api/projects",
+            json={"name": "Delegated Tester Background Shell", "agent_names": ["valet", "tester"]},
+        ).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            parent_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                client_turn_id="parent-bg-contract",
+                run_kind="project_single_agent",
+                status="running",
+                title="Test project",
+                user_request="test the project",
+                initiator="user",
+                target_agent_name="Valet",
+            )
+            child_run = db_mod.TaskRun(
+                chatroom_id=cid,
+                project_id=project["id"],
+                client_turn_id="delegate-bg-contract",
+                run_kind="project_single_agent",
+                status="running",
+                title="@tester Test project",
+                user_request="@tester Test project",
+                initiator="user",
+                target_agent_name="Tester",
+            )
+            db.add_all([parent_run, child_run])
+            db.commit()
+            db.refresh(parent_run)
+            db.refresh(child_run)
+            api_routes.append_task_event(
+                db,
+                parent_run,
+                "delegated_task_dispatched",
+                agent_name="Valet",
+                payload={
+                    "task_id": "test-background-contract",
+                    "task_title": "Test project",
+                    "task_description": "Run tests and report results.",
+                    "from_agent": "Valet",
+                    "target_agent_name": "Tester",
+                    "child_client_turn_id": "delegate-bg-contract",
+                    "required_outputs": ["test_report"],
+                },
+            )
+            db.add(
+                db_mod.Message(
+                    chatroom_id=cid,
+                    agent_id=None,
+                    content="@tester Test project",
+                    message_type="text",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "delegate-bg-contract",
+                            "parent_task_run_id": parent_run.id,
+                            "delegated_task": {
+                                "task_id": "test-background-contract",
+                                "task_title": "Test project",
+                                "task_description": "Run tests and report results.",
+                                "delegator": "Valet",
+                                "target_agent_name": "Tester",
+                                "parent_task_run_id": parent_run.id,
+                                "parent_client_turn_id": "parent-bg-contract",
+                                "required_outputs": ["test_report"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            child_run_id = child_run.id
+            parent_run_id = parent_run.id
+        finally:
+            db.close()
+
+        async def fake_execute(tool_name, **kwargs):
+            assert tool_name == "run_shell"
+            return {
+                "__catown_tool_result__": True,
+                "tool_name": "run_shell",
+                "success": False,
+                "status": "background_running",
+                "blocked": False,
+                "result": "[Run Shell] Foreground wait elapsed after 60s. The process is still running in the background.",
+                "metadata": {
+                    "tracked_process": {
+                        "token": "bg-shell-token",
+                        "status": "running",
+                        "task_run_id": child_run_id,
+                        "client_turn_id": "delegate-bg-contract",
+                        "tool_call_id": "call_pytest_background",
+                    }
+                },
+            }
+
+        parent_followups = []
+
+        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+            parent_followups.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "task_run_id": task_run_id,
+                    "extra_context": extra_context,
+                }
+            )
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": task_run_id}
+
+        original_trigger_agent_response = api_routes.trigger_agent_response
+
+        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+            if task_run_id == child_run_id:
+                return await original_trigger_agent_response(
+                    chatroom_id,
+                    user_message,
+                    client_turn_id=client_turn_id,
+                    task_run_id=task_run_id,
+                    extra_context=extra_context,
+                    checkpoint_snapshot=checkpoint_snapshot,
+                )
+            return await fake_parent_followup(
+                chatroom_id,
+                user_message,
+                client_turn_id=client_turn_id,
+                task_run_id=task_run_id,
+                extra_context=extra_context,
+                checkpoint_snapshot=checkpoint_snapshot,
+            )
+
+        spawned_background_watches = []
+
+        def fake_spawn_background_watch(task_run_id, base_card):
+            spawned_background_watches.append({"task_run_id": task_run_id, "base_card": base_card})
+
+        with patch("tools.tool_registry.execute", side_effect=fake_execute), patch.object(api_routes, "trigger_agent_response", side_effect=wrapped_trigger_agent_response), patch.object(api_routes, "_spawn_background_tracked_run_shell_watch", side_effect=fake_spawn_background_watch):
+            result = asyncio.run(
+                api_routes.trigger_agent_response(
+                    cid,
+                    "@tester Test project",
+                    client_turn_id="delegate-bg-contract",
+                    task_run_id=child_run_id,
+                )
+            )
+
+        assert result["completed"] is False
+        assert result["awaiting_background_tool"] is True
+        assert mock_llm.chat_with_tools.await_count == 1
+        assert parent_followups == []
+        assert len(spawned_background_watches) == 1
+        assert spawned_background_watches[0]["task_run_id"] == child_run_id
+        assert spawned_background_watches[0]["base_card"]["tool"] == "run_shell"
+        assert spawned_background_watches[0]["base_card"]["tracked_process"]["token"] == "bg-shell-token"
+
+        detail = client.get(f"/api/task-runs/{child_run_id}").json()
+        assert detail["status"] == "running"
+        assert any(
+            event["event_type"] == "tool_round_recorded"
+            and event["payload"].get("tool_status_counts", {}).get("background_running") == 1
+            for event in detail["events"]
+        )
+        assert not any(event["event_type"] == "test_report_produced" for event in detail["events"])
+        assert not any(
+            event["event_type"] == "tool_call_started"
+            and event["payload"].get("tool_call_id") != "call_pytest_background"
+            for event in detail["events"]
+        )
+
+    def test_task_run_detail_reconciles_finished_tracked_run_shell(self, tmp_path, client):
+        import models.database as db_mod
+        import routes.api as api_mod
+        from services.run_shell_processes import create_tracked_run_shell_handle
+        from datetime import datetime
+
+        project = client.post("/api/projects", json={"name": "Task Detail Reconcile"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Tracked shell detail task",
+                user_request="Run command",
+                target_agent_name="tester",
+            )
+            db.add(task_run)
+            db.flush()
+            handle = create_tracked_run_shell_handle(
+                command="python -m pytest backend/tests -q",
+                cwd=str(tmp_path),
+                timeout_seconds=60,
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                task_run_id=task_run.id,
+                client_turn_id="turn-detail-reconcile",
+                tool_call_id="call_detail_reconcile",
+                turn=1,
+                agent_name="tester",
+            )
+            record = api_mod.load_tracked_run_shell_handle(handle)
+            assert record is not None
+            Path(record["log_path"]).write_text("tests passed\n", encoding="utf-8")
+            Path(record["exit_path"]).write_text(
+                json.dumps({"exit_code": 0, "finished_at": datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+            record.update({"status": "completed", "exit_code": 0, "finished_at": datetime.now().isoformat()})
+            Path(record["state_path"]).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+            db.add(db_mod.Message(
+                chatroom_id=chatroom_id,
+                content="runtime_card",
+                message_type="runtime_card",
+                metadata_json=json.dumps({
+                    "card": {
+                        "type": "tool_call",
+                        "tool": "run_shell",
+                        "arguments": json.dumps({"command": "python -m pytest backend/tests -q"}),
+                        "status": "running",
+                        "success": None,
+                        "result": "stale running output",
+                        "pid": 97008,
+                        "tracked_process": handle,
+                        "run_id": task_run.id,
+                        "tool_call_id": "call_detail_reconcile",
+                    }
+                }),
+                created_at=datetime.now(),
+            ))
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        def fake_spawn_followup(task_run_id, next_card):
+            followup_calls.append({"task_run_id": task_run_id, "next_card": next_card})
+
+        with patch.object(api_mod, "_spawn_tracked_run_shell_followup", side_effect=fake_spawn_followup):
+            detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        assert detail["status"] == "running"
+        assert any(event["event_type"] == "tracked_run_shell_completed" for event in detail["events"])
+        assert len(followup_calls) == 1
+        assert followup_calls[0]["task_run_id"] == task_run_id
+        assert followup_calls[0]["next_card"]["status"] == "succeeded"
+
     def test_send_message_builds_blocking_and_sidecar_schedule(self, client):
         r = client.post("/api/projects", json={
             "name": "TaskRun Sync Sidecar", "agent_names": ["analyst", "developer", "tester", "release"]
@@ -1870,9 +2702,15 @@ class TestChatEndpoints:
         activity = client.get(f"/api/task-runs/{run['id']}/activity").json()
 
         assert activity["task_run_id"] == run["id"]
+        assert activity["timeline"]["task_run_id"] == run["id"]
+        assert activity["timeline"]["version"] == activity["version"]
         assert activity["latest_event_index"] >= 1
         assert activity["current_step_id"]
+        assert activity["current_step_id"] == activity["timeline"]["current_step_id"]
         assert len(activity["steps"]) >= 3
+        assert [step["event_index"] for step in activity["steps"]] == [
+            step["sequence"] for step in activity["timeline"]["steps"]
+        ]
         assert any(step["event_type"] == "scheduler_plan_created" for step in activity["steps"])
         assert any(step["event_type"] == "agent_turn_completed" for step in activity["steps"])
         assert activity["steps"][-1]["state"] in {"done", "live", "error"}
@@ -3525,36 +4363,38 @@ class TestSSEStreaming:
             if delete_target.exists():
                 delete_target.unlink()
 
-    def test_timeout_queue_item_can_continue_waiting_and_remembers_preference(self, client):
+    def test_run_shell_foreground_wait_elapsed_does_not_create_timeout_queue_item(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
-        import models.database as db_mod
-        from services.tool_execution_preferences import (
-            TIMEOUT_BEHAVIOR_KIND,
-            TIMEOUT_BEHAVIOR_WAIT_FOREVER,
-            build_run_shell_timeout_preference_key,
-        )
 
         async def mock_timeout_then_followup_stream(messages, tools=None):
+            if not any(message.get("role") == "tool" for message in messages if isinstance(message, dict)):
+                yield {
+                    "type": "done",
+                    "full_content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_run_shell_background_running",
+                            "function": {
+                                "name": "run_shell",
+                                "arguments": json.dumps(
+                                    {
+                                        "command": 'python -c "import time; time.sleep(2); print(\'done\')"',
+                                        "cwd": ".",
+                                        "timeout_seconds": 1,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                }
+                return
+            yield {"type": "content", "delta": "Command is running in the background."}
             yield {
                 "type": "done",
-                "full_content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_run_shell_timeout_then_wait",
-                        "function": {
-                            "name": "run_shell",
-                            "arguments": json.dumps(
-                                {
-                                    "command": 'python -c "import time; time.sleep(2); print(\'done\')"',
-                                    "cwd": ".",
-                                    "timeout_seconds": 1,
-                                },
-                                ensure_ascii=False,
-                            ),
-                        },
-                    }
-                ],
+                "full_content": "Command is running in the background.",
+                "tool_calls": None,
             }
 
         mock_llm = MagicMock()
@@ -3570,28 +4410,14 @@ class TestSSEStreaming:
         api_routes.get_default_llm_client = lambda: mock_llm
         api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
 
-        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
-            thread = threading.Thread(
-                target=lambda: asyncio.run(
-                    api_routes._finalize_approved_queue_item_followup_async(
-                        item_id,
-                        request_payload=request_payload,
-                        resolved_by=resolved_by,
-                        resolution_note=resolution_note,
-                    )
-                )
-            )
-            thread.start()
-            thread.join()
+        project = client.post(
+            "/api/projects",
+            json={"name": "Background Running Shell", "agent_names": ["analyst"]},
+        ).json()
+        cid = project["chatroom_id"]
+        turn_id = "turn-background-running-shell"
 
-        with patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now):
-            project = client.post(
-                "/api/projects",
-                json={"name": "Timeout Continue Waiting", "agent_names": ["analyst"]},
-            ).json()
-            cid = project["chatroom_id"]
-            turn_id = "turn-timeout-continue-waiting"
-
+        with patch.object(api_routes, "_spawn_background_tracked_run_shell_watch"):
             stream = client.post(
                 f"/api/chatrooms/{cid}/messages/stream",
                 json={"content": "run the long test command", "client_turn_id": turn_id},
@@ -3620,60 +4446,57 @@ class TestSSEStreaming:
             ).json()
             assert approved_first["status"] == "approved"
 
-            timeout_queue_items = client.get(
+            detail = _wait_for_task_run_event(
+                client,
+                task_run_id,
+                "tool_round_recorded",
+                payload_predicate=lambda payload: payload.get("tool_status_counts", {}).get("background_running") == 1,
+                timeout_seconds=8.0,
+            )
+            assert detail is not None
+            assert detail["status"] == "running"
+
+            pending_after_background = client.get(
                 "/api/approval-queue",
                 params={"task_run_id": task_run_id, "status": "pending"},
             ).json()
-            assert len(timeout_queue_items) == 1
-            assert timeout_queue_items[0]["request_payload"]["blocked_kind"] == "timeout"
-
-            approved_timeout = client.post(
-                f"/api/approval-queue/{timeout_queue_items[0]['id']}/approve",
-                json={"note": "Continue waiting and remember this command."},
-            ).json()
-            assert approved_timeout["status"] == "approved"
-
-            completed_detail = _wait_for_task_run_event(
-                client,
-                task_run_id,
-                "approval_queue_item_resolved",
-                payload_predicate=lambda payload: (
-                    payload.get("queue_item_id") == timeout_queue_items[0]["id"]
-                    and payload.get("action_taken") == "tool_replayed"
-                ),
-                timeout_seconds=20.0,
+            assert pending_after_background == []
+            assert any(
+                event["event_type"] == "tool_round_recorded"
+                and event["payload"].get("tool_status_counts", {}).get("background_running") == 1
+                for event in detail["events"]
             )
-        assert completed_detail is not None
-
-        pending_after_continue = client.get(
-            "/api/approval-queue",
-            params={"task_run_id": task_run_id, "status": "pending"},
-        ).json()
-        assert pending_after_continue == []
-
-        db = db_mod.SessionLocal()
-        try:
-            preference_key = build_run_shell_timeout_preference_key(
-                'python -c "import time; time.sleep(2); print(\'done\')"',
-                ".",
+            assert not any(
+                event["event_type"] == "approval_queue_item_created"
+                and event["payload"].get("target_name") == "run_shell"
+                and event["payload"].get("status") == "pending"
+                and event["payload"].get("queue_item_id") != first_queue_items[0]["id"]
+                for event in detail["events"]
             )
-            row = (
-                db.query(db_mod.ToolExecutionPreference)
-                .filter(db_mod.ToolExecutionPreference.project_id == project["id"])
-                .filter(db_mod.ToolExecutionPreference.tool_name == "run_shell")
-                .filter(db_mod.ToolExecutionPreference.preference_kind == TIMEOUT_BEHAVIOR_KIND)
-                .filter(db_mod.ToolExecutionPreference.preference_key == preference_key)
-                .first()
-            )
-            assert row is not None
-            assert row.preference_value == TIMEOUT_BEHAVIOR_WAIT_FOREVER
-        finally:
-            db.close()
+        followup_call = mock_llm.chat_stream
+        assert followup_call is not None
 
-    def test_approve_run_shell_queue_item_replay_restores_project_workspace(self, client):
+    def test_approve_run_shell_item_does_not_create_timeout_queue(self, client):
         import models.database as db_mod
+        import routes.api as api_routes
+        from types import SimpleNamespace
+        from services.runner_lifecycle import record_tool_round
 
-        project = client.post("/api/projects", json={"name": "Replay Workspace Project", "agent_names": ["analyst"]}).json()
+        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
+            thread = threading.Thread(
+                target=lambda: asyncio.run(
+                    api_routes._finalize_approved_queue_item_followup_async(
+                        item_id,
+                        request_payload=request_payload,
+                        resolved_by=resolved_by,
+                        resolution_note=resolution_note,
+                    )
+                )
+            )
+            thread.start()
+            thread.join()
+
+        project = client.post("/api/projects", json={"name": "No Timeout Queue Project", "agent_names": ["analyst"]}).json()
         cid = project["chatroom_id"]
 
         db = db_mod.SessionLocal()
@@ -3684,8 +4507,8 @@ class TestSSEStreaming:
                 project_id=project["id"],
                 run_kind="project_single_agent",
                 status="running",
-                title="Replay run_shell within project workspace",
-                user_request="Replay run_shell within project workspace",
+                title="Run shell without timeout queue",
+                user_request="Run shell without timeout queue",
                 initiator="user",
                 target_agent_name="analyst",
             )
@@ -3693,38 +4516,144 @@ class TestSSEStreaming:
             db.commit()
             db.refresh(task_run)
 
-            queue_item = db_mod.ApprovalQueueItem(
-                task_run_id=task_run.id,
+            arguments = json.dumps(
+                {
+                    "command": "sleep 2",
+                    "cwd": project_row.workspace_path,
+                    "timeout_seconds": 1,
+                },
+                ensure_ascii=False,
+            )
+            record_tool_round(
+                db,
+                task_run,
+                agent_name="analyst",
+                turn=1,
+                tool_names=["run_shell"],
+                tool_results=[],
+                blocked_tool_results=[
+                    SimpleNamespace(
+                        tool_call_id="call_run_shell_continue_timeout",
+                        tool_name="run_shell",
+                        arguments=arguments,
+                        status="approval_blocked",
+                        success=False,
+                        blocked=True,
+                        blocked_kind="approval",
+                        blocked_reason="run_shell blocked in project chat",
+                        result="run_shell blocked in project chat",
+                        metadata={},
+                    )
+                ],
+                summary="run_shell blocked in project chat",
+            )
+            queue_item = (
+                db.query(db_mod.ApprovalQueueItem)
+                .filter(db_mod.ApprovalQueueItem.task_run_id == task_run.id)
+                .filter(db_mod.ApprovalQueueItem.status == "pending")
+                .first()
+            )
+            assert queue_item is not None
+            queue_item_id = queue_item.id
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        with patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now), patch.object(api_routes, "_spawn_background_tracked_run_shell_watch"):
+            approved = client.post(
+                f"/api/approval-queue/{queue_item_id}/approve",
+                json={"note": "Start run shell."},
+            ).json()
+
+        assert approved["status"] == "approved"
+
+        detail = _wait_for_task_run_event(
+            client,
+            task_run_id,
+            "tool_round_recorded",
+            payload_predicate=lambda payload: payload.get("tool_status_counts", {}).get("background_running") == 1,
+            timeout_seconds=3.0,
+        )
+        assert detail is not None
+        assert detail["status"] in {"running", "completed"}
+        assert any(
+            event["event_type"] == "tool_round_recorded"
+            and event["payload"].get("tool_status_counts", {}).get("background_running") == 1
+            for event in detail["events"]
+        )
+        assert not any(
+            event["event_type"] == "approval_queue_item_followup_triggered"
+            for event in detail["events"]
+        )
+        pending_items = client.get(
+            "/api/approval-queue",
+            params={"task_run_id": task_run_id, "status": "pending"},
+        ).json()
+        assert pending_items == []
+
+    def test_approve_run_shell_queue_item_continue_restores_project_workspace(self, client):
+        import models.database as db_mod
+        from types import SimpleNamespace
+        from services.runner_lifecycle import record_tool_round
+
+        project = client.post("/api/projects", json={"name": "Continue Workspace Project", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            project_row = db.query(db_mod.Project).filter(db_mod.Project.id == project["id"]).first()
+            task_run = db_mod.TaskRun(
                 chatroom_id=cid,
                 project_id=project["id"],
-                queue_kind="approval",
-                status="pending",
-                source="tool_call_blocked",
-                title="Approve run_shell",
-                summary="run_shell blocked in project chat",
-                agent_name="analyst",
-                target_kind="tool",
-                target_name="run_shell",
-                request_payload_json=json.dumps(
-                    {
-                        "tool_name": "run_shell",
-                        "arguments": json.dumps(
-                            {
-                                "command": "pwd",
-                                "cwd": project_row.workspace_path,
-                                "timeout_seconds": 10,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        "resume_supported": True,
-                        "turn": 1,
-                    },
-                    ensure_ascii=False,
-                ),
+                run_kind="project_single_agent",
+                status="running",
+                title="Continue run_shell within project workspace",
+                user_request="Continue run_shell within project workspace",
+                initiator="user",
+                target_agent_name="analyst",
             )
-            db.add(queue_item)
+            db.add(task_run)
             db.commit()
-            db.refresh(queue_item)
+            db.refresh(task_run)
+
+            arguments = json.dumps(
+                {
+                    "command": "pwd",
+                    "cwd": project_row.workspace_path,
+                    "timeout_seconds": 10,
+                },
+                ensure_ascii=False,
+            )
+            record_tool_round(
+                db,
+                task_run,
+                agent_name="analyst",
+                turn=1,
+                tool_names=["run_shell"],
+                tool_results=[],
+                blocked_tool_results=[
+                    SimpleNamespace(
+                        tool_call_id="call_run_shell_continue_workspace",
+                        tool_name="run_shell",
+                        arguments=arguments,
+                        status="approval_blocked",
+                        success=False,
+                        blocked=True,
+                        blocked_kind="approval",
+                        blocked_reason="run_shell blocked in project chat",
+                        result="run_shell blocked in project chat",
+                        metadata={},
+                    )
+                ],
+                summary="run_shell blocked in project chat",
+            )
+            queue_item = (
+                db.query(db_mod.ApprovalQueueItem)
+                .filter(db_mod.ApprovalQueueItem.task_run_id == task_run.id)
+                .filter(db_mod.ApprovalQueueItem.status == "pending")
+                .first()
+            )
+            assert queue_item is not None
             queue_item_id = queue_item.id
             task_run_id = task_run.id
         finally:
@@ -3732,7 +4661,7 @@ class TestSSEStreaming:
 
         approved = client.post(
             f"/api/approval-queue/{queue_item_id}/approve",
-            json={"note": "Replay in project workspace."},
+            json={"note": "Continue in project workspace."},
         ).json()
 
         assert approved["status"] == "approved"
@@ -3742,7 +4671,7 @@ class TestSSEStreaming:
             client,
             task_run_id,
             "approval_queue_item_resolved",
-            payload_predicate=lambda payload: payload.get("action_taken") == "tool_replayed",
+            payload_predicate=lambda payload: payload.get("action_taken") == "run_shell_continued_after_approval",
             timeout_seconds=3.0,
         )
         assert resolved_detail is not None
@@ -3750,7 +4679,7 @@ class TestSSEStreaming:
             event
             for event in resolved_detail["events"]
             if event["event_type"] == "approval_queue_item_resolved"
-            and event["payload"].get("action_taken") == "tool_replayed"
+            and event["payload"].get("action_taken") == "run_shell_continued_after_approval"
         )
         assert resolved_event["payload"]["replay_success"] is True
         assert resolved_event["payload"]["replay_status"] == "succeeded"
@@ -3872,118 +4801,13 @@ class TestSSEStreaming:
         shutdown_payload = json.loads(shutdown_event.payload_json or "{}")
         assert shutdown_payload["followup_status"] == "skipped"
 
-    def test_approve_run_shell_timeout_creates_continue_wait_queue(self, client):
-        import models.database as db_mod
-        import routes.api as api_routes
-
-        def run_followup_now(item_id, *, request_payload, resolved_by, resolution_note):
-            thread = threading.Thread(
-                target=lambda: asyncio.run(
-                    api_routes._finalize_approved_queue_item_followup_async(
-                        item_id,
-                        request_payload=request_payload,
-                        resolved_by=resolved_by,
-                        resolution_note=resolution_note,
-                    )
-                )
-            )
-            thread.start()
-            thread.join()
-
-        project = client.post("/api/projects", json={"name": "Replay Timeout Project", "agent_names": ["analyst"]}).json()
-        cid = project["chatroom_id"]
-
-        db = db_mod.SessionLocal()
-        try:
-            project_row = db.query(db_mod.Project).filter(db_mod.Project.id == project["id"]).first()
-            task_run = db_mod.TaskRun(
-                chatroom_id=cid,
-                project_id=project["id"],
-                run_kind="project_single_agent",
-                status="running",
-                title="Replay timeout run_shell within project workspace",
-                user_request="Replay timeout run_shell within project workspace",
-                initiator="user",
-                target_agent_name="analyst",
-            )
-            db.add(task_run)
-            db.commit()
-            db.refresh(task_run)
-            original_updated_at = task_run.updated_at
-
-            queue_item = db_mod.ApprovalQueueItem(
-                task_run_id=task_run.id,
-                chatroom_id=cid,
-                project_id=project["id"],
-                queue_kind="approval",
-                status="pending",
-                source="tool_call_blocked",
-                title="Approve timeout run_shell",
-                summary="run_shell blocked in project chat",
-                agent_name="analyst",
-                target_kind="tool",
-                target_name="run_shell",
-                request_payload_json=json.dumps(
-                    {
-                        "tool_name": "run_shell",
-                        "arguments": json.dumps(
-                            {
-                                "command": "python -c \"import time; time.sleep(2)\"",
-                                "cwd": project_row.workspace_path,
-                                "timeout_seconds": 1,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        "resume_supported": True,
-                        "turn": 1,
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            db.add(queue_item)
-            db.commit()
-            db.refresh(queue_item)
-            queue_item_id = queue_item.id
-            task_run_id = task_run.id
-        finally:
-            db.close()
-
-        with patch.object(api_routes, "_spawn_approval_followup_worker", side_effect=run_followup_now):
-            approved = client.post(
-                f"/api/approval-queue/{queue_item_id}/approve",
-                json={"note": "Replay timeout in project workspace."},
-            ).json()
-
-        assert approved["status"] == "approved"
-        assert approved["resolution_payload"]["action_taken"] == "queue_resolved_only"
-
-        resolved_detail = client.get(f"/api/task-runs/{task_run_id}").json()
-        assert resolved_detail is not None
-        assert resolved_detail["status"] == "running"
-        assert resolved_detail["completed_at"] is None
-        assert resolved_detail["updated_at"] != original_updated_at
-        timeout_queue_items = client.get(
-            "/api/approval-queue",
-            params={"task_run_id": task_run_id, "status": "pending"},
-        ).json()
-        assert len(timeout_queue_items) == 1
-        assert timeout_queue_items[0]["request_payload"]["blocked_kind"] == "timeout"
-        resolved_event = next(
-            event
-            for event in resolved_detail["events"]
-            if event["event_type"] == "approval_queue_item_resolved"
-            and event["payload"].get("action_taken") == "tool_replayed"
-        )
-        assert resolved_event["payload"]["replay_status"] == "timeout_waiting"
-        assert resolved_event["payload"]["replay_success"] is False
-
     def test_startup_recovery_continues_agent_after_tracked_run_shell_result(self, tmp_path):
         app = _make_app(tmp_path)
 
         from fastapi.testclient import TestClient
         import models.database as db_mod
         import routes.api as api_routes
-        from services.run_shell_processes import create_tracked_run_shell_handle, launch_tracked_run_shell
+        from services.run_shell_processes import create_tracked_run_shell_handle, launch_tracked_run_shell, wait_for_tracked_run_shell
 
         with TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"}) as client:
             db = db_mod.SessionLocal()
@@ -4032,42 +4856,33 @@ class TestSSEStreaming:
                     agent_name="tester",
                 )
                 launch_tracked_run_shell(handle)
+                asyncio.run(wait_for_tracked_run_shell(handle, timeout_seconds=None))
 
-                queue_item = db_mod.ApprovalQueueItem(
-                    task_run_id=task_run.id,
-                    chatroom_id=chatroom.id,
-                    project_id=project.id,
-                    queue_kind="approval",
-                    status="pending",
-                    source="tool_call_blocked",
-                    title="Continue waiting for run_shell",
-                    summary="run_shell timed out",
-                    agent_name="tester",
-                    target_kind="tool",
-                    target_name="run_shell",
-                    request_payload_json=json.dumps(
-                        {
-                            "tool_name": "run_shell",
-                            "arguments": json.dumps(
-                                {
-                                    "command": command,
-                                    "cwd": str(tmp_path),
-                                    "timeout_seconds": 1,
-                                },
-                                ensure_ascii=False,
-                            ),
-                            "resume_supported": True,
-                            "turn": 1,
-                            "blocked_kind": "timeout",
-                            "tool_call_id": "call_recover",
-                            "metadata": {"tracked_process": handle},
-                        },
-                        ensure_ascii=False,
-                    ),
+                db.add(
+                    db_mod.Message(
+                        chatroom_id=chatroom.id,
+                        content="runtime_card",
+                        message_type="runtime_card",
+                        metadata_json=json.dumps(
+                            {
+                                "card": {
+                                    "type": "tool_call",
+                                    "tool": "run_shell",
+                                    "arguments": json.dumps({"command": command, "cwd": str(tmp_path)}),
+                                    "status": "running",
+                                    "result": "running",
+                                    "tracked_process": handle,
+                                    "tool_call_id": "call_recover",
+                                    "client_turn_id": task_run.client_turn_id,
+                                    "run_id": task_run.id,
+                                    "turn": 1,
+                                }
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                 )
-                db.add(queue_item)
                 db.commit()
-                queue_item_id = queue_item.id
                 task_run_id = task_run.id
             finally:
                 db.close()
@@ -4097,26 +4912,21 @@ class TestSSEStreaming:
             with patch.object(api_routes, "trigger_agent_response", side_effect=fake_trigger_agent_response):
                 summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
             assert summary["detected"] == 1
-            assert summary["recovered"] == 1
-            assert len(followup_calls) == 1
-            assert followup_calls[0]["task_run_id"] == task_run_id
-            assert followup_calls[0]["client_turn_id"] == "delegate-tracked-recovery"
-            assert "run_shell" in followup_calls[0]["extra_context"]
-            assert "recovered done" in followup_calls[0]["extra_context"].lower()
+            assert summary["recovered"] == 0
+            assert summary["skipped"] == 1
 
             detail = client.get(f"/api/task-runs/{task_run_id}").json()
             assert any(
-                event["event_type"] == "approval_queue_item_followup_triggered"
+                event["event_type"] == "tracked_run_shell_completed"
+                and event["payload"].get("tool_success") is True
                 for event in detail["events"]
             )
-            resolved_event = next(
+            recovery_event = next(
                 event
                 for event in detail["events"]
-                if event["event_type"] == "approval_queue_item_resolved"
-                and event["payload"].get("queue_item_id") == queue_item_id
+                if event["event_type"] == "tracked_run_shell_completed"
             )
-            assert resolved_event["payload"]["action_taken"] == "startup_recovered"
-            assert resolved_event["payload"]["followup_status"] == "continued"
+            assert recovery_event["payload"]["tool_success"] is True
             queue_items = client.get(
                 "/api/approval-queue",
                 params={"task_run_id": task_run_id, "status": "pending"},
@@ -4232,6 +5042,223 @@ class TestSSEStreaming:
             processes = [entry.model_dump() for entry in api_routes._build_chat_process_entries(db, chatroom_id)]
             assert all(process["status"] != "running" for process in processes)
             assert any(process["kind"] == "command" and process["status"] == "terminated" for process in processes)
+        finally:
+            db.close()
+
+    def test_delegated_child_run_shell_result_reports_to_parent_owner(self, tmp_path):
+        _make_app(tmp_path)
+
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        db = db_mod.SessionLocal()
+        try:
+            parent_agent = db.query(db_mod.Agent).filter(db_mod.Agent.agent_type == "valet").first()
+            child_agent = db.query(db_mod.Agent).filter(db_mod.Agent.agent_type == "tester").first()
+            assert parent_agent is not None
+            assert child_agent is not None
+            workspace = tmp_path / "delegated-owner-workspace"
+            workspace.mkdir()
+            project = db_mod.Project(
+                name="Delegated Owner Project",
+                status="active",
+                workspace_path=str(workspace),
+            )
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Delegated Owner Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            db.add_all(
+                [
+                    db_mod.AgentAssignment(project_id=project.id, agent_id=parent_agent.id),
+                    db_mod.AgentAssignment(project_id=project.id, agent_id=child_agent.id),
+                ]
+            )
+            db.commit()
+
+            parent_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                client_turn_id="parent-turn",
+                run_kind="project_single_agent",
+                status="running",
+                title="Run tests",
+                user_request="测试一下当前项目",
+                initiator="user",
+                target_agent_name="Valet",
+            )
+            child_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                client_turn_id="delegate-task-1",
+                run_kind="project_single_agent",
+                status="running",
+                title="@tester Run tests",
+                user_request="@tester Run tests",
+                initiator="user",
+                target_agent_name="Tester",
+            )
+            db.add_all([parent_run, child_run])
+            db.commit()
+            db.refresh(parent_run)
+            db.refresh(child_run)
+
+            api_routes.append_task_event(
+                db,
+                parent_run,
+                "delegated_task_dispatched",
+                agent_name="Valet",
+                payload={
+                    "task_id": "task-1",
+                    "task_title": "Run tests",
+                    "from_agent": "Valet",
+                    "target_agent_name": "Tester",
+                    "child_client_turn_id": "delegate-task-1",
+                },
+            )
+            db.add(
+                db_mod.Message(
+                    chatroom_id=chatroom.id,
+                    agent_id=parent_agent.id,
+                    content="@tester Run tests",
+                    message_type="text",
+                    metadata_json=json.dumps(
+                        {
+                            "client_turn_id": "delegate-task-1",
+                            "parent_task_run_id": parent_run.id,
+                            "delegated_task": {
+                                "task_id": "task-1",
+                                "task_title": "Run tests",
+                                "task_description": "Run backend tests and report results.",
+                                "delegator": "Valet",
+                                "target_agent_name": "Tester",
+                                "parent_task_run_id": parent_run.id,
+                                "parent_client_turn_id": "parent-turn",
+                                "required_outputs": ["test_report"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            child_run_id = child_run.id
+            parent_run_id = parent_run.id
+            chatroom_id = chatroom.id
+            child_agent_id = child_agent.id
+        finally:
+            db.close()
+
+        followup_calls = []
+
+        async def fake_trigger_agent_response(
+            chatroom_id,
+            user_message,
+            client_turn_id=None,
+            task_run_id=None,
+            extra_context="",
+            checkpoint_snapshot=None,
+        ):
+            followup_calls.append(
+                {
+                    "chatroom_id": chatroom_id,
+                    "user_message": user_message,
+                    "client_turn_id": client_turn_id,
+                    "task_run_id": task_run_id,
+                    "extra_context": extra_context,
+                    "checkpoint_snapshot": checkpoint_snapshot,
+                }
+            )
+            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": task_run_id}
+
+        next_card = {
+            "type": "tool_call",
+            "agent": "Tester",
+            "tool": "run_shell",
+            "arguments": json.dumps(
+                {
+                    "command": "/home/sun/.catown/venv/bin/python3 -m pytest backend/tests -q",
+                    "cwd": "/workspace",
+                }
+            ),
+            "success": False,
+            "status": "failed",
+            "blocked": False,
+            "result": "4 failed, 764 passed",
+            "tool_call_id": "call-test",
+            "turn": 1,
+            "tracked_process": {"token": "token-test", "status": "failed"},
+        }
+        with patch.object(api_routes, "trigger_agent_response", side_effect=fake_trigger_agent_response):
+            asyncio.run(api_routes._continue_agent_after_tracked_run_shell_async(child_run_id, next_card))
+
+        assert len(followup_calls) == 1
+        assert followup_calls[0]["chatroom_id"] == chatroom_id
+        assert followup_calls[0]["user_message"] == ""
+        assert followup_calls[0]["client_turn_id"] == "parent-turn"
+        assert followup_calls[0]["task_run_id"] == parent_run_id
+        assert "agent handoff message from Tester to Valet" in followup_calls[0]["extra_context"]
+
+        db = db_mod.SessionLocal()
+        try:
+            child_run = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == child_run_id).first()
+            parent_run = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == parent_run_id).first()
+            assert child_run.status == "completed"
+            assert parent_run.status == "running"
+            child_event_types = [event.event_type for event in child_run.events]
+            parent_event_types = [event.event_type for event in parent_run.events]
+            assert "tracked_run_shell_followup_queued" not in child_event_types
+            assert "test_report_produced" in child_event_types
+            assert "delegated_task_result_reported" in child_event_types
+            assert "delegated_task_result_reported" in parent_event_types
+            report_event = next(event for event in child_run.events if event.event_type == "test_report_produced")
+            report_payload = json.loads(report_event.payload_json or "{}")
+            assert report_payload["produced_outputs"] == ["test_report"]
+            assert report_payload["required_outputs"] == ["test_report"]
+            assert report_payload["test_report"]["kind"] == "test_report"
+            assert report_payload["test_report"]["counts"]["passed"] == 764
+            assert report_payload["test_report"]["counts"]["failed"] == 4
+            assert report_payload["test_report"]["blocked"] is True
+            report = (
+                db.query(db_mod.Message)
+                .filter(db_mod.Message.chatroom_id == chatroom_id, db_mod.Message.agent_id == child_agent_id)
+                .order_by(db_mod.Message.id.desc())
+                .first()
+            )
+            assert report is not None
+            assert "@Valet" in report.content
+            assert "Required output: test_report" in report.content
+            assert "4 failed, 764 passed" in report.content
+            metadata = json.loads(report.metadata_json or "{}")
+            assert metadata["delegated_task_result"]["produced_outputs"] == ["test_report"]
+            assert isinstance(metadata["delegated_task_result"].get("artifact_asset_id"), int)
+            assert metadata["test_report"]["kind"] == "test_report"
+            assert metadata["test_report_artifact"]["asset_type"] == "document.test_report"
+            asset = (
+                db.query(db_mod.Asset)
+                .filter(db_mod.Asset.id == metadata["test_report_artifact"]["asset_id"])
+                .first()
+            )
+            assert asset is not None
+            assert asset.asset_type == "document.test_report"
+            assert asset.owner_agent.lower() == "tester"
+            assert asset.content_markdown is not None
+            assert "# Test Report" in asset.content_markdown
+            assert "@Valet Test report from Tester." in asset.content_markdown
+            assert asset.storage_path is not None
+            assert asset.storage_path.startswith("reports/tests/")
+            asset_path = workspace / asset.storage_path
+            assert asset_path.exists()
+            assert asset_path.read_text(encoding="utf-8") == asset.content_markdown
         finally:
             db.close()
 

@@ -174,7 +174,7 @@ async def run_orchestration_agent_turn(
         before_tool_call=profile.check_cancel,
         on_tool_round=profile.on_tool_round,
     )
-    if loop_result.awaiting_tool_approval:
+    if loop_result.awaiting_tool_approval or loop_result.awaiting_background_tool:
         return None, None
     response_content = loop_result.final_content
 

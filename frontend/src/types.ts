@@ -73,6 +73,7 @@ export type ProjectBrowserArtifactItem = {
   path: string;
   name: string;
   type: string;
+  agent_name?: string | null;
   size?: number | null;
   mtime?: number | null;
 };
@@ -89,6 +90,7 @@ export type ChatProcessEntry = {
   label: string;
   kind: "project" | "chat" | "task" | "command" | "subagent";
   detail: string;
+  agent_name?: string | null;
   status?: "running" | "terminated" | string | null;
   parent_id?: string | null;
   timestamp?: string | null;
@@ -100,6 +102,16 @@ export type ChatProcessEntry = {
 
 export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
   type: "start" | "batch" | "done";
+};
+
+export type ProjectBrowserWatchEvent = {
+  type: "ready" | "refresh_needed";
+  workspace_path: string;
+  changed: boolean;
+  reason?: string | null;
+  changed_paths: string[];
+  truncated: boolean;
+  snapshot_id?: string | null;
 };
 
 export type ProjectFileReadResponse = {
@@ -128,6 +140,7 @@ export type MessageItem = {
   created_at: string;
   agent_name?: string | null;
   client_turn_id?: string;
+  metadata?: Record<string, unknown> | null;
   isStreaming?: boolean;
   statusDetail?: string;
   streamSteps?: MessageStreamStep[];
@@ -373,6 +386,7 @@ export type TaskActivityProjection = {
   latest_agent_turn_preview?: string | null;
   background?: Record<string, unknown>;
   steps: TaskActivityStep[];
+  timeline?: ChatTimelineProjection | null;
 };
 
 export type ChatTimelineStep = {

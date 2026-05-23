@@ -35,6 +35,7 @@ async def publish_saved_chat_message(
         "message_type": message_type,
         "created_at": created_value,
         "client_turn_id": (metadata or {}).get("client_turn_id"),
+        "metadata": metadata or {},
     }
     await websocket_manager.broadcast_to_room(room_payload, chatroom_id)
 

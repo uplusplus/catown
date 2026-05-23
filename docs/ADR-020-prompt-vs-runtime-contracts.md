@@ -4,6 +4,9 @@
 **Date**: 2026-05-19  
 **Decision makers**: BOSS + Catown Runtime
 
+**Related**:
+- [Chat Handoff Tail-Mention Feature Doc](./feature-chat-handoff-tail-mention.md)
+
 ## Context
 
 Catown agents receive rich prompt context: role descriptions, team members, skills,
@@ -92,6 +95,9 @@ software-owned.
    A message such as `@Tester please test this` is a conversation event. It can be used
    as an input to routing, but the backend must still create or link a durable target run
    if the work is meant to be executed and waited on.
+
+   The concrete lightweight chat-routing protocol for mention-based handoff is documented
+   in [Chat Handoff Tail-Mention Feature Doc](./feature-chat-handoff-tail-mention.md).
 
 6. Completion must be objective-scoped.
    A parent or coordinator run must not be marked completed merely because the

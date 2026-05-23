@@ -69,6 +69,26 @@ def test_write_project_workspace_file_saves_text(tmp_path):
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
+def test_write_project_workspace_file_archives_overwritten_artifact(tmp_path):
+    from routes.api import ProjectFileWriteRequest, _read_project_workspace_file, _write_project_workspace_file
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "PRD.md"
+    target.write_text("old\n", encoding="utf-8")
+    opened = _read_project_workspace_file(str(workspace), "PRD.md")
+
+    _write_project_workspace_file(
+        str(workspace),
+        ProjectFileWriteRequest(path="PRD.md", content="new\n", expected_mtime=opened.mtime),
+    )
+
+    archived = list((workspace / ".catown" / "artifact-history").glob("*--PRD.md"))
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == "old\n"
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
 def test_write_project_workspace_file_rejects_stale_mtime(tmp_path):
     from routes.api import ProjectFileWriteRequest, _read_project_workspace_file, _write_project_workspace_file
 

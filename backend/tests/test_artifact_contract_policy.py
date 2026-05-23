@@ -28,7 +28,7 @@ def _workflow_spec():
                     "display_name": "Testing",
                     "agent": "tester",
                     "gate": "auto",
-                    "expected_artifacts": ["test_report.md"],
+                    "expected_artifacts": ["reports/tests/"],
                 },
             ],
         },
@@ -49,7 +49,7 @@ def test_workspace_file_artifact_matches_stage_delivery_contract():
                 "agent_name": "Tester",
             },
             "mode": "workspace_file",
-            "file_path": "reports/test_report.md",
+            "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
         },
     )
 

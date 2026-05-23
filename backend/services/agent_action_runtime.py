@@ -196,7 +196,7 @@ def run_list_collaborators_action(*, coordinator: Any | None, chatroom_id: int) 
         "\nSelection guide:\n"
         "- Use delegate_task for tracked async work.\n"
         "- Use consult_agent for an immediate expert answer.\n"
-        "- Use @agent_name in normal chat when you want a lightweight live handoff or notification."
+        "- Use @agent_name at the start of the last non-empty paragraph of the final chat message when you want a lightweight live handoff or notification."
     )
     return result
 

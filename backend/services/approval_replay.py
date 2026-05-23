@@ -17,7 +17,7 @@ def blocked_tool_queue_kind(blocked_kind: Any) -> str:
 def blocked_tool_queue_title(tool_name: Any, *, queue_kind: str, blocked_kind: Any = None) -> str:
     normalized_tool_name = str(tool_name or "tool").strip() or "tool"
     if str(blocked_kind or "").strip().lower() == "timeout":
-        return f"Continue waiting for {normalized_tool_name}"
+        return f"{normalized_tool_name} is running in the background"
     if queue_kind == "escalation":
         return f"Escalation needed for {normalized_tool_name}"
     return f"Approval needed for {normalized_tool_name}"
@@ -25,7 +25,7 @@ def blocked_tool_queue_title(tool_name: Any, *, queue_kind: str, blocked_kind: A
 
 def blocked_tool_resume_supported(*, blocked_kind: Any, blocked_reason: Any) -> bool:
     if str(blocked_kind or "").strip().lower() == "timeout":
-        return True
+        return False
     if str(blocked_kind or "").strip().lower() != "approval":
         return False
     reason = str(blocked_reason or "").strip().lower()
@@ -401,15 +401,21 @@ def build_approval_queue_item_resolved_event_payload(
     return payload
 
 
+def replay_result_non_actionable_reason(replay_result: Any) -> str | None:
+    """Return the factual reason a replay result cannot resume the agent yet."""
+
+    if bool(getattr(replay_result, "blocked", False)):
+        return "blocked"
+    status = str(getattr(replay_result, "status", None) or "").strip().lower()
+    if status == "background_running":
+        return "background_running"
+    return None
+
+
 def replay_result_is_actionable(replay_result: Any) -> bool:
-    """A replay can continue execution after any non-blocked tool result.
+    """A replay is actionable only after the resumed tool invocation actually finished."""
 
-    Failed command/test output is actionable context for the agent: the next
-    turn should diagnose it or choose a corrected command. Blocked results are
-    not actionable because they still require an external decision.
-    """
-
-    return not bool(getattr(replay_result, "blocked", False))
+    return replay_result_non_actionable_reason(replay_result) is None
 
 
 def build_followup_skipped_payload(reason: str) -> Dict[str, Any]:

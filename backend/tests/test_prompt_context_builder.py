@@ -383,12 +383,20 @@ def test_runtime_user_fragments_are_structured_and_prioritized():
     assert fragments[0].visibility == "global"
     assert fragments[3].content.startswith("## Chat Routing")
     assert "`@agent_name`" in fragments[3].content
-    assert "normal chat message" in fragments[3].content
+    assert "last non-empty paragraph" in fragments[3].content
+    assert "not routing instructions" in fragments[3].content
     assert fragments[4].content.startswith("## Chat Lineage")
     assert fragments[7].scope == "shared_fact"
     assert "Current focus" not in fragments[1].content
     assert "Blocking reason" not in fragments[1].content
     assert "Latest summary" not in fragments[1].content
+
+
+def test_operating_contract_requires_handoff_mentions_at_start_of_final_message():
+    fragment = build_operating_developer_context(agent_name="Valet")
+
+    assert "last non-empty paragraph" in fragment.content
+    assert "Mentions outside that final paragraph" in fragment.content
 
 
 def test_runtime_user_fragments_can_split_standalone_note_and_source_chat():
@@ -745,6 +753,52 @@ def test_chat_context_selector_applies_profile_fragment_caps_without_context_win
     assert chat_selector.max_tokens_by_scope["run"] == 1800
     assert fallback_selector.max_tokens_by_scope["stage"] == 420
     assert query_selector.max_tokens_by_scope["shared_fact"] == 240
+
+
+def test_chat_context_selector_uses_openai_reference_window_for_known_gpt_model():
+    selector = build_chat_context_selector(
+        profile="chat_interactive",
+        agent_name="unknown",
+        model_id="gpt-4.1",
+        base_system_prompt="identity",
+    )
+
+    assert selector.max_tokens == 3200
+
+
+def test_context_selector_default_completion_reserve_scales_for_large_windows():
+    selector = ContextSelector.for_context_window(
+        context_window=400_000,
+        base_system_prompt="identity",
+        max_tokens=None,
+    )
+
+    assert selector.max_tokens is not None
+    assert selector.max_tokens < 360_000
+
+
+def test_selector_profile_ratio_budget_materializes_from_model_context():
+    from services.chat_prompt_builder import materialize_selector_profile_config
+    from services.model_context import ModelContextMetadata
+
+    config = materialize_selector_profile_config(
+        {
+            "max_tokens_cap_ratio": 0.5,
+            "max_tokens_by_role_ratio": {"developer": 0.2, "user": 0.8},
+            "max_tokens_by_scope_ratio": {"turn": 0.3, "run": 0.4},
+        },
+        ModelContextMetadata(
+            model_id="demo",
+            context_window=100_000,
+            input_window=80_000,
+            output_reserve=20_000,
+        ),
+    )
+
+    assert config["max_tokens_cap"] == 40_000
+    assert config["max_tokens_by_role"] == {"developer": 16_000, "user": 64_000}
+    assert config["max_tokens_by_scope"] == {"turn": 24_000, "run": 32_000}
+    assert config["reserved_completion_tokens"] == 20_000
 
 
 def test_turn_state_fragments_keep_recent_protocol_and_summarize_older_tool_rounds():

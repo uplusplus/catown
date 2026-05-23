@@ -5,6 +5,7 @@ LLM 客户端封装
 支持 per-Agent 独立 LLM 配置，所有配置来源为 agents.json。
 """
 from typing import Awaitable, Callable, List, Dict, Any, Optional
+import asyncio
 from openai import AsyncOpenAI
 from openai._base_client import DefaultAsyncHttpxClient
 from copy import deepcopy
@@ -49,6 +50,31 @@ def _supports_stream_usage_fallback(error: Exception) -> bool:
             "additional properties",
         )
     )
+
+
+def _is_retry_later_rate_limit(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    fragments = [
+        str(error or ""),
+        repr(error),
+        str(getattr(error, "__cause__", "") or ""),
+        str(getattr(error, "__context__", "") or ""),
+    ]
+    message = " ".join(fragment for fragment in fragments if fragment).lower()
+    if status_code != 429 and "429" not in message and "too many requests" not in message:
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "please retry later",
+            "retry later",
+            "concurrency limit exceeded",
+        )
+    )
+
+
+def _tool_chat_retry_delay_seconds(attempt: int) -> float:
+    return min(60.0, float(2 ** max(0, attempt - 1)))
 
 
 def _compact_text(value: Any, limit: int = 280) -> str:
@@ -458,6 +484,9 @@ class LLMClient:
 
     async def chat_with_tools(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
         """支持工具调用的聊天"""
+        started_at = time.perf_counter()
+        attempt = 0
+        retry_budget_seconds = 300.0
         try:
             kwargs = {
                 "model": self.model,
@@ -467,7 +496,53 @@ class LLMClient:
             if tools:
                 kwargs["tools"] = tools
 
-            response = await self.client.chat.completions.create(**kwargs)
+            while True:
+                attempt += 1
+                try:
+                    response = await self.client.chat.completions.create(**kwargs)
+                    if attempt > 1:
+                        logger.info(
+                            "LLM tool chat retry succeeded: model=%s attempts=%s",
+                            self.model,
+                            attempt,
+                        )
+                    break
+                except Exception as create_error:
+                    elapsed_seconds = time.perf_counter() - started_at
+                    delay_seconds = _tool_chat_retry_delay_seconds(attempt)
+                    next_elapsed_seconds = elapsed_seconds + delay_seconds
+                    will_retry = (
+                        _is_retry_later_rate_limit(create_error)
+                        and next_elapsed_seconds <= retry_budget_seconds
+                    )
+                    if will_retry:
+                        delay_seconds = _tool_chat_retry_delay_seconds(attempt)
+                        logger.warning(
+                            "LLM tool chat rate-limited; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
+                            self.model,
+                            attempt,
+                            elapsed_seconds,
+                            delay_seconds,
+                            retry_budget_seconds,
+                            create_error,
+                        )
+                        self._record_network_event(
+                            request_payload=kwargs,
+                            duration_ms=int((time.perf_counter() - started_at) * 1000),
+                            success=False,
+                            error=f"{type(create_error).__name__}: {create_error}",
+                            metadata={
+                                "sync_tool_chat": True,
+                                "retryable": True,
+                                "retry_attempt": attempt,
+                                "will_retry": True,
+                                "retry_delay_seconds": delay_seconds,
+                                "retry_budget_seconds": retry_budget_seconds,
+                            },
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    raise
 
             # 调试：记录实际响应类型和内容，帮助定位 'str' object has no attribute 'choices' 问题
             if not hasattr(response, 'choices'):
@@ -497,13 +572,61 @@ class LLMClient:
                     "total_tokens": getattr(response.usage, 'total_tokens', 0),
                 }
 
+            content = choice.message.content
+            tool_calls = choice.message.tool_calls if hasattr(choice.message, 'tool_calls') else None
+            finish_reason = getattr(choice, 'finish_reason', None)
+            refusal = getattr(choice.message, 'refusal', None) if hasattr(choice.message, 'refusal') else None
+
+            if content is None and not tool_calls:
+                logger.error(
+                    "LLM tool chat returned empty completion: model=%s finish_reason=%r refusal=%r response_type=%s",
+                    self.model,
+                    finish_reason,
+                    refusal,
+                    type(response).__name__,
+                )
+                self._record_network_event(
+                    request_payload=kwargs,
+                    response_payload={
+                        "content": content,
+                        "tool_calls": tool_calls,
+                        "finish_reason": finish_reason,
+                        "refusal": refusal,
+                    },
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                    success=False,
+                    error="empty tool chat completion",
+                    metadata={
+                        "sync_tool_chat": True,
+                        "response_validation": "empty_completion",
+                        "attempts": attempt,
+                    },
+                )
+
             return {
-                "content": choice.message.content,
-                "tool_calls": choice.message.tool_calls if hasattr(choice.message, 'tool_calls') else None,
+                "content": content,
+                "tool_calls": tool_calls,
                 "usage": usage,
             }
         except Exception as e:
-            raise Exception(f"LLM API error with tools: {str(e)}")
+            logger.error(
+                "LLM tool chat failed: model=%s attempts=%s type=%s repr=%r cause=%r context=%r\n%s",
+                self.model,
+                attempt,
+                type(e).__name__,
+                e,
+                e.__cause__,
+                e.__context__,
+                traceback.format_exc(),
+            )
+            self._record_network_event(
+                request_payload=locals().get("kwargs", {"messages": messages, "tools": tools}),
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                success=False,
+                error=f"{type(e).__name__}: {e}",
+                metadata={"sync_tool_chat": True, "attempts": attempt},
+            )
+            raise Exception(f"LLM API error with tools: {str(e)}") from e
 
     async def chat_stream(self, messages: List[Dict], tools: List[Dict] = None):
         """

@@ -341,7 +341,7 @@ class TestToolRegistry:
         assert (tmp_path / "created.txt").exists()
 
     @pytest.mark.asyncio
-    async def test_run_shell_timeout_requests_continue_waiting(self, fresh_db, tmp_path):
+    async def test_run_shell_foreground_wait_elapsed_returns_background_running(self, fresh_db, tmp_path):
         fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
@@ -355,10 +355,10 @@ class TestToolRegistry:
         )
 
         assert result["success"] is False
-        assert result["status"] == "timeout_waiting"
-        assert result["blocked"] is True
-        assert result["blocked_kind"] == "timeout"
-        assert "continue without a timeout" in result["result"]
+        assert result["status"] == "background_running"
+        assert result["blocked"] is False
+        assert result["blocked_kind"] is None
+        assert "still running in the background" in result["result"]
 
     @pytest.mark.asyncio
     async def test_run_shell_saved_wait_preference_disables_timeout(self, fresh_db, tmp_path):
@@ -524,7 +524,7 @@ class TestToolRegistry:
         assert any("redirected line 1" in str(update.get("tail_output") or "") for update in progress_updates)
 
     @pytest.mark.asyncio
-    async def test_run_shell_timeout_waiting_returns_tracked_process_metadata(self, fresh_db, tmp_path):
+    async def test_run_shell_background_running_returns_tracked_process_metadata(self, fresh_db, tmp_path):
         fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
@@ -537,7 +537,7 @@ class TestToolRegistry:
         )
 
         assert result["success"] is False
-        assert result["status"] == "timeout_waiting"
+        assert result["status"] == "background_running"
         tracked_process = result.get("metadata", {}).get("tracked_process")
         assert isinstance(tracked_process, dict)
         assert tracked_process.get("token")

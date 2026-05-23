@@ -19,6 +19,7 @@ from models.database import (
 from pipeline.engine import pipeline_engine, event_bus
 from pipeline.config import pipeline_config_manager
 from services.approval_audit import record_approval_audit
+from services.artifact_history import archive_workspace_artifact_snapshot
 from services.workflow_spec_contracts import WorkflowSpec
 from services.workflow_spec_policy import validate_workflow_spec_for_execution
 
@@ -488,6 +489,7 @@ async def write_file(pipeline_id: int, body: dict, db: Session = Depends(get_db)
         raise HTTPException(status_code=403, detail="Path traversal detected")
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    archive_workspace_artifact_snapshot(workspace, file_path, next_content=content)
     target.write_text(content, encoding="utf-8")
 
     return {"status": "written", "path": file_path, "size": len(content)}

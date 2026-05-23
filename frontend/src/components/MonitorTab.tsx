@@ -7481,6 +7481,7 @@ export function MonitorTab() {
                 <div key={item.id} className="approval-card">
                   <div className="simple-row">
                     <strong>{item.title}</strong>
+                    <span className="tag mono">Approval #{item.id}</span>
                     <div className={`feed-badge feed-badge--${approvalStatusTone(item.status)}`}>{item.status}</div>
                     <div className="small-note">{formatTimeAgo(item.created_at)}</div>
                   </div>

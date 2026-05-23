@@ -42,7 +42,7 @@
         "agent": "tester",
         "gate": "auto",
         "timeout_minutes": 30,
-        "expected_artifacts": ["test_report.md"],
+        "expected_artifacts": ["reports/tests/"],
         "context_prompt": "请基于 PRD 的验收标准测试代码。包含边界测试和异常路径。如果有 blocker 级别的 bug，明确标注。",
         "rollback_on_blocker": true,
         "max_rollback_count": 3,

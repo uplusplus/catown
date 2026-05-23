@@ -39,7 +39,7 @@ def _result(*, rubric_id: str = "rubric-testing", stage_id: str = "testing"):
         "rubric_id": rubric_id,
         "target": {
             "artifact_type": "document.test_report",
-            "file_path": "test_report.md",
+            "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
             "workflow_id": "default",
             "stage_id": stage_id,
         },

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 
 from .base import BaseTool
+from services.artifact_history import archive_workspace_artifact_snapshot
 from typing import Optional, List
 from contextvars import ContextVar, Token
 
@@ -176,6 +177,12 @@ class WriteFileTool(BaseTool):
             
             # Write mode
             write_mode = 'a' if mode == 'append' else 'w'
+            if write_mode == 'w':
+                archive_workspace_artifact_snapshot(
+                    _effective_workspace(self.workspace),
+                    full_path,
+                    next_content=content,
+                )
             
             with open(full_path, write_mode, encoding='utf-8') as f:
                 f.write(content)

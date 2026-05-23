@@ -36,7 +36,7 @@ def _workflow_spec():
                     "display_name": "Testing",
                     "agent": "tester",
                     "gate": "auto",
-                    "expected_artifacts": ["test_report.md"],
+                    "expected_artifacts": ["reports/tests/"],
                     "evaluation_rubrics": ["rubric-testing"],
                 },
             ],

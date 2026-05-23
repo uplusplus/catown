@@ -231,7 +231,7 @@ def build_runtime_environment_context(project: Any = None) -> str:
     python3_path = shutil.which("python3")
     python_path = shutil.which("python")
     recommended_python = executable or python3_path or python_path or "python3"
-    pytest_command = f"{_shell_quote(recommended_python)} -m pytest backend/tests -q --tb=short --disable-warnings"
+    pytest_command = f"{_shell_quote(recommended_python)} -m pytest backend/tests -q --tb=short --disable-warnings -r fE"
 
     lines = [
         "## Runtime Environment",

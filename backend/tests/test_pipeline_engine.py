@@ -146,6 +146,23 @@ def test_start_pipeline_creates_task_run_ledger_bridge(fresh_db):
         db.close()
 
 
+def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
+    import pipeline.engine as engine_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "CHANGELOG.md"
+    target.write_text("old release notes\n", encoding="utf-8")
+
+    result = engine_mod._tool_write_file(workspace, "CHANGELOG.md", "new release notes\n")
+
+    archived = list((workspace / ".catown" / "artifact-history").glob("*--CHANGELOG.md"))
+    assert "Written: CHANGELOG.md" in result
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == "old release notes\n"
+    assert target.read_text(encoding="utf-8") == "new release notes\n"
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_allows_read_only_run_shell_without_manual_approval(fresh_db, tmp_path):
     engine_mod = _reload_pipeline_engine()

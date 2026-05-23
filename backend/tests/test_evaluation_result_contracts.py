@@ -57,7 +57,7 @@ def test_parse_failed_evaluation_result_can_reference_action_requests():
             "rubric_id": "rubric-testing",
             "target": {
                 "artifact_type": "document.test_report",
-                "file_path": "test_report.md",
+                "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
                 "stage_id": "testing",
             },
             "reviewer": {
@@ -72,7 +72,7 @@ def test_parse_failed_evaluation_result_can_reference_action_requests():
                     "status": "failed",
                     "score": 0,
                     "rationale": "A blocker was found in auth checks.",
-                    "evidence_refs": ["test_report.md"],
+                    "evidence_refs": ["reports/tests/20260522T143122004981Z--task-45--backend-pytest.md"],
                 }
             ],
             "recommended_action_request_ids": ["req-rollback-1"],
@@ -93,7 +93,7 @@ def test_summarize_evaluation_result_returns_compact_read_model():
             "rubric_id": "rubric-testing",
             "target": {
                 "artifact_type": "document.test_report",
-                "file_path": "test_report.md",
+                "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
                 "stage_id": "testing",
             },
             "reviewer": {

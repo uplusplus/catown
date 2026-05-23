@@ -92,6 +92,19 @@ class TestWriteFileTool:
         assert (tmp_path / "exist.txt").read_text() == "new"
 
     @pytest.mark.asyncio
+    async def test_write_overwrite_archives_artifact_history(self, tmp_path):
+        from tools.file_operations import WriteFileTool
+        (tmp_path / "PRD.md").write_text("old artifact")
+        tool = WriteFileTool(workspace=str(tmp_path))
+
+        await tool.execute(file_path="PRD.md", content="new artifact")
+
+        archived = list((tmp_path / ".catown" / "artifact-history").glob("*--PRD.md"))
+        assert len(archived) == 1
+        assert archived[0].read_text(encoding="utf-8") == "old artifact"
+        assert (tmp_path / "PRD.md").read_text(encoding="utf-8") == "new artifact"
+
+    @pytest.mark.asyncio
     async def test_write_append(self, tmp_path):
         from tools.file_operations import WriteFileTool
         (tmp_path / "append.txt").write_text("line1\n")

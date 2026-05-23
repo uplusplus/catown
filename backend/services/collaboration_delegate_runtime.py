@@ -5,6 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 
+def delegated_required_outputs_for_agent(target_agent_name: str | None) -> list[str]:
+    """Return completion artifacts required for one delegated agent type."""
+
+    normalized = str(target_agent_name or "").strip().lower()
+    if normalized == "tester":
+        return ["test_report"]
+    return []
+
+
 def _coordinator_or_default(coordinator: Any | None) -> Any:
     if coordinator is not None:
         return coordinator
@@ -33,6 +42,7 @@ def build_delegated_task_metadata(
         "context": context,
         "delegator": delegator,
         "target_agent_name": target_agent_name,
+        "required_outputs": delegated_required_outputs_for_agent(target_agent_name),
     }
     if parent_task_run_id is not None:
         metadata["parent_task_run_id"] = parent_task_run_id
@@ -48,6 +58,7 @@ def create_delegated_collaboration_task(
     chatroom_id: int,
     assigned_to_agent_id: int,
     created_by_agent_id: int,
+    target_agent_name: str = "",
     context: str = "",
     delegator: str = "",
     parent_task_run_id: int | None = None,
@@ -67,6 +78,9 @@ def create_delegated_collaboration_task(
         metadata["parent_task_run_id"] = parent_task_run_id
     if parent_client_turn_id:
         metadata["parent_client_turn_id"] = parent_client_turn_id
+    required_outputs = delegated_required_outputs_for_agent(target_agent_name)
+    if required_outputs:
+        metadata["required_outputs"] = required_outputs
 
     return CollaborationTask(
         id=str(uuid.uuid4()),

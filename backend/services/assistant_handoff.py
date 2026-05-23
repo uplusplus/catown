@@ -13,6 +13,63 @@ _MENTION_PATTERN = re.compile(r"^\s*@([a-zA-Z0-9_-]+)\b")
 _LEADING_MENTIONS_PATTERN = re.compile(r"^\s*(?:@[a-zA-Z0-9_-]+\s*)+")
 
 
+def _normalize_newlines(content: str) -> str:
+    return str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _last_nonempty_paragraph_outside_fences(content: str) -> str:
+    normalized = _normalize_newlines(content)
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    in_fence = False
+
+    for line in normalized.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if current:
+                paragraphs.append(current)
+                current = []
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if not stripped:
+            if current:
+                paragraphs.append(current)
+                current = []
+            continue
+        current.append(line)
+
+    if current:
+        paragraphs.append(current)
+    if not paragraphs:
+        return ""
+    return "\n".join(paragraphs[-1]).strip()
+
+
+def _tail_handoff_paragraph(content: str) -> tuple[list[str], str] | None:
+    paragraph = _last_nonempty_paragraph_outside_fences(content)
+    if not paragraph:
+        return None
+
+    lines = [line for line in paragraph.split("\n") if line.strip()]
+    if not lines:
+        return None
+
+    first_line = lines[0]
+    if not _MENTION_PATTERN.match(first_line):
+        return None
+
+    mentioned = [normalize_agent_type(name) for name in re.findall(r"@(\w+)", first_line)]
+    body_first_line = _LEADING_MENTIONS_PATTERN.sub("", first_line).strip()
+    body_lines: list[str] = []
+    if body_first_line:
+        body_lines.append(body_first_line)
+    body_lines.extend(lines[1:])
+    body = "\n".join(body_lines).strip()
+    return mentioned, body
+
+
 def handoff_targets(*, content: str, agent_name: str | None, metadata: dict[str, Any] | None) -> list[str]:
     normalized_agent = normalize_agent_type(agent_name or "")
     if not normalized_agent:
@@ -23,10 +80,10 @@ def handoff_targets(*, content: str, agent_name: str | None, metadata: dict[str,
     depth = int(metadata.get("handoff_depth") or 0)
     if depth >= _MAX_HANDOFF_DEPTH:
         return []
-    match = _MENTION_PATTERN.match(str(content or ""))
-    if not match:
+    extracted = _tail_handoff_paragraph(str(content or ""))
+    if extracted is None:
         return []
-    all_mentions = [normalize_agent_type(name) for name in re.findall(r"@(\w+)", str(content or ""))]
+    all_mentions, _ = extracted
     unique_mentions: list[str] = []
     seen = set()
     for target_agent in all_mentions:
@@ -51,9 +108,11 @@ def build_handoff_metadata(base_metadata: dict[str, Any] | None, *, from_agent: 
 
 
 def build_handoff_trigger_content(content: str, *, target_agent: str) -> str:
-    stripped = _LEADING_MENTIONS_PATTERN.sub("", str(content or "")).strip()
-    if stripped:
-        return f"@{target_agent} {stripped}"
+    extracted = _tail_handoff_paragraph(content)
+    if extracted is not None:
+        _, stripped = extracted
+        if stripped:
+            return f"@{target_agent} {stripped}"
     return f"@{target_agent}"
 
 

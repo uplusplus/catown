@@ -7,8 +7,8 @@ import json
 from typing import Any
 
 from models.database import TaskRun, TaskRunEvent
+from services.chat_timeline_projection import build_task_run_timeline_projection
 from services.run_ledger import serialize_task_run_summary
-from services.user_visible_step_projection import build_user_visible_runtime_steps
 
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
@@ -30,7 +30,8 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
     events = list(getattr(task_run, "events", []) or [])
     latest_event_index = max((int(getattr(event, "event_index", 0) or 0) for event in events), default=0)
     summary = serialize_task_run_summary(task_run)
-    steps = [_timeline_step_to_activity_step(step) for step in build_user_visible_runtime_steps(task_run)]
+    timeline = build_task_run_timeline_projection(task_run)
+    steps = [_timeline_step_to_activity_step(step) for step in timeline.get("steps", [])]
     current_step = _resolve_current_step(steps)
     active_subagent_handle = _active_subagent_handle(summary)
     active_consult_handle = (
@@ -69,6 +70,7 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         "active_subagent_handle": active_subagent_handle,
         "active_consult_handle": active_consult_handle,
         "steps": steps,
+        "timeline": timeline,
     }
 
 

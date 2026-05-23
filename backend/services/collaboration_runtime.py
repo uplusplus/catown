@@ -96,6 +96,7 @@ async def delegate_collaboration_task(
         chatroom_id=chatroom_id,
         assigned_to_agent_id=target_agent_id,
         created_by_agent_id=created_by_agent_id,
+        target_agent_name=target_agent_type,
         context=context,
         delegator=current_agent_name,
         parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
@@ -205,6 +206,11 @@ def _record_delegated_task_dispatched(
             "task_title": task_title,
             "task_description": task_description,
             "context": context,
+            "required_outputs": (
+                getattr(task, "metadata", {}).get("required_outputs")
+                if isinstance(getattr(task, "metadata", None), dict)
+                else []
+            ),
         },
     )
 

@@ -43,6 +43,8 @@ from services.context_builder import (
     build_turn_state_developer_fragments,
     build_turn_state_user_fragments,
 )
+from services.chat_prompt_builder import resolve_llm_context_window
+from services.model_context import context_window_from_provider
 from services.approval_queue import (
     create_approval_queue_item,
     find_pending_queue_item,
@@ -67,6 +69,7 @@ from services.artifact_contract_policy import (
     ArtifactContractPolicyViolation,
     validate_artifact_contract_for_policy,
 )
+from services.artifact_history import archive_workspace_artifact_snapshot
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
 from services.policy_decision_contracts import (
@@ -620,6 +623,7 @@ def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
     if parent_err:
         return parent_err
     target.parent.mkdir(parents=True, exist_ok=True)
+    archive_workspace_artifact_snapshot(workspace, file_path, next_content=content)
     target.write_text(content, encoding="utf-8")
     return f"Written: {file_path} ({len(content)} chars)"
 
@@ -2784,46 +2788,10 @@ class PipelineEngine:
             return {}
 
     def _context_window_from_provider(self, provider_data: Any, model_id: str) -> Optional[int]:
-        if not isinstance(provider_data, dict):
-            return None
-        models = provider_data.get("models", [])
-        if not isinstance(models, list):
-            return None
-        for model in models:
-            if not isinstance(model, dict) or model.get("id") != model_id:
-                continue
-            context_window = model.get("contextWindow")
-            if isinstance(context_window, (int, float)) and context_window > 0:
-                return int(context_window)
-        return None
+        return context_window_from_provider(provider_data, model_id)
 
     def _get_agent_context_window(self, agent_name: str, model_id: str) -> Optional[int]:
-        try:
-            with open(settings.AGENT_CONFIG_FILE, "r", encoding="utf-8-sig") as f:
-                data = json.load(f)
-        except Exception:
-            return None
-
-        agents = data.get("agents", {})
-        if isinstance(agents, dict):
-            context_window = self._context_window_from_provider((agents.get(agent_name) or {}).get("provider"), model_id)
-            if context_window:
-                return context_window
-
-        context_window = self._context_window_from_provider((data.get("global_llm") or {}).get("provider"), model_id)
-        if context_window:
-            return context_window
-
-        if isinstance(agents, dict):
-            for agent_cfg in agents.values():
-                context_window = self._context_window_from_provider(
-                    agent_cfg.get("provider") if isinstance(agent_cfg, dict) else None,
-                    model_id,
-                )
-                if context_window:
-                    return context_window
-
-        return None
+        return resolve_llm_context_window(agent_name, model_id)
 
     def _get_agent_system_prompt(self, agent_name: str) -> str:
         """Build the stable system layer from structured agent configuration only."""

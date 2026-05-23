@@ -82,7 +82,7 @@ def test_runtime_environment_context_prefers_current_python(monkeypatch):
     assert "## Runtime Environment" in context
     assert "Workspace path: /workspace/catown" in context
     assert "Recommended Python command for this session: /opt/catown/venv/bin/python3" in context
-    assert "/opt/catown/venv/bin/python3 -m pytest backend/tests" in context
+    assert "/opt/catown/venv/bin/python3 -m pytest backend/tests -q --tb=short --disable-warnings -r fE" in context
     assert "Do not assume `python` exists" in context
 
 

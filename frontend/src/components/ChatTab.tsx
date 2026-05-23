@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { Archive, BookOpen, Bot, Boxes, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Menu, Monitor, PackageCheck, PanelRightOpen, ScrollText, SendHorizontal, Settings, Shell, Square, Workflow, X } from "lucide-react";
+import { Archive, BookOpen, Bot, Boxes, Braces, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Menu, Monitor, PackageCheck, PanelRightOpen, ScrollText, Search, SendHorizontal, Settings, Shell, Square, TestTube2, Workflow, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -16,6 +16,7 @@ import {
   getAgentDisplayName,
   getAgentType,
 } from "../utils/agents";
+import { buildAgentThemeStyle, getAgentTheme, resolveAgentLabel } from "../utils/agentColors";
 import {
   filterAgentSetSuggestions,
   filterTextSuggestions,
@@ -128,6 +129,7 @@ function sanitizeOverlayMessage(message: MessageItem): MessageItem {
     created_at: message.created_at,
     agent_name: message.agent_name,
     client_turn_id: message.client_turn_id,
+    metadata: message.metadata ?? null,
     isStreaming: message.isStreaming,
     statusDetail: trimOverlayText(message.statusDetail, OVERLAY_MAX_STEP_DETAIL_CHARS),
     optimisticKind: message.optimisticKind,
@@ -488,6 +490,7 @@ type BrowserArtifactEntry = {
   id: string;
   name: string;
   type: string;
+  agentName?: string | null;
   path?: string;
   stage: string;
   detail: string;
@@ -539,6 +542,7 @@ function processNodeDetail(node: ChatProcessEntry) {
 
 function ProcessTreeNode({
   node,
+  agents,
   depth = 0,
   activeActionKey,
   onInspectTaskRun,
@@ -547,6 +551,7 @@ function ProcessTreeNode({
   onCloseSubagent,
 }: {
   node: ChatProcessEntry;
+  agents: AgentInfo[];
   depth?: number;
   activeActionKey?: string | null;
   onInspectTaskRun?: (taskRunId: number) => void;
@@ -560,6 +565,18 @@ function ProcessTreeNode({
   const isTerminated = statusLabel === "Terminated";
   const hasOutputDetails = node.kind === "command" && Boolean(node.output?.trim());
   const metadata = node.metadata && typeof node.metadata === "object" ? node.metadata : null;
+  const resolvedProcessAgentName =
+    node.agent_name
+    || (typeof metadata?.["agent_name"] === "string" ? metadata["agent_name"] : null)
+    || (
+      node.kind === "subagent"
+        ? typeof metadata?.["requested_name"] === "string"
+          ? metadata["requested_name"]
+          : null
+        : null
+    )
+    || null;
+  const processThemeStyle = buildAgentThemeStyle(resolvedProcessAgentName, agents);
   const processMetaChips = [
     typeof metadata?.["dispatch_kind"] === "string" ? String(metadata["dispatch_kind"]) : "",
     typeof metadata?.["control_state"] === "string" ? String(metadata["control_state"]).replace(/_/g, " ") : "",
@@ -659,7 +676,10 @@ function ProcessTreeNode({
     </>
   );
   return (
-    <div className="process-tree__node" style={{ "--process-depth": depth } as CSSProperties}>
+    <div
+      className={`process-tree__node ${resolvedProcessAgentName ? "process-tree__node--agent" : ""}`}
+      style={{ "--process-depth": depth, ...(processThemeStyle || {}) } as CSSProperties}
+    >
       {hasOutputDetails ? (
         <details className="browser-entry browser-entry--process process-tree__details">
           <summary className="process-tree__row process-tree__summary">
@@ -681,6 +701,7 @@ function ProcessTreeNode({
             <ProcessTreeNode
               key={child.id}
               node={child}
+              agents={agents}
               depth={depth + 1}
               activeActionKey={activeActionKey}
               onInspectTaskRun={onInspectTaskRun}
@@ -782,6 +803,26 @@ type ThreadItem =
       cards: ThreadCard[];
     };
 
+function threadItemAgentName(item: ThreadItem, agents: AgentInfo[]) {
+  switch (item.kind) {
+    case "message":
+      return item.message.agent_name || null;
+    case "task_run":
+      return item.taskRun.target_agent_name || resolveTaskRunActorName(item.taskRun, agents);
+    case "card":
+      return cardActorName(item.card);
+    case "activity_batch":
+      return (
+        [...item.cards]
+          .reverse()
+          .map((card) => cardActorName(card))
+          .find((name) => name !== "system") || null
+      );
+    default:
+      return null;
+  }
+}
+
 const EMPTY_THREAD_CARDS: ThreadCard[] = [];
 const llmConversationMarkdownCache = new Map<string, ParsedLlmConversation>();
 
@@ -819,6 +860,28 @@ function initials(name: string) {
     .join("")
     .slice(0, 2)
     .toUpperCase();
+}
+
+function renderAgentAvatarContent(agentName: string, agents: AgentInfo[]) {
+  const theme = getAgentTheme(agentName, agents);
+  const iconProps = { size: 16, strokeWidth: 1.9, "aria-hidden": true as const };
+
+  switch (theme?.agentKey) {
+    case "analyst":
+      return <Search {...iconProps} />;
+    case "architect":
+      return <Workflow {...iconProps} />;
+    case "developer":
+      return <Braces {...iconProps} />;
+    case "tester":
+      return <TestTube2 {...iconProps} />;
+    case "release":
+      return <PackageCheck {...iconProps} />;
+    case "valet":
+      return <Bot {...iconProps} />;
+    default:
+      return <span>{initials(agentName)}</span>;
+  }
 }
 
 function toneLabel(tone: ChatEventItem["tone"]) {
@@ -1293,6 +1356,10 @@ function rememberedApprovalScope(item: ApprovalQueueItem) {
   return typeof item.project_id === "number" ? "project" : "chatroom";
 }
 
+function approvalRequestLabel(item: ApprovalQueueItem) {
+  return `Approval #${item.id}`;
+}
+
 function summarizeTaskRunInlineStatus(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
@@ -1401,6 +1468,13 @@ function summarizeTaskRunInlineStatus(
       };
     }
     if (latestEventTypeValue === "approval_queue_item_resolved") {
+      if (latestResolutionAction === "run_shell_continued_after_approval") {
+        return {
+          tone: "info" as const,
+          label: latestToolName ? `Tool: ${latestToolName}` : "Tool",
+          detail: latestReplayStatus === "failed" ? "Status: failed" : "Status: continued",
+        };
+      }
       if (latestResolutionAction === "tool_replayed") {
         return {
           tone: "info" as const,
@@ -1710,6 +1784,9 @@ function buildTaskRunCardSummary(
         : `Tool: ${blockedToolName || "command"}\nStatus: running`;
     }
     if (latestEventTypeValue === "approval_queue_item_resolved") {
+      if (latestResolutionAction === "run_shell_continued_after_approval") {
+        return [`Event: approval_queue_item_resolved`, latestToolName ? `Tool: ${latestToolName}` : "", latestReplayStatus === "failed" ? "Status: failed" : "Status: continued"].filter(Boolean).join("\n");
+      }
       if (latestResolutionAction === "tool_replayed") {
         if (latestReplayStatus === "failed") {
           return [`Event: approval_queue_item_resolved`, latestToolName ? `Tool: ${latestToolName}` : "", "Status: failed"].filter(Boolean).join("\n");
@@ -2170,6 +2247,13 @@ function artifactDisplayName(value: string) {
   return browserPathBaseName(normalized) || normalized;
 }
 
+function resolveArtifactWorkspacePath(entry: BrowserArtifactEntry, workspacePath?: string | null) {
+  const rawPath = (entry.path || "").trim();
+  if (!rawPath) return "";
+  if (!isRuntimePathInsideWorkspace(rawPath, workspacePath)) return "";
+  return relativeBrowserPath(rawPath, workspacePath);
+}
+
 function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSummary[]) {
   const entries: BrowserArtifactEntry[] = [];
 
@@ -2181,8 +2265,10 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `expected:${card.id}:${artifact}`,
         name: artifactDisplayName(artifact),
         type: artifactType,
+        agentName: card.agent || null,
+        path: artifact,
         stage: card.stage || card.display_name || "Expected artifact",
-        detail: card.summary || card.agent || "Declared by stage plan",
+        detail: artifact,
         status: "expected",
         timestamp: card.created_at,
       });
@@ -2195,6 +2281,7 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `artifact-path:${card.id}:${path}`,
         name: artifactDisplayName(path),
         type: artifactType,
+        agentName: card.agent || null,
         path,
         stage: card.stage || card.tool || card.kind,
         detail: path,
@@ -2212,6 +2299,7 @@ function buildBrowserArtifactEntries(cards: ChatCardItem[], taskRuns: TaskRunSum
         id: `run-artifact:${run.id}:${path}`,
         name: artifactDisplayName(path),
         type: artifactType,
+        agentName: run.target_agent_name || null,
         path,
         stage: formatTaskRunKind(run.run_kind),
         detail: path,
@@ -2232,6 +2320,7 @@ function buildWorkspaceBrowserArtifactEntries(projectBrowserIndex: ProjectBrowse
     id: `workspace-artifact:${artifact.path}`,
     name: artifact.name || artifactDisplayName(artifact.path),
     type: artifact.type,
+    agentName: artifact.agent_name || null,
     path: artifact.path,
     stage: "Workspace",
     detail: artifact.path,
@@ -2240,14 +2329,46 @@ function buildWorkspaceBrowserArtifactEntries(projectBrowserIndex: ProjectBrowse
   }));
 }
 
-function mergeBrowserArtifactEntries(workspaceEntries: BrowserArtifactEntry[], runtimeEntries: BrowserArtifactEntry[]) {
+function mergeBrowserArtifactEntries(
+  workspaceEntries: BrowserArtifactEntry[],
+  runtimeEntries: BrowserArtifactEntry[],
+  workspacePath?: string | null,
+) {
   const merged = new Map<string, BrowserArtifactEntry>();
-  workspaceEntries.forEach((entry) => merged.set(entry.detail || entry.name, entry));
-  runtimeEntries.forEach((entry) => {
-    const key = entry.detail || entry.name;
-    merged.set(key, merged.has(key) ? { ...merged.get(key), ...entry } as BrowserArtifactEntry : entry);
+  const fallbackEntries: BrowserArtifactEntry[] = [];
+
+  workspaceEntries.forEach((entry) => {
+    const key = relativeBrowserPath(entry.path || "", workspacePath) || normalizeBrowserPath(entry.path || entry.name);
+    merged.set(key, entry);
   });
-  return Array.from(merged.values())
+
+  runtimeEntries.forEach((entry) => {
+    const resolvedPath = resolveArtifactWorkspacePath(entry, workspacePath);
+    if (!resolvedPath) {
+      fallbackEntries.push(entry);
+      return;
+    }
+
+    const existing = merged.get(resolvedPath) ?? merged.get(normalizeBrowserPath(entry.path || ""));
+    if (!existing) {
+      merged.set(resolvedPath, {
+        ...entry,
+        path: resolvedPath,
+        detail: resolvedPath,
+      });
+      return;
+    }
+
+    merged.set(resolvedPath, {
+      ...existing,
+      ...entry,
+      path: existing.path || resolvedPath,
+      detail: existing.detail || resolvedPath,
+      status: existing.status === "file" && entry.status === "expected" ? existing.status : entry.status,
+    } as BrowserArtifactEntry);
+  });
+
+  return [...Array.from(merged.values()), ...fallbackEntries]
     .sort((left, right) => {
       const leftTime = new Date(left.timestamp || 0).getTime();
       const rightTime = new Date(right.timestamp || 0).getTime();
@@ -2335,6 +2456,50 @@ function readNumber(value: unknown) {
 
 function readStringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function readObjectArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+type AgentStripStatus = "online" | "waiting" | "working";
+
+function taskRunAgentStripStatus(taskRun: TaskRunSummary): AgentStripStatus {
+  const status = (taskRun.status || "").trim().toLowerCase();
+  if (status !== "running") return "online";
+
+  const latestEventType = (
+    taskRun.latest_event_type
+    || taskRun.checkpoint_snapshot?.latest_event_type
+    || taskRun.continuation_cursor?.source_event_type
+    || taskRun.checkpoint_snapshot?.continuation_cursor?.source_event_type
+    || ""
+  ).trim().toLowerCase();
+  if (latestEventType === "task_run_waiting_for_delegated_work") {
+    return "waiting";
+  }
+
+  const checkpoint = readRecord(taskRun.checkpoint_snapshot);
+  const handles = readRecord(checkpoint?.subagent_handles);
+  const entries = readObjectArray(handles?.entries);
+  const hasAwaitingSubagent = entries.some((entry) => {
+    const controlState = (readTextField(entry, "control_state") || "").toLowerCase();
+    return controlState === "await_completion" || controlState === "await_dependency";
+  });
+  if (hasAwaitingSubagent) {
+    return "waiting";
+  }
+
+  const cursor = taskRun.continuation_cursor ?? taskRun.checkpoint_snapshot?.continuation_cursor ?? null;
+  const runningStepCount = readNumber(cursor?.running_step_count);
+  const waitingStepCount = readNumber(cursor?.waiting_step_count);
+  if ((waitingStepCount ?? 0) > 0 && (runningStepCount ?? 0) > 0) {
+    return "waiting";
+  }
+
+  return "working";
 }
 
 function formatSourceList(values: string[]) {
@@ -2506,6 +2671,43 @@ function renderFailureStepAction(
     >
       Valet
     </button>
+  );
+}
+
+function readMessageTestReportArtifact(message: MessageItem) {
+  const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : null;
+  const artifact = metadata?.["test_report_artifact"];
+  if (!artifact || typeof artifact !== "object") return null;
+  const asset = artifact as Record<string, unknown>;
+  const assetId = typeof asset["asset_id"] === "number" ? asset["asset_id"] : null;
+  const assetType = typeof asset["asset_type"] === "string" ? asset["asset_type"] : "";
+  if (assetType !== "document.test_report") return null;
+  const title = typeof asset["title"] === "string" && asset["title"].trim()
+    ? asset["title"].trim()
+    : "Test report";
+  const storagePath = typeof asset["storage_path"] === "string" ? asset["storage_path"] : "";
+  return {
+    assetId,
+    assetType,
+    title,
+    storagePath,
+  };
+}
+
+function renderMessageArtifactSummary(message: MessageItem) {
+  const artifact = readMessageTestReportArtifact(message);
+  if (!artifact) return null;
+  return (
+    <div className="message-runtime-summary" aria-label="Message artifacts">
+      <div className="message-runtime-summary__row">
+        <span className="message-runtime-summary__label">Artifact</span>
+        <span className="message-runtime-summary__detail">
+          <FileText size={14} />
+          <span style={{ marginLeft: 6 }}>{artifact.title}</span>
+          {artifact.storagePath ? <span style={{ marginLeft: 8, opacity: 0.75 }}>{artifact.storagePath}</span> : null}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -5115,10 +5317,13 @@ function renderCard(
   activeActionKey?: string | null,
 ) {
   const sender = cardActorName(card);
+  const avatarThemeStyle = buildAgentThemeStyle(sender, agents);
 
   return (
     <div key={card.id} className="chat-card-row">
-      <div className="chat-avatar assistant">{initials(sender)}</div>
+      <div className="chat-avatar assistant chat-avatar--agent" style={avatarThemeStyle}>
+        {renderAgentAvatarContent(sender, agents)}
+      </div>
       <div className="chat-group-messages chat-card-stack">
         {renderCardSurface(
           card,
@@ -5139,6 +5344,7 @@ function renderCard(
 function renderActivityBatch(
   batchId: string,
   cards: ThreadCard[],
+  agents: AgentInfo[],
   isCurrentBatch: boolean,
   currentActivityAgentName: string | null,
   expandedProgressCards: Record<string, StepExpansionValue>,
@@ -5181,10 +5387,13 @@ function renderActivityBatch(
       .find((name) => name !== "system") ||
     orderedGroups[orderedGroups.length - 1]?.name ||
     "system";
+  const avatarThemeStyle = buildAgentThemeStyle(fallbackActiveName, agents);
 
   return (
     <div key={batchId} className="chat-card-row">
-      <div className="chat-avatar assistant">{initials(fallbackActiveName)}</div>
+      <div className="chat-avatar assistant chat-avatar--agent" style={avatarThemeStyle}>
+        {renderAgentAvatarContent(fallbackActiveName, agents)}
+      </div>
       <div className="chat-group-messages chat-card-stack">
         <section className="chat-activity-batch">
           <div className="chat-activity-batch__header">
@@ -5221,6 +5430,7 @@ function renderActivityBatch(
                 <section
                   key={`${batchId}-${group.name}`}
                   className={`chat-agent-activity ${isActiveGroup ? "is-active" : ""}`}
+                  style={buildAgentThemeStyle(group.name, agents)}
                 >
                   <div className="chat-agent-activity__summary">
                     <span className={`chat-agent-activity__status ${isActiveGroup ? "is-live" : ""}`} />
@@ -5264,6 +5474,7 @@ function renderActivityBatch(
 
 function renderMessage(
   message: MessageItem,
+  agents: AgentInfo[],
   copiedMessageId: number | null,
   onCopyMessage: (message: MessageItem) => Promise<void>,
   selectionMode: boolean,
@@ -5281,6 +5492,7 @@ function renderMessage(
 ) {
   const isAssistant = Boolean(message.agent_name);
   const sender = message.agent_name || "You";
+  const messageThemeStyle = isAssistant ? buildAgentThemeStyle(message.agent_name, agents) : undefined;
   const timelineTaskRunId =
     messageTimeline && typeof messageTimeline.task_run_id === "number"
       ? messageTimeline.task_run_id
@@ -5345,9 +5557,13 @@ function renderMessage(
     isAssistant && fallbackCards.length > 0
       ? renderLlmUsageFooter(summarizeLlmUsage(fallbackCards), "chat-usage-footer chat-usage-footer--message")
       : null;
+  const avatarThemeStyle = isAssistant ? buildAgentThemeStyle(sender, agents) : undefined;
 
   return (
-    <div className={`chat-group ${isAssistant ? "" : "user"} ${selectionMode ? "is-selecting" : ""} ${selected ? "is-selected" : ""}`}>
+    <div
+      className={`chat-group ${isAssistant ? "chat-group--agent" : "user"} ${selectionMode ? "is-selecting" : ""} ${selected ? "is-selected" : ""}`}
+      style={messageThemeStyle}
+    >
       {selectionMode ? (
         <button
           type="button"
@@ -5360,7 +5576,12 @@ function renderMessage(
           {selected ? <CheckSquare size={16} /> : <Square size={16} />}
         </button>
       ) : null}
-      <div className={`chat-avatar ${isAssistant ? "assistant" : "user"}`}>{initials(sender)}</div>
+      <div
+        className={`chat-avatar ${isAssistant ? "assistant chat-avatar--agent" : "user"}`}
+        style={avatarThemeStyle}
+      >
+        {isAssistant ? renderAgentAvatarContent(sender, agents) : initials(sender)}
+      </div>
 
       <div className="chat-group-messages">
         <div className={`chat-bubble ${message.isStreaming ? "chat-bubble--streaming" : ""}`}>
@@ -5380,7 +5601,8 @@ function renderMessage(
         </div>
 
         <div className="chat-group-footer">
-          <span className="chat-sender-name">{sender}</span>
+          <span className={`chat-sender-name ${isAssistant ? "chat-sender-name--agent" : ""}`}>{sender}</span>
+          <span className="chat-message-id" title={`Message ID: ${message.id}`}>#{message.id}</span>
           <span className="chat-group-timestamp">{formatTime(message.created_at)}</span>
           {message.isStreaming ? <span className="soft-pill">streaming</span> : null}
           {!message.localOnly ? (
@@ -5418,6 +5640,7 @@ function renderMessage(
             <span className="soft-pill">local</span>
           )}
         </div>
+        {renderMessageArtifactSummary(message)}
         {renderMessageRuntimeSummary(message)}
       </div>
     </div>
@@ -5448,6 +5671,7 @@ function renderTaskRunInlineCard(
   const shellStatus = shouldUseLiveActivity ? summarizeTaskRunShellStatus(cards) : null;
   const liveActivity = shouldUseLiveActivity ? shellStatus ?? summarizeTaskRunRuntimeCards(cards) : null;
   const actorName = resolveTaskRunActorName(taskRun, agents);
+  const taskThemeStyle = buildAgentThemeStyle(taskRun.target_agent_name || actorName, agents);
   const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, activity, pendingApprovalOverride, actorName);
   const inlineStatus = liveActivity
     ? {
@@ -5468,17 +5692,23 @@ function renderTaskRunInlineCard(
     : null;
   const shouldHideSummary = Boolean(liveActivity?.detail && summary === liveActivity.detail);
   const shouldShowInlineStatus = !(shellOutput && shellStatus);
+  const avatarThemeStyle = buildAgentThemeStyle(taskRun.target_agent_name || actorName, agents);
 
   return (
     <div className="chat-card-row" key={`task-run-inline-${taskRun.id}`}>
-      <div className="chat-avatar assistant">{initials(actorName)}</div>
+      <div className="chat-avatar assistant chat-avatar--agent" style={avatarThemeStyle}>
+        {renderAgentAvatarContent(taskRun.target_agent_name || actorName, agents)}
+      </div>
       <div className="chat-group-messages chat-card-stack">
-        <article className={`chat-tool-card chat-tool-card--task-run ${pendingItems.length > 0 ? "has-pending-approval" : ""}`}>
+        <article
+          className={`chat-tool-card chat-tool-card--task-run ${pendingItems.length > 0 ? "has-pending-approval" : ""}`}
+          style={taskThemeStyle}
+        >
           <div className="chat-tool-card__header">
             <div>
               <div className="chat-tool-card__title">
                 <span className="chat-json-badge">TASK</span>
-                <span>{taskIdLabel ? `TASK ${taskIdLabel}` : actorName}</span>
+                <span className="chat-tool-card__agent-name">{taskIdLabel ? `TASK ${taskIdLabel}` : actorName}</span>
                 <span className="soft-pill">run #{taskRun.id}</span>
               </div>
               <div className="chat-tool-card__detail">
@@ -5527,8 +5757,11 @@ function renderTaskRunInlineCard(
                 const labels = approvalQueueActionLabels(item);
                 return (
                   <div key={item.id} className="task-run-inline-approval">
-                    <div className="task-run-detail__summary">
-                      {item.summary || item.title || item.target_name || "Approval request"}
+                    <div className="task-run-inline-approval__header">
+                      <span className="task-run-approval-id">{approvalRequestLabel(item)}</span>
+                      <span className="task-run-detail__summary">
+                        {item.summary || item.title || item.target_name || "Approval request"}
+                      </span>
                     </div>
                     <div className="task-run-approval-card__actions">
                       <button
@@ -5634,6 +5867,7 @@ function renderProjectFileTreeNode(
 
 type MessageRowProps = {
   message: MessageItem;
+  agents: AgentInfo[];
   copiedMessageId: number | null;
   onCopyMessage: (message: MessageItem) => void | Promise<void>;
   selectionMode: boolean;
@@ -5653,6 +5887,7 @@ type MessageRowProps = {
 const MessageRow = memo(
   function MessageRow({
     message,
+    agents,
     copiedMessageId,
     onCopyMessage,
     selectionMode,
@@ -5670,6 +5905,7 @@ const MessageRow = memo(
   }: MessageRowProps) {
     return renderMessage(
       message,
+      agents,
       copiedMessageId,
       onCopyMessage,
       selectionMode,
@@ -5691,6 +5927,7 @@ const MessageRow = memo(
     const nextIsCopied = next.copiedMessageId === next.message.id;
     return (
       prev.message === next.message &&
+      prev.agents === next.agents &&
       prev.selectionMode === next.selectionMode &&
       prev.selected === next.selected &&
       prev.selectedMessageCount === next.selectedMessageCount &&
@@ -5812,7 +6049,7 @@ export function ChatTab({
   };
   const activeAgents = useMemo(() => agents.filter((agent) => agent.is_active), [agents]);
   const agentRunState = useMemo(() => {
-    const state = new Map<string, { isWorking: boolean; runningCount: number }>();
+    const state = new Map<string, { status: AgentStripStatus; runningCount: number; waitingCount: number }>();
     for (const agent of activeAgents) {
       const keys = [
         getAgentType(agent).trim().toLowerCase(),
@@ -5820,7 +6057,7 @@ export function ChatTab({
         getAgentDisplayName(agent).trim().toLowerCase(),
       ].filter(Boolean);
       for (const key of keys) {
-        state.set(key, { isWorking: false, runningCount: 0 });
+        state.set(key, { status: "online", runningCount: 0, waitingCount: 0 });
       }
     }
 
@@ -5828,8 +6065,13 @@ export function ChatTab({
       if ((run.status || "").toLowerCase() !== "running") continue;
       const target = (run.target_agent_name || "").trim().toLowerCase();
       if (!target) continue;
-      const current = state.get(target) ?? { isWorking: false, runningCount: 0 };
-      state.set(target, { isWorking: true, runningCount: current.runningCount + 1 });
+      const current = state.get(target) ?? { status: "online" as AgentStripStatus, runningCount: 0, waitingCount: 0 };
+      const nextStatus = taskRunAgentStripStatus(run);
+      const nextRunningCount = current.runningCount + (nextStatus === "working" ? 1 : 0);
+      const nextWaitingCount = current.waitingCount + (nextStatus === "waiting" ? 1 : 0);
+      const mergedStatus =
+        nextRunningCount > 0 ? "working" : nextWaitingCount > 0 ? "waiting" : current.status;
+      state.set(target, { status: mergedStatus, runningCount: nextRunningCount, waitingCount: nextWaitingCount });
     }
 
     return state;
@@ -5844,9 +6086,10 @@ export function ChatTab({
         agentRunState.get(getAgentType(right).trim().toLowerCase()) ??
         agentRunState.get(right.name.trim().toLowerCase()) ??
         agentRunState.get(getAgentDisplayName(right).trim().toLowerCase());
-      const leftWorking = leftState?.isWorking ? 1 : 0;
-      const rightWorking = rightState?.isWorking ? 1 : 0;
-      if (leftWorking !== rightWorking) return rightWorking - leftWorking;
+      const rank = (status: AgentStripStatus | undefined) => (status === "working" ? 2 : status === "waiting" ? 1 : 0);
+      const leftRank = rank(leftState?.status);
+      const rightRank = rank(rightState?.status);
+      if (leftRank !== rightRank) return rightRank - leftRank;
       return getAgentDisplayName(left).localeCompare(getAgentDisplayName(right));
     });
   }, [activeAgents, agentRunState]);
@@ -5920,8 +6163,8 @@ export function ChatTab({
     [projectBrowserIndex],
   );
   const browserArtifactEntries = useMemo(
-    () => mergeBrowserArtifactEntries(workspaceBrowserArtifactEntries, runtimeBrowserArtifactEntries),
-    [runtimeBrowserArtifactEntries, workspaceBrowserArtifactEntries],
+    () => mergeBrowserArtifactEntries(workspaceBrowserArtifactEntries, runtimeBrowserArtifactEntries, project?.workspace_path),
+    [project?.workspace_path, runtimeBrowserArtifactEntries, workspaceBrowserArtifactEntries],
   );
   const browserArtifactGroups = useMemo(
     () => groupBrowserArtifactEntries(browserArtifactEntries),
@@ -6015,10 +6258,10 @@ export function ChatTab({
     void openProjectFilePath(node.path);
   }, [openProjectFilePath]);
   const openArtifactReader = useCallback((entry: BrowserArtifactEntry) => {
-    const path = entry.path || entry.detail;
+    const path = resolveArtifactWorkspacePath(entry, project?.workspace_path);
     if (!path) return;
     void openProjectFilePath(path);
-  }, [openProjectFilePath]);
+  }, [openProjectFilePath, project?.workspace_path]);
   const saveFileReaderDraft = useCallback(async () => {
     if (!project?.id || !fileReader?.data || fileReader.mode !== "edit") return;
     const content = fileReader.draft ?? "";
@@ -7422,42 +7665,53 @@ export function ChatTab({
     if (threadItems.length > 0) {
       return (
         <>
-          {threadItems.map((item) =>
-            item.kind === "message"
-              ? (
-                  <MessageRow
-                    key={`message-${item.message.id}`}
-                    message={item.message}
-                    copiedMessageId={copiedMessageId}
-                    onCopyMessage={handleCopyMessage}
-                    selectionMode={messageSelectionMode}
-                    selected={selectedMessageIds.has(item.message.id)}
-                    onToggleSelected={toggleSelectedMessage}
-                    selectedMessageCount={selectedMessageCount}
-                    copiedSelection={copiedSelection}
-                    onCancelSelection={cancelMessageSelection}
-                    onCopySelectedMessages={handleCopySelectedMessages}
-                    expandedStepId={resolveExpandedMessageStepId(item.message)}
-                    onToggleStep={toggleMessageStep}
-                    messageTimeline={
-                      item.message.agent_name && typeof item.message.runtime_summary?.task_run_id === "number"
-                        ? taskTimelinesById[item.message.runtime_summary.task_run_id] ?? null
-                        : null
-                    }
-                    fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
-                    onAnalyzeFailureStep={handleAnalyzeFailureStep}
-                  />
-                )
+          {threadItems.map((item, index) => {
+            const currentAgentName = threadItemAgentName(item, agents);
+            const previousAgentName = index > 0 ? threadItemAgentName(threadItems[index - 1], agents) : null;
+            const hasAgentBreak =
+              index > 0 &&
+              Boolean(currentAgentName) &&
+              Boolean(previousAgentName) &&
+              currentAgentName !== previousAgentName;
+
+            const content =
+              item.kind === "message"
+                ? (
+                    <MessageRow
+                      key={`message-${item.message.id}`}
+                      message={item.message}
+                      agents={agents}
+                      copiedMessageId={copiedMessageId}
+                      onCopyMessage={handleCopyMessage}
+                      selectionMode={messageSelectionMode}
+                      selected={selectedMessageIds.has(item.message.id)}
+                      onToggleSelected={toggleSelectedMessage}
+                      selectedMessageCount={selectedMessageCount}
+                      copiedSelection={copiedSelection}
+                      onCancelSelection={cancelMessageSelection}
+                      onCopySelectedMessages={handleCopySelectedMessages}
+                      expandedStepId={resolveExpandedMessageStepId(item.message)}
+                      onToggleStep={toggleMessageStep}
+                      messageTimeline={
+                        item.message.agent_name && typeof item.message.runtime_summary?.task_run_id === "number"
+                          ? taskTimelinesById[item.message.runtime_summary.task_run_id] ?? null
+                          : null
+                      }
+                      fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
+                      onAnalyzeFailureStep={handleAnalyzeFailureStep}
+                    />
+                  )
                 : item.kind === "activity_batch"
                   ? renderActivityBatch(
                       item.id,
-                    item.cards,
-                    item.id === latestActivityBatchId,
-                    item.id === latestActivityBatchId ? currentActivityAgentName : null,
-                    expandedProgressCards,
-                    expandCurrentStepByDefault && !stepAutoExpansionDisabled,
-                    toggleProgressCard,
-                    gateActionPipelineId,
+                      item.cards,
+                      agents,
+                      item.id === latestActivityBatchId,
+                      item.id === latestActivityBatchId ? currentActivityAgentName : null,
+                      expandedProgressCards,
+                      expandCurrentStepByDefault && !stepAutoExpansionDisabled,
+                      toggleProgressCard,
+                      gateActionPipelineId,
                       handleApproveGate,
                       handleRejectGate,
                     )
@@ -7491,8 +7745,14 @@ export function ChatTab({
                         handleCancelSubagent,
                         handleCloseSubagent,
                         subagentActionKey,
-                      ),
-          )}
+                      );
+
+            return (
+              <div key={item.id} className={hasAgentBreak ? "chat-turn-gap" : undefined}>
+                {content}
+              </div>
+            );
+          })}
         </>
       );
     }
@@ -7518,6 +7778,8 @@ export function ChatTab({
       </div>
     );
   }, [
+    approvalActionItemId,
+    approvalQueueLoaded,
     chat,
     cancelMessageSelection,
     copiedMessageId,
@@ -7629,6 +7891,17 @@ export function ChatTab({
             <span className="status-dot chat-live-pill__dot" />
             <span>v{UI_VERSION}</span>
           </span>
+          <a
+            className="btn btn--sm chat-monitor-link"
+            href="/monitor"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open monitor"
+            title="Open monitor"
+          >
+            <Monitor size={15} aria-hidden="true" />
+            <span>Monitor</span>
+          </a>
           <button
             type="button"
             className="btn btn--sm btn--icon mobile-sidebar-toggle mobile-sidebar-toggle--left"
@@ -7797,22 +8070,29 @@ export function ChatTab({
                     agentRunState.get(getAgentType(agent).trim().toLowerCase()) ??
                     agentRunState.get(agent.name.trim().toLowerCase()) ??
                     agentRunState.get(getAgentDisplayName(agent).trim().toLowerCase());
-                  const isWorking = Boolean(state?.isWorking);
+                  const chipStatus = state?.status ?? "online";
+                  const isWorking = chipStatus === "working";
+                  const isWaiting = chipStatus === "waiting";
                   const statusLabel = isWorking
                     ? state && state.runningCount > 1
                       ? `working x${state.runningCount}`
                       : "working"
-                    : "online";
+                    : isWaiting
+                      ? state && state.waitingCount > 1
+                        ? `waiting x${state.waitingCount}`
+                        : "waiting"
+                      : "online";
                   return (
                     <button
                       key={agent.id}
                       type="button"
-                      className={`agent-strip__chip ${isWorking ? "is-working" : ""}`}
+                      className={`agent-strip__chip ${isWorking ? "is-working" : isWaiting ? "is-waiting" : ""}`}
                       disabled={sending}
                       onClick={() => insertMention(getAgentType(agent))}
                       title={`Mention ${getAgentDisplayName(agent)} (@${getAgentType(agent)})`}
+                      style={buildAgentThemeStyle(getAgentType(agent), agents)}
                     >
-                      <span className={`agent-dot ${isWorking ? "is-working" : "is-active"}`} />
+                      <span className={`agent-dot ${isWorking ? "is-working" : isWaiting ? "is-waiting" : "is-active"}`} />
                       <div>
                         <strong>{getAgentDisplayName(agent)}</strong>
                         <small>{statusLabel}</small>
@@ -7995,13 +8275,15 @@ export function ChatTab({
                             <button
                               key={entry.id}
                               type="button"
-                              className="artifact-row"
+                              className={`artifact-row ${entry.agentName ? "artifact-row--agent" : ""}`}
                               title={entry.detail || entry.name}
                               onClick={() => openArtifactReader(entry)}
+                              style={buildAgentThemeStyle(entry.agentName, agents)}
                             >
                               <span className="artifact-row__icon" aria-hidden="true"><ArtifactIcon type={entry.type} /></span>
                               <span className="artifact-row__name">{entry.name}</span>
                               <span className="artifact-row__meta">
+                                {entry.agentName ? <span>{resolveAgentLabel(entry.agentName, agents)}</span> : null}
                                 <span>{entry.status}</span>
                                 {entry.timestamp ? <span>{formatTime(entry.timestamp)}</span> : null}
                               </span>
@@ -8023,6 +8305,7 @@ export function ChatTab({
                   ) : (
                     <ProcessTreeNode
                       node={browserProcessTree}
+                      agents={agents}
                       activeActionKey={subagentActionKey}
                       onInspectTaskRun={inspectTaskRun}
                       onWaitSubagent={handleWaitSubagent}

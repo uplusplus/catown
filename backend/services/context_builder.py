@@ -432,6 +432,8 @@ def build_operating_developer_context(*, agent_name: str = "", agent_role: str =
             "- Keep attention on the latest user request and the highest-priority developer constraints; do not overfit stale history.\n"
             "- Respect context visibility: use shared facts for coordination, but do not leak agent-private reasoning unless explicitly asked.\n"
             "- When a tool is useful, call it instead of pretending to know external or workspace state.\n"
+            "- If you intend to hand off or notify another agent via chat mention, start the last non-empty paragraph of the final chat message with one or more `@agent_name` mentions.\n"
+            "- Mentions outside that final paragraph are treated as normal text and do not trigger routing.\n"
             "- If context conflicts, prefer newer turn/stage developer instructions over older history and state the assumption briefly."
         ),
         scope=ContextScope.RUN,
@@ -1287,7 +1289,8 @@ def _chatroom_context_fragments(chatroom: Any, *, project: Any = None, source_ch
                 content=(
                     "## Chat Routing\n"
                     "- Messages in this chat are shared conversation events.\n"
-                    "- Agents can send a lightweight message to another agent by writing a normal chat message that mentions `@agent_name`.\n"
+                    "- Agents can send a lightweight message to another agent by starting the last non-empty paragraph of the final chat message with one or more `@agent_name` mentions.\n"
+                    "- Mentions outside that final paragraph are treated as normal text, not routing instructions.\n"
                     "- Use chat mentions for agent-to-agent notifications or context handoffs; use tracked task tools only when the work needs task tracking."
                 ),
                 scope=ContextScope.RUN,
@@ -1442,7 +1445,7 @@ def estimate_messages_tokens(messages: Optional[Iterable[dict[str, Any]]]) -> in
 
 
 def _default_completion_reserve(context_window: int) -> int:
-    return max(1024, min(8192, context_window // 8))
+    return max(1024, min(128000, context_window // 8))
 
 
 def _truncate_text_to_token_budget(text: str, max_tokens: int) -> str:

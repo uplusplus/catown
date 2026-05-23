@@ -118,6 +118,111 @@ class TestLLMClientChatWithTools:
         with pytest.raises(Exception, match="LLM API error with tools"):
             await client.chat_with_tools([{"role": "user", "content": "hi"}])
 
+    @pytest.mark.asyncio
+    async def test_error_handling_logs_and_records_network_event(self, caplog):
+        from llm.client import LLMClient
+
+        client = LLMClient()
+        events = []
+        client._record_network_event = lambda **kwargs: events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(
+            side_effect=Exception("API error")
+        )
+
+        with pytest.raises(Exception, match="LLM API error with tools"):
+            await client.chat_with_tools([{"role": "user", "content": "hi"}])
+
+        assert any("LLM tool chat failed" in message for message in caplog.messages)
+        assert len(events) == 1
+        assert events[0]["success"] is False
+        assert "API error" in events[0]["error"]
+        assert events[0]["metadata"]["sync_tool_chat"] is True
+
+    @pytest.mark.asyncio
+    async def test_empty_completion_logs_and_preserves_original_return_shape(self, caplog):
+        from llm.client import LLMClient
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_response.choices[0].message.tool_calls = None
+        mock_response.choices[0].message.refusal = None
+        mock_response.choices[0].finish_reason = "stop"
+
+        client = LLMClient()
+        events = []
+        client._record_network_event = lambda **kwargs: events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        result = await client.chat_with_tools([{"role": "user", "content": "hi"}])
+
+        assert result["content"] is None
+        assert result["tool_calls"] is None
+        assert any("LLM tool chat returned empty completion" in message for message in caplog.messages)
+        assert len(events) == 1
+        assert events[0]["success"] is False
+        assert events[0]["error"] == "empty tool chat completion"
+        assert events[0]["metadata"]["response_validation"] == "empty_completion"
+
+    @pytest.mark.asyncio
+    async def test_retry_later_rate_limit_retries_with_exponential_backoff_and_succeeds(self, caplog):
+        from llm.client import LLMClient
+
+        caplog.set_level("INFO", logger="catown.llm")
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Recovered"
+        mock_response.choices[0].message.tool_calls = None
+
+        attempts = []
+
+        async def flaky_create(**_kwargs):
+            attempts.append("call")
+            if len(attempts) < 4:
+                raise Exception("Error code: 429 - {'error': {'message': 'Concurrency limit exceeded for account, please retry later', 'type': 'rate_limit_error'}}")
+            return mock_response
+
+        client = LLMClient()
+        events = []
+        client._record_network_event = lambda **kwargs: events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(side_effect=flaky_create)
+
+        with patch("llm.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            result = await client.chat_with_tools([{"role": "user", "content": "hi"}])
+
+        assert result["content"] == "Recovered"
+        assert len(attempts) == 4
+        assert mock_sleep.await_count == 3
+        assert [call.args[0] for call in mock_sleep.await_args_list] == [1.0, 2.0, 4.0]
+        assert any("rate-limited; retrying" in message for message in caplog.messages)
+        assert any("retry succeeded" in message for message in caplog.messages)
+        assert len(events) == 3
+        assert events[0]["metadata"]["retryable"] is True
+        assert events[0]["metadata"]["will_retry"] is True
+
+    @pytest.mark.asyncio
+    async def test_retry_later_rate_limit_stops_after_five_minute_budget(self, caplog):
+        from llm.client import LLMClient
+
+        client = LLMClient()
+        events = []
+        client._record_network_event = lambda **kwargs: events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(
+            side_effect=Exception("Error code: 429 - {'error': {'message': 'Concurrency limit exceeded for account, please retry later', 'type': 'rate_limit_error'}}")
+        )
+
+        perf_counter_values = iter([0.0, 0.0, 1.0, 3.0, 7.0, 15.0, 31.0, 63.0, 123.0, 183.0, 243.0, 303.0, 303.0])
+        with patch("llm.client.asyncio.sleep", new=AsyncMock()) as mock_sleep, patch("llm.client.time.perf_counter", side_effect=lambda: next(perf_counter_values)):
+            with pytest.raises(Exception, match="LLM API error with tools"):
+                await client.chat_with_tools([{"role": "user", "content": "hi"}])
+
+        assert mock_sleep.await_count == 5
+        assert [call.args[0] for call in mock_sleep.await_args_list] == [1.0, 2.0, 4.0, 8.0, 16.0]
+        assert len(events) == 6
+        assert events[0]["metadata"]["retryable"] is True
+        assert events[-1]["metadata"]["attempts"] == 6
+        assert any("LLM tool chat failed" in message for message in caplog.messages)
+
 
 class TestLLMClientChatStream:
     """chat_stream 方法测试"""

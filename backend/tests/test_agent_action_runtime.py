@@ -72,6 +72,7 @@ def test_run_list_collaborators_action_formats_summary(monkeypatch):
 
     assert "coder" in result
     assert "Selection guide" in result
+    assert "last non-empty paragraph of the final chat message" in result
 
 
 @pytest.mark.asyncio

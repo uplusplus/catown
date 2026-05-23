@@ -179,17 +179,15 @@ async def wait_for_tracked_run_shell(
 
         if deadline is not None and time.monotonic() >= deadline:
             result_text = (
-                f"[Run Shell] Timed out after {int(timeout_seconds or 0)}s. "
-                "Waiting for user confirmation to continue without a timeout."
+                f"[Run Shell] Foreground wait elapsed after {int(timeout_seconds or 0)}s. "
+                "The process is still running in the background."
             )
             return build_structured_tool_result(
                 tool_name="run_shell",
                 result_text=result_text,
                 success=False,
-                status="timeout_waiting",
-                blocked=True,
-                blocked_kind="timeout",
-                blocked_reason=result_text,
+                status="background_running",
+                blocked=False,
                 metadata={"tracked_process": _public_handle(record)},
             )
 
