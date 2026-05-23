@@ -104,6 +104,7 @@ async def run_nonstream_orchestration_step(
         fail_orchestration_step_handoffs(db, handoff_state, error=str(exc), retry=True)
         raise
     except Exception as exc:
+        queue.mark_failed(step.step_id, reason=str(exc)[:500])
         record_scheduler_step_failed(
             db,
             task_run,

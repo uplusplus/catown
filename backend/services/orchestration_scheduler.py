@@ -80,6 +80,7 @@ class ScheduledStepRuntimeState:
     released_by_step_id: str | None = None
     dispatch_count: int = 0
     completion_count: int = 0
+    failed_reason: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -97,6 +98,7 @@ class ScheduledStepRuntimeState:
             "released_by_step_id": self.released_by_step_id,
             "dispatch_count": self.dispatch_count,
             "completion_count": self.completion_count,
+            "failed_reason": self.failed_reason,
         }
 
 
@@ -110,10 +112,14 @@ class OrchestrationRuntimeSnapshot:
     waiting_step_count: int
     running_step_count: int
     completed_step_count: int
+    failed_step_count: int
+    cancelled_step_count: int
     ready_step_ids: list[str]
     waiting_step_ids: list[str]
     running_step_ids: list[str]
     completed_step_ids: list[str]
+    failed_step_ids: list[str]
+    cancelled_step_ids: list[str]
     steps: list[ScheduledStepRuntimeState]
 
     def to_payload(self) -> dict[str, Any]:
@@ -124,10 +130,14 @@ class OrchestrationRuntimeSnapshot:
             "waiting_step_count": self.waiting_step_count,
             "running_step_count": self.running_step_count,
             "completed_step_count": self.completed_step_count,
+            "failed_step_count": self.failed_step_count,
+            "cancelled_step_count": self.cancelled_step_count,
             "ready_step_ids": self.ready_step_ids,
             "waiting_step_ids": self.waiting_step_ids,
             "running_step_ids": self.running_step_ids,
             "completed_step_ids": self.completed_step_ids,
+            "failed_step_ids": self.failed_step_ids,
+            "cancelled_step_ids": self.cancelled_step_ids,
             "steps": [step.to_payload() for step in self.steps],
         }
 
@@ -141,6 +151,9 @@ class OrchestrationRuntimeQueue:
         self._ready = deque(_sort_ready_steps([step for step in plan.steps if not step.wait_for_step_id]))
         self._waiting: dict[str, list[ScheduledAgentTurn]] = {}
         self._completed: set[str] = set()
+        self._failed: set[str] = set()
+        self._cancelled: set[str] = set()
+        self._failed_reasons: dict[str, str] = {}
         self._runtime_state: dict[str, dict[str, Any]] = {
             step.step_id: {
                 "status": "ready" if not step.wait_for_step_id else "waiting",
@@ -185,12 +198,61 @@ class OrchestrationRuntimeQueue:
             self._ready.append(step)
         return ready
 
+    def mark_failed(self, step_id: str, *, reason: str = "") -> None:
+        """Mark a step as failed. Does NOT release downstream dependents."""
+        if step_id in self._completed or step_id in self._failed:
+            return
+
+        self._failed.add(step_id)
+        if reason:
+            self._failed_reasons[step_id] = reason
+        if self._ready:
+            self._ready = deque(step for step in self._ready if step.step_id != step_id)
+        step_state = self._runtime_state.get(step_id)
+        if step_state is not None:
+            step_state["status"] = "failed"
+        # NOTE: do NOT pop from _waiting here; cancel_dependents() needs it.
+
+    def cancel_dependents(self, failed_step_id: str) -> list[ScheduledAgentTurn]:
+        """Cancel all downstream steps that transitively depend on *failed_step_id*.
+
+        Returns the list of steps that were cancelled.
+        """
+        cancelled: list[ScheduledAgentTurn] = []
+        queue = list(self._waiting.pop(failed_step_id, []))
+        visited: set[str] = set()
+
+        while queue:
+            step = queue.pop(0)
+            if step.step_id in visited:
+                continue
+            visited.add(step.step_id)
+
+            # Skip already terminal steps
+            if step.step_id in self._completed or step.step_id in self._failed or step.step_id in self._cancelled:
+                continue
+
+            self._cancelled.add(step.step_id)
+            step_state = self._runtime_state.get(step.step_id)
+            if step_state is not None:
+                step_state["status"] = "cancelled"
+            cancelled.append(step)
+
+            # Cascade: also cancel *their* dependents
+            for dep in self._waiting.pop(step.step_id, []):
+                if dep.step_id not in visited:
+                    queue.append(dep)
+
+        return cancelled
+
     def runtime_snapshot(self) -> OrchestrationRuntimeSnapshot:
         steps = [self.runtime_state_for_step(step.step_id) for step in self.plan.steps]
         ready_step_ids = [step.step_id for step in steps if step.status == "ready"]
         waiting_step_ids = [step.step_id for step in steps if step.status == "waiting"]
         running_step_ids = [step.step_id for step in steps if step.status == "running"]
         completed_step_ids = [step.step_id for step in steps if step.status == "completed"]
+        failed_step_ids = [step.step_id for step in steps if step.status == "failed"]
+        cancelled_step_ids = [step.step_id for step in steps if step.status == "cancelled"]
         return OrchestrationRuntimeSnapshot(
             mode=self.plan.mode,
             step_count=len(steps),
@@ -198,10 +260,14 @@ class OrchestrationRuntimeQueue:
             waiting_step_count=len(waiting_step_ids),
             running_step_count=len(running_step_ids),
             completed_step_count=len(completed_step_ids),
+            failed_step_count=len(failed_step_ids),
+            cancelled_step_count=len(cancelled_step_ids),
             ready_step_ids=ready_step_ids,
             waiting_step_ids=waiting_step_ids,
             running_step_ids=running_step_ids,
             completed_step_ids=completed_step_ids,
+            failed_step_ids=failed_step_ids,
+            cancelled_step_ids=cancelled_step_ids,
             steps=steps,
         )
 
@@ -226,6 +292,7 @@ class OrchestrationRuntimeQueue:
             released_by_step_id=runtime_state.get("released_by_step_id"),
             dispatch_count=int(runtime_state.get("dispatch_count") or 0),
             completion_count=int(runtime_state.get("completion_count") or 0),
+            failed_reason=self._failed_reasons.get(step_id),
         )
 
     def runtime_state_payload_for_step(self, step_id: str) -> dict[str, Any]:

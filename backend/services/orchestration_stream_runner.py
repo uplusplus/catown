@@ -253,6 +253,7 @@ def fail_stream_orchestration_step(
     stage_policy: Any = None,
     error: Any,
 ) -> None:
+    queue.mark_failed(step.step_id, reason=str(error)[:500])
     record_scheduler_step_failed(
         db,
         task_run,
