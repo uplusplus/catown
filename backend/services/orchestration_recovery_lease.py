@@ -42,37 +42,15 @@ def claim_recovery_lease(
 
     current_time = now or datetime.now()
     lease_expires_at = current_time + timedelta(seconds=lease_seconds)
-    updated = (
+
+    # SELECT … FOR UPDATE — locks the row so two processes cannot both
+    # claim the same lease in a race window.
+    task_run = (
         db.query(TaskRun)
-        .filter(
-            TaskRun.id == task_run_id,
-            TaskRun.status == "running",
-            TaskRun.run_kind.in_(sorted(recoverable_run_kinds)),
-            or_(
-                TaskRun.recovery_owner.is_(None),
-                TaskRun.recovery_lease_expires_at.is_(None),
-                TaskRun.recovery_lease_expires_at < current_time,
-            ),
-        )
-        .update(
-            {
-                TaskRun.recovery_owner: owner,
-                TaskRun.recovery_claimed_at: current_time,
-                TaskRun.recovery_lease_expires_at: lease_expires_at,
-            },
-            synchronize_session=False,
-        )
+        .filter(TaskRun.id == task_run_id)
+        .with_for_update(nowait=False)
+        .first()
     )
-    db.commit()
-    task_run = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
-    if updated:
-        return RecoveryLeaseClaimResult(
-            task_run=task_run,
-            reason="claimed",
-            status=(task_run.status if task_run is not None else None),
-            owner=owner,
-            lease_expires_at=lease_expires_at,
-        )
     if task_run is None:
         return RecoveryLeaseClaimResult(
             task_run=None,
@@ -80,8 +58,10 @@ def claim_recovery_lease(
             status=None,
             detail="Task run not found.",
         )
-    run_kind = (task_run.run_kind or "").strip()
+
     status = (task_run.status or "").strip()
+    run_kind = (task_run.run_kind or "").strip()
+
     if status != "running":
         return RecoveryLeaseClaimResult(
             task_run=task_run,
@@ -96,16 +76,39 @@ def claim_recovery_lease(
             status=status or None,
             detail=f"Task run kind '{run_kind or 'unknown'}' is not recoverable.",
         )
+
+    # Check if lease is already held and still valid
+    recovery_owner = getattr(task_run, "recovery_owner", None)
+    recovery_lease_expires_at = getattr(task_run, "recovery_lease_expires_at", None)
+    lease_held = (
+        recovery_owner is not None
+        and recovery_lease_expires_at is not None
+        and recovery_lease_expires_at >= current_time
+    )
+    if lease_held and recovery_owner != owner:
+        return RecoveryLeaseClaimResult(
+            task_run=task_run,
+            reason="leased",
+            status=status or None,
+            detail=_format_recovery_lease_detail(recovery_owner, recovery_lease_expires_at),
+            owner=recovery_owner,
+            lease_expires_at=recovery_lease_expires_at,
+        )
+
+    # Claim or re-claim the lease
+    task_run.recovery_owner = owner
+    task_run.recovery_claimed_at = current_time
+    task_run.recovery_lease_expires_at = lease_expires_at
+    db.add(task_run)
+    db.commit()
+    db.refresh(task_run)
+
     return RecoveryLeaseClaimResult(
         task_run=task_run,
-        reason="leased",
-        status=status or None,
-        detail=_format_recovery_lease_detail(
-            getattr(task_run, "recovery_owner", None),
-            getattr(task_run, "recovery_lease_expires_at", None),
-        ),
-        owner=getattr(task_run, "recovery_owner", None),
-        lease_expires_at=getattr(task_run, "recovery_lease_expires_at", None),
+        reason="claimed",
+        status=status,
+        owner=owner,
+        lease_expires_at=lease_expires_at,
     )
 
 
@@ -121,24 +124,25 @@ def renew_recovery_lease(
 
     current_time = now or datetime.now()
     lease_expires_at = current_time + timedelta(seconds=lease_seconds)
-    updated = (
+
+    # SELECT … FOR UPDATE to prevent concurrent renewal races
+    task_run = (
         db.query(TaskRun)
-        .filter(
-            TaskRun.id == task_run_id,
-            TaskRun.recovery_owner == owner,
-        )
-        .update(
-            {
-                TaskRun.recovery_claimed_at: current_time,
-                TaskRun.recovery_lease_expires_at: lease_expires_at,
-            },
-            synchronize_session=False,
-        )
+        .filter(TaskRun.id == task_run_id)
+        .with_for_update(nowait=False)
+        .first()
     )
+    if task_run is None:
+        return None
+
+    if (task_run.recovery_owner or "") != owner:
+        return None
+
+    task_run.recovery_claimed_at = current_time
+    task_run.recovery_lease_expires_at = lease_expires_at
+    db.add(task_run)
     db.commit()
-    if updated:
-        return lease_expires_at
-    return None
+    return lease_expires_at
 
 
 def ensure_recovery_lease(

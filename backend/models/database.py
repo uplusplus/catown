@@ -247,6 +247,12 @@ class TaskRun(Base):
         back_populates="task_run",
         cascade="all, delete-orphan",
         order_by="ApprovalQueueItem.created_at.desc()",
+        foreign_keys="[ApprovalQueueItem.task_run_id]",
+    )
+    blocked_by_queue_item = relationship(
+        "ApprovalQueueItem",
+        foreign_keys=[blocked_by_queue_item_id],
+        post_update=True,
     )
     pipeline_runs = relationship("PipelineRun", back_populates="task_run", order_by="PipelineRun.run_number.asc()")
     orchestration_handoff_deliveries = relationship(
@@ -335,7 +341,7 @@ class ApprovalQueueItem(Base):
     resolved_at = Column(DateTime, nullable=True, index=True)
     expires_at = Column(DateTime, nullable=True, index=True)
 
-    task_run = relationship("TaskRun", back_populates="approval_queue_items")
+    task_run = relationship("TaskRun", back_populates="approval_queue_items", foreign_keys=[task_run_id])
     chatroom = relationship("Chatroom")
     project = relationship("Project")
     pipeline_run = relationship("PipelineRun")
