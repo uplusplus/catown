@@ -44,8 +44,8 @@ file-write detail.
 
 The priority order is:
 
-1. semantic naming for meaningful documents;
-2. unique timestamped naming for concurrency-prone outputs;
+1. semantic naming for meaningful singleton documents;
+2. unique timestamped naming for true multi-version outputs;
 3. directory-based storage by artifact class;
 4. history archiving only as a last-resort safety net.
 
@@ -53,9 +53,13 @@ Artifact history remains enabled, but it is not the primary versioning model.
 
 ## Naming Rules
 
-### 1. Meaningful documents must encode the business decision or subject in the filename
+### 1. Meaningful singleton documents must encode the business decision or subject in the filename
 
 Documents whose value depends on what they are about must not use bare generic names.
+
+These documents are normally maintained in-place at one semantic path. Creating a new
+document is done by choosing a new subject-specific path, not by timestamping revisions
+of the same document purpose.
 
 Examples:
 
@@ -73,10 +77,26 @@ Disallowed examples:
 
 The filename must answer "about what?" rather than only "what kind of file is this?"
 
-### 2. Concurrency-prone outputs must include a timestamp
+Examples of singleton semantic documents:
 
-Outputs that may be produced multiple times by one run or by multiple active processes
-must include a UTC timestamp in the physical storage path.
+- ADRs
+- PRDs
+- feature documents
+- technical specifications
+- release notes when the product expects one current changelog document
+
+For these artifact classes:
+
+- refresh/update writes should overwrite the current semantic path;
+- new business topics should create new semantic filenames;
+- artifact-history may preserve overwritten content as a fallback, but history is not the
+  primary versioning model.
+
+### 2. True multi-version outputs must include a timestamp
+
+Outputs that represent repeated runs of the same artifact type, or that may be produced
+concurrently by multiple active processes, must include a UTC timestamp in the physical
+storage path.
 
 Required timestamp format:
 
@@ -95,6 +115,9 @@ When helpful, the timestamped name should also include:
 - a run reference such as `run-17`;
 - a task reference such as `task-45`;
 - a short subject slug such as `backend-pytest`.
+
+Test reports are the primary required example of this policy because the same logical
+artifact kind may legitimately exist in multiple versions at the same time.
 
 ### 3. Use stable slugs
 
@@ -134,10 +157,10 @@ whenever a stage may produce more than one valid artifact instance over time.
 
 Examples:
 
-- use `docs/prd/` instead of `PRD.md`
-- use `docs/specs/` instead of `tech-spec.md`
-- use `reports/tests/` instead of `test_report.md`
-- use `reports/releases/` instead of `CHANGELOG.md`
+- use `docs/prd/` for semantic PRD documents, with one subject-specific current file per topic
+- use `docs/specs/` for semantic spec documents, with one subject-specific current file per topic
+- use `reports/tests/` instead of `test_report.md` for repeated test-report outputs
+- use `reports/releases/` when release reporting is intentionally versioned as multiple report instances
 
 Exact filename expectations are still allowed only when the product truly requires a
 singleton path with external meaning.
@@ -149,6 +172,9 @@ Examples of valid singleton expectations:
 - a framework-mandated config path
 
 Workflow policy should not model versioned artifacts as singleton filenames.
+
+It should also not model singleton semantic documents as timestamped run outputs unless
+the product explicitly wants a versioned report series instead of one maintained document.
 
 ## Current Alias Rule
 
@@ -186,7 +212,8 @@ Positive consequences:
 - fewer accidental overwrites;
 - clearer project-browser artifact lists;
 - cleaner matching between artifact meaning and artifact path;
-- better support for concurrent testing and repeated reporting;
+- better support for concurrent testing and repeated reporting without forcing every
+  document class into a versioned model;
 - better alignment between runtime contracts and visible workspace state.
 
 Costs:

@@ -25,7 +25,14 @@ def test_valid_pipeline_template_workflow_is_executable():
                     "display_name": "Analysis",
                     "agent": "analyst",
                     "gate": "manual",
-                    "expected_artifacts": ["PRD.md"],
+                    "expected_artifacts": ["docs/prd/"],
+                },
+                {
+                    "name": "architecture",
+                    "display_name": "Architecture",
+                    "agent": "architect",
+                    "gate": "auto",
+                    "expected_artifacts": ["docs/specs/"],
                 },
                 {
                     "name": "development",
@@ -52,7 +59,7 @@ def test_valid_pipeline_template_workflow_is_executable():
 
     assert report.executable is True
     assert report.diagnostics == []
-    assert report.to_payload()["metadata"]["stage_count"] == 3
+    assert report.to_payload()["metadata"]["stage_count"] == 4
 
 
 def test_compile_pipeline_template_with_policy_report_returns_spec_and_diagnostics():
@@ -66,7 +73,14 @@ def test_compile_pipeline_template_with_policy_report_returns_spec_and_diagnosti
                     "display_name": "Analysis",
                     "agent": "analyst",
                     "gate": "manual",
-                    "expected_artifacts": ["PRD.md"],
+                    "expected_artifacts": ["docs/prd/"],
+                },
+                {
+                    "name": "architecture",
+                    "display_name": "Architecture",
+                    "agent": "architect",
+                    "gate": "auto",
+                    "expected_artifacts": ["docs/specs/"],
                 }
             ],
         },
@@ -76,6 +90,9 @@ def test_compile_pipeline_template_with_policy_report_returns_spec_and_diagnosti
     assert result.executable is True
     assert result.workflow_spec.workflow_id == "default"
     assert payload["workflow_spec"]["stages"][0]["stage_id"] == "analysis"
+    assert payload["workflow_spec"]["stages"][0]["delivery"]["expected_artifacts"] == ["docs/prd/"]
+    assert payload["workflow_spec"]["stages"][1]["stage_id"] == "architecture"
+    assert payload["workflow_spec"]["stages"][1]["delivery"]["expected_artifacts"] == ["docs/specs/"]
     assert payload["policy_report"]["executable"] is True
 
 

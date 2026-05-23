@@ -30,6 +30,7 @@ class SingleAgentSyncRawExecutionInputs:
 @dataclass(frozen=True)
 class SingleAgentSessionRunnerResult:
     final_content: str | None = None
+    outcome: str = "completed"
 
 
 def build_single_agent_sync_raw_execution_inputs(
@@ -95,16 +96,16 @@ async def run_single_agent_session(
     except Exception as exc:
         if deps.finalize_failure is not None:
             await _maybe_await(deps.finalize_failure(exc))
-            return SingleAgentSessionRunnerResult(final_content=None)
+            return SingleAgentSessionRunnerResult(final_content=None, outcome="failed")
         raise
 
     if not final_content:
         if deps.on_empty is not None:
             await _maybe_await(deps.on_empty())
-        return SingleAgentSessionRunnerResult(final_content=None)
+        return SingleAgentSessionRunnerResult(final_content=None, outcome="empty")
 
     await deps.finalize_success(final_content)
-    return SingleAgentSessionRunnerResult(final_content=final_content)
+    return SingleAgentSessionRunnerResult(final_content=final_content, outcome="completed")
 
 
 async def _maybe_await(value: Any) -> Any:

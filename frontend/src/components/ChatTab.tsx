@@ -36,6 +36,7 @@ import type {
   MessageStreamStep,
   TaskActivityProjection,
   ProjectBrowserIndex,
+  ProjectBrowserFileItem,
   ProjectFileReadResponse,
   ProjectSummary,
   TaskRunDetail,
@@ -326,6 +327,11 @@ type ChatTabProps = {
   taskRuns: TaskRunSummary[];
   processes: ChatProcessEntry | null;
   projectBrowserIndex: ProjectBrowserIndex | null;
+  projectBrowserAutoRefreshEnabled?: boolean;
+  projectBrowserContentRefresh?: {
+    snapshotId?: string | null;
+    updatedFiles: ProjectBrowserFileItem[];
+  } | null;
   liveTaskRunDetailsById: Record<number, TaskRunDetail>;
   taskActivitiesById: Record<number, TaskActivityProjection>;
   taskTimelinesById: Record<number, ChatTimelineProjection>;
@@ -1013,6 +1019,7 @@ function buildRuntimeMonitorViewModel({
       }
 
       if (step.kind === "approval") {
+        const toolName = readTextField(facts, "tool_name") || readTextField(facts, "target_name") || "Approval";
         pushEvent({
           id: `timeline:${run.id}:${step.id}:approval`,
           taskRunId: run.id,
@@ -1044,6 +1051,7 @@ function buildRuntimeMonitorViewModel({
     for (const item of pendingApprovals) {
       const actor = item.agent_name?.trim() || fallbackActor;
       const timestamp = item.updated_at || item.created_at || run.updated_at || run.created_at || new Date().toISOString();
+      const title = item.target_name?.trim() || item.title || "Approval";
       pushEvent({
         id: `approval-item:${item.id}`,
         taskRunId: run.id,
@@ -1114,7 +1122,7 @@ function buildRuntimeMonitorViewModel({
       continue;
     }
     if (card.kind === "tool_call" || card.kind === "tool_merge") {
-      const toolName = card.tool || "Tool";
+      const toolName = card.kind === "tool_merge" ? card.tool || "Tool" : card.tool || "Tool";
       pushEvent({
         id: `card:${card.id}:tool`,
         taskRunId: typeof card.run_id === "number" ? card.run_id : null,
@@ -1235,7 +1243,7 @@ function RuntimeMonitorSection({
                 <button
                   type="button"
                   className="chat-copy-inline-btn"
-                  onClick={() => onInspectTaskRun?.(event.taskRunId)}
+                  onClick={() => onInspectTaskRun?.(event.taskRunId as number)}
                   title="Inspect task run"
                 >
                   Run {event.taskRunId}
@@ -1780,10 +1788,6 @@ function isTaskRunDetailFresh(summary: TaskRunSummary, detail: TaskRunDetail | n
 
 function resolveFreshTaskRunDetail(summary: TaskRunSummary, ...details: Array<TaskRunDetail | null | undefined>) {
   return details.find((detail) => isTaskRunDetailFresh(summary, detail)) ?? null;
-}
-
-function rememberedApprovalScope(item: ApprovalQueueItem) {
-  return typeof item.project_id === "number" ? "project" : "chatroom";
 }
 
 function approvalRequestLabel(item: ApprovalQueueItem) {
@@ -2816,18 +2820,9 @@ function groupBrowserArtifactEntries(entries: BrowserArtifactEntry[]) {
   return Array.from(groups.entries())
     .map(([type, items]) => ({
       type,
-      latestTimestamp: items.reduce((latest, item) => Math.max(latest, new Date(item.timestamp || 0).getTime()), 0),
-      items: items.sort((left, right) => {
-        const leftTime = new Date(left.timestamp || 0).getTime();
-        const rightTime = new Date(right.timestamp || 0).getTime();
-        if (leftTime !== rightTime) return rightTime - leftTime;
-        return left.name.localeCompare(right.name);
-      }),
+      items: items.sort((left, right) => left.name.localeCompare(right.name)),
     }))
-    .sort((left, right) => {
-      if (left.latestTimestamp !== right.latestTimestamp) return right.latestTimestamp - left.latestTimestamp;
-      return left.type.localeCompare(right.type);
-    });
+    .sort((left, right) => left.type.localeCompare(right.type));
 }
 
 function taskRunPayloadPreview(payload: Record<string, unknown> | undefined) {
@@ -6089,7 +6084,12 @@ function renderTaskRunInlineCard(
   approvalActionItemId: number | null,
   expandedStepId: StepExpansionValue | undefined,
   onToggleStep: (taskRunId: number, stepId: string, isExpanded: boolean) => void,
-  onResolveApprovalQueueItem: (item: ApprovalQueueItem, action: "approve" | "reject", remember?: boolean) => Promise<void>,
+  onResolveApprovalQueueItem: (
+    item: ApprovalQueueItem,
+    action: "approve" | "reject",
+    remember?: boolean,
+    rememberScope?: string,
+  ) => Promise<void>,
   onAnalyzeFailureStep?: FailureStepAnalysisHandler,
 ) {
   const pendingItems = approvalItems.filter((item) => (item.status || "").toLowerCase() === "pending");
@@ -6384,6 +6384,8 @@ export function ChatTab({
   taskRuns,
   processes,
   projectBrowserIndex,
+  projectBrowserAutoRefreshEnabled = false,
+  projectBrowserContentRefresh = null,
   liveTaskRunDetailsById,
   taskActivitiesById,
   taskTimelinesById,
@@ -6720,6 +6722,30 @@ export function ChatTab({
       } : current);
     }
   }, [fileReader, project?.id]);
+  useEffect(() => {
+    if (!projectBrowserAutoRefreshEnabled) return;
+    if (!project?.id || !fileReader?.path || fileReader.status !== "ready") return;
+    if (fileReader.mode === "edit" || fileReader.saving) return;
+    const currentEntry = projectBrowserContentRefresh?.updatedFiles.find((item) => item.path === fileReader.path);
+    if (!currentEntry || typeof currentEntry.mtime !== "number" || !fileReader.data?.mtime) return;
+    if (currentEntry.mtime <= fileReader.data.mtime) return;
+    void openProjectFilePath(fileReader.path, {
+      history: fileReader.history,
+      historyIndex: fileReader.historyIndex,
+    });
+  }, [
+    fileReader?.data?.mtime,
+    fileReader?.history,
+    fileReader?.historyIndex,
+    fileReader?.mode,
+    fileReader?.path,
+    fileReader?.saving,
+    fileReader?.status,
+    openProjectFilePath,
+    project?.id,
+    projectBrowserAutoRefreshEnabled,
+    projectBrowserContentRefresh,
+  ]);
   const selectedTaskRunSummary = useMemo(() => {
     if (taskRuns.length === 0) return null;
     const preferredRuns = [...taskRuns].sort(compareTaskRunsForSidebarSelection);
@@ -7022,12 +7048,12 @@ export function ChatTab({
         if (action === "approve") {
           updated = await api.approveApprovalQueueItem(item.id, {
             resolved_by: "home",
-            remember_scope: remember ? rememberedApprovalScope(item) : undefined,
+            remember: Boolean(remember),
           });
         } else {
           updated = await api.rejectApprovalQueueItem(item.id, {
             resolved_by: "home",
-            remember_scope: remember ? rememberedApprovalScope(item) : undefined,
+            remember: Boolean(remember),
           });
         }
         setPendingApprovalItems((current) => current.filter((pendingItem) => pendingItem.id !== item.id));
@@ -8672,20 +8698,20 @@ export function ChatTab({
               </button>
             </div>
             <div className="sidebar-content project-browser">
-                <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
-                  {[
-                    {
-                      id: "files" as const,
-                      label: "Files",
-                      count: projectBrowserIndex?.truncated ? `${browserFileEntries.length}+` : browserFileEntries.length,
-                      Icon: FolderTree,
-                    },
-                    { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
-                    { id: "processes" as const, label: "Processes", count: browserProcessCount, Icon: Monitor },
-                    { id: "runtime" as const, label: "Runtime", count: runtimeMonitorViewModel.summary.runningActions, Icon: Workflow },
-                  ].map(({ id, label, count, Icon }) => (
-                    <button
-                      key={id}
+              <div className="project-browser__tabs" role="tablist" aria-label="Project browser sections">
+                {[
+                  {
+                    id: "files" as const,
+                    label: "Files",
+                    count: projectBrowserIndex?.truncated ? `${browserFileEntries.length}+` : browserFileEntries.length,
+                    Icon: FolderTree,
+                  },
+                  { id: "artifacts" as const, label: "Artifacts", count: browserArtifactEntries.length, Icon: Archive },
+	                  { id: "processes" as const, label: "Processes", count: browserProcessCount, Icon: Monitor },
+	                  { id: "runtime" as const, label: "Runtime", count: runtimeMonitorViewModel.summary.runningActions, Icon: Workflow },
+                ].map(({ id, label, count, Icon }) => (
+                  <button
+                    key={id}
                     type="button"
                     className={`project-browser__tab ${projectBrowserTab === id ? "is-active" : ""}`}
                     onClick={() => setProjectBrowserTab(id)}
@@ -8748,11 +8774,11 @@ export function ChatTab({
                 </div>
               ) : null}
 
-              {projectBrowserTab === "processes" ? (
-                <div className="project-browser__section project-browser__section--processes">
-                  {subagentActionMessage ? <div className="empty-card">{subagentActionMessage}</div> : null}
-                  {subagentActionError ? <div className="empty-card">{subagentActionError}</div> : null}
-                  {browserProcessCount === 0 || !browserProcessTree ? (
+	              {projectBrowserTab === "processes" ? (
+	                <div className="project-browser__section project-browser__section--processes">
+	                  {subagentActionMessage ? <div className="empty-card">{subagentActionMessage}</div> : null}
+	                  {subagentActionError ? <div className="empty-card">{subagentActionError}</div> : null}
+	                  {browserProcessCount === 0 || !browserProcessTree ? (
                     <div className="empty-card">Running background tasks will appear here.</div>
                   ) : (
                     <ProcessTreeNode
@@ -8764,19 +8790,19 @@ export function ChatTab({
                       onCancelSubagent={handleCancelSubagent}
                       onCloseSubagent={handleCloseSubagent}
                     />
-                  )}
-                </div>
-              ) : null}
+	                  )}
+	                </div>
+	              ) : null}
 
-              {projectBrowserTab === "runtime" ? (
-                <div className="project-browser__section project-browser__section--runtime">
-                  <RuntimeMonitorSection
-                    viewModel={runtimeMonitorViewModel}
-                    agents={agents}
-                    onInspectTaskRun={inspectTaskRun}
-                  />
-                </div>
-              ) : null}
+	              {projectBrowserTab === "runtime" ? (
+	                <div className="project-browser__section project-browser__section--runtime">
+	                  <RuntimeMonitorSection
+	                    viewModel={runtimeMonitorViewModel}
+	                    agents={agents}
+	                    onInspectTaskRun={inspectTaskRun}
+	                  />
+	                </div>
+	              ) : null}
             </div>
           </div>
         </aside>

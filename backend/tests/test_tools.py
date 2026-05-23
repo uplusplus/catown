@@ -17,11 +17,16 @@ from services.tool_governance import assess_run_shell_command, classify_tool_res
 from services.tool_execution_preferences import (
     AUTH_DECISION_ALLOW,
     AUTH_DECISION_DENY,
+    AUTH_DECISION_REQUIRE_APPROVAL,
+    AUTH_MATCHER_ALL_TOOLS,
     AUTH_MATCHER_COMMAND_FINGERPRINT,
+    AUTH_MATCHER_SHELL_BIN,
     AUTH_MATCHER_TOOL_TARGET,
     AUTH_PREFERENCE_KIND,
+    build_all_tools_matcher_value,
     build_run_shell_timeout_preference_key,
     build_run_shell_command_matcher_value,
+    build_shell_bin_matcher_value,
     build_tool_target_matcher_value,
     save_wait_forever_preference,
     upsert_authorization_rule,
@@ -693,6 +698,127 @@ class TestToolRegistry:
         assert result["success"] is False
         assert result["status"] == "approval_blocked"
         assert "denies" in result["result"]
+
+    @pytest.mark.asyncio
+    async def test_saved_shell_bin_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(title="Shell bin allow chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="chatroom",
+                matcher_type=AUTH_MATCHER_SHELL_BIN,
+                matcher_value=build_shell_bin_matcher_value("python3"),
+                decision_kind=AUTH_DECISION_ALLOW,
+                chatroom_id=chatroom.id,
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="granted",
+                command_preview="python3",
+            )
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        result = await registry.execute(
+            "run_shell",
+            command="python3 -c 'from pathlib import Path; Path(\"bin-created.txt\").write_text(\"ok\")'",
+            chatroom_id=chatroom_id,
+        )
+
+        assert result["success"] is True
+        assert (tmp_path / "bin-created.txt").read_text(encoding="utf-8") == "ok"
+
+    @pytest.mark.asyncio
+    async def test_saved_all_tools_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(title="All tools allow chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="chatroom",
+                matcher_type=AUTH_MATCHER_ALL_TOOLS,
+                matcher_value=build_all_tools_matcher_value(),
+                decision_kind=AUTH_DECISION_ALLOW,
+                chatroom_id=chatroom.id,
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="granted",
+                command_preview="all tools",
+            )
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        result = await registry.execute(
+            "run_shell",
+            command="touch all-tools-created.txt",
+            chatroom_id=chatroom_id,
+        )
+
+        assert result["success"] is True
+        assert (tmp_path / "all-tools-created.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_require_approval_rule_overrides_broader_allow(self, fresh_db, tmp_path):
+        registry = ToolRegistry()
+        registry.register(RunShellTool(workspace=str(tmp_path)))
+
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(title="Require approval chat")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="chatroom",
+                matcher_type=AUTH_MATCHER_ALL_TOOLS,
+                matcher_value=build_all_tools_matcher_value(),
+                decision_kind=AUTH_DECISION_ALLOW,
+                chatroom_id=chatroom.id,
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="granted",
+                command_preview="all tools",
+            )
+            upsert_authorization_rule(
+                db,
+                tool_name="run_shell",
+                scope="chatroom",
+                matcher_type=AUTH_MATCHER_SHELL_BIN,
+                matcher_value=build_shell_bin_matcher_value("python3"),
+                decision_kind=AUTH_DECISION_REQUIRE_APPROVAL,
+                chatroom_id=chatroom.id,
+                preference_kind=AUTH_PREFERENCE_KIND,
+                preference_value="approval_required",
+                command_preview="python3",
+            )
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        result = await registry.execute(
+            "run_shell",
+            command="python3 -c 'print(123)'",
+            chatroom_id=chatroom_id,
+        )
+
+        assert result["success"] is False
+        assert result["status"] == "approval_blocked"
+        assert "requires approval" in result["result"]
 
     def test_classify_tool_result_does_not_treat_embedded_approval_text_as_blocked(self):
         result = classify_tool_result(

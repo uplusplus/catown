@@ -445,6 +445,16 @@ def build_followup_continued_payload(**fields: Any) -> Dict[str, Any]:
     return payload
 
 
+def build_followup_interrupted_payload(reason: str, **fields: Any) -> Dict[str, Any]:
+    payload = {
+        "followup_attempted": True,
+        "followup_status": "interrupted",
+        "followup_reason": reason,
+    }
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    return payload
+
+
 def build_followup_triggered_event_payload(
     item: Any,
     replay_result: Any,

@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
+from unittest.mock import patch
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -405,6 +406,151 @@ def test_startup_recovery_terminalizes_interrupted_single_agent_run(tmp_path):
         assert "backend restart" in (detail.summary or "")
         interrupted_event = next(event for event in detail.events if event.event_type == "task_run_interrupted")
         assert interrupted_event is not None
+    finally:
+        db.close()
+
+
+def test_startup_recovery_resumes_interrupted_single_agent_followup(tmp_path):
+    _make_app(tmp_path)
+
+    from models.database import SessionLocal, TaskRun
+    import routes.api as api_routes
+    from services.run_ledger import append_task_event
+    from services.session_service import SessionService
+
+    db = SessionLocal()
+    try:
+        project, chatroom, _ = SessionService(db).create_project_directly(
+            name="Interrupted Single Agent Followup Project",
+            description="Recovery test project",
+            agent_names=["tester"],
+        )
+        task_run = TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            client_turn_id="delegate-interrupted-followup",
+            run_kind="project_single_agent",
+            status="running",
+            title="Interrupted single-agent followup",
+            user_request="@tester analyze the replayed test result",
+            initiator="user",
+            target_agent_name="tester",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        append_task_event(
+            db,
+            task_run,
+            "tool_round_recorded",
+            agent_name="tester",
+            summary="Continued blocked tool run_shell after approval.",
+            payload={
+                "turn": 1,
+                "tool_names": ["run_shell"],
+                "tool_count": 1,
+                "tool_status_counts": {"failed": 1},
+                "blocked_tool_count": 0,
+                "turn_local_state": {
+                    "assistant_content": "Continued blocked tool run_shell after approval.",
+                    "tool_results": [
+                        {
+                            "tool_call_id": "call-recovery-followup",
+                            "tool_name": "run_shell",
+                            "arguments": "{\"command\":\"pytest -q\",\"cwd\":\"/workspace\",\"timeout_seconds\":10}",
+                            "result": "[Run Shell] Error (exit 1): one failed",
+                            "success": False,
+                            "status": "failed",
+                            "blocked": False,
+                            "blocked_kind": None,
+                            "blocked_reason": None,
+                        }
+                    ],
+                    "protocol_messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Continued blocked tool run_shell after approval.",
+                            "tool_calls": [
+                                {
+                                    "id": "call-recovery-followup",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "run_shell",
+                                        "arguments": "{\"command\":\"pytest -q\",\"cwd\":\"/workspace\",\"timeout_seconds\":10}",
+                                    },
+                                }
+                            ],
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": "call-recovery-followup",
+                            "name": "run_shell",
+                            "content": "[Run Shell] Error (exit 1): one failed",
+                        },
+                    ],
+                },
+            },
+        )
+        append_task_event(
+            db,
+            task_run,
+            "approval_queue_item_followup_interrupted",
+            agent_name="tester",
+            summary="Approved continuation follow-up interrupted for run_shell.",
+            payload={"reason": "cancelled", "tool_name": "run_shell"},
+        )
+        task_run_id = task_run.id
+    finally:
+        db.close()
+
+    followup_calls = []
+
+    async def fake_trigger_agent_response(
+        chatroom_id,
+        user_message,
+        client_turn_id=None,
+        task_run_id=None,
+        extra_context="",
+        checkpoint_snapshot=None,
+    ):
+        followup_calls.append(
+            {
+                "chatroom_id": chatroom_id,
+                "user_message": user_message,
+                "client_turn_id": client_turn_id,
+                "task_run_id": task_run_id,
+                "extra_context": extra_context,
+                "checkpoint_snapshot": checkpoint_snapshot,
+            }
+        )
+        return {
+            "completed": True,
+            "awaiting_tool_approval": False,
+            "awaiting_background_tool": False,
+            "task_run_id": task_run_id,
+            "outcome": "completed",
+        }
+
+    with patch.object(api_routes, "trigger_agent_response", side_effect=fake_trigger_agent_response):
+        summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+
+    assert summary["detected"] == 1
+    assert summary["recovered"] == 1
+    assert summary["interrupted"] == 0
+    assert len(followup_calls) == 1
+    assert followup_calls[0]["task_run_id"] == task_run_id
+    assert followup_calls[0]["user_message"] == "@tester analyze the replayed test result"
+    checkpoint = followup_calls[0]["checkpoint_snapshot"]
+    assert checkpoint["turn_local_state"]["protocol_tail_messages"]
+
+    db = SessionLocal()
+    try:
+        detail = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        assert detail is not None
+        event_types = [event.event_type for event in detail.events]
+        assert "task_run_recovery_started" in event_types
+        assert "task_run_recovery_completed" in event_types
+        assert "task_run_interrupted" not in event_types
     finally:
         db.close()
 

@@ -18,9 +18,13 @@ AUTH_SCOPE_GLOBAL = "global"
 AUTH_DECISION_ALLOW = "allow"
 AUTH_DECISION_DENY = "deny"
 AUTH_DECISION_ALLOW_NO_TIMEOUT = "allow_no_timeout"
+AUTH_DECISION_REQUIRE_APPROVAL = "require_approval"
 
+AUTH_MATCHER_ALL_TOOLS = "all_tools"
 AUTH_MATCHER_COMMAND_FINGERPRINT = "command_fingerprint"
+AUTH_MATCHER_SHELL_BIN = "shell_bin"
 AUTH_MATCHER_TOOL_TARGET = "tool_target"
+AUTH_MATCHER_READ_ONLY_CLASS = "read_only_class"
 
 AUTH_PREFERENCE_KIND = "authorization_rule"
 TIMEOUT_BEHAVIOR_KIND = "timeout_behavior"
@@ -46,6 +50,18 @@ def build_run_shell_command_matcher_value(command: str, cwd: str) -> str:
 
 def build_tool_target_matcher_value(tool_name: str) -> str:
     return str(tool_name or "").strip().lower()
+
+
+def build_shell_bin_matcher_value(bin_name: str) -> str:
+    return os.path.basename(str(bin_name or "").strip()).lower()
+
+
+def build_all_tools_matcher_value() -> str:
+    return "*"
+
+
+def build_read_only_class_matcher_value(tool_name: str) -> str:
+    return str(tool_name or "").strip().lower() or "*"
 
 
 def normalize_authorization_scope(
@@ -95,7 +111,7 @@ def _equivalent_run_shell_cwds(cwd: str, workspace_path: str | None = None) -> l
 def authorization_matchers_for_tool(tool_name: str, arguments: dict[str, Any] | None = None) -> list[tuple[str, str]]:
     normalized_tool_name = str(tool_name or "").strip().lower()
     arguments = arguments if isinstance(arguments, dict) else {}
-    matchers: list[tuple[str, str]] = []
+    matchers: list[tuple[str, str]] = [(AUTH_MATCHER_ALL_TOOLS, build_all_tools_matcher_value())]
     if normalized_tool_name == "run_shell":
         command = str(arguments.get("command") or "").strip()
         if command:
@@ -108,9 +124,49 @@ def authorization_matchers_for_tool(tool_name: str, arguments: dict[str, Any] | 
                         build_run_shell_command_matcher_value(command, equivalent_cwd),
                     )
                 )
+            for bin_name in shell_bins_for_command(command):
+                matchers.append((AUTH_MATCHER_SHELL_BIN, build_shell_bin_matcher_value(bin_name)))
     if normalized_tool_name:
         matchers.append((AUTH_MATCHER_TOOL_TARGET, build_tool_target_matcher_value(normalized_tool_name)))
     return matchers
+
+
+def shell_bins_for_command(command: Any) -> list[str]:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return []
+    try:
+        import shlex
+
+        lexer = shlex.shlex(normalized_command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except Exception:
+        return []
+    bins: list[str] = []
+    current_segment: list[str] = []
+    separators = {"&&", "||", ";", "|", "&"}
+    for token in tokens:
+        if token in separators:
+            if current_segment:
+                bins.append(current_segment[0])
+                current_segment = []
+            continue
+        if any(marker in token for marker in (">", "<")):
+            if current_segment:
+                bins.append(current_segment[0])
+                current_segment = []
+            continue
+        current_segment.append(token)
+    if current_segment:
+        bins.append(current_segment[0])
+    seen: set[str] = set()
+    return [
+        normalized
+        for value in bins
+        if (normalized := build_shell_bin_matcher_value(value)) and not (normalized in seen or seen.add(normalized))
+    ]
 
 
 def _scope_matches(
@@ -131,11 +187,41 @@ def _scope_matches(
 
 def _scope_rank(rule: ToolExecutionPreference) -> int:
     scope = str(rule.scope or "").strip().lower()
-    if scope == AUTH_SCOPE_PROJECT:
-        return 0
     if scope == AUTH_SCOPE_CHATROOM:
+        return 0
+    if scope == AUTH_SCOPE_PROJECT:
         return 1
     return 2
+
+
+def _matcher_rank(rule: ToolExecutionPreference) -> int:
+    matcher_type = str(rule.matcher_type or "").strip().lower()
+    if matcher_type == AUTH_MATCHER_COMMAND_FINGERPRINT:
+        return 0
+    if matcher_type == AUTH_MATCHER_SHELL_BIN:
+        return 1
+    if matcher_type == AUTH_MATCHER_TOOL_TARGET:
+        return 2
+    if matcher_type == AUTH_MATCHER_ALL_TOOLS:
+        return 3
+    if matcher_type == AUTH_MATCHER_READ_ONLY_CLASS:
+        return 4
+    return 5
+
+
+def _decision_rank(rule: ToolExecutionPreference) -> int:
+    decision = str(rule.decision_kind or "").strip().lower()
+    if decision == AUTH_DECISION_DENY:
+        return 0
+    if decision == AUTH_DECISION_REQUIRE_APPROVAL:
+        return 1
+    if decision in {AUTH_DECISION_ALLOW, AUTH_DECISION_ALLOW_NO_TIMEOUT}:
+        return 2
+    return 3
+
+
+def _agent_rank(rule: ToolExecutionPreference) -> int:
+    return 0 if str(rule.agent_name or "").strip() else 1
 
 
 def _rule_is_active(rule: Any) -> bool:
@@ -287,7 +373,16 @@ def resolve_authorization_rule(
 
     if not candidates:
         return None
-    candidates.sort(key=lambda rule: (_scope_rank(rule), -(rule.updated_at.timestamp() if rule.updated_at else 0), -int(rule.id or 0)))
+    candidates.sort(
+        key=lambda rule: (
+            _decision_rank(rule),
+            _scope_rank(rule),
+            _agent_rank(rule),
+            _matcher_rank(rule),
+            -(rule.updated_at.timestamp() if rule.updated_at else 0),
+            -int(rule.id or 0),
+        )
+    )
     return candidates[0]
 
 

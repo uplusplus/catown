@@ -328,6 +328,8 @@ class TestConfigEndpoint:
                 json={
                     "allow_read_only_tools_without_approval": False,
                     "auto_approve_all": True,
+                    "remember_default_scope": "chatroom",
+                    "remember_default_matcher": "shell_bin",
                 },
             )
 
@@ -335,6 +337,8 @@ class TestConfigEndpoint:
             refreshed = client.get("/api/config").json()
             assert refreshed["permissions"]["allow_read_only_tools_without_approval"] is False
             assert refreshed["permissions"]["auto_approve_all"] is True
+            assert refreshed["permissions"]["remember_default_scope"] == "chatroom"
+            assert refreshed["permissions"]["remember_default_matcher"] == "shell_bin"
         finally:
             if previous_config_file is None:
                 os.environ.pop("AGENT_CONFIG_FILE", None)
@@ -599,6 +603,161 @@ class TestConfigEndpoint:
             and row["command_preview"] == "pwd @ ."
             for row in audit_rows
         )
+
+    def test_approval_decision_can_remember_selected_matcher(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Remember Matcher Project", "agent_names": ["analyst"]}).json()
+        cid = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            bin_item = db_mod.ApprovalQueueItem(
+                task_run_id=None,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve python",
+                summary="python blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "python3 -c 'print(1)'", "cwd": "."}, ensure_ascii=False),
+                        "blocked_kind": "approval",
+                        "resume_supported": False,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            full_item = db_mod.ApprovalQueueItem(
+                task_run_id=None,
+                chatroom_id=cid,
+                project_id=project["id"],
+                queue_kind="approval",
+                status="pending",
+                source="tool_call_blocked",
+                title="Approve all",
+                summary="run_shell blocked in project chat",
+                agent_name="analyst",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "touch broad.txt", "cwd": "."}, ensure_ascii=False),
+                        "blocked_kind": "approval",
+                        "resume_supported": False,
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add_all([bin_item, full_item])
+            db.commit()
+            db.refresh(bin_item)
+            db.refresh(full_item)
+            bin_item_id = bin_item.id
+            full_item_id = full_item.id
+        finally:
+            db.close()
+
+        client.post(
+            f"/api/approval-queue/{bin_item_id}/approve",
+            json={"remember_scope": "project", "remember_matcher": "shell_bin"},
+        )
+        client.post(
+            f"/api/approval-queue/{full_item_id}/approve",
+            json={"remember_scope": "project", "remember_matcher": "all_tools"},
+        )
+
+        rules = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
+        assert any(rule["matcher_type"] == "shell_bin" and rule["matcher_value"] == "python3" for rule in rules)
+        assert any(rule["matcher_type"] == "all_tools" and rule["matcher_value"] == "*" for rule in rules)
+
+    def test_approval_decision_uses_configured_remember_defaults(self, client, tmp_path):
+        import models.database as db_mod
+
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "agents": {},
+                    "permissions": {
+                        "allow_read_only_tools_without_approval": True,
+                        "auto_approve_all": False,
+                        "remember_default_scope": "project",
+                        "remember_default_matcher": "shell_bin",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        try:
+            os.environ["AGENT_CONFIG_FILE"] = str(config_path)
+            project = client.post(
+                "/api/projects",
+                json={"name": "Remember Defaults Project", "agent_names": ["analyst"]},
+            ).json()
+            cid = project["chatroom_id"]
+
+            db = db_mod.SessionLocal()
+            try:
+                item = db_mod.ApprovalQueueItem(
+                    task_run_id=None,
+                    chatroom_id=cid,
+                    project_id=project["id"],
+                    queue_kind="approval",
+                    status="pending",
+                    source="tool_call_blocked",
+                    title="Approve python default",
+                    summary="python blocked in project chat",
+                    agent_name="analyst",
+                    target_kind="tool",
+                    target_name="run_shell",
+                    request_payload_json=json.dumps(
+                        {
+                            "tool_name": "run_shell",
+                            "arguments": json.dumps({"command": "python3 -c 'print(1)'", "cwd": "."}, ensure_ascii=False),
+                            "blocked_kind": "approval",
+                            "resume_supported": False,
+                            "turn": 1,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                db.add(item)
+                db.commit()
+                db.refresh(item)
+                item_id = item.id
+            finally:
+                db.close()
+
+            response = client.post(
+                f"/api/approval-queue/{item_id}/approve",
+                json={"remember": True},
+            )
+
+            assert response.status_code == 200
+            rules = client.get("/api/tool-authorization-rules", params={"project_id": project["id"]}).json()
+            assert any(
+                rule["scope"] == "project"
+                and rule["matcher_type"] == "shell_bin"
+                and rule["matcher_value"] == "python3"
+                for rule in rules
+            )
+        finally:
+            if previous_config_file is None:
+                os.environ.pop("AGENT_CONFIG_FILE", None)
+            else:
+                os.environ["AGENT_CONFIG_FILE"] = previous_config_file
 
     def test_remembered_run_shell_approval_matches_workspace_cwd_alias(self, client):
         import models.database as db_mod
@@ -1044,8 +1203,8 @@ class TestProjectEndpoints:
     def test_project_browser_watch_stream_reports_workspace_changes(self, client):
         project = client.post("/api/projects", json={"name": "BrowserWatch"}).json()
         workspace = Path(project["workspace_path"])
-        (workspace / "docs").mkdir()
-        watched = workspace / "docs" / "PRD.md"
+        (workspace / "docs" / "prd").mkdir(parents=True)
+        watched = workspace / "docs" / "prd" / "project-browser-artifact-lifecycle.md"
         watched.write_text("# Initial\n", encoding="utf-8")
 
         def mutate_file():
@@ -1065,12 +1224,42 @@ class TestProjectEndpoints:
         assert payloads[0]["changed"] is False
         assert payloads[0]["files"] == []
         assert payloads[0]["artifacts"] == []
+        assert payloads[0]["added_paths"] == []
+        assert payloads[0]["updated_paths"] == []
         assert payloads[0]["removed_paths"] == []
         assert payloads[1]["type"] == "refresh_needed"
         assert payloads[1]["changed"] is True
-        assert "docs/PRD.md" in payloads[1]["changed_paths"]
-        assert any(item["path"] == "docs/PRD.md" for item in payloads[1]["files"])
-        assert any(item["path"] == "docs/PRD.md" for item in payloads[1]["artifacts"])
+        assert "docs/prd/project-browser-artifact-lifecycle.md" in payloads[1]["changed_paths"]
+        assert payloads[1]["added_paths"] == []
+        assert payloads[1]["updated_paths"] == ["docs/prd/project-browser-artifact-lifecycle.md"]
+        assert any(item["path"] == "docs/prd/project-browser-artifact-lifecycle.md" for item in payloads[1]["files"])
+        assert any(item["path"] == "docs/prd/project-browser-artifact-lifecycle.md" for item in payloads[1]["artifacts"])
+
+    def test_project_browser_watch_stream_reports_added_paths(self, client):
+        project = client.post("/api/projects", json={"name": "BrowserWatchAdd"}).json()
+        workspace = Path(project["workspace_path"])
+        (workspace / "reports" / "tests").mkdir(parents=True)
+        watched = workspace / "reports" / "tests" / "20260523T101500Z--run-1--task-1--smoke.md"
+
+        def create_file():
+            time.sleep(1.0)
+            watched.write_text("# Added\n", encoding="utf-8")
+
+        worker = threading.Thread(target=create_file, daemon=True)
+        worker.start()
+
+        with client.stream("GET", f"/api/projects/{project['id']}/browser/watch?poll_interval=0.5&max_events=2") as response:
+            assert response.status_code == 200
+            payloads = [json.loads(line) for line in response.iter_lines() if line]
+
+        worker.join(timeout=3.0)
+        assert len(payloads) >= 2
+        assert payloads[1]["type"] == "refresh_needed"
+        assert payloads[1]["changed"] is True
+        assert payloads[1]["added_paths"] == [watched.relative_to(workspace).as_posix()]
+        assert payloads[1]["updated_paths"] == []
+        assert payloads[1]["removed_paths"] == []
+        assert any(item["path"] == watched.relative_to(workspace).as_posix() for item in payloads[1]["artifacts"])
 
     def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod
@@ -4848,6 +5037,193 @@ class TestSSEStreaming:
         )
         shutdown_payload = json.loads(shutdown_event.payload_json or "{}")
         assert shutdown_payload["followup_status"] == "skipped"
+
+    def test_continue_runtime_after_approved_tool_replay_marks_empty_followup_failed(self, tmp_path):
+        _make_app(tmp_path)
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Empty Followup Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Empty Followup Chat",
+                session_type="project",
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="project_single_agent",
+                status="running",
+                title="Empty followup task",
+                user_request="@tester analyze this result",
+                initiator="user",
+                target_agent_name="Tester",
+                client_turn_id="delegate-empty-followup",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                queue_kind="approval",
+                status="approved",
+                source="tool_call_blocked",
+                title="Approved run_shell",
+                summary="Approved run_shell",
+                agent_name="Tester",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "pytest -q", "cwd": str(tmp_path), "timeout_seconds": 10}),
+                        "resume_supported": True,
+                        "tool_call_id": "call-empty-followup",
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+
+            replay_result = api_routes.build_tool_result_record(
+                tool_call_id="call-empty-followup",
+                tool_name="run_shell",
+                arguments=json.dumps({"command": "pytest -q", "cwd": str(tmp_path), "timeout_seconds": 10}),
+                result="[Run Shell] Error (exit 1): one failed",
+                success=False,
+            )
+
+            async def fake_trigger_agent_response(*args, **kwargs):
+                return {
+                    "completed": False,
+                    "awaiting_tool_approval": False,
+                    "awaiting_background_tool": False,
+                    "task_run_id": task_run.id,
+                    "outcome": "empty",
+                }
+
+            with patch.object(api_routes, "trigger_agent_response", side_effect=fake_trigger_agent_response):
+                resolution = asyncio.run(
+                    api_routes._continue_runtime_after_approved_tool_replay(
+                        db,
+                        item,
+                        json.loads(item.request_payload_json or "{}"),
+                        replay_result,
+                    )
+                )
+
+            assert resolution["followup_status"] == "failed"
+            assert resolution["followup_reason"] == "empty_followup_result"
+        finally:
+            db.close()
+
+    def test_continue_runtime_after_approved_tool_replay_marks_cancelled_followup_interrupted(self, tmp_path):
+        _make_app(tmp_path)
+        import models.database as db_mod
+        import routes.api as api_routes
+
+        db = db_mod.SessionLocal()
+        try:
+            project = db_mod.Project(name="Cancelled Followup Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = db_mod.Chatroom(
+                project_id=project.id,
+                title="Cancelled Followup Chat",
+                session_type="project",
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="project_single_agent",
+                status="running",
+                title="Cancelled followup task",
+                user_request="@tester analyze this result",
+                initiator="user",
+                target_agent_name="Tester",
+                client_turn_id="delegate-cancelled-followup",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            item = db_mod.ApprovalQueueItem(
+                task_run_id=task_run.id,
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                queue_kind="approval",
+                status="approved",
+                source="tool_call_blocked",
+                title="Approved run_shell",
+                summary="Approved run_shell",
+                agent_name="Tester",
+                target_kind="tool",
+                target_name="run_shell",
+                request_payload_json=json.dumps(
+                    {
+                        "tool_name": "run_shell",
+                        "arguments": json.dumps({"command": "pytest -q", "cwd": str(tmp_path), "timeout_seconds": 10}),
+                        "resume_supported": True,
+                        "tool_call_id": "call-cancelled-followup",
+                        "turn": 1,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+
+            replay_result = api_routes.build_tool_result_record(
+                tool_call_id="call-cancelled-followup",
+                tool_name="run_shell",
+                arguments=json.dumps({"command": "pytest -q", "cwd": str(tmp_path), "timeout_seconds": 10}),
+                result="[Run Shell] Error (exit 1): one failed",
+                success=False,
+            )
+
+            async def cancelled_trigger(*args, **kwargs):
+                raise asyncio.CancelledError()
+
+            with patch.object(api_routes, "trigger_agent_response", side_effect=cancelled_trigger):
+                resolution = asyncio.run(
+                    api_routes._continue_runtime_after_approved_tool_replay(
+                        db,
+                        item,
+                        json.loads(item.request_payload_json or "{}"),
+                        replay_result,
+                    )
+                )
+
+            assert resolution["followup_status"] == "interrupted"
+            assert resolution["followup_reason"] == "cancelled"
+            refreshed = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == task_run.id).first()
+            assert refreshed is not None
+            assert any(event.event_type == "approval_queue_item_followup_interrupted" for event in refreshed.events)
+        finally:
+            db.close()
 
     def test_startup_recovery_continues_agent_after_tracked_run_shell_result(self, tmp_path):
         app = _make_app(tmp_path)

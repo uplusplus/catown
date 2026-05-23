@@ -28,8 +28,16 @@ def _workflow_spec():
                     "display_name": "Analysis",
                     "agent": "analyst",
                     "gate": "manual",
-                    "expected_artifacts": ["PRD.md"],
+                    "expected_artifacts": ["docs/prd/"],
                     "evaluation_rubrics": ["rubric-analysis"],
+                },
+                {
+                    "name": "architecture",
+                    "display_name": "Architecture",
+                    "agent": "architect",
+                    "gate": "auto",
+                    "expected_artifacts": ["docs/specs/"],
+                    "evaluation_rubrics": ["rubric-architecture"],
                 },
                 {
                     "name": "testing",
@@ -60,7 +68,7 @@ def test_parse_policy_decision_contract():
             "stage_name": "analysis",
             "policy_source": "workflow_spec",
             "pipeline_name": "default",
-            "stage_count": 2,
+            "stage_count": 3,
         }
     )
 
@@ -126,6 +134,28 @@ def test_project_artifact_policy_decision_with_violation():
     assert dumped["subject"]["type"] == "workspace.file"
     assert dumped["accepted"] is False
     assert [violation["code"] for violation in dumped["violations"]] == ["artifact_not_expected"]
+
+
+def test_project_architecture_artifact_policy_decision_is_accepted():
+    decision = validate_artifact_contract_for_workflow(
+        workflow_spec=_workflow_spec(),
+        contract={
+            "kind": "artifact_contract",
+            "version": 1,
+            "artifact_id": "artifact-architecture-spec-1",
+            "artifact_type": "workspace.file",
+            "title": "Architecture spec",
+            "producer": {"stage_name": "architecture"},
+            "mode": "workspace_file",
+            "file_path": "docs/specs/project-browser-artifact-storage.md",
+        },
+    )
+
+    dumped = dump_policy_decision(project_policy_decision(decision))
+    assert dumped["decision_type"] == "artifact_contract_policy"
+    assert dumped["subject"]["id"] == "artifact-architecture-spec-1"
+    assert dumped["accepted"] is True
+    assert dumped["violations"] == []
 
 
 def test_project_evaluation_result_policy_decision():

@@ -9,7 +9,7 @@
         "agent": "analyst",
         "gate": "manual",
         "timeout_minutes": 30,
-        "expected_artifacts": ["PRD.md"],
+        "expected_artifacts": ["docs/prd/"],
         "context_prompt": "请根据用户的原始需求，输出一份结构化的 PRD。包含用户故事、验收标准、优先级。",
         "active_skills": ["document-analysis", "requirement-decomposition", "user-story-writing"],
         "hint_only_skills": []
@@ -20,7 +20,7 @@
         "agent": "architect",
         "gate": "auto",
         "timeout_minutes": 30,
-        "expected_artifacts": ["tech-spec.md"],
+        "expected_artifacts": ["docs/specs/"],
         "context_prompt": "请基于 PRD 进行技术选型和架构设计。包含模块划分、API 接口定义、数据库 schema。",
         "active_skills": ["architecture-design", "technology-evaluation", "api-design"],
         "hint_only_skills": ["knowledge-graph"]

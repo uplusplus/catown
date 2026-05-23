@@ -43,7 +43,7 @@
           "需求模糊时做合理假设，但必须明确标注",
           "具体优于模糊：'支持100并发' > '可扩展'",
           "输出 Markdown 格式",
-          "写入 PRD.md"
+          "写入 docs/prd/<subject>.md"
         ]
       },
       "tools": [
@@ -112,7 +112,7 @@
           "不过度设计：简单 CRUD 不需要微服务",
           "PRD 有缺口时标记并做务实选择",
           "输出 Markdown 格式",
-          "写入 tech-spec.md"
+          "写入 docs/specs/<subject>.md"
         ]
       },
       "tools": [

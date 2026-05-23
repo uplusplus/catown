@@ -17,7 +17,14 @@ def _workflow_spec():
                     "display_name": "Analysis",
                     "agent": "analyst",
                     "gate": "manual",
-                    "expected_artifacts": ["PRD.md"],
+                    "expected_artifacts": ["docs/prd/"],
+                },
+                {
+                    "name": "architecture",
+                    "display_name": "Architecture",
+                    "agent": "architect",
+                    "gate": "auto",
+                    "expected_artifacts": ["docs/specs/"],
                 },
                 {
                     "name": "development",
@@ -225,6 +232,26 @@ def test_directory_artifact_expectation_accepts_nested_files():
                 "artifact_type": "workspace_file",
                 "title": "Implementation",
                 "file_path": "src/features/runtime_policy.py",
+            },
+        },
+    )
+
+    assert decision.accepted is True
+
+
+def test_semantic_spec_artifact_expectation_accepts_nested_files():
+    decision = validate_action_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request={
+            "kind": "action_request",
+            "version": 1,
+            "request_id": "req-artifact-4",
+            "type": "publish_artifact",
+            "source": _source("architecture", "architect"),
+            "payload": {
+                "artifact_type": "document.spec",
+                "title": "Architecture spec",
+                "file_path": "docs/specs/project-browser-artifact-storage.md",
             },
         },
     )

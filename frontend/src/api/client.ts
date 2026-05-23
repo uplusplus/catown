@@ -365,13 +365,13 @@ export const api = {
     });
     return request<MonitorApprovalAuditResponse>(`/api/monitor/approval-audit?${params.toString()}`);
   },
-  approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string; remember_scope?: string }) {
+  approveApprovalQueueItem(itemId: number, payload?: { note?: string; resolved_by?: string; remember?: boolean; remember_scope?: string; remember_matcher?: string }) {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/approve`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
   },
-  rejectApprovalQueueItem(itemId: number, payload?: { note?: string; rollback_to?: string | null; resolved_by?: string; remember_scope?: string }) {
+  rejectApprovalQueueItem(itemId: number, payload?: { note?: string; rollback_to?: string | null; resolved_by?: string; remember?: boolean; remember_scope?: string; remember_matcher?: string }) {
     return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}/reject`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),

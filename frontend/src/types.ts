@@ -110,6 +110,8 @@ export type ProjectBrowserWatchEvent = {
   changed: boolean;
   reason?: string | null;
   changed_paths: string[];
+  added_paths: string[];
+  updated_paths: string[];
   files: ProjectBrowserFileItem[];
   artifacts: ProjectBrowserArtifactItem[];
   removed_paths: string[];
@@ -457,6 +459,10 @@ export type ApprovalQueueItem = {
   resolved_at?: string | null;
 };
 
+export type PermissionRememberScope = "project" | "chatroom" | "global";
+
+export type PermissionRememberMatcher = "command_fingerprint" | "shell_bin" | "tool_target" | "all_tools";
+
 export type ToolAuthorizationRule = {
   id: number;
   project_id?: number | null;
@@ -778,6 +784,8 @@ export type ConfigOrchestrationDefinition = {
 export type ConfigPermissionsDefinition = {
   allow_read_only_tools_without_approval?: boolean;
   auto_approve_all?: boolean;
+  remember_default_scope?: PermissionRememberScope;
+  remember_default_matcher?: PermissionRememberMatcher;
 };
 
 export type ContextSelectorProfileConfig = {
@@ -961,6 +969,8 @@ export type OrchestrationConfigPayload = {
 export type PermissionsConfigPayload = {
   allow_read_only_tools_without_approval: boolean;
   auto_approve_all: boolean;
+  remember_default_scope: PermissionRememberScope;
+  remember_default_matcher: PermissionRememberMatcher;
 };
 
 export type ContextConfigPayload = {

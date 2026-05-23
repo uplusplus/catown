@@ -165,6 +165,7 @@ from services.approval_replay import (
     build_followup_continued_payload,
     build_followup_failed_event_payload,
     build_followup_failed_payload,
+    build_followup_interrupted_payload,
     build_followup_skipped_payload,
     build_followup_triggered_event_payload,
     build_queue_replay_resolution_payload,
@@ -231,7 +232,9 @@ from services.tool_execution_preferences import (
     AUTH_DECISION_ALLOW,
     AUTH_DECISION_DENY,
     AUTH_DECISION_ALLOW_NO_TIMEOUT,
+    AUTH_MATCHER_ALL_TOOLS,
     AUTH_MATCHER_COMMAND_FINGERPRINT,
+    AUTH_MATCHER_SHELL_BIN,
     AUTH_MATCHER_TOOL_TARGET,
     AUTH_PREFERENCE_KIND,
     AUTH_SCOPE_CHATROOM,
@@ -418,11 +421,52 @@ class OrchestrationConfigModel(BaseModel):
         return normalized
 
 
+def _normalize_authorization_matcher_config(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    aliases = {
+        "command": AUTH_MATCHER_COMMAND_FINGERPRINT,
+        "exact_command": AUTH_MATCHER_COMMAND_FINGERPRINT,
+        "command_fingerprint": AUTH_MATCHER_COMMAND_FINGERPRINT,
+        "bin": AUTH_MATCHER_SHELL_BIN,
+        "shell_bin": AUTH_MATCHER_SHELL_BIN,
+        "tool": AUTH_MATCHER_TOOL_TARGET,
+        "tool_target": AUTH_MATCHER_TOOL_TARGET,
+        "full": AUTH_MATCHER_ALL_TOOLS,
+        "all": AUTH_MATCHER_ALL_TOOLS,
+        "all_tools": AUTH_MATCHER_ALL_TOOLS,
+    }
+    return aliases.get(normalized)
+
+
 class PermissionsConfigModel(BaseModel):
     """Runtime permission policy config validation model."""
 
     allow_read_only_tools_without_approval: bool = True
     auto_approve_all: bool = False
+    remember_default_scope: str = AUTH_SCOPE_PROJECT
+    remember_default_matcher: str = AUTH_MATCHER_COMMAND_FINGERPRINT
+
+    @field_validator("remember_default_scope")
+    @classmethod
+    def _validate_remember_default_scope(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return AUTH_SCOPE_PROJECT
+        if normalized not in {AUTH_SCOPE_PROJECT, AUTH_SCOPE_CHATROOM, AUTH_SCOPE_GLOBAL}:
+            raise ValueError("remember_default_scope must be one of: project, chatroom, global")
+        return normalized
+
+    @field_validator("remember_default_matcher")
+    @classmethod
+    def _validate_remember_default_matcher(cls, value: str) -> str:
+        normalized = _normalize_authorization_matcher_config(value)
+        if normalized is None:
+            raise ValueError("remember_default_matcher must be one of: command_fingerprint, shell_bin, tool_target, all_tools")
+        return normalized
 
 
 class ContextSelectorProfileModel(BaseModel):
@@ -758,6 +802,15 @@ def _effective_permissions_config(config_data: Optional[Dict[str, Any]] = None) 
             permissions_data.get("allow_read_only_tools_without_approval", True)
         ),
         "auto_approve_all": bool(permissions_data.get("auto_approve_all", False)),
+        "remember_default_scope": PermissionsConfigModel._validate_remember_default_scope(
+            permissions_data.get("remember_default_scope", AUTH_SCOPE_PROJECT)
+        ),
+        "remember_default_matcher": (
+            _normalize_authorization_matcher_config(
+                permissions_data.get("remember_default_matcher", AUTH_MATCHER_COMMAND_FINGERPRINT)
+            )
+            or AUTH_MATCHER_COMMAND_FINGERPRINT
+        ),
     }
 
 
@@ -1663,15 +1716,25 @@ async def trigger_agent_response(
         if finalized.final_content:
             logger.debug(f"[ Agent response saved: id=completed")
             logger.info(f"[Agent] {_agent_type(target_agent)} responded to message successfully")
-            return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
+            return {
+                "completed": True,
+                "awaiting_tool_approval": False,
+                "awaiting_background_tool": False,
+                "task_run_id": getattr(task_run, "id", None),
+                "outcome": finalized.outcome,
+            }
 
         return {
             "completed": False,
             "awaiting_tool_approval": awaiting_tool_approval,
             "awaiting_background_tool": awaiting_background_tool,
             "task_run_id": getattr(task_run, "id", None),
+            "outcome": finalized.outcome,
         }
 
+    except asyncio.CancelledError:
+        logger.warning("[ Agent response interrupted during shutdown")
+        raise
     except Exception as e:
         logger.error(f"[ Agent response failed: {str(e)}")
         finalize_single_agent_session_failure(
@@ -1682,7 +1745,13 @@ async def trigger_agent_response(
         )
         import traceback
         traceback.print_exc()
-        return {"completed": True, "awaiting_tool_approval": False, "task_run_id": getattr(task_run, "id", None)}
+        return {
+            "completed": True,
+            "awaiting_tool_approval": False,
+            "awaiting_background_tool": False,
+            "task_run_id": getattr(task_run, "id", None),
+            "outcome": "failed",
+        }
     finally:
         if workspace_token is not None:
             reset_active_workspace(workspace_token)
@@ -2020,6 +2089,18 @@ def _task_run_event_payload(event: Optional[TaskRunEvent]) -> Dict[str, Any]:
         return loaded if isinstance(loaded, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _latest_task_run_event(task_run: TaskRun) -> Optional[TaskRunEvent]:
+    events = list(getattr(task_run, "events", []) or [])
+    return events[-1] if events else None
+
+
+def _task_run_has_interrupted_approval_followup(task_run: TaskRun) -> bool:
+    latest_event = _latest_task_run_event(task_run)
+    if latest_event is None:
+        return False
+    return str(getattr(latest_event, "event_type", "") or "").strip() == "approval_queue_item_followup_interrupted"
 
 
 def _json_column_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
@@ -3449,6 +3530,69 @@ async def _recover_tracked_single_agent_run_shell_task_run(
     return True
 
 
+async def _resume_interrupted_single_agent_task_run(
+    db: Session,
+    task_run: TaskRun,
+    *,
+    trigger: str,
+) -> bool:
+    if str(task_run.status or "").strip().lower() != "running":
+        return False
+    if not _task_run_has_interrupted_approval_followup(task_run):
+        return False
+
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    latest_event = _latest_task_run_event(task_run)
+    recovery_continuation_state = describe_checkpoint_continuation_state(checkpoint_snapshot)
+    append_task_event(
+        db,
+        task_run,
+        "task_run_recovery_started",
+        agent_name=task_run.target_agent_name,
+        summary="Resuming interrupted single-agent follow-up after backend restart.",
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery_kind": "single_agent_followup_interrupted",
+            "checkpoint_snapshot": checkpoint_snapshot,
+            "recovery_continuation_state": recovery_continuation_state,
+            "latest_event_type": latest_event.event_type if latest_event is not None else None,
+            "latest_event_at": latest_event.created_at.isoformat() if latest_event is not None and latest_event.created_at else None,
+        },
+    )
+    result = await trigger_agent_response(
+        task_run.chatroom_id,
+        task_run.user_request or "",
+        task_run.client_turn_id,
+        task_run_id=task_run.id,
+        checkpoint_snapshot=checkpoint_snapshot,
+    )
+    append_task_event(
+        db,
+        get_task_run(db, task_run.id),
+        "task_run_recovery_completed",
+        agent_name=task_run.target_agent_name,
+        summary="Resumed interrupted single-agent follow-up after backend restart.",
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery_kind": "single_agent_followup_interrupted",
+            "recovery_continuation_state": recovery_continuation_state,
+            "followup_status": (
+                "completed"
+                if result.get("completed")
+                else "awaiting_tool_approval"
+                if result.get("awaiting_tool_approval")
+                else "awaiting_background_tool"
+                if result.get("awaiting_background_tool")
+                else str(result.get("outcome") or "incomplete")
+            ),
+            "result": result,
+        },
+    )
+    return True
+
+
 def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
     schedule_event = next((event for event in task_run.events if event.event_type == "scheduler_plan_created"), None)
     schedule_payload = _task_run_event_payload(schedule_event)
@@ -3950,6 +4094,8 @@ async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
                         recovered += 1
                     elif await _recover_tracked_single_agent_run_shell_task_run(db, task_run, trigger="startup"):
                         recovered += 1
+                    elif await _resume_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
+                        recovered += 1
                     elif _task_run_has_tracked_shell_followup(task_run, include_completed_marker=True):
                         skipped += 1
                     elif _terminalize_interrupted_single_agent_task_run(db, task_run, trigger="startup"):
@@ -4166,6 +4312,8 @@ class ProjectBrowserWatchEvent(BaseModel):
     changed: bool = False
     reason: Optional[str] = None
     changed_paths: List[str] = Field(default_factory=list)
+    added_paths: List[str] = Field(default_factory=list)
+    updated_paths: List[str] = Field(default_factory=list)
     files: List[ProjectBrowserFileInfo] = Field(default_factory=list)
     artifacts: List[ProjectBrowserArtifactInfo] = Field(default_factory=list)
     removed_paths: List[str] = Field(default_factory=list)
@@ -4237,7 +4385,9 @@ class ApprovalQueueDecisionRequest(BaseModel):
     note: Optional[str] = None
     rollback_to: Optional[str] = None
     resolved_by: Optional[str] = "user"
+    remember: bool = False
     remember_scope: Optional[str] = None
+    remember_matcher: Optional[str] = None
 
     @field_validator("remember_scope")
     @classmethod
@@ -4250,6 +4400,16 @@ class ApprovalQueueDecisionRequest(BaseModel):
         if normalized not in {AUTH_SCOPE_PROJECT, AUTH_SCOPE_CHATROOM, AUTH_SCOPE_GLOBAL}:
             raise ValueError("remember_scope must be one of: project, chatroom, global")
         return normalized
+
+    @field_validator("remember_matcher")
+    @classmethod
+    def _validate_remember_matcher(cls, value: Optional[str]) -> Optional[str]:
+        resolved = _normalize_authorization_matcher_config(value)
+        if resolved is None and (value is None or not str(value).strip()):
+            return None
+        if resolved is None:
+            raise ValueError("remember_matcher must be one of: command_fingerprint, shell_bin, tool_target, all_tools")
+        return resolved
 
 
 class TaskRunCancelRequest(BaseModel):
@@ -4587,11 +4747,13 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
         for path in set(previous_files.keys()) | set(current_files.keys())
         if previous_files.get(path) != current_files.get(path)
     )
+    added_paths = [path for path in changed_paths if path not in previous_files]
+    updated_paths = [path for path in changed_paths if path in previous_files and path in current_files]
+    removed_paths = [path for path in changed_paths if path not in current_files]
     changed = bool(changed_paths) or bool(previous.get("truncated")) != bool(current.get("truncated"))
     workspace = Path(current.get("workspace_path") or "").expanduser().resolve()
     file_updates: list[ProjectBrowserFileInfo] = []
     artifact_updates: list[ProjectBrowserArtifactInfo] = []
-    removed_paths = [path for path in changed_paths if path not in current_files]
 
     for path in changed_paths:
         if path not in current_files:
@@ -4607,6 +4769,8 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
     return {
         "changed": changed,
         "changed_paths": changed_paths[:64],
+        "added_paths": added_paths[:64],
+        "updated_paths": updated_paths[:64],
         "files": [item.model_dump() for item in file_updates],
         "artifacts": [item.model_dump() for item in artifact_updates],
         "removed_paths": removed_paths[:64],
@@ -4631,6 +4795,8 @@ async def _stream_project_browser_watch_events(
             changed=False,
             reason="initial_snapshot",
             changed_paths=[],
+            added_paths=[],
+            updated_paths=[],
             files=[],
             artifacts=[],
             removed_paths=[],
@@ -4659,6 +4825,8 @@ async def _stream_project_browser_watch_events(
                     changed=True,
                     reason="workspace_changed",
                     changed_paths=diff["changed_paths"],
+                    added_paths=diff.get("added_paths", []),
+                    updated_paths=diff.get("updated_paths", []),
                     files=[ProjectBrowserFileInfo(**item) for item in diff.get("files", [])],
                     artifacts=[ProjectBrowserArtifactInfo(**item) for item in diff.get("artifacts", [])],
                     removed_paths=diff.get("removed_paths", []),
@@ -6513,6 +6681,8 @@ def _finalize_noncontinuable_approval_task_run(
     followup_status = str(resolution_payload.get("followup_status") or "").strip().lower()
     if followup_status == "continued":
         return
+    if followup_status == "interrupted":
+        return
     if followup_status == "skipped" and str(resolution_payload.get("followup_reason") or "").strip().lower() == "background_running":
         return
 
@@ -6550,6 +6720,12 @@ def _finalize_noncontinuable_approval_task_run(
             limit=220,
         )
         summary = f"{tool_name} continuation follow-up failed: {followup_error}"
+    elif followup_status == "interrupted":
+        followup_reason = _compact_runtime_text(
+            str(resolution_payload.get("followup_reason") or "follow-up interrupted"),
+            limit=220,
+        )
+        summary = f"{tool_name} continuation interrupted: {followup_reason}"
     else:
         summary = f"{tool_name} continuation did not continue."
 
@@ -6579,6 +6755,14 @@ def _build_authorization_rule_preview(tool_name: str, request_payload: Dict[str,
     return str(request_payload.get("tool_name") or tool_name or "tool").strip() or "tool"
 
 
+def _approval_decision_remember_scope(item: Any, req: ApprovalQueueDecisionRequest) -> str | None:
+    if req.remember_scope:
+        return req.remember_scope
+    if req.remember:
+        return str(_effective_permissions_config().get("remember_default_scope") or AUTH_SCOPE_PROJECT)
+    return None
+
+
 def _persist_authorization_rule_for_queue_item(
     db: Session,
     item: Any,
@@ -6586,6 +6770,7 @@ def _persist_authorization_rule_for_queue_item(
     *,
     decision_kind: str,
     requested_scope: str | None,
+    requested_matcher: str | None = None,
 ) -> dict[str, Any] | None:
     tool_name = str(request_payload.get("tool_name") or getattr(item, "target_name", "") or "").strip().lower()
     if not tool_name:
@@ -6603,10 +6788,31 @@ def _persist_authorization_rule_for_queue_item(
     if not matcher_pairs:
         matcher_pairs = [(AUTH_MATCHER_TOOL_TARGET, build_tool_target_matcher_value(tool_name))]
 
-    matcher_type, matcher_value = matcher_pairs[0]
+    normalized_matcher = str(requested_matcher or "").strip().lower()
+    if not normalized_matcher:
+        configured_matcher = _effective_permissions_config().get("remember_default_matcher")
+        normalized_matcher = str(configured_matcher or "").strip().lower()
+    if not normalized_matcher:
+        normalized_matcher = AUTH_MATCHER_COMMAND_FINGERPRINT if any(
+            matcher_type == AUTH_MATCHER_COMMAND_FINGERPRINT
+            for matcher_type, _ in matcher_pairs
+        ) else AUTH_MATCHER_TOOL_TARGET
+    matcher_pair = next(
+        ((matcher_type, matcher_value) for matcher_type, matcher_value in matcher_pairs if matcher_type == normalized_matcher),
+        None,
+    )
+    if matcher_pair is None and normalized_matcher == AUTH_MATCHER_ALL_TOOLS:
+        matcher_pair = (AUTH_MATCHER_ALL_TOOLS, "*")
+    if matcher_pair is None and normalized_matcher == AUTH_MATCHER_TOOL_TARGET:
+        matcher_pair = (AUTH_MATCHER_TOOL_TARGET, build_tool_target_matcher_value(tool_name))
+    if matcher_pair is None:
+        matcher_pair = matcher_pairs[0]
+    matcher_type, matcher_value = matcher_pair
     constraints: dict[str, Any] = {}
     if decision_kind == AUTH_DECISION_ALLOW_NO_TIMEOUT:
         constraints["allow_timeout_bypass"] = True
+    constraints["created_from_queue_item_id"] = getattr(item, "id", None)
+    constraints["matcher_selection"] = matcher_type
     rule = upsert_authorization_rule(
         db,
         tool_name=tool_name,
@@ -6694,7 +6900,7 @@ async def _continue_runtime_after_approved_tool_replay(
     )
     followup_snapshot = build_task_run_checkpoint_snapshot(task_run)
     try:
-        await trigger_agent_response(
+        followup_result = await trigger_agent_response(
             getattr(item, "chatroom_id", None),
             task_run.user_request or "",
             getattr(task_run, "client_turn_id", None),
@@ -6702,6 +6908,27 @@ async def _continue_runtime_after_approved_tool_replay(
             extra_context=followup_context,
             checkpoint_snapshot=followup_snapshot,
         )
+    except asyncio.CancelledError as exc:
+        logger.warning(
+            "[ApprovalFlow] runtime-followup-interrupted queue_item_id=%s task_run_id=%s tool=%s reason=cancelled",
+            getattr(item, "id", None),
+            getattr(task_run, "id", None),
+            getattr(replay_result, "tool_name", None),
+        )
+        append_task_event(
+            db,
+            task_run,
+            "approval_queue_item_followup_interrupted",
+            agent_name=item.agent_name,
+            summary=f"Approved continuation follow-up interrupted for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
+            payload={
+                "queue_item_id": getattr(item, "id", None),
+                "tool_name": getattr(replay_result, "tool_name", None),
+                "reason": "cancelled",
+                "task_run_id": getattr(task_run, "id", None),
+            },
+        )
+        return build_followup_interrupted_payload("cancelled")
     except Exception as exc:
         logger.exception(
             "[ApprovalFlow] runtime-followup-failed queue_item_id=%s task_run_id=%s tool=%s error=%s",
@@ -6720,7 +6947,30 @@ async def _continue_runtime_after_approved_tool_replay(
         )
         return build_followup_failed_payload(exc)
 
-    return build_followup_continued_payload()
+    followup_completed = bool(followup_result.get("completed"))
+    awaiting_tool_approval = bool(followup_result.get("awaiting_tool_approval"))
+    awaiting_background_tool = bool(followup_result.get("awaiting_background_tool"))
+    followup_outcome = str(followup_result.get("outcome") or "").strip().lower()
+    if followup_completed:
+        return build_followup_continued_payload(
+            followup_outcome=followup_outcome or "completed",
+        )
+    if awaiting_tool_approval:
+        return build_followup_continued_payload(
+            followup_outcome=followup_outcome or "awaiting_tool_approval",
+        )
+    if awaiting_background_tool:
+        return build_followup_continued_payload(
+            followup_outcome=followup_outcome or "awaiting_background_tool",
+        )
+    if followup_outcome == "empty":
+        return build_followup_failed_payload(
+            "non_stream_followup_empty",
+            followup_reason="empty_followup_result",
+        )
+    return build_followup_interrupted_payload(
+        followup_outcome or "incomplete_followup_result",
+    )
 
 
 async def _continue_pipeline_after_approved_tool_replay(
@@ -7140,13 +7390,15 @@ async def approve_approval_queue_item(
         action_taken="queue_resolved_only",
     )
     remembered_rule = None
-    if req is not None and req.remember_scope:
+    remember_scope = _approval_decision_remember_scope(item, req) if req is not None else None
+    if remember_scope:
         remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
             item,
             request_payload,
             decision_kind=AUTH_DECISION_ALLOW,
-            requested_scope=req.remember_scope,
+            requested_scope=remember_scope,
+            requested_matcher=req.remember_matcher,
         )
         if remembered_rule is not None:
             resolution_payload["remembered_rule"] = remembered_rule
@@ -7328,13 +7580,15 @@ async def reject_approval_queue_item(
     )
     rejection_payload = _load_jsonish_payload(getattr(resolved, "resolution_payload_json", None))
     remembered_rule = None
-    if req is not None and req.remember_scope:
+    remember_scope = _approval_decision_remember_scope(item, req) if req is not None else None
+    if remember_scope:
         remembered_rule = _persist_authorization_rule_for_queue_item(
             db,
             item,
             request_payload,
             decision_kind=AUTH_DECISION_DENY,
-            requested_scope=req.remember_scope,
+            requested_scope=remember_scope,
+            requested_matcher=req.remember_matcher,
         )
         if remembered_rule is not None:
             resolved.resolution_payload_json = json.dumps(
@@ -8506,7 +8760,9 @@ async def update_permissions_config(config: PermissionsConfigModel):
     Request body:
     {
         "allow_read_only_tools_without_approval": true,
-        "auto_approve_all": false
+        "auto_approve_all": false,
+        "remember_default_scope": "project",
+        "remember_default_matcher": "command_fingerprint"
     }
     """
     from pathlib import Path

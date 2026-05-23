@@ -19,20 +19,31 @@ def _make_app(tmp_path):
         json.dump(
             {
                 "default": {
-                    "name": "标准软件开发流水线",
-                    "description": "需求分析 -> 架构设计 -> 开发",
+                    "name": "Standard software delivery workflow",
+                    "description": "analysis -> architecture",
                     "stages": [
                         {
                             "name": "analysis",
-                            "display_name": "需求分析",
+                            "display_name": "Analysis",
                             "agent": "analyst",
                             "gate": "manual",
                             "timeout_minutes": 30,
-                            "expected_artifacts": ["PRD.md"],
+                            "expected_artifacts": ["docs/prd/"],
                             "context_prompt": "Write a PRD.",
                             "active_skills": ["document-analysis"],
                             "hint_only_skills": [],
-                        }
+                        },
+                        {
+                            "name": "architecture",
+                            "display_name": "Architecture",
+                            "agent": "architect",
+                            "gate": "auto",
+                            "timeout_minutes": 45,
+                            "expected_artifacts": ["docs/specs/"],
+                            "context_prompt": "Write a technical specification.",
+                            "active_skills": ["architecture-design"],
+                            "hint_only_skills": ["knowledge-graph"],
+                        },
                     ],
                 }
             },
@@ -59,6 +70,7 @@ def _make_app(tmp_path):
         "routes.pipeline",
     ]
     from tests.conftest import reset_app_modules
+
     reset_app_modules(modules_to_clear)
 
     import llm.client as llm_mod
@@ -68,7 +80,9 @@ def _make_app(tmp_path):
     mock_llm.base_url = "http://localhost:9999/v1"
     mock_llm.model = "test-model"
     mock_llm.chat = AsyncMock(return_value="Mocked response.")
-    mock_llm.chat_with_tools = AsyncMock(return_value={"content": "Mocked agent response.", "tool_calls": None})
+    mock_llm.chat_with_tools = AsyncMock(
+        return_value={"content": "Mocked agent response.", "tool_calls": None}
+    )
 
     async def mock_stream(messages, tools=None):
         yield {"type": "content", "delta": "Hello!"}
@@ -91,7 +105,11 @@ def _make_app(tmp_path):
 def client(tmp_path):
     from fastapi.testclient import TestClient
 
-    return TestClient(_make_app(tmp_path), base_url="http://testserver", headers={"X-Catown-Client": "test"})
+    return TestClient(
+        _make_app(tmp_path),
+        base_url="http://testserver",
+        headers={"X-Catown-Client": "test"},
+    )
 
 
 def test_pipeline_template_workflow_spec_endpoint_exposes_canonical_schema(client):
@@ -99,13 +117,15 @@ def test_pipeline_template_workflow_spec_endpoint_exposes_canonical_schema(clien
     assert response.status_code == 200
     payload = response.json()
     assert payload["workflow_id"] == "default"
-    assert payload["name"] == "标准软件开发流水线"
+    assert payload["name"] == "Standard software delivery workflow"
     assert payload["domain"] == "software_delivery"
-    assert payload["stage_count"] == 1
+    assert payload["stage_count"] == 2
     assert payload["payload"]["kind"] == "workflow_spec"
     assert payload["payload"]["version"] == 1
     assert payload["payload"]["stages"][0]["stage_id"] == "analysis"
-    assert payload["payload"]["stages"][0]["delivery"]["expected_artifacts"] == ["PRD.md"]
+    assert payload["payload"]["stages"][0]["delivery"]["expected_artifacts"] == ["docs/prd/"]
+    assert payload["payload"]["stages"][1]["stage_id"] == "architecture"
+    assert payload["payload"]["stages"][1]["delivery"]["expected_artifacts"] == ["docs/specs/"]
 
 
 def test_pipeline_template_workflow_spec_report_endpoint_exposes_diagnostics(client):
@@ -115,7 +135,7 @@ def test_pipeline_template_workflow_spec_report_endpoint_exposes_diagnostics(cli
     assert payload["workflow_id"] == "default"
     assert payload["executable"] is True
     assert payload["diagnostic_count"] == 0
-    assert payload["payload"]["metadata"]["stage_count"] == 1
+    assert payload["payload"]["metadata"]["stage_count"] == 2
 
 
 def test_workflow_spec_validate_endpoint_accepts_executable_spec(client):
@@ -134,10 +154,21 @@ def test_workflow_spec_validate_endpoint_accepts_executable_spec(client):
                     "gate": "manual",
                     "timeout_minutes": 30,
                     "delivery": {
-                        "expected_artifacts": ["PRD.md"],
+                        "expected_artifacts": ["docs/prd/"],
                         "required": True,
                     },
-                }
+                },
+                {
+                    "stage_id": "architecture",
+                    "display_name": "Architecture",
+                    "agent_type": "architect",
+                    "gate": "auto",
+                    "timeout_minutes": 45,
+                    "delivery": {
+                        "expected_artifacts": ["docs/specs/"],
+                        "required": True,
+                    },
+                },
             ],
         },
     )

@@ -170,7 +170,10 @@ async def run_managed_single_agent_sync_session(
             finalize_failure=spec.callbacks.finalize_failure,
         )
     )
-    return UnifiedSingleAgentSessionOutcome(final_content=result.final_content)
+    return UnifiedSingleAgentSessionOutcome(
+        final_content=result.final_content,
+        outcome=result.outcome,
+    )
 
 
 async def iter_managed_single_agent_stream_session(
@@ -235,7 +238,10 @@ def build_unified_sync_single_agent_session_spec(
             if on_empty is not None:
                 await _maybe_await(on_empty())
             return
-        yield UnifiedSingleAgentSessionOutcome(final_content=final_content)
+        yield UnifiedSingleAgentSessionOutcome(
+            final_content=final_content,
+            outcome="completed",
+        )
 
     return UnifiedSingleAgentSessionSpec(iterate=_iterate)
 

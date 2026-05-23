@@ -15,6 +15,7 @@ from services.tool_governance import build_blocked_tool_result, build_structured
 from services.tool_execution_preferences import (
     AUTH_DECISION_ALLOW,
     AUTH_DECISION_DENY,
+    AUTH_DECISION_REQUIRE_APPROVAL,
     authorization_matchers_for_tool,
     resolve_authorization_rule,
 )
@@ -573,12 +574,13 @@ class ToolRegistry:
                 project_id=project_id if isinstance(project_id, int) else None,
                 chatroom_id=chatroom_id if isinstance(chatroom_id, int) else None,
                 agent_name=str(agent_name or "").strip() or None,
-                decision_kinds=[AUTH_DECISION_ALLOW, AUTH_DECISION_DENY],
+                decision_kinds=[AUTH_DECISION_ALLOW, AUTH_DECISION_DENY, AUTH_DECISION_REQUIRE_APPROVAL],
             )
         finally:
             db.close()
 
-        if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_DENY:
+        authorization_decision = str(getattr(authorization_rule, "decision_kind", "") or "").strip().lower()
+        if authorization_rule is not None and authorization_decision == AUTH_DECISION_DENY:
             self._record_authorization_rule_audit(
                 authorization_rule,
                 decision="deny",
@@ -600,7 +602,29 @@ class ToolRegistry:
                 blocked_kind="approval",
                 blocked_reason=result_text,
             )
-        if authorization_rule is not None and str(authorization_rule.decision_kind or "").strip().lower() == AUTH_DECISION_ALLOW:
+        if authorization_rule is not None and authorization_decision == AUTH_DECISION_REQUIRE_APPROVAL:
+            self._record_authorization_rule_audit(
+                authorization_rule,
+                decision="require_approval",
+                source="remembered_rule",
+                tool_name=tool_name,
+                arguments=kwargs,
+            )
+            result_text = build_blocked_tool_result(
+                "approval_blocked",
+                tool_name,
+                f"Saved authorization rule requires approval for this {tool_name} invocation.",
+            )
+            return build_structured_tool_result(
+                tool_name=tool_name,
+                result_text=result_text,
+                success=False,
+                status="approval_blocked",
+                blocked=True,
+                blocked_kind="approval",
+                blocked_reason=result_text,
+            )
+        if authorization_rule is not None and authorization_decision == AUTH_DECISION_ALLOW:
             self._record_authorization_rule_audit(
                 authorization_rule,
                 decision="approve",

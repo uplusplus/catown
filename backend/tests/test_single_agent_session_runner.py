@@ -64,6 +64,8 @@ async def test_run_single_agent_session_handles_empty_and_failure():
 
     assert empty_result.final_content is None
     assert failure_result.final_content is None
+    assert empty_result.outcome == "empty"
+    assert failure_result.outcome == "failed"
     assert calls == [("empty", None), ("failure", "boom")]
 
 

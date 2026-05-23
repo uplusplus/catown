@@ -9,23 +9,34 @@ def test_pipeline_config_manager_exports_canonical_workflow_spec(tmp_path):
         json.dumps(
             {
                 "default": {
-                    "name": "标准软件开发流水线",
-                    "description": "需求分析 -> 架构设计 -> 开发",
+                    "name": "Standard software delivery workflow",
+                    "description": "analysis -> architecture -> development",
                     "stages": [
                         {
                             "name": "analysis",
-                            "display_name": "需求分析",
+                            "display_name": "Analysis",
                             "agent": "analyst",
                             "gate": "manual",
                             "timeout_minutes": 30,
-                            "expected_artifacts": ["PRD.md"],
+                            "expected_artifacts": ["docs/prd/"],
                             "context_prompt": "Write a PRD.",
                             "active_skills": ["document-analysis"],
                             "hint_only_skills": [],
                         },
                         {
+                            "name": "architecture",
+                            "display_name": "Architecture",
+                            "agent": "architect",
+                            "gate": "auto",
+                            "timeout_minutes": 45,
+                            "expected_artifacts": ["docs/specs/"],
+                            "context_prompt": "Write a technical specification.",
+                            "active_skills": ["architecture-design"],
+                            "hint_only_skills": ["knowledge-graph"],
+                        },
+                        {
                             "name": "development",
-                            "display_name": "开发",
+                            "display_name": "Development",
                             "agent": "developer",
                             "gate": "auto",
                             "timeout_minutes": 60,
@@ -33,7 +44,7 @@ def test_pipeline_config_manager_exports_canonical_workflow_spec(tmp_path):
                             "context_prompt": "Write code.",
                             "rollback_on_blocker": True,
                             "max_rollback_count": 2,
-                            "rollback_target": "analysis",
+                            "rollback_target": "architecture",
                             "active_skills": ["code-generation"],
                             "hint_only_skills": ["debugging"],
                         },
@@ -52,19 +63,21 @@ def test_pipeline_config_manager_exports_canonical_workflow_spec(tmp_path):
     workflow_spec = manager.get_workflow_spec("default")
     assert workflow_spec is not None
     assert workflow_spec.workflow_id == "default"
-    assert workflow_spec.name == "标准软件开发流水线"
-    assert len(workflow_spec.stages) == 2
+    assert workflow_spec.name == "Standard software delivery workflow"
+    assert len(workflow_spec.stages) == 3
     assert workflow_spec.stages[0].stage_id == "analysis"
     assert workflow_spec.stages[0].gate == "manual"
-    assert workflow_spec.stages[0].delivery.expected_artifacts == ["PRD.md"]
-    assert workflow_spec.stages[1].rollback.enabled is True
-    assert workflow_spec.stages[1].rollback.target_stage_name == "analysis"
-    assert workflow_spec.stages[1].skills.hint_only == ["debugging"]
+    assert workflow_spec.stages[0].delivery.expected_artifacts == ["docs/prd/"]
+    assert workflow_spec.stages[1].stage_id == "architecture"
+    assert workflow_spec.stages[1].delivery.expected_artifacts == ["docs/specs/"]
+    assert workflow_spec.stages[2].rollback.enabled is True
+    assert workflow_spec.stages[2].rollback.target_stage_name == "architecture"
+    assert workflow_spec.stages[2].skills.hint_only == ["debugging"]
 
     report = manager.get_workflow_spec_report("default")
     assert report is not None
     assert report.executable is True
-    assert report.to_payload()["metadata"]["stage_count"] == 2
+    assert report.to_payload()["metadata"]["stage_count"] == 3
 
 
 def test_pipeline_config_manager_exports_workflow_spec_diagnostics(tmp_path):
@@ -78,7 +91,7 @@ def test_pipeline_config_manager_exports_workflow_spec_diagnostics(tmp_path):
                     "stages": [
                         {
                             "name": "testing",
-                            "display_name": "测试",
+                            "display_name": "Testing",
                             "agent": "tester",
                             "gate": "auto",
                             "timeout_minutes": 30,

@@ -6,24 +6,47 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
     workflow_spec = compile_pipeline_template_to_workflow_spec(
         "default",
         {
-            "name": "标准软件开发流水线",
-            "description": "需求分析 -> 架构设计 -> 开发 -> 测试 -> 发布",
+            "name": "Standard software delivery workflow",
+            "description": "analysis -> architecture -> development -> testing -> release",
             "stages": [
                 {
                     "name": "analysis",
-                    "display_name": "需求分析",
+                    "display_name": "Analysis",
                     "agent": "analyst",
                     "gate": "manual",
                     "timeout_minutes": 30,
-                    "expected_artifacts": ["PRD.md"],
+                    "expected_artifacts": ["docs/prd/"],
                     "context_prompt": "Write a PRD.",
                     "active_skills": ["document-analysis"],
                     "hint_only_skills": [],
                     "evaluation_rubrics": ["rubric-analysis-prd"],
                 },
                 {
+                    "name": "architecture",
+                    "display_name": "Architecture",
+                    "agent": "architect",
+                    "gate": "auto",
+                    "timeout_minutes": 45,
+                    "expected_artifacts": ["docs/specs/"],
+                    "context_prompt": "Write a technical specification.",
+                    "active_skills": ["architecture-design"],
+                    "hint_only_skills": ["knowledge-graph"],
+                    "evaluation_rubrics": ["rubric-architecture-spec"],
+                },
+                {
+                    "name": "development",
+                    "display_name": "Development",
+                    "agent": "developer",
+                    "gate": "auto",
+                    "timeout_minutes": 60,
+                    "expected_artifacts": ["src/"],
+                    "context_prompt": "Write code.",
+                    "active_skills": ["code-generation"],
+                    "hint_only_skills": ["debugging"],
+                },
+                {
                     "name": "testing",
-                    "display_name": "测试",
+                    "display_name": "Testing",
                     "agent": "tester",
                     "gate": "auto",
                     "timeout_minutes": 30,
@@ -51,22 +74,35 @@ def test_compile_workflow_run_policy_preserves_stage_governance_shape():
     assert payload["source"] == "workflow_spec"
     assert payload["pipeline_name"] == "default"
     assert payload["project_id"] == 7
-    assert payload["stage_count"] == 2
-    assert payload["metadata"]["workflow_name"] == "标准软件开发流水线"
+    assert payload["stage_count"] == 4
+    assert payload["metadata"]["workflow_name"] == "Standard software delivery workflow"
     assert payload["metadata"]["workflow_domain"] == "software_delivery"
 
     analysis = payload["stages"][0]
     assert analysis["stage_name"] == "analysis"
     assert analysis["agent_name"] == "analyst"
     assert analysis["approval"]["required"] is True
-    assert analysis["delivery"]["expected_artifacts"] == ["PRD.md"]
+    assert analysis["delivery"]["expected_artifacts"] == ["docs/prd/"]
     assert analysis["metadata"]["tool_policy_summary"]["tool_count"] == 1
     assert analysis["metadata"]["evaluation_policy"] == {
         "rubric_refs": ["rubric-analysis-prd"],
         "required": True,
     }
 
-    testing = payload["stages"][1]
+    architecture = payload["stages"][1]
+    assert architecture["stage_name"] == "architecture"
+    assert architecture["delivery"]["expected_artifacts"] == ["docs/specs/"]
+    assert architecture["metadata"]["evaluation_policy"] == {
+        "rubric_refs": ["rubric-architecture-spec"],
+        "required": True,
+    }
+
+    development = payload["stages"][2]
+    assert development["stage_name"] == "development"
+    assert development["delivery"]["expected_artifacts"] == ["src/"]
+    assert development["hint_only_skills"] == ["debugging"]
+
+    testing = payload["stages"][3]
     assert testing["stage_name"] == "testing"
     assert testing["delivery"]["expected_artifacts"] == ["reports/tests/"]
     assert testing["rollback"]["enabled"] is True

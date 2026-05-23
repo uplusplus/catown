@@ -11,6 +11,8 @@ import type {
   ConfigResponse,
   ConfigSection,
   PermissionsConfigPayload,
+  PermissionRememberMatcher,
+  PermissionRememberScope,
   SkillMarketplace,
   ToolAuthorizationRule,
   UiConfigPayload,
@@ -70,6 +72,8 @@ type OrchestrationDraft = {
 type PermissionsDraft = {
   allowReadOnlyToolsWithoutApproval: boolean;
   autoApproveAll: boolean;
+  rememberDefaultScope: PermissionRememberScope;
+  rememberDefaultMatcher: PermissionRememberMatcher;
 };
 
 type ContextDraft = {
@@ -147,6 +151,8 @@ function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft 
   return {
     allowReadOnlyToolsWithoutApproval: config?.permissions?.allow_read_only_tools_without_approval ?? true,
     autoApproveAll: config?.permissions?.auto_approve_all ?? false,
+    rememberDefaultScope: config?.permissions?.remember_default_scope ?? "project",
+    rememberDefaultMatcher: config?.permissions?.remember_default_matcher ?? "command_fingerprint",
   };
 }
 
@@ -1203,6 +1209,14 @@ export function ConfigTab({
         value: permissionsDraft.autoApproveAll ? "Auto approve" : "Manual when required",
       },
       {
+        label: "Remember scope",
+        value: permissionsDraft.rememberDefaultScope,
+      },
+      {
+        label: "Remember matcher",
+        value: permissionsDraft.rememberDefaultMatcher.replace(/_/g, " "),
+      },
+      {
         label: "Covered tools",
         value: "read_file · list_files · search_files · list_agents · retrieve_memory",
       },
@@ -1211,7 +1225,12 @@ export function ConfigTab({
         value: "Global runtime policy",
       },
     ],
-    [permissionsDraft.allowReadOnlyToolsWithoutApproval, permissionsDraft.autoApproveAll],
+    [
+      permissionsDraft.allowReadOnlyToolsWithoutApproval,
+      permissionsDraft.autoApproveAll,
+      permissionsDraft.rememberDefaultMatcher,
+      permissionsDraft.rememberDefaultScope,
+    ],
   );
   const contextProfileRows = useMemo(
     () => Object.entries(config?.context?.selector_profiles ?? {}).sort(([left], [right]) => left.localeCompare(right)),
@@ -1626,6 +1645,8 @@ export function ConfigTab({
               void onSavePermissions({
                 allow_read_only_tools_without_approval: permissionsDraft.allowReadOnlyToolsWithoutApproval,
                 auto_approve_all: permissionsDraft.autoApproveAll,
+                remember_default_scope: permissionsDraft.rememberDefaultScope,
+                remember_default_matcher: permissionsDraft.rememberDefaultMatcher,
               });
             }}
           >
@@ -1660,6 +1681,42 @@ export function ConfigTab({
             </label>
             <p className="small-note">
               Applies to tool approval blocks and pipeline manual gates. Saved deny rules still block matching tool calls.
+            </p>
+            <label className="settings-form__field">
+              <span>Remember scope</span>
+              <select
+                value={permissionsDraft.rememberDefaultScope}
+                onChange={(event) =>
+                  setPermissionsDraft((current) => ({
+                    ...current,
+                    rememberDefaultScope: event.target.value as PermissionRememberScope,
+                  }))
+                }
+              >
+                <option value="project">Project</option>
+                <option value="chatroom">Chat</option>
+                <option value="global">Global</option>
+              </select>
+            </label>
+            <label className="settings-form__field">
+              <span>Remember matcher</span>
+              <select
+                value={permissionsDraft.rememberDefaultMatcher}
+                onChange={(event) =>
+                  setPermissionsDraft((current) => ({
+                    ...current,
+                    rememberDefaultMatcher: event.target.value as PermissionRememberMatcher,
+                  }))
+                }
+              >
+                <option value="command_fingerprint">Exact command</option>
+                <option value="shell_bin">Bin/tool name</option>
+                <option value="tool_target">Tool target</option>
+                <option value="all_tools">All tools</option>
+              </select>
+            </label>
+            <p className="small-note">
+              Approval cards still show only approve once and remember; these defaults decide what remember saves.
             </p>
           </form>
 

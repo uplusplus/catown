@@ -25,6 +25,7 @@ import type {
   GlobalConfigPayload,
   MessageItem,
   MessageStreamStep,
+  ProjectBrowserFileItem,
   PermissionsConfigPayload,
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
@@ -53,6 +54,7 @@ const TASK_ACTIVITY_POLL_MS = 2500;
 const APP_SIDEBAR_DEFAULT_WIDTH = 258;
 const APP_SIDEBAR_MIN_WIDTH = 220;
 const APP_SIDEBAR_MAX_WIDTH = 420;
+const PROJECT_BROWSER_ORDER_BASE = 1_000_000;
 
 const CONFIG_SECTION_META: Record<
   ConfigSection,
@@ -1972,6 +1974,38 @@ function updateRecoveredTaskRunPlaceholder(message: MessageItem, taskRun: TaskRu
   };
 }
 
+function buildProjectBrowserOrderMap(items: { path: string }[]) {
+  return new Map(items.map((item, index) => [item.path, index]));
+}
+
+function sortProjectBrowserItems<T extends { path: string }>(
+  items: Iterable<T>,
+  previousOrder: Map<string, number>,
+  compareFallback: (left: T, right: T) => number,
+) {
+  return Array.from(items).sort((left, right) => {
+    const leftOrder = previousOrder.get(left.path);
+    const rightOrder = previousOrder.get(right.path);
+    if (typeof leftOrder === "number" || typeof rightOrder === "number") {
+      const stableLeft = typeof leftOrder === "number" ? leftOrder : PROJECT_BROWSER_ORDER_BASE;
+      const stableRight = typeof rightOrder === "number" ? rightOrder : PROJECT_BROWSER_ORDER_BASE;
+      if (stableLeft !== stableRight) return stableLeft - stableRight;
+    }
+    return compareFallback(left, right);
+  });
+}
+
+function compareProjectBrowserFileItem(left: { path: string }, right: { path: string }) {
+  return left.path.localeCompare(right.path);
+}
+
+function compareProjectBrowserArtifactItem(
+  left: { type: string; path: string },
+  right: { type: string; path: string },
+) {
+  return left.type === right.type ? left.path.localeCompare(right.path) : left.type.localeCompare(right.type);
+}
+
 function messageLooksApprovalHold(message: MessageItem) {
   return (message.streamSteps ?? []).some((step) => {
     const label = (step.label || "").toLowerCase();
@@ -2129,6 +2163,9 @@ function App() {
   const [activeConfigSection, setActiveConfigSection] = useState<ConfigSection>("agents");
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [activityDrawerOpen, setActivityDrawerOpen] = useState(false);
+  const [appVisible, setAppVisible] = useState(() =>
+    typeof document === "undefined" ? true : document.visibilityState === "visible",
+  );
   const [appSidebarWidth, setAppSidebarWidth] = useState(APP_SIDEBAR_DEFAULT_WIDTH);
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -2143,6 +2180,10 @@ function App() {
   const [taskRuns, setTaskRuns] = useState<TaskRunSummary[]>([]);
   const [chatProcesses, setChatProcesses] = useState<ChatProcessEntry | null>(null);
   const [projectBrowserIndex, setProjectBrowserIndex] = useState<ProjectBrowserIndex | null>(null);
+  const [projectBrowserContentRefresh, setProjectBrowserContentRefresh] = useState<{
+    snapshotId?: string | null;
+    updatedFiles: ProjectBrowserFileItem[];
+  } | null>(null);
   const [liveTaskRunDetailsById, setLiveTaskRunDetailsById] = useState<Record<number, TaskRunDetail>>({});
   const [taskActivitiesById, setTaskActivitiesById] = useState<Record<number, TaskActivityProjection>>({});
   const [taskTimelinesById, setTaskTimelinesById] = useState<Record<number, ChatTimelineProjection>>({});
@@ -3006,14 +3047,14 @@ function App() {
     const workspacePath = batch.workspace_path || current?.workspace_path || "";
     const fileMap = new Map((current?.files ?? []).map((item) => [item.path, item]));
     const artifactMap = new Map((current?.artifacts ?? []).map((item) => [item.path, item]));
+    const previousFileOrder = buildProjectBrowserOrderMap(current?.files ?? []);
+    const previousArtifactOrder = buildProjectBrowserOrderMap(current?.artifacts ?? []);
     batch.files.forEach((item) => fileMap.set(item.path, item));
     batch.artifacts.forEach((item) => artifactMap.set(item.path, item));
     return {
       workspace_path: workspacePath,
-      files: Array.from(fileMap.values()).sort((left, right) => left.path.localeCompare(right.path)),
-      artifacts: Array.from(artifactMap.values()).sort((left, right) =>
-        left.type === right.type ? left.path.localeCompare(right.path) : left.type.localeCompare(right.type),
-      ),
+      files: sortProjectBrowserItems(fileMap.values(), previousFileOrder, compareProjectBrowserFileItem),
+      artifacts: sortProjectBrowserItems(artifactMap.values(), previousArtifactOrder, compareProjectBrowserArtifactItem),
       truncated: Boolean(current?.truncated || batch.truncated),
     };
   }
@@ -3025,30 +3066,34 @@ function App() {
     const workspacePath = event.workspace_path || current?.workspace_path || "";
     const fileMap = new Map((current?.files ?? []).map((item) => [item.path, item]));
     const artifactMap = new Map((current?.artifacts ?? []).map((item) => [item.path, item]));
+    const previousFileOrder = buildProjectBrowserOrderMap(current?.files ?? []);
+    const previousArtifactOrder = buildProjectBrowserOrderMap(current?.artifacts ?? []);
+    const listChangedPaths = new Set([...(event.added_paths ?? []), ...(event.removed_paths ?? [])]);
 
     for (const removedPath of event.removed_paths ?? []) {
       fileMap.delete(removedPath);
       artifactMap.delete(removedPath);
     }
     for (const item of event.files ?? []) {
+      if (!listChangedPaths.has(item.path)) continue;
       fileMap.set(item.path, item);
     }
     const artifactPathsInPatch = new Set((event.artifacts ?? []).map((item) => item.path));
     for (const changedPath of event.changed_paths ?? []) {
+      if (!listChangedPaths.has(changedPath)) continue;
       if (!artifactPathsInPatch.has(changedPath) && fileMap.has(changedPath)) {
         artifactMap.delete(changedPath);
       }
     }
     for (const item of event.artifacts ?? []) {
+      if (!listChangedPaths.has(item.path)) continue;
       artifactMap.set(item.path, item);
     }
 
     return {
       workspace_path: workspacePath,
-      files: Array.from(fileMap.values()).sort((left, right) => left.path.localeCompare(right.path)),
-      artifacts: Array.from(artifactMap.values()).sort((left, right) =>
-        left.type === right.type ? left.path.localeCompare(right.path) : left.type.localeCompare(right.type),
-      ),
+      files: sortProjectBrowserItems(fileMap.values(), previousFileOrder, compareProjectBrowserFileItem),
+      artifacts: sortProjectBrowserItems(artifactMap.values(), previousArtifactOrder, compareProjectBrowserArtifactItem),
       truncated: Boolean(event.truncated || current?.truncated),
     };
   }
@@ -3110,6 +3155,7 @@ function App() {
     }
     if (previousProjectId !== nextProjectId) {
       setProjectBrowserIndex(null);
+      setProjectBrowserContentRefresh(null);
     }
     selectedChatIdRef.current = nextChatId;
     selectedProjectIdRef.current = nextProjectId;
@@ -3279,6 +3325,15 @@ function App() {
   }, [selectedChatId]);
 
   useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const handleVisibilityChange = () => {
+      setAppVisible(document.visibilityState === "visible");
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
     if (activeTab !== "chat") {
       setSidebarDrawerOpen(false);
       setActivityDrawerOpen(false);
@@ -3296,6 +3351,7 @@ function App() {
   useEffect(() => {
     if (!bootstrapped || !selectedProject) {
       setProjectBrowserIndex(null);
+      setProjectBrowserContentRefresh(null);
       lastProjectBrowserSnapshotIdRef.current = null;
       lastProjectBrowserPollAtRef.current = 0;
       return undefined;
@@ -3307,6 +3363,7 @@ function App() {
     projectBrowserRefreshQueuedRef.current = false;
     lastProjectBrowserSnapshotIdRef.current = null;
     lastProjectBrowserPollAtRef.current = 0;
+    setProjectBrowserContentRefresh(null);
 
     void scheduleProjectBrowserReload(
       selectedProject.id,
@@ -3333,11 +3390,23 @@ function App() {
           pushEvent("Project browser auto-refresh is active", "info");
           announcedLiveRefresh = true;
         }
-        if ((event.files?.length ?? 0) > 0 || (event.artifacts?.length ?? 0) > 0 || (event.removed_paths?.length ?? 0) > 0) {
+        if (!appVisible) {
+          return;
+        }
+        if ((event.added_paths?.length ?? 0) > 0 || (event.removed_paths?.length ?? 0) > 0) {
           setProjectBrowserIndex((current) => applyProjectBrowserWatchPatch(current, event));
           return;
         }
-        void scheduleProjectBrowserReload(selectedProject.id, selectedProject.workspace_path, controller.signal);
+        if ((event.updated_paths?.length ?? 0) > 0) {
+          const updatedPaths = new Set(event.updated_paths ?? []);
+          setProjectBrowserContentRefresh({
+            snapshotId: event.snapshot_id,
+            updatedFiles: (event.files ?? []).filter((item) => updatedPaths.has(item.path)),
+          });
+        }
+        if (Boolean(event.truncated) !== Boolean(projectBrowserIndex?.truncated)) {
+          void scheduleProjectBrowserReload(selectedProject.id, selectedProject.workspace_path, controller.signal);
+        }
       },
       controller.signal,
     ).catch((nextError) => {
@@ -3362,7 +3431,7 @@ function App() {
       window.clearInterval(fallbackPoll);
       controller.abort();
     };
-  }, [bootstrapped, selectedProject]);
+  }, [appVisible, bootstrapped, projectBrowserIndex?.truncated, selectedProject]);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -3374,6 +3443,7 @@ function App() {
       setTaskRuns([]);
       setChatProcesses(null);
       setProjectBrowserIndex(null);
+      setProjectBrowserContentRefresh(null);
       setLiveTaskRunDetailsById({});
       setTaskActivitiesById({});
       setTaskTimelinesById({});
@@ -4907,6 +4977,8 @@ function App() {
             taskRuns={taskRuns}
             processes={chatProcesses}
             projectBrowserIndex={projectBrowserIndex}
+            projectBrowserAutoRefreshEnabled={appVisible}
+            projectBrowserContentRefresh={projectBrowserContentRefresh}
             liveTaskRunDetailsById={liveTaskRunDetailsById}
             taskActivitiesById={taskActivitiesById}
             taskTimelinesById={taskTimelinesById}
