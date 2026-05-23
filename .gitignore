@@ -91,3 +91,6 @@ dmypy.json
 .codex
 
 test_report.md
+.pytest-debug/
+reports/
+tmpcatown-pytest/
