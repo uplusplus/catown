@@ -43,6 +43,10 @@ def find_pending_queue_item(
     return query.order_by(ApprovalQueueItem.created_at.desc(), ApprovalQueueItem.id.desc()).first()
 
 
+# Default TTL for approval queue items (24 hours).
+DEFAULT_APPROVAL_TTL_SECONDS = 24 * 60 * 60
+
+
 def create_approval_queue_item(
     db: Session,
     *,
@@ -60,6 +64,7 @@ def create_approval_queue_item(
     request_payload: Any = None,
     pipeline_run_id: int | None = None,
     pipeline_stage_id: int | None = None,
+    ttl_seconds: int | None = DEFAULT_APPROVAL_TTL_SECONDS,
 ) -> ApprovalQueueItem:
     normalized_request_key = (request_key or "").strip() or None
     if normalized_request_key:
@@ -88,6 +93,7 @@ def create_approval_queue_item(
         request_key=normalized_request_key,
         resume_token=uuid4().hex,
         request_payload_json=_dump_payload(request_payload),
+        expires_at=(datetime.now() + timedelta(seconds=max(1, ttl_seconds))) if ttl_seconds and ttl_seconds > 0 else None,
     )
     db.add(item)
     db.commit()
@@ -234,6 +240,7 @@ def serialize_approval_queue_item(item: ApprovalQueueItem) -> dict[str, Any]:
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
+        "expires_at": item.expires_at.isoformat() if item.expires_at else None,
     }
 
 
@@ -254,3 +261,37 @@ def _load_payload(payload_json: str | None) -> Any:
     except json.JSONDecodeError:
         return {"raw": payload_json}
     return payload if isinstance(payload, dict) else {"value": payload}
+
+
+def expire_stale_approvals(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> list[ApprovalQueueItem]:
+    """Expire all pending approvals whose ``expires_at`` has passed.
+
+    Returns the list of items that were transitioned to ``expired``.
+    """
+    now = now or datetime.now()
+    stale_items = (
+        db.query(ApprovalQueueItem)
+        .filter(
+            ApprovalQueueItem.status == "pending",
+            ApprovalQueueItem.expires_at.isnot(None),
+            ApprovalQueueItem.expires_at < now,
+        )
+        .all()
+    )
+    expired: list[ApprovalQueueItem] = []
+    for item in stale_items:
+        item.status = "expired"
+        item.resolved_by = "system"
+        item.resolution_note = "Approval expired (TTL exceeded)."
+        item.resolved_at = now
+        db.add(item)
+        expired.append(item)
+    if expired:
+        db.commit()
+        for item in expired:
+            db.refresh(item)
+    return expired

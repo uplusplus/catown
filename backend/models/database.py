@@ -332,6 +332,7 @@ class ApprovalQueueItem(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     resolved_at = Column(DateTime, nullable=True, index=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
 
     task_run = relationship("TaskRun", back_populates="approval_queue_items")
     chatroom = relationship("Chatroom")
