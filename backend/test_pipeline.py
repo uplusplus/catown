@@ -106,7 +106,7 @@ def mock_llm_client():
             "content": "# Test Report\nAll tests passed.\nNo blockers found.",
             "tool_calls": [
                 {"id": "tc4", "function": {"name": "write_file", "arguments": json.dumps({
-                    "file_path": "test_report.md",
+                    "file_path": "reports/tests/20260522T143122004981Z--todo-app-test-report.md",
                     "content": "# Test Report\n\n## Results\n- Add todo: PASS\n- Delete todo: PASS\n- List todos: PASS\n\n## Blockers: None"
                 })}}
             ]
@@ -393,7 +393,7 @@ class TestPipelineExecution:
                 StageConfig(name="development", display_name="开发", agent="developer", gate="auto",
                             expected_artifacts=["src/"], context_prompt="Write code"),
                 StageConfig(name="testing", display_name="测试", agent="tester", gate="auto",
-                            expected_artifacts=["test_report.md"], context_prompt="Test"),
+                            expected_artifacts=["reports/tests/"], context_prompt="Test"),
                 StageConfig(name="release", display_name="发布", agent="release", gate="auto",
                             expected_artifacts=["CHANGELOG.md"], context_prompt="Release"),
             ],

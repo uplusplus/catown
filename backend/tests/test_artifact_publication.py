@@ -53,7 +53,7 @@ def test_compile_publish_artifact_request_to_document_contract():
                 "artifact_type": "document.test_report",
                 "title": "Test report",
                 "summary": "Regression results.",
-                "file_path": "test_report.md",
+                "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
                 "content_markdown": "# Test Report",
                 "content_json": {"passed": 12},
             }

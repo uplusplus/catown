@@ -85,7 +85,7 @@ catown/
 | `analyst` | 需求分析，输出 PRD.md | 人工审批 |
 | `architect` | 架构设计，输出 tech-spec.md | 自动 |
 | `developer` | 编写代码 + 单元测试 | 自动 |
-| `tester` | 测试执行，输出 test_report.md | 自动 |
+| `tester` | 测试执行，输出 `reports/tests/<timestamp>--<subject>.md` | 自动 |
 | `release` | 版本管理，输出 CHANGELOG.md | 人工审批 |
 | `assistant` | 打杂，协助其他 Agent | — |
 

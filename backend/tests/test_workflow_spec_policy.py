@@ -39,7 +39,7 @@ def test_valid_pipeline_template_workflow_is_executable():
                     "display_name": "Testing",
                     "agent": "tester",
                     "gate": "auto",
-                    "expected_artifacts": ["test_report.md"],
+                    "expected_artifacts": ["reports/tests/"],
                     "rollback_on_blocker": True,
                     "max_rollback_count": 3,
                     "rollback_target": "development",

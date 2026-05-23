@@ -68,7 +68,7 @@ def test_compile_stage_artifact_preserves_specific_artifact_type():
             "id": 22,
             "stage_id": 9,
             "artifact_type": "document.test_report",
-            "file_path": "test_report.md",
+            "file_path": "reports/tests/20260523T101010000000Z--task-45--backend-pytest.md",
         },
         stage={"stage_name": "testing"},
     )

@@ -416,7 +416,7 @@ Typical outputs:
   - `PRD.md`
   - `tech-spec.md`
   - `src/`
-  - `test_report.md`
+  - `reports/tests/<timestamp>--<subject>.md`
   - `CHANGELOG.md`
 - action requests
   - tool use

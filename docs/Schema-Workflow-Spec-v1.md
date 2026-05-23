@@ -89,7 +89,7 @@ Example:
   "timeout_minutes": 30,
   "context_prompt": "请基于 PRD 的验收标准测试代码。",
   "delivery": {
-    "expected_artifacts": ["test_report.md"],
+    "expected_artifacts": ["reports/tests/"],
     "required": true
   },
   "rollback": {
