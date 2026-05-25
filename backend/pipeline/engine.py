@@ -1065,6 +1065,33 @@ def _serialize_tool_call_preview(tool_call: Dict[str, Any]) -> Dict[str, Any]:
 
 # ==================== 引擎 ====================
 
+
+def _format_stage_output_summary(
+    stage_name: str,
+    display_name: str,
+    agent_name: str,
+    raw_content: str,
+    artifacts: list[str] | None = None,
+    max_chars: int = 800,
+) -> str:
+    """Format a stage's LLM output into a compact structured summary for downstream agents.
+
+    ADR-028 Phase 4: Cross-stage summary compression.
+    """
+    content = (raw_content or "").strip()
+    if not content:
+        return f"({display_name}: no output)"
+
+    # Truncate content
+    if len(content) > max_chars:
+        content = content[:max_chars] + "..."
+
+    parts = [f"Agent: {agent_name}", content]
+    if artifacts:
+        parts.append("Artifacts: " + ", ".join(artifacts))
+    return "\n".join(parts)
+
+
 class PipelineEngine:
     """Pipeline 引擎 — 管理 pipeline 的完整生命周期，支持多项目并行"""
 
@@ -1974,7 +2001,13 @@ class PipelineEngine:
                     return True
 
                 stage.status = "completed"
-                stage.output_summary = summary[:2000] if summary else "(no output)"
+                stage.output_summary = _format_stage_output_summary(
+                    stage_name=stage_cfg.name,
+                    display_name=stage_cfg.display_name,
+                    agent_name=stage_cfg.agent,
+                    raw_content=summary,
+                    artifacts=stage_policy.delivery.expected_artifacts,
+                )
                 stage.completed_at = datetime.now()
                 db.commit()
 
@@ -2264,18 +2297,20 @@ class PipelineEngine:
             parts.append(run.input_requirement)
             parts.append("")
 
-        # 前一阶段的产出摘要
+        # 前一阶段的产出摘要 (ADR-028 Phase 4: compact structured summaries)
         stages = (
             db.query(PipelineStage)
             .filter(PipelineStage.run_id == run.id, PipelineStage.status == "completed")
             .order_by(PipelineStage.stage_order)
             .all()
         )
-        for s in stages:
-            if s.output_summary:
-                parts.append(f"## Output from: {s.stage_name} ({s.display_name})")
-                parts.append(s.output_summary)
-                parts.append("")
+        if stages:
+            parts.append("## Previous Stage Summaries")
+            for s in stages:
+                if s.output_summary:
+                    parts.append(f"### {s.display_name} ({s.agent_name})")
+                    parts.append(s.output_summary)
+                    parts.append("")
 
         # 阶段指令
         if stage_cfg.context_prompt:
