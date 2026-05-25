@@ -703,19 +703,28 @@ def _shell_invocation(command: str) -> list[str] | None:
     return None
 
 
-def _apply_output_filter(command: str, raw_output: str, exit_code: int) -> str:
+def _apply_output_filter(command: str, raw_output: str, exit_code: int) -> tuple[str, dict[str, Any]]:
     """Apply output filter for token compression (ADR-028 Phase 1).
 
+    Returns (filtered_output, filter_stats) where filter_stats includes
+    raw_tokens, filtered_tokens, savings_pct for observability.
     Falls back to raw output on any error.
     """
     if not raw_output:
-        return raw_output
+        return raw_output, {}
     try:
         from tools.output_filter import filter_output
         result = filter_output(command, raw_output, exit_code)
-        return result.output
+        stats = {
+            "raw_tokens": result.raw_tokens,
+            "filtered_tokens": result.filtered_tokens,
+            "savings_pct": result.savings_pct,
+        }
+        if result.tee_path:
+            stats["tee_path"] = result.tee_path
+        return result.output, stats
     except Exception:
-        return raw_output
+        return raw_output, {}
 
 
 def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DEFAULT_RESULT_CHARS) -> dict[str, Any]:
@@ -748,7 +757,12 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
 
     # Apply output filter for compression (ADR-028 Phase 1)
     command = str(record.get("command") or "")
-    filtered_output = _apply_output_filter(command, raw_output, exit_code)
+    filtered_output, filter_stats = _apply_output_filter(command, raw_output, exit_code)
+
+    # Build metadata with filter observability
+    metadata: dict[str, Any] = {"tracked_process": _public_handle(record)}
+    if filter_stats:
+        metadata["output_filter"] = filter_stats
 
     if exit_code == 0:
         result_text = f"[Run Shell] Success:\n{filtered_output}" if filtered_output else "[Run Shell] Success (no output)"
@@ -757,7 +771,7 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
             result_text=result_text,
             success=True,
             status="succeeded",
-            metadata={"tracked_process": _public_handle(record)},
+            metadata=metadata,
         )
     if not filtered_output:
         filtered_output = f"Command exited with status {exit_code}."
@@ -766,7 +780,7 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
         result_text=f"[Run Shell] Error (exit {exit_code}):\n{filtered_output}",
         success=False,
         status="failed",
-        metadata={"tracked_process": _public_handle(record)},
+        metadata=metadata,
     )
 
 

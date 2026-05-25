@@ -155,20 +155,29 @@ class TestPhase1FilterIntegration:
         assert callable(_apply_output_filter)
 
     def test_apply_output_filter_calls_filter(self):
-        """_apply_output_filter should call the filter module."""
+        """_apply_output_filter should call the filter module and return (output, stats)."""
         with patch("services.run_shell_processes.filter_output") as mock_filter:
-            mock_filter.return_value = MagicMock(output="filtered")
+            mock_result = MagicMock()
+            mock_result.output = "filtered"
+            mock_result.raw_tokens = 100
+            mock_result.filtered_tokens = 50
+            mock_result.savings_pct = 50.0
+            mock_result.tee_path = "/tmp/test.log"
+            mock_filter.return_value = mock_result
             from services.run_shell_processes import _apply_output_filter
-            result = _apply_output_filter("git status", "raw output", 0)
+            output, stats = _apply_output_filter("git status", "raw output", 0)
             mock_filter.assert_called_once()
-            assert result == "filtered"
+            assert output == "filtered"
+            assert stats["savings_pct"] == 50.0
+            assert stats["raw_tokens"] == 100
 
     def test_apply_output_filter_fallback_on_error(self):
         """_apply_output_filter should fallback to raw on error."""
         with patch("services.run_shell_processes.filter_output", side_effect=Exception("fail")):
             from services.run_shell_processes import _apply_output_filter
-            result = _apply_output_filter("git status", "raw output", 0)
-            assert result == "raw output"
+            output, stats = _apply_output_filter("git status", "raw output", 0)
+            assert output == "raw output"
+            assert stats == {}
 
 
 # ── Phase 2: History Progressive Compression ─────────────────────
