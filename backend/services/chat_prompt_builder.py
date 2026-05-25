@@ -44,9 +44,14 @@ _DEFAULT_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
         "allowed_scopes": None,
         "max_fragments": 20,
         "max_tokens_cap": 8000,
+        "max_tokens_cap_ratio": 0.03,
         "max_tokens_by_role": {
             "developer": 2500,
             "user": 5500,
+        },
+        "max_tokens_by_role_ratio": {
+            "developer": 0.01,
+            "user": 0.02,
         },
         "max_tokens_by_scope": {
             "session": 400,
@@ -56,15 +61,28 @@ _DEFAULT_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
             "shared_fact": 600,
             "agent_private": 600,
         },
+        "max_tokens_by_scope_ratio": {
+            "session": 0.002,
+            "run": 0.015,
+            "stage": 0.005,
+            "turn": 0.005,
+            "shared_fact": 0.003,
+            "agent_private": 0.003,
+        },
     },
     "fallback_chat": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
         "max_fragments": 15,
         "max_tokens_cap": 5000,
+        "max_tokens_cap_ratio": 0.025,
         "max_tokens_by_role": {
             "developer": 1800,
             "user": 3200,
+        },
+        "max_tokens_by_role_ratio": {
+            "developer": 0.008,
+            "user": 0.017,
         },
         "max_tokens_by_scope": {
             "session": 300,
@@ -74,15 +92,28 @@ _DEFAULT_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
             "shared_fact": 400,
             "agent_private": 400,
         },
+        "max_tokens_by_scope_ratio": {
+            "session": 0.002,
+            "run": 0.012,
+            "stage": 0.004,
+            "turn": 0.004,
+            "shared_fact": 0.002,
+            "agent_private": 0.002,
+        },
     },
     "consult_agent": {
         "allowed_visibilities": None,
         "allowed_scopes": None,
         "max_fragments": 16,
         "max_tokens_cap": 4500,
+        "max_tokens_cap_ratio": 0.02,
         "max_tokens_by_role": {
             "developer": 1800,
             "user": 2700,
+        },
+        "max_tokens_by_role_ratio": {
+            "developer": 0.008,
+            "user": 0.012,
         },
         "max_tokens_by_scope": {
             "session": 300,
@@ -91,6 +122,14 @@ _DEFAULT_SELECTOR_PROFILES: dict[str, dict[str, Any]] = {
             "turn": 700,
             "shared_fact": 400,
             "agent_private": 300,
+        },
+        "max_tokens_by_scope_ratio": {
+            "session": 0.002,
+            "run": 0.010,
+            "stage": 0.003,
+            "turn": 0.003,
+            "shared_fact": 0.002,
+            "agent_private": 0.002,
         },
     },
 }
