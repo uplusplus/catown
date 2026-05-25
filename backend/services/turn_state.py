@@ -10,6 +10,10 @@ from typing import Any, Iterable, Mapping, Optional
 from services.tool_governance import classify_tool_result
 
 
+_TOOL_RESULT_TRUNCATE_THRESHOLD = 2000
+_TOOL_RESULT_TRUNCATE_MARKER = "\n[truncated for context budget]"
+
+
 @dataclass(frozen=True)
 class ToolResultRecord:
     tool_call_id: str
@@ -24,10 +28,14 @@ class ToolResultRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_message(self) -> dict[str, str]:
+        content = self.result
+        # Truncate long tool results to prevent context bloat (ADR-028 Phase 2)
+        if len(content) > _TOOL_RESULT_TRUNCATE_THRESHOLD:
+            content = content[:_TOOL_RESULT_TRUNCATE_THRESHOLD] + _TOOL_RESULT_TRUNCATE_MARKER
         return {
             "role": "tool",
             "tool_call_id": self.tool_call_id,
-            "content": self.result,
+            "content": content,
             "name": self.tool_name,
         }
 

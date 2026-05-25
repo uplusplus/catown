@@ -238,7 +238,7 @@ def assemble_chat_messages(
     user_message: str = "",
     available_tools: Optional[List[str]] = None,
     tool_guidance: str = "",
-    history_limit: int = 10,
+    history_limit: int = 5,
     history_visibility: str = "all",
     target_agent_name: Optional[str] = None,
     prefix_assistant_name: bool = False,

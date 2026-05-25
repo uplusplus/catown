@@ -181,7 +181,7 @@ def assemble_runtime_chat_messages(
     user_message: str = "",
     available_tools: Optional[List[str]] = None,
     tool_policy_pack: Optional[Mapping[str, Any]] = None,
-    history_limit: int = 10,
+    history_limit: int = 5,
     history_visibility: str = "all",
     target_agent_name: Optional[str] = None,
     prefix_assistant_name: bool = False,
