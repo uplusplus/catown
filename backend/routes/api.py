@@ -9249,3 +9249,84 @@ async def cancel_choice_box(box_id: str):
     if not box:
         raise HTTPException(status_code=404, detail=f"Choice box '{box_id}' not found")
     return box.to_dict()
+
+
+# ==================== Command System ====================
+
+@router.get("/commands")
+async def list_commands():
+    """List all available chat commands for autocomplete."""
+    from commands.executor import get_command_definitions
+    return {"commands": get_command_definitions()}
+
+
+@router.post("/commands/execute")
+async def execute_chat_command(
+    command: str = Body(..., embed=True),
+    chatroom_id: Optional[int] = Body(None, embed=True),
+    project_id: Optional[int] = Body(None, embed=True),
+    db: Session = Depends(get_db),
+):
+    """Execute a read-only chat command."""
+    from commands.executor import execute_command
+    result = await execute_command(
+        command,
+        db=db,
+        chatroom_id=chatroom_id,
+        project_id=project_id,
+    )
+    return result
+
+
+@router.get("/chat/history/{chatroom_id}")
+async def get_chat_input_history(chatroom_id: int):
+    """Get input history for a chatroom (for ↑/↓ recall)."""
+    from pathlib import Path
+    history_dir = Path.home() / ".catown" / "chat_history"
+    history_file = history_dir / f"{chatroom_id}.json"
+
+    if not history_file.exists():
+        return {"chatroom_id": chatroom_id, "history": []}
+
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            history = json.load(f)
+        return {"chatroom_id": chatroom_id, "history": history[-50:]}
+    except Exception:
+        return {"chatroom_id": chatroom_id, "history": []}
+
+
+@router.post("/chat/history/{chatroom_id}")
+async def save_chat_input_history(
+    chatroom_id: int,
+    entry: str = Body(..., embed=True),
+):
+    """Save a message to input history (called after user sends)."""
+    from pathlib import Path
+
+    if not entry or not entry.strip():
+        return {"ok": True}
+
+    history_dir = Path.home() / ".catown" / "chat_history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    history_file = history_dir / f"{chatroom_id}.json"
+
+    history = []
+    if history_file.exists():
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+
+    # Avoid consecutive duplicates
+    if not history or history[-1] != entry.strip():
+        history.append(entry.strip())
+
+    # Keep last 50
+    history = history[-50:]
+
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False)
+
+    return {"ok": True}

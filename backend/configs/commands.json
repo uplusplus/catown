@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "command": "/help",
+      "aliases": ["/h"],
+      "category": "基础",
+      "description": "显示所有可用指令及说明",
+      "readOnly": true
+    },
+    {
+      "command": "/skills list",
+      "aliases": ["/sl"],
+      "category": "Skills",
+      "description": "列出已安装 Skills",
+      "readOnly": true
+    },
+    {
+      "command": "/skills info",
+      "aliases": ["/si"],
+      "category": "Skills",
+      "description": "查看 Skill 详情",
+      "args": "<name>",
+      "readOnly": true
+    },
+    {
+      "command": "/tools list",
+      "aliases": ["/tl"],
+      "category": "Tools",
+      "description": "列出所有可用工具",
+      "readOnly": true
+    },
+    {
+      "command": "/tools info",
+      "aliases": ["/ti"],
+      "category": "Tools",
+      "description": "查看工具详情",
+      "args": "<name>",
+      "readOnly": true
+    },
+    {
+      "command": "/agents list",
+      "aliases": ["/al"],
+      "category": "Agent",
+      "description": "列出所有 Agent 角色及状态",
+      "readOnly": true
+    },
+    {
+      "command": "/agents info",
+      "aliases": ["/ai"],
+      "category": "Agent",
+      "description": "查看 Agent 详情",
+      "args": "<name>",
+      "readOnly": true
+    },
+    {
+      "command": "/config get",
+      "aliases": ["/cg"],
+      "category": "配置",
+      "description": "查看当前全局配置",
+      "readOnly": true
+    },
+    {
+      "command": "/pipeline status",
+      "aliases": ["/ps"],
+      "category": "Pipeline",
+      "description": "查看当前 Pipeline 状态",
+      "readOnly": true
+    }
+  ]
+}

@@ -11,6 +11,12 @@ import { FormSuggestionStrip } from "./FormSuggestionStrip";
 import { UI_VERSION } from "../uiVersion";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
 import {
+  isCommandInput,
+  matchCommands,
+  matchHistory,
+  type ChatCommandDef,
+} from "../utils/chatCommands";
+import {
   DEFAULT_AGENT_TYPE,
   defaultAgentName,
   findAgentByType,
@@ -6456,6 +6462,10 @@ export function ChatTab({
   const [taskRunDetailError, setTaskRunDetailError] = useState("");
   const [approvalActionItemId, setApprovalActionItemId] = useState<number | null>(null);
   const [approvalActionError, setApprovalActionError] = useState("");
+  const [commandSuggestions, setCommandSuggestions] = useState<ChatCommandDef[]>([]);
+  const [historySuggestions, setHistorySuggestions] = useState<string[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+  const [serverHistory, setServerHistory] = useState<string[]>([]);
   const [approvalActionMessage, setApprovalActionMessage] = useState("");
   const [subagentActionKey, setSubagentActionKey] = useState<string | null>(null);
   const [subagentActionMessage, setSubagentActionMessage] = useState("");
@@ -6833,6 +6843,17 @@ export function ChatTab({
     setMessageSelectionMode(false);
     setSelectedMessageIds(new Set());
     setCopiedSelection(false);
+    setCommandSuggestions([]);
+    setHistorySuggestions([]);
+
+    // Load server-side input history for cross-session recall
+    if (chat?.id) {
+      void api.getChatInputHistory(chat.id).then((result) => {
+        setServerHistory(result.history ?? []);
+      }).catch(() => {});
+    } else {
+      setServerHistory([]);
+    }
     draftHistoryIndexRef.current = null;
     draftHistoryPendingDraftRef.current = "";
   }, [chat?.id, draftHistoryKey]);
@@ -7775,6 +7796,12 @@ export function ChatTab({
   function submitContent(rawContent: string) {
     const next = rawContent.trim();
     if (!next || sending) return;
+
+    // Clear autocomplete
+    setCommandSuggestions([]);
+    setHistorySuggestions([]);
+
+    // Save to local draft history
     const history = getDraftHistory();
     draftHistoryByChatRef.current[draftHistoryKey] =
       history[history.length - 1] === next ? history : mergeDraftHistory(history, [next]);
@@ -7784,6 +7811,78 @@ export function ChatTab({
     shouldStickThreadToBottomRef.current = true;
     setShowMentionPicker(false);
     setDraft("");
+
+    // Save to server-side history (async, fire-and-forget)
+    if (chat?.id) {
+      void api.saveChatInputHistory(chat.id, next).catch(() => {});
+    }
+
+    // Command detection: if input starts with /, execute as command
+    if (isCommandInput(next)) {
+      const now = new Date();
+      const baseId = -Math.floor(now.getTime());
+      const clientTurnId = createClientTurnId();
+      const userLocalMessage: MessageItem = {
+        id: baseId,
+        content: next,
+        message_type: "user",
+        created_at: now.toISOString(),
+        agent_name: null,
+        client_turn_id: clientTurnId,
+        optimisticKind: "user",
+        localOnly: true,
+      };
+      flushSync(() => {
+        setLocalOverlayMessages((current) => {
+          const nextMessages = [...current, userLocalMessage].sort(
+            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+          );
+          writeOverlayMessages(chat?.id ?? null, nextMessages);
+          return nextMessages;
+        });
+      });
+
+      // Execute command via API
+      void api.executeCommand(next, chat?.id, undefined).then((result) => {
+        const cmdMsg: MessageItem = {
+          id: -Math.floor(Date.now()) - 2,
+          content: result.content || "指令执行完成",
+          message_type: "command_result",
+          created_at: new Date().toISOString(),
+          agent_name: "system",
+          client_turn_id: clientTurnId,
+          metadata: {
+            command_result: true,
+            command: result.command,
+            success: result.success,
+            category: result.category,
+            title: result.title,
+          },
+          optimisticKind: "assistant_placeholder",
+          localOnly: true,
+        };
+        setLocalOverlayMessages((current) => {
+          const nextMessages = [...current, cmdMsg].sort(
+            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+          );
+          writeOverlayMessages(chat?.id ?? null, nextMessages);
+          return nextMessages;
+        });
+      }).catch((error) => {
+        const errMsg: MessageItem = {
+          id: -Math.floor(Date.now()) - 3,
+          content: `指令执行失败: ${error instanceof Error ? error.message : "未知错误"}`,
+          message_type: "text",
+          created_at: new Date().toISOString(),
+          agent_name: "system",
+          client_turn_id: clientTurnId,
+          optimisticKind: "assistant_placeholder",
+          localOnly: true,
+        };
+        setLocalOverlayMessages((current) => [...current, errMsg]);
+      });
+      return;
+    }
     const now = new Date();
     const baseId = -Math.floor(now.getTime());
     const clientTurnId = createClientTurnId();
@@ -7977,6 +8076,26 @@ export function ChatTab({
     setDraft(history[nextIndex] ?? "");
   }
 
+  function applySuggestion(value: string) {
+    setDraft(value);
+    setCommandSuggestions([]);
+    setHistorySuggestions([]);
+    setSelectedSuggestionIndex(0);
+    // Move caret to end
+    window.requestAnimationFrame(() => {
+      const input = composerInputRef.current;
+      if (input) {
+        input.focus();
+        input.setSelectionRange(value.length, value.length);
+      }
+    });
+  }
+
+  const hasSuggestions = commandSuggestions.length > 0 || historySuggestions.length > 0;
+  const allSuggestions: string[] = commandSuggestions.length > 0
+    ? commandSuggestions.map((c) => c.command + (c.args ? " " + c.args : ""))
+    : historySuggestions;
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing || isComposingRef.current) return;
 
@@ -7986,6 +8105,31 @@ export function ChatTab({
     const isArrowUpKey = event.key === "ArrowUp" || event.code === "ArrowUp";
     const isTabKey = event.key === "Tab" || event.code === "Tab";
     const isEscapeKey = event.key === "Escape" || event.code === "Escape";
+
+    // Autocomplete panel navigation
+    if (hasSuggestions && !showMentionPicker) {
+      if (isArrowDownKey) {
+        event.preventDefault();
+        setSelectedSuggestionIndex((current) => (current + 1) % allSuggestions.length);
+        return;
+      }
+      if (isArrowUpKey) {
+        event.preventDefault();
+        setSelectedSuggestionIndex((current) => (current - 1 + allSuggestions.length) % allSuggestions.length);
+        return;
+      }
+      if (isTabKey) {
+        event.preventDefault();
+        applySuggestion(allSuggestions[selectedSuggestionIndex] ?? allSuggestions[0]);
+        return;
+      }
+      if (isEscapeKey) {
+        event.preventDefault();
+        setCommandSuggestions([]);
+        setHistorySuggestions([]);
+        return;
+      }
+    }
 
     if (showMentionPicker && mentionOptions.length > 0) {
       if (isArrowDownKey) {
@@ -8638,10 +8782,71 @@ export function ChatTab({
                   )}
                 </div>
               ) : null}
+              {hasSuggestions && !showMentionPicker ? (
+                <div className="agent-chat__autocomplete" role="listbox" aria-label="Suggestions">
+                  <div className="agent-chat__autocomplete-header">
+                    <span>{commandSuggestions.length > 0 ? "指令" : "历史记录"}</span>
+                    <span className="agent-chat__autocomplete-hint">Tab 选择 · Esc 关闭</span>
+                  </div>
+                  <div className="agent-chat__autocomplete-list">
+                    {commandSuggestions.length > 0 ? (
+                      commandSuggestions.map((cmd, index) => (
+                        <button
+                          key={cmd.command}
+                          type="button"
+                          className={`agent-chat__autocomplete-item ${index === selectedSuggestionIndex ? "is-selected" : ""}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applySuggestion(cmd.command + (cmd.args ? " " + cmd.args : ""))}
+                          role="option"
+                          aria-selected={index === selectedSuggestionIndex}
+                        >
+                          <span className="agent-chat__autocomplete-cmd">{cmd.command}</span>
+                          {cmd.args ? <span className="agent-chat__autocomplete-args">{cmd.args}</span> : null}
+                          <span className="agent-chat__autocomplete-desc">{cmd.description}</span>
+                        </button>
+                      ))
+                    ) : (
+                      historySuggestions.map((entry, index) => (
+                        <button
+                          key={`${entry}-${index}`}
+                          type="button"
+                          className={`agent-chat__autocomplete-item ${index === selectedSuggestionIndex ? "is-selected" : ""}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applySuggestion(entry)}
+                          role="option"
+                          aria-selected={index === selectedSuggestionIndex}
+                        >
+                          <span className="agent-chat__autocomplete-text">{entry}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              ) : null}
               <textarea
                 ref={composerInputRef}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setDraft(value);
+                  // Update autocomplete suggestions
+                  if (isCommandInput(value)) {
+                    const cmds = matchCommands(value);
+                    setCommandSuggestions(cmds);
+                    setHistorySuggestions([]);
+                  } else if (value.trim().length > 0) {
+                    const localHistory = getDraftHistory();
+                    const merged = [...serverHistory, ...localHistory];
+                    const unique = [...new Set(merged)];
+                    const matches = matchHistory(value, unique);
+                    setCommandSuggestions([]);
+                    setHistorySuggestions(matches);
+                  } else {
+                    setCommandSuggestions([]);
+                    setHistorySuggestions([]);
+                  }
+                  setSelectedSuggestionIndex(0);
+                }}
                 onKeyDownCapture={handleComposerKeyDown}
                 onCompositionStart={() => {
                   isComposingRef.current = true;

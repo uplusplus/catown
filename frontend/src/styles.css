@@ -5039,6 +5039,110 @@ a {
   font-size: 12px;
 }
 
+/* === Autocomplete Panel (ADR-005) === */
+
+.agent-chat__autocomplete {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 82%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-elevated) 94%, black 6%);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-chat__autocomplete-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agent-chat__autocomplete-hint {
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+
+.agent-chat__autocomplete-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agent-chat__autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+
+.agent-chat__autocomplete-item:hover,
+.agent-chat__autocomplete-item.is-selected {
+  background: color-mix(in srgb, var(--accent-subtle) 72%, var(--bg-hover) 28%);
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.agent-chat__autocomplete-cmd {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.agent-chat__autocomplete-args {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.agent-chat__autocomplete-desc {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+.agent-chat__autocomplete-text {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-chat__input > textarea {
   width: 100%;
   min-height: 40px;

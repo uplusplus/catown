@@ -559,4 +559,41 @@ export const api = {
       { method: "POST" },
     );
   },
+
+  // --- Command System ---
+  executeCommand(command: string, chatroomId?: number, projectId?: number) {
+    return request<{
+      success: boolean;
+      command: string;
+      category: string;
+      title: string;
+      content: string;
+      error: string | null;
+    }>("/api/commands/execute", {
+      method: "POST",
+      body: JSON.stringify({ command, chatroom_id: chatroomId, project_id: projectId }),
+    });
+  },
+
+  getChatCommands() {
+    return request<{ commands: { command: string; aliases: string[]; category: string; description: string; args?: string }[] }>(
+      "/api/commands",
+    );
+  },
+
+  getChatInputHistory(chatroomId: number) {
+    return request<{ chatroom_id: number; history: string[] }>(
+      `/api/chat/history/${chatroomId}`,
+    );
+  },
+
+  saveChatInputHistory(chatroomId: number, entry: string) {
+    return request<{ ok: boolean }>(
+      `/api/chat/history/${chatroomId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ entry }),
+      },
+    );
+  },
 };
