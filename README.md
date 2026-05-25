@@ -16,18 +16,82 @@
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.10+（推荐 3.12）
+- Git
+- 一个 OpenAI 兼容的 LLM API（OpenAI / DeepSeek / Ollama / vLLM 等）
 
-### 安装 & 启动
+### 方式一：一键启动（推荐）
 
 ```bash
-cd backend && pip install -r requirements.txt
+git clone https://github.com/uplusplus/catown.git
+cd catown
+./run.sh        # Linux / macOS
+run.bat         # Windows
 ```
 
-推荐先运行一次 `./run.sh`（Windows 用 `run.bat`），它会初始化运行时目录 `${CATOWN_HOME:-~/.catown}`。
+`run.sh` 会自动完成：
+1. 检测 Python 3.10+
+2. 创建虚拟环境（`backend/.venv`）
+3. 安装依赖
+4. 初始化运行时目录 `${CATOWN_HOME:-~/.catown}`
+5. 启动 uvicorn（默认 `--reload` 热重载）
 
-配置 LLM 时，编辑运行时配置 `${CATOWN_HOME:-~/.catown}/config/agents.json`
-（源码模板位于 `backend/configs/agents.json`），并按需在 `${CATOWN_HOME:-~/.catown}/.env` 中填写密钥：
+启动后访问：
+- 🌐 Web 界面：http://localhost:8000
+- 📚 API 文档：http://localhost:8000/docs
+
+运行中可输入 `q` 退出、`r` 重启。
+
+### 方式二：手动启动
+
+```bash
+# 1. 克隆
+git clone https://github.com/uplusplus/catown.git
+cd catown
+
+# 2. 创建虚拟环境
+python3 -m venv backend/.venv
+source backend/.venv/bin/activate   # Linux/macOS
+# backend\.venv\Scripts\activate    # Windows
+
+# 3. 安装依赖
+cd backend
+pip install -r requirements.txt
+
+# 4. 初始化运行时目录
+mkdir -p ~/.catown/{config,state,projects,workspaces}
+cp configs/*.json ~/.catown/config/
+cp .env.example ~/.catown/.env
+
+# 5. 配置 LLM（见下方）
+vim ~/.catown/.env
+
+# 6. 启动
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 配置 LLM
+
+编辑 `${CATOWN_HOME:-~/.catown}/.env`：
+
+```bash
+# OpenAI
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o
+
+# DeepSeek
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+
+# Ollama（本地）
+LLM_API_KEY=ollama
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=qwen2.5:72b
+```
+
+也可以编辑 `${CATOWN_HOME:-~/.catown}/config/agents.json` 做更细粒度的 per-agent 模型配置：
 
 ```json
 {
@@ -42,22 +106,69 @@ cd backend && pip install -r requirements.txt
 }
 ```
 
+### 运行时目录结构
+
+首次启动后，`~/.catown/` 目录结构如下：
+
+```
+~/.catown/
+├── .env                  # 环境变量（LLM 密钥等）
+├── config/
+│   ├── agents.json       # Agent 角色 + LLM 配置
+│   ├── pipelines.json    # Pipeline 流程定义
+│   └── skills.json       # Skills 注册表
+├── state/
+│   ├── catown.db         # SQLite 数据库
+│   └── tee/              # 工具输出原始日志（ADR-028）
+├── projects/             # 项目数据
+└── workspaces/           # Agent 工作目录
+```
+
+### Docker（可选）
+
+```bash
+# 构建
+docker build -t catown .
+
+# 运行
+docker run -p 8000:8000 \
+  -e LLM_API_KEY=sk-xxx \
+  -e LLM_BASE_URL=https://api.openai.com/v1 \
+  -e LLM_MODEL=gpt-4o \
+  catown
+```
+
+### 开发模式
+
+```bash
+# 后端热重载（默认开启）
+CATOWN_RELOAD=1 ./run.sh
+
+# 仅运行后端测试
+cd backend && python -m pytest -v
+
+# 并行测试加速
+cd backend && python -m pytest -n auto --dist loadscope
+
+# 运行特定测试
+cd backend && python -m pytest tests/test_adr028_context_compression.py -v
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CATOWN_HOME` | `~/.catown` | 运行时根目录 |
+| `CATOWN_RELOAD` | `1` | uvicorn 热重载 |
+| `RUN_HOST` | `0.0.0.0` | 监听地址 |
+| `RUN_PORT` | `8000` | 监听端口 |
+| `LLM_API_KEY` | — | LLM API 密钥 |
+| `LLM_BASE_URL` | — | LLM API 地址 |
+| `LLM_MODEL` | — | 默认模型 ID |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+| `MONITOR_NETWORK_RETENTION_HOURS` | `168` | 网络事件保留天数 |
+
 `/monitor/network` 的网络事件会落盘到 `${CATOWN_HOME:-~/.catown}/state/catown.db`，默认仅保留最近 7 天（`MONITOR_NETWORK_RETENTION_HOURS=168`）。
-
-启动：
-
-```bash
-./run.sh
-```
-
-或手动启动：
-
-```bash
-cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-- 🌐 Web 界面：http://localhost:8000
-- 📚 API 文档：http://localhost:8000/docs
 
 ## 📁 项目结构
 
