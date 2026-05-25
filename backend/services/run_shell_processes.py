@@ -703,6 +703,21 @@ def _shell_invocation(command: str) -> list[str] | None:
     return None
 
 
+def _apply_output_filter(command: str, raw_output: str, exit_code: int) -> str:
+    """Apply output filter for token compression (ADR-028 Phase 1).
+
+    Falls back to raw output on any error.
+    """
+    if not raw_output:
+        return raw_output
+    try:
+        from tools.output_filter import filter_output
+        result = filter_output(command, raw_output, exit_code)
+        return result.output
+    except Exception:
+        return raw_output
+
+
 def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DEFAULT_RESULT_CHARS) -> dict[str, Any]:
     record = record_or_handle if isinstance(record_or_handle, dict) else load_tracked_run_shell_handle(record_or_handle)
     if not isinstance(record, dict):
@@ -715,7 +730,7 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
         )
 
     exit_payload = _load_exit_payload(record)
-    output = read_tracked_run_shell_tail(record, max_chars=max_chars)
+    raw_output = read_tracked_run_shell_tail(record, max_chars=max_chars)
     exit_code = None if exit_payload is None else _coerce_int(exit_payload.get("exit_code"))
     if exit_code is None and exit_payload is not None:
         try:
@@ -730,8 +745,13 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
             status="interrupted",
             metadata={"tracked_process": _public_handle(record)},
         )
+
+    # Apply output filter for compression (ADR-028 Phase 1)
+    command = str(record.get("command") or "")
+    filtered_output = _apply_output_filter(command, raw_output, exit_code)
+
     if exit_code == 0:
-        result_text = f"[Run Shell] Success:\n{output}" if output else "[Run Shell] Success (no output)"
+        result_text = f"[Run Shell] Success:\n{filtered_output}" if filtered_output else "[Run Shell] Success (no output)"
         return build_structured_tool_result(
             tool_name="run_shell",
             result_text=result_text,
@@ -739,11 +759,11 @@ def build_tracked_run_shell_result(record_or_handle: Any, *, max_chars: int = DE
             status="succeeded",
             metadata={"tracked_process": _public_handle(record)},
         )
-    if not output:
-        output = f"Command exited with status {exit_code}."
+    if not filtered_output:
+        filtered_output = f"Command exited with status {exit_code}."
     return build_structured_tool_result(
         tool_name="run_shell",
-        result_text=f"[Run Shell] Error (exit {exit_code}):\n{output}",
+        result_text=f"[Run Shell] Error (exit {exit_code}):\n{filtered_output}",
         success=False,
         status="failed",
         metadata={"tracked_process": _public_handle(record)},
