@@ -89,6 +89,7 @@ dmypy.json
 
 #codex
 .codex
+.claude
 
 .pytest-debug/
 reports/
