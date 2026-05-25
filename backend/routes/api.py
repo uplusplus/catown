@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, object_session
@@ -9130,3 +9130,83 @@ async def list_collaboration_tasks(chatroom_id: Optional[int] = None):
         "tasks": tasks,
         "count": len(tasks)
     }
+
+
+# ---------------------------------------------------------------------------
+# Choice Box API
+# ---------------------------------------------------------------------------
+
+@router.get("/choice-boxes")
+async def list_choice_boxes(chatroom_id: Optional[int] = None):
+    """List pending choice boxes, optionally filtered by chatroom."""
+    from services.choice_box import get_choice_box_store
+    store = get_choice_box_store()
+    if chatroom_id is not None:
+        boxes = store.pending_for_chatroom(chatroom_id)
+    else:
+        boxes = store.pending_boxes
+    return {
+        "choice_boxes": [b.to_dict() for b in boxes],
+        "count": len(boxes),
+    }
+
+
+@router.get("/choice-boxes/{box_id}")
+async def get_choice_box(box_id: str):
+    """Get a specific choice box by ID."""
+    from services.choice_box import get_choice_box_store
+    store = get_choice_box_store()
+    box = store.get(box_id)
+    if not box:
+        raise HTTPException(status_code=404, detail=f"Choice box '{box_id}' not found")
+    return box.to_dict()
+
+
+@router.post("/choice-boxes/{box_id}/respond")
+async def respond_to_choice_box(
+    box_id: str,
+    value: str = Body(..., embed=True),
+):
+    """Respond to a choice box."""
+    from services.choice_box import get_choice_box_store, ChoiceBoxStatus
+    store = get_choice_box_store()
+    box = store.respond(box_id, value)
+    if not box:
+        raise HTTPException(status_code=404, detail=f"Choice box '{box_id}' not found or already responded")
+
+    # Publish the response as a chat message
+    try:
+        from services.chat_publish import publish_saved_chat_message
+        from models.database import get_db as _get_db, Message as _Message
+        db = next(_get_db())
+        try:
+            response_content = f"✅ 选择了: {value}"
+            msg = _Message(
+                chatroom_id=0,  # Will be resolved from context
+                content=response_content,
+                message_type="choice_response",
+                metadata_json=json.dumps({
+                    "choice_box_id": box_id,
+                    "choice_value": value,
+                    "source_agent": box.source_agent,
+                }),
+            )
+            db.add(msg)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("[ChoiceBox] Failed to publish response: %s", exc)
+
+    return box.to_dict()
+
+
+@router.post("/choice-boxes/{box_id}/cancel")
+async def cancel_choice_box(box_id: str):
+    """Cancel a pending choice box."""
+    from services.choice_box import get_choice_box_store
+    store = get_choice_box_store()
+    box = store.cancel(box_id)
+    if not box:
+        raise HTTPException(status_code=404, detail=f"Choice box '{box_id}' not found")
+    return box.to_dict()

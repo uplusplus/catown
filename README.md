@@ -140,7 +140,7 @@ catown/
 │   ├── models/            # SQLAlchemy 数据库模型
 │   ├── pipeline/          # Pipeline 引擎（核心调度）
 │   ├── routes/            # FastAPI 路由（114 个端点）
-│   ├── services/          # 业务逻辑层
+│   ├── services/          # 业务逻辑层（含 project_memory, short_term_memory, choice_box）
 │   ├── tools/             # 工具集合（24 个）
 │   ├── tests/             # 单元测试（94 个文件）
 │   └── main.py            # 应用入口
@@ -281,9 +281,9 @@ cd backend && python -m pytest --collect-only
 | 知识图谱 Skill 定义 (ADR-004) | ✅ 完成 | 2026-04-10 |
 | 上下文压缩修复 (ADR-028) | ✅ 完成 | 2026-05-25 |
 | Chat Runtime 状态机加固 (ADR-027) | ✅ 完成 | 2026-05-25 |
-| 短期记忆 | ⏳ 待做 | — |
-| 项目记忆 | ⏳ 待做 | — |
-| Choice Box 交互组件 | ⏳ 待做 | — |
+| 短期记忆 | ✅ 完成 | 2026-05-25 |
+| 项目记忆 | ✅ 完成 | 2026-05-25 |
+| Choice Box 交互组件 | ✅ 完成 | 2026-05-25 |
 | Agent 操作可视化 | ⏳ 待做 | — |
 | 聊天框输入体验 | ⏳ 待做 | — |
 | 工具临时授权流程 | ⏳ 待做 | — |

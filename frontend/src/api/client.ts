@@ -536,4 +536,27 @@ export const api = {
       },
     );
   },
+
+  // --- Choice Box ---
+  getChoiceBoxes(chatroomId?: number) {
+    const qs = chatroomId != null ? `?chatroom_id=${chatroomId}` : "";
+    return request<{ choice_boxes: import("../components/ChoiceBox").ChoiceBoxData[]; count: number }>(
+      `/api/choice-boxes${qs}`,
+    );
+  },
+  respondChoiceBox(boxId: string, value: string) {
+    return request<import("../components/ChoiceBox").ChoiceBoxData>(
+      `/api/choice-boxes/${boxId}/respond`,
+      {
+        method: "POST",
+        body: JSON.stringify({ value }),
+      },
+    );
+  },
+  cancelChoiceBox(boxId: string) {
+    return request<import("../components/ChoiceBox").ChoiceBoxData>(
+      `/api/choice-boxes/${boxId}/cancel`,
+      { method: "POST" },
+    );
+  },
 };

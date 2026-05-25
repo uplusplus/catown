@@ -6,6 +6,7 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
+import { ChoiceBox, type ChoiceBoxData } from "./ChoiceBox";
 import { FormSuggestionStrip } from "./FormSuggestionStrip";
 import { UI_VERSION } from "../uiVersion";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
@@ -5964,6 +5965,23 @@ function renderMessage(
       ? renderStreamingTextContent(messageBodyContent, messageBodyClassName)
       : renderStreamingStatusContent(message, messageBodyClassName)
     : renderMarkdownContent(messageBodyContent, messageBodyClassName);
+  // Choice Box: interactive decision component embedded in chat
+  const choiceBoxData = message.metadata?.choice_box as ChoiceBoxData | undefined;
+  const choiceBoxElement = choiceBoxData && choiceBoxData.status === "pending" ? (
+    <div className="message-choice-box" style={{ marginTop: 8 }}>
+      <ChoiceBox
+        data={choiceBoxData}
+        onRespond={async (boxId: string, value: string) => {
+          try {
+            const { api } = await import("../api/client");
+            await api.respondChoiceBox(boxId, value);
+          } catch (err) {
+            console.error("[ChoiceBox] respond failed:", err);
+          }
+        }}
+      />
+    </div>
+  ) : null;
   const messageTrace = hasStreamSteps ? (
     <div className={`message-stream-trace ${showReplyAfterTrace ? "message-stream-trace--top" : ""}`}>
       {renderTraceHistoryCard({
@@ -6014,11 +6032,13 @@ function renderMessage(
             <>
               {messageTrace}
               {messageBody}
+              {choiceBoxElement}
               {messageUsageFooter}
             </>
           ) : (
             <>
               {messageBody}
+              {choiceBoxElement}
               {messageTrace}
               {messageUsageFooter}
             </>
