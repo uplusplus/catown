@@ -761,16 +761,49 @@ def build_recent_history(
     visibility: str = "all",
     target_agent_name: Optional[str] = None,
     prefix_assistant_name: bool = False,
+    summarize_threshold: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Build recent history messages with optional progressive compression.
+
+    ADR-028 Phase 2: Three-tier history compression.
+    - Last `limit` messages: fully preserved
+    - `limit` to `summarize_threshold`: compressed to 1-line summaries
+    - Older: excluded (handled by build_history_summary_fragment)
+    """
+    all_messages = list(recent_messages or [])
+    if summarize_threshold and summarize_threshold > limit:
+        # Three-tier: full → compressed → excluded
+        full_start = max(0, len(all_messages) - limit)
+        compress_start = max(0, len(all_messages) - summarize_threshold)
+        messages_to_process = all_messages[compress_start:]  # include compressed tier
+    else:
+        # Two-tier: full → excluded (original behavior)
+        full_start = max(0, len(all_messages) - limit)
+        messages_to_process = all_messages[full_start:]
+
     output: list[dict[str, Any]] = []
-    recent = list(recent_messages or [])[-limit:]
-    for msg in recent:
+    for idx, msg in enumerate(messages_to_process):
+        is_full_tier = idx >= (len(messages_to_process) - limit)
         agent_name = _message_agent_name(msg)
         content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
         if not content:
             continue
         message_type = getattr(msg, "message_type", "") if not isinstance(msg, dict) else msg.get("message_type", "")
         metadata = _message_metadata(msg)
+
+        # Compressed tier: compress to 1-line summary (ADR-028 Phase 2)
+        if not is_full_tier:
+            compact = _trim_context_value(content, limit=120)
+            if message_type in {"tool_result", "tool"}:
+                output.append({"role": "tool", "content": f"[tool result: {compact}]"})
+            elif message_type == "user" or not agent_name:
+                output.append({"role": "user", "content": compact})
+            elif visibility != "target" or not target_agent_name or agent_name == target_agent_name:
+                speaker = f"[{agent_name}]" if prefix_assistant_name else agent_name
+                output.append({"role": "assistant", "content": f"{speaker}: {compact}"})
+            continue
+
+        # Full tier: preserve complete message
         if message_type in {"tool_result", "tool"}:
             tool_call_id = metadata.get("tool_call_id")
             tool_message = {"role": "tool", "content": content}

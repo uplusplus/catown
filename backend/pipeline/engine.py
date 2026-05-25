@@ -1094,6 +1094,45 @@ def _format_stage_output_summary(
     return "\n".join(parts)
 
 
+async def _format_stage_output_summary_async(
+    stage_name: str,
+    display_name: str,
+    agent_name: str,
+    raw_content: str,
+    artifacts: list[str] | None = None,
+    max_chars: int = 800,
+) -> str:
+    """Async version with LLM-assisted summarization for long outputs.
+
+    ADR-028 Phase 5: Uses lightweight LLM to compress long stage outputs
+    while preserving key information.
+    """
+    content = (raw_content or "").strip()
+    if not content:
+        return f"({display_name}: no output)"
+
+    # For long outputs, use LLM summarization (ADR-028 Phase 5)
+    if len(content) > max_chars * 2:
+        try:
+            from services.context_builder import summarize_for_context
+            # Use LLM to create a better summary than simple truncation
+            summarized = await summarize_for_context(content, max_tokens=200)
+            if summarized and len(summarized) < len(content):
+                content = summarized
+            else:
+                content = content[:max_chars] + "..."
+        except Exception:
+            # Fallback to truncation on any error
+            content = content[:max_chars] + "..."
+    elif len(content) > max_chars:
+        content = content[:max_chars] + "..."
+
+    parts = [f"Agent: {agent_name}", content]
+    if artifacts:
+        parts.append("Artifacts: " + ", ".join(artifacts))
+    return "\n".join(parts)
+
+
 def _build_completed_stage_summaries_fragment(
     db: Session,
     run: PipelineRun,
@@ -2028,7 +2067,7 @@ class PipelineEngine:
                     return True
 
                 stage.status = "completed"
-                stage.output_summary = _format_stage_output_summary(
+                stage.output_summary = await _format_stage_output_summary_async(
                     stage_name=stage_cfg.name,
                     display_name=stage_cfg.display_name,
                     agent_name=stage_cfg.agent,

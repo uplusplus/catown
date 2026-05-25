@@ -308,6 +308,7 @@ def assemble_chat_messages(
         visibility=history_visibility,
         target_agent_name=target_agent_name,
         prefix_assistant_name=prefix_assistant_name,
+        summarize_threshold=history_limit * 2,  # ADR-028 Phase 2: three-tier compression
     )
     history_summary = build_history_summary_fragment(
         recent_messages or [],
@@ -480,11 +481,16 @@ def materialize_selector_profile_config(
         _drop_ratio_fields(materialized)
         return materialized
 
+    # ADR-028 Phase 3: Minimum cap floor to prevent aggressive ratio on small models
+    min_tokens_cap = 3200
+
     cap_ratio = _ratio(materialized.pop("max_tokens_cap_ratio", None))
     if cap_ratio is not None:
         ratio_cap = max(1, int(input_window * cap_ratio))
         configured_cap = _positive_int(materialized.get("max_tokens_cap"))
-        materialized["max_tokens_cap"] = min(configured_cap, ratio_cap) if configured_cap else ratio_cap
+        # Use max of ratio_cap and min_tokens_cap to ensure minimum budget
+        effective_cap = max(ratio_cap, min_tokens_cap)
+        materialized["max_tokens_cap"] = min(configured_cap, effective_cap) if configured_cap else effective_cap
 
     _materialize_budget_ratio_map(materialized, "max_tokens_by_role", "max_tokens_by_role_ratio", input_window)
     _materialize_budget_ratio_map(materialized, "max_tokens_by_scope", "max_tokens_by_scope_ratio", input_window)
