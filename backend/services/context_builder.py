@@ -569,8 +569,10 @@ def build_runtime_user_fragments(
             )
         )
 
-    fragments.extend(_project_context_fragments(project))
-    fragments.extend(_chatroom_context_fragments(chatroom, project=project, source_chatroom=source_chatroom))
+    # Merged: project + chatroom + routing + lineage → 1 fragment (was 6)
+    overview_fragment = _build_project_chat_overview_fragment(project, chatroom, source_chatroom)
+    if overview_fragment is not None:
+        fragments.append(overview_fragment)
 
     run_text = _run_context(run)
     if run_text:
@@ -1373,6 +1375,103 @@ def _chatroom_context_fragments(chatroom: Any, *, project: Any = None, source_ch
         )
 
     return fragments
+
+
+def _build_project_chat_overview_fragment(
+    project: Any,
+    chatroom: Any,
+    source_chatroom: Any = None,
+) -> Optional[ContextFragment]:
+    """Merge project context + chatroom context + routing + lineage into one fragment."""
+
+    parts: list[str] = []
+
+    # Project identity + strategy + status
+    if project is not None:
+        identity_lines = _context_lines(
+            project,
+            [
+                ("Project ID", "id", 120),
+                ("Name", "name", 240),
+                ("Description", "description", 800),
+                ("Workspace path", "workspace_path", 260),
+            ],
+        )
+        if identity_lines:
+            parts.append("## Current Project\n" + "\n".join(identity_lines))
+
+        strategy_lines = _context_lines(
+            project,
+            [
+                ("Vision", "one_line_vision", 320),
+                ("Primary outcome", "primary_outcome", 320),
+            ],
+        )
+        if strategy_lines:
+            parts.append("## Project Strategy\n" + "\n".join(strategy_lines))
+
+        status_lines = _context_lines(
+            project,
+            [
+                ("Status", "status", 160),
+                ("Current stage", "current_stage", 200),
+                ("Execution mode", "execution_mode", 160),
+                ("Health status", "health_status", 160),
+            ],
+        )
+        if status_lines:
+            parts.append("## Project Delivery State\n" + "\n".join(status_lines))
+
+    # Chatroom identity
+    if chatroom is not None:
+        chat_lines = _context_lines(
+            chatroom,
+            [
+                ("Chat ID", "id", 120),
+                ("Title", "title", 400),
+                ("Session type", "session_type", 120),
+                ("Message visibility", "message_visibility", 120),
+            ],
+        )
+        visible_in_list = getattr(chatroom, "is_visible_in_chat_list", None)
+        if visible_in_list is not None:
+            chat_lines.append(f"- Visible in chat list: {'yes' if visible_in_list else 'no'}")
+        if chat_lines:
+            parts.append("## Current Chat\n" + "\n".join(chat_lines))
+
+        # Chat routing (compact)
+        parts.append(
+            "## Chat Routing\n"
+            "- Messages are shared conversation events.\n"
+            "- Agent-to-agent: start the last non-empty paragraph with `@agent_name` mentions to trigger routing.\n"
+            "- Use chat mentions for notifications/handoffs; use tracked task tools for work that needs tracking."
+        )
+
+        # Chat lineage
+        lineage_lines: list[str] = []
+        chat_role = _chat_role(chatroom, project)
+        if chat_role:
+            lineage_lines.append(f"- Chat role: {chat_role}")
+        if source_chatroom is not None:
+            source_id = getattr(source_chatroom, "id", None)
+            source_title = getattr(source_chatroom, "title", None)
+            if source_id or source_title:
+                source_label = f"#{source_id} {source_title or 'New Chat'}".strip()
+                lineage_lines.append(f"- Source chat: {source_label}")
+        if lineage_lines:
+            parts.append("## Chat Lineage\n" + "\n".join(lineage_lines))
+
+    if not parts:
+        return None
+
+    return ContextFragment(
+        role="user",
+        content="\n\n".join(parts),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.GLOBAL,
+        source="project_chat_overview",
+        priority=20,
+    )
 
 
 def _run_context(run: Any) -> str:
