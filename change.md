@@ -3414,3 +3414,26 @@ Expected outcome:
 - rejected artifact gate result 会阻止 stage 标记为 completed
 - pipeline 写入 `pipeline_stage_blocked`，payload 包含 `policy_decision_summary`
 - 当前先覆盖 missing expected artifact 场景，不改变已 accepted artifact 的完成路径
+
+## 2026-05-25
+
+### `feat: chat runtime audit data collection (ADR-010 P0-a)`
+
+范围：
+
+- `backend/services/audit_recorder.py`
+- `backend/routes/api.py`
+- `backend/services/orchestration_agent_turn.py`
+- `backend/tests/test_audit_recorder.py`
+
+内容：
+
+- 新增共享审计记录服务 `audit_recorder.py`，提供 non-stream/stream turn executor 回调工厂
+- 聊天运行时所有路径（standalone stream、project single-agent sync/stream、orchestration sync/stream）注入审计回调
+- LLM 调用记录写入 `llm_calls` 表（含 prompt、response、tokens、耗时）
+- 工具调用记录写入 `tool_calls` 表（含入参、返回摘要、成功/失败、耗时）
+- 事件写入 `events` 表（llm_call、tool_call、error）
+- 链式 `before_event` 回调，与现有 LLM fact recorder 共存
+- 新增单元测试覆盖审计记录服务核心功能
+
+之前只有 Pipeline 引擎写审计表，聊天运行时（主要交互路径）缺失审计数据。现在所有 LLM/工具调用均有完整记录。
