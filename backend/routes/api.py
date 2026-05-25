@@ -208,6 +208,11 @@ from services.stream_runtime_persistence import (
     public_runtime_card_payload,
     store_runtime_card,
 )
+from services.audit_recorder import (
+    chain_before_event_callbacks,
+    make_nonstream_audit_callbacks,
+    make_stream_audit_before_event,
+)
 from services.single_agent_session_finalizer import (
     finalize_single_agent_session_failure,
 )
@@ -1210,12 +1215,20 @@ async def _stream_standalone_assistant_response(
                 preview_tool_calls=_preview_tool_calls,
                 format_prompt_messages=_format_json_block,
                 tool_result_success=_tool_result_succeeded,
-                before_event=_build_llm_fact_recorder(
-                    db,
-                    task_run,
-                    agent_name=runtime.assistant_name,
-                    llm_client=runtime.llm_client,
-                    client_turn_id=client_turn_id,
+                before_event=chain_before_event_callbacks(
+                    _build_llm_fact_recorder(
+                        db,
+                        task_run,
+                        agent_name=runtime.assistant_name,
+                        llm_client=runtime.llm_client,
+                        client_turn_id=client_turn_id,
+                    ),
+                    make_stream_audit_before_event(
+                        db=db,
+                        run_id=getattr(task_run, "id", None),
+                        stage_id=None,
+                        agent_name=runtime.assistant_name,
+                    ),
                 ),
             ),
             transport=build_single_agent_stream_transport_context(
@@ -1673,6 +1686,21 @@ async def trigger_agent_response(
 
         async def _execute_project_single_agent_turn():
             nonlocal awaiting_tool_approval, awaiting_background_tool
+            audit_cbs = make_nonstream_audit_callbacks(
+                db=db,
+                run_id=getattr(task_run, "id", None),
+                stage_id=None,
+                agent_name=runtime.agent_label,
+            )
+            _original_on_tool_round = _on_project_single_agent_tool_round
+
+            async def _chained_on_tool_round(frame, tool_results, turn_state):
+                # Audit recording first
+                if audit_cbs.get("on_tool_round"):
+                    await audit_cbs["on_tool_round"](frame, tool_results, turn_state)
+                # Then original handler
+                return await _original_on_tool_round(frame, tool_results, turn_state)
+
             loop_result = await execute_non_stream_turn_loop(
                 llm_client=runtime.llm_client,
                 tools=runtime.tool_schemas,
@@ -1680,7 +1708,10 @@ async def trigger_agent_response(
                 assemble_messages=_assemble_project_single_agent_messages,
                 execute_tool_call=_execute_project_single_agent_tool,
                 max_turns=MAX_TOOL_ITERATIONS,
-                on_tool_round=_on_project_single_agent_tool_round,
+                on_tool_round=_chained_on_tool_round,
+                before_llm_call=audit_cbs["before_llm_call"],
+                on_llm_response=audit_cbs["on_llm_response"],
+                on_llm_error=audit_cbs["on_llm_error"],
             )
             awaiting_tool_approval = loop_result.awaiting_tool_approval
             awaiting_background_tool = loop_result.awaiting_background_tool
@@ -8367,12 +8398,20 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         preview_tool_calls=_preview_tool_calls,
                         format_prompt_messages=_format_json_block,
                         tool_result_success=_tool_result_succeeded,
-                        before_event=_build_llm_fact_recorder(
-                            db,
-                            task_run,
-                            agent_name=target_agent_label,
-                            llm_client=runtime.llm_client,
-                            client_turn_id=message.client_turn_id,
+                        before_event=chain_before_event_callbacks(
+                            _build_llm_fact_recorder(
+                                db,
+                                task_run,
+                                agent_name=target_agent_label,
+                                llm_client=runtime.llm_client,
+                                client_turn_id=message.client_turn_id,
+                            ),
+                            make_stream_audit_before_event(
+                                db=db,
+                                run_id=getattr(task_run, "id", None),
+                                stage_id=None,
+                                agent_name=target_agent_label,
+                            ),
                         ),
                         on_tool_round=_on_single_agent_stream_tool_round,
                     ),

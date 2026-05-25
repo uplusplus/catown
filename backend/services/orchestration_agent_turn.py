@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from agents.identity import agent_name_of
 from models.database import Chatroom, TaskRun
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
+from services.audit_recorder import chain_before_event_callbacks, make_nonstream_audit_callbacks, make_stream_audit_before_event
 from services.orchestration_chat_profile import (
     build_orchestration_stream_turn_profile,
     build_orchestration_sync_turn_profile,
@@ -163,6 +164,20 @@ async def run_orchestration_agent_turn(
         compaction_callback=compaction_callback,
     )
 
+    audit_cbs = make_nonstream_audit_callbacks(
+        db=db,
+        run_id=getattr(task_run, "id", None),
+        stage_id=None,
+        agent_name=agent_name_of(agent),
+    )
+    _original_on_tool_round = profile.on_tool_round
+
+    async def _chained_on_tool_round(frame, tool_results, turn_state):
+        if audit_cbs.get("on_tool_round"):
+            await audit_cbs["on_tool_round"](frame, tool_results, turn_state)
+        if _original_on_tool_round:
+            return await _original_on_tool_round(frame, tool_results, turn_state)
+
     loop_result = await execute_non_stream_turn_loop(
         llm_client=profile.runtime.llm_client,
         tools=profile.runtime.tool_schemas,
@@ -172,7 +187,10 @@ async def run_orchestration_agent_turn(
         max_turns=deps.max_tool_iterations,
         before_turn=profile.check_cancel,
         before_tool_call=profile.check_cancel,
-        on_tool_round=profile.on_tool_round,
+        on_tool_round=_chained_on_tool_round,
+        before_llm_call=audit_cbs["before_llm_call"],
+        on_llm_response=audit_cbs["on_llm_response"],
+        on_llm_error=audit_cbs["on_llm_error"],
     )
     if loop_result.awaiting_tool_approval or loop_result.awaiting_background_tool:
         return None, None
@@ -361,7 +379,15 @@ async def iter_stream_orchestration_agent_turn_events(
         tool_result_success=deps.tool_result_success,
         max_turns=deps.max_tool_iterations,
         before_turn=profile.check_cancel,
-        before_event=_record_stream_fact,
+        before_event=chain_before_event_callbacks(
+            _record_stream_fact,
+            make_stream_audit_before_event(
+                db=db,
+                run_id=getattr(task_run, "id", None),
+                stage_id=None,
+                agent_name=profile.runtime.agent_label,
+            ),
+        ),
         before_tool_call=profile.check_cancel,
         on_tool_round=profile.on_tool_round,
     ):
