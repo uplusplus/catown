@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from sqlalchemy.orm import Session
 
 from models.database import TaskRun
+from models.enums import EventType
 from services.orchestration_handoffs import compact_runtime_text
 from services.run_ledger import append_task_event, complete_task_run
 
@@ -58,7 +59,7 @@ def fail_orchestration_task_run(
     task_run: TaskRun | None,
     *,
     summary: str,
-    event_type: str = "task_run_failed",
+    event_type: str | EventType = EventType.TASK_RUN_FAILED,
     agent_name: str | None = None,
     event_summary: str | None = None,
     payload: Any = None,

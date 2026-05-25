@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from models.database import TaskRun
+from models.enums import EventType
 from services.run_ledger import append_task_event
 
 
@@ -58,7 +59,7 @@ def record_orchestration_started(
     return append_task_event(
         db,
         task_run,
-        "orchestration_started",
+        EventType.ORCHESTRATION_STARTED,
         summary=(
             "Multi-agent streaming orchestration started."
             if streaming
@@ -92,7 +93,7 @@ def record_scheduler_plan_created(
     return append_task_event(
         db,
         task_run,
-        "scheduler_plan_created",
+        EventType.SCHEDULER_PLAN_CREATED,
         summary=summary,
         payload=scheduler_plan_payload(
             queue,
@@ -120,7 +121,7 @@ def record_task_run_recovery_started(
     return append_task_event(
         db,
         task_run,
-        "task_run_recovery_started",
+        EventType.TASK_RUN_RECOVERY_STARTED,
         summary=(
             "Manual resume started recovery for an interrupted orchestration run."
             if trigger == "manual"
@@ -159,7 +160,7 @@ def record_scheduler_recovery_state_rebuilt(
     return append_task_event(
         db,
         task_run,
-        "scheduler_recovery_state_rebuilt",
+        EventType.SCHEDULER_RECOVERY_STATE_REBUILT,
         summary=(
             f"Rebuilt scheduler state with {len(completed_step_ids)} completed step(s) and "
             f"{queue.runtime_snapshot().ready_step_count} ready step(s)."
@@ -196,7 +197,7 @@ def record_scheduler_step_dispatched(
     return append_task_event(
         db,
         task_run,
-        "scheduler_step_dispatched",
+        EventType.SCHEDULER_STEP_DISPATCHED,
         agent_name=agent_name,
         summary=f"{summary_prefix} dispatched {step.dispatch_kind} work to {agent_name}.",
         payload=scheduler_event_payload(queue, step, extra=payload_extra),
@@ -227,7 +228,7 @@ def record_scheduler_step_completed(
     return append_task_event(
         db,
         task_run,
-        "scheduler_step_completed",
+        EventType.SCHEDULER_STEP_COMPLETED,
         agent_name=agent_name,
         summary=(
             f"{summary_prefix} marked {agent_name} complete and released {len(ready_steps)} waiting step(s)."
@@ -260,7 +261,7 @@ def record_scheduler_step_resumed(
     return append_task_event(
         db,
         task_run,
-        "scheduler_step_resumed",
+        EventType.SCHEDULER_STEP_RESUMED,
         agent_name=step.agent_name,
         summary=f"{summary_prefix} resumed {step.agent_name} after {resumed_by_agent}.",
         payload=scheduler_event_payload(queue, step, extra=payload_extra),
@@ -288,7 +289,7 @@ def record_scheduler_step_failed(
     return append_task_event(
         db,
         task_run,
-        "scheduler_step_failed",
+        EventType.SCHEDULER_STEP_FAILED,
         agent_name=agent_name,
         summary=f"{summary_prefix} marked {agent_name} failed.",
         payload=scheduler_event_payload(queue, step, extra=payload_extra),
@@ -307,7 +308,7 @@ def record_scheduler_step_cancelled(
     return append_task_event(
         db,
         task_run,
-        "scheduler_step_cancelled",
+        EventType.SCHEDULER_STEP_CANCELLED,
         agent_name=agent_name,
         summary=f"Cancelled subagent {agent_name or subagent.get('step_id')}.",
         payload={

@@ -131,6 +131,61 @@ class TurnContextState:
             if str(summary or "").strip()
         ]
 
+    def reset(self) -> None:
+        """Clear all accumulated turn-local state, restoring a fresh instance.
+
+        Useful when reusing a ``TurnContextState`` across multiple loop
+        iterations to prevent unbounded memory growth.
+        """
+        self.previous_agent_work = ""
+        self.boss_instructions.clear()
+        self.inter_agent_messages.clear()
+        self.tool_rounds.clear()
+        self.continuation_protocol_messages.clear()
+        self.continuation_summaries.clear()
+
+    def compact(self, *, keep_last_n_rounds: int = 1) -> None:
+        """Retain only the most recent *keep_last_n_rounds* tool rounds.
+
+        Older rounds are summarised into ``continuation_summaries`` so the
+        model still has context, but the full protocol messages are dropped.
+        This bounds memory growth in long-running multi-turn loops.
+
+        Parameters
+        ----------
+        keep_last_n_rounds:
+            How many of the most recent tool rounds to keep in full.
+            Defaults to 1 (the same as ``max_protocol_rounds``).
+        """
+        if keep_last_n_rounds < 0:
+            keep_last_n_rounds = 0
+
+        if not self.tool_rounds:
+            return
+
+        excess = self.tool_rounds[:-keep_last_n_rounds] if keep_last_n_rounds > 0 else list(self.tool_rounds)
+        if not excess:
+            return
+
+        # Build lightweight summaries for the rounds we are about to drop
+        for index, round_record in enumerate(excess, start=1):
+            assistant_preview = _compact_text(round_record.assistant_content, limit=140)
+            if assistant_preview:
+                self.continuation_summaries.append(f"- Round {index} intent: {assistant_preview}")
+            for result in round_record.tool_results:
+                arg_preview = _compact_jsonish(result.arguments, limit=120)
+                result_preview = _compact_text(result.result, limit=180)
+                status = result.status or ("ok" if result.success else "error")
+                self.continuation_summaries.append(
+                    f"- {result.tool_name}({arg_preview}) [{status}] -> {result_preview}"
+                )
+
+        # Keep only the tail of tool_rounds
+        if keep_last_n_rounds > 0:
+            self.tool_rounds = self.tool_rounds[-keep_last_n_rounds:]
+        else:
+            self.tool_rounds.clear()
+
 
 def build_turn_state_from_checkpoint_snapshot(
     checkpoint_snapshot: Any,

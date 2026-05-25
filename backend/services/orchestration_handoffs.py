@@ -17,6 +17,7 @@ from services.orchestration_inbox import (
     mark_orchestration_handoffs_failed,
 )
 from services.run_ledger import append_task_event
+from models.enums import EventType
 
 
 def compact_runtime_text(value: Any, *, limit: int = 600) -> str:
@@ -173,7 +174,7 @@ def record_orchestration_handoffs(
         append_task_event(
             db,
             task_run,
-            "handoff_created",
+            EventType.HANDOFF_CREATED,
             agent_name=from_agent_name,
             summary=(
                 f"Recovery created a handoff for {next_step.agent_name}."

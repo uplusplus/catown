@@ -13,6 +13,7 @@ from services.subagent_lifecycle import (
     find_subagent_lifecycle_entry,
     find_subagent_runtime_handle,
 )
+from models.enums import EventType
 
 
 @dataclass
@@ -117,14 +118,14 @@ def cancel_task_run_subagent_handle(
     append_task_event(
         db,
         task_run,
-        "task_run_subagent_cancelled",
+        EventType.TASK_RUN_SUBAGENT_CANCELLED,
         summary=note or f"Cancelled subagent {step_id} from the API.",
         payload={
             "task_run_id": task_run.id,
             "step_id": step_id,
             "cancelled_by": cancelled_by,
             "note": note or None,
-            "task_run_cancelled": task_run_cancelled,
+            EventType.TASK_RUN_CANCELLED: task_run_cancelled,
             "remaining_cancellable_subagent_count": len(remaining_cancellable_handles),
             "subagent_handle": updated_handle,
         },
@@ -134,7 +135,7 @@ def cancel_task_run_subagent_handle(
         append_task_event(
             db,
             task_run,
-            "task_run_cancelled",
+            EventType.TASK_RUN_CANCELLED,
             summary=note or f"Task run cancelled after subagent {step_id} was cancelled.",
             payload={
                 "task_run_id": task_run.id,
@@ -156,7 +157,7 @@ def cancel_task_run_subagent_handle(
             else "Subagent cancelled."
         ),
         "cancelled": True,
-        "task_run_cancelled": task_run_cancelled,
+        EventType.TASK_RUN_CANCELLED: task_run_cancelled,
         "task_run_id": task_run.id,
         "step_id": step_id,
         "status": task_run.status,
@@ -194,7 +195,7 @@ def close_task_run_subagent_handle(
     append_task_event(
         db,
         task_run,
-        "subagent_handle_closed",
+        EventType.SUBAGENT_HANDLE_CLOSED,
         summary=note or f"Closed subagent handle {step_id} from the API.",
         payload={
             "task_run_id": task_run.id,
@@ -258,7 +259,7 @@ def cancel_task_run_with_subagents(
     append_task_event(
         db,
         task_run,
-        "task_run_cancelled",
+        EventType.TASK_RUN_CANCELLED,
         summary=note or "Task run cancelled from the API.",
         payload={
             "task_run_id": task_run.id,

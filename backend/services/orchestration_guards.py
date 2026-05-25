@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from models.database import TaskRun
+from models.enums import EventType
 from services.orchestration_finalizer import fail_orchestration_task_run
 
 
@@ -77,7 +78,7 @@ def fail_recovery_guard(
         fail_orchestration_task_run(
             db,
             task_run,
-            event_type="task_run_recovery_failed",
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
             summary="Recovery failed: chatroom missing.",
             event_summary="Recovery aborted because the chatroom no longer exists.",
             payload=extra_payload or {"task_run_id": getattr(task_run, "id", task_run_id)},
@@ -94,7 +95,7 @@ def fail_recovery_guard(
         fail_orchestration_task_run(
             db,
             task_run,
-            event_type="task_run_recovery_failed",
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
             summary="Recovery failed: no valid agents resolved.",
             event_summary="Recovery aborted because no valid orchestration agents could be resolved.",
             payload=extra_payload,
@@ -111,7 +112,7 @@ def fail_recovery_guard(
         fail_orchestration_task_run(
             db,
             task_run,
-            event_type="task_run_recovery_failed",
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
             summary="Recovery failed: no runnable orchestration plan.",
             event_summary="Recovery failed because orchestration runtime preparation returned no runnable plan.",
             payload=extra_payload,
@@ -128,7 +129,7 @@ def fail_recovery_guard(
         fail_orchestration_task_run(
             db,
             task_run,
-            event_type="task_run_recovery_failed",
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
             summary="Recovery failed: no runnable steps after rebuild.",
             event_summary="Recovery rebuilt the scheduler state but found no runnable steps.",
             payload=extra_payload,
@@ -145,7 +146,7 @@ def fail_recovery_guard(
         fail_orchestration_task_run(
             db,
             task_run,
-            event_type="task_run_recovery_failed",
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
             summary="Recovery failed: orchestration remained incomplete.",
             event_summary="Recovery stopped before all scheduled steps completed.",
             payload=extra_payload,

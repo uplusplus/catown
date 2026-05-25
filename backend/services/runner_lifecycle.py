@@ -24,6 +24,7 @@ from services.approval_replay import (
 
 logger = logging.getLogger("catown.runner_lifecycle")
 from services.run_ledger import append_task_event, update_task_run
+from models.enums import EventType
 from services.task_status_transition import validate_transition
 
 
@@ -135,7 +136,7 @@ def start_agent_turn(
     return append_task_event(
         db,
         task_run,
-        "agent_turn_started",
+        EventType.AGENT_TURN_STARTED,
         agent_name=agent_name,
         summary=summary or "",
         payload=payload,
@@ -164,7 +165,7 @@ def record_llm_request_created(
     return append_task_event(
         db,
         task_run,
-        "llm_request_created",
+        EventType.LLM_REQUEST_CREATED,
         agent_name=agent_name,
         summary=summary or "",
         payload=merged_payload,
@@ -191,7 +192,7 @@ def record_llm_response_started(
     return append_task_event(
         db,
         task_run,
-        "llm_response_started",
+        EventType.LLM_RESPONSE_STARTED,
         agent_name=agent_name,
         summary=summary or "",
         payload=merged_payload,
@@ -220,7 +221,7 @@ def record_llm_response_completed(
     return append_task_event(
         db,
         task_run,
-        "llm_response_completed",
+        EventType.LLM_RESPONSE_COMPLETED,
         agent_name=agent_name,
         summary=summary or "",
         payload=merged_payload,
@@ -349,7 +350,7 @@ def record_tool_round(
     event = append_task_event(
         db,
         task_run,
-        "tool_round_recorded",
+        EventType.TOOL_ROUND_RECORDED,
         agent_name=agent_name,
         summary=summary,
         payload=merged_payload,
@@ -373,7 +374,7 @@ def record_tool_round(
                 chatroom_id=getattr(task_run, "chatroom_id", None),
                 project_id=getattr(task_run, "project_id", None),
                 queue_kind=queue_kind,
-                source="tool_call_blocked",
+                source=EventType.TOOL_CALL_BLOCKED,
                 title=blocked_tool_queue_title(
                     blocked_tool["tool_name"],
                     queue_kind=queue_kind,
@@ -413,7 +414,7 @@ def record_tool_round(
             append_task_event(
                 db,
                 task_run,
-                "approval_queue_item_created",
+                EventType.APPROVAL_QUEUE_ITEM_CREATED,
                 agent_name=agent_name,
                 summary="",
                 payload=build_approval_queue_item_created_event_payload(queue_item),
@@ -421,7 +422,7 @@ def record_tool_round(
         append_task_event(
             db,
             task_run,
-            "tool_call_blocked",
+            EventType.TOOL_CALL_BLOCKED,
             agent_name=agent_name,
             summary="",
             payload={
@@ -468,7 +469,7 @@ def start_tool_call(
     return append_task_event(
         db,
         task_run,
-        "tool_call_started",
+        EventType.TOOL_CALL_STARTED,
         agent_name=agent_name,
         summary="",
         payload=merged_payload,
@@ -497,7 +498,7 @@ def complete_agent_turn(
     return append_task_event(
         db,
         task_run,
-        "agent_turn_completed",
+        EventType.AGENT_TURN_COMPLETED,
         agent_name=agent_name,
         message_id=message_id,
         summary=summary or "",

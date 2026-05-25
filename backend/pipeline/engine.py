@@ -93,6 +93,7 @@ from services.run_ledger import (
     get_task_run,
     update_task_run,
 )
+from models.enums import EventType
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.runner_policy import (
     compile_pipeline_run_policy,
@@ -1329,7 +1330,7 @@ class PipelineEngine:
         # 写入 gate 审批事件
         db.add(Event(
             run_id=run.id,
-            event_type="gate_approved",
+            event_type=EventType.GATE_APPROVED,
             agent_name=None,
             stage_name=stage.stage_name,
             summary=f"Gate approved: {stage.display_name} by BOSS",
@@ -1454,7 +1455,7 @@ class PipelineEngine:
         # 写入 gate 拒绝 + 打回事件
         db.add(Event(
             run_id=run.id,
-            event_type="gate_rejected",
+            event_type=EventType.GATE_REJECTED,
             agent_name=None,
             stage_name=stage.stage_name,
             summary=f"Gate rejected: {stage.display_name} → rolling back to {target_name}",
@@ -1496,7 +1497,7 @@ class PipelineEngine:
         # 写入 BOSS 指令事件
         db.add(Event(
             run_id=run.id,
-            event_type="boss_instruction",
+            event_type=EventType.BOSS_INSTRUCTION,
             agent_name=agent_name,
             stage_name=None,
             summary=f"BOSS → {agent_name}: {message[:100]}",
@@ -1772,7 +1773,7 @@ class PipelineEngine:
         active_skills = list(stage_policy.active_skills)
         db.add(Event(
             run_id=run.id,
-            event_type="stage_start",
+            event_type=EventType.STAGE_START,
             agent_name=stage_policy.agent_name,
             stage_name=stage_policy.stage_name,
             summary=f"Stage: {stage_policy.display_name} ({stage_policy.agent_name})",
@@ -1984,7 +1985,7 @@ class PipelineEngine:
                 duration_min = (stage.completed_at - stage.started_at).total_seconds() / 60 if stage.started_at else 0
                 db.add(Event(
                     run_id=run.id,
-                    event_type="stage_end",
+                    event_type=EventType.STAGE_END,
                     agent_name=stage_policy.agent_name,
                     stage_name=stage_policy.stage_name,
                     summary=f"Stage: {stage_policy.display_name} completed ({duration_min:.0f}min)",
@@ -2031,7 +2032,7 @@ class PipelineEngine:
                     )
                     db.add(Event(
                         run_id=run.id,
-                        event_type="gate_auto_approved",
+                        event_type=EventType.GATE_AUTO_APPROVED,
                         agent_name=stage_policy.agent_name,
                         stage_name=stage_policy.stage_name,
                         summary=f"Gate: {stage_policy.display_name} auto-approved by permission policy",
@@ -2084,7 +2085,7 @@ class PipelineEngine:
                     # 写入 gate 阻塞事件
                     db.add(Event(
                         run_id=run.id,
-                        event_type="gate_blocked",
+                        event_type=EventType.GATE_BLOCKED,
                         agent_name=stage_policy.agent_name,
                         stage_name=stage_policy.stage_name,
                         summary=f"Gate: {stage_policy.display_name} — 等待人工审批",
@@ -2142,7 +2143,7 @@ class PipelineEngine:
                 if attempt < max_retries:
                     db.add(Event(
                         run_id=run.id,
-                        event_type="stage_retry",
+                        event_type=EventType.STAGE_RETRY,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} timeout, retry {attempt}/{max_retries}",
@@ -2157,7 +2158,7 @@ class PipelineEngine:
 
                     db.add(Event(
                         run_id=run.id,
-                        event_type="timeout",
+                        event_type=EventType.TIMEOUT,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} failed (timeout after {max_retries} retries)",
@@ -2194,7 +2195,7 @@ class PipelineEngine:
                 if attempt < max_retries:
                     db.add(Event(
                         run_id=run.id,
-                        event_type="stage_retry",
+                        event_type=EventType.STAGE_RETRY,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} error, retry {attempt}/{max_retries}",
@@ -2209,7 +2210,7 @@ class PipelineEngine:
 
                     db.add(Event(
                         run_id=run.id,
-                        event_type="error",
+                        event_type=EventType.ERROR,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} failed after {max_retries} retries",
@@ -2454,7 +2455,7 @@ class PipelineEngine:
             db.flush()
             db.add(Event(
                 run_id=run.id,
-                event_type="llm_call",
+                event_type=EventType.LLM_CALL,
                 agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
                 summary=(
@@ -2575,7 +2576,7 @@ class PipelineEngine:
             ))
             db.add(Event(
                 run_id=run.id,
-                event_type="tool_call",
+                event_type=EventType.TOOL_CALL,
                 agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
                 summary=f"{fn_name}({tool_result_record.status}, {result_len} chars, {tool_duration}ms)",

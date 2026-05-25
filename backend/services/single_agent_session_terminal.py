@@ -11,6 +11,7 @@ from services.delegated_task_guard import (
     build_pending_delegated_work_summary,
     find_incomplete_delegated_child_runs,
 )
+from models.enums import EventType
 
 
 SaveMessage = Callable[..., Awaitable[Any]]
@@ -88,7 +89,7 @@ async def persist_single_agent_session_success(
         append_task_event(
             db,
             task_run,
-            "task_run_waiting_for_delegated_work",
+            EventType.TASK_RUN_WAITING_FOR_DELEGATED_WORK,
             agent_name=agent_name,
             summary=pending_summary,
             payload={"pending_delegated_work": pending_delegated_work},
@@ -118,7 +119,7 @@ def terminalize_single_agent_session_failure(
     append_task_event(
         db,
         task_run,
-        "task_run_failed",
+        EventType.TASK_RUN_FAILED,
         agent_name=agent_name,
         summary=failure_summary,
         payload={"error": error_text},

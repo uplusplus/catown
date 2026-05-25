@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Any, Awaitable, Callable
+from models.enums import EventType
 
 
 logger = logging.getLogger("catown.collaboration_delegate_execution")
@@ -39,7 +40,7 @@ def mark_delegated_task_run_interrupted(
         append_task_event(
             db,
             task_run,
-            "task_run_failed",
+            EventType.TASK_RUN_FAILED,
             agent_name=agent_name,
             summary=summary,
             payload={

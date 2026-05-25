@@ -29,6 +29,7 @@ from services.collaboration_task_runtime import (
     resolve_collaboration_task,
 )
 from services.run_ledger import append_task_event
+from models.enums import EventType
 
 
 def _available_collaborator_names(coordinator: Any) -> list[str]:
@@ -189,7 +190,7 @@ def _record_delegated_task_dispatched(
     append_task_event(
         db,
         parent_task_run,
-        "delegated_task_dispatched",
+        EventType.DELEGATED_TASK_DISPATCHED,
         agent_name=from_agent,
         summary=f"{from_agent} delegated '{task_title}' to {to_agent}.",
         payload={

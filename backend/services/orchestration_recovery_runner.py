@@ -22,6 +22,7 @@ from services.orchestration_runtime_runner import (
 from services.orchestration_scheduler import OrchestrationRuntimeQueue
 from services.orchestration_step_state import OrchestrationStepOutputState
 from services.run_ledger import append_task_event
+from models.enums import EventType
 from services.task_run_control import TaskRunCancelledError, raise_if_task_run_cancelled
 
 
@@ -204,7 +205,7 @@ async def run_orchestration_recovery_runtime(
     append_task_event(
         db,
         task_run,
-        "task_run_recovery_completed",
+        EventType.TASK_RUN_RECOVERY_COMPLETED,
         summary="Interrupted orchestration recovery completed.",
         payload={
             "task_run_id": task_run.id,

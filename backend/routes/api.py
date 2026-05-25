@@ -53,6 +53,7 @@ from models.database import (
     SessionLocal,
     Base,
 )
+from models.enums import EventType, RunKind
 from pipeline.engine import pipeline_engine
 from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
@@ -310,14 +311,14 @@ logger = logging.getLogger("catown.api")
 
 MAX_TOOL_ITERATIONS = 50
 RECOVERABLE_ORCHESTRATION_RUN_KINDS = {
-    "multi_agent_orchestration",
-    "multi_agent_orchestration_stream",
+    RunKind.MULTI_AGENT_ORCHESTRATION,
+    RunKind.MULTI_AGENT_ORCHESTRATION_STREAM,
 }
 INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS = {
-    "project_single_agent",
-    "project_single_agent_stream",
-    "standalone_assistant",
-    "standalone_assistant_stream",
+    RunKind.PROJECT_SINGLE_AGENT,
+    RunKind.PROJECT_SINGLE_AGENT_STREAM,
+    RunKind.STANDALONE_ASSISTANT,
+    RunKind.STANDALONE_ASSISTANT_STREAM,
 }
 RECOVERY_LEASE_SECONDS = max(60, int(os.getenv("CATOWN_RECOVERY_LEASE_SECONDS", "900")))
 RECOVERY_INSTANCE_ID = (
@@ -1003,7 +1004,7 @@ async def _trigger_standalone_assistant_response(
         recent_message_limit=20,
     )
     standalone_policy = _build_single_agent_runner_policy(
-        run_kind="standalone_assistant",
+        run_kind=RunKind.STANDALONE_ASSISTANT,
         agent_name=runtime.assistant_name,
         project_id=None,
         tool_names=[],
@@ -1018,7 +1019,7 @@ async def _trigger_standalone_assistant_response(
         tool_names=[],
         client_turn_id=client_turn_id,
         project_id=None,
-        run_kind="standalone_assistant",
+        run_kind=RunKind.STANDALONE_ASSISTANT,
     )
 
     record_agent_turn_started(
@@ -1110,7 +1111,7 @@ async def _stream_standalone_assistant_response(
         recent_message_limit=20,
     )
     standalone_stream_policy = _build_single_agent_runner_policy(
-        run_kind="standalone_assistant_stream",
+        run_kind=RunKind.STANDALONE_ASSISTANT_STREAM,
         agent_name=runtime.assistant_name,
         project_id=None,
         tool_names=[],
@@ -1267,7 +1268,7 @@ async def trigger_agent_response(
                 project_id=project.id if project else None,
                 origin_message_id=None,
                 client_turn_id=client_turn_id,
-                run_kind="chat_turn",
+                run_kind=RunKind.CHAT_TURN,
                 user_request=user_message,
                 initiator="user",
             )
@@ -1288,12 +1289,12 @@ async def trigger_agent_response(
                     agent_names=mentioned_names,
                     client_turn_id=client_turn_id,
                     project_id=None,
-                    run_kind="multi_agent_orchestration",
+                    run_kind=RunKind.MULTI_AGENT_ORCHESTRATION,
                 )
                 _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    run_kind="multi_agent_orchestration",
+                    run_kind=RunKind.MULTI_AGENT_ORCHESTRATION,
                     summary="",
                     project_id=None,
                     runner_policy=prepared_orchestration.runner_policy,
@@ -1316,7 +1317,7 @@ async def trigger_agent_response(
             standalone_target = _resolve_standalone_target_agent(db, user_message)
             standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
             standalone_policy = _build_single_agent_runner_policy(
-                run_kind="standalone_assistant",
+                run_kind=RunKind.STANDALONE_ASSISTANT,
                 agent_name=standalone_agent_name,
                 project_id=None,
                 tool_names=[],
@@ -1326,7 +1327,7 @@ async def trigger_agent_response(
             _select_task_run_runtime_mode(
                 db,
                 task_run,
-                run_kind="standalone_assistant",
+                run_kind=RunKind.STANDALONE_ASSISTANT,
                 summary="",
                 project_id=None,
                 target_agent_name=standalone_agent_name,
@@ -1374,12 +1375,12 @@ async def trigger_agent_response(
                 agent_names=mentioned_names,
                 client_turn_id=client_turn_id,
                 project_id=project.id,
-                run_kind="multi_agent_orchestration",
+                run_kind=RunKind.MULTI_AGENT_ORCHESTRATION,
             )
             _select_task_run_runtime_mode(
                 db,
                 task_run,
-                run_kind="multi_agent_orchestration",
+                run_kind=RunKind.MULTI_AGENT_ORCHESTRATION,
                 summary="",
                 project_id=project.id,
                 runner_policy=prepared_orchestration.runner_policy,
@@ -1422,7 +1423,7 @@ async def trigger_agent_response(
         available_tools = _resolve_agent_runtime_tools(target_agent)
         target_llm_client = get_llm_client_for_agent(_agent_type(target_agent))
         single_agent_policy = _build_single_agent_runner_policy(
-            run_kind="project_single_agent",
+            run_kind=RunKind.PROJECT_SINGLE_AGENT,
             agent_name=agent_name_of(target_agent),
             project_id=project.id,
             tool_names=available_tools,
@@ -1432,7 +1433,7 @@ async def trigger_agent_response(
         _select_task_run_runtime_mode(
             db,
             task_run,
-            run_kind="project_single_agent",
+            run_kind=RunKind.PROJECT_SINGLE_AGENT,
             target_agent_name=agent_name_of(target_agent),
             agent_name=agent_name_of(target_agent),
             summary="",
@@ -1447,7 +1448,7 @@ async def trigger_agent_response(
             tool_names=available_tools,
             client_turn_id=client_turn_id,
             project_id=project.id,
-            run_kind="project_single_agent",
+            run_kind=RunKind.PROJECT_SINGLE_AGENT,
         )
 
         # Register all project agents as collaborators so collaboration tools see the full room context.
@@ -1956,7 +1957,7 @@ def _select_task_run_runtime_mode(
     append_task_event(
         db,
         task_run,
-        "runtime_mode_selected",
+        EventType.RUNTIME_MODE_SELECTED,
         agent_name=agent_name,
         summary=summary or "",
         payload=payload,
@@ -1977,7 +1978,7 @@ def _record_target_agent_selected(
     append_task_event(
         db,
         task_run,
-        "target_agent_selected",
+        EventType.TARGET_AGENT_SELECTED,
         agent_name=agent_name,
         summary="",
         payload={
@@ -2004,7 +2005,7 @@ def _record_target_agents_selected(
     append_task_event(
         db,
         task_run,
-        "target_agents_selected",
+        EventType.TARGET_AGENTS_SELECTED,
         summary="",
         payload={
             "agent_names": normalized_names,
@@ -2101,7 +2102,7 @@ def _task_run_has_interrupted_approval_followup(task_run: TaskRun) -> bool:
     latest_event = _latest_task_run_event(task_run)
     if latest_event is None:
         return False
-    return str(getattr(latest_event, "event_type", "") or "").strip() == "approval_queue_item_followup_interrupted"
+    return str(getattr(latest_event, "event_type", "") or "").strip() == EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_INTERRUPTED
 
 
 def _json_column_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
@@ -2176,7 +2177,7 @@ def _terminalize_interrupted_single_agent_task_run(
     append_task_event(
         db,
         task_run,
-        "task_run_interrupted",
+        EventType.TASK_RUN_INTERRUPTED,
         agent_name=task_run.target_agent_name,
         summary=summary,
         payload={
@@ -2337,7 +2338,7 @@ def _append_tracked_run_shell_completed_event(
     append_task_event(
         db,
         task_run,
-        "tracked_run_shell_completed",
+        EventType.TRACKED_RUN_SHELL_COMPLETED,
         agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or None,
         summary="Tracked run_shell completed; agent follow-up will analyze the result.",
         payload={
@@ -2445,14 +2446,14 @@ def _task_run_has_tracked_shell_followup(
     if task_run is None:
         return False
     event_types = [
-        "tracked_run_shell_followup_queued",
-        "approval_queue_item_followup_triggered",
-        "agent_turn_completed",
+        EventType.TRACKED_RUN_SHELL_FOLLOWUP_QUEUED,
+        EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_TRIGGERED,
+        EventType.AGENT_TURN_COMPLETED,
     ]
     if include_completed_marker:
-        event_types.append("tracked_run_shell_completed")
+        event_types.append(EventType.TRACKED_RUN_SHELL_COMPLETED)
     if token or tool_call_id:
-        event_types.append("run_shell_continuation_claimed")
+        event_types.append(EventType.RUN_SHELL_CONTINUATION_CLAIMED)
     normalized_token = str(token or "").strip()
     normalized_tool_call_id = str(tool_call_id or "").strip()
 
@@ -2548,13 +2549,13 @@ def _task_run_has_terminal_tool_round_result(
             query_session.query(TaskRunEvent)
             .filter(
                 TaskRunEvent.task_run_id == task_run.id,
-                TaskRunEvent.event_type == "tool_round_recorded",
+                TaskRunEvent.event_type == EventType.TOOL_ROUND_RECORDED,
             )
         )
         return any(_event_matches(event) for event in query.all())
 
     return any(
-        event.event_type == "tool_round_recorded" and _event_matches(event)
+        event.event_type == EventType.TOOL_ROUND_RECORDED and _event_matches(event)
         for event in list(getattr(task_run, "events", []) or [])
     )
 
@@ -2569,7 +2570,7 @@ def _task_run_has_delegated_result_report(task_run: TaskRun | None, *, token: st
             query_session.query(TaskRunEvent)
             .filter(
                 TaskRunEvent.task_run_id == task_run.id,
-                TaskRunEvent.event_type == "delegated_task_result_reported",
+                TaskRunEvent.event_type == EventType.DELEGATED_TASK_RESULT_REPORTED,
             )
             .all()
         )
@@ -2577,7 +2578,7 @@ def _task_run_has_delegated_result_report(task_run: TaskRun | None, *, token: st
         events = [
             event
             for event in list(getattr(task_run, "events", []) or [])
-            if getattr(event, "event_type", None) == "delegated_task_result_reported"
+            if getattr(event, "event_type", None) == EventType.DELEGATED_TASK_RESULT_REPORTED
         ]
     if not token:
         return bool(events)
@@ -2917,7 +2918,7 @@ async def _report_delegated_child_result_to_parent(
             append_task_event(
                 db,
                 child_task_run,
-                "test_runner_result_classified",
+                EventType.TEST_RUNNER_RESULT_CLASSIFIED,
                 agent_name=parent_context.get("target_agent_name") or child_task_run.target_agent_name,
                 summary="Tester classified the tool result as a runner issue, not a valid test result.",
                 payload={
@@ -3064,7 +3065,7 @@ async def _report_delegated_child_result_to_parent(
         append_task_event(
             db,
             child_task_run,
-            "test_report_produced",
+            EventType.TEST_REPORT_PRODUCED,
             agent_name=child_agent_name or child_task_run.target_agent_name,
             message_id=getattr(saved_message, "id", None),
             summary=f"{child_agent_name or child_task_run.target_agent_name} produced required test_report.",
@@ -3076,7 +3077,7 @@ async def _report_delegated_child_result_to_parent(
     append_task_event(
         db,
         child_task_run,
-        "delegated_task_result_reported",
+        EventType.DELEGATED_TASK_RESULT_REPORTED,
         agent_name=child_agent_name or child_task_run.target_agent_name,
         message_id=getattr(saved_message, "id", None),
         summary=summary_for_payload,
@@ -3085,7 +3086,7 @@ async def _report_delegated_child_result_to_parent(
     append_task_event(
         db,
         parent_task_run,
-        "delegated_task_result_reported",
+        EventType.DELEGATED_TASK_RESULT_REPORTED,
         agent_name=child_agent_name or child_task_run.target_agent_name,
         message_id=getattr(saved_message, "id", None),
         summary=summary_for_payload,
@@ -3175,7 +3176,7 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
         append_task_event(
             db,
             task_run,
-            "tracked_run_shell_followup_queued",
+            EventType.TRACKED_RUN_SHELL_FOLLOWUP_QUEUED,
             agent_name=(task_run.target_agent_name or next_card.get("agent") or "").strip() or "agent",
             summary="Queued agent follow-up after tracked run_shell completed.",
             payload={
@@ -3221,7 +3222,7 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
         append_task_event(
             db,
             task_run,
-            "tracked_run_shell_followup_failed",
+            EventType.TRACKED_RUN_SHELL_FOLLOWUP_FAILED,
             agent_name=getattr(task_run, "target_agent_name", None),
             summary="Agent follow-up failed after tracked run_shell completed.",
             payload={"error": str(exc), "task_run_id": task_run_id},
@@ -3384,7 +3385,7 @@ async def _recover_orphaned_single_agent_run_shell_task_run(
     append_task_event(
         db,
         task_run,
-        "task_run_recovery_completed",
+        EventType.TASK_RUN_RECOVERY_COMPLETED,
         agent_name=task_run.target_agent_name,
         summary="Recovered interrupted run_shell state after backend restart.",
         payload={
@@ -3440,7 +3441,7 @@ async def _recover_tracked_single_agent_run_shell_task_run(
     append_task_event(
         db,
         task_run,
-        "task_run_recovery_started",
+        EventType.TASK_RUN_RECOVERY_STARTED,
         agent_name=task_run.target_agent_name,
         summary="Reattached to tracked run_shell process after backend restart.",
         payload={
@@ -3515,7 +3516,7 @@ async def _recover_tracked_single_agent_run_shell_task_run(
     append_task_event(
         db,
         get_task_run(db, task_run.id),
-        "task_run_recovery_completed",
+        EventType.TASK_RUN_RECOVERY_COMPLETED,
         agent_name=task_run.target_agent_name,
         summary="Recovered tracked run_shell result after backend restart.",
         payload={
@@ -3548,7 +3549,7 @@ async def _resume_interrupted_single_agent_task_run(
     append_task_event(
         db,
         task_run,
-        "task_run_recovery_started",
+        EventType.TASK_RUN_RECOVERY_STARTED,
         agent_name=task_run.target_agent_name,
         summary="Resuming interrupted single-agent follow-up after backend restart.",
         payload={
@@ -3571,7 +3572,7 @@ async def _resume_interrupted_single_agent_task_run(
     append_task_event(
         db,
         get_task_run(db, task_run.id),
-        "task_run_recovery_completed",
+        EventType.TASK_RUN_RECOVERY_COMPLETED,
         agent_name=task_run.target_agent_name,
         summary="Resumed interrupted single-agent follow-up after backend restart.",
         payload={
@@ -3595,7 +3596,7 @@ async def _resume_interrupted_single_agent_task_run(
 
 
 def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
-    schedule_event = next((event for event in task_run.events if event.event_type == "scheduler_plan_created"), None)
+    schedule_event = next((event for event in task_run.events if event.event_type == EventType.SCHEDULER_PLAN_CREATED), None)
     schedule_payload = _task_run_event_payload(schedule_event)
     raw_steps = schedule_payload.get("steps", [])
     if isinstance(raw_steps, list):
@@ -3612,7 +3613,7 @@ def _recover_orchestration_agent_names(task_run: TaskRun) -> List[str]:
         if recovered_names:
             return recovered_names
 
-    orchestration_event = next((event for event in task_run.events if event.event_type == "orchestration_started"), None)
+    orchestration_event = next((event for event in task_run.events if event.event_type == EventType.ORCHESTRATION_STARTED), None)
     orchestration_payload = _task_run_event_payload(orchestration_event)
     resolved_agents = orchestration_payload.get("resolved_agents", [])
     if isinstance(resolved_agents, list):
@@ -3642,14 +3643,14 @@ def _rebuild_orchestration_recovery_state(
     message_ids = [
         event.message_id
         for event in task_run.events
-        if event.event_type == "agent_turn_completed" and event.message_id
+        if event.event_type == EventType.AGENT_TURN_COMPLETED and event.message_id
     ]
     if message_ids:
         for message in db.query(Message).filter(Message.id.in_(message_ids)).all():
             messages_by_id[message.id] = message
 
     for event in task_run.events:
-        if event.event_type != "agent_turn_completed":
+        if event.event_type != EventType.AGENT_TURN_COMPLETED:
             continue
         agent_name = (event.agent_name or "").strip()
         if not agent_name:
@@ -4035,7 +4036,7 @@ async def _resume_interrupted_orchestration_task_run(
             fail_orchestration_task_run(
                 db,
                 task_run,
-                event_type="task_run_recovery_failed",
+                event_type=EventType.TASK_RUN_RECOVERY_FAILED,
                 summary=f"Recovery failed: {exc}",
                 event_summary=f"Interrupted orchestration recovery failed: {exc}",
                 payload={"task_run_id": task_run_id},
@@ -6125,7 +6126,7 @@ async def resume_task_run(task_run_id: int, db: Session = Depends(get_db)):
     append_task_event(
         db,
         task_run,
-        "task_run_manual_resume_requested",
+        EventType.TASK_RUN_MANUAL_RESUME_REQUESTED,
         summary="Manual resume requested from the API.",
         payload={
             "task_run_id": task_run.id,
@@ -6520,7 +6521,7 @@ def _latest_run_shell_continuation_claim(task_run: Any) -> dict[str, Any] | None
         return None
     events = list(getattr(task_run, "events", []) or [])
     for event in reversed(events):
-        if getattr(event, "event_type", None) != "run_shell_continuation_claimed":
+        if getattr(event, "event_type", None) != EventType.RUN_SHELL_CONTINUATION_CLAIMED:
             continue
         payload = _load_jsonish_payload(getattr(event, "payload_json", None))
         if not isinstance(payload, dict):
@@ -6633,7 +6634,7 @@ def _append_run_shell_continuation_claimed_event(
     append_task_event(
         db,
         task_run,
-        "run_shell_continuation_claimed",
+        EventType.RUN_SHELL_CONTINUATION_CLAIMED,
         agent_name=getattr(item, "agent_name", None),
         summary=f"run_shell continuation claimed by approval item {getattr(item, 'id', None)}.",
         payload={
@@ -6887,7 +6888,7 @@ async def _continue_runtime_after_approved_tool_replay(
     append_task_event(
         db,
         task_run,
-        "approval_queue_item_followup_triggered",
+        EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_TRIGGERED,
         agent_name=item.agent_name,
         summary=f"Continuing agent turn after approved continuation of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
         payload=build_followup_triggered_event_payload(
@@ -6921,7 +6922,7 @@ async def _continue_runtime_after_approved_tool_replay(
         append_task_event(
             db,
             task_run,
-            "approval_queue_item_followup_interrupted",
+            EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_INTERRUPTED,
             agent_name=item.agent_name,
             summary=f"Approved continuation follow-up interrupted for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
             payload={
@@ -6943,7 +6944,7 @@ async def _continue_runtime_after_approved_tool_replay(
         append_task_event(
             db,
             task_run,
-            "approval_queue_item_followup_failed",
+            EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_FAILED,
             agent_name=item.agent_name,
             summary=f"Approved continuation follow-up failed for {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
             payload=build_followup_failed_event_payload(item, replay_result, exc),
@@ -7003,7 +7004,7 @@ async def _continue_pipeline_after_approved_tool_replay(
     append_task_event(
         db,
         task_run,
-        "approval_queue_item_followup_triggered",
+        EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_TRIGGERED,
         agent_name=item.agent_name,
         summary=f"Resuming pipeline after approved replay of {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
         payload=build_followup_triggered_event_payload(
@@ -7033,7 +7034,7 @@ async def _continue_pipeline_after_approved_tool_replay(
         append_task_event(
             db,
             task_run,
-            "approval_queue_item_followup_failed",
+            EventType.APPROVAL_QUEUE_ITEM_FOLLOWUP_FAILED,
             agent_name=item_agent_name,
             summary=f"Approved continuation follow-up failed for pipeline tool {getattr(replay_result, 'tool_name', item.target_name or 'tool')}.",
             payload=build_followup_failed_event_payload(
@@ -7078,7 +7079,7 @@ async def _finalize_approved_queue_item_followup_async(
             append_task_event(
                 db,
                 task_run,
-                "approval_queue_item_resolved",
+                EventType.APPROVAL_QUEUE_ITEM_RESOLVED,
                 agent_name=item.agent_name,
                 summary=f"Approved queue item follow-up skipped during shutdown for {item.target_name or item.target_kind}.",
                 payload=build_approval_queue_item_resolved_event_payload(
@@ -7187,7 +7188,7 @@ async def _finalize_approved_queue_item_followup_async(
             append_task_event(
                 db,
                 task_run,
-                "run_shell_continuation_claimed",
+                EventType.RUN_SHELL_CONTINUATION_CLAIMED,
                 agent_name=item.agent_name,
                 summary=f"run_shell continuation finished for approval item {getattr(item, 'id', None)}.",
                 payload={
@@ -7209,7 +7210,7 @@ async def _finalize_approved_queue_item_followup_async(
         append_task_event(
             db,
             task_run,
-            "approval_queue_item_resolved",
+            EventType.APPROVAL_QUEUE_ITEM_RESOLVED,
             agent_name=item.agent_name,
             summary=f"Approved queue item continuation updated for {item.target_name or item.target_kind}.",
             payload=build_approval_queue_item_resolved_event_payload(
@@ -7239,7 +7240,7 @@ async def _finalize_approved_queue_item_followup_async(
                 append_task_event(
                     db,
                     task_run,
-                    "run_shell_continuation_claimed",
+                    EventType.RUN_SHELL_CONTINUATION_CLAIMED,
                     agent_name=getattr(item, "agent_name", None),
                     summary=f"run_shell continuation failed for approval item {item_id}.",
                     payload={
@@ -7449,7 +7450,7 @@ async def approve_approval_queue_item(
     append_task_event(
         db,
         task_run,
-        "approval_queue_item_resolved",
+        EventType.APPROVAL_QUEUE_ITEM_RESOLVED,
         agent_name=item.agent_name,
         summary=f"Approved queue item for {item.target_name or item.target_kind}.",
         payload=build_approval_queue_item_resolved_event_payload(
@@ -7478,7 +7479,7 @@ async def approve_approval_queue_item(
             append_task_event(
                 db,
                 task_run,
-                "approval_queue_item_resolved",
+                EventType.APPROVAL_QUEUE_ITEM_RESOLVED,
                 agent_name=item.agent_name,
                 summary=f"Approved queue item follow-up skipped during shutdown for {item.target_name or item.target_kind}.",
                 payload=build_approval_queue_item_resolved_event_payload(
@@ -7640,7 +7641,7 @@ async def reject_approval_queue_item(
     append_task_event(
         db,
         task_run,
-        "approval_queue_item_resolved",
+        EventType.APPROVAL_QUEUE_ITEM_RESOLVED,
         agent_name=item.agent_name,
         summary=f"Rejected queue item for {item.target_name or item.target_kind}.",
         payload=build_approval_queue_item_resolved_event_payload(
@@ -7744,14 +7745,14 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         project_id=project.id if project else None,
         origin_message_id=response_msg.id,
         client_turn_id=message.client_turn_id,
-        run_kind="chat_turn",
+        run_kind=RunKind.CHAT_TURN,
         user_request=message.content,
         initiator="user",
     )
     append_task_event(
         db,
         task_run,
-        "user_message_saved",
+        EventType.USER_MESSAGE_SAVED,
         message_id=response_msg.id,
         summary="",
         payload={
@@ -7977,14 +7978,14 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 project_id=project.id if project else None,
                 origin_message_id=user_msg.id,
                 client_turn_id=message.client_turn_id,
-                run_kind="chat_turn_stream",
+                run_kind=RunKind.CHAT_TURN_STREAM,
                 user_request=message.content,
                 initiator="user",
             )
             append_task_event(
                 db,
                 task_run,
-                "user_message_saved",
+                EventType.USER_MESSAGE_SAVED,
                 message_id=user_msg.id,
                 summary="",
                 payload={
@@ -8013,12 +8014,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         agent_names=mentioned_names,
                         client_turn_id=message.client_turn_id,
                         project_id=None,
-                        run_kind="multi_agent_orchestration_stream",
+                        run_kind=RunKind.MULTI_AGENT_ORCHESTRATION_STREAM,
                     )
                     _select_task_run_runtime_mode(
                         db,
                         task_run,
-                        run_kind="multi_agent_orchestration_stream",
+                        run_kind=RunKind.MULTI_AGENT_ORCHESTRATION_STREAM,
                         summary="",
                         project_id=None,
                         runner_policy=prepared_orchestration.runner_policy,
@@ -8045,7 +8046,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 standalone_agent_name = _agent_type(standalone_target) if standalone_target else DEFAULT_AGENT_TYPE
                 standalone_llm_client = get_llm_client_for_agent(standalone_agent_name) if standalone_target else get_default_llm_client()
                 standalone_stream_policy = _build_single_agent_runner_policy(
-                    run_kind="standalone_assistant_stream",
+                    run_kind=RunKind.STANDALONE_ASSISTANT_STREAM,
                     agent_name=standalone_agent_name,
                     project_id=None,
                     tool_names=[],
@@ -8055,7 +8056,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    run_kind="standalone_assistant_stream",
+                    run_kind=RunKind.STANDALONE_ASSISTANT_STREAM,
                     summary="",
                     project_id=None,
                     target_agent_name=standalone_agent_name,
@@ -8069,7 +8070,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     tool_names=[],
                     client_turn_id=message.client_turn_id,
                     project_id=None,
-                    run_kind="standalone_assistant_stream",
+                    run_kind=RunKind.STANDALONE_ASSISTANT_STREAM,
                 )
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
@@ -8104,7 +8105,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 _select_task_run_runtime_mode(
                     db,
                     task_run,
-                    run_kind="multi_agent_orchestration_stream",
+                    run_kind=RunKind.MULTI_AGENT_ORCHESTRATION_STREAM,
                     summary="",
                     project_id=project.id,
                     runner_policy=prepared_orchestration.runner_policy,
@@ -8116,7 +8117,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     agent_names=mentioned_names,
                     client_turn_id=message.client_turn_id,
                     project_id=project.id,
-                    run_kind="multi_agent_orchestration_stream",
+                    run_kind=RunKind.MULTI_AGENT_ORCHESTRATION_STREAM,
                 )
                 async for chunk in _stream_multi_agent_orchestration(
                     db=db,
@@ -8157,7 +8158,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 append_task_event(
                     db,
                     task_run,
-                    "task_run_failed",
+                    EventType.TASK_RUN_FAILED,
                     summary="No target agent resolved for streaming execution.",
                     payload={"project_id": project.id},
                 )
@@ -8171,7 +8172,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             available_tools = _resolve_agent_runtime_tools(target_agent)
             target_llm_client = get_llm_client_for_agent(_agent_type(target_agent))
             project_single_agent_stream_policy = _build_single_agent_runner_policy(
-                run_kind="project_single_agent_stream",
+                run_kind=RunKind.PROJECT_SINGLE_AGENT_STREAM,
                 agent_name=target_agent_label,
                 project_id=project.id,
                 tool_names=available_tools,
@@ -8181,7 +8182,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             _select_task_run_runtime_mode(
                 db,
                 task_run,
-                run_kind="project_single_agent_stream",
+                run_kind=RunKind.PROJECT_SINGLE_AGENT_STREAM,
                 target_agent_name=target_agent_label,
                 agent_name=target_agent_label,
                 summary="",
@@ -8196,7 +8197,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 tool_names=available_tools,
                 client_turn_id=message.client_turn_id,
                 project_id=project.id,
-                run_kind="project_single_agent_stream",
+                run_kind=RunKind.PROJECT_SINGLE_AGENT_STREAM,
             )
 
             _ensure_collaboration_context(agents, chatroom_id)

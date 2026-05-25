@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from models.enums import EventType
 
 if TYPE_CHECKING:
     from models.database import Chatroom, Project, TaskRun, TaskRunEvent
@@ -167,7 +169,7 @@ def complete_task_run(
 def append_task_event(
     db: Session,
     task_run: TaskRun | None,
-    event_type: str,
+    event_type: Union[str, EventType],
     *,
     agent_name: str | None = None,
     message_id: int | None = None,
@@ -176,6 +178,9 @@ def append_task_event(
 ) -> Optional[TaskRunEvent]:
     if task_run is None:
         return None
+
+    # Normalise to plain string for DB storage
+    event_type_str = str(event_type.value) if isinstance(event_type, EventType) else str(event_type)
 
     db_models = _db_models()
     next_index = (
@@ -188,7 +193,7 @@ def append_task_event(
     event = db_models.TaskRunEvent(
         task_run_id=task_run.id,
         event_index=next_index,
-        event_type=event_type,
+        event_type=event_type_str,
         agent_name=(agent_name or "").strip() or None,
         message_id=message_id,
         summary=(summary or "").strip() or None,
@@ -224,7 +229,7 @@ def append_policy_decision_event(
     return append_task_event(
         db,
         task_run,
-        "policy_decision_recorded",
+        EventType.POLICY_DECISION_RECORDED,
         agent_name=agent_name,
         message_id=message_id,
         summary=summary or format_policy_decision_summary(decision_summary),
@@ -279,7 +284,7 @@ def append_policy_decision_event_from_result_payload(
     return append_task_event(
         db,
         task_run,
-        "policy_decision_recorded",
+        EventType.POLICY_DECISION_RECORDED,
         agent_name=agent_name,
         message_id=message_id,
         summary=summary or format_policy_decision_summary(decision_summary),

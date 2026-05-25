@@ -13,6 +13,7 @@ import time
 from .base import BaseTool
 from agents.identity import agent_name_of
 from config import settings
+from models.enums import EventType
 from services.agent_action_runtime import (
     build_consult_agent_messages,
     build_consult_agent_prompt_profile,
@@ -102,7 +103,7 @@ def _record_consult_subagent_dispatched(
     append_task_event(
         db,
         task_run,
-        "scheduler_step_dispatched",
+        EventType.SCHEDULER_STEP_DISPATCHED,
         agent_name=getattr(target_db_agent, "name", target_agent_type),
         summary=f"Consultation dispatched to {getattr(target_db_agent, 'name', target_agent_type)}.",
         payload={
@@ -155,7 +156,7 @@ def _record_consult_subagent_completed(
     append_task_event(
         db,
         task_run,
-        "scheduler_step_completed",
+        EventType.SCHEDULER_STEP_COMPLETED,
         agent_name=getattr(target_db_agent, "name", target_agent_type),
         summary=f"Consultation completed by {getattr(target_db_agent, 'name', target_agent_type)}.",
         payload=payload,
@@ -195,7 +196,7 @@ def _record_consult_subagent_failed(
     append_task_event(
         db,
         task_run,
-        "scheduler_step_failed",
+        EventType.SCHEDULER_STEP_FAILED,
         agent_name=target_agent_type,
         summary=f"Consultation failed for {target_agent_type}.",
         payload=payload,
