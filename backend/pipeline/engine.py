@@ -40,8 +40,10 @@ from services.context_builder import (
     build_operating_developer_context,
     build_runtime_user_fragments,
     build_stage_developer_context,
+    build_stage_summaries_fragment,
     build_turn_state_developer_fragments,
     build_turn_state_user_fragments,
+    summarize_for_context,
 )
 from services.chat_prompt_builder import resolve_llm_context_window
 from services.model_context import context_window_from_provider
@@ -1090,6 +1092,31 @@ def _format_stage_output_summary(
     if artifacts:
         parts.append("Artifacts: " + ", ".join(artifacts))
     return "\n".join(parts)
+
+
+def _build_completed_stage_summaries_fragment(
+    db: Session,
+    run: PipelineRun,
+    current_stage_cfg: Any,
+) -> Any:
+    """Build a fragment with summaries of completed stages upstream of current stage.
+
+    ADR-028 Phase 4: Cross-stage summary compression.
+    """
+    current_order = getattr(current_stage_cfg, "order", None) or getattr(current_stage_cfg, "stage_order", 0)
+    completed_stages = (
+        db.query(PipelineStage)
+        .filter(
+            PipelineStage.run_id == run.id,
+            PipelineStage.status == "completed",
+            PipelineStage.stage_order < current_order,
+        )
+        .order_by(PipelineStage.stage_order)
+        .all()
+    )
+    if not completed_stages:
+        return None
+    return build_stage_summaries_fragment(completed_stages)
 
 
 class PipelineEngine:
@@ -2354,6 +2381,12 @@ class PipelineEngine:
         developer_fragments.extend(build_turn_state_developer_fragments(turn_state))
 
         user_fragments = build_runtime_user_fragments(runtime_context=context, run=run)
+
+        # ADR-028 Phase 4: Inject summaries of completed upstream stages
+        stage_summaries_fragment = _build_completed_stage_summaries_fragment(db, run, stage_cfg)
+        if stage_summaries_fragment is not None:
+            user_fragments.append(stage_summaries_fragment)
+
         user_fragments.extend(build_turn_state_user_fragments(turn_state))
 
         protocol_messages = turn_state.protocol_messages() if turn_state is not None else []

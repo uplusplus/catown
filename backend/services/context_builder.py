@@ -697,6 +697,63 @@ def build_runtime_user_context(
     )
 
 
+def build_stage_summaries_fragment(
+    completed_stages: list[Any],
+) -> Optional[ContextFragment]:
+    """Build a fragment containing summaries of completed pipeline stages.
+
+    ADR-028 Phase 4: Cross-stage summary compression.
+    Downstream agents see compact stage summaries instead of full conversation history.
+    """
+    summaries: list[str] = []
+    for stage in completed_stages:
+        output = _clean_text(getattr(stage, "output_summary", None))
+        stage_name = getattr(stage, "display_name", None) or getattr(stage, "stage_name", "unknown")
+        agent_name = getattr(stage, "agent_name", "unknown")
+        if output:
+            summaries.append(f"### {stage_name} (by {agent_name})\n{output}")
+
+    if not summaries:
+        return None
+
+    return ContextFragment(
+        role="user",
+        content="## Pipeline Stage Summaries\n\n" + "\n\n".join(summaries),
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.AGENT,
+        source="stage_summaries",
+        priority=35,
+    )
+
+
+async def summarize_for_context(text: str, max_tokens: int = 200) -> str:
+    """Use a lightweight LLM to compress text for context injection.
+
+    ADR-028 Phase 5: LLM-assisted summarization.
+    Falls back to simple truncation on error.
+    """
+    if not text or not text.strip():
+        return ""
+    try:
+        from llm.client import get_default_llm_client
+        client = get_default_llm_client()
+        response = await client.chat(
+            [
+                {"role": "system", "content": "Summarize the following text concisely. Keep key decisions, artifacts, and metrics."},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
+        return response.strip() if response else text[:max_tokens * 4]
+    except Exception:
+        # Fallback: simple truncation
+        char_limit = max_tokens * 4
+        if len(text) > char_limit:
+            return text[:char_limit] + "..."
+        return text
+
+
 def build_recent_history(
     recent_messages: Iterable[Any],
     *,
