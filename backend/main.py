@@ -40,6 +40,7 @@ load_dotenv(_default_catown_home() / ".env")
 from config import settings
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.runtime_lifecycle import mark_runtime_starting, mark_runtime_shutting_down
+from services.telemetry_writer import telemetry_writer
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
@@ -481,7 +482,7 @@ async def _start_file_watcher():
     if monitor_network_buffer.install():
         logger.info(
             "[Monitor] Network events persist to %s with %sh retention (max %s rows)",
-            settings.DATABASE_URL,
+            settings.TELEMETRY_DATABASE_URL,
             settings.MONITOR_NETWORK_RETENTION_HOURS,
             settings.MONITOR_NETWORK_MAX_PERSISTED,
         )
@@ -514,6 +515,7 @@ async def _start_file_watcher():
 async def _stop_file_watcher():
     mark_runtime_shutting_down()
     file_watcher.stop()
+    telemetry_writer.stop(drain=True)
     try:
         from services.sleep_scheduler import stop_scheduler
         stop_scheduler()

@@ -214,10 +214,19 @@ class Settings:
         self.DATABASE_URL: str = os.getenv(
             "DATABASE_URL", str(self.STATE_DIR / "catown.db")
         )
+        self.TELEMETRY_DATABASE_URL: str = os.getenv(
+            "TELEMETRY_DATABASE_URL", str(self.STATE_DIR / "telemetry.db")
+        )
         self.SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(self.DATABASE_URL)
+        self.TELEMETRY_SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(
+            self.TELEMETRY_DATABASE_URL
+        )
         self.DB_POOL_SIZE: int = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
         self.DB_MAX_OVERFLOW: int = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
         self.DB_POOL_TIMEOUT: int = max(1, int(os.getenv("DB_POOL_TIMEOUT", "30")))
+        self.SQLITE_BUSY_TIMEOUT_MS: int = max(
+            1000, int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000"))
+        )
         self.MONITOR_NETWORK_MEMORY_MAX_ENTRIES: int = max(
             100, int(os.getenv("MONITOR_NETWORK_MEMORY_MAX_ENTRIES", "4000"))
         )

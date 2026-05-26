@@ -6,20 +6,20 @@ llm_calls:  LLM 对话全记录（prompt + response + tokens）
 tool_calls: 工具执行记录（入参 + 返回摘要 + 耗时）
 events:     事件流（阶段流转 / gate / agent 消息 / 错误）
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
-from models.database import Base
+from models.database import TelemetryBase
 
 
-class LLMCall(Base):
+class LLMCall(TelemetryBase):
     """LLM 对话全记录"""
     __tablename__ = "llm_calls"
 
     id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
-    stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=True)
+    run_id = Column(Integer, nullable=True, index=True)
+    stage_id = Column(Integer, nullable=True)
     agent_name = Column(String, nullable=False, index=True)
     turn_index = Column(Integer, default=0)
     model = Column(String)
@@ -41,14 +41,14 @@ class LLMCall(Base):
     )
 
 
-class ToolCall(Base):
+class ToolCall(TelemetryBase):
     """工具执行记录"""
     __tablename__ = "tool_calls"
 
     id = Column(Integer, primary_key=True, index=True)
-    llm_call_id = Column(Integer, ForeignKey("llm_calls.id"), nullable=True)
-    run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
-    stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=True)
+    llm_call_id = Column(Integer, nullable=True, index=True)
+    run_id = Column(Integer, nullable=True, index=True)
+    stage_id = Column(Integer, nullable=True)
     agent_name = Column(String, nullable=False, index=True)
     tool_name = Column(String, nullable=False, index=True)
     arguments = Column(Text)  # JSON
@@ -66,15 +66,15 @@ class ToolCall(Base):
     )
 
 
-class Event(Base):
+class Event(TelemetryBase):
     """事件流"""
     __tablename__ = "events"
 
     id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
-    stage_run_id = Column(Integer, ForeignKey("stage_runs.id"), nullable=True, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    run_id = Column(Integer, nullable=True, index=True)
+    project_id = Column(Integer, nullable=True, index=True)
+    stage_run_id = Column(Integer, nullable=True, index=True)
+    asset_id = Column(Integer, nullable=True, index=True)
     event_type = Column(String, nullable=False, index=True)
     # event_type 枚举: stage_start, stage_end, stage_retry, gate_blocked,
     #   gate_approved, gate_rejected, rollback, agent_message, boss_instruction,
@@ -90,7 +90,7 @@ class Event(Base):
     )
 
 
-class MonitorNetworkRecord(Base):
+class MonitorNetworkRecord(TelemetryBase):
     """Persisted monitor network events for crash-safe troubleshooting."""
 
     __tablename__ = "monitor_network_records"

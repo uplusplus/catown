@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from config import settings
+from services.telemetry_writer import telemetry_writer
 
 logger = logging.getLogger("catown.monitor.network")
 
@@ -27,6 +28,7 @@ class MonitorNetworkBuffer:
 
     def install(self) -> bool:
         """Ensure persistence is ready and trim data outside the retention window."""
+        telemetry_writer.start()
         if not self._ensure_persisted_table():
             return False
         try:
@@ -80,9 +82,9 @@ class MonitorNetworkBuffer:
             if not self._ensure_persisted_table():
                 return
             from models.audit import MonitorNetworkRecord
-            from models.database import SessionLocal
+            from models.database import TelemetrySessionLocal
 
-            db = SessionLocal()
+            db = TelemetrySessionLocal()
             try:
                 db.query(MonitorNetworkRecord).delete()
                 db.commit()
@@ -206,62 +208,8 @@ class MonitorNetworkBuffer:
     def _persist(self, normalized: dict[str, Any]) -> dict[str, Any] | None:
         if not self._ensure_persisted_table():
             return None
-
-        persisted = self._persist_once(normalized)
-        if persisted is not None:
-            return persisted
-
-        if not self._ensure_persisted_table(force=True):
-            return None
-        return self._persist_once(normalized)
-
-    def _persist_once(self, normalized: dict[str, Any]) -> dict[str, Any] | None:
-        from models.audit import MonitorNetworkRecord
-        from models.database import SessionLocal
-
-        db = SessionLocal()
-        try:
-            created_at = self._coerce_datetime(normalized["created_at"])
-            row = MonitorNetworkRecord(
-                created_at=created_at,
-                category=normalized["category"],
-                source=normalized["source"],
-                protocol=normalized["protocol"],
-                from_entity=normalized["from_entity"],
-                to_entity=normalized["to_entity"],
-                method=normalized["method"],
-                url=normalized["url"],
-                host=normalized["host"],
-                path=normalized["path"],
-                status_code=normalized["status_code"],
-                success=normalized["success"],
-                request_bytes=normalized["request_bytes"],
-                response_bytes=normalized["response_bytes"],
-                total_bytes=normalized["total_bytes"],
-                duration_ms=normalized["duration_ms"],
-                content_type=normalized["content_type"],
-                preview=normalized["preview"],
-                error=normalized["error"],
-                client_source=normalized["client_source"],
-                raw_request=normalized["raw_request"],
-                raw_response=normalized["raw_response"],
-                request_headers_json=json.dumps(normalized["request_headers"], ensure_ascii=False),
-                response_headers_json=json.dumps(normalized["response_headers"], ensure_ascii=False),
-                metadata_json=json.dumps(normalized["metadata"], ensure_ascii=False),
-            )
-            db.add(row)
-            db.commit()
-            db.refresh(row)
-            persisted = dict(normalized)
-            persisted["id"] = int(row.id)
-            persisted["created_at"] = self._format_datetime(row.created_at) if row.created_at else normalized["created_at"]
-            return persisted
-        except Exception as exc:
-            db.rollback()
-            self._warn_persistence_fallback(exc)
-            return None
-        finally:
-            db.close()
+        telemetry_writer.enqueue_network_record(normalized)
+        return None
 
     def _list_persisted(
         self,
@@ -275,9 +223,9 @@ class MonitorNetworkBuffer:
             return []
         try:
             from models.audit import MonitorNetworkRecord
-            from models.database import SessionLocal
+            from models.database import TelemetrySessionLocal
 
-            db = SessionLocal()
+            db = TelemetrySessionLocal()
             try:
                 rows = db.query(MonitorNetworkRecord)
                 if after_id is not None:
@@ -306,10 +254,10 @@ class MonitorNetworkBuffer:
             return 0
         try:
             from models.audit import MonitorNetworkRecord
-            from models.database import SessionLocal
+            from models.database import TelemetrySessionLocal
             from sqlalchemy import func
 
-            db = SessionLocal()
+            db = TelemetrySessionLocal()
             try:
                 value = db.query(func.max(MonitorNetworkRecord.id)).scalar()
                 return int(value or 0)
@@ -329,9 +277,9 @@ class MonitorNetworkBuffer:
         if not self._ensure_persisted_table():
             return
         from models.audit import MonitorNetworkRecord
-        from models.database import SessionLocal
+        from models.database import TelemetrySessionLocal
 
-        db = SessionLocal()
+        db = TelemetrySessionLocal()
         try:
             cutoff = datetime.now() - timedelta(hours=settings.MONITOR_NETWORK_RETENTION_HOURS)
             db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.created_at < cutoff).delete()
@@ -366,7 +314,7 @@ class MonitorNetworkBuffer:
     def _ensure_persisted_table(self, *, force: bool = False) -> bool:
         try:
             from models.audit import MonitorNetworkRecord
-            from models.database import engine
+            from models.database import telemetry_engine
         except Exception as exc:
             self._warn_persistence_fallback(exc)
             return False
@@ -377,7 +325,7 @@ class MonitorNetworkBuffer:
                 return True
 
         try:
-            MonitorNetworkRecord.__table__.create(bind=engine, checkfirst=True)
+            MonitorNetworkRecord.__table__.create(bind=telemetry_engine, checkfirst=True)
         except Exception as exc:
             self._warn_persistence_fallback(exc)
             return False
@@ -389,9 +337,9 @@ class MonitorNetworkBuffer:
 
     def _database_key(self) -> str:
         try:
-            from models.database import engine
+            from models.database import telemetry_engine
 
-            return str(engine.url)
+            return str(telemetry_engine.url)
         except Exception:
             return "<unknown>"
 

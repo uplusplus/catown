@@ -5,7 +5,7 @@ Database model definitions.
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, MetaData, String, Text, create_engine, event, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
@@ -17,23 +17,41 @@ from agents.identity import (
 )
 from config import settings
 
-# Create engine
-_engine_kwargs = {}
-if settings.SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
-if not settings.SQLALCHEMY_DATABASE_URL.startswith("sqlite:///:memory:"):
-    _engine_kwargs["pool_pre_ping"] = True
-    _engine_kwargs["pool_size"] = settings.DB_POOL_SIZE
-    _engine_kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
-    _engine_kwargs["pool_timeout"] = settings.DB_POOL_TIMEOUT
+def _build_engine(database_url: str):
+    engine_kwargs = {}
+    if database_url.startswith("sqlite"):
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+    if not database_url.startswith("sqlite:///:memory:"):
+        engine_kwargs["pool_pre_ping"] = True
+        engine_kwargs["pool_size"] = settings.DB_POOL_SIZE
+        engine_kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
+        engine_kwargs["pool_timeout"] = settings.DB_POOL_TIMEOUT
+    db_engine = create_engine(database_url, **engine_kwargs)
+    _configure_sqlite_engine(db_engine, database_url)
+    return db_engine
 
-engine = create_engine(
-    settings.SQLALCHEMY_DATABASE_URL,
-    **_engine_kwargs,
-)
+
+def _configure_sqlite_engine(db_engine, database_url: str) -> None:
+    if not database_url.startswith("sqlite"):
+        return
+
+    @event.listens_for(db_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT_MS}")
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
+
+
+engine = _build_engine(settings.SQLALCHEMY_DATABASE_URL)
+telemetry_engine = _build_engine(settings.TELEMETRY_SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+TelemetrySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=telemetry_engine)
 
 Base = declarative_base()
+TelemetryBase = declarative_base(metadata=MetaData())
 
 
 class Agent(Base):
@@ -694,6 +712,7 @@ def init_database():
     from models import audit  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    audit.TelemetryBase.metadata.create_all(bind=telemetry_engine)
     with engine.begin() as connection:
         existing_agent_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(agents)")).fetchall()
