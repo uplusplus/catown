@@ -1,19 +1,15 @@
 # -*- coding: utf-8 -*-
 """Periodic watchdog sweep for stale running TaskRuns and orphaned approvals.
 
-Finds TaskRuns stuck in ``running`` with no recent event activity and
-transitions them to ``failed``.  Also expires stale approvals and fails
-their blocked TaskRuns.
+ADR-030: Uses event-sourced state derivation. The watchdog checks whether
+the last event in a TaskRun's stream is terminal; if not and the TaskRun
+has been idle too long, it emits a ``task_run_interrupted`` event which
+automatically derives the status to "failed".
 
 Usage
 -----
 Call ``run_watchdog_sweep()`` from a cron job, heartbeat, or background
 task at a regular interval (recommended: every 5–10 minutes).
-
-Or use the individual functions:
-- ``sweep_stale_task_runs()`` — stale running TaskRuns
-- ``sweep_expired_approvals()`` — expired pending approvals
-- ``sweep_stale_paused_task_runs()`` — paused TaskRuns with expired blockers
 """
 
 from __future__ import annotations
@@ -25,16 +21,41 @@ from sqlalchemy.orm import Session
 
 from models.database import TaskRun, TaskRunEvent, ApprovalQueueItem
 from models.enums import EventType
-from services.task_run_lifecycle import terminalize_task_run
+from services.task_run_state import derive_task_run_status, is_terminal_status
 
 
 logger = logging.getLogger("catown.task_run_watchdog")
 
-# TaskRuns with no event newer than this threshold are considered stale.
 DEFAULT_STALE_THRESHOLD_MINUTES = 30
-
-# Paused TaskRuns whose approval expired more than this long ago are swept.
 DEFAULT_PAUSED_STALE_THRESHOLD_MINUTES = 60
+
+
+def _latest_event(db: Session, task_run_id: int) -> TaskRunEvent | None:
+    return (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.task_run_id == task_run_id)
+        .order_by(TaskRunEvent.event_index.desc())
+        .first()
+    )
+
+
+def _is_stale(db: Session, task_run: TaskRun, cutoff: datetime) -> bool:
+    """Check if a TaskRun is stale (non-terminal and no recent activity)."""
+    latest = _latest_event(db, task_run.id)
+    if latest and latest.created_at and latest.created_at > cutoff:
+        return False  # Has recent activity.
+    # Check if already terminal via derivation.
+    if latest:
+        all_events = (
+            db.query(TaskRunEvent)
+            .filter(TaskRunEvent.task_run_id == task_run.id)
+            .order_by(TaskRunEvent.event_index.asc())
+            .all()
+        )
+        derived = derive_task_run_status(all_events)
+        if is_terminal_status(derived):
+            return False  # Already terminal.
+    return True
 
 
 def sweep_stale_task_runs(
@@ -43,10 +64,7 @@ def sweep_stale_task_runs(
     threshold_minutes: int = DEFAULT_STALE_THRESHOLD_MINUTES,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Find and terminalize stale running TaskRuns.
-
-    Returns a list of dicts describing the TaskRuns that were swept.
-    """
+    """Find stale running TaskRuns and emit interrupted events."""
     now = now or datetime.now()
     cutoff = now - timedelta(minutes=threshold_minutes)
 
@@ -61,41 +79,29 @@ def sweep_stale_task_runs(
 
     swept: list[dict] = []
     for task_run in stale_runs:
-        # Double-check: is there a recent event that updated_at didn't reflect?
-        latest_event = (
-            db.query(TaskRunEvent)
-            .filter(TaskRunEvent.task_run_id == task_run.id)
-            .order_by(TaskRunEvent.event_index.desc())
-            .first()
-        )
-        if latest_event and latest_event.created_at and latest_event.created_at > cutoff:
-            # Has recent activity — skip.
+        if not _is_stale(db, task_run, cutoff):
             continue
 
-        last_event_type = latest_event.event_type if latest_event else "none"
-        last_event_at = latest_event.created_at.isoformat() if latest_event and latest_event.created_at else "none"
-        idle_minutes = int((now - (latest_event.created_at if latest_event and latest_event.created_at else task_run.updated_at or task_run.created_at or now)).total_seconds() / 60)
+        latest = _latest_event(db, task_run.id)
+        last_event_type = latest.event_type if latest else "none"
+        last_event_at = latest.created_at.isoformat() if latest and latest.created_at else "none"
+        idle_minutes = int((now - (latest.created_at if latest and latest.created_at else task_run.updated_at or task_run.created_at or now)).total_seconds() / 60)
 
         logger.warning(
-            "[Watchdog] Sweeping stale task_run id=%s status=%s last_event=%s last_event_at=%s idle=%dmin",
-            task_run.id,
-            task_run.status,
-            last_event_type,
-            last_event_at,
-            idle_minutes,
+            "[Watchdog] Sweeping stale task_run id=%s last_event=%s idle=%dmin",
+            task_run.id, last_event_type, idle_minutes,
         )
 
-        terminalize_task_run(
-            db,
-            task_run,
-            status="failed",
+        # ADR-030: Emit event — status auto-derives to "failed".
+        from services.run_ledger import append_task_event
+        append_task_event(
+            db, task_run,
+            EventType.TASK_RUN_INTERRUPTED,
             summary=f"Watchdog: no activity for {idle_minutes} minutes (last event: {last_event_type}).",
-            event_type=EventType.TASK_RUN_INTERRUPTED,
             payload={
                 "sweep_reason": "watchdog_stale",
                 "idle_minutes": idle_minutes,
                 "last_event_type": last_event_type,
-                "last_event_at": last_event_at,
                 "threshold_minutes": threshold_minutes,
             },
         )
@@ -118,13 +124,7 @@ def sweep_stale_paused_task_runs(
     threshold_minutes: int = DEFAULT_PAUSED_STALE_THRESHOLD_MINUTES,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Find paused TaskRuns whose approval expired a long time ago and fail them.
-
-    This catches cases where ``expire_stale_approvals()`` didn't properly
-    terminalize the TaskRun (e.g. due to a race or crash).
-
-    Returns a list of dicts describing the TaskRuns that were swept.
-    """
+    """Find paused TaskRuns whose approval expired long ago and fail them."""
     now = now or datetime.now()
     cutoff = now - timedelta(minutes=threshold_minutes)
 
@@ -139,32 +139,24 @@ def sweep_stale_paused_task_runs(
 
     swept: list[dict] = []
     for task_run in stale_paused:
-        # Check if the blocking approval is still pending (shouldn't be after TTL).
         blocker_id = getattr(task_run, "blocked_by_queue_item_id", None)
-        blocker_resolved = True
         if blocker_id:
             blocker = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.id == blocker_id).first()
             if blocker and blocker.status == "pending":
-                blocker_resolved = False  # Still pending — don't sweep yet.
-
-        if not blocker_resolved:
-            continue
+                continue  # Still pending — don't sweep.
 
         idle_minutes = int((now - (task_run.updated_at or task_run.created_at or now)).total_seconds() / 60)
 
         logger.warning(
             "[Watchdog] Sweeping stale paused task_run id=%s blocker_id=%s idle=%dmin",
-            task_run.id,
-            blocker_id,
-            idle_minutes,
+            task_run.id, blocker_id, idle_minutes,
         )
 
-        terminalize_task_run(
-            db,
-            task_run,
-            status="failed",
+        from services.run_ledger import append_task_event
+        append_task_event(
+            db, task_run,
+            EventType.TASK_RUN_INTERRUPTED,
             summary=f"Watchdog: paused with resolved/expired approval, no activity for {idle_minutes} minutes.",
-            event_type=EventType.TASK_RUN_INTERRUPTED,
             payload={
                 "sweep_reason": "watchdog_stale_paused",
                 "idle_minutes": idle_minutes,
@@ -192,16 +184,7 @@ def run_watchdog_sweep(
     stale_paused_threshold_minutes: int = DEFAULT_PAUSED_STALE_THRESHOLD_MINUTES,
     now: datetime | None = None,
 ) -> dict:
-    """Run all watchdog sweeps and return a summary.
-
-    Call this from a cron job or heartbeat.  Returns::
-
-        {
-            "stale_running_swept": [...],
-            "stale_paused_swept": [...],
-            "total_swept": int,
-        }
-    """
+    """Run all watchdog sweeps and return a summary."""
     now = now or datetime.now()
 
     stale_running = sweep_stale_task_runs(

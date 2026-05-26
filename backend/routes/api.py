@@ -6752,13 +6752,21 @@ def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str,
 def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:
     if task_run is None:
         return None
+    # ADR-030: Emit event instead of direct status assignment.
+    # The event will auto-derive status to "running".
     validate_transition(task_run.status, "running")
-    task_run.status = "running"
     task_run.completed_at = None
     task_run.blocked_by_queue_item_id = None
     db.add(task_run)
     db.commit()
     db.refresh(task_run)
+    append_task_event(
+        db,
+        task_run,
+        EventType.AGENT_TURN_RESUMED,
+        agent_name=task_run.target_agent_name,
+        summary="Task run reopened for followup.",
+    )
     return task_run
 
 

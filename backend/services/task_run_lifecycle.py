@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """Single entry point for all TaskRun terminal transitions.
 
-All paths that end a TaskRun (success, failure, cancellation, interruption,
-watchdog sweep) MUST go through ``terminalize_task_run`` so that:
-  1. No caller can silently leave a TaskRun in ``running``.
-  2. The transition table is always validated.
-  3. A terminal event is always appended before the status change.
-  4. Recovery lease fields are cleared on completion.
+.. deprecated::
+    ADR-030: This module is deprecated. Status is now derived from the
+    event stream via ``task_run_state.derive_task_run_status()``.
+    Use ``run_ledger.append_task_event()`` directly — the status will
+    be auto-derived.  This module is retained only for backward
+    compatibility with existing callers during the migration period.
 """
 
 from __future__ import annotations

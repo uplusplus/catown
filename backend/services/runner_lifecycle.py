@@ -394,8 +394,8 @@ def record_tool_round(
                 pipeline_run_id=pipeline_run_id,
                 pipeline_stage_id=pipeline_stage_id,
             )
-            validate_transition(task_run.status, "paused")
-            task_run.status = "paused"
+            # ADR-030: Status derived from approval_created event below.
+            # Set metadata only.
             task_run.blocked_by_queue_item_id = queue_item.id
             task_run.summary = f"Paused awaiting approval for {blocked_tool['tool_name']}."
             db.add(task_run)

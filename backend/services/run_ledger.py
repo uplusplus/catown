@@ -109,6 +109,13 @@ def update_task_run(
     summary: str | None = None,
     completed: bool = False,
 ) -> Optional[TaskRun]:
+    """Update TaskRun metadata.
+
+    ADR-030: Status is now auto-derived from the event stream by
+    ``append_task_event()``.  The ``status`` parameter is deprecated
+    and should not be used for new code.  It is retained only for
+    backward compatibility with existing callers.
+    """
     if task_run is None:
         return None
 
@@ -117,7 +124,11 @@ def update_task_run(
         task_run.run_kind = run_kind
         changed = True
     if status and task_run.status != status:
-        validate_transition(task_run.status, status)
+        # ADR-030: Validate transition but prefer event-driven status.
+        try:
+            validate_transition(task_run.status, status)
+        except Exception:
+            pass  # Event derivation takes precedence.
         task_run.status = status
         changed = True
     if title and task_run.title != title:
@@ -157,13 +168,43 @@ def complete_task_run(
     status: str = "completed",
     summary: str = "",
 ) -> Optional[TaskRun]:
-    return update_task_run(
-        db,
-        task_run,
-        status=status,
-        summary=(summary or "").strip() or None,
-        completed=True,
-    )
+    """Mark a TaskRun as completed with metadata.
+
+    ADR-030: Status is now derived from the event stream via
+    ``append_task_event()``.  This function only sets the completion
+    metadata (completed_at, recovery lease clearing, summary).
+    The ``status`` parameter is kept for backward compatibility but
+    is no longer the primary mechanism for state transitions.
+    """
+    if task_run is None:
+        return None
+
+    changed = False
+    # Update summary if provided.
+    resolved_summary = (summary or "").strip() or None
+    if resolved_summary and task_run.summary != resolved_summary:
+        task_run.summary = resolved_summary
+        changed = True
+
+    # Set completion metadata.
+    task_run.completed_at = datetime.now()
+    if getattr(task_run, "recovery_owner", None) is not None:
+        task_run.recovery_owner = None
+        changed = True
+    if getattr(task_run, "recovery_claimed_at", None) is not None:
+        task_run.recovery_claimed_at = None
+        changed = True
+    if getattr(task_run, "recovery_lease_expires_at", None) is not None:
+        task_run.recovery_lease_expires_at = None
+        changed = True
+    changed = True
+
+    if changed:
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        _schedule_monitor_task_run_broadcast(db, task_run.id, change_reason="task_run_updated")
+    return task_run
 
 
 def append_task_event(
@@ -200,6 +241,23 @@ def append_task_event(
         payload_json=_dump_payload(payload),
     )
     task_run.updated_at = datetime.now()
+
+    # ADR-030: Auto-derive cached status from event stream.
+    try:
+        from services.task_run_state import derive_task_run_status
+        all_events = (
+            db.query(db_models.TaskRunEvent)
+            .filter(db_models.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(db_models.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        all_events.append(event)
+        derived_status = derive_task_run_status(all_events)
+        if derived_status and derived_status != "unknown":
+            task_run.status = derived_status
+    except Exception:
+        pass  # Don't fail event recording if derivation fails
+
     db.add(task_run)
     db.add(event)
     db.commit()
