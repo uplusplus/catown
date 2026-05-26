@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from uuid import uuid4
@@ -12,6 +13,9 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.database import ApprovalQueueItem, TaskRun
+from models.enums import EventType
+
+logger = logging.getLogger("catown.approval_queue")
 
 
 def get_approval_queue_item(db: Session, item_id: int | None) -> Optional[ApprovalQueueItem]:
@@ -270,6 +274,9 @@ def expire_stale_approvals(
 ) -> list[ApprovalQueueItem]:
     """Expire all pending approvals whose ``expires_at`` has passed.
 
+    Also transitions any paused TaskRun blocked by an expired approval to
+    ``failed`` so that it does not hang indefinitely.
+
     Returns the list of items that were transitioned to ``expired``.
     """
     now = now or datetime.now()
@@ -290,6 +297,37 @@ def expire_stale_approvals(
         item.resolved_at = now
         db.add(item)
         expired.append(item)
+
+        # P0-3: Fail the blocked TaskRun so it doesn't stay paused forever.
+        if item.task_run_id:
+            try:
+                task_run = db.query(TaskRun).filter(TaskRun.id == item.task_run_id).first()
+                if task_run and (task_run.status or "").strip().lower() == "paused":
+                    from services.task_run_lifecycle import terminalize_task_run
+
+                    terminalize_task_run(
+                        db,
+                        task_run,
+                        status="failed",
+                        summary=(
+                            f"Approval for {item.target_name or item.target_kind} "
+                            f"expired after TTL; task run abandoned."
+                        ),
+                        agent_name=item.agent_name,
+                        event_type=EventType.TASK_RUN_FAILED,
+                        payload={
+                            "expired_approval_queue_item_id": item.id,
+                            "target_kind": item.target_kind,
+                            "target_name": item.target_name,
+                        },
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[ApprovalQueue] Failed to terminalize task_run %s after approval expiry: %s",
+                    item.task_run_id,
+                    exc,
+                )
+
     if expired:
         db.commit()
         for item in expired:
