@@ -9237,6 +9237,18 @@ async def respond_to_choice_box(
     except Exception as exc:
         logger.warning("[ChoiceBox] Failed to publish response: %s", exc)
 
+    # Execute registered action handler (e.g., knowledge graph build on approval)
+    action_handler = store.pop_action_handler(box_id)
+    if action_handler and value in ("approve", "confirm", "allow_once", "allow_stage"):
+        try:
+            import asyncio
+            if asyncio.iscoroutinefunction(action_handler):
+                asyncio.create_task(action_handler())
+            else:
+                action_handler()
+        except Exception as exc:
+            logger.warning("[ChoiceBox] Action handler failed for %s: %s", box_id, exc)
+
     return box.to_dict()
 
 

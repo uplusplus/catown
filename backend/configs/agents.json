@@ -123,12 +123,14 @@
         "consult_agent",
         "list_files",
         "execute_code",
-        "web_fetch"
+        "web_fetch",
+        "knowledge_graph"
       ],
       "skills": [
         "architecture-design",
         "technology-evaluation",
-        "api-design"
+        "api-design",
+        "knowledge-graph"
       ],
       "memory": {
         "long_term_enabled": true,
@@ -194,13 +196,15 @@
         "run_shell",
         "search_files",
         "consult_agent",
-        "web_fetch"
+        "web_fetch",
+        "knowledge_graph"
       ],
       "skills": [
         "code-generation",
         "unit-testing",
         "refactoring",
-        "debugging"
+        "debugging",
+        "knowledge-graph"
       ],
       "memory": {
         "long_term_enabled": true,
@@ -262,12 +266,14 @@
         "list_files",
         "search_files",
         "consult_agent",
-        "web_fetch"
+        "web_fetch",
+        "knowledge_graph"
       ],
       "skills": [
         "test-generation",
         "bug-reporting",
-        "security-testing"
+        "security-testing",
+        "knowledge-graph"
       ],
       "memory": {
         "long_term_enabled": true,

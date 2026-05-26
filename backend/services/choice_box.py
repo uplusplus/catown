@@ -67,6 +67,7 @@ class ChoiceBox:
     response_value: Optional[str] = None
     responded_at: Optional[str] = None
     created_at: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.created_at:
@@ -214,12 +215,17 @@ class ChoiceBoxStore:
 
     def __init__(self):
         self._pending: Dict[str, ChoiceBox] = {}
+        self._action_handlers: Dict[str, Any] = {}  # box_id -> handler coroutine
 
     def create(self, box: ChoiceBox) -> ChoiceBox:
         """Register a new choice box."""
         self._pending[box.id] = box
         logger.info("[ChoiceBox] Created %s: %s", box.id, box.question[:80])
         return box
+
+    def register_action_handler(self, box_id: str, handler: Any) -> None:
+        """Register an async callback to execute after the box is responded to."""
+        self._action_handlers[box_id] = handler
 
     def get(self, box_id: str) -> Optional[ChoiceBox]:
         return self._pending.get(box_id)
@@ -234,6 +240,10 @@ class ChoiceBoxStore:
         box.responded_at = datetime.now().isoformat()
         logger.info("[ChoiceBox] Responded %s: %s", box_id, value)
         return box
+
+    def pop_action_handler(self, box_id: str) -> Any:
+        """Retrieve and remove the action handler for a box."""
+        return self._action_handlers.pop(box_id, None)
 
     def cancel(self, box_id: str) -> Optional[ChoiceBox]:
         box = self._pending.get(box_id)
