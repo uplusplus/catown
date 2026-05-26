@@ -485,6 +485,15 @@ async def _start_file_watcher():
             settings.MONITOR_NETWORK_RETENTION_HOURS,
             settings.MONITOR_NETWORK_MAX_PERSISTED,
         )
+
+    # Start sleep scheduler for memory consolidation
+    try:
+        from services.sleep_scheduler import start_scheduler
+        start_scheduler()
+        logger.info("[SleepScheduler] Memory consolidation scheduler started")
+    except Exception as exc:
+        logger.warning("[SleepScheduler] Failed to start: %s", exc)
+
     try:
         from routes.api import recover_interrupted_task_runs
 
@@ -505,6 +514,11 @@ async def _start_file_watcher():
 async def _stop_file_watcher():
     mark_runtime_shutting_down()
     file_watcher.stop()
+    try:
+        from services.sleep_scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
 
 # 包含 API 路由
 app.include_router(api_router, prefix="/api")

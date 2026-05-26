@@ -9263,6 +9263,24 @@ async def cancel_choice_box(box_id: str):
     return box.to_dict()
 
 
+# ==================== Sleep Scheduler ====================
+
+@router.get("/sleep-scheduler/status")
+async def get_sleep_scheduler_status():
+    """Get the current status of the sleep memory consolidation scheduler."""
+    from services.sleep_scheduler import get_scheduler_status
+    return get_scheduler_status()
+
+
+@router.post("/sleep-scheduler/trigger")
+async def trigger_sleep_consolidation(
+    agent_type: Optional[str] = Body(None, embed=True),
+):
+    """Manually trigger memory consolidation for one or all agents."""
+    from services.sleep_scheduler import trigger_consolidation
+    return await trigger_consolidation(agent_type)
+
+
 # ==================== Command System ====================
 
 @router.get("/commands")
