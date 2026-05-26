@@ -113,7 +113,7 @@ class SaveMemoryTool(BaseTool):
         return f"Memory saved to project ({cat}): {path}"
 
     def _save_to_long_term(self, content: str, agent_id: Optional[int], importance: Optional[int]) -> str:
-        """Save to long-term database memory."""
+        """Save to long-term database memory and vector store."""
         from models.database import get_db, Memory
 
         db = next(get_db())
@@ -128,7 +128,25 @@ class SaveMemoryTool(BaseTool):
             db.add(memory)
             db.commit()
             db.refresh(memory)
-            return f"Memory saved to long-term store (id={memory.id}, importance={memory.importance})"
+
+            # Also save to vector store (ChromaDB) for semantic search
+            vector_status = ""
+            try:
+                from services.vector_memory import add_memory, is_available
+                if is_available():
+                    added = add_memory(
+                        agent_id=agent_id or 0,
+                        content=content,
+                        memory_type="long_term",
+                        importance=importance or 5,
+                        source="save_memory",
+                    )
+                    if added:
+                        vector_status = " + vector store"
+            except Exception:
+                pass  # Vector store is optional, don't fail if unavailable
+
+            return f"Memory saved to long-term store (id={memory.id}, importance={memory.importance}{vector_status})"
         finally:
             db.close()
 

@@ -17,10 +17,10 @@ class RetrieveMemoryTool(BaseTool):
 
     name = "retrieve_memory"
     description = (
-        "Retrieve relevant memories from the agent's three-layer memory system. "
+        "Retrieve relevant memories from the agent's four-layer memory system. "
         "Searches: (1) current session context, (2) project memory files, "
-        "(3) long-term database memories. Use this to recall decisions, "
-        "conventions, issues, and learned patterns."
+        "(3) long-term database memories, (4) semantic vector search (ChromaDB). "
+        "Use this to recall decisions, conventions, issues, and learned patterns."
     )
 
     async def execute(
@@ -70,6 +70,12 @@ class RetrieveMemoryTool(BaseTool):
                 if lt_results:
                     results.append(lt_results)
 
+            # --- Layer 4: Vector memory (ChromaDB semantic search) ---
+            if "vector" in scopes_to_search:
+                vec_results = self._search_vector(query, agent_id, project_id)
+                if vec_results:
+                    results.append(vec_results)
+
             if results:
                 return "\n\n".join(results)
             return f"[Memory] No relevant memories found for '{query}'."
@@ -79,15 +85,17 @@ class RetrieveMemoryTool(BaseTool):
 
     def _resolve_scopes(self, scope: Optional[str]) -> list:
         """Determine which memory layers to search."""
-        all_scopes = ["short_term", "project", "long_term"]
+        all_scopes = ["short_term", "project", "long_term", "vector"]
         if scope is None:
             return all_scopes
         scope_map = {
             "short_term": ["short_term"],
             "project": ["project"],
             "long_term": ["long_term"],
+            "vector": ["vector"],
             "session": ["short_term"],
             "stage": ["short_term"],
+            "semantic": ["vector"],
         }
         return scope_map.get(scope, all_scopes)
 
@@ -206,6 +214,37 @@ class RetrieveMemoryTool(BaseTool):
         except Exception:
             return ""
 
+    def _search_vector(self, query: str, agent_id: Optional[int], project_id: Optional[int]) -> str:
+        """Search vector memory (ChromaDB semantic search)."""
+        try:
+            from services.vector_memory import search_memories, is_available
+
+            if not is_available():
+                return ""
+
+            # If no agent_id, try default agent 0
+            search_agent_id = agent_id if agent_id is not None else 0
+
+            results = search_memories(
+                agent_id=search_agent_id,
+                query=query,
+                max_results=5,
+                project_id=project_id,
+            )
+
+            if results:
+                lines = [f"**Semantic memories ({len(results)}):**"]
+                for r in results:
+                    score_pct = int(r["score"] * 100)
+                    meta = r.get("metadata", {})
+                    mtype = meta.get("memory_type", "?")
+                    imp = meta.get("importance", "?")
+                    lines.append(f"- [{mtype}] [imp={imp}] [score={score_pct}%] {r['content'][:200]}")
+                return "\n".join(lines)
+            return ""
+        except Exception:
+            return ""
+
     def _get_workspace(self, project_id: Optional[int]) -> Optional[str]:
         """Resolve workspace path from project_id."""
         if not project_id:
@@ -241,8 +280,8 @@ class RetrieveMemoryTool(BaseTool):
                 },
                 "scope": {
                     "type": "string",
-                    "enum": ["short_term", "project", "long_term", "session", "stage"],
-                    "description": "Optional scope: 'short_term' (current session), 'project' (project files), 'long_term' (database), or omit for all"
+                    "enum": ["short_term", "project", "long_term", "vector", "semantic", "session", "stage"],
+                    "description": "Optional scope: 'short_term' (current session), 'project' (project files), 'long_term' (database), 'vector'/'semantic' (ChromaDB semantic search), or omit for all"
                 },
             },
             "required": ["query"]

@@ -158,6 +158,26 @@ async def extract_agent_memories(
 
         if persisted:
             logger.info("[Memory] Extracted %s memories for %s", persisted, agent_type)
+
+            # Also save to vector store (ChromaDB) for semantic search
+            try:
+                from services.vector_memory import add_memories_batch, is_available
+                if is_available():
+                    vector_memories = [
+                        {
+                            "content": str(m.get("content", "")).strip(),
+                            "memory_type": str(m.get("type", "context") or "context").strip(),
+                            "importance": min(max(int(m.get("importance", 5)), 1), 10),
+                            "source": "extraction",
+                        }
+                        for m in memories[:limit]
+                        if len(str(m.get("content", "")).strip()) >= 10
+                    ]
+                    if vector_memories:
+                        add_memories_batch(agent_id=agent_id, memories=vector_memories)
+            except Exception:
+                pass  # Vector store is optional
+
         return persisted
     except Exception as exc:
         logger.debug("[Memory] Extraction failed: %s", exc)

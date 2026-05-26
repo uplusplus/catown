@@ -289,7 +289,7 @@ cd backend && python -m pytest --collect-only
 | 工具授权流程 | ⏳ 待做 | — |
 | 审计日志 | ✅ 完成 | 2026-05-25 |
 | 知识图谱集成（接 Choice Box） | ✅ 完成 | 2026-05-26 |
-| 长期记忆 (ChromaDB) | ⏳ 待做 | — |
+| 长期记忆 (ChromaDB) | ✅ 完成 | 2026-05-26 |
 | 睡眠整理调度器 | ⏳ 待做 | — |
 | OMNI 多模态集成 | ⏳ 待做 | — |
 | UI/UX Pro Max Phase 2 | ⏳ 待做 | — |
