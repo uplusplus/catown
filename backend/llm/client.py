@@ -222,7 +222,16 @@ class LLMClient:
     LLM 客户端（OpenAI 兼容接口）
 
     每个 Agent 可以有独立的 provider 配置（baseUrl, apiKey, model）。
+    支持多模态消息（图片等）。
     """
+
+    # 已知支持 vision 的模型前缀
+    _VISION_MODEL_PREFIXES = (
+        "gpt-4o", "gpt-4-vision", "gpt-4-turbo",
+        "claude-3", "claude-3.5", "claude-4",
+        "gemini", "qwen-vl", "qwen2-vl",
+        "glm-4v", "deepseek-vl",
+    )
 
     def __init__(self, base_url: str = None, api_key: str = None, model: str = None, agent_name: str | None = None):
         if base_url is None or api_key is None or model is None:
@@ -241,6 +250,70 @@ class LLMClient:
             }
         )
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=self._http_client)
+
+    def supports_multimodal(self) -> bool:
+        """Check if the current model supports multimodal (vision) inputs."""
+        model_lower = (self.model or "").lower()
+        return any(model_lower.startswith(prefix) for prefix in self._VISION_MODEL_PREFIXES)
+
+    @staticmethod
+    def _prepare_multimodal_content(
+        text: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        detail: str = "auto",
+    ) -> str | List[Dict[str, Any]]:
+        """
+        Build OpenAI-compatible multimodal content.
+
+        Args:
+            text: The text prompt.
+            images: List of image dicts, each with:
+                - "url": str (data URI or HTTP URL)
+                - "mime_type": str (optional, e.g. "image/png")
+                - "detail": str (optional, overrides default detail)
+            detail: Default image detail level ("low", "high", "auto").
+
+        Returns:
+            str if no images provided, otherwise a list of content parts.
+        """
+        if not images:
+            return text
+
+        content_parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+        for img in images:
+            url = img.get("url", "")
+            if not url:
+                continue
+            image_detail = img.get("detail", detail)
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": url, "detail": image_detail},
+            })
+        return content_parts
+
+    @staticmethod
+    def _normalize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Normalize message content for the OpenAI API.
+
+        Ensures each message's content field is valid for multimodal:
+        - str content passes through as-is
+        - list content passes through as-is (already multimodal format)
+        - Other types are converted to str
+        """
+        normalized: List[Dict[str, Any]] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                normalized.append(msg)
+                continue
+            content = msg.get("content")
+            if content is None:
+                normalized.append(msg)
+            elif isinstance(content, (str, list)):
+                normalized.append(msg)
+            else:
+                normalized.append({**msg, "content": str(content)})
+        return normalized
 
     def _llm_target(self, host: str | None = None) -> str:
         parsed = urlparse(self.base_url or "")
@@ -456,13 +529,15 @@ class LLMClient:
             }
         )
 
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """发送聊天消息"""
+    async def chat(self, messages: List[Dict[str, Any]], **kwargs) -> str:
+        """发送聊天消息（支持 multimodal content）"""
         started_at = time.perf_counter()
         try:
+            # Normalize messages: ensure content can be str or list
+            normalized = self._normalize_messages(messages)
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=normalized,
                 temperature=kwargs.get("temperature", 0.7),
                 max_tokens=kwargs.get("max_tokens", 2000)
             )
@@ -483,14 +558,16 @@ class LLMClient:
             raise Exception(f"LLM API error: {str(e)}")
 
     async def chat_with_tools(self, messages: List[Dict], tools: List[Dict] = None) -> Dict:
-        """支持工具调用的聊天"""
+        """支持工具调用的聊天（支持 multimodal content）"""
         started_at = time.perf_counter()
         attempt = 0
         retry_budget_seconds = 300.0
         try:
+            # Normalize messages: ensure content can be str or list
+            normalized = self._normalize_messages(messages)
             kwargs = {
                 "model": self.model,
-                "messages": messages,
+                "messages": normalized,
                 "temperature": 0.7
             }
             if tools:
@@ -630,7 +707,7 @@ class LLMClient:
 
     async def chat_stream(self, messages: List[Dict], tools: List[Dict] = None):
         """
-        流式聊天（SSE generator）
+        流式聊天（SSE generator，支持 multimodal content）
 
         Yields:
             dict: {"type": "request_sent"|"first_chunk"|"first_content"|
@@ -640,9 +717,11 @@ class LLMClient:
         request_dispatched_at = request_started_at
         timings: Dict[str, int] = {}
         try:
+            # Normalize messages: ensure content can be str or list
+            normalized = self._normalize_messages(messages)
             kwargs = {
                 "model": self.model,
-                "messages": messages,
+                "messages": normalized,
                 "temperature": 0.7,
                 "stream": True
             }

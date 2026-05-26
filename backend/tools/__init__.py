@@ -33,6 +33,7 @@ from .browser import BrowserTool
 from .skill_manager import SkillManagerTool
 from .user_file_interaction import OpenFileForUserTool
 from .knowledge_graph import KnowledgeGraphTool
+from .analyze_image import AnalyzeImageTool
 
 # Initialize tool registry
 tool_registry = ToolRegistry()
@@ -80,6 +81,7 @@ tool_registry.register(BrowserTool())
 tool_registry.register(SkillManagerTool())
 tool_registry.register(OpenFileForUserTool())
 tool_registry.register(KnowledgeGraphTool())
+tool_registry.register(AnalyzeImageTool())
 
 def init_collaboration_tools(coordinator):
     """Initialize collaboration tools with coordinator"""
@@ -116,6 +118,7 @@ __all__ = [
     'SkillManagerTool',
     'OpenFileForUserTool',
     'KnowledgeGraphTool',
+    'AnalyzeImageTool',
     'set_collaboration_coordinator',
     'init_collaboration_tools'
 ]

@@ -349,7 +349,7 @@ type ChatTabProps = {
   connectionState: "connected" | "connecting" | "disconnected";
   events: ChatEventItem[];
   expandCurrentStepByDefault: boolean;
-  onSend: (content: string, options?: { clientTurnId?: string }) => Promise<void>;
+  onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
   onOpenActivity: () => void;
@@ -6473,6 +6473,17 @@ export function ChatTab({
   const [pendingApprovalItems, setPendingApprovalItems] = useState<ApprovalQueueItem[]>([]);
   const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
   const composerRef = useRef<HTMLDivElement | null>(null);
+
+  // Attachment state for image/file uploads
+  type PendingAttachment = {
+    file: File;
+    previewUrl: string;
+    uploading: boolean;
+    error: string | null;
+    uploaded: { file_path: string; file_name: string; file_size: number; mime_type?: string } | null;
+  };
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const draftHistoryByChatRef = useRef<Record<string, string[]>>(readDraftHistoryStore());
   const draftHistoryIndexRef = useRef<number | null>(null);
@@ -7907,7 +7918,16 @@ export function ChatTab({
     });
 
     window.requestAnimationFrame(() => {
-      void onSend(next, { clientTurnId }).catch((error) => {
+      // Collect uploaded attachments
+      const uploadedAttachments = pendingAttachments
+        .filter((a) => a.uploaded !== null)
+        .map((a) => a.uploaded!);
+      // Clear pending attachments after collecting
+      if (uploadedAttachments.length > 0) {
+        clearAllAttachments();
+      }
+
+      void onSend(next, { clientTurnId, attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined }).catch((error) => {
         const message = error instanceof Error ? error.message : "Send failed";
         setLocalOverlayMessages((current) => {
           const failedAt = new Date();
@@ -7934,6 +7954,96 @@ export function ChatTab({
   function submitDraft() {
     submitContent(draft);
   }
+
+  // --- Attachment handlers ---
+  function handleFileSelect(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const imageFiles = Array.from(files).filter((f) =>
+      f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.name)
+    );
+    if (imageFiles.length === 0) return;
+
+    const newAttachments: PendingAttachment[] = imageFiles.map((file) => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+      uploading: false,
+      error: null,
+      uploaded: null,
+    }));
+    setPendingAttachments((current) => [...current, ...newAttachments]);
+
+    // Auto-upload each file
+    for (const attachment of newAttachments) {
+      void uploadAttachment(attachment);
+    }
+  }
+
+  async function uploadAttachment(attachment: PendingAttachment) {
+    if (!chat?.id) return;
+    setPendingAttachments((current) =>
+      current.map((a) => (a.file === attachment.file ? { ...a, uploading: true, error: null } : a))
+    );
+    try {
+      const result = await api.uploadFile(chat.id, attachment.file);
+      setPendingAttachments((current) =>
+        current.map((a) => (a.file === attachment.file ? { ...a, uploading: false, uploaded: result } : a))
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Upload failed";
+      setPendingAttachments((current) =>
+        current.map((a) => (a.file === attachment.file ? { ...a, uploading: false, error: errorMsg } : a))
+      );
+    }
+  }
+
+  function removeAttachment(index: number) {
+    setPendingAttachments((current) => {
+      const removed = current[index];
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((_, i) => i !== index);
+    });
+  }
+
+  function clearAllAttachments() {
+    setPendingAttachments((current) => {
+      for (const a of current) {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      }
+      return [];
+    });
+  }
+
+  // Drag-and-drop handler for the compose area
+  function handleComposeDragOver(event: React.DragEvent) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleComposeDrop(event: React.DragEvent) {
+    event.preventDefault();
+    handleFileSelect(event.dataTransfer.files);
+  }
+
+  // Paste handler for images
+  useEffect(() => {
+    function handlePaste(event: ClipboardEvent) {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      const imageFiles: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        handleFileSelect(imageFiles as unknown as FileList);
+      }
+    }
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [chat?.id]);
 
   function handleAnalyzeFailureStep(step: MessageStreamStep, context: FailureStepAnalysisContext) {
     if (sending) return;
@@ -8703,7 +8813,31 @@ export function ChatTab({
             </div>
           </div>
 
-          <form className="chat-compose" onSubmit={handleSubmit}>
+          <form className="chat-compose" onSubmit={handleSubmit} onDragOver={handleComposeDragOver} onDrop={handleComposeDrop}>
+            {pendingAttachments.length > 0 ? (
+              <div className="attachment-preview-strip">
+                {pendingAttachments.map((att, index) => (
+                  <div key={index} className="attachment-preview-item">
+                    <img src={att.previewUrl} alt={att.file.name} className="attachment-preview-img" />
+                    {att.uploading ? (
+                      <span className="attachment-status uploading">⬆</span>
+                    ) : att.error ? (
+                      <span className="attachment-status error" title={att.error}>✕</span>
+                    ) : att.uploaded ? (
+                      <span className="attachment-status ok">✓</span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="attachment-remove-btn"
+                      onClick={() => removeAttachment(index)}
+                      title="Remove"
+                    >
+                      <X size={10} aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {orderedActiveAgents.length > 0 ? (
               <div className="agent-strip">
                 {orderedActiveAgents.map((agent) => {
@@ -8860,6 +8994,26 @@ export function ChatTab({
               />
               <div className="agent-chat__toolbar">
                 <div className="agent-chat__toolbar-left">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      handleFileSelect(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="agent-chat__input-btn attachment-btn"
+                    disabled={sending}
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Attach image (📎)"
+                  >
+                    📎
+                  </button>
                   <button
                     type="button"
                     className="agent-chat__input-btn"

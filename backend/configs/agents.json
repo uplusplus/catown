@@ -54,7 +54,8 @@
         "consult_agent",
         "list_files",
         "execute_code",
-        "web_fetch"
+        "web_fetch",
+        "analyze_image"
       ],
       "skills": [
         "document-analysis",
@@ -84,7 +85,11 @@
             "contextWindow": 400000
           }
         ]
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     },
     "architect": {
       "name": "Architect",
@@ -155,7 +160,11 @@
             "contextWindow": 400000
           }
         ]
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     },
     "developer": {
       "name": "Developer",
@@ -197,7 +206,8 @@
         "search_files",
         "consult_agent",
         "web_fetch",
-        "knowledge_graph"
+        "knowledge_graph",
+        "analyze_image"
       ],
       "skills": [
         "code-generation",
@@ -229,7 +239,11 @@
             "contextWindow": 400000
           }
         ]
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     },
     "tester": {
       "name": "Tester",
@@ -267,7 +281,8 @@
         "search_files",
         "consult_agent",
         "web_fetch",
-        "knowledge_graph"
+        "knowledge_graph",
+        "analyze_image"
       ],
       "skills": [
         "test-generation",
@@ -298,7 +313,11 @@
             "contextWindow": 400000
           }
         ]
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     },
     "release": {
       "name": "Release",
@@ -366,7 +385,11 @@
             "contextWindow": 400000
           }
         ]
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     },
     "valet": {
       "name": "Valet",
@@ -452,7 +475,11 @@
           ],
           "completion_rule": "Do not mark specialized work complete until the owning agent has produced a result."
         }
-      }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
     }
   }
 }

@@ -396,13 +396,13 @@ export const api = {
       method: "DELETE",
     });
   },
-  sendMessage(chatroomId: number, content: string, clientTurnId?: string) {
+  sendMessage(chatroomId: number, content: string, clientTurnId?: string, attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
     return request<MessageItem>(`/api/chatrooms/${chatroomId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, client_turn_id: clientTurnId }),
+      body: JSON.stringify({ content, client_turn_id: clientTurnId, attachments }),
     });
   },
-  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string) {
+  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string, attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
     return fetch(`/api/chatrooms/${chatroomId}/messages/stream`, {
       method: "POST",
       headers: {
@@ -410,12 +410,34 @@ export const api = {
         "X-Catown-Client": getClientSource(),
         "X-Catown-UI-Version": UI_VERSION,
       },
-      body: JSON.stringify({ content, client_turn_id: clientTurnId }),
+      body: JSON.stringify({ content, client_turn_id: clientTurnId, attachments }),
       signal,
     }).then((response) => {
       handleServerVersionHeaders(response.headers, `/api/chatrooms/${chatroomId}/messages/stream`);
       return response;
     });
+  },
+  async uploadFile(chatroomId: number, file: File): Promise<{ file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time: string }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`/api/chatrooms/${chatroomId}/upload`, {
+      method: "POST",
+      headers: {
+        "X-Catown-Client": getClientSource(),
+        "X-Catown-UI-Version": UI_VERSION,
+      },
+      body: formData,
+    });
+    handleServerVersionHeaders(response.headers, `api:/api/chatrooms/${chatroomId}/upload`);
+    if (!response.ok) {
+      let detail = `Upload failed: ${response.status}`;
+      try {
+        const data = await response.json();
+        detail = data.detail || data.error || detail;
+      } catch {}
+      throw new Error(detail);
+    }
+    return response.json();
   },
   getAgents() {
     return request<AgentInfo[]>("/api/agents");

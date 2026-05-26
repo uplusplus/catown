@@ -278,6 +278,20 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "sandbox": {"mode": "workspace_guarded", "workspace_scope": "workspace_read"},
         "side_effect_scope": "user_interaction",
     },
+    "analyze_image": {
+        "risk_level": "low",
+        "sandbox": {
+            "mode": "workspace_guarded",
+            "workspace_scope": "workspace_read",
+            "network_access": "enabled",
+            "notes": [
+                "Reads an image file from the workspace and sends it to the LLM for analysis.",
+                "The image is sent as base64 in the LLM request body.",
+            ],
+        },
+        "side_effect_scope": "network_read",
+        "external_targets": ["llm_api"],
+    },
 }
 
 

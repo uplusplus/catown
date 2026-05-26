@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, UploadFile, File as FastAPIFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, object_session
@@ -4401,6 +4401,16 @@ class ProjectReorderRequest(BaseModel):
 class MessageRequest(BaseModel):
     content: str
     client_turn_id: Optional[str] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+
+class MessageAttachment(BaseModel):
+    """Attachment metadata returned after upload."""
+    file_path: str
+    file_name: str
+    file_size: int
+    mime_type: Optional[str] = None
+    upload_time: str
 
 
 class MessageResponse(BaseModel):
@@ -7742,18 +7752,110 @@ async def set_chatroom_visibility(
     return {"chatroom_id": chatroom_id, "message_visibility": visibility}
 
 
+# ==================== 文件上传 ====================
+
+# Supported image MIME types for upload
+_UPLOAD_IMAGE_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/bmp", "image/svg+xml",
+}
+_UPLOAD_MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20MB
+
+
+@router.post("/chatrooms/{chatroom_id}/upload", response_model=MessageAttachment)
+async def upload_file(
+    chatroom_id: int,
+    file: UploadFile = FastAPIFile(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload a file (image) to a chatroom's project workspace.
+
+    Saves the file to `projects/{id}/uploads/` and returns the file path
+    and metadata for use as a message attachment.
+    """
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    if not chatroom:
+        raise HTTPException(status_code=404, detail="Chatroom not found")
+
+    project = _resolve_chatroom_project(db, chatroom)
+    if not project:
+        raise HTTPException(status_code=400, detail="Chatroom has no associated project")
+
+    if not project.workspace_path:
+        raise HTTPException(status_code=400, detail="Project has no workspace path")
+
+    # Validate file type
+    content_type = file.content_type or ""
+    if content_type not in _UPLOAD_IMAGE_TYPES:
+        # Try to guess from filename
+        import mimetypes as _mimetypes
+        guessed_type, _ = _mimetypes.guess_type(file.filename or "")
+        if not guessed_type or guessed_type not in _UPLOAD_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {content_type}. "
+                       f"Supported: {', '.join(sorted(_UPLOAD_IMAGE_TYPES))}"
+            )
+        content_type = guessed_type
+
+    # Read file content
+    content = await file.read()
+    if len(content) > _UPLOAD_MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large: {len(content)} bytes (max {_UPLOAD_MAX_SIZE_BYTES} bytes)"
+        )
+
+    # Determine file extension
+    import mimetypes as _mimetypes
+    ext = _mimetypes.guess_extension(content_type) or ""
+    if not ext and file.filename:
+        ext = Path(file.filename).suffix
+
+    # Generate unique filename
+    import uuid as _uuid
+    upload_dir = Path(project.workspace_path) / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = Path(file.filename or "upload").stem
+    unique_name = f"{safe_name}_{_uuid.uuid4().hex[:8]}{ext}"
+    file_path = upload_dir / unique_name
+
+    # Write file
+    file_path.write_bytes(content)
+
+    # Return relative path from workspace
+    workspace = Path(project.workspace_path).expanduser().resolve()
+    relative_path = file_path.resolve().relative_to(workspace).as_posix()
+
+    from datetime import datetime as _dt
+    return MessageAttachment(
+        file_path=relative_path,
+        file_name=unique_name,
+        file_size=len(content),
+        mime_type=content_type,
+        upload_time=_dt.utcnow().isoformat(),
+    )
+
+
 @router.post("/chatrooms/{chatroom_id}/messages", response_model=MessageResponse)
 async def send_message(chatroom_id: int, message: MessageRequest, db: Session = Depends(get_db)):
     """发送消息到聊天室"""
     logger.info(f"[API] send_message called: chatroom_id={chatroom_id}, content={message.content[:50]}...")
     
     # 发送用户消息
+    # Build metadata with attachments info
+    msg_metadata = _message_metadata_with_turn(message.client_turn_id)
+    if message.attachments:
+        msg_metadata["attachments"] = message.attachments
+
     response_msg = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
         agent_id=None,  # None 表示用户
         content=message.content,
         message_type="text",
-        metadata=_message_metadata_with_turn(message.client_turn_id),
+        metadata=msg_metadata,
     )
     await publish_saved_chat_message(
         db,
@@ -7763,10 +7865,26 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         agent_name=None,
         message_type=response_msg.message_type,
         created_at=response_msg.created_at,
-        metadata=_message_metadata_with_turn(message.client_turn_id),
+        metadata=msg_metadata,
     )
     
     logger.info(f"[API] User message saved: id={response_msg.id}")
+
+    # Build extra context from attachments
+    extra_context = ""
+    if message.attachments:
+        attachment_lines = []
+        for att in message.attachments:
+            att_path = att.get("file_path", "")
+            att_mime = att.get("mime_type", "")
+            if att_path:
+                attachment_lines.append(f"- {att_path} ({att_mime})")
+        if attachment_lines:
+            extra_context = (
+                "The user has attached the following files with their message:\n"
+                + "\n".join(attachment_lines)
+                + "\n\nTo analyze images, use the analyze_image tool with the file path above."
+            )
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
     project = _resolve_chatroom_project(db, chatroom) if chatroom else None
@@ -7801,6 +7919,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
             message.content,
             message.client_turn_id,
             task_run_id=task_run.id,
+            extra_context=extra_context,
         )
         logger.info(f"[API] Agent response completed")
     except Exception as e:
@@ -7977,13 +8096,17 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             active_agent_id = agent_id
 
         try:
-            # 1. 保存用户消息
+            # 1. 保存用户消息（含附件元数据）
+            stream_msg_metadata = _message_metadata_with_turn(message.client_turn_id)
+            if message.attachments:
+                stream_msg_metadata["attachments"] = message.attachments
+
             user_msg = await chatroom_manager.send_message(
                 chatroom_id=chatroom_id,
                 agent_id=None,
                 content=message.content,
                 message_type="text",
-                metadata=_message_metadata_with_turn(message.client_turn_id),
+                metadata=stream_msg_metadata,
             )
             await publish_saved_chat_message(
                 db,
@@ -7993,8 +8116,29 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 agent_name=None,
                 message_type=user_msg.message_type,
                 created_at=user_msg.created_at,
-                metadata=_message_metadata_with_turn(message.client_turn_id),
+                metadata=stream_msg_metadata,
             )
+
+            # Build extra context from attachments
+            stream_extra_context = ""
+            if message.attachments:
+                att_lines = []
+                for att in message.attachments:
+                    att_path = att.get("file_path", "")
+                    att_mime = att.get("mime_type", "")
+                    if att_path:
+                        att_lines.append(f"- {att_path} ({att_mime})")
+                if att_lines:
+                    stream_extra_context = (
+                        "The user has attached the following files with their message:\n"
+                        + "\n".join(att_lines)
+                        + "\n\nTo analyze images, use the analyze_image tool with the file path above."
+                    )
+
+            # Inject attachment context into user message for all stream paths
+            effective_user_content = message.content
+            if stream_extra_context:
+                effective_user_content = message.content + "\n\n" + stream_extra_context
 
             # 2. 获取聊天室和项目
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -8062,7 +8206,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         project=None,
                         agents=agents,
                         agent_names=mentioned_names,
-                        user_message=message.content,
+                        user_message=effective_user_content,
                         client_turn_id=message.client_turn_id,
                         sse_json=_json,
                         sse_card=_sse_card,
@@ -8106,7 +8250,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
                     chatroom_id=chatroom_id,
-                    user_message=message.content,
+                    user_message=effective_user_content,
                     sse_json=_json,
                     client_turn_id=message.client_turn_id,
                     task_run=task_run,
@@ -8156,7 +8300,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     project=project,
                     agents=agents,
                     agent_names=mentioned_names,
-                    user_message=message.content,
+                    user_message=effective_user_content,
                     client_turn_id=message.client_turn_id,
                     sse_json=_json,
                     sse_card=_sse_card,
@@ -8279,7 +8423,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     project=project,
                     agents=agents,
                     recent_messages=runtime.recent_messages,
-                    user_message=message.content,
+                    user_message=effective_user_content,
                     available_tools=runtime.available_tools,
                     tool_policy_pack=runtime.tool_policy_pack,
                     history_limit=6,
@@ -8371,7 +8515,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 agent_id=target_agent.id,
                 agent_name=target_agent_label,
                 agent_type=_agent_type(target_agent),
-                user_message=message.content,
+                user_message=effective_user_content,
                 save_message=chatroom_manager.send_message,
                 publish_message=publish_saved_chat_message,
                 record_turn_completed=record_agent_turn_completed,

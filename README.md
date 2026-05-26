@@ -291,7 +291,7 @@ cd backend && python -m pytest --collect-only
 | 知识图谱集成（接 Choice Box） | ✅ 完成 | 2026-05-26 |
 | 长期记忆 (ChromaDB) | ✅ 完成 | 2026-05-26 |
 | 睡眠整理调度器 | ✅ 完成 | 2026-05-26 |
-| OMNI 多模态集成 | ⏳ 待做 | — |
+| OMNI 多模态集成 | ✅ 完成 | 2026-05-26 |
 | UI/UX Pro Max Phase 2 | ⏳ 待做 | — |
 | Knowledge Graph 进阶 | ⏳ 待做 | — |
 

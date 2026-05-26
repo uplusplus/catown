@@ -3944,7 +3944,7 @@ function App() {
     }
   }
 
-  async function handleSendMessage(content: string, options?: { clientTurnId?: string }) {
+  async function handleSendMessage(content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) {
     let chatId = selectedChatId;
     let streamReceivedEvent = false;
     const userTempId = nextTempMessageId();
@@ -3992,7 +3992,7 @@ function App() {
       sendAbortRef.current?.abort();
       sendAbortRef.current = controller;
 
-      const response = await api.streamMessage(chatId, content, controller.signal, clientTurnId);
+      const response = await api.streamMessage(chatId, content, controller.signal, clientTurnId, options?.attachments);
       if (!response.ok || !response.body) {
         let detail = `Request failed: ${response.status}`;
         try {
