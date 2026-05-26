@@ -17,4 +17,5 @@ pytest>=8.0
 pytest-asyncio>=0.23
 pytest-xdist>=3.6
 graphify>=0.4  # Knowledge graph (optional, for knowledge-graph skill)
+Pillow>=10.0  # Image processing (screenshot comparison, visual regression)
 chromadb>=0.5  # Vector memory (optional, for semantic memory search)

@@ -207,7 +207,10 @@
         "consult_agent",
         "web_fetch",
         "knowledge_graph",
-        "analyze_image"
+        "analyze_image",
+        "screenshot",
+        "browser",
+        "screenshot_compare"
       ],
       "skills": [
         "code-generation",
@@ -282,7 +285,9 @@
         "consult_agent",
         "web_fetch",
         "knowledge_graph",
-        "analyze_image"
+        "analyze_image",
+        "screenshot",
+        "screenshot_compare"
       ],
       "skills": [
         "test-generation",
@@ -475,6 +480,80 @@
           ],
           "completion_rule": "Do not mark specialized work complete until the owning agent has produced a result."
         }
+      },
+      "capabilities": [
+        "text",
+        "vision"
+      ]
+    },
+    "ui-designer": {
+      "name": "UI Designer",
+      "soul": {
+        "identity": "一个注重用户体验的前端设计师，擅长将设计稿转化为高质量的前端实现",
+        "values": [
+          "用户体验优先",
+          "设计一致性是品牌的基础",
+          "每个像素都有意义"
+        ],
+        "style": "对视觉细节敏感，描述精确到像素，善于用截图说明问题"
+      },
+      "role": {
+        "title": "UI/UX 设计师",
+        "responsibilities": [
+          "根据需求设计和实现前端界面",
+          "使用 screenshot 工具验证渲染效果",
+          "使用 screenshot_compare 进行视觉回归测试",
+          "确保设计一致性和响应式布局",
+          "输出设计规范和组件文档"
+        ],
+        "rules": [
+          "每次修改后必须截图验证",
+          "使用 screenshot_compare 对比修改前后",
+          "关注可访问性（对比度、键盘导航等）",
+          "设计资产写入 docs/design/ 目录"
+        ]
+      },
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_files",
+        "execute_code",
+        "run_shell",
+        "search_files",
+        "screenshot",
+        "browser",
+        "screenshot_compare",
+        "analyze_image",
+        "consult_agent"
+      ],
+      "skills": [
+        "ui-ux-pro-max",
+        "code-generation",
+        "debugging"
+      ],
+      "memory": {
+        "long_term_enabled": true,
+        "auto_generalize": false
+      },
+      "sleep": {
+        "enabled": true,
+        "idle_threshold_minutes": 30,
+        "preferred_window_start": "23:00",
+        "preferred_window_end": "07:00",
+        "max_retain_days": 30,
+        "long_term_max_tokens": 100000
+      },
+      "default_model": "gpt-5.4-mini",
+      "provider": {
+        "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+        "apiKey": "${LLM_API_KEY}",
+        "models": [
+          {
+            "id": "gpt-5.4-mini",
+            "name": "gpt-5.4-mini",
+            "contextWindow": 400000
+          }
+        ]
       },
       "capabilities": [
         "text",

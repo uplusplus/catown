@@ -37,6 +37,17 @@
         "hint_only_skills": ["knowledge-graph", "debugging"]
       },
       {
+        "name": "ui_design",
+        "display_name": "UI/UX 设计验证",
+        "agent": "ui-designer",
+        "gate": "auto",
+        "timeout_minutes": 30,
+        "expected_artifacts": ["docs/design/"],
+        "context_prompt": "请对前端界面进行视觉验证和优化。使用 screenshot 截图验证，screenshot_compare 做视觉回归测试，确保响应式布局和可访问性。",
+        "active_skills": ["ui-ux-pro-max"],
+        "hint_only_skills": ["code-generation", "debugging"]
+      },
+      {
         "name": "testing",
         "display_name": "测试",
         "agent": "tester",

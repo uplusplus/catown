@@ -292,6 +292,28 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "side_effect_scope": "network_read",
         "external_targets": ["llm_api"],
     },
+    "screenshot_compare": {
+        "risk_level": "medium",
+        "approval": {
+            "kind": "conditional",
+            "notes": [
+                "Capture actions invoke the screenshot tool (browser dependency). "
+                "Compare is a local file operation.",
+            ],
+        },
+        "sandbox": {
+            "mode": "browser_runtime",
+            "workspace_scope": "temp_or_explicit_path",
+            "network_access": "enabled",
+        },
+        "escalation": {
+            "possible": True,
+            "hint": "Escalate when output paths fall outside the approved workspace or require browser setup.",
+            "triggers": ["protected_output_path", "browser_dependency"],
+        },
+        "side_effect_scope": "artifact_capture",
+        "external_targets": ["web"],
+    },
 }
 
 

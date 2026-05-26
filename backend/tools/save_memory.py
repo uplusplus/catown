@@ -34,10 +34,11 @@ class SaveMemoryTool(BaseTool):
         importance: Optional[int] = None,
         memory_type: Optional[str] = None,
         category: Optional[str] = None,
+        metadata: Optional[dict] = None,
         **kwargs,
     ) -> str:
         return await asyncio.to_thread(
-            self._execute_sync, content, agent_id, project_id, importance, memory_type, category,
+            self._execute_sync, content, agent_id, project_id, importance, memory_type, category, metadata,
         )
 
     def _execute_sync(
@@ -48,6 +49,7 @@ class SaveMemoryTool(BaseTool):
         importance: Optional[int] = None,
         memory_type: Optional[str] = None,
         category: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> str:
         """Save a memory to the appropriate layer.
 
@@ -58,15 +60,16 @@ class SaveMemoryTool(BaseTool):
             importance: Importance score 1-10 (default: 5)
             memory_type: 'project' or 'long_term' (auto-detected if not specified)
             category: For project memory: 'decision', 'convention', 'issue', 'context'
+            metadata: Optional dict of extra metadata (e.g. screenshot paths, audit info)
         """
         try:
             # Determine target layer
             target = self._resolve_target(memory_type, project_id)
 
             if target == "project":
-                return self._save_to_project(content, project_id, category, importance)
+                return self._save_to_project(content, project_id, category, importance, metadata)
             else:
-                return self._save_to_long_term(content, agent_id, importance)
+                return self._save_to_long_term(content, agent_id, importance, metadata)
 
         except Exception as e:
             return f"Error saving memory: {str(e)}"
@@ -84,12 +87,14 @@ class SaveMemoryTool(BaseTool):
 
     def _save_to_project(
         self, content: str, project_id: Optional[int], category: Optional[str], importance: Optional[int],
+        metadata: Optional[dict] = None,
     ) -> str:
         """Save to project memory files."""
         from services.project_memory import (
             write_decision, write_convention, write_issue, write_context,
             MemoryEntry, append_entry, _resolve_workspace,
         )
+        import json as _json
 
         workspace = self._get_workspace(project_id)
         if not workspace:
@@ -98,6 +103,15 @@ class SaveMemoryTool(BaseTool):
         cat = category or "context"
         imp = importance or 5
         agent_name = self._get_agent_name()
+
+        # If metadata contains screenshot info, append it to content
+        if metadata:
+            screenshot_info = metadata.get("screenshot") or metadata.get("screenshot_path")
+            if screenshot_info:
+                content = f"{content}\n\n> 截图: {screenshot_info}"
+            diff_info = metadata.get("diff") or metadata.get("diff_path")
+            if diff_info:
+                content = f"{content}\n> 差异图: {diff_info}"
 
         # Map category to writer function
         writers = {
@@ -112,18 +126,21 @@ class SaveMemoryTool(BaseTool):
 
         return f"Memory saved to project ({cat}): {path}"
 
-    def _save_to_long_term(self, content: str, agent_id: Optional[int], importance: Optional[int]) -> str:
+    def _save_to_long_term(self, content: str, agent_id: Optional[int], importance: Optional[int],
+                           metadata: Optional[dict] = None) -> str:
         """Save to long-term database memory and vector store."""
+        import json as _json
         from models.database import get_db, Memory
 
         db = next(get_db())
         try:
+            metadata_json = _json.dumps(metadata or {}, ensure_ascii=False)
             memory = Memory(
                 agent_id=agent_id or 0,
                 memory_type="long_term",
                 content=content,
                 importance=importance or 5,
-                metadata_json='{}',
+                metadata_json=metadata_json,
             )
             db.add(memory)
             db.commit()
@@ -201,6 +218,10 @@ class SaveMemoryTool(BaseTool):
                     "type": "string",
                     "enum": ["decision", "convention", "issue", "context"],
                     "description": "For project memory: the category of memory (default: context)"
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Optional metadata dict. Supports screenshot/diff paths for audit logging: {\"screenshot\": \"path\", \"diff\": \"path\"}"
                 },
             },
             "required": ["content"]

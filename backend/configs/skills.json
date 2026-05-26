@@ -305,5 +305,23 @@
       "guide": "## 图片分析规范\n- 使用 analyze_image 工具分析图片\n- 提供清晰的分析指令（prompt）\n- 支持 OCR、图表分析、UI 审查等场景\n- 图片需在 workspace 内",
       "full": "## 多模态图片分析完整指南\n\n### 工具使用\n使用  工具：\n\n\n### 参数说明\n- image_path: 图片文件路径（workspace 内）\n- prompt: 分析指令\n- detail: low/high/auto（默认 auto）\n\n### 适用场景\n- UI 截图审查：识别布局问题、可访问性问题\n- OCR 文字提取：从图片中提取文字内容\n- 图表分析：解读图表数据和趋势\n- 设计稿审查：检查设计一致性\n- 错误截图分析：从错误截图中定位问题\n\n### 最佳实践\n- prompt 要具体明确，说明你想了解什么\n- 对于 OCR 任务，指定 \"提取图中所有文字\"\n- 对于 UI 审查，指定关注点（布局、颜色、可访问性）\n- 高分辨率图片用 detail=high，普通截图用 detail=auto\n\n### 注意事项\n- 图片必须在 workspace 内\n- 支持格式：PNG, JPEG, GIF, WebP, BMP, SVG\n- 最大文件大小：20MB\n- 需要 LLM 支持 vision 能力"
     }
+  },
+  "ui-ux-pro-max": {
+    "name": "UI/UX Pro Max",
+    "description": "专业的前端设计和视觉验证工作流",
+    "required_tools": [
+      "screenshot",
+      "browser",
+      "screenshot_compare",
+      "analyze_image",
+      "read_file",
+      "write_file"
+    ],
+    "category": "development",
+    "levels": {
+      "hint": "UI 设计: 每次修改后截图验证，使用 screenshot_compare 做视觉回归",
+      "guide": "## UI/UX Pro Max 规范\n- 修改前端代码后必须 screenshot 验证\n- 使用 screenshot_compare 对比修改前后\n- 使用 analyze_image 分析 UI 问题\n- 关注响应式布局和可访问性",
+      "full": "## UI/UX Pro Max 完整指南\n\n### 工作流\n1. 理解需求：分析设计稿或需求文档\n2. 实现代码：编写 HTML/CSS/组件\n3. 截图验证：screenshot 工具捕获页面\n4. 视觉对比：screenshot_compare 与 baseline 对比\n5. 问题分析：analyze_image 识别 UI 问题\n6. 迭代修复：直到视觉效果满意\n\n### 截图对比流程\n1. capture_baseline: 修改前截图\n2. 修改代码\n3. capture_actual: 修改后截图\n4. compare: 对比差异\n5. 差异 > 阈值 → 继续修复\n\n### 响应式测试\n- desktop: 1920x1080\n- tablet: 768x1024\n- mobile: 375x812\n\n### 可访问性检查\n- 对比度 >= 4.5:1 (AA)\n- 键盘可导航\n- 语义化 HTML\n- ARIA 标签"
+    }
   }
 }
