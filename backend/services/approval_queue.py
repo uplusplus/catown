@@ -303,23 +303,24 @@ def expire_stale_approvals(
             try:
                 task_run = db.query(TaskRun).filter(TaskRun.id == item.task_run_id).first()
                 if task_run and (task_run.status or "").strip().lower() == "paused":
-                    from services.task_run_lifecycle import terminalize_task_run
+                    from services.run_ledger import append_task_event, complete_task_run
 
-                    terminalize_task_run(
+                    append_task_event(
                         db,
                         task_run,
-                        status="failed",
+                        EventType.TASK_RUN_FAILED,
+                        agent_name=item.agent_name,
                         summary=(
                             f"Approval for {item.target_name or item.target_kind} "
                             f"expired after TTL; task run abandoned."
                         ),
-                        agent_name=item.agent_name,
-                        event_type=EventType.TASK_RUN_FAILED,
                         payload={
                             "expired_approval_queue_item_id": item.id,
                             "target_kind": item.target_kind,
                             "target_name": item.target_name,
                         },
+                    )
+                    complete_task_run(db, task_run)
                     )
             except Exception as exc:
                 logger.warning(

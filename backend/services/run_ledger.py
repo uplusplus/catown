@@ -24,7 +24,7 @@ def _db_models():
 
 
 from services.approval_queue import serialize_approval_queue_item
-from services.task_status_transition import validate_transition, InvalidTaskRunStatusTransition
+from services.task_status_transition import InvalidTaskRunStatusTransition
 from services.approval_replay import (
     build_pending_approval_continuation_cursor,
     load_approval_queue_request_payload,
@@ -103,18 +103,15 @@ def update_task_run(
     task_run: TaskRun | None,
     *,
     run_kind: str | None = None,
-    status: str | None = None,
     title: str | None = None,
     target_agent_name: str | None = None,
     summary: str | None = None,
-    completed: bool = False,
 ) -> Optional[TaskRun]:
-    """Update TaskRun metadata.
+    """Update TaskRun metadata (non-status fields only).
 
-    ADR-030: Status is now auto-derived from the event stream by
-    ``append_task_event()``.  The ``status`` parameter is deprecated
-    and should not be used for new code.  It is retained only for
-    backward compatibility with existing callers.
+    ADR-030: Status is derived from the event stream by
+    ``append_task_event()``.  This function only updates metadata
+    fields like run_kind, title, target_agent_name, summary.
     """
     if task_run is None:
         return None
@@ -122,14 +119,6 @@ def update_task_run(
     changed = False
     if run_kind and task_run.run_kind != run_kind:
         task_run.run_kind = run_kind
-        changed = True
-    if status and task_run.status != status:
-        # ADR-030: Validate transition but prefer event-driven status.
-        try:
-            validate_transition(task_run.status, status)
-        except Exception:
-            pass  # Event derivation takes precedence.
-        task_run.status = status
         changed = True
     if title and task_run.title != title:
         task_run.title = title
@@ -139,18 +128,6 @@ def update_task_run(
         changed = True
     if summary is not None and task_run.summary != summary:
         task_run.summary = summary
-        changed = True
-    if completed:
-        task_run.completed_at = datetime.now()
-        if getattr(task_run, "recovery_owner", None) is not None:
-            task_run.recovery_owner = None
-            changed = True
-        if getattr(task_run, "recovery_claimed_at", None) is not None:
-            task_run.recovery_claimed_at = None
-            changed = True
-        if getattr(task_run, "recovery_lease_expires_at", None) is not None:
-            task_run.recovery_lease_expires_at = None
-            changed = True
         changed = True
 
     if changed:

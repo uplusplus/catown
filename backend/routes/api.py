@@ -137,7 +137,6 @@ from services.run_ledger import (
     serialize_task_run_summary,
     update_task_run,
 )
-from services.task_run_lifecycle import terminalize_task_run
 from services.task_activity_projection import build_task_activity_projection
 from services.chat_timeline_projection import (
     build_chatroom_timeline_projection,
@@ -3153,21 +3152,21 @@ async def _report_delegated_child_result_to_parent(
                 followup_exc,
             )
             if _attempt == 2:
-                # Final failure — terminalize parent so it doesn't hang.
+                # Final failure — emit terminal event so it doesn't hang.
                 logger.error(
                     "[DelegatedTask] All followup attempts exhausted for parent_task_run_id=%s",
                     getattr(parent_task_run, "id", None),
                 )
                 parent_task_run = get_task_run(db, parent_task_run.id)
                 if parent_task_run and (parent_task_run.status or "").strip().lower() in ("running", "paused"):
-                    terminalize_task_run(
+                    append_task_event(
                         db, parent_task_run,
-                        status="failed",
-                        error=followup_exc,
-                        summary=f"Delegated result followup failed after 3 attempts: {followup_exc}",
+                        EventType.TASK_RUN_FAILED,
                         agent_name=parent_agent_name,
-                        event_type=EventType.TASK_RUN_FAILED,
+                        summary=f"Delegated result followup failed after 3 attempts: {followup_exc}",
+                        payload={"error": str(followup_exc)},
                     )
+                    complete_task_run(db, parent_task_run)
             else:
                 await _asyncio.sleep(1 * (_attempt + 1))
 
@@ -3292,15 +3291,16 @@ async def _continue_agent_after_tracked_run_shell_async(task_run_id: int, next_c
             summary="Agent follow-up failed after tracked run_shell completed.",
             payload={"error": str(exc), "task_run_id": task_run_id},
         )
-        # P0-4: Terminalize TaskRun so it doesn't hang in "running".
+        # Emit terminal event so it doesn't hang in "running".
         if task_run and (task_run.status or "").strip().lower() == "running":
-            terminalize_task_run(
+            append_task_event(
                 db, task_run,
-                status="failed",
-                error=exc,
-                summary=f"Followup after run_shell failed: {exc}",
+                EventType.TASK_RUN_FAILED,
                 agent_name=getattr(task_run, "target_agent_name", None),
+                summary=f"Followup after run_shell failed: {exc}",
+                payload={"error": str(exc), "task_run_id": task_run_id},
             )
+            complete_task_run(db, task_run)
     finally:
         db.close()
 
@@ -7984,16 +7984,16 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         logger.error(f"[API] Agent response error: {e}")
         import traceback
         traceback.print_exc()
-        # P0-1: Terminalize TaskRun on failure so it doesn't hang in "running".
+        # Emit terminal event so it doesn't hang in "running".
         task_run = get_task_run(db, task_run.id)
         if task_run and (task_run.status or "").strip().lower() == "running":
-            terminalize_task_run(
+            append_task_event(
                 db, task_run,
-                status="failed",
-                error=e,
+                EventType.TASK_RUN_FAILED,
                 summary=f"Agent response failed: {e}",
-                event_type=EventType.TASK_RUN_FAILED,
+                payload={"error": str(e)},
             )
+            complete_task_run(db, task_run)
     
     return MessageResponse(
         id=response_msg.id,
@@ -8648,17 +8648,17 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             traceback.print_exc()
             yield render_sse_payload({"type": "error", "error": str(persist_exc)}, serialize_payload=lambda payload: _json.dumps(payload))
         finally:
-            # P0-2: Terminalize TaskRun if still running (SSE disconnect / exception).
+            # Emit interrupted event if TaskRun still running (SSE disconnect / exception).
             if task_run is not None:
                 try:
                     task_run = get_task_run(db, task_run.id)
                     if task_run and (task_run.status or "").strip().lower() == "running":
-                        terminalize_task_run(
+                        append_task_event(
                             db, task_run,
-                            status="failed",
+                            EventType.TASK_RUN_INTERRUPTED,
                             summary="Stream interrupted before completion.",
-                            event_type=EventType.TASK_RUN_INTERRUPTED,
                         )
+                        complete_task_run(db, task_run)
                 except Exception as cleanup_exc:
                     logger.warning(f"[SSE] Failed to terminalize task_run during cleanup: {cleanup_exc}")
             if workspace_token is not None:
