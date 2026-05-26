@@ -1741,3 +1741,27 @@ async def get_monitor_overview(
         "recent_compactions": recent_compactions,
         "recent_policy_decisions": recent_policy_decisions,
     }
+
+
+@router.post("/watchdog/sweep")
+def trigger_watchdog_sweep(
+    stale_running_threshold: int = Query(default=30, ge=1, le=1440),
+    stale_paused_threshold: int = Query(default=60, ge=1, le=1440),
+    db: Session = Depends(get_db),
+):
+    """Manually trigger a watchdog sweep of stale TaskRuns.
+
+    Also runs automatically on startup; this endpoint is for manual
+    invocation or external cron integration.
+    """
+    from services.task_run_watchdog import run_watchdog_sweep
+
+    result = run_watchdog_sweep(
+        db,
+        stale_running_threshold_minutes=stale_running_threshold,
+        stale_paused_threshold_minutes=stale_paused_threshold,
+    )
+    return {
+        "status": "ok",
+        **result,
+    }

@@ -4128,8 +4128,15 @@ async def _resume_interrupted_orchestration_task_run(
 
 
 async def recover_interrupted_task_runs(limit: int = 10) -> Dict[str, int]:
+    from services.task_run_watchdog import run_watchdog_sweep
+
     db = SessionLocal()
     try:
+        # P2-2: Run watchdog sweep on startup to clean up stale TaskRuns.
+        watchdog_result = run_watchdog_sweep(db)
+        if watchdog_result["total_swept"]:
+            logger.info("[Startup] Watchdog swept %d stale task run(s).", watchdog_result["total_swept"])
+
         reconcile_tracked_run_shell_runtime_cards(db, limit=1000)
         recoverable_run_kinds = RECOVERABLE_ORCHESTRATION_RUN_KINDS | INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS
         pending_runs = (
@@ -8663,7 +8670,6 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 async for chunk in raw_event_generator():
                     if runtime_is_shutting_down() or await request.is_disconnected():
                         client_connected = False
-                        break
                     sse_chunks.append(chunk)
                     _record_stream_chunk(chunk)
                     if '"type": "error"' in chunk:
@@ -8696,6 +8702,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     except asyncio.QueueFull:
                         pass
 
+        # P2-1: Shield the producer so client disconnect doesn't cancel execution.
+        # The execution continues in the background, persisting results to DB.
+        # The consumer loop below stops yielding to the client but doesn't kill execution.
         producer_task = asyncio.create_task(producer())
 
         try:
@@ -8715,14 +8724,23 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
         finally:
             client_connected = False
             if not producer_task.done():
-                producer_task.cancel()
+                # Don't cancel — let execution finish and persist to DB.
+                # The P0-2 finally block in raw_event_generator handles cleanup.
+                logger.info("[SSE] Client disconnected; producer continues in background for task_run completion.")
                 try:
-                    await asyncio.wait_for(
-                        asyncio.gather(producer_task, return_exceptions=True),
-                        timeout=2.0,
-                    )
+                    await asyncio.wait_for(producer_task, timeout=120.0)
                 except asyncio.TimeoutError:
-                    logger.warning("[SSE] Producer cancellation timed out during stream shutdown.")
+                    logger.warning("[SSE] Producer still running after 120s post-disconnect; cancelling.")
+                    producer_task.cancel()
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(producer_task, return_exceptions=True),
+                            timeout=5.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[SSE] Producer cancellation timed out during stream shutdown.")
+                except Exception as bg_exc:
+                    logger.warning("[SSE] Producer raised after client disconnect: %s", bg_exc)
 
     return StreamingResponse(
         event_generator(),

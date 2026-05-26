@@ -85,8 +85,8 @@ Followup 失败后记录了 `TRACKED_RUN_SHELL_FOLLOWUP_FAILED` 事件，但不�
 
 ### P2: 架构改进（长期）
 
-- [ ] **P2-1**: 执行层与 SSE 传输层解耦
-- [ ] **P2-2**: 心咽驱动的状态自愈 cron job
+- [x] **P2-1**: 执行层与 SSE 传输层解耦
+- [x] **P2-2**: 心咽驱动的状态自愈 cron job
 
 ---
 
@@ -145,6 +145,25 @@ except 块增加 `terminalize_task_run(status="failed")` 调用。
 `trigger_agent_response` 调用包裹在 3 次重试循环中：
 - 第 1-2 次失败：等待递增间隔后重试
 - 第 3 次失败：terminalize 父 TaskRun 为 failed，避免永远 waiting
+
+### P2-1: 执行层与 SSE 传输层解耦 ✅
+
+**文件**: `routes/api.py` — `event_generator()`
+
+SSE `event_generator` 的 `producer_task` 不再在客户端断连时立即 cancel：
+- 客户端断连后，producer 继续在后台运行，持久化结果到 DB
+- 最多等待 120 秒让执行自然完成
+- 超时后才 cancel，配合 P0-2 的 finally 补全确保 TaskRun 终态
+
+### P2-2: 心跳驱动的状态自愈 ✅
+
+**文件**: `services/task_run_watchdog.py`（增强）、`routes/monitor.py`、`routes/api.py`
+
+- `run_watchdog_sweep()` 统一入口，包含三类扫描：
+  - `sweep_stale_task_runs()` — stale running TaskRun（30 分钟无活动）
+  - `sweep_stale_paused_task_runs()` — stale paused TaskRun（审批已解决/过期但 TaskRun 未联动）
+- 启动时自动调用 `run_watchdog_sweep()` 清理历史遗留
+- 监控 API `POST /api/monitor/watchdog/sweep` 支持手动触发或外部 cron 调用
 
 ---
 
