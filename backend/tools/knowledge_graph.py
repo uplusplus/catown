@@ -87,18 +87,33 @@ class KnowledgeGraphTool(BaseTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["check", "request_build", "query", "report"],
+                    "enum": [
+                        "check", "request_build", "query", "report",
+                        "update", "explain", "path", "check_update",
+                    ],
                     "description": (
                         "Action to perform: "
                         "'check' = check if graph exists and return metadata; "
                         "'request_build' = present a Choice Box to BOSS for build approval; "
                         "'query' = run a graphify query against the existing graph; "
-                        "'report' = read the GRAPH_REPORT.md summary."
+                        "'report' = read the GRAPH_REPORT.md summary; "
+                        "'update' = incremental re-extraction (no LLM cost, no approval needed); "
+                        "'explain' = plain-language explanation of a node and its neighbors; "
+                        "'path' = shortest path between two nodes; "
+                        "'check_update' = check if semantic re-extraction is pending."
                     ),
                 },
                 "query_text": {
                     "type": "string",
-                    "description": "Query string for action='query', e.g. '模块 A 依赖哪些外部库'.",
+                    "description": (
+                        "Query string for action='query' (e.g. '模块 A 依赖哪些外部库'), "
+                        "or node name for action='explain', "
+                        "or ignored for other actions."
+                    ),
+                },
+                "target_node": {
+                    "type": "string",
+                    "description": "Target node for action='path' (the endpoint node name).",
                 },
                 "chatroom_id": {
                     "type": "integer",
@@ -112,6 +127,11 @@ class KnowledgeGraphTool(BaseTool):
                     "type": "string",
                     "description": "Name of the agent requesting the action.",
                 },
+                "force": {
+                    "type": "boolean",
+                    "description": "For action='update': force rebuild even if fewer nodes (default false).",
+                    "default": False,
+                },
             },
             "required": ["action"],
         }
@@ -120,9 +140,11 @@ class KnowledgeGraphTool(BaseTool):
         self,
         action: str,
         query_text: str = "",
+        target_node: str = "",
         chatroom_id: int | None = None,
         project_id: int | None = None,
         agent_name: str | None = None,
+        force: bool = False,
         **kwargs,
     ) -> Any:
         action = str(action or "").strip().lower()
@@ -136,13 +158,25 @@ class KnowledgeGraphTool(BaseTool):
                 agent_name=agent_name or "agent",
             )
         elif action == "query":
-            return self._action_query(query_text)
+            return await self._action_query_async(query_text)
         elif action == "report":
             return self._action_report()
+        elif action == "update":
+            return await self._action_update_async(force=force)
+        elif action == "explain":
+            return await self._action_explain_async(query_text)
+        elif action == "path":
+            return await self._action_path_async(query_text, target_node)
+        elif action == "check_update":
+            return await self._action_check_update_async()
         else:
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text=f"[Knowledge Graph] Error: Unknown action '{action}'. Valid actions: check, request_build, query, report.",
+                result_text=(
+                    f"[Knowledge Graph] Error: Unknown action '{action}'. "
+                    f"Valid actions: check, request_build, query, report, "
+                    f"update, explain, path, check_update."
+                ),
                 success=False,
                 status="invalid_action",
             )
@@ -356,6 +390,375 @@ class KnowledgeGraphTool(BaseTool):
                 "command": f'graphify query "{query_text}" --graph {GRAPHIFY_OUT_DIR}/{GRAPH_JSON}',
             },
         )
+
+    async def _action_query_async(self, query_text: str) -> Dict[str, Any]:
+        """Execute graphify query directly and return results."""
+        if not _graph_exists():
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=(
+                    "❌ 知识图谱不存在，无法查询。\n"
+                    "使用 action='request_build' 先构建图谱。"
+                ),
+                success=False,
+                status="graph_not_found",
+            )
+
+        query_text = str(query_text or "").strip()
+        if not query_text:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="[Knowledge Graph] Error: query_text is required for query action.",
+                success=False,
+                status="missing_query",
+            )
+
+        import subprocess
+        workspace = _workspace_root()
+        graph_path = _graph_json_path()
+
+        try:
+            proc = subprocess.run(
+                ["graphify", "query", query_text, "--graph", graph_path],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            output = proc.stdout.strip()
+            stderr = proc.stderr.strip()
+
+            if proc.returncode != 0:
+                return build_structured_tool_result(
+                    tool_name=self.name,
+                    result_text=f"❌ 查询失败:\n{stderr or output}",
+                    success=False,
+                    status="query_error",
+                )
+
+            if not output:
+                output = "(查询完成，无结果返回)"
+
+            # Truncate very long output
+            if len(output) > 15000:
+                output = output[:15000] + "\n\n... (truncated)"
+
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=output,
+                success=True,
+                status="query_result",
+                metadata={
+                    "query": query_text,
+                    "graph_path": graph_path,
+                    "output_size": len(output),
+                },
+            )
+        except subprocess.TimeoutExpired:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 查询超时（60s）。查询可能过于复杂，请缩小范围。",
+                success=False,
+                status="query_timeout",
+            )
+        except FileNotFoundError:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                success=False,
+                status="graphify_not_found",
+            )
+        except Exception as exc:
+            logger.error("[KnowledgeGraph] query failed: %s", exc)
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"❌ 查询异常: {exc}",
+                success=False,
+                status="query_exception",
+            )
+
+    async def _action_update_async(self, force: bool = False) -> Dict[str, Any]:
+        """Incremental graph update — re-extract code files without LLM calls."""
+        if not _graph_exists():
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=(
+                    "❌ 知识图谱不存在，无法增量更新。\n"
+                    "使用 action='request_build' 先构建图谱。"
+                ),
+                success=False,
+                status="graph_not_found",
+            )
+
+        import subprocess
+        workspace = _workspace_root()
+
+        cmd = ["graphify", "update", workspace]
+        if force:
+            cmd.append("--force")
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            output = proc.stdout.strip()
+            stderr = proc.stderr.strip()
+
+            if proc.returncode != 0:
+                return build_structured_tool_result(
+                    tool_name=self.name,
+                    result_text=f"❌ 增量更新失败:\n{stderr or output}",
+                    success=False,
+                    status="update_error",
+                )
+
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"✅ 知识图谱增量更新完成\n\n{output}",
+                success=True,
+                status="updated",
+                metadata={"force": force},
+            )
+        except subprocess.TimeoutExpired:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 增量更新超时（120s）。项目可能过大。",
+                success=False,
+                status="update_timeout",
+            )
+        except FileNotFoundError:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                success=False,
+                status="graphify_not_found",
+            )
+        except Exception as exc:
+            logger.error("[KnowledgeGraph] update failed: %s", exc)
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"❌ 增量更新异常: {exc}",
+                success=False,
+                status="update_exception",
+            )
+
+    async def _action_explain_async(self, node_name: str) -> Dict[str, Any]:
+        """Get plain-language explanation of a node and its neighbors."""
+        if not _graph_exists():
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 知识图谱不存在。使用 action='request_build' 先构建图谱。",
+                success=False,
+                status="graph_not_found",
+            )
+
+        node_name = str(node_name or "").strip()
+        if not node_name:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="[Knowledge Graph] Error: query_text (node name) is required for explain action.",
+                success=False,
+                status="missing_node",
+            )
+
+        import subprocess
+        workspace = _workspace_root()
+        graph_path = _graph_json_path()
+
+        try:
+            proc = subprocess.run(
+                ["graphify", "explain", node_name, "--graph", graph_path],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = proc.stdout.strip()
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.strip()
+                return build_structured_tool_result(
+                    tool_name=self.name,
+                    result_text=f"❌ 解释失败:\n{stderr or output}",
+                    success=False,
+                    status="explain_error",
+                )
+
+            if not output:
+                output = f"(未找到节点 '{node_name}' 的信息)"
+
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=output,
+                success=True,
+                status="explain_result",
+                metadata={"node": node_name},
+            )
+        except subprocess.TimeoutExpired:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 解释超时。",
+                success=False,
+                status="explain_timeout",
+            )
+        except FileNotFoundError:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                success=False,
+                status="graphify_not_found",
+            )
+        except Exception as exc:
+            logger.error("[KnowledgeGraph] explain failed: %s", exc)
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"❌ 解释异常: {exc}",
+                success=False,
+                status="explain_exception",
+            )
+
+    async def _action_path_async(self, source: str, target: str) -> Dict[str, Any]:
+        """Find shortest path between two nodes in the graph."""
+        if not _graph_exists():
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 知识图谱不存在。使用 action='request_build' 先构建图谱。",
+                success=False,
+                status="graph_not_found",
+            )
+
+        source = str(source or "").strip()
+        target = str(target or "").strip()
+        if not source or not target:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="[Knowledge Graph] Error: query_text (source) and target_node (target) are both required for path action.",
+                success=False,
+                status="missing_nodes",
+            )
+
+        import subprocess
+        workspace = _workspace_root()
+        graph_path = _graph_json_path()
+
+        try:
+            proc = subprocess.run(
+                ["graphify", "path", source, target, "--graph", graph_path],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = proc.stdout.strip()
+
+            if proc.returncode != 0:
+                stderr = proc.stderr.strip()
+                return build_structured_tool_result(
+                    tool_name=self.name,
+                    result_text=f"❌ 路径查询失败:\n{stderr or output}",
+                    success=False,
+                    status="path_error",
+                )
+
+            if not output:
+                output = f"(未找到从 '{source}' 到 '{target}' 的路径)"
+
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=output,
+                success=True,
+                status="path_result",
+                metadata={"source": source, "target": target},
+            )
+        except subprocess.TimeoutExpired:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 路径查询超时。",
+                success=False,
+                status="path_timeout",
+            )
+        except FileNotFoundError:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                success=False,
+                status="graphify_not_found",
+            )
+        except Exception as exc:
+            logger.error("[KnowledgeGraph] path failed: %s", exc)
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"❌ 路径查询异常: {exc}",
+                success=False,
+                status="path_exception",
+            )
+
+    async def _action_check_update_async(self) -> Dict[str, Any]:
+        """Check if semantic re-extraction is pending (no LLM cost)."""
+        if not _graph_exists():
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 知识图谱不存在。使用 action='request_build' 先构建图谱。",
+                success=False,
+                status="graph_not_found",
+            )
+
+        import subprocess
+        workspace = _workspace_root()
+
+        try:
+            proc = subprocess.run(
+                ["graphify", "check-update", workspace],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = proc.stdout.strip()
+            stderr = proc.stderr.strip()
+
+            if proc.returncode != 0:
+                return build_structured_tool_result(
+                    tool_name=self.name,
+                    result_text=f"❌ 检查失败:\n{stderr or output}",
+                    success=False,
+                    status="check_error",
+                )
+
+            needs_update = "needs update" in output.lower() or "pending" in output.lower()
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=output or ("✅ 图谱是最新的" if not needs_update else "⚠️ 图谱需要更新"),
+                success=True,
+                status="needs_update" if needs_update else "up_to_date",
+                metadata={"needs_update": needs_update},
+            )
+        except subprocess.TimeoutExpired:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ 检查超时。",
+                success=False,
+                status="check_timeout",
+            )
+        except FileNotFoundError:
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                success=False,
+                status="graphify_not_found",
+            )
+        except Exception as exc:
+            logger.error("[KnowledgeGraph] check_update failed: %s", exc)
+            return build_structured_tool_result(
+                tool_name=self.name,
+                result_text=f"❌ 检查异常: {exc}",
+                success=False,
+                status="check_exception",
+            )
 
     def _action_report(self) -> Dict[str, Any]:
         """Read the GRAPH_REPORT.md summary."""
