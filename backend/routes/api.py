@@ -3126,18 +3126,51 @@ async def _report_delegated_child_result_to_parent(
     )
     complete_task_run(db, child_task_run, status="completed", summary=summary_for_payload)
     _reopen_task_run_for_followup(db, parent_task_run)
-    await trigger_agent_response(
-        child_task_run.chatroom_id,
-        "",
-        getattr(parent_task_run, "client_turn_id", None),
-        task_run_id=getattr(parent_task_run, "id", None),
-        extra_context=(
-            f"A new agent handoff message from {child_agent_name or child_task_run.target_agent_name or 'agent'} "
-            f"to {parent_agent_name or 'the parent owner'} was just saved in chat history. "
-            "Read that message and decide the next step."
-        ),
-        checkpoint_snapshot=build_task_run_checkpoint_snapshot(parent_task_run),
+
+    # P1-2: Retry trigger_agent_response for delegated task followup.
+    import asyncio as _asyncio
+    _followup_context = (
+        f"A new agent handoff message from {child_agent_name or child_task_run.target_agent_name or 'agent'} "
+        f"to {parent_agent_name or 'the parent owner'} was just saved in chat history. "
+        "Read that message and decide the next step."
     )
+    for _attempt in range(3):
+        try:
+            await trigger_agent_response(
+                child_task_run.chatroom_id,
+                "",
+                getattr(parent_task_run, "client_turn_id", None),
+                task_run_id=getattr(parent_task_run, "id", None),
+                extra_context=_followup_context,
+                checkpoint_snapshot=build_task_run_checkpoint_snapshot(parent_task_run),
+            )
+            break
+        except Exception as followup_exc:
+            logger.warning(
+                "[DelegatedTask] Parent followup attempt %d/3 failed for parent_task_run_id=%s: %s",
+                _attempt + 1,
+                getattr(parent_task_run, "id", None),
+                followup_exc,
+            )
+            if _attempt == 2:
+                # Final failure — terminalize parent so it doesn't hang.
+                logger.error(
+                    "[DelegatedTask] All followup attempts exhausted for parent_task_run_id=%s",
+                    getattr(parent_task_run, "id", None),
+                )
+                parent_task_run = get_task_run(db, parent_task_run.id)
+                if parent_task_run and (parent_task_run.status or "").strip().lower() in ("running", "paused"):
+                    terminalize_task_run(
+                        db, parent_task_run,
+                        status="failed",
+                        error=followup_exc,
+                        summary=f"Delegated result followup failed after 3 attempts: {followup_exc}",
+                        agent_name=parent_agent_name,
+                        event_type=EventType.TASK_RUN_FAILED,
+                    )
+            else:
+                await _asyncio.sleep(1 * (_attempt + 1))
+
     return True
 
 

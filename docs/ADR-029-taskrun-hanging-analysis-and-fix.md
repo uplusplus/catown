@@ -81,7 +81,7 @@ Followup 失败后记录了 `TRACKED_RUN_SHELL_FOLLOWUP_FAILED` 事件，但不�
 ### P1: 防御性机制（兜底安全网）
 
 - [x] **P1-1**: TaskRun 看门狗 — 定期扫描 stale running TaskRun
-- [ ] **P1-2**: 委派任务 followup 失败重试
+- [x] **P1-2**: 委派任务 followup 失败重试
 
 ### P2: 架构改进（长期）
 
@@ -137,6 +137,14 @@ except 块增加 `terminalize_task_run(status="failed")` 调用。
 - 返回被清扫的 TaskRun 列表，供 cron/heartbeat 调用方报告
 
 建议通过 cron 或 heartbeat 每 5-10 分钟调用一次。
+
+### P1-2: 委派任务 followup 失败重试 ✅
+
+**文件**: `routes/api.py` — `_report_delegated_child_result_to_parent()`
+
+`trigger_agent_response` 调用包裹在 3 次重试循环中：
+- 第 1-2 次失败：等待递增间隔后重试
+- 第 3 次失败：terminalize 父 TaskRun 为 failed，避免永远 waiting
 
 ---
 
