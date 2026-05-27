@@ -97,6 +97,34 @@ def _ensure_agent_tool(config_file: Path, agent_name: str, tool_name: str) -> No
     config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _ensure_agent_tools(config_file: Path, agent_name: str, tool_names: list[str]) -> None:
+    """Add newly introduced tools to an existing runtime agent config."""
+    if not config_file.exists():
+        return
+    try:
+        with config_file.open("r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    agents = data.get("agents")
+    if not isinstance(agents, dict) or agent_name not in agents:
+        return
+    tools = agents[agent_name].setdefault("tools", [])
+    if not isinstance(tools, list):
+        return
+
+    changed = False
+    for tool_name in tool_names or []:
+        normalized = str(tool_name or "").strip()
+        if not normalized or normalized in tools:
+            continue
+        tools.append(normalized)
+        changed = True
+
+    if changed:
+        config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _ensure_agent_rule(config_file: Path, agent_name: str, rule: str) -> None:
     """Add a newly introduced role rule to an existing runtime agent config."""
     if not config_file.exists():
@@ -254,10 +282,16 @@ class Settings:
             directory.mkdir(parents=True, exist_ok=True)
 
         if "AGENT_CONFIG_FILE" not in os.environ:
-            _copy_file_if_missing(DEFAULT_CONFIG_SOURCE_DIR / "agents.json", Path(self.AGENT_CONFIG_FILE))
-            _ensure_agent_tool(Path(self.AGENT_CONFIG_FILE), "valet", "skill_manager")
+            agent_config_path = Path(self.AGENT_CONFIG_FILE)
+            _copy_file_if_missing(DEFAULT_CONFIG_SOURCE_DIR / "agents.json", agent_config_path)
+            _ensure_agent_tool(agent_config_path, "valet", "skill_manager")
+            _ensure_agent_tools(agent_config_path, "valet", ["analyze_image"])
+            _ensure_agent_tools(agent_config_path, "analyst", ["analyze_image"])
+            _ensure_agent_tools(agent_config_path, "developer", ["analyze_image", "browser", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "tester", ["analyze_image", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "ui-designer", ["analyze_image", "browser", "screenshot", "screenshot_compare"])
             _ensure_agent_rule(
-                Path(self.AGENT_CONFIG_FILE),
+                agent_config_path,
                 "valet",
                 "用户要求安装、下载、导入、启用或排查 skill/技能/marketplace 时，优先调用 skill_manager；不要用 web_search 或 execute_code 猜安装命令。未指定来源时先 action=marketplaces，再选择合适 marketplace。",
             )

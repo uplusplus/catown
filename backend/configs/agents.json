@@ -427,6 +427,7 @@
       "tools": [
         "web_search",
         "retrieve_memory",
+        "analyze_image",
         "skill_manager",
         "delegate_task",
         "check_task_status",

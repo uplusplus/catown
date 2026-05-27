@@ -106,7 +106,7 @@ def build_tool_prompt(
     tool_names: List[str],
     *,
     tool_policy_pack: Optional[Mapping[str, Any]] = None,
-    user_message: str = "",
+    user_message: Any = "",
 ) -> str:
     if not tool_names:
         return ""
@@ -178,7 +178,7 @@ def assemble_runtime_chat_messages(
     project: Any = None,
     agents: Optional[List[Any]] = None,
     recent_messages: Optional[List[Any]] = None,
-    user_message: str = "",
+    user_message: Any = "",
     available_tools: Optional[List[str]] = None,
     tool_policy_pack: Optional[Mapping[str, Any]] = None,
     history_limit: int = 5,
@@ -194,7 +194,7 @@ def assemble_runtime_chat_messages(
 ) -> List[Dict[str, Any]]:
     tool_guidance = ""
     if available_tools:
-        tool_guidance = build_tool_prompt(available_tools, tool_policy_pack=tool_policy_pack, user_message=user_message)
+        tool_guidance = build_tool_prompt(available_tools, tool_policy_pack=tool_policy_pack, user_message=str(user_message or ""))
         if "When you need to use a tool" not in tool_guidance:
             tool_guidance += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
     return shared_assemble_chat_messages(

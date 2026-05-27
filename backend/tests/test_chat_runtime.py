@@ -106,6 +106,30 @@ def test_assemble_runtime_chat_messages_passes_runtime_context(monkeypatch):
     assert captured["runtime_context"].startswith("## Runtime Environment")
 
 
+def test_assemble_runtime_chat_messages_accepts_multimodal_user_content(monkeypatch):
+    captured = {}
+
+    def fake_shared_assemble_chat_messages(**kwargs):
+        captured.update(kwargs)
+        return [{"role": "system", "content": "ok"}]
+
+    monkeypatch.setattr("services.chat_runtime.shared_assemble_chat_messages", fake_shared_assemble_chat_messages)
+
+    multimodal_content = [
+        {"type": "text", "text": "Inspect this screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA", "detail": "auto"}},
+    ]
+
+    assemble_runtime_chat_messages(
+        db=object(),
+        agent=None,
+        agent_name="Valet",
+        user_message=multimodal_content,
+    )
+
+    assert captured["user_message"] == multimodal_content
+
+
 def test_resolve_agent_tool_names_uses_agent_whitelist_from_json():
     resolved = resolve_agent_tool_names(
         SimpleNamespace(tools='["read_file", "consult_agent", "missing_tool"]'),

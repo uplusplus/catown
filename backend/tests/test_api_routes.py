@@ -2303,6 +2303,135 @@ class TestChatEndpoints:
             for message in messages
         )
 
+    def test_send_message_passes_multimodal_project_content_to_llm(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        project = client.post("/api/projects", json={
+            "name": "ChatMultimodal", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        workspace = Path(project["workspace_path"])
+        upload_dir = workspace / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        image_path = upload_dir / "sample.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb1"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        captured_messages = []
+
+        async def fake_chat_with_tools(messages, tools=None, **kwargs):
+            captured_messages.append(messages)
+            return {"content": "Mocked agent response.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.base_url = "http://localhost:9999/v1"
+        mock_llm.model = "test-model"
+        mock_llm.chat = AsyncMock(return_value="Mocked response.")
+        mock_llm.chat_with_tools = AsyncMock(side_effect=fake_chat_with_tools)
+        llm_mod._llm_client = mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={
+                "content": "Look at this image",
+                "client_turn_id": "turn-multimodal-sync",
+                "attachments": [
+                    {
+                        "file_path": "uploads/sample.png",
+                        "file_name": "sample.png",
+                        "file_size": image_path.stat().st_size,
+                        "mime_type": "image/png",
+                        "upload_time": "2026-05-27T00:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured_messages, "expected the LLM tool loop to receive prompt messages"
+        final_user_message = next(
+            message for message in reversed(captured_messages[-1]) if message.get("role") == "user"
+        )
+        assert isinstance(final_user_message["content"], list)
+        assert final_user_message["content"][0] == {"type": "text", "text": "Look at this image"}
+        assert final_user_message["content"][1]["type"] == "image_url"
+        assert final_user_message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_stream_message_passes_multimodal_project_content_to_llm(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        project = client.post("/api/projects", json={
+            "name": "ChatMultimodalStream", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        workspace = Path(project["workspace_path"])
+        upload_dir = workspace / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        image_path = upload_dir / "sample-stream.png"
+        image_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+            b"\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c\xf8\x0f\x00\x01\x01\x01\x00"
+            b"\x18\xdd\x8d\xb1"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        seen_messages = []
+
+        async def scripted_stream(messages, tools=None):
+            seen_messages.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            yield {"type": "content", "delta": "Done inspecting image."}
+            yield {"type": "done", "full_content": "Done inspecting image.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.base_url = "http://localhost:9999/v1"
+        mock_llm.model = "test-model"
+        mock_llm.chat = AsyncMock(return_value="Mocked response.")
+        mock_llm.chat_stream = scripted_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={
+                "content": "Stream this image",
+                "client_turn_id": "turn-multimodal-stream",
+                "attachments": [
+                    {
+                        "file_path": "uploads/sample-stream.png",
+                        "file_name": "sample-stream.png",
+                        "file_size": image_path.stat().st_size,
+                        "mime_type": "image/png",
+                        "upload_time": "2026-05-27T00:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert seen_messages, "expected the streaming LLM path to receive prompt messages"
+        final_user_message = next(
+            message for message in reversed(seen_messages[-1]) if message.get("role") == "user"
+        )
+        assert isinstance(final_user_message["content"], list)
+        assert final_user_message["content"][0] == {"type": "text", "text": "Stream this image"}
+        assert final_user_message["content"][1]["type"] == "image_url"
+        assert final_user_message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
     def test_send_message_creates_task_run_ledger(self, client):
         r = client.post("/api/projects", json={
             "name": "TaskRun Sync", "agent_names": ["analyst"]

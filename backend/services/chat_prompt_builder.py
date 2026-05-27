@@ -149,6 +149,26 @@ _SELECTOR_PROFILE_FIELDS = {
 }
 
 
+def _task_state_user_message_text(user_message: Any) -> str:
+    if isinstance(user_message, str):
+        return user_message
+    if isinstance(user_message, list):
+        text_parts: list[str] = []
+        for item in user_message:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != "text":
+                continue
+            text = item.get("text")
+            if text is None:
+                continue
+            normalized = str(text).strip()
+            if normalized:
+                text_parts.append(normalized)
+        return "\n\n".join(text_parts)
+    return str(user_message or "")
+
+
 def agent_base_system_prompt(agent: Any, fallback_name: str, fallback_role: str = "assistant") -> str:
     if agent is None:
         return f"You are {fallback_name}, a helpful AI collaborator."
@@ -274,7 +294,7 @@ def assemble_chat_messages(
     project: Any,
     agents: Optional[List[Any]] = None,
     recent_messages: Optional[List[Any]] = None,
-    user_message: str = "",
+    user_message: Any = "",
     available_tools: Optional[List[str]] = None,
     tool_guidance: str = "",
     history_limit: int = 5,
@@ -318,12 +338,17 @@ def assemble_chat_messages(
         prefix_assistant_name=prefix_assistant_name,
     )
     current_input: List[Dict[str, Any]] = []
-    normalized_user = (user_message or "").strip()
-    if normalized_user and not (
-        history
-        and history[-1].get("role") == "user"
-        and str(history[-1].get("content") or "").strip() == normalized_user
-    ):
+    normalized_user = user_message.strip() if isinstance(user_message, str) else ""
+    should_append_user_message = False
+    if isinstance(user_message, list):
+        should_append_user_message = True
+    elif normalized_user:
+        should_append_user_message = not (
+            history
+            and history[-1].get("role") == "user"
+            and str(history[-1].get("content") or "").strip() == normalized_user
+        )
+    if should_append_user_message:
         current_input.append({"role": "user", "content": user_message})
     if turn_state is not None:
         current_input.extend(turn_state.protocol_messages())
@@ -345,7 +370,7 @@ def assemble_chat_messages(
     user_fragments = build_task_state_fragments(
         build_task_state(
             project=project,
-            user_message=user_message,
+            user_message=_task_state_user_message_text(user_message),
         )
     )
     if history_summary is not None:

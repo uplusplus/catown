@@ -1,5 +1,6 @@
 """Runtime path layout tests."""
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -54,6 +55,19 @@ def test_defaults_use_unified_catown_home(tmp_path, monkeypatch):
     assert (settings.SKILLS_DIR / "code-generation" / "skill.json").exists()
     assert list(settings.PROJECTS_ROOT.iterdir()) == []
     assert list(settings.WORKSPACES_DIR.iterdir()) == []
+
+    with Path(settings.AGENT_CONFIG_FILE).open("r", encoding="utf-8-sig") as handle:
+        agent_config = json.load(handle)
+
+    valet_tools = agent_config["agents"]["valet"]["tools"]
+    developer_tools = agent_config["agents"]["developer"]["tools"]
+    tester_tools = agent_config["agents"]["tester"]["tools"]
+
+    assert "analyze_image" in valet_tools
+    assert "analyze_image" in developer_tools
+    assert "browser" in developer_tools
+    assert "screenshot_compare" in developer_tools
+    assert "analyze_image" in tester_tools
 
 
 def test_explicit_config_override_is_not_seeded(tmp_path, monkeypatch):

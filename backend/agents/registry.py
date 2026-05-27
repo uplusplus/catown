@@ -99,7 +99,7 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
             soul={"identity": "一个万能打杂的助手", "values": ["能帮就帮"], "style": "友好随和"},
             role={"title": "助理", "responsibilities": ["回答问题", "协助处理一般任务"], "rules": ["不确定时提问"]},
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
+            tools=["web_search", "retrieve_memory", "analyze_image", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
             metadata={
                 "runtime_contract": {
                     "mode": "coordinator",
@@ -117,7 +117,7 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
             soul={"identity": "善于提炼的需求专家", "values": ["需求不清是一切烂系统的根源"], "style": "条理清晰"},
             role={"title": "需求分析师", "responsibilities": ["将需求转化为PRD"], "rules": ["输出 Markdown"]},
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory", "read_file", "write_file"]
+            tools=["web_search", "retrieve_memory", "read_file", "write_file", "analyze_image"]
         ),
         create_agent_config_from_provider(
             agent_type="architect",
@@ -131,14 +131,14 @@ def get_builtin_agent_configs() -> List[Union[AgentConfig, AgentConfigV2]]:
             soul={"identity": "注重代码质量的工程师", "values": ["可读性优先"], "style": "简洁"},
             role={"title": "开发工程师", "responsibilities": ["基于 spec 写代码", "写测试"], "rules": ["代码写到 src/"]},
             provider_config=default_provider,
-            tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "run_shell", "search_files"]
+            tools=["web_search", "retrieve_memory", "read_file", "write_file", "list_files", "execute_code", "run_shell", "search_files", "analyze_image", "browser", "screenshot", "screenshot_compare"]
         ),
         create_agent_config_from_provider(
             agent_type="tester",
             soul={"identity": "天生多疑的QA", "values": ["边界条件是bug的温床"], "style": "冷静精确"},
             role={"title": "测试工程师", "responsibilities": ["测试软件找bug"], "rules": ["安全问题标记blocker"]},
             provider_config=default_provider,
-            tools=["retrieve_memory", "read_file", "execute_code", "run_shell", "list_files", "search_files"]
+            tools=["retrieve_memory", "read_file", "execute_code", "run_shell", "list_files", "search_files", "analyze_image", "screenshot", "screenshot_compare"]
         ),
         create_agent_config_from_provider(
             agent_type="release",

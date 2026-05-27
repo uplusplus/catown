@@ -7,6 +7,7 @@ import re
 import json
 import os
 import asyncio
+import base64
 import hashlib
 import threading
 import socket
@@ -58,7 +59,7 @@ from pipeline.engine import pipeline_engine
 from agents.registry import get_registry
 from agents.core import Agent as AgentInstance
 from chatrooms.manager import chatroom_manager
-from llm.client import get_llm_client_for_agent, get_default_llm_client, clear_client_cache
+from llm.client import LLMClient, get_llm_client_for_agent, get_default_llm_client, clear_client_cache
 from config import settings
 from monitoring import monitor_network_buffer
 from skills import import_skill_from_marketplace, list_marketplaces, load_skill_registry, set_marketplace_enabled
@@ -1259,6 +1260,7 @@ async def trigger_agent_response(
     origin_message_id: Optional[int] = None,
     extra_context: str = "",
     checkpoint_snapshot: Optional[Dict[str, Any]] = None,
+    current_user_content: Optional[str | List[Dict[str, Any]]] = None,
 ):
     """触发 Agent 处理消息并生成响应（统一执行路径 + 工具结果回传 LLM）"""
     from models.database import get_db
@@ -1271,6 +1273,7 @@ async def trigger_agent_response(
     task_run = None
     try:
         logger.debug(f"[ trigger_agent_response called: chatroom_id={chatroom_id}, message={user_message[:50]}...")
+        llm_user_content = current_user_content if current_user_content is not None else user_message
         
         # 1. 获取聊天室关联的项目
         chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -1521,7 +1524,7 @@ async def trigger_agent_response(
                 project=project,
                 agents=agents,
                 recent_messages=runtime.recent_messages,
-                user_message=user_message,
+                user_message=llm_user_content,
                 available_tools=runtime.available_tools,
                 tool_policy_pack=runtime.tool_policy_pack,
                 history_limit=5,
@@ -8033,6 +8036,63 @@ _UPLOAD_IMAGE_TYPES = {
 _UPLOAD_MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20MB
 
 
+def _resolve_attachment_file_path(project: Optional[Project], attachment: Dict[str, Any]) -> Optional[Path]:
+    if project is None or not getattr(project, "workspace_path", None):
+        return None
+    raw_path = str((attachment or {}).get("file_path") or "").strip()
+    if not raw_path:
+        return None
+    workspace_path = Path(project.workspace_path).expanduser().resolve()
+    candidate = (workspace_path / raw_path).resolve()
+    try:
+        candidate.relative_to(workspace_path)
+    except ValueError:
+        return None
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _build_multimodal_user_content(
+    user_message: str,
+    *,
+    project: Optional[Project],
+    attachments: Optional[List[Dict[str, Any]]] = None,
+    detail: str = "auto",
+) -> str | List[Dict[str, Any]]:
+    prompt_text = str(user_message or "")
+    image_parts: List[Dict[str, Any]] = []
+
+    for attachment in attachments or []:
+        mime_type = str((attachment or {}).get("mime_type") or "").strip().lower()
+        if mime_type not in _UPLOAD_IMAGE_TYPES:
+            continue
+        file_path = _resolve_attachment_file_path(project, attachment)
+        if file_path is None:
+            continue
+        try:
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        if len(raw) > _UPLOAD_MAX_SIZE_BYTES:
+            continue
+        image_parts.append(
+            {
+                "url": f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}",
+                "detail": detail,
+            }
+        )
+
+    if not image_parts:
+        return prompt_text
+
+    return LLMClient._prepare_multimodal_content(
+        text=prompt_text,
+        images=image_parts,
+        detail=detail,
+    )
+
+
 @router.post("/chatrooms/{chatroom_id}/upload", response_model=MessageAttachment)
 async def upload_file(
     chatroom_id: int,
@@ -8185,12 +8245,19 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
 
     # 触发 Agent 响应（同步等待，方便调试）
     try:
+        effective_user_content = _build_multimodal_user_content(
+            message.content,
+            project=project,
+            attachments=message.attachments,
+        )
+
         await trigger_agent_response(
             chatroom_id,
             message.content,
             message.client_turn_id,
             task_run_id=task_run.id,
             extra_context=extra_context,
+            current_user_content=effective_user_content,
         )
         logger.info(f"[API] Agent response completed")
     except Exception as e:
@@ -8416,10 +8483,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         + "\n\nTo analyze images, use the analyze_image tool with the file path above."
                     )
 
-            # Inject attachment context into user message for all stream paths
-            effective_user_content = message.content
-            if stream_extra_context:
-                effective_user_content = message.content + "\n\n" + stream_extra_context
+            effective_user_text = message.content + ("\n\n" + stream_extra_context if stream_extra_context else "")
 
             # 2. 获取聊天室和项目
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -8428,6 +8492,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 return
 
             project = _resolve_chatroom_project(db, chatroom)
+            effective_user_content = _build_multimodal_user_content(
+                message.content,
+                project=project,
+                attachments=message.attachments,
+            )
             task_run = create_task_run(
                 db,
                 chatroom_id=chatroom_id,
@@ -8487,7 +8556,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                         project=None,
                         agents=agents,
                         agent_names=mentioned_names,
-                        user_message=effective_user_content,
+                        user_message=effective_user_text,
                         client_turn_id=message.client_turn_id,
                         sse_json=_json,
                         sse_card=_sse_card,
@@ -8531,7 +8600,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 async for chunk in _stream_standalone_assistant_response(
                     db=db,
                     chatroom_id=chatroom_id,
-                    user_message=effective_user_content,
+                    user_message=effective_user_text,
                     sse_json=_json,
                     client_turn_id=message.client_turn_id,
                     task_run=task_run,
@@ -8581,7 +8650,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     project=project,
                     agents=agents,
                     agent_names=mentioned_names,
-                    user_message=effective_user_content,
+                    user_message=effective_user_text,
                     client_turn_id=message.client_turn_id,
                     sse_json=_json,
                     sse_card=_sse_card,
@@ -8709,6 +8778,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     tool_policy_pack=runtime.tool_policy_pack,
                     history_limit=6,
                     runtime_context=build_runtime_environment_context(project),
+                    extra_context=stream_extra_context,
                     turn_state=current_turn_state,
                     on_compaction=compaction_callback,
                 )
@@ -8796,7 +8866,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 agent_id=target_agent.id,
                 agent_name=target_agent_label,
                 agent_type=_agent_type(target_agent),
-                user_message=effective_user_content,
+                user_message=message.content,
                 save_message=chatroom_manager.send_message,
                 publish_message=publish_saved_chat_message,
                 record_turn_completed=record_agent_turn_completed,
