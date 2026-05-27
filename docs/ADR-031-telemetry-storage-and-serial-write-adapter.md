@@ -183,7 +183,7 @@ On shutdown:
 
 - [x] **5-1**: enable WAL and busy timeout for the primary DB
 - [x] **5-2**: enable WAL and busy timeout for the telemetry DB
-- [ ] **5-3**: add dedicated writer tests
+- [x] **5-3**: add dedicated writer tests
 - [ ] **5-4**: validate that single-agent streaming no longer blocks on telemetry writes under real incident load
 
 ---
@@ -203,6 +203,7 @@ On shutdown:
 - Migrated `audit_recorder.py` off direct audit commits so runtime audit helpers now persist through the telemetry writer.
 - Removed invalid ORM relationships between `LLMCall` and `ToolCall` after the telemetry split, because cross-table foreign keys were intentionally dropped for the separate SQLite DB design.
 - Verified the new audit path with `pytest backend/tests/test_audit_recorder.py -q` and a local smoke run covering create/finalize/event persistence through `telemetry_writer`.
+- Added dedicated `telemetry_writer` tests covering record persistence, `flush()` semantics, and 20-thread concurrent create calls serialized into the telemetry DB without lock failures.
 
 ---
 
