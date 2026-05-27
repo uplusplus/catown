@@ -12,6 +12,7 @@
 - 📊 **Pipeline Dashboard**：实时进度、Agent 通信、产出物管理
 - 🔧 **24 个内置工具**：文件、代码执行、Shell、浏览器、搜索、协作、记忆等
 - ⚙️ **全可配置**：LLM 模型、Pipeline 流程、Agent 角色、Skills 全部由 JSON 驱动
+- ↩️ **统一返回语义**：全局 `Esc` 现在用于退出或返回上一级，已覆盖主界面、聊天子层和 `/monitor` 子页面，并为移动端返回手势与系统返回键预留统一 back-action 接口
 - 📦 **Skills 三级披露**：hint → guide → full，按需注入 Agent 上下文
 
 ## 🚀 快速开始
