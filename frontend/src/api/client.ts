@@ -44,6 +44,7 @@ import type {
   UiConfigPayload,
 } from "../types";
 import { UI_VERSION } from "../uiVersion";
+import { isAbortError } from "../utils/abort";
 import { DEFAULT_AGENT_TYPE } from "../utils/agents";
 import { handleServerVersionHeaders } from "../versionGuard";
 
@@ -195,21 +196,28 @@ export const api = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      lines.forEach((line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        onBatch(JSON.parse(trimmed) as ProjectBrowserStreamBatch);
-      });
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      onBatch(JSON.parse(buffer.trim()) as ProjectBrowserStreamBatch);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        lines.forEach((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          onBatch(JSON.parse(trimmed) as ProjectBrowserStreamBatch);
+        });
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        onBatch(JSON.parse(buffer.trim()) as ProjectBrowserStreamBatch);
+      }
+    } catch (error) {
+      if (signal?.aborted && isAbortError(error)) {
+        return;
+      }
+      throw error;
     }
   },
   async watchProjectBrowser(
@@ -236,21 +244,28 @@ export const api = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      lines.forEach((line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        onEvent(JSON.parse(trimmed) as ProjectBrowserWatchEvent);
-      });
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      onEvent(JSON.parse(buffer.trim()) as ProjectBrowserWatchEvent);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        lines.forEach((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          onEvent(JSON.parse(trimmed) as ProjectBrowserWatchEvent);
+        });
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        onEvent(JSON.parse(buffer.trim()) as ProjectBrowserWatchEvent);
+      }
+    } catch (error) {
+      if (signal?.aborted && isAbortError(error)) {
+        return;
+      }
+      throw error;
     }
   },
   createProjectSubchat(projectId: number, title?: string) {

@@ -6,6 +6,7 @@ import { ChatTab } from "./components/ChatTab";
 import { ConfigTab } from "./components/ConfigTab";
 import { ProjectsTab } from "./components/ProjectsTab";
 import { UI_VERSION } from "./uiVersion";
+import { isAbortError } from "./utils/abort";
 import { DEFAULT_AGENT_TYPE, defaultAgentName, findAgentByType, getAgentDisplayName } from "./utils/agents";
 import { BackNavigationProvider, useRegisterBackHandler } from "./utils/backNavigation";
 import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTimings";
@@ -4360,6 +4361,9 @@ function App() {
       if (contentFlushTimer !== null) {
         window.clearTimeout(contentFlushTimer);
         contentFlushTimer = null;
+      }
+      if (controller.signal.aborted && isAbortError(nextError)) {
+        return;
       }
       const message = nextError instanceof Error ? nextError.message : "Failed to send message";
       setError(message);

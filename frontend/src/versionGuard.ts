@@ -30,6 +30,10 @@ function currentBuildId() {
           ? node.getAttribute("href") || ""
           : "",
     )
+    .map((value) => {
+      const assetIndex = value.indexOf("/assets/");
+      return assetIndex >= 0 ? value.slice(assetIndex + "/assets/".length) : value;
+    })
     .filter(Boolean)
     .sort();
   return assets.join("|") || "unknown";

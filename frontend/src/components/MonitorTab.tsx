@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { api } from "../api/client";
+import { isAbortError } from "../utils/abort";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import { FlowTopologyView } from "./FlowTopologyView";
 import { MonitorRuntimeMap } from "./MonitorRuntimeMap";
@@ -3864,6 +3865,11 @@ export function MonitorTab() {
   const logCursorRef = useRef(0);
   const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
+  const monitorLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const monitorOverviewRef = useRef<MonitorOverview | null>(null);
+  const monitorSocketConnectedOnceRef = useRef(false);
+  const shouldStreamLogs = activePage === "logs";
+  const shouldStreamNetwork = activePage === "overview" || activePage === "flow" || activePage === "network";
 
   useRegisterBackHandler(
     () => activePage !== "overview" || showCreateRuleForm || showSecurityCatalog,
@@ -3883,33 +3889,49 @@ export function MonitorTab() {
       return false;
     },
   );
-  const loadMonitor = useCallback(async (silent = false) => {
+  useEffect(() => {
+    monitorOverviewRef.current = overview;
+  }, [overview]);
+
+  const loadMonitor = useCallback((silent = false) => {
+    if (monitorLoadPromiseRef.current) {
+      return monitorLoadPromiseRef.current;
+    }
+
     if (silent) {
       setRefreshing(true);
     } else {
       setLoading(true);
     }
 
-    try {
-      const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
-        api.getMonitorOverview(),
-        api.getProjects(),
-        api.getAgents(),
-        api.getConfig(),
-      ]);
-      setOverview(normalizeMonitorOverviewRuntime(nextOverview));
-      setProjects(nextProjects);
-      setAgents(nextAgents);
-      setConfig(nextConfig);
-      setConnectionState("connected");
-      setError("");
-    } catch (nextError) {
-      setConnectionState("disconnected");
-      setError(nextError instanceof Error ? nextError.message : "Failed to load Catown monitor");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    const request = (async () => {
+      try {
+        const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
+          api.getMonitorOverview(),
+          api.getProjects(),
+          api.getAgents(),
+          api.getConfig(),
+        ]);
+        setOverview(normalizeMonitorOverviewRuntime(nextOverview));
+        setProjects(nextProjects);
+        setAgents(nextAgents);
+        setConfig(nextConfig);
+        setConnectionState("connected");
+        setError("");
+      } catch (nextError) {
+        setConnectionState("disconnected");
+        setError(nextError instanceof Error ? nextError.message : "Failed to load Catown monitor");
+      } finally {
+        if (monitorLoadPromiseRef.current === request) {
+          monitorLoadPromiseRef.current = null;
+        }
+        setLoading(false);
+        setRefreshing(false);
+      }
+    })();
+
+    monitorLoadPromiseRef.current = request;
+    return request;
   }, []);
 
   useEffect(() => {
@@ -3999,7 +4021,12 @@ export function MonitorTab() {
         if (cancelled) return;
         socket.send(JSON.stringify({ type: "subscribe", topic: "monitor" }));
         setConnectionState("connected");
-        void loadMonitor(true);
+        const shouldResyncSnapshot =
+          monitorSocketConnectedOnceRef.current || monitorOverviewRef.current === null;
+        monitorSocketConnectedOnceRef.current = true;
+        if (shouldResyncSnapshot) {
+          void loadMonitor(true);
+        }
       };
 
       socket.onmessage = (event) => {
@@ -4089,6 +4116,11 @@ export function MonitorTab() {
   }, [historyRange, loadMonitor]);
 
   useEffect(() => {
+    if (!shouldStreamLogs) {
+      setLogStreamState("disconnected");
+      return undefined;
+    }
+
     let cancelled = false;
     let streamAbortController: AbortController | null = null;
     let reconnectTimer: number | null = null;
@@ -4159,7 +4191,10 @@ export function MonitorTab() {
           setLogStreamState("disconnected");
           scheduleReconnect();
         }
-      } catch {
+      } catch (error) {
+        if (streamAbortController?.signal.aborted && isAbortError(error)) {
+          return;
+        }
         if (!cancelled) {
           setLogStreamState("disconnected");
           scheduleReconnect();
@@ -4176,9 +4211,14 @@ export function MonitorTab() {
       }
       streamAbortController?.abort();
     };
-  }, []);
+  }, [shouldStreamLogs]);
 
   useEffect(() => {
+    if (!shouldStreamNetwork) {
+      setNetworkStreamState("disconnected");
+      return undefined;
+    }
+
     let cancelled = false;
     let streamAbortController: AbortController | null = null;
     let reconnectTimer: number | null = null;
@@ -4258,7 +4298,10 @@ export function MonitorTab() {
           setNetworkStreamState("disconnected");
           scheduleReconnect();
         }
-      } catch {
+      } catch (error) {
+        if (streamAbortController?.signal.aborted && isAbortError(error)) {
+          return;
+        }
         if (!cancelled) {
           setNetworkStreamState("disconnected");
           scheduleReconnect();
@@ -4275,7 +4318,7 @@ export function MonitorTab() {
       }
       streamAbortController?.abort();
     };
-  }, [networkCategory, networkFilter, showInternalNetwork]);
+  }, [networkCategory, networkFilter, shouldStreamNetwork, showInternalNetwork]);
 
   const sortedProjects = useMemo(
     () => [...projects].sort((left, right) => left.display_order - right.display_order),
