@@ -11,6 +11,7 @@ import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from openai import APITimeoutError
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -194,7 +195,7 @@ class TestLLMClientChatWithTools:
         assert len(attempts) == 4
         assert mock_sleep.await_count == 3
         assert [call.args[0] for call in mock_sleep.await_args_list] == [1.0, 2.0, 4.0]
-        assert any("rate-limited; retrying" in message for message in caplog.messages)
+        assert any("upstream failure; retrying" in message for message in caplog.messages)
         assert any("retry succeeded" in message for message in caplog.messages)
         assert len(events) == 3
         assert events[0]["metadata"]["retryable"] is True
@@ -451,6 +452,91 @@ class TestLLMClientChatStream:
         error_events = [e for e in events if e["type"] == "error"]
         assert len(error_events) == 1
         assert "Stream broken" in error_events[0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_stream_retries_retryable_upstream_failure_before_first_output_and_succeeds(self, caplog):
+        from llm.client import LLMClient
+
+        caplog.set_level("INFO", logger="catown.llm")
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        attempts = []
+
+        chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="Recovered", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+
+        async def success_stream():
+            yield chunk
+
+        async def mock_create_impl(**_kwargs):
+            attempts.append("call")
+            if len(attempts) == 1:
+                raise APITimeoutError(request=request) from httpx.ConnectTimeout("connect timeout")
+            return success_stream()
+
+        client = LLMClient()
+        events = []
+        network_events = []
+        client._record_network_event = lambda **kwargs: network_events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(side_effect=mock_create_impl)
+
+        with patch("llm.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            async for event in client.chat_stream([{"role": "user", "content": "hi"}]):
+                events.append(event)
+
+        done_event = next(event for event in events if event["type"] == "done")
+        assert done_event["full_content"] == "Recovered"
+        assert len(attempts) == 2
+        assert mock_sleep.await_count == 1
+        assert mock_sleep.await_args_list[0].args[0] == 1.0
+        assert network_events[0]["metadata"]["retry_phase"] == "pre_first_output"
+        assert any("retry succeeded before first output" in message for message in caplog.messages)
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_retry_after_first_output(self):
+        from llm.client import LLMClient
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        attempts = []
+
+        async def broken_stream():
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="partial", tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+            raise APITimeoutError(request=request) from httpx.ReadTimeout("read timeout")
+
+        async def mock_create_impl(**_kwargs):
+            attempts.append("call")
+            return broken_stream()
+
+        client = LLMClient()
+        network_events = []
+        client._record_network_event = lambda **kwargs: network_events.append(kwargs)
+        client.client.chat.completions.create = AsyncMock(side_effect=mock_create_impl)
+
+        with patch("llm.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            events = []
+            async for event in client.chat_stream([{"role": "user", "content": "hi"}]):
+                events.append(event)
+
+        assert len(attempts) == 1
+        assert mock_sleep.await_count == 0
+        assert any(event["type"] == "content" and event["delta"] == "partial" for event in events)
+        error_event = next(event for event in events if event["type"] == "error")
+        assert "Request timed out." in error_event["error"]
+        assert network_events[-1]["metadata"]["attempts"] == 1
 
     @pytest.mark.asyncio
     async def test_stream_empty_chunks(self):

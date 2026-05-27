@@ -52,8 +52,13 @@ For synchronous tool chat:
 
 For streaming chat:
 
-- `LLMClient.chat_stream()` must surface the failure as a streamed
-  `{"type": "error", ...}` event.
+- `LLMClient.chat_stream()` may retry retryable upstream failures only before the
+  first stream chunk or tool-call delta has been observed.
+- If recovery succeeds before the first stream-visible event, the caller should see a
+  normal stream and retry telemetry.
+- If failure happens after any stream-visible output has started, or if the pre-output
+  retry budget is exhausted, `LLMClient.chat_stream()` must surface the failure as a
+  streamed `{"type": "error", ...}` event.
 - It must log the failure and record a failed backend-LLM network event.
 
 ### 2. Abnormal response payload
@@ -84,8 +89,8 @@ These are not connectivity failures and should not enter automatic retry loops.
 
 ### Retryable upstream/server/connectivity class
 
-The following classes are considered retryable upstream failures for tool chat when they
-match provider semantics:
+The following classes are considered retryable upstream failures when they match
+provider semantics:
 
 - `429` with retry-later meaning, including messages such as `please retry later`,
   `retry later`, or `concurrency limit exceeded`
@@ -124,8 +129,10 @@ themselves:
 
 ## Retry Contract
 
-Automatic retry applies only to retryable upstream failures for synchronous
-`chat_with_tools()`.
+Automatic retry applies to retryable upstream failures for:
+
+- synchronous `chat_with_tools()`
+- `chat_stream()` only before any stream-visible output has been emitted
 
 Current contract:
 
@@ -141,6 +148,14 @@ real failure once the retry budget is exhausted.
 The retry policy is intentionally narrower than "retry every 429." Only retry-later style
 rate limits are retried automatically. This avoids blindly retrying permanent quota or
 billing failures.
+
+For streaming chat, the retry boundary is stricter:
+
+- before first visible stream output: automatic retry is allowed
+- after first visible stream output: automatic retry is forbidden
+
+This preserves stream correctness by avoiding duplicated content chunks, repeated
+tool-call deltas, or ambiguous partial-output recovery semantics.
 
 ## Interface Contract
 
@@ -166,6 +181,9 @@ Interpretation:
 Contract:
 
 - yields stream progress events during normal execution
+- may transparently retry retryable upstream failures before first stream-visible output
+- must not automatically retry once any content chunk, tool-call delta, or equivalent
+  stream-visible output has been emitted
 - yields `{"type": "error", ...}` when stream creation or streaming fails
 - does not require the caller to infer transport failure from a missing final chunk
 
@@ -204,6 +222,19 @@ Because that destroys the operational meaning of the failure.
 The runtime, monitor, logs, and state machine need these distinctions to make correct
 retry and failure decisions.
 
+### Why allow stream retry only before first output?
+
+Before the first visible chunk, the stream has not yet exposed user-visible output or
+tool-progress state, so retrying is semantically close to retrying a normal request.
+
+After visible stream output begins, automatic retry becomes much riskier:
+
+- repeated content can be emitted to the UI
+- tool-call deltas can be duplicated or interleaved
+- it becomes unclear whether a partial result should be preserved or discarded
+
+So the runtime should only auto-retry the pre-output segment of a stream.
+
 ### Why retry only a subset of `429`?
 
 Not all `429` responses are transient.
@@ -226,12 +257,13 @@ not when the error is likely permanent until operator intervention.
 3. The monitor view can distinguish retryable provider pressure from terminal failures by
    reading network-event metadata.
 4. The older PRD wording of `retry 3 times (1s/2s/4s)` is superseded by the runtime
-   contract in this ADR for tool-chat upstream failures.
+   contract in this ADR for retryable upstream failures, with the extra pre-output
+   restriction on streaming.
 
 ## Non-goals
 
-- This ADR does not require automatic retry for every LLM endpoint or every streaming
-  failure path.
+- This ADR does not require automatic retry for every LLM endpoint or every post-output
+  streaming failure path.
 - This ADR does not define user-facing copy for every provider error.
 - This ADR does not treat model refusal as a transport failure.
 - This ADR does not add silent fallback behavior that masks upstream failures from the

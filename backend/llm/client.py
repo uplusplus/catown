@@ -6,7 +6,7 @@ LLM 客户端封装
 """
 from typing import Awaitable, Callable, List, Dict, Any, Optional
 import asyncio
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 from openai._base_client import DefaultAsyncHttpxClient
 from copy import deepcopy
 import httpx
@@ -75,6 +75,58 @@ def _is_retry_later_rate_limit(error: Exception) -> bool:
 
 def _tool_chat_retry_delay_seconds(attempt: int) -> float:
     return min(60.0, float(2 ** max(0, attempt - 1)))
+
+
+def _error_fragments(error: Exception) -> list[str]:
+    return [
+        str(error or ""),
+        repr(error),
+        str(getattr(error, "__cause__", "") or ""),
+        str(getattr(error, "__context__", "") or ""),
+    ]
+
+
+def _is_retryable_upstream_failure(error: Exception) -> bool:
+    if _is_retry_later_rate_limit(error):
+        return True
+
+    if isinstance(error, (APITimeoutError, APIConnectionError)):
+        return True
+
+    if isinstance(error, httpx.TimeoutException):
+        return True
+
+    if isinstance(error, (httpx.NetworkError, httpx.ProtocolError)):
+        return True
+
+    status_code = getattr(error, "status_code", None)
+    if status_code in {408, 500, 502, 503, 504, 520, 521, 522, 523, 524}:
+        return True
+
+    if isinstance(error, (RateLimitError, APIStatusError)) and status_code in {408, 500, 502, 503, 504, 520, 521, 522, 523, 524}:
+        return True
+
+    message = " ".join(fragment for fragment in _error_fragments(error) if fragment).lower()
+    return any(
+        marker in message
+        for marker in (
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection aborted",
+            "connection refused",
+            "temporary failure in name resolution",
+            "name or service not known",
+            "nodename nor servname provided",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "tls",
+            "ssl",
+            "handshake",
+            "stream interrupted",
+        )
+    )
 
 
 def _compact_text(value: Any, limit: int = 280) -> str:
@@ -589,13 +641,13 @@ class LLMClient:
                     delay_seconds = _tool_chat_retry_delay_seconds(attempt)
                     next_elapsed_seconds = elapsed_seconds + delay_seconds
                     will_retry = (
-                        _is_retry_later_rate_limit(create_error)
+                        _is_retryable_upstream_failure(create_error)
                         and next_elapsed_seconds <= retry_budget_seconds
                     )
                     if will_retry:
                         delay_seconds = _tool_chat_retry_delay_seconds(attempt)
                         logger.warning(
-                            "LLM tool chat rate-limited; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
+                            "LLM tool chat upstream failure; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
                             self.model,
                             attempt,
                             elapsed_seconds,
@@ -716,6 +768,9 @@ class LLMClient:
         request_started_at = time.perf_counter()
         request_dispatched_at = request_started_at
         timings: Dict[str, int] = {}
+        attempt = 0
+        retry_budget_seconds = 300.0
+        first_visible_event_emitted = False
         try:
             # Normalize messages: ensure content can be str or list
             normalized = self._normalize_messages(messages)
@@ -734,116 +789,169 @@ class LLMClient:
             request_dispatched_at = time.perf_counter()
             timings["request_sent_ms"] = int((request_dispatched_at - request_started_at) * 1000)
             yield {"type": "request_sent", "elapsed_ms": timings["request_sent_ms"]}
-            try:
-                stream = await self.client.chat.completions.create(**kwargs)
-                if request_stream_usage:
-                    self._stream_usage_supported = True
-            except Exception as create_error:
-                if request_stream_usage and _supports_stream_usage_fallback(create_error):
-                    logger.warning(
-                        "Model '%s' rejected stream_options.include_usage; retrying stream without usage collection. error=%s",
-                        self.model,
-                        create_error,
-                    )
-                    self._stream_usage_supported = False
-                    fallback_kwargs = dict(kwargs)
-                    fallback_kwargs.pop("stream_options", None)
-                    stream = await self.client.chat.completions.create(**fallback_kwargs)
-                else:
-                    raise
 
-            full_content = ""
-            accumulated_tool_calls = []
-            usage = None
-            finish_reason = None
-            first_chunk_seen = False
-            tool_call_ready_emitted = False
+            while True:
+                attempt += 1
+                try:
+                    try:
+                        stream = await self.client.chat.completions.create(**kwargs)
+                        if request_stream_usage:
+                            self._stream_usage_supported = True
+                    except Exception as create_error:
+                        if request_stream_usage and _supports_stream_usage_fallback(create_error):
+                            logger.warning(
+                                "Model '%s' rejected stream_options.include_usage; retrying stream without usage collection. error=%s",
+                                self.model,
+                                create_error,
+                            )
+                            self._stream_usage_supported = False
+                            request_stream_usage = False
+                            kwargs = dict(kwargs)
+                            kwargs.pop("stream_options", None)
+                            continue
+                        raise
 
-            async for chunk in stream:
-                elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
-                if not first_chunk_seen:
-                    first_chunk_seen = True
-                    timings["first_chunk_ms"] = elapsed_ms
-                    yield {"type": "first_chunk", "elapsed_ms": elapsed_ms}
+                    full_content = ""
+                    accumulated_tool_calls = []
+                    usage = None
+                    finish_reason = None
+                    first_chunk_seen = False
+                    tool_call_ready_emitted = False
 
-                choice = chunk.choices[0] if chunk.choices else None
+                    async for chunk in stream:
+                        elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+                        if not first_chunk_seen:
+                            first_chunk_seen = True
+                            first_visible_event_emitted = True
+                            timings["first_chunk_ms"] = elapsed_ms
+                            yield {"type": "first_chunk", "elapsed_ms": elapsed_ms}
 
-                # 捕获 usage（流式模式下通常在最后一个 chunk）
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    usage = {
-                        "prompt_tokens": getattr(chunk.usage, 'prompt_tokens', 0),
-                        "completion_tokens": getattr(chunk.usage, 'completion_tokens', 0),
-                        "total_tokens": getattr(chunk.usage, 'total_tokens', 0),
+                        choice = chunk.choices[0] if chunk.choices else None
+
+                        # 捕获 usage（流式模式下通常在最后一个 chunk）
+                        if hasattr(chunk, 'usage') and chunk.usage:
+                            usage = {
+                                "prompt_tokens": getattr(chunk.usage, 'prompt_tokens', 0),
+                                "completion_tokens": getattr(chunk.usage, 'completion_tokens', 0),
+                                "total_tokens": getattr(chunk.usage, 'total_tokens', 0),
+                            }
+
+                        if not choice:
+                            continue
+
+                        delta = choice.delta
+
+                        if delta.content:
+                            if "first_content_ms" not in timings:
+                                timings["first_content_ms"] = elapsed_ms
+                                yield {"type": "first_content", "elapsed_ms": elapsed_ms}
+                            full_content += delta.content
+                            first_visible_event_emitted = True
+                            yield {"type": "content", "delta": delta.content}
+
+                        if delta.tool_calls:
+                            if "first_tool_call_ms" not in timings:
+                                timings["first_tool_call_ms"] = elapsed_ms
+                            for tc_delta in delta.tool_calls:
+                                first_visible_event_emitted = True
+                                idx = tc_delta.index
+                                while len(accumulated_tool_calls) <= idx:
+                                    accumulated_tool_calls.append({
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    })
+
+                                if tc_delta.id:
+                                    accumulated_tool_calls[idx]["id"] = tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        accumulated_tool_calls[idx]["function"]["name"] = tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+                                snapshot = deepcopy(accumulated_tool_calls[idx])
+                                yield {
+                                    "type": "tool_call_delta",
+                                    "tool_call_index": idx,
+                                    "tool_call": snapshot,
+                                    "tool_name": snapshot.get("function", {}).get("name") or "",
+                                    "arguments": snapshot.get("function", {}).get("arguments") or "",
+                                    "elapsed_ms": elapsed_ms,
+                                }
+
+                        if choice.finish_reason in ("stop", "tool_calls", "length"):
+                            finish_reason = choice.finish_reason
+                            if finish_reason == "tool_calls" and not tool_call_ready_emitted:
+                                tool_call_ready_emitted = True
+                                timings["tool_call_ready_ms"] = elapsed_ms
+                                yield {
+                                    "type": "tool_call_ready",
+                                    "elapsed_ms": elapsed_ms,
+                                    "tool_calls": deepcopy(accumulated_tool_calls),
+                                }
+                            continue
+
+                    timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+                    if attempt > 1:
+                        logger.info(
+                            "LLM stream retry succeeded before first output: model=%s attempts=%s",
+                            self.model,
+                            attempt,
+                        )
+                    yield {
+                        "type": "done",
+                        "full_content": full_content,
+                        "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                        "usage": usage,
+                        "finish_reason": finish_reason,
+                        "timings": timings,
                     }
-
-                if not choice:
-                    continue
-
-                delta = choice.delta
-
-                if delta.content:
-                    if "first_content_ms" not in timings:
-                        timings["first_content_ms"] = elapsed_ms
-                        yield {"type": "first_content", "elapsed_ms": elapsed_ms}
-                    full_content += delta.content
-                    yield {"type": "content", "delta": delta.content}
-
-                if delta.tool_calls:
-                    if "first_tool_call_ms" not in timings:
-                        timings["first_tool_call_ms"] = elapsed_ms
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        while len(accumulated_tool_calls) <= idx:
-                            accumulated_tool_calls.append({
-                                "id": "",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
-                            })
-
-                        if tc_delta.id:
-                            accumulated_tool_calls[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                accumulated_tool_calls[idx]["function"]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                accumulated_tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
-                        snapshot = deepcopy(accumulated_tool_calls[idx])
-                        yield {
-                            "type": "tool_call_delta",
-                            "tool_call_index": idx,
-                            "tool_call": snapshot,
-                            "tool_name": snapshot.get("function", {}).get("name") or "",
-                            "arguments": snapshot.get("function", {}).get("arguments") or "",
-                            "elapsed_ms": elapsed_ms,
-                        }
-
-                if choice.finish_reason in ("stop", "tool_calls", "length"):
-                    finish_reason = choice.finish_reason
-                    if finish_reason == "tool_calls" and not tool_call_ready_emitted:
-                        tool_call_ready_emitted = True
-                        timings["tool_call_ready_ms"] = elapsed_ms
-                        yield {
-                            "type": "tool_call_ready",
-                            "elapsed_ms": elapsed_ms,
-                            "tool_calls": deepcopy(accumulated_tool_calls),
-                        }
-                    continue
-
-            timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
-            yield {
-                "type": "done",
-                "full_content": full_content,
-                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
-                "usage": usage,
-                "finish_reason": finish_reason,
-                "timings": timings,
-            }
+                    break
+                except Exception as stream_error:
+                    elapsed_seconds = time.perf_counter() - request_started_at
+                    delay_seconds = _tool_chat_retry_delay_seconds(attempt)
+                    next_elapsed_seconds = elapsed_seconds + delay_seconds
+                    will_retry = (
+                        not first_visible_event_emitted
+                        and _is_retryable_upstream_failure(stream_error)
+                        and next_elapsed_seconds <= retry_budget_seconds
+                    )
+                    if will_retry:
+                        logger.warning(
+                            "LLM stream upstream failure before first output; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
+                            self.model,
+                            attempt,
+                            elapsed_seconds,
+                            delay_seconds,
+                            retry_budget_seconds,
+                            stream_error,
+                        )
+                        self._record_network_event(
+                            request_payload=kwargs,
+                            duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+                            success=False,
+                            error=f"{type(stream_error).__name__}: {stream_error}",
+                            metadata={
+                                "stream": True,
+                                "retryable": True,
+                                "retry_attempt": attempt,
+                                "will_retry": True,
+                                "retry_delay_seconds": delay_seconds,
+                                "retry_budget_seconds": retry_budget_seconds,
+                                "retry_phase": "pre_first_output",
+                            },
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    raise
 
         except Exception as e:
             if "completed_ms" not in timings:
                 timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
             logger.error(
-                "LLM stream failed: type=%s repr=%r cause=%r context=%r timings=%s\n%s",
+                "LLM stream failed: model=%s attempts=%s type=%s repr=%r cause=%r context=%r timings=%s\n%s",
+                self.model,
+                attempt,
                 type(e).__name__,
                 e,
                 e.__cause__,
@@ -856,7 +964,7 @@ class LLMClient:
                 duration_ms=timings["completed_ms"],
                 success=False,
                 error=f"{type(e).__name__}: {e}",
-                metadata={"stream": True, "aggregated": True},
+                metadata={"stream": True, "aggregated": True, "attempts": attempt},
             )
             yield {"type": "error", "error": str(e), "timings": timings}
 
