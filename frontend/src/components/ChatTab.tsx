@@ -3264,6 +3264,12 @@ function renderTraceHistoryCard({
   const isHistoryExpanded = expandedStepId === historyId || steps.some((step) => step.id === expandedStepId);
   const errorCount = steps.filter((step) => step.state === "error").length;
   const liveCount = steps.filter((step) => step.state === "live").length;
+  const doneCount = steps.filter((step) => step.state === "done").length;
+  const historyStateClass = errorCount > 0
+    ? "message-stream-step--history-error"
+    : liveCount === 0 && doneCount === steps.length
+      ? "message-stream-step--history-done"
+      : "message-stream-step--history-neutral";
   const firstStep = steps[0];
   const lastStep = steps[steps.length - 1];
   const summary = [
@@ -3276,7 +3282,7 @@ function renderTraceHistoryCard({
   return (
     <details
       key={historyId}
-      className="message-stream-step message-stream-step--history"
+      className={`message-stream-step message-stream-step--history ${historyStateClass}`}
       open={isHistoryExpanded}
     >
       <summary
