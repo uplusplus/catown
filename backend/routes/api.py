@@ -8040,6 +8040,10 @@ _UPLOAD_IMAGE_TYPES = {
     "image/png", "image/jpeg", "image/gif", "image/webp",
     "image/bmp", "image/svg+xml",
 }
+_UPLOAD_DOCUMENT_TYPES = {
+    "application/pdf",
+}
+_UPLOAD_SUPPORTED_TYPES = _UPLOAD_IMAGE_TYPES | _UPLOAD_DOCUMENT_TYPES
 _UPLOAD_MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20MB
 
 
@@ -8069,10 +8073,11 @@ def _build_multimodal_user_content(
 ) -> str | List[Dict[str, Any]]:
     prompt_text = str(user_message or "")
     image_parts: List[Dict[str, Any]] = []
+    file_parts: List[Dict[str, Any]] = []
 
     for attachment in attachments or []:
         mime_type = str((attachment or {}).get("mime_type") or "").strip().lower()
-        if mime_type not in _UPLOAD_IMAGE_TYPES:
+        if mime_type not in _UPLOAD_SUPPORTED_TYPES:
             continue
         file_path = _resolve_attachment_file_path(project, attachment)
         if file_path is None:
@@ -8083,19 +8088,31 @@ def _build_multimodal_user_content(
             continue
         if len(raw) > _UPLOAD_MAX_SIZE_BYTES:
             continue
-        image_parts.append(
-            {
-                "url": f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}",
-                "detail": detail,
-            }
-        )
+        data_uri = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        if mime_type in _UPLOAD_IMAGE_TYPES:
+            image_parts.append(
+                {
+                    "url": data_uri,
+                    "detail": detail,
+                }
+            )
+            continue
+        if mime_type in _UPLOAD_DOCUMENT_TYPES:
+            file_parts.append(
+                {
+                    "data": data_uri,
+                    "filename": str((attachment or {}).get("file_name") or file_path.name),
+                    "mime_type": mime_type,
+                }
+            )
 
-    if not image_parts:
+    if not image_parts and not file_parts:
         return prompt_text
 
     return LLMClient._prepare_multimodal_content(
         text=prompt_text,
         images=image_parts,
+        files=file_parts,
         detail=detail,
     )
 
@@ -8107,7 +8124,7 @@ async def upload_file(
     db: Session = Depends(get_db),
 ):
     """
-    Upload a file (image) to a chatroom's project workspace.
+    Upload a supported attachment to a chatroom's project workspace.
 
     Saves the file to `projects/{id}/uploads/` and returns the file path
     and metadata for use as a message attachment.
@@ -8125,15 +8142,15 @@ async def upload_file(
 
     # Validate file type
     content_type = file.content_type or ""
-    if content_type not in _UPLOAD_IMAGE_TYPES:
+    if content_type not in _UPLOAD_SUPPORTED_TYPES:
         # Try to guess from filename
         import mimetypes as _mimetypes
         guessed_type, _ = _mimetypes.guess_type(file.filename or "")
-        if not guessed_type or guessed_type not in _UPLOAD_IMAGE_TYPES:
+        if not guessed_type or guessed_type not in _UPLOAD_SUPPORTED_TYPES:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unsupported file type: {content_type}. "
-                       f"Supported: {', '.join(sorted(_UPLOAD_IMAGE_TYPES))}"
+                       f"Supported: {', '.join(sorted(_UPLOAD_SUPPORTED_TYPES))}"
             )
         content_type = guessed_type
 
@@ -8221,7 +8238,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
             extra_context = (
                 "The user has attached the following files with their message:\n"
                 + "\n".join(attachment_lines)
-                + "\n\nTo analyze images, use the analyze_image tool with the file path above."
+                + "\n\nUse the attachment paths above when deciding whether to inspect an image, read a text file, or reason directly from multimodal input."
             )
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -8487,7 +8504,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     stream_extra_context = (
                         "The user has attached the following files with their message:\n"
                         + "\n".join(att_lines)
-                        + "\n\nTo analyze images, use the analyze_image tool with the file path above."
+                        + "\n\nUse the attachment paths above when deciding whether to inspect an image, read a text file, or reason directly from multimodal input."
                     )
 
             effective_user_text = message.content + ("\n\n" + stream_extra_context if stream_extra_context else "")

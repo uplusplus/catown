@@ -6486,7 +6486,7 @@ export function ChatTab({
   // Attachment state for image/file uploads
   type PendingAttachment = {
     file: File;
-    previewUrl: string;
+    previewUrl: string | null;
     uploading: boolean;
     error: string | null;
     uploaded: { file_path: string; file_name: string; file_size: number; mime_type?: string } | null;
@@ -8001,14 +8001,14 @@ export function ChatTab({
   // --- Attachment handlers ---
   function handleFileSelect(files: FileList | null) {
     if (!files || files.length === 0) return;
-    const imageFiles = Array.from(files).filter((f) =>
-      f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.name)
+    const supportedFiles = Array.from(files).filter((f) =>
+      f.type.startsWith("image/") || f.type === "application/pdf" || /\.(png|jpe?g|gif|webp|bmp|svg|pdf)$/i.test(f.name)
     );
-    if (imageFiles.length === 0) return;
+    if (supportedFiles.length === 0) return;
 
-    const newAttachments: PendingAttachment[] = imageFiles.map((file) => ({
+    const newAttachments: PendingAttachment[] = supportedFiles.map((file) => ({
       file,
-      previewUrl: URL.createObjectURL(file),
+      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
       uploading: false,
       error: null,
       uploaded: null,
@@ -8948,7 +8948,14 @@ export function ChatTab({
               <div className="attachment-preview-strip">
                 {pendingAttachments.map((att, index) => (
                   <div key={index} className="attachment-preview-item">
-                    <img src={att.previewUrl} alt={att.file.name} className="attachment-preview-img" />
+                    {att.previewUrl ? (
+                      <img src={att.previewUrl} alt={att.file.name} className="attachment-preview-img" />
+                    ) : (
+                      <div className="attachment-preview-file" aria-label={att.file.name}>
+                        <strong>{att.file.type === "application/pdf" || /\.pdf$/i.test(att.file.name) ? "PDF" : "FILE"}</strong>
+                        <span>{att.file.name}</span>
+                      </div>
+                    )}
                     {att.uploading ? (
                       <span className="attachment-status uploading">⬆</span>
                     ) : att.error ? (
@@ -9127,7 +9134,7 @@ export function ChatTab({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,.pdf,application/pdf"
                     multiple
                     style={{ display: "none" }}
                     onChange={(e) => {

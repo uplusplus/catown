@@ -2303,6 +2303,25 @@ class TestChatEndpoints:
             for message in messages
         )
 
+    def test_upload_pdf_attachment(self, client):
+        project = client.post("/api/projects", json={
+            "name": "ChatUploadPdf", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/upload",
+            files={
+                "file": ("spec.pdf", b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n", "application/pdf")
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["mime_type"] == "application/pdf"
+        assert payload["file_name"].endswith(".pdf")
+        assert payload["file_path"].startswith("uploads/")
+
     def test_send_message_passes_multimodal_project_content_to_llm(self, client):
         import llm.client as llm_mod
         import routes.api as api_routes
@@ -2431,6 +2450,133 @@ class TestChatEndpoints:
         assert final_user_message["content"][0] == {"type": "text", "text": "Stream this image"}
         assert final_user_message["content"][1]["type"] == "image_url"
         assert final_user_message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    def test_send_message_passes_pdf_attachment_to_llm_as_file_content(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        project = client.post("/api/projects", json={
+            "name": "ChatMultimodalPdfSync", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        workspace = Path(project["workspace_path"])
+        upload_dir = workspace / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = upload_dir / "sample.pdf"
+        pdf_path.write_bytes(
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+            b"2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n"
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n"
+            b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        )
+
+        captured_messages = []
+
+        async def fake_chat_with_tools(messages, tools=None, **kwargs):
+            captured_messages.append(messages)
+            return {"content": "Mocked agent response.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.base_url = "http://localhost:9999/v1"
+        mock_llm.model = "test-model"
+        mock_llm.chat = AsyncMock(return_value="Mocked response.")
+        mock_llm.chat_with_tools = AsyncMock(side_effect=fake_chat_with_tools)
+        llm_mod._llm_client = mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={
+                "content": "Review this PDF",
+                "client_turn_id": "turn-multimodal-pdf-sync",
+                "attachments": [
+                    {
+                        "file_path": "uploads/sample.pdf",
+                        "file_name": "sample.pdf",
+                        "file_size": pdf_path.stat().st_size,
+                        "mime_type": "application/pdf",
+                        "upload_time": "2026-05-27T00:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured_messages, "expected the LLM tool loop to receive prompt messages"
+        final_user_message = next(
+            message for message in reversed(captured_messages[-1]) if message.get("role") == "user"
+        )
+        assert isinstance(final_user_message["content"], list)
+        assert final_user_message["content"][0] == {"type": "text", "text": "Review this PDF"}
+        assert final_user_message["content"][1]["type"] == "file"
+        assert final_user_message["content"][1]["file"]["filename"] == "sample.pdf"
+        assert final_user_message["content"][1]["file"]["file_data"].startswith("data:application/pdf;base64,")
+
+    def test_stream_message_passes_pdf_attachment_to_llm_as_file_content(self, client):
+        import llm.client as llm_mod
+        import routes.api as api_routes
+
+        project = client.post("/api/projects", json={
+            "name": "ChatMultimodalPdfStream", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        workspace = Path(project["workspace_path"])
+        upload_dir = workspace / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = upload_dir / "sample-stream.pdf"
+        pdf_path.write_bytes(
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+            b"2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n"
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\n"
+            b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        )
+
+        seen_messages = []
+
+        async def scripted_stream(messages, tools=None):
+            seen_messages.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            yield {"type": "content", "delta": "Done inspecting PDF."}
+            yield {"type": "done", "full_content": "Done inspecting PDF.", "tool_calls": None}
+
+        mock_llm = MagicMock()
+        mock_llm.base_url = "http://localhost:9999/v1"
+        mock_llm.model = "test-model"
+        mock_llm.chat = AsyncMock(return_value="Mocked response.")
+        mock_llm.chat_stream = scripted_stream
+        llm_mod._llm_client = mock_llm
+        api_routes.get_llm_client_for_agent = lambda agent_name: mock_llm
+        api_routes.get_default_llm_client = lambda: mock_llm
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={
+                "content": "Stream this PDF",
+                "client_turn_id": "turn-multimodal-pdf-stream",
+                "attachments": [
+                    {
+                        "file_path": "uploads/sample-stream.pdf",
+                        "file_name": "sample-stream.pdf",
+                        "file_size": pdf_path.stat().st_size,
+                        "mime_type": "application/pdf",
+                        "upload_time": "2026-05-27T00:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        assert seen_messages, "expected the streaming LLM path to receive prompt messages"
+        final_user_message = next(
+            message for message in reversed(seen_messages[-1]) if message.get("role") == "user"
+        )
+        assert isinstance(final_user_message["content"], list)
+        assert final_user_message["content"][0] == {"type": "text", "text": "Stream this PDF"}
+        assert final_user_message["content"][1]["type"] == "file"
+        assert final_user_message["content"][1]["file"]["filename"] == "sample-stream.pdf"
+        assert final_user_message["content"][1]["file"]["file_data"].startswith("data:application/pdf;base64,")
 
     def test_send_message_creates_task_run_ledger(self, client):
         r = client.post("/api/projects", json={

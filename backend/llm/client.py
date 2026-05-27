@@ -312,6 +312,7 @@ class LLMClient:
     def _prepare_multimodal_content(
         text: str,
         images: Optional[List[Dict[str, Any]]] = None,
+        files: Optional[List[Dict[str, Any]]] = None,
         detail: str = "auto",
     ) -> str | List[Dict[str, Any]]:
         """
@@ -323,12 +324,16 @@ class LLMClient:
                 - "url": str (data URI or HTTP URL)
                 - "mime_type": str (optional, e.g. "image/png")
                 - "detail": str (optional, overrides default detail)
+            files: List of file dicts, each with:
+                - "data": str (data URI or base64 content)
+                - "filename": str (optional)
+                - "mime_type": str (optional, e.g. "application/pdf")
             detail: Default image detail level ("low", "high", "auto").
 
         Returns:
-            str if no images provided, otherwise a list of content parts.
+            str if no images/files provided, otherwise a list of content parts.
         """
-        if not images:
+        if not images and not files:
             return text
 
         content_parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
@@ -340,6 +345,21 @@ class LLMClient:
             content_parts.append({
                 "type": "image_url",
                 "image_url": {"url": url, "detail": image_detail},
+            })
+        for file in files or []:
+            file_data = file.get("data", "")
+            if not file_data:
+                continue
+            file_part: Dict[str, Any] = {"file_data": file_data}
+            filename = file.get("filename")
+            if filename:
+                file_part["filename"] = filename
+            mime_type = file.get("mime_type")
+            if mime_type:
+                file_part["mime_type"] = mime_type
+            content_parts.append({
+                "type": "file",
+                "file": file_part,
             })
         return content_parts
 
