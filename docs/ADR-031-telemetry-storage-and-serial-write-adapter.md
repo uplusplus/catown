@@ -1,196 +1,190 @@
-# ADR-031: Telemetry 拆库与串行写适配层
-
-**Date**: 2026-05-26  
-**Status**: In Progress  
+# ADR-031: Telemetry Split DB and Serial Write Adapter
+**Date**: 2026-05-26
+**Status**: In Progress
 **Decision Owner**: Catown Runtime
 
 ---
 
 ## Context
 
-Catown 当前把业务事实、运行时事件、网络监控、LLM 审计全部写入同一个 SQLite 数据库 `catown.db`。
+Catown had been writing business data, runtime audit events, network monitor data, and LLM audit rows into the same SQLite database: `catown.db`.
 
-在单 agent 流式路径中，以下几类高频写会同时争抢 SQLite 写锁：
+In single-agent streaming paths, several high-frequency write classes were competing for the same SQLite writer lock:
 
-- 业务事实写：`messages`、`task_runs`、`task_run_events`
-- 运行时审计写：`llm_calls`、`tool_calls`、`events`
-- 网络监控写：`monitor_network_records`
+- business writes: `messages`, `task_runs`, `task_run_events`
+- runtime audit writes: `llm_calls`, `tool_calls`, `events`
+- monitor writes: `monitor_network_records`
 
-当前实现还存在两个放大问题：
+The main amplification issues were:
 
-1. 高频路径存在大量“小事务”  
-   多处代码在单条记录级别直接 `db.commit()`。
+1. many tiny transactions committed independently
+2. all writes contending on the same primary SQLite file
 
-2. 所有写共用同一主库  
-   观测类写与业务关键写互相影响，一旦监控/审计写变密，会拖慢甚至阻塞主业务链路。
-
-运行态证据表明，流式请求卡住时，日志中会反复出现 `sqlite3.OperationalError: database is locked`，并伴随 `monitor_network_records`、`llm_wait`、`request_sent` 等持续写入。
+Observed runtime failures showed repeated `sqlite3.OperationalError: database is locked` while monitor and audit writes continued to hit the database under streaming load.
 
 ---
 
 ## Decision
 
-### 1. 拆库
+### 1. Split telemetry from the main business DB
 
-将观测/审计类数据从主业务库拆到独立 telemetry 库。
-
-主库 `catown.db` 保留：
+Keep core business state in `catown.db`:
 
 - `messages`
 - `task_runs`
 - `task_run_events`
-- 其他业务核心表
+- other primary business tables
 
-Telemetry 库 `telemetry.db` 承载：
-
-- `monitor_network_records`
-- `llm_calls`
-- `tool_calls`
-- `events`
-
-### 2. 串行写适配层
-
-为 telemetry 库新增统一写入口，所有高频观测写不再直接 `Session.commit()`，而是：
-
-1. 主流程构造写请求
-2. 写请求进入内存队列
-3. 后台单写者顺序刷盘
-4. 按批次提交事务
-
-该层负责把“多调用方并发写”转换为“单写者串行提交”。
-
-### 3. 先治理 telemetry 写，不立即改造主库业务写
-
-第一阶段只改造高频观测写：
+Move telemetry-style data to `telemetry.db`:
 
 - `monitor_network_records`
 - `llm_calls`
 - `tool_calls`
 - `events`
 
-`task_run_events` 暂时保留在主库，避免第一阶段扩大语义面。
+### 2. Add a serial write adapter for telemetry
 
-### 4. SQLite 参数同步优化
+Telemetry writes should stop calling `Session.commit()` directly from request threads. Instead:
 
-主库与 telemetry 库都应启用适合桌面本地运行的 SQLite 设置：
+1. the caller builds a write request
+2. the request enters an in-memory queue
+3. a single background writer serializes writes
+4. commits happen in batches
 
-- `journal_mode=WAL`
-- 合理的 `busy_timeout`
-- telemetry 写端允许批量 `commit`
+This explicitly converts concurrent callers into serialized SQLite writes.
+
+### 3. Fix telemetry first, not all business writes at once
+
+Phase 1 focuses only on the high-frequency telemetry paths:
+
+- `monitor_network_records`
+- `llm_calls`
+- `tool_calls`
+- `events`
+
+`task_run_events` stays on the primary DB for now to avoid changing business consistency semantics in the same step.
+
+### 4. Align SQLite settings for local desktop runtime
+
+Both databases should use:
+
+- `PRAGMA journal_mode=WAL`
+- a shared configurable `busy_timeout`
+- batched commits on the telemetry writer
 
 ---
 
 ## Rationale
 
-### 为什么先拆 telemetry，而不是直接整体换数据库？
+### Why split telemetry first?
 
-因为当前最密集、最容易放大锁冲突的，是观测类写，不是核心业务写。先把 telemetry 抽离，可以最低风险地降低主链路阻塞。
+The highest write density and lock amplification came from observability paths, not from the core business tables. Splitting telemetry reduces primary-path interference with the least semantic risk.
 
-### 为什么需要串行写适配层？
+### Why add a serial write adapter?
 
-SQLite 可以支持并发读，但不能让多个写事务真正并行提交。  
-正确做法不是“让更多调用方直接写 SQLite”，而是“扇入成单写者顺序提交”。
+SQLite can handle concurrent readers, but true concurrent writers still serialize internally. The correct fix is not "let more threads write directly", but "absorb concurrency at an adapter and commit in order".
 
-### 为什么第一阶段不动 `task_run_events`？
+### Why not move `task_run_events` yet?
 
-`task_run_events` 同时承担事实来源和状态派生语义，直接异步化会影响“事件写入后立刻可见”的假设。第一阶段优先切掉高频观测写，收益最大、风险最小。
+`task_run_events` still carries business-facing event semantics and immediate visibility assumptions. Moving it async in the same change would expand risk beyond the telemetry bottleneck.
 
 ---
 
 ## Design
 
-### 1. 新增 telemetry 数据库配置
+### 1. Telemetry DB configuration
+
+Add:
 
 - `TELEMETRY_DATABASE_URL`
 - `TELEMETRY_SQLALCHEMY_DATABASE_URL`
-- telemetry 独立 engine / session factory
+- dedicated telemetry engine and session factory
 
-默认路径：
+Default paths:
 
-- 主库：`~/.catown/state/catown.db`
-- telemetry 库：`~/.catown/state/telemetry.db`
+- main DB: `~/.catown/state/catown.db`
+- telemetry DB: `~/.catown/state/telemetry.db`
 
-### 2. 新增串行写适配层
+### 2. Serial write adapter
 
-建议新增统一组件，例如：
+Primary component:
 
-- `services/telemetry_store.py`
-- `services/telemetry_writer.py`
+- `backend/services/telemetry_writer.py`
 
-适配层能力：
+Responsibilities:
 
-- `enqueue_*` 写接口
-- 单后台 worker
-- 批量刷盘
-- `flush()` / `shutdown()`
-- 失败回退日志
+- queue write requests
+- run a single writer worker
+- batch DB work
+- support `flush()` and shutdown drain
+- return IDs for synchronous audit helper call sites that still need immediate linkage
 
-### 3. 监控写接入方式
+### 3. Monitor write integration
 
-`MonitorNetworkBuffer.append()` 改为：
+`MonitorNetworkBuffer.append()` now:
 
-- 先写内存缓冲
-- 再 enqueue 到 telemetry writer
-- 不在请求线程内直接 `Session.commit()`
+- appends to memory buffer first
+- enqueues telemetry persistence
+- no longer commits from the request thread
 
-### 4. 审计写接入方式
+### 4. Audit write integration
 
-`audit_recorder.py` 改为通过 telemetry store 记录：
+`audit_recorder.py` now records through the telemetry writer for:
 
 - `LLMCall`
 - `ToolCall`
 - `Event`
 
-第一阶段允许保留原有 API 形状，但内部不再自行 `db.commit()`。
+The public helper API shape remains stable, but the internals no longer perform direct DB commits.
 
-### 5. 初始化与生命周期
+### 5. Lifecycle
 
-运行时启动时：
+On startup:
 
-- 初始化 telemetry 库
-- 启动 writer
+- initialize telemetry DB
+- start the telemetry writer on demand
 
-运行时关闭时：
+On shutdown:
 
-- drain 队列
-- flush 剩余批次
-- 关闭 writer
+- drain queued writes
+- flush remaining batches
+- stop the writer
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Telemetry 拆库基础设施
+### Phase 1: Telemetry split infrastructure
 
-- [x] **1-1**: 配置层新增 telemetry 数据库路径
-- [x] **1-2**: 新增 telemetry engine / session factory
-- [x] **1-3**: 审计模型改为绑定 telemetry metadata
-- [x] **1-4**: 启动时自动初始化 telemetry 表
+- [x] **1-1**: add telemetry DB config
+- [x] **1-2**: add telemetry engine and session factory
+- [x] **1-3**: bind audit models to telemetry metadata
+- [x] **1-4**: initialize telemetry tables on startup
 
-### Phase 2: 串行写适配层
+### Phase 2: Serial write adapter
 
-- [x] **2-1**: 新增 telemetry writer
-- [ ] **2-2**: 支持单写者队列 + 批量提交
-- [x] **2-3**: 支持 flush / shutdown / 错误日志
+- [x] **2-1**: add telemetry writer
+- [x] **2-2**: support single-writer queue plus batched commit
+- [x] **2-3**: support flush, shutdown, and error logging
 
-### Phase 3: 接管 monitor 高频写
+### Phase 3: Move monitor hot writes
 
-- [x] **3-1**: `monitor_network_records` 改为入队写
-- [x] **3-2**: 清理 `network_buffer.py` 内直接 commit 的热点路径
+- [x] **3-1**: switch `monitor_network_records` to queued writes
+- [x] **3-2**: remove direct commit hotspots from `network_buffer.py`
 
-### Phase 4: 接管 audit 高频写
+### Phase 4: Move audit hot writes
 
-- [ ] **4-1**: `llm_calls` 改为入队写
-- [ ] **4-2**: `tool_calls` 改为入队写
-- [ ] **4-3**: `events` 改为入队写
-- [ ] **4-4**: 移除 `audit_recorder.py` 中分散的直接 commit
+- [x] **4-1**: switch `llm_calls` to queued writes
+- [x] **4-2**: switch `tool_calls` to queued writes
+- [x] **4-3**: switch `events` to queued writes
+- [x] **4-4**: remove scattered direct commits from `audit_recorder.py`
 
-### Phase 5: SQLite 参数与验证
+### Phase 5: SQLite settings and verification
 
-- [ ] **5-1**: 主库启用 WAL / busy timeout
-- [ ] **5-2**: telemetry 库启用 WAL / busy timeout
-- [ ] **5-3**: 增加针对 writer 的测试
-- [ ] **5-4**: 验证单 agent 流式路径不再被 telemetry 写阻塞
+- [x] **5-1**: enable WAL and busy timeout for the primary DB
+- [x] **5-2**: enable WAL and busy timeout for the telemetry DB
+- [ ] **5-3**: add dedicated writer tests
+- [ ] **5-4**: validate that single-agent streaming no longer blocks on telemetry writes under real incident load
 
 ---
 
@@ -198,11 +192,17 @@ SQLite 可以支持并发读，但不能让多个写事务真正并行提交。
 
 ### 2026-05-26
 
-- 新增 ADR，确定方案为“业务主库 + telemetry 独立库 + 单写者串行提交”
-- 已完成 Phase 1：telemetry 配置、独立 engine/session、独立 metadata、启动建表
-- 已完成第一批 Phase 2/3：新增 `TelemetryWriter`，`monitor_network_records` 改为后台串行写
-- telemetry 表已从主库 metadata 拆出，默认写入 `~/.catown/state/telemetry.db`
-- 下一步优先事项：补批量提交，并把 `audit_recorder.py` 的 `llm_calls/tool_calls/events` 切到 telemetry writer
+- Added this ADR and locked the direction to `main business DB + dedicated telemetry DB + single serialized writer`.
+- Completed Phase 1: telemetry config, dedicated engine/session, dedicated metadata, and startup table creation.
+- Completed the first part of Phase 2/3: introduced `TelemetryWriter` and moved `monitor_network_records` to background serialized writes.
+- Telemetry tables now write to `~/.catown/state/telemetry.db` instead of the main metadata bundle.
+
+### 2026-05-27
+
+- Extended `TelemetryWriter` to support queued and batched writes for `LLMCall`, `ToolCall`, and `Event`, including synchronous ID return for call sites that need linkage.
+- Migrated `audit_recorder.py` off direct audit commits so runtime audit helpers now persist through the telemetry writer.
+- Removed invalid ORM relationships between `LLMCall` and `ToolCall` after the telemetry split, because cross-table foreign keys were intentionally dropped for the separate SQLite DB design.
+- Verified the new audit path with `pytest backend/tests/test_audit_recorder.py -q` and a local smoke run covering create/finalize/event persistence through `telemetry_writer`.
 
 ---
 
@@ -210,21 +210,21 @@ SQLite 可以支持并发读，但不能让多个写事务真正并行提交。
 
 ### Positive
 
-- 高频观测写不再直接和主业务写争抢同一主库写锁
-- SQLite 的单写者约束被显式吸收进适配层
-- 后续可以继续把更多观测写迁入 telemetry writer，而不破坏业务路径
+- high-frequency telemetry writes no longer contend directly with primary business writes on the same SQLite file
+- SQLite's single-writer constraint is absorbed explicitly by the adapter
+- additional telemetry producers can move to the same writer without changing the business DB path
 
 ### Negative
 
-- telemetry 数据会从“请求内同步可见”变为“短暂异步落盘”
-- 需要处理 shutdown flush、队列积压和失败回退
-- 代码结构从“直接 ORM 写”演进为“存储适配层”，复杂度上升
+- telemetry persistence becomes briefly asynchronous from the request thread perspective
+- shutdown/flush and queue backpressure handling become important runtime responsibilities
+- the storage path evolves from direct ORM writes to an adapter layer, increasing implementation complexity
 
 ---
 
 ## Related
 
-- [ADR-010: 监控审计与交互可视化](./ADR-010-monitoring-audit-visualization.md)
+- [ADR-010: Monitoring Audit Visualization](./ADR-010-monitoring-audit-visualization.md)
 - [ADR-014: Network Monitor Semantics](./ADR-014-network-monitor-semantics.md)
-- [ADR-029: TaskRun 悬挂问题分析与改进](./ADR-029-taskrun-hanging-analysis-and-fix.md)
+- [ADR-029: TaskRun Hanging Analysis and Fix](./ADR-029-taskrun-hanging-analysis-and-fix.md)
 - [ADR-030: Event-Sourced TaskRun State](./ADR-030-event-sourced-taskrun-state.md)

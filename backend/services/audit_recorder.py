@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from models.audit import Event, LLMCall, ToolCall
+from services.telemetry_writer import telemetry_writer
 
 logger = logging.getLogger("catown.audit")
 
@@ -56,7 +57,19 @@ def create_llm_call_record(
 
     Returns a mutable state dict to pass through the turn executor callbacks.
     """
+    record_id = telemetry_writer.create_llm_call(
+        {
+            "run_id": run_id,
+            "stage_id": stage_id,
+            "agent_name": agent_name,
+            "turn_index": turn_index,
+            "model": model,
+            "system_prompt": _truncate(system_prompt, 50000),
+            "messages": _json_dumps_safe(messages[-10:] if messages else None, 100000),
+        }
+    )
     record = LLMCall(
+        id=record_id,
         run_id=run_id,
         stage_id=stage_id,
         agent_name=agent_name,
@@ -65,8 +78,6 @@ def create_llm_call_record(
         system_prompt=_truncate(system_prompt, 50000),
         messages=_json_dumps_safe(messages[-10:] if messages else None, 100000),
     )
-    db.add(record)
-    db.flush()
     return {"record": record, "started_at": time.time()}
 
 
@@ -90,34 +101,46 @@ def finalize_llm_call_success(
     record.response_content = _truncate(content, 100000)
     record.response_tool_calls = _json_dumps_safe(tool_calls, 100000)
     record.duration_ms = int((time.time() - started_at) * 1000)
+    record.token_input = 0
+    record.token_output = 0
     if usage:
         record.token_input = usage.get("prompt_tokens", 0)
         record.token_output = usage.get("completion_tokens", 0)
 
-    db.add(record)
-    db.flush()
-
-    # Write an event for the LLM call
-    db.add(Event(
-        run_id=run_id or record.run_id,
-        event_type="llm_call",
-        agent_name=agent_name,
-        stage_name=stage_name,
-        summary=(
-            f"LLM #{record.turn_index}: "
-            f"{record.token_input}in/{record.token_output}out, "
-            f"{record.duration_ms}ms"
-        ),
-        payload=_json_dumps_safe({
-            "turn": record.turn_index,
-            "model": record.model,
-            "tokens_in": record.token_input,
-            "tokens_out": record.token_output,
+    telemetry_writer.finalize_llm_call(
+        {
+            "id": record.id,
+            "response_content": record.response_content,
+            "response_tool_calls": record.response_tool_calls,
             "duration_ms": record.duration_ms,
-            "content_preview": (content or "")[:200],
-        }),
-    ))
-    db.flush()
+            "token_input": record.token_input,
+            "token_output": record.token_output,
+        }
+    )
+
+    telemetry_writer.create_event(
+        {
+            "run_id": run_id or record.run_id,
+            "event_type": "llm_call",
+            "agent_name": agent_name,
+            "stage_name": stage_name,
+            "summary": (
+                f"LLM #{record.turn_index}: "
+                f"{record.token_input}in/{record.token_output}out, "
+                f"{record.duration_ms}ms"
+            ),
+            "payload": _json_dumps_safe(
+                {
+                    "turn": record.turn_index,
+                    "model": record.model,
+                    "tokens_in": record.token_input,
+                    "tokens_out": record.token_output,
+                    "duration_ms": record.duration_ms,
+                    "content_preview": (content or "")[:200],
+                }
+            ),
+        }
+    )
     return record
 
 
@@ -138,23 +161,31 @@ def finalize_llm_call_error(
     started_at = state.get("started_at", time.time())
     record.error = str(error)[:5000]
     record.duration_ms = int((time.time() - started_at) * 1000)
-    db.add(record)
-    db.flush()
-
-    db.add(Event(
-        run_id=run_id or record.run_id,
-        event_type="error",
-        agent_name=agent_name,
-        stage_name=stage_name,
-        summary=f"LLM error: {str(error)[:200]}",
-        payload=_json_dumps_safe({
-            "turn": record.turn_index,
-            "model": record.model,
-            "error": str(error)[:2000],
+    telemetry_writer.finalize_llm_call(
+        {
+            "id": record.id,
+            "error": record.error,
             "duration_ms": record.duration_ms,
-        }),
-    ))
-    db.flush()
+        }
+    )
+
+    telemetry_writer.create_event(
+        {
+            "run_id": run_id or record.run_id,
+            "event_type": "error",
+            "agent_name": agent_name,
+            "stage_name": stage_name,
+            "summary": f"LLM error: {str(error)[:200]}",
+            "payload": _json_dumps_safe(
+                {
+                    "turn": record.turn_index,
+                    "model": record.model,
+                    "error": str(error)[:2000],
+                    "duration_ms": record.duration_ms,
+                }
+            ),
+        }
+    )
 
 
 # ────────────────────────────── Tool Call Recording ──────────────────────────
@@ -188,24 +219,40 @@ def record_tool_call(
         success=success,
         duration_ms=duration_ms,
     )
-    db.add(record)
-    db.flush()
-
-    db.add(Event(
-        run_id=run_id,
-        event_type="tool_call",
-        agent_name=agent_name,
-        stage_name=stage_name,
-        summary=f"{tool_name}({'ok' if success else 'fail'}, {result_length} chars, {duration_ms}ms)",
-        payload=_json_dumps_safe({
-            "tool": tool_name,
-            "success": success,
+    record_id = telemetry_writer.create_tool_call(
+        {
+            "llm_call_id": llm_call_id,
+            "run_id": run_id,
+            "stage_id": stage_id,
+            "agent_name": agent_name,
+            "tool_name": tool_name,
+            "arguments": _truncate(arguments, 50000),
+            "result_summary": _truncate(result_summary, 500),
             "result_length": result_length,
-            "result_preview": (result_summary or "")[:200],
+            "success": success,
             "duration_ms": duration_ms,
-        }),
-    ))
-    db.flush()
+        }
+    )
+    record.id = record_id
+
+    telemetry_writer.create_event(
+        {
+            "run_id": run_id,
+            "event_type": "tool_call",
+            "agent_name": agent_name,
+            "stage_name": stage_name,
+            "summary": f"{tool_name}({'ok' if success else 'fail'}, {result_length} chars, {duration_ms}ms)",
+            "payload": _json_dumps_safe(
+                {
+                    "tool": tool_name,
+                    "success": success,
+                    "result_length": result_length,
+                    "result_preview": (result_summary or "")[:200],
+                    "duration_ms": duration_ms,
+                }
+            ),
+        }
+    )
     return record
 
 
@@ -223,7 +270,18 @@ def record_audit_event(
     payload: Optional[Dict[str, Any]] = None,
 ) -> Event:
     """Record a generic audit event."""
+    event_id = telemetry_writer.create_event(
+        {
+            "run_id": run_id,
+            "event_type": event_type,
+            "agent_name": agent_name,
+            "stage_name": stage_name,
+            "summary": summary,
+            "payload": _json_dumps_safe(payload),
+        }
+    )
     event = Event(
+        id=event_id,
         run_id=run_id,
         event_type=event_type,
         agent_name=agent_name,
@@ -231,8 +289,6 @@ def record_audit_event(
         summary=summary,
         payload=_json_dumps_safe(payload),
     )
-    db.add(event)
-    db.flush()
     return event
 
 
@@ -288,8 +344,6 @@ def make_nonstream_audit_callbacks(
         )
         _state["llm_call_id"] = record.id if record else None
         _tool_started_at = time.time()
-        db.commit()
-
     async def on_llm_error(frame, exc, turn_state):
         state = {**_state}
         finalize_llm_call_error(
@@ -300,8 +354,6 @@ def make_nonstream_audit_callbacks(
             stage_name=stage_name,
             run_id=run_id,
         )
-        db.commit()
-
     async def _on_tool_round(frame, tool_results, turn_state):
         """Record tool calls to audit tables after each tool round."""
         nonlocal _tool_started_at
@@ -331,8 +383,6 @@ def make_nonstream_audit_callbacks(
                 stage_name=stage_name,
             )
         _tool_started_at = time.time()
-        db.commit()
-
     return {
         "before_llm_call": before_llm_call,
         "on_llm_response": on_llm_response,
@@ -414,7 +464,6 @@ def make_stream_audit_before_event(
                 stage_name=stage_name,
                 run_id=run_id,
             )
-            db.commit()
             # Store llm_call_id for tool call linking
             _llm_state["llm_call_id"] = state.get("record").id if state.get("record") else None
 
@@ -442,6 +491,4 @@ def make_stream_audit_before_event(
                 duration_ms=duration_ms,
                 stage_name=stage_name,
             )
-            db.commit()
-
     return before_event
