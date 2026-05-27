@@ -106,6 +106,7 @@ from services.chat_runtime import (
     build_runtime_environment_context,
     build_tool_runtime_kwargs,
     canonical_tool_names,
+    merge_tool_execution_kwargs,
     prepare_chat_turn_runtime,
     resolve_agent_tool_names,
 )
@@ -1583,8 +1584,10 @@ async def trigger_agent_response(
             try:
                 tool_result = await tool_registry.execute(
                     tool_name,
-                    **tool_args,
-                    **runtime.runtime_kwargs,
+                    **merge_tool_execution_kwargs(
+                        tool_args,
+                        runtime.runtime_kwargs,
+                    ),
                     task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
                     client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
                     tool_call_id=tool_call.get("id"),
@@ -6601,8 +6604,10 @@ async def _replay_runtime_blocked_tool_queue_item(
     try:
         tool_result = await tool_registry.execute(
             tool_name,
-            **loaded_arguments,
-            **runtime_kwargs,
+            **merge_tool_execution_kwargs(
+                loaded_arguments,
+                runtime_kwargs,
+            ),
             __catown_approval_granted=True,
             tool_call_id=request_payload.get("tool_call_id"),
             turn=request_payload.get("turn"),
@@ -6748,8 +6753,10 @@ async def _start_approved_run_shell_queue_item(
     try:
         tool_result = await tool_registry.execute(
             tool_name,
-            **loaded_arguments,
-            **runtime_kwargs,
+            **merge_tool_execution_kwargs(
+                loaded_arguments,
+                runtime_kwargs,
+            ),
             __catown_approval_granted=True,
             tool_call_id=request_payload.get("tool_call_id"),
             turn=request_payload.get("turn"),
@@ -8812,8 +8819,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
                 return await tool_registry.execute(
                     tool_name,
-                    **tool_args,
-                    **runtime.runtime_kwargs,
+                    **merge_tool_execution_kwargs(
+                        tool_args,
+                        runtime.runtime_kwargs,
+                    ),
                     task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
                     client_turn_id=message.client_turn_id,
                     tool_call_id=tool_call_id,

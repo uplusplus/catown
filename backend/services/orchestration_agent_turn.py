@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from agents.identity import agent_name_of
 from models.database import Chatroom, TaskRun
+from services.chat_runtime import merge_tool_execution_kwargs
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
 from services.audit_recorder import chain_before_event_callbacks, make_nonstream_audit_callbacks, make_stream_audit_before_event
 from services.orchestration_chat_profile import (
@@ -129,8 +130,10 @@ async def run_orchestration_agent_turn(
 
         return await tool_registry.execute(
             tool_name,
-            **tool_args,
-            **runtime.runtime_kwargs,
+            **merge_tool_execution_kwargs(
+                tool_args,
+                runtime.runtime_kwargs,
+            ),
             task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
             client_turn_id=client_turn_id,
             tool_call_id=tool_call_id,
@@ -335,8 +338,10 @@ async def iter_stream_orchestration_agent_turn_events(
 
         return await tool_registry.execute(
             tool_name,
-            **tool_args,
-            **runtime.runtime_kwargs,
+            **merge_tool_execution_kwargs(
+                tool_args,
+                runtime.runtime_kwargs,
+            ),
             task_run_id=getattr(task_run, "id", None) if task_run is not None else None,
             client_turn_id=client_turn_id,
             tool_call_id=tool_call_id,

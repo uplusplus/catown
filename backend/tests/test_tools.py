@@ -39,6 +39,7 @@ from tools.github_manager import GitHubManagerTool
 from tools.skill_manager import SkillManagerTool
 from tools.file_operations import DeleteFileTool
 from tools.user_file_interaction import OpenFileForUserTool
+from services.chat_runtime import merge_tool_execution_kwargs
 
 
 def _read_only_probe_command() -> str:
@@ -258,6 +259,19 @@ class TestToolRegistry:
         assert policies["send_message"]["side_effect_scope"] == "runtime_dispatch"
         assert policies["write_file"]["sandbox"]["workspace_scope"] == "workspace_write"
         assert policies["write_file"]["escalation"]["possible"] is True
+
+    def test_merge_tool_execution_kwargs_preserves_tool_agent_id_and_runtime_caller_identity(self):
+        merged = merge_tool_execution_kwargs(
+            {"agent_id": 99, "query": "memory lookup"},
+            {"agent_id": 7, "agent_name": "developer", "chatroom_id": 3},
+            turn=2,
+        )
+
+        assert merged["agent_id"] == 99
+        assert merged["caller_agent_id"] == 7
+        assert merged["caller_agent_name"] == "developer"
+        assert merged["chatroom_id"] == 3
+        assert merged["turn"] == 2
 
     @pytest.mark.asyncio
     async def test_execute_blocks_manual_approval_tools_in_registry(self, tmp_path):

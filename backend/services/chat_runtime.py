@@ -277,6 +277,33 @@ def build_tool_runtime_kwargs(
     return payload
 
 
+def merge_tool_execution_kwargs(
+    tool_arguments: Mapping[str, Any] | None = None,
+    runtime_kwargs: Mapping[str, Any] | None = None,
+    **overrides: Any,
+) -> Dict[str, Any]:
+    """Merge one tool call payload with runtime context without duplicate keywords.
+
+    Runtime caller identity is preserved separately so tools may still accept
+    explicit `agent_id` arguments for their own business logic.
+    """
+
+    merged: Dict[str, Any] = {}
+    if isinstance(runtime_kwargs, Mapping):
+        merged.update(dict(runtime_kwargs))
+        runtime_agent_id = runtime_kwargs.get("agent_id")
+        runtime_agent_name = runtime_kwargs.get("agent_name")
+        if runtime_agent_id is not None:
+            merged["caller_agent_id"] = runtime_agent_id
+        if runtime_agent_name is not None:
+            merged["caller_agent_name"] = runtime_agent_name
+    if isinstance(tool_arguments, Mapping):
+        merged.update(dict(tool_arguments))
+    for key, value in overrides.items():
+        merged[key] = value
+    return merged
+
+
 async def prepare_chat_turn_runtime(
     *,
     agent: Any,

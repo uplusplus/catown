@@ -301,6 +301,10 @@ async def test_iter_stream_orchestration_agent_turn_events_streams_run_shell_pro
 
         monkeypatch.setattr("services.orchestration_agent_turn.store_runtime_card", fake_store_runtime_card)
         monkeypatch.setattr("tools.tool_registry.execute", fake_execute)
+        monkeypatch.setattr(
+            "services.orchestration_agent_turn.make_stream_audit_before_event",
+            lambda **kwargs: None,
+        )
 
         async def prepare_chat_turn_runtime(**kwargs):
             return SimpleNamespace(
@@ -380,6 +384,124 @@ async def test_iter_stream_orchestration_agent_turn_events_streams_run_shell_pro
         assert any(event["type"] == "tool_result" for event in events)
         assert events[-1]["type"] == "turn_complete"
         assert events[-1]["content"] == "Tests finished."
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_orchestration_agent_turn_allows_tool_arguments_to_override_runtime_agent_id_without_duplicate_keyword_error(
+    fresh_db,
+    monkeypatch,
+):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Memory lookup")
+        agent = fresh_db.Agent(agent_type="developer", name="Developer", role="developer")
+        db.add_all([chatroom, agent])
+        db.commit()
+        db.refresh(chatroom)
+        db.refresh(agent)
+
+        class FakeMemoryToolLLMClient:
+            model = "fake-memory-tool-model"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def chat_with_tools(self, messages, tools):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-memory",
+                                "type": "function",
+                                "function": {
+                                    "name": "retrieve_memory",
+                                    "arguments": '{"query":"bug","agent_id":42}',
+                                },
+                            }
+                        ],
+                    }
+                return {
+                    "content": "Memory inspected.",
+                    "tool_calls": [],
+                }
+
+        captured_execute = {}
+
+        async def fake_execute(tool_name, **kwargs):
+            captured_execute["tool_name"] = tool_name
+            captured_execute["kwargs"] = dict(kwargs)
+            return {
+                "__catown_tool_result__": True,
+                "tool_name": tool_name,
+                "success": True,
+                "status": "succeeded",
+                "result": "memory results",
+            }
+
+        monkeypatch.setattr("tools.tool_registry.execute", fake_execute)
+        monkeypatch.setattr(
+            "services.orchestration_agent_turn.make_nonstream_audit_callbacks",
+            lambda **kwargs: {
+                "before_llm_call": None,
+                "on_llm_response": None,
+                "on_llm_error": None,
+                "on_tool_round": None,
+            },
+        )
+
+        async def prepare_chat_turn_runtime(**kwargs):
+            return SimpleNamespace(
+                llm_client=FakeMemoryToolLLMClient(),
+                agent_label="Developer",
+                recent_messages=[],
+                available_tools=["retrieve_memory"],
+                tool_schemas=[{"type": "function", "function": {"name": "retrieve_memory", "parameters": {}}}],
+                runtime_kwargs={"agent_id": agent.id, "agent_name": "Developer", "chatroom_id": chatroom.id},
+                turn_state=TurnContextState(),
+            )
+
+        async def fake_save_message(**kwargs):
+            return SimpleNamespace(id=77, **kwargs)
+
+        deps = OrchestrationAgentTurnDeps(
+            ensure_collaboration_context=lambda agents, chatroom_id: None,
+            prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+            build_context_compaction_callback=lambda *args, **kwargs: None,
+            assemble_chat_messages=lambda **kwargs: [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": kwargs["user_message"]},
+            ],
+            save_message=fake_save_message,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda *args, **kwargs: None,
+            max_tool_iterations=3,
+        )
+
+        content, message = await run_orchestration_agent_turn(
+            deps=deps,
+            agent=agent,
+            chatroom_id=chatroom.id,
+            project=None,
+            agents=[agent],
+            user_message="Check memory.",
+            extra_context="",
+            db=db,
+            client_turn_id="turn-memory",
+            task_run=None,
+        )
+
+        assert content == "Memory inspected."
+        assert message.id == 77
+        assert captured_execute["tool_name"] == "retrieve_memory"
+        assert captured_execute["kwargs"]["agent_id"] == 42
+        assert captured_execute["kwargs"]["caller_agent_id"] == agent.id
+        assert captured_execute["kwargs"]["caller_agent_name"] == "Developer"
+        assert captured_execute["kwargs"]["chatroom_id"] == chatroom.id
     finally:
         db.close()
 

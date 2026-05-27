@@ -49,8 +49,8 @@ class DelegateTaskTool(BaseTool):
         **kwargs,
     ) -> str:
         """Delegate one tracked task to another agent."""
-        current_agent_id = kwargs.get("agent_id", 0)
-        current_agent_name = kwargs.get("agent_name", "unknown")
+        current_agent_id = kwargs.get("caller_agent_id", kwargs.get("agent_id", 0))
+        current_agent_name = kwargs.get("caller_agent_name", kwargs.get("agent_name", "unknown"))
         chatroom_id = kwargs.get("chatroom_id", 0)
         task_run_id = kwargs.get("task_run_id")
 
@@ -111,8 +111,8 @@ class BroadcastMessageTool(BaseTool):
 
     async def execute(self, message: str, **kwargs) -> str:
         """Broadcast one message to all agents in the room."""
-        current_agent_id = kwargs.get("agent_id", 0)
-        current_agent_name = kwargs.get("agent_name", "unknown")
+        current_agent_id = kwargs.get("caller_agent_id", kwargs.get("agent_id", 0))
+        current_agent_name = kwargs.get("caller_agent_name", kwargs.get("agent_name", "unknown"))
         chatroom_id = kwargs.get("chatroom_id", 0)
 
         return await run_broadcast_agent_action(
@@ -201,8 +201,8 @@ class SendDirectMessageTool(BaseTool):
 
     async def execute(self, target_agent_name: str, message: str, **kwargs) -> str:
         """Send one direct message to a specific agent."""
-        current_agent_id = kwargs.get("agent_id", 0)
-        current_agent_name = kwargs.get("agent_name", "unknown")
+        current_agent_id = kwargs.get("caller_agent_id", kwargs.get("agent_id", 0))
+        current_agent_name = kwargs.get("caller_agent_name", kwargs.get("agent_name", "unknown"))
         chatroom_id = kwargs.get("chatroom_id", 0)
 
         return await run_direct_message_agent_action(
