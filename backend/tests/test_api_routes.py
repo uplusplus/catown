@@ -30,6 +30,7 @@ def _make_app(tmp_path):
     # 清理缓存模块，强制重新加载
     modules_to_clear = [
         'main', 'config', 'models.database', 'agents.registry',
+        'models.audit',
         'agents.collaboration', 'tools', 'llm.client', 'chatrooms.manager',
         'routes.api', 'routes.monitor', 'routes.websocket', 'pipeline.engine', 'routes.pipeline',
         'services.approval_queue',
@@ -37,6 +38,7 @@ def _make_app(tmp_path):
         'services.runtime_lifecycle',
         'services.monitor_projection',
         'services.run_ledger',
+        'services.task_run_watchdog',
         'services.task_activity_projection',
         'services.agent_lifecycle_runtime',
         'services.agent_action_runtime',
@@ -66,6 +68,8 @@ def _make_app(tmp_path):
         'services.single_agent_stream_finalizer',
         'services.approval_audit',
         'services.tool_execution_preferences',
+        'services.telemetry_writer',
+        'services.audit_recorder',
     ]
     from tests.conftest import reset_app_modules
     reset_app_modules(modules_to_clear)
@@ -1741,14 +1745,14 @@ class TestProjectEndpoints:
         shell_card = next(card for card in cards if card.get("tool") == "run_shell")
         assert shell_card["status"] == "succeeded"
         assert shell_card["success"] is True
-        assert "tests passed" in shell_card["result"]
+        assert "passed: 1" in shell_card["result"]
         assert "stale running output" not in shell_card["result"]
         assert len(followup_calls) == 1
         assert followup_calls[0]["task_run_id"] == task_run_id
         assert followup_calls[0]["next_card"]["tool"] == "run_shell"
         assert followup_calls[0]["next_card"]["status"] == "succeeded"
         assert followup_calls[0]["next_card"]["success"] is True
-        assert "tests passed" in followup_calls[0]["next_card"]["result"]
+        assert "passed: 1" in followup_calls[0]["next_card"]["result"]
 
         detail = client.get(f"/api/task-runs/{task_run_id}").json()
         assert detail["status"] == "running"
@@ -2439,6 +2443,8 @@ class TestChatEndpoints:
                     "task_description": "Run tests and report results.",
                     "from_agent": "Valet",
                     "target_agent_name": "Tester",
+                    "parent_task_run_public_id": parent_run.public_id,
+                    "parent_chatroom_public_id": parent_run.chatroom_public_id,
                     "child_client_turn_id": "delegate-test-contract",
                     "required_outputs": ["test_report"],
                 },
@@ -2453,6 +2459,8 @@ class TestChatEndpoints:
                         {
                             "client_turn_id": "delegate-test-contract",
                             "parent_task_run_id": parent_run.id,
+                            "parent_task_run_public_id": parent_run.public_id,
+                            "parent_chatroom_public_id": parent_run.chatroom_public_id,
                             "delegated_task": {
                                 "task_id": "test-contract",
                                 "task_title": "Test project",
@@ -2460,6 +2468,8 @@ class TestChatEndpoints:
                                 "delegator": "Valet",
                                 "target_agent_name": "Tester",
                                 "parent_task_run_id": parent_run.id,
+                                "parent_task_run_public_id": parent_run.public_id,
+                                "parent_chatroom_public_id": parent_run.chatroom_public_id,
                                 "parent_client_turn_id": "parent-test-contract",
                                 "required_outputs": ["test_report"],
                             },
@@ -2497,13 +2507,14 @@ class TestChatEndpoints:
 
         parent_followups = []
 
-        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, origin_message_id=None, extra_context="", checkpoint_snapshot=None):
             parent_followups.append(
                 {
                     "chatroom_id": chatroom_id,
                     "user_message": user_message,
                     "client_turn_id": client_turn_id,
                     "task_run_id": task_run_id,
+                    "origin_message_id": origin_message_id,
                     "extra_context": extra_context,
                 }
             )
@@ -2511,13 +2522,14 @@ class TestChatEndpoints:
 
         original_trigger_agent_response = api_routes.trigger_agent_response
 
-        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, origin_message_id=None, extra_context="", checkpoint_snapshot=None):
             if task_run_id == child_run_id:
                 return await original_trigger_agent_response(
                     chatroom_id,
                     user_message,
                     client_turn_id=client_turn_id,
                     task_run_id=task_run_id,
+                    origin_message_id=origin_message_id,
                     extra_context=extra_context,
                     checkpoint_snapshot=checkpoint_snapshot,
                 )
@@ -2526,6 +2538,7 @@ class TestChatEndpoints:
                 user_message,
                 client_turn_id=client_turn_id,
                 task_run_id=task_run_id,
+                origin_message_id=origin_message_id,
                 extra_context=extra_context,
                 checkpoint_snapshot=checkpoint_snapshot,
             )
@@ -2636,6 +2649,8 @@ class TestChatEndpoints:
                     "task_description": "Run tests and report results.",
                     "from_agent": "Valet",
                     "target_agent_name": "Tester",
+                    "parent_task_run_public_id": parent_run.public_id,
+                    "parent_chatroom_public_id": parent_run.chatroom_public_id,
                     "child_client_turn_id": "delegate-bg-contract",
                     "required_outputs": ["test_report"],
                 },
@@ -2650,6 +2665,8 @@ class TestChatEndpoints:
                         {
                             "client_turn_id": "delegate-bg-contract",
                             "parent_task_run_id": parent_run.id,
+                            "parent_task_run_public_id": parent_run.public_id,
+                            "parent_chatroom_public_id": parent_run.chatroom_public_id,
                             "delegated_task": {
                                 "task_id": "test-background-contract",
                                 "task_title": "Test project",
@@ -2657,6 +2674,8 @@ class TestChatEndpoints:
                                 "delegator": "Valet",
                                 "target_agent_name": "Tester",
                                 "parent_task_run_id": parent_run.id,
+                                "parent_task_run_public_id": parent_run.public_id,
+                                "parent_chatroom_public_id": parent_run.chatroom_public_id,
                                 "parent_client_turn_id": "parent-bg-contract",
                                 "required_outputs": ["test_report"],
                             },
@@ -2693,13 +2712,14 @@ class TestChatEndpoints:
 
         parent_followups = []
 
-        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+        async def fake_parent_followup(chatroom_id, user_message, client_turn_id=None, task_run_id=None, origin_message_id=None, extra_context="", checkpoint_snapshot=None):
             parent_followups.append(
                 {
                     "chatroom_id": chatroom_id,
                     "user_message": user_message,
                     "client_turn_id": client_turn_id,
                     "task_run_id": task_run_id,
+                    "origin_message_id": origin_message_id,
                     "extra_context": extra_context,
                 }
             )
@@ -2707,13 +2727,14 @@ class TestChatEndpoints:
 
         original_trigger_agent_response = api_routes.trigger_agent_response
 
-        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, extra_context="", checkpoint_snapshot=None):
+        async def wrapped_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, task_run_id=None, origin_message_id=None, extra_context="", checkpoint_snapshot=None):
             if task_run_id == child_run_id:
                 return await original_trigger_agent_response(
                     chatroom_id,
                     user_message,
                     client_turn_id=client_turn_id,
                     task_run_id=task_run_id,
+                    origin_message_id=origin_message_id,
                     extra_context=extra_context,
                     checkpoint_snapshot=checkpoint_snapshot,
                 )
@@ -2722,6 +2743,7 @@ class TestChatEndpoints:
                 user_message,
                 client_turn_id=client_turn_id,
                 task_run_id=task_run_id,
+                origin_message_id=origin_message_id,
                 extra_context=extra_context,
                 checkpoint_snapshot=checkpoint_snapshot,
             )
@@ -5272,8 +5294,10 @@ class TestSSEStreaming:
                     cwd=str(tmp_path),
                     timeout_seconds=1,
                     chatroom_id=chatroom.id,
+                    chatroom_public_id=chatroom.public_id,
                     project_id=project.id,
                     task_run_id=task_run.id,
+                    task_run_public_id=task_run.public_id,
                     client_turn_id=task_run.client_turn_id,
                     tool_call_id="call_recover",
                     turn=1,
@@ -5401,8 +5425,10 @@ class TestSSEStreaming:
                 cwd=str(tmp_path),
                 timeout_seconds=60,
                 chatroom_id=chatroom.id,
+                chatroom_public_id=chatroom.public_id,
                 project_id=project.id,
                 task_run_id=task_run.id,
+                task_run_public_id=task_run.public_id,
                 client_turn_id=task_run.client_turn_id,
                 tool_call_id="call_orphaned",
                 turn=1,

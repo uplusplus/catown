@@ -254,7 +254,9 @@ def build_tool_runtime_kwargs(
     project: Any,
     *,
     task_run_id: int | None = None,
+    task_run_public_id: str | None = None,
     client_turn_id: str | None = None,
+    chatroom_public_id: str | None = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"chatroom_id": chatroom_id}
     if agent is not None and getattr(agent, "id", None) is not None:
@@ -266,8 +268,12 @@ def build_tool_runtime_kwargs(
         payload["__catown_workspace_path"] = str(project.workspace_path)
     if task_run_id is not None:
         payload["task_run_id"] = task_run_id
+    if task_run_public_id:
+        payload["task_run_public_id"] = task_run_public_id
     if client_turn_id:
         payload["client_turn_id"] = client_turn_id
+    if chatroom_public_id:
+        payload["chatroom_public_id"] = chatroom_public_id
     return payload
 
 

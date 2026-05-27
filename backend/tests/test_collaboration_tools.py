@@ -172,6 +172,17 @@ class TestDelegateTask:
 
         tool = DelegateTaskTool(collaboration_coordinator=coordinator)
         spawned_coroutines = []
+        db = fresh_db.SessionLocal()
+        try:
+            agent = fresh_db.Agent(name="coder", role="assistant")
+            chatroom = fresh_db.Chatroom(id=100, title="Delegated real result")
+            db.add_all([agent, chatroom])
+            db.commit()
+            db.refresh(agent)
+            db.refresh(chatroom)
+            agent_id = agent.id
+        finally:
+            db.close()
 
         async def fake_send_message(chatroom_id, agent_id, content, message_type="text", metadata=None, agent_name=None):
             return SimpleNamespace(
@@ -193,7 +204,7 @@ class TestDelegateTask:
             try:
                 db.add(fresh_db.Message(
                     chatroom_id=chatroom_id,
-                    agent_id=2,
+                    agent_id=agent_id,
                     content="Real delegated result from coder.",
                     message_type="text",
                     metadata_json=json.dumps({"client_turn_id": client_turn_id}),
@@ -287,6 +298,14 @@ class TestDelegateTask:
 
         tool = DelegateTaskTool(collaboration_coordinator=coordinator)
         spawned_coroutines = []
+        db = fresh_db.SessionLocal()
+        try:
+            chatroom = fresh_db.Chatroom(id=100, title="Delegated cancelled run")
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+        finally:
+            db.close()
 
         async def fake_send_message(chatroom_id, agent_id, content, message_type="text", metadata=None, agent_name=None):
             return SimpleNamespace(
@@ -303,12 +322,21 @@ class TestDelegateTask:
         async def fake_store_runtime_card(chatroom_id, payload):
             return None
 
-        async def fake_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, extra_context="", **kwargs):
+        async def fake_trigger_agent_response(chatroom_id, user_message, client_turn_id=None, origin_message_id=None, extra_context="", **kwargs):
             db = fresh_db.SessionLocal()
             try:
+                db.add(fresh_db.Message(
+                    id=origin_message_id,
+                    chatroom_id=chatroom_id,
+                    agent_id=None,
+                    content=user_message,
+                    message_type="text",
+                    metadata_json=json.dumps({"client_turn_id": client_turn_id}),
+                ))
                 db.add(fresh_db.TaskRun(
                     chatroom_id=chatroom_id,
                     project_id=None,
+                    origin_message_id=origin_message_id,
                     client_turn_id=client_turn_id,
                     run_kind="project_single_agent",
                     status="running",

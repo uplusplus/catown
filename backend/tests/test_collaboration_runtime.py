@@ -159,10 +159,14 @@ async def test_delegate_collaboration_task_records_parent_dispatch_fact(monkeypa
         assert payload["dispatch_kind"] == "delegate_task"
         assert payload["task_id"] == task.id
         assert payload["child_client_turn_id"] == f"delegate-{task.id}"
+        assert payload["parent_task_run_public_id"] == parent_run.public_id
+        assert payload["parent_chatroom_public_id"] == parent_run.chatroom_public_id
         assert payload["from_agent"] == "Valet"
         assert payload["to_agent"] == "tester"
         assert payload["task_description"] == "Run the verification and report facts."
         assert task.metadata["parent_task_run_id"] == parent_run.id
+        assert task.metadata["parent_task_run_public_id"] == parent_run.public_id
+        assert task.metadata["parent_chatroom_public_id"] == parent_run.chatroom_public_id
         assert task.metadata["parent_client_turn_id"] == "parent-turn"
     finally:
         db.close()

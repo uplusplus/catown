@@ -9,6 +9,7 @@ import { api } from "../api/client";
 import { ChoiceBox, type ChoiceBoxData } from "./ChoiceBox";
 import { FormSuggestionStrip } from "./FormSuggestionStrip";
 import { UI_VERSION } from "../uiVersion";
+import { useRegisterBackHandler } from "../utils/backNavigation";
 import { buildLlmTimingsMarkdown } from "../utils/llmTimings";
 import {
   isCommandInput,
@@ -349,6 +350,7 @@ type ChatTabProps = {
   connectionState: "connected" | "connecting" | "disconnected";
   events: ChatEventItem[];
   expandCurrentStepByDefault: boolean;
+  onEnsureChat?: (content: string) => Promise<number>;
   onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
@@ -3639,7 +3641,6 @@ function visibleMessageKey(message: MessageItem) {
 
 function mergeVisibleMessagePair(left: MessageItem, right: MessageItem): MessageItem {
   const server = !left.localOnly ? left : !right.localOnly ? right : null;
-  const local = left.localOnly ? left : right.localOnly ? right : null;
   const primary = server ?? right;
   const secondary = primary === left ? right : left;
   const primarySteps = primary.streamSteps ?? [];
@@ -5739,6 +5740,7 @@ function renderCompactCard(
 
 function renderCard(
   card: ThreadCard,
+  agents: AgentInfo[],
   gateActionPipelineId: number | null,
   onApproveGate: (pipelineId: number) => Promise<void>,
   onRejectGate: (pipelineId: number) => Promise<void>,
@@ -6422,6 +6424,7 @@ export function ChatTab({
   connectionState,
   events,
   expandCurrentStepByDefault,
+  onEnsureChat,
   onSend,
   onOpenWorkspace,
   onOpenSidebar,
@@ -7252,6 +7255,15 @@ export function ChatTab({
     () => new Set(Array.from(fallbackStepCardsByMessageId.values()).flatMap((group) => group.map((card) => card.id))),
     [fallbackStepCardsByMessageId],
   );
+  const taskRunIdByAssistantTurnId = useMemo(() => {
+    const mapped = new Map<string, number>();
+    for (const run of taskRuns) {
+      const turnId = normalizeClientTurnId(run.client_turn_id);
+      if (!turnId || typeof run.id !== "number") continue;
+      mapped.set(turnId, run.id);
+    }
+    return mapped;
+  }, [taskRuns]);
 
   const threadItems = useMemo<ThreadItem[]>(() => {
     const anchoredAssistantTurnIds = new Set(
@@ -7536,17 +7548,14 @@ export function ChatTab({
   }, [chat?.id]);
 
   useEffect(() => {
-    function handleStepCollapseKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      setExpandedMessageSteps({});
-      setExpandedTaskRunSteps({});
-      setExpandedProgressCards({});
-      setStepAutoExpansionDisabled(true);
+    if (
+      Object.keys(expandedMessageSteps).length === 0 &&
+      Object.keys(expandedTaskRunSteps).length === 0 &&
+      Object.keys(expandedProgressCards).length === 0
+    ) {
+      setStepAutoExpansionDisabled(false);
     }
-
-    document.addEventListener("keydown", handleStepCollapseKeyDown);
-    return () => document.removeEventListener("keydown", handleStepCollapseKeyDown);
-  }, []);
+  }, [expandedMessageSteps, expandedProgressCards, expandedTaskRunSteps]);
 
   useEffect(() => {
     const chatId = chat?.id ?? null;
@@ -7587,14 +7596,14 @@ export function ChatTab({
           return [item];
         }
 
-        if (item.optimisticKind === "assistant_placeholder") {
+        if (item.agent_name) {
           const matchedServerReply =
             [...messages]
               .filter(
                 (message) =>
                   Boolean(message.agent_name) &&
                   (
-                    (item.client_turn_id && message.client_turn_id === item.client_turn_id) ||
+                    sameClientTurn(item.client_turn_id, message.client_turn_id) ||
                     (
                       !item.client_turn_id &&
                       new Date(message.created_at).getTime() >= new Date(item.created_at).getTime() - 1000
@@ -7710,12 +7719,14 @@ export function ChatTab({
             content: matched.content || item.content,
             isStreaming: matched.isStreaming ?? item.isStreaming,
             streamSteps: matched.streamSteps ?? item.streamSteps,
+            statusDetail: matched.statusDetail ?? item.statusDetail,
           };
 
           if (
             nextItem.agent_name !== item.agent_name ||
             nextItem.content !== item.content ||
             nextItem.isStreaming !== item.isStreaming ||
+            nextItem.statusDetail !== item.statusDetail ||
             JSON.stringify(nextItem.streamSteps ?? []) !== JSON.stringify(item.streamSteps ?? [])
           ) {
             changed = true;
@@ -7804,6 +7815,81 @@ export function ChatTab({
     return () => window.cancelAnimationFrame(frame);
   }, [chat?.id, loading, threadItems, localOverlayMessages]);
 
+  async function handleCommandSubmit(command: string) {
+    const resolvedChatId = chat?.id ?? (onEnsureChat ? await onEnsureChat(command) : null);
+    if (!resolvedChatId) {
+      throw new Error("Chat not ready");
+    }
+    void api.saveChatInputHistory(resolvedChatId, command).catch(() => {});
+
+    const now = new Date();
+    const baseId = -Math.floor(now.getTime());
+    const clientTurnId = createClientTurnId();
+    const userLocalMessage: MessageItem = {
+      id: baseId,
+      content: command,
+      message_type: "user",
+      created_at: now.toISOString(),
+      agent_name: null,
+      client_turn_id: clientTurnId,
+      optimisticKind: "user",
+      localOnly: true,
+    };
+    flushSync(() => {
+      setLocalOverlayMessages((current) => {
+        const nextMessages = [...current, userLocalMessage].sort(
+          (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+        );
+        writeOverlayMessages(resolvedChatId, nextMessages);
+        return nextMessages;
+      });
+    });
+
+    try {
+      const result = await api.executeCommand(command, resolvedChatId, undefined);
+      const cmdMsg: MessageItem = {
+        id: -Math.floor(Date.now()) - 2,
+        content: result.content || "鎸囦护鎵ц瀹屾垚",
+        message_type: "command_result",
+        created_at: new Date().toISOString(),
+        agent_name: "system",
+        client_turn_id: clientTurnId,
+        metadata: {
+          command_result: true,
+          command: result.command,
+          success: result.success,
+          category: result.category,
+          title: result.title,
+        },
+        optimisticKind: "assistant_placeholder",
+        localOnly: true,
+      };
+      setLocalOverlayMessages((current) => {
+        const nextMessages = [...current, cmdMsg].sort(
+          (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+        );
+        writeOverlayMessages(resolvedChatId, nextMessages);
+        return nextMessages;
+      });
+    } catch (error) {
+      const errMsg: MessageItem = {
+        id: -Math.floor(Date.now()) - 3,
+        content: `鎸囦护鎵ц澶辫触: ${error instanceof Error ? error.message : "鏈煡閿欒"}`,
+        message_type: "text",
+        created_at: new Date().toISOString(),
+        agent_name: "system",
+        client_turn_id: clientTurnId,
+        optimisticKind: "assistant_placeholder",
+        localOnly: true,
+      };
+      setLocalOverlayMessages((current) => {
+        const nextMessages = [...current, errMsg];
+        writeOverlayMessages(resolvedChatId, nextMessages);
+        return nextMessages;
+      });
+    }
+  }
+
   function submitContent(rawContent: string) {
     const next = rawContent.trim();
     if (!next || sending) return;
@@ -7824,73 +7910,24 @@ export function ChatTab({
     setDraft("");
 
     // Save to server-side history (async, fire-and-forget)
-    if (chat?.id) {
+    if (chat?.id && !isCommandInput(next)) {
       void api.saveChatInputHistory(chat.id, next).catch(() => {});
     }
 
     // Command detection: if input starts with /, execute as command
     if (isCommandInput(next)) {
-      const now = new Date();
-      const baseId = -Math.floor(now.getTime());
-      const clientTurnId = createClientTurnId();
-      const userLocalMessage: MessageItem = {
-        id: baseId,
-        content: next,
-        message_type: "user",
-        created_at: now.toISOString(),
-        agent_name: null,
-        client_turn_id: clientTurnId,
-        optimisticKind: "user",
-        localOnly: true,
-      };
-      flushSync(() => {
-        setLocalOverlayMessages((current) => {
-          const nextMessages = [...current, userLocalMessage].sort(
-            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
-          );
-          writeOverlayMessages(chat?.id ?? null, nextMessages);
-          return nextMessages;
-        });
-      });
-
-      // Execute command via API
-      void api.executeCommand(next, chat?.id, undefined).then((result) => {
-        const cmdMsg: MessageItem = {
-          id: -Math.floor(Date.now()) - 2,
-          content: result.content || "指令执行完成",
-          message_type: "command_result",
-          created_at: new Date().toISOString(),
-          agent_name: "system",
-          client_turn_id: clientTurnId,
-          metadata: {
-            command_result: true,
-            command: result.command,
-            success: result.success,
-            category: result.category,
-            title: result.title,
-          },
-          optimisticKind: "assistant_placeholder",
-          localOnly: true,
-        };
-        setLocalOverlayMessages((current) => {
-          const nextMessages = [...current, cmdMsg].sort(
-            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
-          );
-          writeOverlayMessages(chat?.id ?? null, nextMessages);
-          return nextMessages;
-        });
-      }).catch((error) => {
-        const errMsg: MessageItem = {
-          id: -Math.floor(Date.now()) - 3,
-          content: `指令执行失败: ${error instanceof Error ? error.message : "未知错误"}`,
+      void handleCommandSubmit(next).catch((error) => {
+        const failedAt = new Date();
+        const failureMessage: MessageItem = {
+          id: -Math.floor(failedAt.getTime()) - 4,
+          content: `Error: ${error instanceof Error ? error.message : "Command failed"}`,
           message_type: "text",
-          created_at: new Date().toISOString(),
+          created_at: failedAt.toISOString(),
           agent_name: "system",
-          client_turn_id: clientTurnId,
           optimisticKind: "assistant_placeholder",
           localOnly: true,
         };
-        setLocalOverlayMessages((current) => [...current, errMsg]);
+        setLocalOverlayMessages((current) => [...current, failureMessage]);
       });
       return;
     }
@@ -8306,6 +8343,70 @@ export function ChatTab({
     setMessageSelectionMode(false);
   }, []);
 
+  const collapseExpandedSteps = useCallback(() => {
+    setExpandedMessageSteps({});
+    setExpandedTaskRunSteps({});
+    setExpandedProgressCards({});
+    setStepAutoExpansionDisabled(true);
+  }, []);
+
+  useRegisterBackHandler(
+    () =>
+      Boolean(
+        fileReader ||
+        activityDrawerOpen ||
+        showProjectCreateConfirm ||
+        showMentionPicker ||
+        commandSuggestions.length > 0 ||
+        historySuggestions.length > 0 ||
+        messageSelectionMode ||
+        pendingAttachments.length > 0 ||
+        Object.keys(expandedMessageSteps).length > 0 ||
+        Object.keys(expandedTaskRunSteps).length > 0 ||
+        Object.keys(expandedProgressCards).length > 0,
+      ),
+    () => {
+      if (fileReader) {
+        setFileReader(null);
+        return true;
+      }
+      if (activityDrawerOpen) {
+        onCloseActivity();
+        return true;
+      }
+      if (showProjectCreateConfirm) {
+        setShowProjectCreateConfirm(false);
+        return true;
+      }
+      if (showMentionPicker) {
+        setShowMentionPicker(false);
+        return true;
+      }
+      if (commandSuggestions.length > 0 || historySuggestions.length > 0) {
+        setCommandSuggestions([]);
+        setHistorySuggestions([]);
+        return true;
+      }
+      if (messageSelectionMode) {
+        cancelMessageSelection();
+        return true;
+      }
+      if (pendingAttachments.length > 0) {
+        clearAllAttachments();
+        return true;
+      }
+      if (
+        Object.keys(expandedMessageSteps).length > 0 ||
+        Object.keys(expandedTaskRunSteps).length > 0 ||
+        Object.keys(expandedProgressCards).length > 0
+      ) {
+        collapseExpandedSteps();
+        return true;
+      }
+      return false;
+    },
+  );
+
   const toggleSelectedMessage = useCallback((message: MessageItem) => {
     if (message.localOnly || message.content.trim() === "") return;
     setCopiedSelection(false);
@@ -8388,7 +8489,13 @@ export function ChatTab({
     project && chat && chat.id !== project.default_chatroom_id
       ? chat.title
       : project?.name ?? chat?.title ?? "New conversation";
-  const chatSubheading = project ? "" : chat ? "standalone chat" : "Your first message will create a chat";
+  const chatSubheading = project
+    ? chat
+      ? "project chat"
+      : "Your first message will create a new chat in this project"
+    : chat
+      ? "standalone chat"
+      : "Your first message will create a chat";
   const threadContent = useMemo(() => {
     const resolveExpandedMessageStepId = (message: MessageItem) => {
       return Object.prototype.hasOwnProperty.call(expandedMessageSteps, message.id)
@@ -8402,11 +8509,15 @@ export function ChatTab({
       return (
         <div className="agent-chat__welcome">
           <div className="agent-chat__avatar--logo">CA</div>
-          <h2>Start with a message</h2>
-          <p className="agent-chat__hint">Say anything below. Catown will create a chat automatically and pin it under Chats.</p>
+          <h2>{project ? "Start a new project chat" : "Start with a message"}</h2>
+          <p className="agent-chat__hint">
+            {project
+              ? "Say anything below. Catown will create a new chat under this project and continue there."
+              : "Say anything below. Catown will create a chat automatically and pin it under Chats."}
+          </p>
           <div className="agent-chat__badges">
-            <span className="agent-chat__badge">chat first</span>
-            <span className="agent-chat__badge">project later</span>
+            <span className="agent-chat__badge">{project ? "project entry" : "chat first"}</span>
+            <span className="agent-chat__badge">{project ? "auto create" : "project later"}</span>
             <span className="agent-chat__badge">multi-agent ready</span>
           </div>
         </div>
@@ -8444,9 +8555,19 @@ export function ChatTab({
                       expandedStepId={resolveExpandedMessageStepId(item.message)}
                       onToggleStep={toggleMessageStep}
                       messageTimeline={
-                        item.message.agent_name && typeof item.message.runtime_summary?.task_run_id === "number"
-                          ? taskTimelinesById[item.message.runtime_summary.task_run_id] ?? null
-                          : null
+                        (() => {
+                          if (!item.message.agent_name) return null;
+                          const runtimeTaskRunId =
+                            typeof item.message.runtime_summary?.task_run_id === "number"
+                              ? item.message.runtime_summary.task_run_id
+                              : null;
+                          const turnId = normalizeClientTurnId(item.message.client_turn_id);
+                          const turnTaskRunId = turnId ? taskRunIdByAssistantTurnId.get(turnId) : undefined;
+                          const resolvedTaskRunId = runtimeTaskRunId ?? turnTaskRunId ?? null;
+                          return typeof resolvedTaskRunId === "number"
+                            ? taskTimelinesById[resolvedTaskRunId] ?? null
+                            : null;
+                        })()
                       }
                       fallbackStepCards={fallbackStepCardsByMessageId.get(item.message.id) ?? EMPTY_THREAD_CARDS}
                       onAnalyzeFailureStep={handleAnalyzeFailureStep}
@@ -8488,6 +8609,7 @@ export function ChatTab({
                       )
                     : renderCard(
                         item.card,
+                        agents,
                         gateActionPipelineId,
                         handleApproveGate,
                         handleRejectGate,
@@ -8558,7 +8680,9 @@ export function ChatTab({
     selectedMessageIds,
     stepAutoExpansionDisabled,
     taskActivitiesById,
+    taskRunIdByAssistantTurnId,
     threadItems,
+    taskTimelinesById,
     toggleSelectedMessage,
     toggleMessageStep,
     toggleProgressCard,

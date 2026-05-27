@@ -85,3 +85,67 @@ async def test_kick_off_delegated_task_execution_publishes_card_and_spawns_runne
     assert runner_calls[0]["task"] is task
     assert runner_calls[0]["client_turn_id"] == "delegate-task-123"
     assert runner_calls[0]["task_metadata"] == {"task_id": "task-123"}
+
+
+@pytest.mark.asyncio
+async def test_run_delegated_task_in_chat_passes_origin_message_id(monkeypatch):
+    trigger_calls = []
+
+    class DummyTask:
+        id = "task-123"
+        chatroom_id = 42
+        created_by_agent_id = 7
+        status = None
+        result = None
+        completed_at = None
+
+    task = DummyTask()
+    coordinator = SimpleNamespace(task_registry={})
+
+    from agents.collaboration import TaskStatus
+    task.status = TaskStatus.DELEGATED
+
+    async def fake_send_message(**kwargs):
+        return SimpleNamespace(
+            id=99,
+            content=kwargs["content"],
+            message_type=kwargs["message_type"],
+            agent_name=kwargs.get("agent_name"),
+            created_at=None,
+        )
+
+    async def fake_publish_saved_chat_message(*args, **kwargs):
+        return None
+
+    async def fake_trigger_agent_response(*args, **kwargs):
+        trigger_calls.append(kwargs)
+        return {"completed": False, "awaiting_tool_approval": True, "task_run_id": 11}
+
+    monkeypatch.setattr(execution_module, "SessionLocal", None, raising=False)
+
+    import models.database as database_module
+
+    class DummyDb:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(database_module, "SessionLocal", lambda: DummyDb())
+
+    await execution_module.run_delegated_task_in_chat(
+        task=task,
+        coordinator=coordinator,
+        target_agent_type="coder",
+        task_description="Run the backend suite",
+        context="Focus on flaky cases",
+        current_agent_name="assistant",
+        client_turn_id="delegate-task-123",
+        task_metadata={"task_id": "task-123"},
+        parent_task_run_id=55,
+        send_message_fn=fake_send_message,
+        publish_saved_chat_message_fn=fake_publish_saved_chat_message,
+        trigger_agent_response_fn=fake_trigger_agent_response,
+        mark_interrupted_fn=lambda **kwargs: None,
+    )
+
+    assert len(trigger_calls) == 1
+    assert trigger_calls[0]["origin_message_id"] == 99

@@ -101,6 +101,8 @@ async def delegate_collaboration_task(
         context=context,
         delegator=current_agent_name,
         parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
+        parent_task_run_public_id=getattr(parent_task_run, "public_id", None) if parent_task_run is not None else None,
+        parent_chatroom_public_id=getattr(parent_task_run, "chatroom_public_id", None) if parent_task_run is not None else None,
         parent_client_turn_id=getattr(parent_task_run, "client_turn_id", None) if parent_task_run is not None else None,
     )
     register_delegated_collaboration_task(task, coordinator=coordinator)
@@ -154,6 +156,8 @@ async def delegate_collaboration_task(
                 delegator=current_agent_name,
                 target_agent_name=target_agent_type,
                 parent_task_run_id=getattr(parent_task_run, "id", None) if parent_task_run is not None else None,
+                parent_task_run_public_id=getattr(parent_task_run, "public_id", None) if parent_task_run is not None else None,
+                parent_chatroom_public_id=getattr(parent_task_run, "chatroom_public_id", None) if parent_task_run is not None else None,
                 parent_client_turn_id=getattr(parent_task_run, "client_turn_id", None) if parent_task_run is not None else None,
             ),
             store_runtime_card_fn=store_runtime_card_fn,
@@ -197,6 +201,8 @@ def _record_delegated_task_dispatched(
             "dispatch_kind": "delegate_task",
             "occurred_at": _utc_now_iso(),
             "parent_task_run_id": getattr(parent_task_run, "id", None),
+            "parent_task_run_public_id": getattr(parent_task_run, "public_id", None),
+            "parent_chatroom_public_id": getattr(parent_task_run, "chatroom_public_id", None),
             "parent_client_turn_id": getattr(parent_task_run, "client_turn_id", None),
             "task_id": getattr(task, "id", None),
             "child_client_turn_id": child_client_turn_id,

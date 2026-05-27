@@ -7,6 +7,7 @@ import { ConfigTab } from "./components/ConfigTab";
 import { ProjectsTab } from "./components/ProjectsTab";
 import { UI_VERSION } from "./uiVersion";
 import { DEFAULT_AGENT_TYPE, defaultAgentName, findAgentByType, getAgentDisplayName } from "./utils/agents";
+import { BackNavigationProvider, useRegisterBackHandler } from "./utils/backNavigation";
 import { buildLlmTimingsMarkdown, formatTimingDuration } from "./utils/llmTimings";
 import type {
   AppTab,
@@ -426,14 +427,6 @@ function resolveRestoredSelection(
   preferredChatId: number | null,
 ) {
   if (preferredChatId !== null) {
-    const matchedProject = projects.find((project) => project.default_chatroom_id === preferredChatId) ?? null;
-    if (matchedProject) {
-      return {
-        projectId: matchedProject.id,
-        chatId: matchedProject.default_chatroom_id,
-      };
-    }
-
     const matchedChat = chats.find((chat) => chat.id === preferredChatId) ?? null;
     if (matchedChat) {
       return {
@@ -447,7 +440,7 @@ function resolveRestoredSelection(
   if (fallbackProject) {
     return {
       projectId: fallbackProject.id,
-      chatId: fallbackProject.default_chatroom_id,
+      chatId: null,
     };
   }
 
@@ -464,10 +457,7 @@ function isKnownChatId(
   chats: ChatSummary[],
 ) {
   if (!chatId) return false;
-  return (
-    projects.some((project) => project.default_chatroom_id === chatId) ||
-    chats.some((chat) => chat.id === chatId)
-  );
+  return chats.some((chat) => chat.id === chatId);
 }
 
 function buildEvent(message: string, tone: ChatEventTone = "info"): ChatEventItem {
@@ -3172,9 +3162,7 @@ function App() {
   async function ensureSelfBootstrapProject() {
     const project = await api.getOrCreateSelfBootstrapProject();
     commitProjects((current) => upsertProject(current, project));
-    migrateOptimisticMessages(selectedChatIdRef.current, project.default_chatroom_id);
-    optimisticScopeRef.current = optimisticScopeKey(project.default_chatroom_id);
-    applyChatSelection(project.default_chatroom_id, project.id);
+    applyChatSelection(null, project.id);
     setActiveTab("chat");
     return project;
   }
@@ -3189,18 +3177,7 @@ function App() {
     [chats, selectedChatId],
   );
 
-  const activeChat = useMemo<ChatSummary | null>(() => {
-    if (selectedProject && selectedProject.default_chatroom_id === selectedChatId) {
-      return {
-        id: selectedProject.default_chatroom_id,
-        title: selectedProject.name,
-        session_type: "project-bound",
-        is_visible_in_chat_list: false,
-        project_id: selectedProject.id,
-      };
-    }
-    return selectedStandaloneChat;
-  }, [selectedProject, selectedStandaloneChat, selectedChatId]);
+  const activeChat = useMemo<ChatSummary | null>(() => selectedStandaloneChat, [selectedStandaloneChat]);
 
   useEffect(() => {
     bootstrappedRef.current = bootstrapped;
@@ -3286,7 +3263,7 @@ function App() {
       const selfProject = await api.getOrCreateSelfBootstrapProject();
       const projectRows = await api.getProjects();
       const restoredSelection = resolveRestoredSelection(projectRows, chatRows, preferredChatId);
-      const nextSelectedChatId = restoredSelection.chatId ?? selfProject.default_chatroom_id;
+      const nextSelectedChatId = restoredSelection.chatId ?? null;
       const nextSelectedProjectId = restoredSelection.projectId ?? selfProject.id;
 
       debugConsole("info", "bootstrapSelection", {
@@ -3339,6 +3316,29 @@ function App() {
       setActivityDrawerOpen(false);
     }
   }, [activeTab]);
+
+  useRegisterBackHandler(
+    () => sidebarDrawerOpen || activityDrawerOpen || activeTab !== "chat" || selectedChatId !== null || selectedProjectId !== null,
+    () => {
+      if (sidebarDrawerOpen) {
+        setSidebarDrawerOpen(false);
+        return true;
+      }
+      if (activityDrawerOpen) {
+        setActivityDrawerOpen(false);
+        return true;
+      }
+      if (activeTab === "config" || activeTab === "projects") {
+        setActiveTab("chat");
+        return true;
+      }
+      if (selectedChatId !== null || selectedProjectId !== null) {
+        applyChatSelection(null, null);
+        return true;
+      }
+      return false;
+    },
+  );
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -3440,10 +3440,9 @@ function App() {
       optimisticScopeRef.current = optimisticScopeKey(null);
       setOptimisticMessages(readOptimisticMessages(null));
       setChatCards([]);
+      setChatEvents([]);
       setTaskRuns([]);
       setChatProcesses(null);
-      setProjectBrowserIndex(null);
-      setProjectBrowserContentRefresh(null);
       setLiveTaskRunDetailsById({});
       setTaskActivitiesById({});
       setTaskTimelinesById({});
@@ -3475,7 +3474,7 @@ function App() {
           const nextCards = runtimeRows
             .map((payload) => buildCard(payload))
             .filter((card): card is ChatCardItem => card !== null);
-          setMessages(rows);
+          setMessages((current) => mergeMessages(current.filter((message) => message.id > 0), rows));
           setChatCards(nextCards);
           setTaskRuns(taskRunRows);
           setChatProcesses(processRows);
@@ -3882,7 +3881,7 @@ function App() {
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
         .filter((card): card is ChatCardItem => card !== null);
-      setMessages(rows);
+      setMessages((current) => mergeMessages(current.filter((message) => message.id > 0), rows));
       commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
       setChatCards(nextCards);
       setTaskRuns(taskRunRows);
@@ -3929,7 +3928,7 @@ function App() {
       const nextCards = runtimeRows
         .map((payload) => buildCard(payload))
         .filter((card): card is ChatCardItem => card !== null);
-      setMessages(rows);
+      setMessages((current) => mergeMessages(current.filter((message) => message.id > 0), rows));
       commitOptimisticMessages((current) => reconcileOptimisticMessagesWithServer(current, rows, nextCards, taskRunRows));
       setChatCards(nextCards);
       setTaskRuns(taskRunRows);
@@ -3942,6 +3941,23 @@ function App() {
       const message = nextError instanceof Error ? nextError.message : "Failed to refresh runtime";
       pushEvent(`Runtime refresh unavailable: ${message}`, "warning");
     }
+  }
+
+  async function ensureSelectedChatForProject(content: string) {
+    let targetProject = selectedProjectIdRef.current
+      ? projectsRef.current.find((project) => project.id === selectedProjectIdRef.current) ?? null
+      : null;
+    if (!targetProject) {
+      targetProject = await ensureSelfBootstrapProject();
+      pushEvent(`Opened self-bootstrap project "${targetProject.name}"`, "success");
+    }
+    const created = await api.createProjectSubchat(targetProject.id, buildInitialChatTitle(content));
+    migrateOptimisticMessages(null, created.id);
+    clearChatLocalCaches(created.id);
+    commitChats((current) => [created, ...current.filter((chat) => chat.id !== created.id)]);
+    applyChatSelection(created.id, targetProject.id);
+    pushEvent(`Created chat "${created.title}" in "${targetProject.name}"`, "success");
+    return created.id;
   }
 
   async function handleSendMessage(content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) {
@@ -3983,9 +3999,7 @@ function App() {
       pushEvent(`Sent: ${content.slice(0, 72)}`, "info");
 
       if (!chatId) {
-        const selfProject = await ensureSelfBootstrapProject();
-        chatId = selfProject.default_chatroom_id;
-        pushEvent(`Opened self-bootstrap project "${selfProject.name}"`, "success");
+        chatId = await ensureSelectedChatForProject(content);
       }
 
       const controller = new AbortController();
@@ -4406,9 +4420,9 @@ function App() {
       const created = await api.createProjectFromGithub(payload);
       const nextProjects = await api.getProjects();
       commitProjects(nextProjects);
-      applyChatSelection(created.default_chatroom_id, created.id);
+      applyChatSelection(null, created.id);
       setActiveTab("chat");
-      setNotice(`Imported "${created.name}" from GitHub and opened its chat room.`);
+      setNotice(`Imported "${created.name}" from GitHub and opened the project.`);
       pushEvent(`Imported project "${created.name}" from GitHub`, "success");
       window.setTimeout(() => setNotice(""), 3000);
     } catch (nextError) {
@@ -4515,7 +4529,7 @@ function App() {
       });
       const nextProjects = await api.getProjects();
       commitProjects(nextProjects);
-      applyChatSelection(created.default_chatroom_id, created.id);
+      applyChatSelection(null, created.id);
       setActiveTab("chat");
       setNotice(`Created project "${created.name}" from "${activeChat.title}".`);
       pushEvent(`Converted chat "${activeChat.title}" into project "${created.name}"`, "success");
@@ -4616,7 +4630,7 @@ function App() {
       if (selectedProjectId === projectId || selectedChatId === targetProject.default_chatroom_id) {
         const fallbackProject = remainingProjects[0] ?? null;
         const nextProjectId = fallbackProject?.id ?? null;
-        const nextChatId = fallbackProject?.default_chatroom_id ?? remainingChats[0]?.id ?? null;
+        const nextChatId = fallbackProject ? null : (remainingChats[0]?.id ?? null);
         applyChatSelection(nextChatId, nextProjectId);
         if (!fallbackProject && remainingChats.length === 0) {
           setMessages([]);
@@ -4851,7 +4865,7 @@ function App() {
         selectedProjectId={selectedProjectId}
         onSelectProject={(projectId) => {
           const nextProject = projects.find((project) => project.id === projectId) ?? null;
-          applyChatSelection(nextProject?.default_chatroom_id ?? null, nextProject?.id ?? null);
+          applyChatSelection(null, nextProject?.id ?? null);
           setActiveTab("chat");
           setSidebarDrawerOpen(false);
           pushEvent(`Opened project "${nextProject?.name || projectId}"`, "info");
@@ -4984,6 +4998,7 @@ function App() {
             taskTimelinesById={taskTimelinesById}
             events={chatEvents}
             expandCurrentStepByDefault={config?.ui?.chat_cards?.expand_current_step_by_default ?? false}
+            onEnsureChat={ensureSelectedChatForProject}
             onSend={handleSendMessage}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSidebar={() => {
@@ -5017,7 +5032,7 @@ function App() {
             onCreateProject={handleCreateProject}
             onSelectProject={(projectId) => {
               const nextProject = projects.find((project) => project.id === projectId) ?? null;
-              applyChatSelection(nextProject?.default_chatroom_id ?? null, nextProject?.id ?? null);
+              applyChatSelection(null, nextProject?.id ?? null);
               setActiveTab("chat");
               pushEvent(`Opened project "${nextProject?.name || projectId}"`, "info");
             }}
@@ -5047,4 +5062,10 @@ function App() {
   );
 }
 
-export default App;
+export default function AppRoot() {
+  return (
+    <BackNavigationProvider>
+      <App />
+    </BackNavigationProvider>
+  );
+}

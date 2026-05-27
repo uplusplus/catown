@@ -63,3 +63,50 @@ def test_approval_queue_resume_token_and_resolution_lease(fresh_db):
         assert resolved.resolution_lease_expires_at is None
     finally:
         db.close()
+
+
+def test_approval_queue_item_carries_stable_identity_snapshots(fresh_db):
+    from services.approval_queue import create_approval_queue_item, serialize_approval_queue_item
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Approval identity chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            chatroom_public_id=chatroom.public_id,
+            run_kind="project_single_agent",
+            status="running",
+            title="Approval identity run",
+            user_request="Do something",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        item = create_approval_queue_item(
+            db,
+            task_run=task_run,
+            chatroom_id=None,
+            project_id=None,
+            queue_kind="approval",
+            source="runtime",
+            title="Approval needed",
+            agent_name="developer",
+            target_kind="tool",
+            target_name="run_shell",
+            request_key="approval-identity-run-shell",
+            request_payload={"turn": 1},
+        )
+
+        serialized = serialize_approval_queue_item(item)
+        assert serialized["public_id"] == item.public_id
+        assert serialized["chatroom_public_id"] == chatroom.public_id
+        assert serialized["task_run_public_id"] == task_run.public_id
+    finally:
+        db.close()

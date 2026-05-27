@@ -184,6 +184,11 @@ from services.test_runner_contract import (
     is_valid_test_runner_result,
     normalize_test_runner_result,
 )
+from services.delegated_task_identity import (
+    delegated_metadata_matches,
+    find_matching_delegated_message_metadata,
+    load_task_run_origin_metadata,
+)
 from services.artifact_naming import build_timestamped_artifact_path, slug_artifact_subject
 from services.task_status_transition import validate_transition
 from services.artifact_history import (
@@ -1251,6 +1256,7 @@ async def trigger_agent_response(
     user_message: str,
     client_turn_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
+    origin_message_id: Optional[int] = None,
     extra_context: str = "",
     checkpoint_snapshot: Optional[Dict[str, Any]] = None,
 ):
@@ -1279,7 +1285,7 @@ async def trigger_agent_response(
                 db,
                 chatroom_id=chatroom_id,
                 project_id=project.id if project else None,
-                origin_message_id=None,
+                origin_message_id=origin_message_id,
                 client_turn_id=client_turn_id,
                 run_kind=RunKind.CHAT_TURN,
                 user_request=user_message,
@@ -2145,6 +2151,57 @@ def _json_column_payload(raw_payload: Optional[str]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
 
+
+def _normalized_public_identity(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value or None
+
+
+def _task_run_identity_matches_chatroom(task_run: TaskRun | None, chatroom: Chatroom | None) -> bool:
+    if task_run is None or chatroom is None:
+        return False
+    expected_chatroom_public_id = _normalized_public_identity(getattr(task_run, "chatroom_public_id", None))
+    actual_chatroom_public_id = _normalized_public_identity(getattr(chatroom, "public_id", None))
+    if not expected_chatroom_public_id or not actual_chatroom_public_id:
+        return False
+    return expected_chatroom_public_id == actual_chatroom_public_id
+
+
+def _approval_item_identity_matches_task_run(item: ApprovalQueueItem | None, task_run: TaskRun | None) -> bool:
+    if item is None or task_run is None:
+        return False
+    expected_task_run_public_id = _normalized_public_identity(getattr(item, "task_run_public_id", None))
+    actual_task_run_public_id = _normalized_public_identity(getattr(task_run, "public_id", None))
+    if not expected_task_run_public_id or not actual_task_run_public_id:
+        return False
+    if expected_task_run_public_id != actual_task_run_public_id:
+        return False
+    expected_chatroom_public_id = _normalized_public_identity(getattr(item, "chatroom_public_id", None))
+    actual_chatroom_public_id = _normalized_public_identity(getattr(task_run, "chatroom_public_id", None))
+    if not expected_chatroom_public_id or not actual_chatroom_public_id:
+        return False
+    if expected_chatroom_public_id != actual_chatroom_public_id:
+        return False
+    return True
+
+
+def _tracked_process_identity_matches_task_run(record: dict[str, Any] | None, task_run: TaskRun | None) -> bool:
+    if not isinstance(record, dict) or task_run is None:
+        return False
+    expected_task_run_public_id = _normalized_public_identity(record.get("task_run_public_id"))
+    actual_task_run_public_id = _normalized_public_identity(getattr(task_run, "public_id", None))
+    if not expected_task_run_public_id or not actual_task_run_public_id:
+        return False
+    if expected_task_run_public_id != actual_task_run_public_id:
+        return False
+    expected_chatroom_public_id = _normalized_public_identity(record.get("chatroom_public_id"))
+    actual_chatroom_public_id = _normalized_public_identity(getattr(task_run, "chatroom_public_id", None))
+    if not expected_chatroom_public_id or not actual_chatroom_public_id:
+        return False
+    if expected_chatroom_public_id != actual_chatroom_public_id:
+        return False
+    return True
+
 def _claim_task_run_recovery_lease(
     db: Session,
     task_run_id: int,
@@ -2249,7 +2306,7 @@ def _find_tracked_run_shell_from_runtime_cards(db: Session, task_run: TaskRun) -
             continue
         tracked = card.get("tracked_process")
         handle = load_tracked_run_shell_handle(tracked) if isinstance(tracked, dict) else None
-        if handle is not None:
+        if handle is not None and _tracked_process_identity_matches_task_run(handle, task_run):
             return handle, {"source": "runtime_card", "runtime_message_id": row.id}
     return None, {}
 
@@ -2272,6 +2329,8 @@ def _find_tracked_run_shell_from_state(task_run: TaskRun) -> tuple[dict[str, Any
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(record, dict):
+            continue
+        if not _tracked_process_identity_matches_task_run(record, task_run):
             continue
         if str(record.get("task_run_id") or "") == str(task_run.id):
             return record, {"source": "state_file", "state_path": str(path)}
@@ -2308,7 +2367,10 @@ def _tracked_run_shell_final_card_payload(card: Dict[str, Any], record: Dict[str
         "pgid": record.get("pgid"),
         "status": record.get("status"),
         "finished_at": record.get("finished_at"),
+        "chatroom_id": record.get("chatroom_id") or tracked.get("chatroom_id"),
+        "chatroom_public_id": record.get("chatroom_public_id") or tracked.get("chatroom_public_id"),
         "task_run_id": record.get("task_run_id") or tracked.get("task_run_id"),
+        "task_run_public_id": record.get("task_run_public_id") or tracked.get("task_run_public_id"),
         "client_turn_id": record.get("client_turn_id") or tracked.get("client_turn_id"),
         "tool_call_id": record.get("tool_call_id") or tracked.get("tool_call_id"),
     }
@@ -2626,24 +2688,30 @@ def _find_delegated_parent_context(db: Session, child_task_run: TaskRun) -> dict
     if not child_client_turn_id.startswith("delegate-"):
         return None
 
-    rows = (
-        db.query(Message)
-        .filter(Message.chatroom_id == child_task_run.chatroom_id)
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(200)
-        .all()
-    )
-    for row in rows:
-        metadata = _load_jsonish_payload(getattr(row, "metadata_json", None))
-        if str(metadata.get("client_turn_id") or "").strip() != child_client_turn_id:
-            continue
+    def _build_context_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
         delegated_task = metadata.get("delegated_task") if isinstance(metadata.get("delegated_task"), dict) else {}
+        parent_task_run_public_id = str(
+            metadata.get("parent_task_run_public_id")
+            or delegated_task.get("parent_task_run_public_id")
+            or ""
+        ).strip()
+        parent_chatroom_public_id = str(
+            metadata.get("parent_chatroom_public_id")
+            or delegated_task.get("parent_chatroom_public_id")
+            or ""
+        ).strip()
         parent_task_run_id = metadata.get("parent_task_run_id") or delegated_task.get("parent_task_run_id")
         if not parent_task_run_id:
-            continue
+            return None
         parent_task_run = get_task_run(db, parent_task_run_id)
         if parent_task_run is None:
-            continue
+            return None
+        if parent_task_run_public_id and str(getattr(parent_task_run, "public_id", "") or "").strip() != parent_task_run_public_id:
+            return None
+        if parent_chatroom_public_id and str(getattr(parent_task_run, "chatroom_public_id", "") or "").strip() != parent_chatroom_public_id:
+            return None
+        if not _task_run_identity_matches_chatroom(parent_task_run, child_task_run.chatroom):
+            return None
         return {
             "parent_task_run": parent_task_run,
             "task_id": delegated_task.get("task_id"),
@@ -2654,6 +2722,43 @@ def _find_delegated_parent_context(db: Session, child_task_run: TaskRun) -> dict
             "child_client_turn_id": child_client_turn_id,
             "required_outputs": delegated_task.get("required_outputs") if isinstance(delegated_task.get("required_outputs"), list) else [],
         }
+
+    has_origin_metadata, origin_metadata = load_task_run_origin_metadata(db, child_task_run)
+    if has_origin_metadata:
+        if not origin_metadata:
+            return None
+        origin_delegated_task = origin_metadata.get("delegated_task") if isinstance(origin_metadata.get("delegated_task"), dict) else {}
+        expected_parent_task_run_public_id = str(
+            origin_metadata.get("parent_task_run_public_id")
+            or origin_delegated_task.get("parent_task_run_public_id")
+            or ""
+        ).strip()
+        expected_parent_chatroom_public_id = str(
+            origin_metadata.get("parent_chatroom_public_id")
+            or origin_delegated_task.get("parent_chatroom_public_id")
+            or ""
+        ).strip()
+        if not delegated_metadata_matches(
+            origin_metadata,
+            child_client_turn_id=child_client_turn_id,
+            parent_task_run_public_id=expected_parent_task_run_public_id or None,
+            parent_chatroom_public_id=expected_parent_chatroom_public_id or None,
+        ):
+            return None
+        built_context = _build_context_from_metadata(origin_metadata)
+        if built_context is not None:
+            return built_context
+        return None
+
+    fallback_metadata = find_matching_delegated_message_metadata(
+        db,
+        chatroom_id=child_task_run.chatroom_id,
+        child_client_turn_id=child_client_turn_id,
+    )
+    if fallback_metadata:
+        built_context = _build_context_from_metadata(fallback_metadata)
+        if built_context is not None:
+            return built_context
 
     parent_events = (
         db.query(TaskRunEvent)
@@ -2668,6 +2773,14 @@ def _find_delegated_parent_context(db: Session, child_task_run: TaskRun) -> dict
             continue
         parent_task_run = get_task_run(db, getattr(event, "task_run_id", None))
         if parent_task_run is None:
+            continue
+        expected_parent_public_id = str(payload.get("parent_task_run_public_id") or "").strip()
+        expected_chatroom_public_id = str(payload.get("parent_chatroom_public_id") or "").strip()
+        if expected_parent_public_id and str(getattr(parent_task_run, "public_id", "") or "").strip() != expected_parent_public_id:
+            continue
+        if expected_chatroom_public_id and str(getattr(parent_task_run, "chatroom_public_id", "") or "").strip() != expected_chatroom_public_id:
+            continue
+        if not _task_run_identity_matches_chatroom(parent_task_run, child_task_run.chatroom):
             continue
         return {
             "parent_task_run": parent_task_run,
@@ -3123,6 +3236,19 @@ async def _report_delegated_child_result_to_parent(
         summary=summary_for_payload,
         payload=event_payload,
     )
+    record_agent_turn_completed(
+        db,
+        child_task_run,
+        agent_name=child_agent_name or child_task_run.target_agent_name or "agent",
+        response_content=report_content,
+        message_id=getattr(saved_message, "id", None),
+        summary=summary_for_payload,
+        payload={
+            "delegated_result": True,
+            "produced_outputs": event_payload.get("produced_outputs"),
+            "required_outputs": event_payload.get("required_outputs"),
+        },
+    )
     complete_task_run(db, child_task_run, status="completed", summary=summary_for_payload)
     _reopen_task_run_for_followup(db, parent_task_run)
 
@@ -3388,7 +3514,10 @@ async def _store_recovered_run_shell_final_card(
                 "pgid": tracked_handle.get("pgid"),
                 "status": tracked_handle.get("status"),
                 "finished_at": tracked_handle.get("finished_at"),
+                "chatroom_id": tracked_handle.get("chatroom_id"),
+                "chatroom_public_id": tracked_handle.get("chatroom_public_id"),
                 "task_run_id": tracked_handle.get("task_run_id"),
+                "task_run_public_id": tracked_handle.get("task_run_public_id"),
                 "client_turn_id": tracked_handle.get("client_turn_id"),
                 "tool_call_id": tracked_handle.get("tool_call_id"),
             },
@@ -3455,6 +3584,28 @@ async def _recover_orphaned_single_agent_run_shell_task_run(
         },
     )
     summary = str(tool_result.result or "").strip() or "Recovered run_shell stopped before completion."
+    append_task_event(
+        db,
+        task_run,
+        EventType.TASK_RUN_FAILED,
+        agent_name=(task_run.target_agent_name or tracked_handle.get("agent_name") or "").strip() or "agent",
+        summary=summary,
+        payload={
+            "task_run_id": task_run.id,
+            "trigger": trigger,
+            "recovery": True,
+            "recovery_kind": "orphaned_run_shell_tracked_process",
+            "tracked_process": {
+                "token": tracked_handle.get("token"),
+                "pid": tracked_handle.get("pid"),
+                "worker_pid": tracked_handle.get("worker_pid"),
+                "status": tracked_handle.get("status"),
+                "has_exit": tracked_run_shell_has_exit(tracked_handle),
+                "is_active": tracked_run_shell_is_active(tracked_handle),
+            },
+            **source_payload,
+        },
+    )
     complete_task_run(db, task_run, status="failed", summary=summary)
     append_task_event(
         db,
@@ -6374,16 +6525,37 @@ async def _replay_runtime_blocked_tool_queue_item(
             request_payload=request_payload,
         )
 
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    if task_run is not None and not _approval_item_identity_matches_task_run(item, task_run):
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error executing blocked tool replay: approval identity mismatch.",
+            success=False,
+            request_payload=request_payload,
+        )
+    if task_run is not None and not _task_run_identity_matches_chatroom(task_run, chatroom):
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error executing blocked tool replay: chatroom identity mismatch.",
+            success=False,
+            request_payload=request_payload,
+        )
+
     project = _resolve_chatroom_project(db, chatroom)
     agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
     agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
-    task_run = get_task_run(db, getattr(item, "task_run_id", None))
     runtime_kwargs = build_tool_runtime_kwargs(
         agent,
         chatroom.id,
         project,
         task_run_id=getattr(item, "task_run_id", None),
+        task_run_public_id=getattr(task_run, "public_id", None) if task_run is not None else None,
         client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+        chatroom_public_id=getattr(chatroom, "public_id", None),
     )
     workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
     logger.info(
@@ -6501,16 +6673,37 @@ async def _start_approved_run_shell_queue_item(
             request_payload=request_payload,
         )
 
+    task_run = get_task_run(db, getattr(item, "task_run_id", None))
+    if task_run is not None and not _approval_item_identity_matches_task_run(item, task_run):
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error starting approved run_shell: approval identity mismatch.",
+            success=False,
+            request_payload=request_payload,
+        )
+    if task_run is not None and not _task_run_identity_matches_chatroom(task_run, chatroom):
+        return build_replay_tool_result_record(
+            item,
+            tool_name=tool_name,
+            arguments=arguments_text,
+            result="Error starting approved run_shell: chatroom identity mismatch.",
+            success=False,
+            request_payload=request_payload,
+        )
+
     project = _resolve_chatroom_project(db, chatroom)
     agents = _serialize_project_agents(db, project.id) if project else _list_global_agents(db)
     agent = find_agent_by_type(agents, getattr(item, "agent_name", None))
-    task_run = get_task_run(db, getattr(item, "task_run_id", None))
     runtime_kwargs = build_tool_runtime_kwargs(
         agent,
         chatroom.id,
         project,
         task_run_id=getattr(item, "task_run_id", None),
+        task_run_public_id=getattr(task_run, "public_id", None) if task_run is not None else None,
         client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
+        chatroom_public_id=getattr(chatroom, "public_id", None),
     )
     workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
     logger.info(
@@ -6666,6 +6859,19 @@ def _validate_run_shell_approval_can_continue(
     task_run = get_task_run(db, getattr(item, "task_run_id", None))
     if task_run is None:
         return
+    if not _approval_item_identity_matches_task_run(item, task_run):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "approval_identity_mismatch",
+                "queue_item_id": getattr(item, "id", None),
+                "task_run_id": getattr(item, "task_run_id", None),
+                "task_run_public_id": getattr(task_run, "public_id", None),
+                "queue_item_task_run_public_id": getattr(item, "task_run_public_id", None),
+                "task_run_chatroom_public_id": getattr(task_run, "chatroom_public_id", None),
+                "queue_item_chatroom_public_id": getattr(item, "chatroom_public_id", None),
+            },
+        )
     checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
     cursor = checkpoint_snapshot.get("continuation_cursor")
     cursor = cursor if isinstance(cursor, dict) else {}
@@ -6752,6 +6958,13 @@ def _describe_recovery_continuation_state(checkpoint_snapshot: Any) -> Dict[str,
 def _reopen_task_run_for_followup(db: Session, task_run: Optional[TaskRun]) -> Optional[TaskRun]:
     if task_run is None:
         return None
+    if str(task_run.status or "").strip().lower() == "running":
+        task_run.completed_at = None
+        task_run.blocked_by_queue_item_id = None
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        return task_run
     # ADR-030: Emit event instead of direct status assignment.
     # The event will auto-derive status to "running".
     validate_transition(task_run.status, "running")

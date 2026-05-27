@@ -31,6 +31,8 @@ def build_delegated_task_metadata(
     delegator: str,
     target_agent_name: str,
     parent_task_run_id: int | None = None,
+    parent_task_run_public_id: str | None = None,
+    parent_chatroom_public_id: str | None = None,
     parent_client_turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the normalized metadata stored alongside a delegated task."""
@@ -46,6 +48,10 @@ def build_delegated_task_metadata(
     }
     if parent_task_run_id is not None:
         metadata["parent_task_run_id"] = parent_task_run_id
+    if parent_task_run_public_id:
+        metadata["parent_task_run_public_id"] = parent_task_run_public_id
+    if parent_chatroom_public_id:
+        metadata["parent_chatroom_public_id"] = parent_chatroom_public_id
     if parent_client_turn_id:
         metadata["parent_client_turn_id"] = parent_client_turn_id
     return metadata
@@ -62,6 +68,8 @@ def create_delegated_collaboration_task(
     context: str = "",
     delegator: str = "",
     parent_task_run_id: int | None = None,
+    parent_task_run_public_id: str | None = None,
+    parent_chatroom_public_id: str | None = None,
     parent_client_turn_id: str | None = None,
 ):
     """Create one normalized delegated collaboration task."""
@@ -76,6 +84,10 @@ def create_delegated_collaboration_task(
         }
     if parent_task_run_id is not None:
         metadata["parent_task_run_id"] = parent_task_run_id
+    if parent_task_run_public_id:
+        metadata["parent_task_run_public_id"] = parent_task_run_public_id
+    if parent_chatroom_public_id:
+        metadata["parent_chatroom_public_id"] = parent_chatroom_public_id
     if parent_client_turn_id:
         metadata["parent_client_turn_id"] = parent_client_turn_id
     required_outputs = delegated_required_outputs_for_agent(target_agent_name)

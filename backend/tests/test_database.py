@@ -120,6 +120,14 @@ class TestChatroomModel:
         with pytest.raises(Exception):  # IntegrityError (unique constraint)
             db_session.commit()
 
+    def test_chatroom_public_id_is_generated(self, db_session, fresh_db):
+        chatroom = fresh_db.Chatroom(title="Stable Identity Chat")
+        db_session.add(chatroom)
+        db_session.commit()
+        db_session.refresh(chatroom)
+
+        assert chatroom.public_id
+
 
 class TestMessageModel:
     """Message 表测试"""
@@ -195,6 +203,24 @@ class TestMessageModel:
         assert len(msgs) == 5
         assert msgs[0].content == "msg_0"
         assert msgs[4].content == "msg_4"
+
+    def test_message_copies_chatroom_public_id(self, db_session, fresh_db):
+        chatroom = fresh_db.Chatroom(title="Message Identity Chat")
+        db_session.add(chatroom)
+        db_session.commit()
+        db_session.refresh(chatroom)
+
+        msg = fresh_db.Message(
+            chatroom_id=chatroom.id,
+            content="Hello identity",
+            message_type="text",
+        )
+        db_session.add(msg)
+        db_session.commit()
+        db_session.refresh(msg)
+
+        assert msg.public_id
+        assert msg.chatroom_public_id == chatroom.public_id
 
 
 class TestMemoryModel:

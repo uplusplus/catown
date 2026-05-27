@@ -20,6 +20,8 @@ def test_build_delegated_task_metadata_returns_normalized_shape():
         context="Focus on flaky tests",
         delegator="assistant",
         target_agent_name="tester",
+        parent_task_run_public_id="run-public-1",
+        parent_chatroom_public_id="chat-public-1",
     )
 
     assert metadata == {
@@ -29,6 +31,8 @@ def test_build_delegated_task_metadata_returns_normalized_shape():
         "context": "Focus on flaky tests",
         "delegator": "assistant",
         "target_agent_name": "tester",
+        "parent_task_run_public_id": "run-public-1",
+        "parent_chatroom_public_id": "chat-public-1",
         "required_outputs": ["test_report"],
     }
 
@@ -43,6 +47,8 @@ def test_create_delegated_collaboration_task_preserves_context_fields():
         target_agent_name="tester",
         context="Focus on flaky tests",
         delegator="assistant",
+        parent_task_run_public_id="run-public-1",
+        parent_chatroom_public_id="chat-public-1",
     )
 
     assert task.title == "Run tests"
@@ -53,6 +59,8 @@ def test_create_delegated_collaboration_task_preserves_context_fields():
     assert task.metadata == {
         "context": "Focus on flaky tests",
         "delegator": "assistant",
+        "parent_task_run_public_id": "run-public-1",
+        "parent_chatroom_public_id": "chat-public-1",
         "required_outputs": ["test_report"],
     }
 

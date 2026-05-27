@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable
 from models.enums import EventType
 
+from services.delegated_task_identity import delegated_metadata_matches, load_task_run_origin_metadata
 
 logger = logging.getLogger("catown.collaboration_delegate_execution")
 
@@ -18,6 +19,8 @@ def mark_delegated_task_run_interrupted(
     client_turn_id: str,
     agent_name: str,
     summary: str,
+    parent_task_run_public_id: str | None = None,
+    chatroom_public_id: str | None = None,
 ) -> None:
     """Mark the delegated task run failed when background execution is interrupted."""
 
@@ -29,12 +32,35 @@ def mark_delegated_task_run_interrupted(
 
     db = SessionLocal()
     try:
-        task_run = (
-            db.query(TaskRun)
-            .filter(TaskRun.client_turn_id == client_turn_id)
-            .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
-            .first()
-        )
+        query = db.query(TaskRun).filter(TaskRun.client_turn_id == client_turn_id)
+        if chatroom_public_id:
+            query = query.filter(TaskRun.chatroom_public_id == chatroom_public_id)
+        candidates = query.order_by(TaskRun.created_at.desc(), TaskRun.id.desc()).all()
+        task_run = None
+        for candidate in candidates:
+            if not parent_task_run_public_id:
+                task_run = candidate
+                break
+            has_origin_metadata, origin_metadata = load_task_run_origin_metadata(db, candidate)
+            if has_origin_metadata and delegated_metadata_matches(
+                origin_metadata,
+                child_client_turn_id=client_turn_id,
+                parent_task_run_public_id=parent_task_run_public_id,
+                parent_chatroom_public_id=chatroom_public_id,
+            ):
+                task_run = candidate
+                break
+            if has_origin_metadata:
+                continue
+            metadata = _latest_delegated_message_metadata(db, candidate)
+            if delegated_metadata_matches(
+                metadata,
+                child_client_turn_id=client_turn_id,
+                parent_task_run_public_id=parent_task_run_public_id,
+                parent_chatroom_public_id=chatroom_public_id,
+            ):
+                task_run = candidate
+                break
         if task_run is None or (task_run.status or "").strip().lower() != "running":
             return
         append_task_event(
@@ -46,6 +72,8 @@ def mark_delegated_task_run_interrupted(
             payload={
                 "reason": "delegated_task_interrupted",
                 "client_turn_id": client_turn_id,
+                "parent_task_run_public_id": parent_task_run_public_id,
+                "chatroom_public_id": chatroom_public_id,
             },
         )
         complete_task_run(db, task_run, status="failed", summary=summary)
@@ -53,6 +81,27 @@ def mark_delegated_task_run_interrupted(
         db.rollback()
     finally:
         db.close()
+
+
+def _latest_delegated_message_metadata(db: Any, task_run: Any) -> dict[str, Any]:
+    try:
+        from models.database import Message
+    except Exception:
+        return {}
+
+    row = (
+        db.query(Message)
+        .filter(Message.chatroom_id == getattr(task_run, "chatroom_id", None))
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .first()
+    )
+    if row is None:
+        return {}
+    try:
+        metadata = json.loads(getattr(row, "metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def delegate_task_card_content(
@@ -162,6 +211,7 @@ async def run_delegated_task_in_chat(
             task.chatroom_id,
             instruction,
             client_turn_id=client_turn_id,
+            origin_message_id=getattr(delegated_msg, "id", None),
             extra_context=f"Delegated by {current_agent_name}. {context}".strip(),
         )
         completed = True
@@ -211,6 +261,8 @@ async def run_delegated_task_in_chat(
             client_turn_id=client_turn_id,
             agent_name=target_agent_type,
             summary=interruption_summary,
+            parent_task_run_public_id=str(task_metadata.get("parent_task_run_public_id") or "").strip() or None,
+            chatroom_public_id=str(task_metadata.get("parent_chatroom_public_id") or "").strip() or None,
         )
         task.status = TaskStatus.FAILED
         task.result = interruption_summary

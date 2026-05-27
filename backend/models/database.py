@@ -3,6 +3,7 @@
 Database model definitions.
 """
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, MetaData, String, Text, create_engine, event, text
@@ -41,6 +42,7 @@ def _configure_sqlite_engine(db_engine, database_url: str) -> None:
         try:
             cursor.execute(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT_MS}")
             cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()
 
@@ -52,6 +54,148 @@ TelemetrySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=tel
 
 Base = declarative_base()
 TelemetryBase = declarative_base(metadata=MetaData())
+
+
+def _generate_public_id() -> str:
+    return uuid4().hex
+
+
+def _normalized_text(value: Any) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value or None
+
+
+def _column_names(connection, table_name: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in connection.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    }
+
+
+def _ensure_sqlite_column(
+    connection,
+    table_name: str,
+    column_name: str,
+    definition_sql: str,
+    *,
+    existing_columns: set[str] | None = None,
+) -> set[str]:
+    columns = existing_columns if existing_columns is not None else _column_names(connection, table_name)
+    if column_name not in columns:
+        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition_sql}"))
+        columns.add(column_name)
+    return columns
+
+
+def _lookup_row_public_id(connection, table_name: str, row_id: Any) -> str | None:
+    if row_id is None:
+        return None
+    row = connection.execute(
+        text(f"SELECT public_id FROM {table_name} WHERE id = :id"),
+        {"id": row_id},
+    ).fetchone()
+    if not row:
+        return None
+    return _normalized_text(row[0])
+
+
+def _backfill_public_ids(connection, table_name: str) -> None:
+    rows = connection.execute(
+        text(f"SELECT id FROM {table_name} WHERE public_id IS NULL OR TRIM(public_id) = '' ORDER BY id ASC")
+    ).fetchall()
+    for (row_id,) in rows:
+        connection.execute(
+            text(f"UPDATE {table_name} SET public_id = :public_id WHERE id = :id"),
+            {"public_id": _generate_public_id(), "id": row_id},
+        )
+
+    duplicate_groups = connection.execute(
+        text(
+            f"SELECT public_id FROM {table_name} "
+            "WHERE public_id IS NOT NULL AND TRIM(public_id) != '' "
+            "GROUP BY public_id HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    for (duplicated_public_id,) in duplicate_groups:
+        duplicate_rows = connection.execute(
+            text(
+                f"SELECT id FROM {table_name} "
+                "WHERE public_id = :public_id ORDER BY id ASC"
+            ),
+            {"public_id": duplicated_public_id},
+        ).fetchall()
+        for duplicate_row in duplicate_rows[1:]:
+            connection.execute(
+                text(f"UPDATE {table_name} SET public_id = :public_id WHERE id = :id"),
+                {"public_id": _generate_public_id(), "id": duplicate_row[0]},
+            )
+
+
+def _backfill_parent_public_ids(
+    connection,
+    *,
+    child_table: str,
+    snapshot_column: str,
+    parent_table: str,
+    child_fk_column: str,
+) -> None:
+    rows = connection.execute(
+        text(
+            f"SELECT child.id, parent.public_id "
+            f"FROM {child_table} AS child "
+            f"JOIN {parent_table} AS parent ON parent.id = child.{child_fk_column} "
+            f"WHERE child.{snapshot_column} IS NULL OR TRIM(child.{snapshot_column}) = '' "
+            f"ORDER BY child.id ASC"
+        )
+    ).fetchall()
+    for child_id, parent_public_id in rows:
+        normalized_public_id = _normalized_text(parent_public_id)
+        if normalized_public_id is None:
+            continue
+        connection.execute(
+            text(
+                f"UPDATE {child_table} "
+                f"SET {snapshot_column} = :snapshot_value "
+                f"WHERE id = :id"
+            ),
+            {"snapshot_value": normalized_public_id, "id": child_id},
+        )
+
+
+def _ensure_unique_nonempty_tokens(connection, table_name: str, column_name: str) -> None:
+    missing_rows = connection.execute(
+        text(
+            f"SELECT id FROM {table_name} "
+            f"WHERE {column_name} IS NULL OR TRIM({column_name}) = '' "
+            "ORDER BY id ASC"
+        )
+    ).fetchall()
+    for (row_id,) in missing_rows:
+        connection.execute(
+            text(f"UPDATE {table_name} SET {column_name} = :value WHERE id = :id"),
+            {"value": _generate_public_id(), "id": row_id},
+        )
+
+    duplicate_groups = connection.execute(
+        text(
+            f"SELECT {column_name} FROM {table_name} "
+            f"WHERE {column_name} IS NOT NULL AND TRIM({column_name}) != '' "
+            f"GROUP BY {column_name} HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    for (duplicated_value,) in duplicate_groups:
+        duplicate_rows = connection.execute(
+            text(
+                f"SELECT id FROM {table_name} "
+                f"WHERE {column_name} = :value ORDER BY id ASC"
+            ),
+            {"value": duplicated_value},
+        ).fetchall()
+        for duplicate_row in duplicate_rows[1:]:
+            connection.execute(
+                text(f"UPDATE {table_name} SET {column_name} = :value WHERE id = :id"),
+                {"value": _generate_public_id(), "id": duplicate_row[0]},
+            )
 
 
 class Agent(Base):
@@ -181,6 +325,7 @@ class Chatroom(Base):
     __tablename__ = "chatrooms"
 
     id = Column(Integer, primary_key=True, index=True)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
     project_id = Column(Integer, ForeignKey("projects.id"), unique=True, nullable=True)
     title = Column(String, nullable=False, default="New Chat")
     session_type = Column(String, nullable=False, default="standalone")
@@ -216,6 +361,8 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
+    chatroom_public_id = Column(String, nullable=True, index=True)
     agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
     content = Column(Text, nullable=False)
     message_type = Column(String, default="text")
@@ -233,6 +380,8 @@ class TaskRun(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False, index=True)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
+    chatroom_public_id = Column(String, nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     origin_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, unique=True, index=True)
     client_turn_id = Column(String, nullable=True, index=True)
@@ -355,6 +504,9 @@ class ApprovalQueueItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
     chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False, index=True)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
+    chatroom_public_id = Column(String, nullable=True, index=True)
+    task_run_public_id = Column(String, nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     pipeline_run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=True, index=True)
     pipeline_stage_id = Column(Integer, ForeignKey("pipeline_stages.id"), nullable=True, index=True)
@@ -493,6 +645,8 @@ class PipelineRun(Base):
     id = Column(Integer, primary_key=True, index=True)
     pipeline_id = Column(Integer, ForeignKey("pipelines.id"), nullable=False)
     task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
+    task_run_public_id = Column(String, nullable=True, index=True)
     run_number = Column(Integer, nullable=False, default=1)
     status = Column(String, default="pending")
     input_requirement = Column(Text)
@@ -514,6 +668,8 @@ class PipelineStage(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=False)
+    public_id = Column(String, unique=True, index=True, nullable=False, default=_generate_public_id)
+    pipeline_run_public_id = Column(String, nullable=True, index=True)
     stage_name = Column(String, nullable=False)
     display_name = Column(String, nullable=False)
     stage_order = Column(Integer, nullable=False)
@@ -707,6 +863,83 @@ class StageRunAsset(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+@event.listens_for(SessionLocal, "before_flush")
+def _populate_stable_public_identity(session, _flush_context, _instances):
+    for obj in list(session.new) + list(session.dirty):
+        if isinstance(obj, Chatroom):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            continue
+
+        if isinstance(obj, Message):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            chatroom = getattr(obj, "chatroom", None)
+            if chatroom is None and getattr(obj, "chatroom_id", None) is not None:
+                chatroom = session.get(Chatroom, getattr(obj, "chatroom_id", None))
+            if chatroom is not None:
+                if not _normalized_text(getattr(chatroom, "public_id", None)):
+                    chatroom.public_id = _generate_public_id()
+                obj.chatroom_public_id = _normalized_text(getattr(chatroom, "public_id", None))
+            continue
+
+        if isinstance(obj, TaskRun):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            chatroom = getattr(obj, "chatroom", None)
+            if chatroom is None and getattr(obj, "chatroom_id", None) is not None:
+                chatroom = session.get(Chatroom, getattr(obj, "chatroom_id", None))
+            if chatroom is not None:
+                if not _normalized_text(getattr(chatroom, "public_id", None)):
+                    chatroom.public_id = _generate_public_id()
+                obj.chatroom_public_id = _normalized_text(getattr(chatroom, "public_id", None))
+            continue
+
+        if isinstance(obj, ApprovalQueueItem):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            chatroom = getattr(obj, "chatroom", None)
+            if chatroom is None and getattr(obj, "chatroom_id", None) is not None:
+                chatroom = session.get(Chatroom, getattr(obj, "chatroom_id", None))
+            if chatroom is not None:
+                if not _normalized_text(getattr(chatroom, "public_id", None)):
+                    chatroom.public_id = _generate_public_id()
+                obj.chatroom_public_id = _normalized_text(getattr(chatroom, "public_id", None))
+            task_run = getattr(obj, "task_run", None)
+            if task_run is None and getattr(obj, "task_run_id", None) is not None:
+                task_run = session.get(TaskRun, getattr(obj, "task_run_id", None))
+            if task_run is not None:
+                if not _normalized_text(getattr(task_run, "public_id", None)):
+                    task_run.public_id = _generate_public_id()
+                obj.task_run_public_id = _normalized_text(getattr(task_run, "public_id", None))
+                if obj.chatroom_public_id is None and _normalized_text(getattr(task_run, "chatroom_public_id", None)):
+                    obj.chatroom_public_id = _normalized_text(getattr(task_run, "chatroom_public_id", None))
+            continue
+
+        if isinstance(obj, PipelineRun):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            task_run = getattr(obj, "task_run", None)
+            if task_run is None and getattr(obj, "task_run_id", None) is not None:
+                task_run = session.get(TaskRun, getattr(obj, "task_run_id", None))
+            if task_run is not None:
+                if not _normalized_text(getattr(task_run, "public_id", None)):
+                    task_run.public_id = _generate_public_id()
+                obj.task_run_public_id = _normalized_text(getattr(task_run, "public_id", None))
+            continue
+
+        if isinstance(obj, PipelineStage):
+            if not _normalized_text(getattr(obj, "public_id", None)):
+                obj.public_id = _generate_public_id()
+            pipeline_run = getattr(obj, "run", None)
+            if pipeline_run is None and getattr(obj, "run_id", None) is not None:
+                pipeline_run = session.get(PipelineRun, getattr(obj, "run_id", None))
+            if pipeline_run is not None:
+                if not _normalized_text(getattr(pipeline_run, "public_id", None)):
+                    pipeline_run.public_id = _generate_public_id()
+                obj.pipeline_run_public_id = _normalized_text(getattr(pipeline_run, "public_id", None))
+
+
 def init_database():
     """Initialize the database."""
     from models import audit  # noqa: F401
@@ -840,17 +1073,93 @@ def init_database():
             )
         if "source_chatroom_id" not in existing_chatroom_columns:
             connection.execute(text("ALTER TABLE chatrooms ADD COLUMN source_chatroom_id INTEGER"))
+        existing_chatroom_columns = _ensure_sqlite_column(
+            connection,
+            "chatrooms",
+            "public_id",
+            "VARCHAR",
+            existing_columns=existing_chatroom_columns,
+        )
+        _backfill_public_ids(connection, "chatrooms")
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_chatrooms_public_id ON chatrooms (public_id)"))
+
+        existing_message_columns = _column_names(connection, "messages")
+        existing_message_columns = _ensure_sqlite_column(
+            connection,
+            "messages",
+            "public_id",
+            "VARCHAR",
+            existing_columns=existing_message_columns,
+        )
+        existing_message_columns = _ensure_sqlite_column(
+            connection,
+            "messages",
+            "chatroom_public_id",
+            "VARCHAR",
+            existing_columns=existing_message_columns,
+        )
+        _backfill_public_ids(connection, "messages")
+        _backfill_parent_public_ids(
+            connection,
+            child_table="messages",
+            snapshot_column="chatroom_public_id",
+            parent_table="chatrooms",
+            child_fk_column="chatroom_id",
+        )
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_public_id ON messages (public_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_chatroom_public_id ON messages (chatroom_public_id)"))
 
         existing_approval_queue_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(approval_queue_items)")).fetchall()
         }
         if existing_approval_queue_columns:
+            existing_approval_queue_columns = _ensure_sqlite_column(
+                connection,
+                "approval_queue_items",
+                "public_id",
+                "VARCHAR",
+                existing_columns=existing_approval_queue_columns,
+            )
+            existing_approval_queue_columns = _ensure_sqlite_column(
+                connection,
+                "approval_queue_items",
+                "chatroom_public_id",
+                "VARCHAR",
+                existing_columns=existing_approval_queue_columns,
+            )
+            existing_approval_queue_columns = _ensure_sqlite_column(
+                connection,
+                "approval_queue_items",
+                "task_run_public_id",
+                "VARCHAR",
+                existing_columns=existing_approval_queue_columns,
+            )
             if "resume_token" not in existing_approval_queue_columns:
                 connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resume_token VARCHAR"))
             if "resolution_owner" not in existing_approval_queue_columns:
                 connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resolution_owner VARCHAR"))
             if "resolution_lease_expires_at" not in existing_approval_queue_columns:
                 connection.execute(text("ALTER TABLE approval_queue_items ADD COLUMN resolution_lease_expires_at DATETIME"))
+            _backfill_public_ids(connection, "approval_queue_items")
+            _backfill_parent_public_ids(
+                connection,
+                child_table="approval_queue_items",
+                snapshot_column="chatroom_public_id",
+                parent_table="chatrooms",
+                child_fk_column="chatroom_id",
+            )
+            _backfill_parent_public_ids(
+                connection,
+                child_table="approval_queue_items",
+                snapshot_column="task_run_public_id",
+                parent_table="task_runs",
+                child_fk_column="task_run_id",
+            )
+            _ensure_unique_nonempty_tokens(connection, "approval_queue_items", "resume_token")
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_approval_queue_items_public_id ON approval_queue_items (public_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_approval_queue_items_chatroom_public_id ON approval_queue_items (chatroom_public_id)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_approval_queue_items_task_run_public_id ON approval_queue_items (task_run_public_id)"))
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_approval_queue_items_resume_token ON approval_queue_items (resume_token)"))
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_approval_queue_items_resume_token ON approval_queue_items (resume_token)")
             )
@@ -939,6 +1248,30 @@ def init_database():
             connection.execute(text("ALTER TABLE task_runs ADD COLUMN recovery_claimed_at DATETIME"))
         if "recovery_lease_expires_at" not in existing_task_run_columns:
             connection.execute(text("ALTER TABLE task_runs ADD COLUMN recovery_lease_expires_at DATETIME"))
+        existing_task_run_columns = _ensure_sqlite_column(
+            connection,
+            "task_runs",
+            "public_id",
+            "VARCHAR",
+            existing_columns=existing_task_run_columns,
+        )
+        existing_task_run_columns = _ensure_sqlite_column(
+            connection,
+            "task_runs",
+            "chatroom_public_id",
+            "VARCHAR",
+            existing_columns=existing_task_run_columns,
+        )
+        _backfill_public_ids(connection, "task_runs")
+        _backfill_parent_public_ids(
+            connection,
+            child_table="task_runs",
+            snapshot_column="chatroom_public_id",
+            parent_table="chatrooms",
+            child_fk_column="chatroom_id",
+        )
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_task_runs_public_id ON task_runs (public_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_task_runs_chatroom_public_id ON task_runs (chatroom_public_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_task_runs_recovery_owner ON task_runs (recovery_owner)"))
         connection.execute(
             text(
@@ -1078,7 +1411,57 @@ def init_database():
         }
         if "task_run_id" not in existing_pipeline_run_columns:
             connection.execute(text("ALTER TABLE pipeline_runs ADD COLUMN task_run_id INTEGER"))
+        existing_pipeline_run_columns = _ensure_sqlite_column(
+            connection,
+            "pipeline_runs",
+            "public_id",
+            "VARCHAR",
+            existing_columns=existing_pipeline_run_columns,
+        )
+        existing_pipeline_run_columns = _ensure_sqlite_column(
+            connection,
+            "pipeline_runs",
+            "task_run_public_id",
+            "VARCHAR",
+            existing_columns=existing_pipeline_run_columns,
+        )
+        _backfill_public_ids(connection, "pipeline_runs")
+        _backfill_parent_public_ids(
+            connection,
+            child_table="pipeline_runs",
+            snapshot_column="task_run_public_id",
+            parent_table="task_runs",
+            child_fk_column="task_run_id",
+        )
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pipeline_runs_task_run_id ON pipeline_runs (task_run_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_runs_public_id ON pipeline_runs (public_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pipeline_runs_task_run_public_id ON pipeline_runs (task_run_public_id)"))
+
+        existing_pipeline_stage_columns = _column_names(connection, "pipeline_stages")
+        existing_pipeline_stage_columns = _ensure_sqlite_column(
+            connection,
+            "pipeline_stages",
+            "public_id",
+            "VARCHAR",
+            existing_columns=existing_pipeline_stage_columns,
+        )
+        existing_pipeline_stage_columns = _ensure_sqlite_column(
+            connection,
+            "pipeline_stages",
+            "pipeline_run_public_id",
+            "VARCHAR",
+            existing_columns=existing_pipeline_stage_columns,
+        )
+        _backfill_public_ids(connection, "pipeline_stages")
+        _backfill_parent_public_ids(
+            connection,
+            child_table="pipeline_stages",
+            snapshot_column="pipeline_run_public_id",
+            parent_table="pipeline_runs",
+            child_fk_column="run_id",
+        )
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_stages_public_id ON pipeline_stages (public_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_pipeline_stages_pipeline_run_public_id ON pipeline_stages (pipeline_run_public_id)"))
 
         existing_pipeline_delivery_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(pipeline_message_deliveries)")).fetchall()

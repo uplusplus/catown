@@ -28,6 +28,8 @@ def reset_app_modules(module_names):
         from sqlalchemy.orm import clear_mappers
 
         clear_mappers()
+    if "models.database" in requested and "models.audit" not in requested:
+        requested.append("models.audit")
     ordered = sorted(
         requested,
         key=lambda module_name: (
@@ -127,10 +129,13 @@ def _reload_model_bound_service_modules(importlib_module):
         "services.runner_lifecycle",
         "services.approval_queue",
         "services.approval_audit",
+        "services.telemetry_writer",
+        "services.audit_recorder",
         "services.chat_publish",
         "services.chat_prompt_builder",
         "services.chat_timeline_projection",
         "services.task_activity_projection",
+        "services.task_run_watchdog",
         "services.user_visible_step_projection",
         "services.monitor_projection",
         "services.agent_lifecycle_runtime",
@@ -147,6 +152,7 @@ def _reload_model_bound_service_modules(importlib_module):
         "services.orchestration_runtime_runner",
         "services.orchestration_recovery_prepare",
         "services.orchestration_recovery_runner",
+        "services.task_run_watchdog",
         "services.orchestration_stream_runner",
     ]
     for module_name in module_names:

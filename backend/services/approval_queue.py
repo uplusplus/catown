@@ -83,6 +83,8 @@ def create_approval_queue_item(
     item = ApprovalQueueItem(
         task_run_id=getattr(task_run, "id", None),
         chatroom_id=resolved_chatroom_id,
+        chatroom_public_id=getattr(task_run, "chatroom_public_id", None) if task_run is not None else None,
+        task_run_public_id=getattr(task_run, "public_id", None) if task_run is not None else None,
         project_id=project_id if project_id is not None else getattr(task_run, "project_id", None),
         pipeline_run_id=pipeline_run_id,
         pipeline_stage_id=pipeline_stage_id,
@@ -218,8 +220,11 @@ def list_approval_queue_items(
 def serialize_approval_queue_item(item: ApprovalQueueItem) -> dict[str, Any]:
     return {
         "id": item.id,
+        "public_id": getattr(item, "public_id", None),
         "task_run_id": item.task_run_id,
+        "task_run_public_id": getattr(item, "task_run_public_id", None),
         "chatroom_id": item.chatroom_id,
+        "chatroom_public_id": getattr(item, "chatroom_public_id", None),
         "project_id": item.project_id,
         "pipeline_run_id": item.pipeline_run_id,
         "pipeline_stage_id": item.pipeline_stage_id,
@@ -321,7 +326,6 @@ def expire_stale_approvals(
                         },
                     )
                     complete_task_run(db, task_run)
-                    )
             except Exception as exc:
                 logger.warning(
                     "[ApprovalQueue] Failed to terminalize task_run %s after approval expiry: %s",

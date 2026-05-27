@@ -91,6 +91,23 @@ def fail_recovery_guard(
             lease_expires_at=lease_expires_at,
         )
 
+    if kind == "chatroom_identity_mismatch":
+        fail_orchestration_task_run(
+            db,
+            task_run,
+            event_type=EventType.TASK_RUN_RECOVERY_FAILED,
+            summary="Recovery failed: chatroom identity mismatch.",
+            event_summary="Recovery aborted because the task run no longer points at the original chat identity.",
+            payload=extra_payload or {"task_run_id": getattr(task_run, "id", task_run_id)},
+        )
+        return RecoveryFailureOutcome(
+            reason="chatroom_identity_mismatch",
+            status="failed",
+            detail="Recovery failed: chatroom identity mismatch.",
+            owner=owner,
+            lease_expires_at=lease_expires_at,
+        )
+
     if kind == "no_valid_agents":
         fail_orchestration_task_run(
             db,

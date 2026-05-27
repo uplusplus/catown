@@ -53,6 +53,39 @@ def prepare_orchestration_recovery_context(
             payload={"task_run_id": getattr(task_run, "id", task_run_id)},
         )
 
+    expected_chatroom_public_id = str(getattr(task_run, "chatroom_public_id", "") or "").strip()
+    actual_chatroom_public_id = str(getattr(chatroom, "public_id", "") or "").strip()
+    if not expected_chatroom_public_id or not actual_chatroom_public_id:
+        return fail_recovery_guard(
+            db,
+            task_run,
+            task_run_id=task_run_id,
+            kind="chatroom_identity_mismatch",
+            owner=recovery_owner,
+            lease_expires_at=lease_expires_at,
+            payload={
+                "task_run_id": getattr(task_run, "id", task_run_id),
+                "expected_chatroom_public_id": expected_chatroom_public_id or None,
+                "actual_chatroom_public_id": actual_chatroom_public_id or None,
+                "chatroom_id": getattr(chatroom, "id", None),
+            },
+        )
+    if expected_chatroom_public_id != actual_chatroom_public_id:
+        return fail_recovery_guard(
+            db,
+            task_run,
+            task_run_id=task_run_id,
+            kind="chatroom_identity_mismatch",
+            owner=recovery_owner,
+            lease_expires_at=lease_expires_at,
+            payload={
+                "task_run_id": getattr(task_run, "id", task_run_id),
+                "expected_chatroom_public_id": expected_chatroom_public_id,
+                "actual_chatroom_public_id": actual_chatroom_public_id,
+                "chatroom_id": getattr(chatroom, "id", None),
+            },
+        )
+
     project = resolve_chatroom_project(db, chatroom)
     agents = serialize_project_agents(db, project.id) if project else list_global_agents(db)
     agent_names = recover_agent_names(task_run)

@@ -146,7 +146,7 @@ class TelemetryWriter:
             db.add(row)
             return None
         if kind == "create_llm_call":
-            row = LLMCall(**payload)
+            row = LLMCall(**self._filtered_model_payload(LLMCall, payload))
             db.add(row)
             db.flush()
             return int(row.id)
@@ -160,12 +160,12 @@ class TelemetryWriter:
             db.add(row)
             return None
         if kind == "create_tool_call":
-            row = ToolCall(**payload)
+            row = ToolCall(**self._filtered_model_payload(ToolCall, payload))
             db.add(row)
             db.flush()
             return int(row.id)
         if kind == "create_event":
-            row = Event(**payload)
+            row = Event(**self._filtered_model_payload(Event, payload))
             db.add(row)
             db.flush()
             return int(row.id)
@@ -199,6 +199,16 @@ class TelemetryWriter:
             response_headers_json=json.dumps(normalized["response_headers"], ensure_ascii=False),
             metadata_json=json.dumps(normalized["metadata"], ensure_ascii=False),
         )
+
+    @staticmethod
+    def _filtered_model_payload(model_cls: type[Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """Drop unknown fields so telemetry schema drift does not break runtime paths."""
+
+        table = getattr(model_cls, "__table__", None)
+        if table is None:
+            return dict(payload)
+        allowed = {column.key for column in table.columns}
+        return {key: value for key, value in payload.items() if key in allowed}
 
     @staticmethod
     def _coerce_datetime(value: Any) -> datetime:

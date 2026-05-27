@@ -335,7 +335,9 @@ def serialize_task_run_summary(task_run: TaskRun) -> dict[str, Any]:
     continuation_cursor = checkpoint_snapshot.get("continuation_cursor")
     return {
         "id": task_run.id,
+        "public_id": getattr(task_run, "public_id", None),
         "chatroom_id": task_run.chatroom_id,
+        "chatroom_public_id": getattr(task_run, "chatroom_public_id", None),
         "project_id": task_run.project_id,
         "origin_message_id": task_run.origin_message_id,
         "client_turn_id": task_run.client_turn_id,

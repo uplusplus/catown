@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from services.delegated_task_identity import load_task_run_origin_metadata, delegated_metadata_matches
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -34,14 +35,12 @@ def find_incomplete_delegated_child_runs(
         if not child_client_turn_id or child_client_turn_id in seen_client_turn_ids:
             continue
         seen_client_turn_ids.add(child_client_turn_id)
-        child_run = (
-            db.query(task_run_model)
-            .filter(
-                task_run_model.chatroom_id == task_run.chatroom_id,
-                task_run_model.client_turn_id == child_client_turn_id,
-            )
-            .order_by(task_run_model.created_at.desc(), task_run_model.id.desc())
-            .first()
+        child_run = _find_child_run_for_dispatch(
+            db,
+            task_run_model=task_run_model,
+            parent_task_run=task_run,
+            payload=payload,
+            child_client_turn_id=child_client_turn_id,
         )
         child_status = str(getattr(child_run, "status", "") or "").strip().lower()
         if child_run is not None and child_status in TERMINAL_STATUSES:
@@ -79,3 +78,39 @@ def _load_payload(payload_json: str | None) -> Any:
         return json.loads(payload_json)
     except (TypeError, json.JSONDecodeError):
         return {"raw": payload_json}
+
+
+def _find_child_run_for_dispatch(
+    db: Session,
+    *,
+    task_run_model: Any,
+    parent_task_run: Any,
+    payload: dict[str, Any],
+    child_client_turn_id: str,
+) -> Any | None:
+    parent_chatroom_public_id = str(payload.get("parent_chatroom_public_id") or "").strip()
+    parent_task_run_public_id = str(payload.get("parent_task_run_public_id") or "").strip()
+    child_runs = (
+        db.query(task_run_model)
+        .filter(
+            task_run_model.chatroom_id == parent_task_run.chatroom_id,
+            task_run_model.client_turn_id == child_client_turn_id,
+        )
+        .order_by(task_run_model.created_at.desc(), task_run_model.id.desc())
+        .all()
+    )
+    for candidate in child_runs:
+        if parent_chatroom_public_id and str(getattr(candidate, "chatroom_public_id", "") or "").strip() != parent_chatroom_public_id:
+            continue
+        if parent_task_run_public_id and str(getattr(parent_task_run, "public_id", "") or "").strip() != parent_task_run_public_id:
+            continue
+        has_origin_metadata, origin_metadata = load_task_run_origin_metadata(db, candidate)
+        if has_origin_metadata and not delegated_metadata_matches(
+            origin_metadata,
+            child_client_turn_id=child_client_turn_id,
+            parent_task_run_public_id=parent_task_run_public_id or None,
+            parent_chatroom_public_id=parent_chatroom_public_id or None,
+        ):
+            continue
+        return candidate
+    return None

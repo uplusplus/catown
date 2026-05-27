@@ -8,6 +8,7 @@ import { api } from "../api/client";
 import { AdaptiveCardDeck } from "./AdaptiveCardDeck";
 import { FlowTopologyView } from "./FlowTopologyView";
 import { MonitorRuntimeMap } from "./MonitorRuntimeMap";
+import { useRegisterBackHandler } from "../utils/backNavigation";
 import type { FlowTopologyGraph, FlowTopologyNode, FlowTopologyStatus } from "./FlowTopologyView";
 import type {
   ApprovalQueueItem,
@@ -3863,6 +3864,25 @@ export function MonitorTab() {
   const logCursorRef = useRef(0);
   const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
+
+  useRegisterBackHandler(
+    () => activePage !== "overview" || showCreateRuleForm || showSecurityCatalog,
+    () => {
+      if (showCreateRuleForm) {
+        setShowCreateRuleForm(false);
+        return true;
+      }
+      if (showSecurityCatalog) {
+        setShowSecurityCatalog(false);
+        return true;
+      }
+      if (activePage !== "overview") {
+        setActivePage("overview");
+        return true;
+      }
+      return false;
+    },
+  );
   const loadMonitor = useCallback(async (silent = false) => {
     if (silent) {
       setRefreshing(true);
