@@ -239,7 +239,16 @@ BOSS 在聊天框可直接发送图片：
 - 音频：支持 WAV/MP3/M4A，点击上传
 - 视频：支持 MP4/MOV，点击上传（P2）
 
-附件通过 WebSocket 或 multipart 上传到后端，路径注入 Agent 上下文。
+当前项目聊天链路中，图片并不是前端直接上传到 LLM，而是先上传到 Catown，再由后端以内联多模态消息的形式转发给 LLM。
+
+**当前已实现的图片上传链路（2026-05-27）**：
+1. 前端选图后，先调用 `/api/chatrooms/{chatroom_id}/upload`，以 `multipart/form-data` 把图片上传到 Catown 后端。
+2. 后端校验 MIME type 和大小后，将文件落盘到当前项目 workspace 的 `uploads/` 目录，并返回 `file_path`、`file_name`、`file_size`、`mime_type` 等附件元数据。
+3. 用户真正发送聊天消息时，前端通过 `/messages` 或 `/messages/stream` 发送的是文本内容加附件元数据，不再重复发送图片二进制。
+4. 后端在生成本轮 user message 时，根据 `file_path` 回到 workspace 内重新读取图片文件，将其编码为 `data:image/...;base64,...`。
+5. `LLMClient` 再将它组装成 OpenAI 兼容的多模态 `content` 数组，例如 `[{type: "text", ...}, {type: "image_url", image_url: {url: "data:...", detail: "auto"}}]`，并通过 `chat.completions.create(messages=...)` 发给 LLM。
+
+这意味着当前实现是“Catown 后端中转并内联图片字节到 JSON 请求”，不是“前端把文件直接上传到 LLM 服务器”。当前原生多模态链路已覆盖项目内单 Agent 的同步与流式聊天入口。
 
 ### 8. 文件存储
 
