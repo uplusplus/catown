@@ -4,6 +4,7 @@ import ReactDOM from "react-dom/client";
 import { MonitorTab } from "./components/MonitorTab";
 import "./monitor.css";
 import "./card-layout.css";
+import { BackNavigationProvider } from "./utils/backNavigation";
 import { startNetworkMonitor } from "./utils/networkMonitor";
 import { startVersionGuard } from "./versionGuard";
 
@@ -12,6 +13,8 @@ startNetworkMonitor();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <MonitorTab />
+    <BackNavigationProvider>
+      <MonitorTab />
+    </BackNavigationProvider>
   </React.StrictMode>,
 );
