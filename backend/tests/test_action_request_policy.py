@@ -48,7 +48,7 @@ def _workflow_spec():
                     "display_name": "Release",
                     "agent": "release",
                     "gate": "manual",
-                    "expected_artifacts": ["CHANGELOG.md"],
+                    "expected_artifacts": ["reports/releases/"],
                 },
             ],
         },
@@ -209,7 +209,7 @@ def test_publish_artifact_is_checked_against_stage_delivery_contract():
             "payload": {
                 "artifact_type": "document.release_note",
                 "title": "Release note",
-                "file_path": "CHANGELOG.md",
+                "file_path": "reports/releases/changelog.md",
             },
         },
     )
@@ -217,6 +217,29 @@ def test_publish_artifact_is_checked_against_stage_delivery_contract():
     assert accepted.accepted is True
     assert rejected.accepted is False
     assert [violation.code for violation in rejected.violations] == ["artifact_not_expected"]
+
+
+def test_publish_artifact_rejects_non_timestamped_test_report_even_in_canonical_directory():
+    decision = validate_action_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request={
+            "kind": "action_request",
+            "version": 1,
+            "request_id": "req-artifact-5",
+            "type": "publish_artifact",
+            "source": _source("testing", "tester"),
+            "payload": {
+                "artifact_type": "document.test_report",
+                "title": "Test report",
+                "file_path": "reports/tests/backend-pytest.md",
+            },
+        },
+    )
+
+    assert decision.accepted is False
+    assert [violation.code for violation in decision.violations] == [
+        "artifact_path_timestamp_required"
+    ]
 
 
 def test_directory_artifact_expectation_accepts_nested_files():

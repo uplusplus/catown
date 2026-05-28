@@ -79,7 +79,7 @@ def mock_llm_client():
             "content": "# PRD\n## Overview\nBuild a todo app.\n## User Stories\n- As a user, I want to add todos",
             "tool_calls": [
                 {"id": "tc1", "function": {"name": "write_file", "arguments": json.dumps({
-                    "file_path": "PRD.md",
+                    "file_path": "docs/prd/todo-app.md",
                     "content": "# Todo App PRD\n\n## Overview\nA simple todo application.\n\n## User Stories\n1. Add todo\n2. Delete todo\n3. List todos"
                 })}}
             ]
@@ -88,7 +88,7 @@ def mock_llm_client():
             "content": "# Tech Spec\n## Stack: Python + FastAPI\n## API: REST",
             "tool_calls": [
                 {"id": "tc2", "function": {"name": "write_file", "arguments": json.dumps({
-                    "file_path": "tech-spec.md",
+                    "file_path": "docs/specs/todo-app.md",
                     "content": "# Tech Spec\n\n## Stack\n- Python 3.11 + FastAPI\n- SQLite\n\n## API\n- POST /todos\n- GET /todos\n- DELETE /todos/{id}"
                 })}}
             ]
@@ -112,10 +112,10 @@ def mock_llm_client():
             ]
         },
         "release": {
-            "content": "Release prepared. CHANGELOG generated.",
+            "content": "Release prepared. changelog generated.",
             "tool_calls": [
                 {"id": "tc5", "function": {"name": "write_file", "arguments": json.dumps({
-                    "file_path": "CHANGELOG.md",
+                    "file_path": "reports/releases/changelog.md",
                     "content": "# CHANGELOG\n\n## v1.0.0\n- Initial release\n- Todo CRUD operations"
                 })}}
             ]
@@ -387,15 +387,15 @@ class TestPipelineExecution:
             description="All auto gates",
             stages=[
                 StageConfig(name="analysis", display_name="分析", agent="analyst", gate="auto",
-                            expected_artifacts=["PRD.md"], context_prompt="Write PRD"),
+                            expected_artifacts=["docs/prd/"], context_prompt="Write PRD"),
                 StageConfig(name="architecture", display_name="架构", agent="architect", gate="auto",
-                            expected_artifacts=["tech-spec.md"], context_prompt="Write tech spec"),
+                            expected_artifacts=["docs/specs/"], context_prompt="Write tech spec"),
                 StageConfig(name="development", display_name="开发", agent="developer", gate="auto",
                             expected_artifacts=["src/"], context_prompt="Write code"),
                 StageConfig(name="testing", display_name="测试", agent="tester", gate="auto",
                             expected_artifacts=["reports/tests/"], context_prompt="Test"),
                 StageConfig(name="release", display_name="发布", agent="release", gate="auto",
-                            expected_artifacts=["CHANGELOG.md"], context_prompt="Release"),
+                            expected_artifacts=["reports/releases/"], context_prompt="Release"),
             ],
         )
         pipeline_config_manager.configs["test-auto"] = auto_template
@@ -420,9 +420,9 @@ class TestPipelineExecution:
         for s in stages:
             assert s.status == "completed", f"Stage {s.stage_name} is {s.status}"
 
-        # 验证至少 PRD.md 存在（analyst 阶段产出）
+        # 验证至少 docs/prd/todo-app.md 存在（analyst 阶段产出）
         workspace = _get_workspace(run)
-        assert (workspace / "PRD.md").exists(), f"PRD.md not found in {workspace}"
+        assert (workspace / "docs" / "prd" / "todo-app.md").exists(), f"PRD artifact not found in {workspace}"
 
     @pytest.mark.asyncio
     async def test_manual_gate_pauses(self, db, project, mock_llm_client):
@@ -555,7 +555,7 @@ class TestParallelExecution:
             name="test-auto", description="All auto",
             stages=[
                 StageConfig(name="analysis", display_name="分析", agent="analyst", gate="auto",
-                            expected_artifacts=["PRD.md"], context_prompt="Write PRD"),
+                            expected_artifacts=["docs/prd/"], context_prompt="Write PRD"),
                 StageConfig(name="development", display_name="开发", agent="developer", gate="auto",
                             expected_artifacts=["src/"], context_prompt="Write code"),
             ],

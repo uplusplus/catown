@@ -76,7 +76,7 @@ def test_parse_publish_artifact_action_request():
                 "artifact_type": "document.prd",
                 "title": "PRD draft",
                 "summary": "Structured product requirements.",
-                "file_path": "PRD.md",
+                "file_path": "docs/prd/project-browser-artifact-lifecycle.md",
                 "content_json": {"stories": 5, "acceptance_criteria": 12},
             },
         }
@@ -84,7 +84,7 @@ def test_parse_publish_artifact_action_request():
 
     dumped = dump_action_request(request)
     assert dumped["payload"]["artifact_type"] == "document.prd"
-    assert dumped["payload"]["file_path"] == "PRD.md"
+    assert dumped["payload"]["file_path"] == "docs/prd/project-browser-artifact-lifecycle.md"
 
 
 def test_unknown_action_request_type_is_rejected():

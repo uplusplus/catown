@@ -72,6 +72,10 @@ from services.artifact_contract_policy import (
     validate_artifact_contract_for_policy,
 )
 from services.artifact_history import archive_workspace_artifact_snapshot
+from services.artifact_output_path_policy import (
+    format_artifact_output_path_failure,
+    validate_artifact_output_path,
+)
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
 from services.output_header_policy import format_output_header_failure, validate_output_header
@@ -646,6 +650,9 @@ def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
     parent_err = _validate_path(workspace, target.parent)
     if parent_err:
         return parent_err
+    output_path_decision = validate_artifact_output_path(file_path)
+    if not output_path_decision.accepted and not target.exists():
+        return f"Error: {format_artifact_output_path_failure(path=file_path, decision=output_path_decision)}"
     header_decision = validate_output_header(path=file_path, content=content)
     if not header_decision.accepted:
         return f"Error: {format_output_header_failure(path=file_path, decision=header_decision)}"

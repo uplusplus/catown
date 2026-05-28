@@ -22,6 +22,15 @@ def test_semantic_adr_documents_are_singleton_outputs():
 
     assert policy.artifact_class == "ADR"
     assert policy.storage_mode == "singleton-semantic"
+    assert policy.canonical_directories == ("docs/adr/",)
+
+
+def test_release_documents_use_release_directory():
+    policy = resolve_artifact_storage_policy("reports/releases/changelog.md")
+
+    assert policy.artifact_class == "Release"
+    assert policy.storage_mode == "singleton-semantic"
+    assert policy.canonical_directories == ("reports/releases/",)
 
 
 def test_non_artifacts_do_not_get_document_storage_policy():

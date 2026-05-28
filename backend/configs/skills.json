@@ -214,7 +214,7 @@
     "levels": {
       "hint": "版本标签: 语义化版本号，Git tag + annotated message",
       "guide": "## 版本标签规范\n- 使用语义化版本号 (v1.0.0)\n- Git annotated tag 含变更摘要\n- 标签前确认测试通过",
-      "full": "## 版本标签完整指南\n\n### 操作流程\n1. 确认所有测试通过\n2. 更新 CHANGELOG.md\n3. 更新版本号（如有 package.json / pyproject.toml）\n4. Git commit\n5. Git tag -a v1.0.0 -m \"Release v1.0.0\"\n6. Git push --tags\n\n### Tag 命名\n- 正式版: v1.0.0, v1.2.3\n- 预发布: v1.0.0-rc.1, v1.0.0-beta.2\n- 不要使用 v 前缀以外的格式\n\n### 注意事项\n- tag 一旦推送不可修改（轻量 tag 可删重建，annotated tag 不建议）\n- 每个 tag 对应一个可部署版本\n- tag message 应包含该版本的核心变更"
+      "full": "## 版本标签完整指南\n\n### 操作流程\n1. 确认所有测试通过\n2. 更新 reports/releases/changelog.md\n3. 更新版本号（如有 package.json / pyproject.toml）\n4. Git commit\n5. Git tag -a v1.0.0 -m \"Release v1.0.0\"\n6. Git push --tags\n\n### Tag 命名\n- 正式版: v1.0.0, v1.2.3\n- 预发布: v1.0.0-rc.1, v1.0.0-beta.2\n- 不要使用 v 前缀以外的格式\n\n### 注意事项\n- tag 一旦推送不可修改（轻量 tag 可删重建，annotated tag 不建议）\n- 每个 tag 对应一个可部署版本\n- tag message 应包含该版本的核心变更"
     }
   },
   "release-management": {
@@ -228,8 +228,8 @@
     "category": "release",
     "levels": {
       "hint": "发布管理: 确认测试通过 → 生成 changelog → 打 tag → 推送",
-      "guide": "## 发布管理规范\n- 确认 reports/tests/ 中的最新测试报告无 blocker\n- 生成 CHANGELOG.md\n- 打 Git tag\n- 推送到远程仓库",
-      "full": "## 发布管理完整指南\n\n### 发布检查清单\n- [ ] reports/tests/ 中的最新测试报告无 blocker\n- [ ] CHANGELOG.md 已更新\n- [ ] 版本号已更新\n- [ ] 所有代码已 commit\n- [ ] 分支为 main/master\n\n### 发布流程\n1. 审查 reports/tests/ 中的最新测试报告\n2. 生成 CHANGELOG.md（changelog-generation skill）\n3. 更新版本号\n4. Git commit\n5. Git tag（version-tagging skill）\n6. Git push + push tags\n\n### 回滚策略\n- 发现严重问题 → 立即 revert tag\n- 通知 BOSS 决定是否 hotfix 或回滚\n- hotfix 从 tag 创建分支"
+      "guide": "## 发布管理规范\n- 确认 reports/tests/ 中的最新测试报告无 blocker\n- 生成 reports/releases/changelog.md\n- 打 Git tag\n- 推送到远程仓库",
+      "full": "## 发布管理完整指南\n\n### 发布检查清单\n- [ ] reports/tests/ 中的最新测试报告无 blocker\n- [ ] reports/releases/changelog.md 已更新\n- [ ] 版本号已更新\n- [ ] 所有代码已 commit\n- [ ] 分支为 main/master\n\n### 发布流程\n1. 审查 reports/tests/ 中的最新测试报告\n2. 生成 reports/releases/changelog.md（changelog-generation skill）\n3. 更新版本号\n4. Git commit\n5. Git tag（version-tagging skill）\n6. Git push + push tags\n\n### 回滚策略\n- 发现严重问题 → 立即 revert tag\n- 通知 BOSS 决定是否 hotfix 或回滚\n- hotfix 从 tag 创建分支"
     }
   },
   "knowledge-graph": {

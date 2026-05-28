@@ -46,6 +46,18 @@ def _workflow_spec():
     )
 
 
+def _headered_markdown(title: str) -> str:
+    return (
+        f"Purpose: {title}\n"
+        f"Overview: Structured output for {title.lower()}\n"
+        "Author: Tester\n"
+        "Created At: 2026-05-28 11:00\n"
+        "Modification Log:\n"
+        f"- 2026-05-28 11:00 Created {title.lower()}\n\n"
+        f"# {title}\n"
+    )
+
+
 def test_compile_publish_artifact_request_to_document_contract():
     contract = compile_publish_artifact_request_to_contract(
         request=_publish_request(
@@ -143,7 +155,7 @@ def test_compile_and_validate_publish_artifact_request_accepts_expected_artifact
                 "artifact_type": "document.test_report",
                 "title": "Test report",
                 "file_path": "reports/tests/20260522T143122004981Z--task-45--backend-pytest.md",
-                "content_markdown": "# Test Report",
+                "content_markdown": _headered_markdown("Test Report"),
             }
         ),
     )
@@ -166,7 +178,7 @@ def test_compile_and_validate_publish_artifact_request_rejects_unexpected_artifa
                 "artifact_type": "document.release_note",
                 "title": "Release note",
                 "file_path": "CHANGELOG.md",
-                "content_markdown": "# Release",
+                "content_markdown": _headered_markdown("Release"),
             }
         ),
     )
@@ -178,3 +190,22 @@ def test_compile_and_validate_publish_artifact_request_rejects_unexpected_artifa
     assert payload["policy_decision_event_payload"]["accepted"] is False
     assert payload["policy_decision_gate_result"]["blocked"] is True
     assert payload["policy_decision_gate_result"]["blocked_kind"] == "policy_decision"
+
+
+def test_compile_and_validate_publish_artifact_request_rejects_non_timestamped_test_report():
+    result = compile_and_validate_publish_artifact_request_for_workflow(
+        workflow_spec=_workflow_spec(),
+        request=_publish_request(
+            {
+                "artifact_type": "document.test_report",
+                "title": "Test report",
+                "file_path": "reports/tests/backend-pytest.md",
+                "content_markdown": _headered_markdown("Test Report"),
+            }
+        ),
+    )
+
+    assert result.decision.accepted is False
+    assert [violation.code for violation in result.decision.violations] == [
+        "artifact_path_timestamp_required"
+    ]

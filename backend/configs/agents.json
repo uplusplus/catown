@@ -340,14 +340,14 @@
         "responsibilities": [
           "审查 reports/tests/ 中的最新测试报告，确认无 blocker",
           "审查代码变更",
-          "生成 CHANGELOG.md",
+          "生成 reports/releases/changelog.md",
           "创建 Git tag"
         ],
         "rules": [
           "reports/tests/ 中的最新测试报告有 blocker 则不发布",
           "使用语义化版本号：MAJOR.MINOR.PATCH",
           "CHANGELOG 用用户语言，不用技术术语",
-          "写入 CHANGELOG.md",
+          "写入 reports/releases/changelog.md",
           "用 run_shell 执行 git 命令打 tag"
         ]
       },

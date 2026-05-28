@@ -151,7 +151,8 @@ def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    target = workspace / "CHANGELOG.md"
+    target = workspace / "reports" / "releases" / "changelog.md"
+    target.parent.mkdir(parents=True)
     target.write_text(
         "Purpose: old release notes\n"
         "Overview: old summary\n"
@@ -164,7 +165,7 @@ def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
 
     result = engine_mod._tool_write_file(
         workspace,
-        "CHANGELOG.md",
+        "reports/releases/changelog.md",
         (
             "Purpose: new release notes\n"
             "Overview: updated summary\n"
@@ -175,8 +176,8 @@ def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
         ),
     )
 
-    archived = list((workspace / ".catown" / "artifact-history").glob("*--CHANGELOG.md"))
-    assert "Written: CHANGELOG.md" in result
+    archived = list((workspace / ".catown" / "artifact-history" / "reports" / "releases").glob("*--changelog.md"))
+    assert "Written: reports/releases/changelog.md" in result
     assert len(archived) == 1
     assert "Created release note" in archived[0].read_text(encoding="utf-8")
     assert "Updated release note" in target.read_text(encoding="utf-8")
@@ -188,10 +189,33 @@ def test_pipeline_tool_write_file_rejects_missing_output_header_for_document(tmp
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    result = engine_mod._tool_write_file(workspace, "docs/ADR-999-test.md", "# Missing header\n")
+    result = engine_mod._tool_write_file(workspace, "docs/adr/ADR-999-test.md", "# Missing header\n")
 
     assert "output header validation failed" in result.lower()
-    assert not (workspace / "docs" / "ADR-999-test.md").exists()
+    assert not (workspace / "docs" / "adr" / "ADR-999-test.md").exists()
+
+
+def test_pipeline_tool_write_file_rejects_noncanonical_new_artifact_path(tmp_path):
+    import pipeline.engine as engine_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = engine_mod._tool_write_file(
+        workspace,
+        "PRD.md",
+        (
+            "Purpose: Product requirements\n"
+            "Overview: Captures the todo app scope\n"
+            "Author: Analyst\n"
+            "Created At: 2026-05-28 10:00\n"
+            "Modification Log:\n"
+            "- 2026-05-28 10:00 Created the PRD\n"
+        ),
+    )
+
+    assert "artifact output path validation failed" in result.lower()
+    assert not (workspace / "PRD.md").exists()
 
 
 @pytest.mark.asyncio

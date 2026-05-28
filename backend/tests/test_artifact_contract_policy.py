@@ -87,6 +87,30 @@ def test_unexpected_artifact_path_is_rejected():
     assert [violation.code for violation in decision.violations] == ["artifact_not_expected"]
 
 
+def test_non_timestamped_test_report_is_rejected_even_under_expected_directory():
+    decision = validate_artifact_contract_for_workflow(
+        workflow_spec=_workflow_spec(),
+        contract={
+            "kind": "artifact_contract",
+            "version": 1,
+            "artifact_id": "artifact-test-report-untimestamped-1",
+            "artifact_type": "workspace.file",
+            "title": "Test report",
+            "producer": {
+                "stage_name": "testing",
+                "agent_name": "Tester",
+            },
+            "mode": "workspace_file",
+            "file_path": "reports/tests/backend-pytest.md",
+        },
+    )
+
+    assert decision.accepted is False
+    assert [violation.code for violation in decision.violations] == [
+        "artifact_path_timestamp_required"
+    ]
+
+
 def test_directory_delivery_accepts_nested_workspace_file():
     decision = validate_artifact_contract_for_workflow(
         workflow_spec=_workflow_spec(),
@@ -140,7 +164,7 @@ def test_missing_artifact_stage_is_rejected():
             "title": "PRD",
             "mode": "document",
             "format": "markdown",
-            "file_path": "PRD.md",
+            "file_path": "docs/prd/project-browser-artifact-lifecycle.md",
         },
     )
 

@@ -67,7 +67,7 @@
         "agent": "release",
         "gate": "manual",
         "timeout_minutes": 15,
-        "expected_artifacts": ["CHANGELOG.md"],
+        "expected_artifacts": ["reports/releases/"],
         "context_prompt": "请检查测试报告，确认无 blocker 后生成 CHANGELOG 和 Git tag。",
         "active_skills": ["changelog-generation", "version-tagging", "release-management"],
         "hint_only_skills": []

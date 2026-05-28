@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.artifact_contracts import ArtifactContract, parse_artifact_contract
+from services.artifact_output_path_policy import validate_artifact_output_path
 from services.output_header_policy import validate_output_header
 from services.runner_policy import (
     RunnerGovernancePolicy,
@@ -110,6 +111,11 @@ def validate_artifact_contract_for_policy(
             stage=target_stage,
             violations=violations,
         )
+        _validate_artifact_output_path(
+            contract=parsed_contract,
+            violations=violations,
+            skip_when_delivery_failed=bool(violations),
+        )
         _validate_required_output_header(
             contract=parsed_contract,
             violations=violations,
@@ -200,6 +206,33 @@ def _validate_required_output_header(
         return
     if decision.accepted:
         return
+    for violation in decision.violations:
+        violations.append(
+            ArtifactContractPolicyViolation(
+                code=violation.code,
+                field=violation.field,
+                message=violation.message,
+            )
+        )
+
+
+def _validate_artifact_output_path(
+    *,
+    contract: ArtifactContract,
+    violations: list[ArtifactContractPolicyViolation],
+    skip_when_delivery_failed: bool = False,
+) -> None:
+    if skip_when_delivery_failed:
+        return
+
+    artifact_path = _artifact_path(contract)
+    if not artifact_path:
+        return
+
+    decision = validate_artifact_output_path(artifact_path)
+    if decision.accepted:
+        return
+
     for violation in decision.violations:
         violations.append(
             ArtifactContractPolicyViolation(

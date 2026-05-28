@@ -11,6 +11,7 @@ from services.action_request_contracts import (
     dump_action_request,
     parse_action_request,
 )
+from services.artifact_output_path_policy import validate_artifact_output_path
 from services.policy_decision_contracts import (
     build_policy_decision_event_payload,
     build_policy_decision_gate_result,
@@ -362,6 +363,12 @@ def _validate_publish_artifact(
                 ),
             )
         )
+        return
+
+    _append_artifact_path_policy_violations(
+        file_path=file_path,
+        violations=violations,
+    )
 
 
 def _validate_report_blocker(
@@ -410,6 +417,24 @@ def _validate_ask_agent(
                 field="payload.target_agent_name",
                 severity="warning",
                 message=f"Target agent '{target_agent}' is not a stage owner in this workflow.",
+            )
+        )
+
+
+def _append_artifact_path_policy_violations(
+    *,
+    file_path: str,
+    violations: list[ActionRequestPolicyViolation],
+) -> None:
+    decision = validate_artifact_output_path(file_path)
+    if decision.accepted:
+        return
+    for violation in decision.violations:
+        violations.append(
+            ActionRequestPolicyViolation(
+                code=violation.code,
+                field=f"payload.{violation.field}" if violation.field else "payload.file_path",
+                message=violation.message,
             )
         )
 

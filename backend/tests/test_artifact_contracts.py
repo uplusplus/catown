@@ -17,14 +17,14 @@ def test_parse_workspace_file_artifact_contract():
                 "stage_name": "analysis",
             },
             "mode": "workspace_file",
-            "file_path": "PRD.md",
+            "file_path": "docs/prd/project-browser-artifact-lifecycle.md",
             "media_type": "text/markdown",
         }
     )
 
     dumped = dump_artifact_contract(contract)
     assert dumped["mode"] == "workspace_file"
-    assert dumped["file_path"] == "PRD.md"
+    assert dumped["file_path"] == "docs/prd/project-browser-artifact-lifecycle.md"
 
 
 def test_parse_document_artifact_contract():
@@ -44,7 +44,7 @@ def test_parse_document_artifact_contract():
             },
             "mode": "document",
             "format": "mixed",
-            "file_path": "PRD.md",
+            "file_path": "docs/prd/project-browser-artifact-lifecycle.md",
             "content_markdown": "# PRD\n\n## Stories",
             "content_json": {"stories": 5, "acceptance_criteria": 12},
         }
