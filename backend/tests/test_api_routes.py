@@ -148,6 +148,54 @@ def _seed_task_run_with_queue_item(*, chatroom_id: int, project_id: int | None =
         db.close()
 
 
+def _seed_pipeline_run_for_project(*, project_id: int, chatroom_id: int) -> tuple[int, int, int]:
+    import models.database as db_mod
+
+    db = db_mod.SessionLocal()
+    try:
+        pipeline = db_mod.Pipeline(project_id=project_id, pipeline_name="default", status="running")
+        db.add(pipeline)
+        db.commit()
+        db.refresh(pipeline)
+
+        task_run = db_mod.TaskRun(
+            chatroom_id=chatroom_id,
+            project_id=project_id,
+            run_kind="pipeline_run",
+            status="running",
+            title="Delete Project Pipeline Cleanup",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        pipeline_run = db_mod.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            workspace_path=f"/tmp/project-{project_id}",
+        )
+        db.add(pipeline_run)
+        db.commit()
+        db.refresh(pipeline_run)
+
+        pipeline_stage = db_mod.PipelineStage(
+            run_id=pipeline_run.id,
+            stage_name="analysis",
+            display_name="Analysis",
+            stage_order=0,
+            agent_name="analyst",
+            status="running",
+        )
+        db.add(pipeline_stage)
+        db.commit()
+
+        return pipeline.id, pipeline_run.id, task_run.id
+    finally:
+        db.close()
+
+
 def _approval_queue_item_exists(item_id: int) -> bool:
     import models.database as db_mod
 
@@ -2200,6 +2248,27 @@ class TestProjectEndpoints:
         subchat_messages = client.get(f"/api/chatrooms/{subchat['id']}/messages")
         assert subchat_messages.status_code == 200
         assert subchat_messages.json() == []
+
+    def test_delete_project_removes_pipeline_runs_and_linked_task_runs(self, client):
+        project = client.post("/api/projects", json={"name": "Pipeline Cleanup Project"}).json()
+        pipeline_id, pipeline_run_id, task_run_id = _seed_pipeline_run_for_project(
+            project_id=project["id"],
+            chatroom_id=project["chatroom_id"],
+        )
+
+        deleted = client.delete(f"/api/projects/{project['id']}")
+        assert deleted.status_code == 200
+
+        import models.database as db_mod
+
+        db = db_mod.SessionLocal()
+        try:
+            assert db.query(db_mod.Project).filter(db_mod.Project.id == project["id"]).first() is None
+            assert db.query(db_mod.Pipeline).filter(db_mod.Pipeline.id == pipeline_id).first() is None
+            assert db.query(db_mod.PipelineRun).filter(db_mod.PipelineRun.id == pipeline_run_id).first() is None
+            assert db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == task_run_id).first() is None
+        finally:
+            db.close()
 
     def test_rename_project(self, client):
         project = client.post("/api/projects", json={

@@ -43,13 +43,26 @@ from models.database import (
     Agent,
     Project,
     Asset,
+    AssetLink,
     Chatroom,
     AgentAssignment,
+    Decision,
+    DecisionAsset,
     Message,
+    Pipeline,
+    PipelineMessage,
+    PipelineMessageDelivery,
+    PipelineRun,
+    PipelineStage,
     TaskRun,
+    TaskRunCheckpoint,
     TaskRunEvent,
     OrchestrationHandoffDelivery,
     ApprovalQueueItem,
+    ApprovalAuditLog,
+    StageArtifact,
+    StageRun,
+    StageRunAsset,
     ToolExecutionPreference,
     SessionLocal,
     Base,
@@ -5577,6 +5590,31 @@ def _delete_task_runs_by_ids(db: Session, task_run_ids: List[int]) -> None:
     if not unique_task_run_ids:
         return
 
+    queue_item_ids = [
+        row[0]
+        for row in db.query(ApprovalQueueItem.id).filter(
+            ApprovalQueueItem.task_run_id.in_(unique_task_run_ids)
+        ).all()
+    ]
+    if queue_item_ids:
+        (
+            db.query(TaskRun)
+            .filter(TaskRun.blocked_by_queue_item_id.in_(queue_item_ids))
+            .update({TaskRun.blocked_by_queue_item_id: None}, synchronize_session=False)
+        )
+        db.query(ApprovalAuditLog).filter(
+            ApprovalAuditLog.queue_item_id.in_(queue_item_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(ApprovalAuditLog).filter(
+        ApprovalAuditLog.task_run_id.in_(unique_task_run_ids)
+    ).delete(synchronize_session=False)
+    db.query(TaskRunCheckpoint).filter(
+        TaskRunCheckpoint.task_run_id.in_(unique_task_run_ids)
+    ).delete(synchronize_session=False)
+    db.query(PipelineRun).filter(
+        PipelineRun.task_run_id.in_(unique_task_run_ids)
+    ).update({PipelineRun.task_run_id: None}, synchronize_session=False)
     db.query(ApprovalQueueItem).filter(
         ApprovalQueueItem.task_run_id.in_(unique_task_run_ids)
     ).delete(synchronize_session=False)
@@ -5589,6 +5627,169 @@ def _delete_task_runs_by_ids(db: Session, task_run_ids: List[int]) -> None:
     db.query(TaskRun).filter(TaskRun.id.in_(unique_task_run_ids)).delete(synchronize_session=False)
 
 
+
+
+def _delete_pipeline_records_by_project_ids(db: Session, project_ids: List[int]) -> List[int]:
+    unique_project_ids = [project_id for project_id in dict.fromkeys(project_ids) if project_id]
+    if not unique_project_ids:
+        return []
+
+    pipeline_ids = [
+        row[0]
+        for row in db.query(Pipeline.id).filter(Pipeline.project_id.in_(unique_project_ids)).all()
+    ]
+    if not pipeline_ids:
+        return []
+
+    pipeline_run_rows = (
+        db.query(PipelineRun.id, PipelineRun.task_run_id)
+        .filter(PipelineRun.pipeline_id.in_(pipeline_ids))
+        .all()
+    )
+    pipeline_run_ids = [row[0] for row in pipeline_run_rows]
+    pipeline_task_run_ids = [row[1] for row in pipeline_run_rows if row[1]]
+    pipeline_stage_ids = []
+    if pipeline_run_ids:
+        pipeline_stage_ids = [
+            row[0]
+            for row in db.query(PipelineStage.id).filter(PipelineStage.run_id.in_(pipeline_run_ids)).all()
+        ]
+
+    queue_filters = []
+    if pipeline_run_ids:
+        queue_filters.append(ApprovalQueueItem.pipeline_run_id.in_(pipeline_run_ids))
+    if pipeline_stage_ids:
+        queue_filters.append(ApprovalQueueItem.pipeline_stage_id.in_(pipeline_stage_ids))
+    queue_item_ids = []
+    if queue_filters:
+        queue_item_ids = [
+            row[0]
+            for row in db.query(ApprovalQueueItem.id).filter(or_(*queue_filters)).all()
+        ]
+
+    if queue_item_ids:
+        (
+            db.query(TaskRun)
+            .filter(TaskRun.blocked_by_queue_item_id.in_(queue_item_ids))
+            .update({TaskRun.blocked_by_queue_item_id: None}, synchronize_session=False)
+        )
+        db.query(ApprovalAuditLog).filter(
+            ApprovalAuditLog.queue_item_id.in_(queue_item_ids)
+        ).delete(synchronize_session=False)
+        db.query(ApprovalQueueItem).filter(
+            ApprovalQueueItem.id.in_(queue_item_ids)
+        ).delete(synchronize_session=False)
+
+    if pipeline_stage_ids:
+        db.query(ApprovalAuditLog).filter(
+            ApprovalAuditLog.pipeline_stage_id.in_(pipeline_stage_ids)
+        ).delete(synchronize_session=False)
+        db.query(StageArtifact).filter(
+            StageArtifact.stage_id.in_(pipeline_stage_ids)
+        ).delete(synchronize_session=False)
+        db.query(PipelineStage).filter(
+            PipelineStage.id.in_(pipeline_stage_ids)
+        ).delete(synchronize_session=False)
+
+    if pipeline_run_ids:
+        db.query(ApprovalAuditLog).filter(
+            ApprovalAuditLog.pipeline_run_id.in_(pipeline_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(PipelineMessageDelivery).filter(
+            PipelineMessageDelivery.run_id.in_(pipeline_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(PipelineMessage).filter(
+            PipelineMessage.run_id.in_(pipeline_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(PipelineRun).filter(
+            PipelineRun.id.in_(pipeline_run_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(Pipeline).filter(Pipeline.id.in_(pipeline_ids)).delete(synchronize_session=False)
+    return pipeline_task_run_ids
+
+
+def _delete_project_domain_records(db: Session, project_ids: List[int]) -> None:
+    unique_project_ids = [project_id for project_id in dict.fromkeys(project_ids) if project_id]
+    if not unique_project_ids:
+        return
+
+    queue_item_ids = [
+        row[0]
+        for row in db.query(ApprovalQueueItem.id).filter(
+            ApprovalQueueItem.project_id.in_(unique_project_ids)
+        ).all()
+    ]
+    if queue_item_ids:
+        (
+            db.query(TaskRun)
+            .filter(TaskRun.blocked_by_queue_item_id.in_(queue_item_ids))
+            .update({TaskRun.blocked_by_queue_item_id: None}, synchronize_session=False)
+        )
+        db.query(ApprovalAuditLog).filter(
+            ApprovalAuditLog.queue_item_id.in_(queue_item_ids)
+        ).delete(synchronize_session=False)
+        db.query(ApprovalQueueItem).filter(
+            ApprovalQueueItem.id.in_(queue_item_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(ApprovalAuditLog).filter(
+        ApprovalAuditLog.project_id.in_(unique_project_ids)
+    ).delete(synchronize_session=False)
+    db.query(ToolExecutionPreference).filter(
+        ToolExecutionPreference.project_id.in_(unique_project_ids)
+    ).delete(synchronize_session=False)
+
+    stage_run_ids = [
+        row[0]
+        for row in db.query(StageRun.id).filter(StageRun.project_id.in_(unique_project_ids)).all()
+    ]
+    decision_ids = [
+        row[0]
+        for row in db.query(Decision.id).filter(Decision.project_id.in_(unique_project_ids)).all()
+    ]
+    asset_ids = [
+        row[0]
+        for row in db.query(Asset.id).filter(Asset.project_id.in_(unique_project_ids)).all()
+    ]
+
+    if asset_ids:
+        db.query(AssetLink).filter(
+            or_(
+                AssetLink.project_id.in_(unique_project_ids),
+                AssetLink.from_asset_id.in_(asset_ids),
+                AssetLink.to_asset_id.in_(asset_ids),
+            )
+        ).delete(synchronize_session=False)
+        db.query(StageRunAsset).filter(
+            StageRunAsset.asset_id.in_(asset_ids)
+        ).delete(synchronize_session=False)
+        db.query(DecisionAsset).filter(
+            DecisionAsset.asset_id.in_(asset_ids)
+        ).delete(synchronize_session=False)
+        db.query(Asset).filter(Asset.id.in_(asset_ids)).update(
+            {
+                Asset.supersedes_asset_id: None,
+                Asset.approval_decision_id: None,
+            },
+            synchronize_session=False,
+        )
+
+    if stage_run_ids:
+        db.query(StageRunAsset).filter(
+            StageRunAsset.stage_run_id.in_(stage_run_ids)
+        ).delete(synchronize_session=False)
+    if decision_ids:
+        db.query(DecisionAsset).filter(
+            DecisionAsset.decision_id.in_(decision_ids)
+        ).delete(synchronize_session=False)
+
+    if asset_ids:
+        db.query(Asset).filter(Asset.id.in_(asset_ids)).delete(synchronize_session=False)
+    if decision_ids:
+        db.query(Decision).filter(Decision.id.in_(decision_ids)).delete(synchronize_session=False)
+    if stage_run_ids:
+        db.query(StageRun).filter(StageRun.id.in_(stage_run_ids)).delete(synchronize_session=False)
 def _serialize_chat(db: Session, chatroom: Chatroom) -> ChatInfo:
     project = _resolve_chatroom_project(db, chatroom)
     agent_count = 0
@@ -6065,6 +6266,8 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
     
     # 清理子记录（模型未配置级联删除）
     db.query(AgentAssignment).filter(AgentAssignment.project_id == project_id).delete()
+    pipeline_task_run_ids = _delete_pipeline_records_by_project_ids(db, [project_id])
+    _delete_project_domain_records(db, [project_id])
     root_chatrooms = db.query(Chatroom).filter(Chatroom.project_id == project_id).order_by(Chatroom.id.asc()).all()
     if not root_chatrooms and project.default_chatroom_id:
         fallback_chatroom = db.query(Chatroom).filter(Chatroom.id == project.default_chatroom_id).first()
@@ -6078,7 +6281,7 @@ async def delete_project(project_id: int, db: Session = Depends(get_db)):
         row[0]
         for row in db.query(TaskRun.id).filter(TaskRun.project_id == project_id).all()
     ]
-    _delete_task_runs_by_ids(db, project_task_run_ids)
+    _delete_task_runs_by_ids(db, project_task_run_ids + pipeline_task_run_ids)
 
     # 删除项目
     db.delete(project)
