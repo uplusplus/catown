@@ -178,6 +178,18 @@ def test_skill_hint_is_always_injected_and_guide_requires_active_skill():
     assert "Debug guide" not in fragment.content
 
 
+def test_stage_developer_context_includes_output_header_contract():
+    fragment = build_stage_developer_context(tools=["write_file"])
+
+    assert fragment is not None
+    assert "## Output Header Contract" in fragment.content
+    assert "Purpose" in fragment.content
+    assert "Overview" in fragment.content
+    assert "Author" in fragment.content
+    assert "Created At" in fragment.content
+    assert "Modification Log" in fragment.content
+
+
 def test_boss_and_inter_agent_context_land_in_separate_roles():
     boss_context = build_boss_instruction_context(["Ship the API path first."])
     user_context = build_runtime_user_context(

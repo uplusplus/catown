@@ -8,6 +8,8 @@ import math
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Iterable, Literal, Mapping, Optional
 
+from services.output_header_policy import output_header_guidance_text
+
 
 ContextRole = Literal["system", "developer", "user"]
 
@@ -420,6 +422,9 @@ def build_stage_developer_context(
         if tool_guidance.strip():
             tool_parts.append(tool_guidance.strip())
         parts.append("## Tool Guidance\n" + "\n".join(tool_parts))
+
+    if parts:
+        parts.append(output_header_guidance_text())
 
     if not parts:
         return None

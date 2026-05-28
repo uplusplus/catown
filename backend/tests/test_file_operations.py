@@ -94,15 +94,32 @@ class TestWriteFileTool:
     @pytest.mark.asyncio
     async def test_write_overwrite_archives_artifact_history(self, tmp_path):
         from tools.file_operations import WriteFileTool
-        (tmp_path / "PRD.md").write_text("old artifact")
+        (tmp_path / "PRD.md").write_text(
+            "Purpose: old artifact\n"
+            "Overview: old overview\n"
+            "Author: Tester\n"
+            "Created At: 2026-05-27 10:00\n"
+            "Modification Log:\n"
+            "- 2026-05-27 10:00 Created old artifact\n"
+        )
         tool = WriteFileTool(workspace=str(tmp_path))
 
-        await tool.execute(file_path="PRD.md", content="new artifact")
+        await tool.execute(
+            file_path="PRD.md",
+            content=(
+                "Purpose: new artifact\n"
+                "Overview: new overview\n"
+                "Author: Tester\n"
+                "Created At: 2026-05-27 10:00\n"
+                "Modification Log:\n"
+                "- 2026-05-28 10:00 Updated artifact\n"
+            ),
+        )
 
         archived = list((tmp_path / ".catown" / "artifact-history").glob("*--PRD.md"))
         assert len(archived) == 1
-        assert archived[0].read_text(encoding="utf-8") == "old artifact"
-        assert (tmp_path / "PRD.md").read_text(encoding="utf-8") == "new artifact"
+        assert "Created old artifact" in archived[0].read_text(encoding="utf-8")
+        assert "Updated artifact" in (tmp_path / "PRD.md").read_text(encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_write_append(self, tmp_path):
@@ -119,6 +136,36 @@ class TestWriteFileTool:
         tool = WriteFileTool(workspace=str(tmp_path))
         await tool.execute(file_path="sub/deep/file.txt", content="deep")
         assert (tmp_path / "sub" / "deep" / "file.txt").read_text() == "deep"
+
+    @pytest.mark.asyncio
+    async def test_write_rejects_document_without_required_output_header(self, tmp_path):
+        from tools.file_operations import WriteFileTool
+
+        tool = WriteFileTool(workspace=str(tmp_path))
+        result = await tool.execute(file_path="docs/ADR-999-test.md", content="# Missing header\n\nbody")
+
+        assert "output header validation failed" in result.lower()
+        assert not (tmp_path / "docs" / "ADR-999-test.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_write_accepts_document_with_required_output_header(self, tmp_path):
+        from tools.file_operations import WriteFileTool
+
+        tool = WriteFileTool(workspace=str(tmp_path))
+        content = (
+            "Purpose: Validate output header policy\n"
+            "Overview: Short document fixture\n"
+            "Author: Tester\n"
+            "Created At: 2026-05-28 11:00\n"
+            "Modification Log:\n"
+            "- 2026-05-28 11:00 Created fixture\n\n"
+            "# Body\n"
+        )
+
+        result = await tool.execute(file_path="docs/ADR-999-test.md", content=content)
+
+        assert "wrote" in result.lower()
+        assert (tmp_path / "docs" / "ADR-999-test.md").read_text(encoding="utf-8") == content
 
     @pytest.mark.asyncio
     async def test_write_outside_workspace(self, tmp_path):

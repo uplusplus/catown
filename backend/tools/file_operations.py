@@ -12,6 +12,10 @@ import subprocess
 
 from .base import BaseTool
 from services.artifact_history import archive_workspace_artifact_snapshot
+from services.output_header_policy import (
+    format_output_header_failure,
+    validate_output_header,
+)
 from typing import Optional, List
 from contextvars import ContextVar, Token
 
@@ -169,6 +173,11 @@ class WriteFileTool(BaseTool):
             
             if not self._is_safe_path(full_path):
                 return f"[Write File] Error: Access denied. Path outside workspace."
+
+            if mode != "append":
+                decision = validate_output_header(path=file_path, content=content)
+                if not decision.accepted:
+                    return f"[Write File] Error: {format_output_header_failure(path=file_path, decision=decision)}"
             
             # Create directory if needed
             dir_path = os.path.dirname(full_path)

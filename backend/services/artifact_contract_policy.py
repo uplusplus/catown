@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.artifact_contracts import ArtifactContract, parse_artifact_contract
+from services.output_header_policy import validate_output_header
 from services.runner_policy import (
     RunnerGovernancePolicy,
     StageRunnerPolicy,
@@ -109,6 +110,10 @@ def validate_artifact_contract_for_policy(
             stage=target_stage,
             violations=violations,
         )
+        _validate_required_output_header(
+            contract=parsed_contract,
+            violations=violations,
+        )
 
     accepted = not any(violation.severity == "error" for violation in violations)
     return ArtifactContractPolicyDecision(
@@ -174,6 +179,35 @@ def _artifact_path(contract: ArtifactContract) -> str:
     if mode == "structured_asset":
         return _normalize_path(getattr(contract, "storage_path", None))
     return ""
+
+
+def _validate_required_output_header(
+    *,
+    contract: ArtifactContract,
+    violations: list[ArtifactContractPolicyViolation],
+) -> None:
+    artifact_path = _artifact_path(contract)
+    if not artifact_path:
+        return
+
+    content = None
+    if hasattr(contract, "content_markdown"):
+        content = getattr(contract, "content_markdown", None)
+    if content is None:
+        return
+    decision = validate_output_header(path=artifact_path, content=content)
+    if not decision.required:
+        return
+    if decision.accepted:
+        return
+    for violation in decision.violations:
+        violations.append(
+            ArtifactContractPolicyViolation(
+                code=violation.code,
+                field=violation.field,
+                message=violation.message,
+            )
+        )
 
 
 def _ensure_artifact_contract(contract: ArtifactContract | dict[str, Any]) -> ArtifactContract:

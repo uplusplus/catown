@@ -74,6 +74,7 @@ from services.artifact_contract_policy import (
 from services.artifact_history import archive_workspace_artifact_snapshot
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
+from services.output_header_policy import format_output_header_failure, validate_output_header
 from services.policy_decision_contracts import (
     build_policy_decision_gate_result,
     dump_policy_decision,
@@ -319,9 +320,17 @@ def _stage_artifact_contract(
     stage: PipelineStage,
     stage_policy: Any,
     run: PipelineRun,
+    workspace: Path | None = None,
 ) -> Any:
     artifact_path = str(getattr(artifact, "file_path", "") or "").strip()
     artifact_kind = str(getattr(artifact, "artifact_type", "") or "").strip().lower()
+    content_markdown = None
+    if workspace is not None and artifact_path and artifact_kind != "directory":
+        try:
+            resolved = (workspace / artifact_path).resolve()
+            content_markdown = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content_markdown = None
     common_payload = {
         "kind": "artifact_contract",
         "version": 1,
@@ -355,9 +364,19 @@ def _stage_artifact_contract(
     return parse_artifact_contract(
         {
             **common_payload,
-            "mode": "workspace_file",
+            "mode": "document" if content_markdown is not None else "workspace_file",
             "file_path": artifact_path,
-            "media_type": None,
+            **(
+                {
+                    "format": "markdown",
+                    "content_markdown": content_markdown,
+                    "content_json": {},
+                }
+                if content_markdown is not None
+                else {
+                    "media_type": None,
+                }
+            ),
         }
     )
 
@@ -370,6 +389,7 @@ def _record_stage_artifact_policy_decisions(
     stage_policy: Any,
     runner_policy: Any,
     artifacts: list[StageArtifact],
+    workspace: Path | None = None,
 ) -> list[dict[str, Any]]:
     task_run = _pipeline_task_run(db, run)
     if task_run is None:
@@ -381,6 +401,7 @@ def _record_stage_artifact_policy_decisions(
             stage=stage,
             stage_policy=stage_policy,
             run=run,
+            workspace=workspace,
         )
         decision = validate_artifact_contract_for_policy(
             contract=contract,
@@ -625,6 +646,9 @@ def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
     parent_err = _validate_path(workspace, target.parent)
     if parent_err:
         return parent_err
+    header_decision = validate_output_header(path=file_path, content=content)
+    if not header_decision.accepted:
+        return f"Error: {format_output_header_failure(path=file_path, decision=header_decision)}"
     target.parent.mkdir(parents=True, exist_ok=True)
     archive_workspace_artifact_snapshot(workspace, file_path, next_content=content)
     target.write_text(content, encoding="utf-8")
@@ -2018,6 +2042,7 @@ class PipelineEngine:
                     stage_policy=stage_policy,
                     runner_policy=runner_policy,
                     artifacts=artifacts,
+                    workspace=workspace,
                 )
                 blocked_artifact_gate = next(
                     (

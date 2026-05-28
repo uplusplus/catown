@@ -169,3 +169,62 @@ def test_document_artifact_without_path_cannot_satisfy_delivery_contract():
 
     assert decision.accepted is False
     assert [violation.code for violation in decision.violations] == ["artifact_path_missing"]
+
+
+def test_document_artifact_requires_required_output_header_fields():
+    decision = validate_artifact_contract_for_workflow(
+        workflow_spec=_workflow_spec(),
+        contract={
+            "kind": "artifact_contract",
+            "version": 1,
+            "artifact_id": "artifact-test-report-header-1",
+            "artifact_type": "document.test_report",
+            "title": "Test report",
+            "producer": {
+                "stage_name": "testing",
+                "agent_name": "Tester",
+            },
+            "mode": "document",
+            "format": "markdown",
+            "file_path": "reports/tests/20260528T110000000000Z--header-check.md",
+            "content_markdown": "# Test Report\n\nMissing header",
+        },
+    )
+
+    assert decision.accepted is False
+    codes = {violation.code for violation in decision.violations}
+    assert "output_header_purpose_missing" in codes
+    assert "output_header_author_missing" in codes
+    assert "output_header_created_at_missing" in codes
+    assert "output_header_modification_log_missing" in codes
+
+
+def test_document_artifact_accepts_required_output_header_fields():
+    decision = validate_artifact_contract_for_workflow(
+        workflow_spec=_workflow_spec(),
+        contract={
+            "kind": "artifact_contract",
+            "version": 1,
+            "artifact_id": "artifact-test-report-header-2",
+            "artifact_type": "document.test_report",
+            "title": "Test report",
+            "producer": {
+                "stage_name": "testing",
+                "agent_name": "Tester",
+            },
+            "mode": "document",
+            "format": "markdown",
+            "file_path": "reports/tests/20260528T110000000000Z--header-check.md",
+            "content_markdown": (
+                "Purpose: Regression verification\n"
+                "Overview: Summarizes the latest backend test run\n"
+                "Author: Tester\n"
+                "Created At: 2026-05-28 11:00\n"
+                "Modification Log:\n"
+                "- 2026-05-28 11:00 Created the report\n\n"
+                "# Test Report\n"
+            ),
+        },
+    )
+
+    assert decision.accepted is True
