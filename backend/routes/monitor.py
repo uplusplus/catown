@@ -13,8 +13,22 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from models.audit import LLMCall, ToolCall
-from models.database import ApprovalAuditLog, ApprovalQueueItem, Agent, Chatroom, Message, Project, TaskRun, TaskRunEvent, get_db
+from models.audit import Event, LLMCall, ToolCall
+from models.database import (
+    ApprovalAuditLog,
+    ApprovalQueueItem,
+    Agent,
+    Chatroom,
+    Message,
+    PipelineRun,
+    PipelineStage,
+    Project,
+    StageArtifact,
+    TaskRun,
+    TaskRunEvent,
+    get_db,
+    get_telemetry_db,
+)
 from services.agent_lifecycle_runtime import get_runtime_collaboration_status
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_audit import list_approval_audit_logs, serialize_approval_audit_log
@@ -22,7 +36,6 @@ from services.approval_queue import list_approval_queue_items
 from services.monitor_projection import (
     serialize_monitor_approval_queue_item,
     serialize_monitor_compaction_item,
-    serialize_monitor_policy_decision_item,
     serialize_monitor_runtime_detail,
     serialize_monitor_runtime_item,
 )
@@ -48,6 +61,9 @@ FILE_MONITOR_ACTIONS = {
 TASK_RUN_STEP_SCAN_MULTIPLIER = 4
 TASK_RUN_STEP_SCAN_MIN = 200
 TASK_RUN_STEP_SCAN_MAX = 800
+OVERVIEW_ACTIVITY_RUNTIME_LIMIT = 80
+OVERVIEW_ACTIVITY_MESSAGE_LIMIT = 40
+OVERVIEW_ACTIVITY_COMPACTION_LIMIT = 16
 
 monitor_log_buffer.install()
 
@@ -462,6 +478,612 @@ def _finalize_usage_totals(totals: dict[str, Any]) -> dict[str, Any]:
     return {
         **totals,
         "estimated_cost_usd": round(float(totals["estimated_cost_usd"]), 4),
+    }
+
+
+def _query_recent_runtime_activity(
+    db: Session,
+    *,
+    runtime_limit: int,
+    summary_window: int,
+) -> tuple[list[dict[str, Any]], list[Message]]:
+    summary_rows = (
+        db.query(Message, Chatroom, Project)
+        .join(Chatroom, Message.chatroom_id == Chatroom.id)
+        .outerjoin(Project, Chatroom.project_id == Project.id)
+        .filter(Message.message_type == "runtime_card")
+        .order_by(desc(Message.created_at), desc(Message.id))
+        .limit(summary_window)
+        .all()
+    )
+
+    recent_rows = summary_rows[:runtime_limit]
+    recent_runtime: list[dict[str, Any]] = []
+    for message, chatroom, project in recent_rows:
+        metadata = _parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card:
+            continue
+        recent_runtime.append(
+            serialize_monitor_runtime_item(
+                runtime_message_id=message.id,
+                chatroom_id=chatroom.id,
+                chat_title=chatroom.title,
+                project_id=project.id if project else None,
+                project_name=project.name if project else None,
+                card=card,
+                created_at=message.created_at,
+                metadata=metadata,
+            )
+        )
+
+    return recent_runtime, [row[0] for row in summary_rows]
+
+
+def _query_recent_message_activity(
+    db: Session,
+    *,
+    message_limit: int,
+) -> list[dict[str, Any]]:
+    recent_message_rows = (
+        db.query(Message, Chatroom, Project)
+        .join(Chatroom, Message.chatroom_id == Chatroom.id)
+        .outerjoin(Project, Chatroom.project_id == Project.id)
+        .filter(Message.message_type != "runtime_card")
+        .order_by(desc(Message.created_at), desc(Message.id))
+        .limit(message_limit)
+        .all()
+    )
+    agent_name_by_id = {agent.id: agent.name for agent in db.query(Agent).all()}
+    return [
+        {
+            "id": message.id,
+            "chatroom_id": chatroom.id,
+            "chat_title": chatroom.title,
+            "project_id": project.id if project else None,
+            "project_name": project.name if project else None,
+            "agent_name": agent_name_by_id.get(message.agent_id),
+            "content": message.content or "",
+            "content_preview": " ".join((message.content or "").split())[:220],
+            "message_type": message.message_type,
+            "created_at": message.created_at.isoformat() if message.created_at else None,
+            "client_turn_id": _metadata_client_turn_id(_parse_metadata(message.metadata_json)),
+        }
+        for message, chatroom, project in recent_message_rows
+    ]
+
+
+def _query_recent_compaction_activity(
+    db: Session,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    recent_compaction_rows = (
+        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
+        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRunEvent.event_type == "context_compaction")
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(limit)
+        .all()
+    )
+    return [
+        serialize_monitor_compaction_item(
+            event,
+            task_run=task_run,
+            chat_title=chatroom.title,
+            project_name=project.name if project else None,
+        )
+        for event, task_run, chatroom, project in recent_compaction_rows
+    ]
+
+
+def _build_overview_usage_window(
+    db: Session,
+    *,
+    range_value: str = "24h",
+) -> dict[str, Any]:
+    scan_start = _range_scan_start(range_value)
+    rows = (
+        db.query(Message)
+        .filter(Message.message_type == "runtime_card", Message.created_at >= scan_start)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+        .all()
+    )
+
+    agent_summary: dict[str, dict[str, float]] = defaultdict(
+        lambda: {
+            "llm_calls": 0,
+            "tool_calls": 0,
+            "errors": 0,
+            "token_input": 0,
+            "token_output": 0,
+        }
+    )
+    tool_summary: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"call_count": 0, "failure_count": 0, "total_duration_ms": 0.0}
+    )
+    skill_summary: dict[str, int] = defaultdict(int)
+    file_summary = {
+        "reads": 0,
+        "writes": 0,
+        "lists": 0,
+        "searches": 0,
+        "deletes": 0,
+        "errors": 0,
+        "unique_paths": set(),
+        "top_paths": defaultdict(int),
+    }
+    llm_calls = 0
+    tool_calls = 0
+    tool_errors = 0
+    input_tokens = 0
+    output_tokens = 0
+
+    for message in rows:
+        metadata = _parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card:
+            continue
+
+        card_type = str(card.get("type") or message.content or "runtime")
+        agent_name = str(card.get("agent") or card.get("from_agent") or "system")
+
+        if card_type == "llm_call":
+            llm_calls += 1
+            token_in, token_out = _runtime_card_token_usage(card)
+            input_tokens += token_in
+            output_tokens += token_out
+            agent_summary[agent_name]["llm_calls"] += 1
+            agent_summary[agent_name]["token_input"] += token_in
+            agent_summary[agent_name]["token_output"] += token_out
+            if card.get("error"):
+                agent_summary[agent_name]["errors"] += 1
+        elif card_type == "tool_call":
+            tool_calls += 1
+            tool_name = str(card.get("tool") or "tool")
+            duration_ms = float(card.get("duration_ms") or 0)
+            success = bool(card.get("success", True))
+            tool_summary[tool_name]["call_count"] += 1
+            tool_summary[tool_name]["total_duration_ms"] += duration_ms
+            agent_summary[agent_name]["tool_calls"] += 1
+            if not success:
+                tool_errors += 1
+                tool_summary[tool_name]["failure_count"] += 1
+                agent_summary[agent_name]["errors"] += 1
+
+            if tool_name in FILE_MONITOR_TOOLS:
+                action = FILE_MONITOR_ACTIONS.get(tool_name, "access")
+                if action == "read":
+                    file_summary["reads"] += 1
+                elif action == "write":
+                    file_summary["writes"] += 1
+                elif action == "list":
+                    file_summary["lists"] += 1
+                elif action == "search":
+                    file_summary["searches"] += 1
+                elif action == "delete":
+                    file_summary["deletes"] += 1
+                if not success:
+                    file_summary["errors"] += 1
+                arguments = _parse_metadata(card.get("arguments")) if isinstance(card.get("arguments"), str) else {}
+                file_path = _file_monitor_tool_path(tool_name, arguments if isinstance(arguments, dict) else {})
+                if file_path:
+                    file_summary["unique_paths"].add(file_path)
+                    file_summary["top_paths"][file_path] += 1
+        elif card_type == "skill_inject":
+            skills = card.get("skills") if isinstance(card.get("skills"), list) else []
+            for skill in skills:
+                if not isinstance(skill, dict):
+                    continue
+                skill_name = str(skill.get("name") or "").strip()
+                if skill_name:
+                    skill_summary[skill_name] += 1
+        elif card_type in {"gate_rejected", "error", "agent_error"}:
+            agent_summary[agent_name]["errors"] += 1
+
+    top_tools = []
+    for tool_name, metrics in sorted(tool_summary.items(), key=lambda item: (-item[1]["call_count"], item[0]))[:8]:
+        count = int(metrics["call_count"])
+        top_tools.append(
+            {
+                "tool_name": tool_name,
+                "call_count": count,
+                "failure_count": int(metrics["failure_count"]),
+                "avg_duration_ms": round(metrics["total_duration_ms"] / count, 1) if count else 0,
+            }
+        )
+
+    by_agent = []
+    for agent_name, metrics in sorted(
+        agent_summary.items(),
+        key=lambda item: (-(item[1]["llm_calls"] + item[1]["tool_calls"]), item[0]),
+    ):
+        token_total = int(metrics["token_input"] + metrics["token_output"])
+        by_agent.append(
+            {
+                "agent_name": agent_name,
+                "llm_calls": int(metrics["llm_calls"]),
+                "tool_calls": int(metrics["tool_calls"]),
+                "errors": int(metrics["errors"]),
+                "token_input": int(metrics["token_input"]),
+                "token_output": int(metrics["token_output"]),
+                "token_total": token_total,
+                "estimated_cost_usd": round(
+                    _runtime_card_cost(int(metrics["token_input"]), int(metrics["token_output"])),
+                    4,
+                ),
+            }
+        )
+
+    top_skills = [
+        {"skill_name": name, "inject_count": count}
+        for name, count in sorted(skill_summary.items(), key=lambda item: (-item[1], item[0]))[:8]
+    ]
+    top_paths = [
+        {"path": path, "count": count}
+        for path, count in sorted(file_summary["top_paths"].items(), key=lambda item: (-item[1], item[0]))[:8]
+    ]
+
+    return {
+        "range": range_value,
+        "runtime_cards_considered": len(rows),
+        "llm_calls": llm_calls,
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "estimated_cost_usd": round(_runtime_card_cost(input_tokens, output_tokens), 4),
+        "pricing": {
+            "input_per_1k": INPUT_PRICE_PER_1K,
+            "output_per_1k": OUTPUT_PRICE_PER_1K,
+        },
+        "by_agent": by_agent,
+        "top_tools": top_tools,
+        "top_skills": top_skills,
+        "files": {
+            "reads": file_summary["reads"],
+            "writes": file_summary["writes"],
+            "lists": file_summary["lists"],
+            "searches": file_summary["searches"],
+            "deletes": file_summary["deletes"],
+            "errors": file_summary["errors"],
+            "unique_paths": len(file_summary["unique_paths"]),
+            "top_paths": top_paths,
+        },
+    }
+
+
+def _build_overview_task_summary(
+    db: Session,
+    *,
+    telemetry_db: Session,
+    range_value: str = "24h",
+) -> dict[str, Any]:
+    scan_start = _range_scan_start(range_value)
+    task_runs = (
+        db.query(TaskRun)
+        .filter(TaskRun.created_at >= scan_start)
+        .order_by(desc(TaskRun.created_at), desc(TaskRun.id))
+        .all()
+    )
+    if not task_runs:
+        return {
+            "range": range_value,
+            "counts": {
+                "total": 0,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "awaiting_approval": 0,
+            },
+            "by_agent": [],
+            "tokens": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "avg_per_task": 0,
+            },
+            "context": {
+                "configured_window": None,
+                "avg_usage_ratio": None,
+                "max_usage_ratio": None,
+                "sampled_runs": 0,
+            },
+            "artifacts": {
+                "recorded": 0,
+                "task_runs_with_artifacts": 0,
+                "top_outputs": [],
+            },
+        }
+
+    counts = {
+        "total": len(task_runs),
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "awaiting_approval": 0,
+    }
+    by_agent: dict[str, int] = defaultdict(int)
+    task_run_ids = [task_run.id for task_run in task_runs]
+
+    for task_run in task_runs:
+        status = str(task_run.status or "").lower()
+        if status == "running":
+            counts["running"] += 1
+        elif status == "completed":
+            counts["completed"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        if any((item.status or "") == "pending" for item in list(task_run.approval_queue_items or [])):
+            counts["awaiting_approval"] += 1
+        agent_name = str(task_run.target_agent_name or "unassigned")
+        by_agent[agent_name] += 1
+
+    llm_rows = (
+        telemetry_db.query(LLMCall)
+        .filter(LLMCall.run_id.in_(task_run_ids))
+        .all()
+    )
+    total_input = sum(int(row.token_input or 0) for row in llm_rows)
+    total_output = sum(int(row.token_output or 0) for row in llm_rows)
+
+    compaction_rows = (
+        db.query(TaskRunEvent)
+        .filter(
+            TaskRunEvent.task_run_id.in_(task_run_ids),
+            TaskRunEvent.event_type == "context_compaction",
+        )
+        .all()
+    )
+    context_ratios: list[float] = []
+    configured_windows: list[int] = []
+    for event in compaction_rows:
+        payload = _parse_metadata(event.payload_json)
+        diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
+        prompt_total = diagnostics.get("prompt_total") if isinstance(diagnostics.get("prompt_total"), dict) else {}
+        user_section = diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {}
+        prompt_tokens = _coerce_int(prompt_total.get("tokens")) or 0
+        max_tokens = _coerce_int(diagnostics.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
+        if max_tokens and max_tokens > 0 and prompt_tokens >= 0:
+            context_ratios.append(prompt_tokens / max_tokens)
+            configured_windows.append(max_tokens)
+
+    artifact_rows = (
+        telemetry_db.query(Event)
+        .filter(
+            Event.run_id.in_(task_run_ids),
+            Event.event_type == "stage_artifacts_recorded",
+        )
+        .all()
+    )
+    recorded_artifacts = 0
+    task_runs_with_artifacts: set[int] = set()
+    artifact_output_counts: dict[str, int] = defaultdict(int)
+    for row in artifact_rows:
+        payload = _parse_metadata(row.payload)
+        artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else []
+        recorded_artifacts += len(artifacts)
+        if row.run_id is not None:
+            task_runs_with_artifacts.add(int(row.run_id))
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            artifact_path = str(
+                artifact.get("file_path")
+                or artifact.get("path")
+                or artifact.get("title")
+                or ""
+            ).strip()
+            if artifact_path:
+                artifact_output_counts[artifact_path] += 1
+
+    if task_run_ids:
+        stage_artifact_rows = (
+            db.query(PipelineRun.task_run_id, StageArtifact.file_path)
+            .join(PipelineStage, StageArtifact.stage_id == PipelineStage.id)
+            .join(PipelineRun, PipelineStage.run_id == PipelineRun.id)
+            .filter(PipelineRun.task_run_id.in_(task_run_ids))
+            .all()
+        )
+    else:
+        stage_artifact_rows = []
+
+    if recorded_artifacts == 0 and stage_artifact_rows:
+        recorded_artifacts = len(stage_artifact_rows)
+    if not task_runs_with_artifacts and stage_artifact_rows:
+        task_runs_with_artifacts = {
+            int(task_run_id)
+            for task_run_id, _file_path in stage_artifact_rows
+            if task_run_id is not None
+        }
+    if not artifact_output_counts and stage_artifact_rows:
+        for _task_run_id, file_path in stage_artifact_rows:
+            normalized_path = str(file_path or "").strip()
+            if normalized_path:
+                artifact_output_counts[normalized_path] += 1
+
+    top_outputs = [
+        {"path": path, "count": count}
+        for path, count in sorted(artifact_output_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+    ]
+
+    return {
+        "range": range_value,
+        "counts": counts,
+        "by_agent": [
+            {"agent_name": name, "task_count": count}
+            for name, count in sorted(by_agent.items(), key=lambda item: (-item[1], item[0]))[:8]
+        ],
+        "tokens": {
+            "input": total_input,
+            "output": total_output,
+            "total": total_input + total_output,
+            "avg_per_task": round((total_input + total_output) / len(task_runs), 1) if task_runs else 0,
+        },
+        "context": {
+            "configured_window": max(configured_windows) if configured_windows else None,
+            "avg_usage_ratio": round(sum(context_ratios) / len(context_ratios), 4) if context_ratios else None,
+            "max_usage_ratio": round(max(context_ratios), 4) if context_ratios else None,
+            "sampled_runs": len(context_ratios),
+        },
+        "artifacts": {
+            "recorded": recorded_artifacts,
+            "task_runs_with_artifacts": len(task_runs_with_artifacts),
+            "top_outputs": top_outputs,
+        },
+    }
+
+
+def _build_overview_llm_summary(
+    telemetry_db: Session,
+    *,
+    range_value: str = "24h",
+) -> dict[str, Any]:
+    scan_start = _range_scan_start(range_value)
+    llm_rows = (
+        telemetry_db.query(LLMCall)
+        .filter(LLMCall.created_at >= scan_start)
+        .order_by(desc(LLMCall.created_at), desc(LLMCall.id))
+        .all()
+    )
+    tool_rows = (
+        telemetry_db.query(ToolCall)
+        .filter(ToolCall.created_at >= scan_start)
+        .order_by(desc(ToolCall.created_at), desc(ToolCall.id))
+        .all()
+    )
+    total_input = sum(int(row.token_input or 0) for row in llm_rows)
+    total_output = sum(int(row.token_output or 0) for row in llm_rows)
+    errors = sum(1 for row in llm_rows if row.error)
+    duration_total = sum(int(row.duration_ms or 0) for row in llm_rows)
+    tool_total = len(tool_rows)
+    tool_errors = sum(1 for row in tool_rows if row.success is False)
+
+    model_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"calls": 0, "tokens": 0})
+    for row in llm_rows:
+        model_key = str(row.model or "unknown").strip() or "unknown"
+        model_counts[model_key]["calls"] += 1
+        model_counts[model_key]["tokens"] += int(row.token_input or 0) + int(row.token_output or 0)
+
+    top_models = [
+        {"name": name, "calls": data["calls"], "tokens": data["tokens"]}
+        for name, data in sorted(model_counts.items(), key=lambda item: (-item[1]["calls"], -item[1]["tokens"], item[0]))[:8]
+    ]
+    success_calls = len(llm_rows) - errors
+
+    return {
+        "range": range_value,
+        "status": "healthy" if errors == 0 else ("degraded" if success_calls > 0 else "error"),
+        "requests": len(llm_rows),
+        "success": success_calls,
+        "errors": errors,
+        "success_rate": round(success_calls / len(llm_rows), 4) if llm_rows else None,
+        "avg_latency_ms": round(duration_total / len(llm_rows), 1) if llm_rows else None,
+        "tokens": {
+            "input": total_input,
+            "output": total_output,
+            "total": total_input + total_output,
+        },
+        "tool_followups": {
+            "calls": tool_total,
+            "errors": tool_errors,
+        },
+        "top_models": top_models,
+        "last_request_at": llm_rows[0].created_at.isoformat() if llm_rows and llm_rows[0].created_at else None,
+    }
+
+
+def _build_overview_approval_summary(db: Session) -> dict[str, Any]:
+    audit_rows = db.query(ApprovalAuditLog).all()
+    queue_total = db.query(ApprovalQueueItem).count()
+    queue_pending = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count()
+    queue_approved = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "approved").count()
+    queue_rejected = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "rejected").count()
+    remembered = sum(1 for row in audit_rows if (row.event_kind or "") == "authorization_rule_saved")
+    automatic = sum(1 for row in audit_rows if (row.event_kind or "") == "authorization_rule_matched")
+    approved = sum(1 for row in audit_rows if (row.decision or "") == "approve")
+    rejected = sum(1 for row in audit_rows if (row.decision or "") == "reject")
+
+    return {
+        "queue": {
+            "total": queue_total,
+            "pending": queue_pending,
+            "approved": queue_approved,
+            "rejected": queue_rejected,
+        },
+        "audit": {
+            "approved": approved,
+            "rejected": rejected,
+            "remembered": remembered,
+            "automatic": automatic,
+        },
+    }
+
+
+def _build_overview_compaction_summary(db: Session) -> dict[str, Any]:
+    rows = (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.event_type == "context_compaction")
+        .order_by(TaskRunEvent.created_at.asc(), TaskRunEvent.id.asc())
+        .all()
+    )
+    if not rows:
+        return {
+            "total": 0,
+            "task_runs": 0,
+            "avg_interval_minutes": None,
+            "avg_per_task_run": None,
+            "avg_prompt_tokens": None,
+            "avg_usage_ratio": None,
+            "reasons": [],
+            "last_compaction_at": None,
+        }
+
+    intervals: list[float] = []
+    prompt_tokens: list[int] = []
+    usage_ratios: list[float] = []
+    reason_counts: dict[str, int] = defaultdict(int)
+    task_run_counts: dict[int, int] = defaultdict(int)
+    previous_created_at: datetime | None = None
+
+    for row in rows:
+        task_run_counts[int(row.task_run_id)] += 1
+        if row.created_at and previous_created_at:
+            intervals.append((row.created_at - previous_created_at).total_seconds() / 60)
+        if row.created_at:
+            previous_created_at = row.created_at
+        payload = _parse_metadata(row.payload_json)
+        diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
+        prompt_total = diagnostics.get("prompt_total") if isinstance(diagnostics.get("prompt_total"), dict) else {}
+        user_section = diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {}
+        prompt_token_value = _coerce_int(prompt_total.get("tokens"))
+        max_tokens = _coerce_int(diagnostics.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
+        if prompt_token_value is not None:
+            prompt_tokens.append(prompt_token_value)
+        if prompt_token_value is not None and max_tokens and max_tokens > 0:
+            usage_ratios.append(prompt_token_value / max_tokens)
+        reasons = diagnostics.get("reasons") if isinstance(diagnostics.get("reasons"), list) else []
+        for reason in reasons:
+            if not isinstance(reason, dict):
+                continue
+            name = str(reason.get("kind") or "unknown").strip() or "unknown"
+            reason_counts[name] += 1
+
+    return {
+        "total": len(rows),
+        "task_runs": len(task_run_counts),
+        "avg_interval_minutes": round(sum(intervals) / len(intervals), 1) if intervals else None,
+        "avg_per_task_run": round(len(rows) / len(task_run_counts), 2) if task_run_counts else None,
+        "avg_prompt_tokens": round(sum(prompt_tokens) / len(prompt_tokens), 1) if prompt_tokens else None,
+        "avg_usage_ratio": round(sum(usage_ratios) / len(usage_ratios), 4) if usage_ratios else None,
+        "reasons": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+        ],
+        "last_compaction_at": rows[-1].created_at.isoformat() if rows[-1].created_at else None,
     }
 
 
@@ -1156,6 +1778,7 @@ async def get_monitor_task_run_steps(
     task_run_id: int,
     limit: int = Query(120, ge=10, le=500),
     db: Session = Depends(get_db),
+    telemetry_db: Session = Depends(get_telemetry_db),
 ):
     task_run = (
         db.query(TaskRun)
@@ -1197,7 +1820,7 @@ async def get_monitor_task_run_steps(
     pipeline_tool_steps: list[dict[str, Any]] = []
     if pipeline_run_ids:
         llm_calls = (
-            db.query(LLMCall)
+            telemetry_db.query(LLMCall)
             .filter(LLMCall.run_id.in_(pipeline_run_ids))
             .order_by(LLMCall.id.desc())
             .limit(limit)
@@ -1206,7 +1829,7 @@ async def get_monitor_task_run_steps(
         pipeline_llm_steps = [_serialize_pipeline_llm_step(call) for call in llm_calls]
 
         tool_calls = (
-            db.query(ToolCall)
+            telemetry_db.query(ToolCall)
             .filter(ToolCall.run_id.in_(pipeline_run_ids))
             .order_by(ToolCall.id.desc())
             .limit(limit)
@@ -1493,10 +2116,9 @@ async def get_monitor_files(
 
 @router.get("/overview")
 async def get_monitor_overview(
-    runtime_limit: int = Query(24, ge=6, le=80),
-    summary_window: int = Query(240, ge=40, le=1000),
-    message_limit: int = Query(18, ge=6, le=60),
+    range: str = Query("24h", pattern="^(1h|6h|24h|7d|30d)$"),
     db: Session = Depends(get_db),
+    telemetry_db: Session = Depends(get_telemetry_db),
 ):
     active_agent_count = db.query(Agent).filter(Agent.is_active.is_(True)).count()
     agent_count = db.query(Agent).count()
@@ -1506,190 +2128,13 @@ async def get_monitor_overview(
     message_count = db.query(Message).filter(Message.message_type != "runtime_card").count()
     runtime_card_count = db.query(Message).filter(Message.message_type == "runtime_card").count()
     latest_message = db.query(Message).order_by(desc(Message.created_at), desc(Message.id)).first()
-    approval_queue_total = db.query(ApprovalQueueItem).count()
-    approval_queue_pending = db.query(ApprovalQueueItem).filter(ApprovalQueueItem.status == "pending").count()
     context_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
-    policy_decision_event_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "policy_decision_recorded").count()
-
-    summary_rows = (
-        db.query(Message, Chatroom, Project)
-        .join(Chatroom, Message.chatroom_id == Chatroom.id)
-        .outerjoin(Project, Chatroom.project_id == Project.id)
-        .filter(Message.message_type == "runtime_card")
-        .order_by(desc(Message.created_at), desc(Message.id))
-        .limit(summary_window)
-        .all()
-    )
-
-    recent_rows = summary_rows[:runtime_limit]
-    recent_runtime: list[dict[str, Any]] = []
-    tool_summary: dict[str, dict[str, float]] = defaultdict(lambda: {"call_count": 0, "failure_count": 0, "total_duration_ms": 0.0})
-    agent_summary: dict[str, dict[str, float]] = defaultdict(
-        lambda: {
-            "llm_calls": 0,
-            "tool_calls": 0,
-            "errors": 0,
-            "token_input": 0,
-            "token_output": 0,
-        }
-    )
-
-    llm_calls = 0
-    tool_calls = 0
-    tool_errors = 0
-    input_tokens = 0
-    output_tokens = 0
-
-    for message, chatroom, project in summary_rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
-            continue
-
-        card_type = str(card.get("type") or message.content or "runtime")
-        agent_name = card.get("agent") or card.get("from_agent") or "system"
-
-        if card_type == "llm_call":
-            llm_calls += 1
-            token_in = int(card.get("tokens_in") or 0)
-            token_out = int(card.get("tokens_out") or 0)
-            input_tokens += token_in
-            output_tokens += token_out
-            agent_summary[str(agent_name)]["llm_calls"] += 1
-            agent_summary[str(agent_name)]["token_input"] += token_in
-            agent_summary[str(agent_name)]["token_output"] += token_out
-        elif card_type == "tool_call":
-            tool_calls += 1
-            tool_name = str(card.get("tool") or "tool")
-            duration_ms = float(card.get("duration_ms") or 0)
-            success = bool(card.get("success", True))
-            tool_summary[tool_name]["call_count"] += 1
-            tool_summary[tool_name]["total_duration_ms"] += duration_ms
-            agent_summary[str(agent_name)]["tool_calls"] += 1
-            if not success:
-                tool_errors += 1
-                tool_summary[tool_name]["failure_count"] += 1
-                agent_summary[str(agent_name)]["errors"] += 1
-        elif card_type in {"gate_rejected", "error"}:
-            agent_summary[str(agent_name)]["errors"] += 1
-
-    estimated_cost = round((input_tokens / 1000 * INPUT_PRICE_PER_1K) + (output_tokens / 1000 * OUTPUT_PRICE_PER_1K), 4)
-
-    top_tools = []
-    for tool_name, metrics in sorted(tool_summary.items(), key=lambda item: (-item[1]["call_count"], item[0]))[:8]:
-        count = int(metrics["call_count"])
-        top_tools.append(
-            {
-                "tool_name": tool_name,
-                "call_count": count,
-                "failure_count": int(metrics["failure_count"]),
-                "avg_duration_ms": round(metrics["total_duration_ms"] / count, 1) if count else 0,
-            }
-        )
-
-    by_agent = []
-    for agent_name, metrics in sorted(agent_summary.items(), key=lambda item: (-(item[1]["llm_calls"] + item[1]["tool_calls"]), item[0])):
-        token_total = int(metrics["token_input"] + metrics["token_output"])
-        estimated_agent_cost = round(
-            (metrics["token_input"] / 1000 * INPUT_PRICE_PER_1K) + (metrics["token_output"] / 1000 * OUTPUT_PRICE_PER_1K),
-            4,
-        )
-        by_agent.append(
-            {
-                "agent_name": agent_name,
-                "llm_calls": int(metrics["llm_calls"]),
-                "tool_calls": int(metrics["tool_calls"]),
-                "errors": int(metrics["errors"]),
-                "token_input": int(metrics["token_input"]),
-                "token_output": int(metrics["token_output"]),
-                "token_total": token_total,
-                "estimated_cost_usd": estimated_agent_cost,
-            }
-        )
-
-    for message, chatroom, project in recent_rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
-            continue
-        recent_runtime.append(
-            serialize_monitor_runtime_item(
-                runtime_message_id=message.id,
-                chatroom_id=chatroom.id,
-                chat_title=chatroom.title,
-                project_id=project.id if project else None,
-                project_name=project.name if project else None,
-                card=card,
-                created_at=message.created_at,
-                metadata=metadata,
-            )
-        )
-
-    recent_message_rows = (
-        db.query(Message, Chatroom, Project)
-        .join(Chatroom, Message.chatroom_id == Chatroom.id)
-        .outerjoin(Project, Chatroom.project_id == Project.id)
-        .filter(Message.message_type != "runtime_card")
-        .order_by(desc(Message.created_at), desc(Message.id))
-        .limit(message_limit)
-        .all()
-    )
-    agent_name_by_id = {agent.id: agent.name for agent in db.query(Agent).all()}
-    recent_messages = [
-        {
-            "id": message.id,
-            "chatroom_id": chatroom.id,
-            "chat_title": chatroom.title,
-            "project_id": project.id if project else None,
-            "project_name": project.name if project else None,
-            "agent_name": agent_name_by_id.get(message.agent_id),
-            "content": message.content or "",
-            "content_preview": " ".join((message.content or "").split())[:220],
-            "message_type": message.message_type,
-            "created_at": message.created_at.isoformat() if message.created_at else None,
-            "client_turn_id": _metadata_client_turn_id(_parse_metadata(message.metadata_json)),
-        }
-        for message, chatroom, project in recent_message_rows
-    ]
-    recent_compaction_rows = (
-        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
-        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
-        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
-        .outerjoin(Project, TaskRun.project_id == Project.id)
-        .filter(TaskRunEvent.event_type == "context_compaction")
-        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
-        .limit(16)
-        .all()
-    )
-    recent_compactions = [
-        serialize_monitor_compaction_item(
-            event,
-            task_run=task_run,
-            chat_title=chatroom.title,
-            project_name=project.name if project else None,
-        )
-        for event, task_run, chatroom, project in recent_compaction_rows
-    ]
-    recent_policy_decision_rows = (
-        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
-        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
-        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
-        .outerjoin(Project, TaskRun.project_id == Project.id)
-        .filter(TaskRunEvent.event_type == "policy_decision_recorded")
-        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
-        .limit(16)
-        .all()
-    )
-    recent_policy_decisions = [
-        serialize_monitor_policy_decision_item(
-            event,
-            task_run=task_run,
-            chat_title=chatroom.title,
-            project_name=project.name if project else None,
-        )
-        for event, task_run, chatroom, project in recent_policy_decision_rows
-    ]
-
+    range_value = range if range in USAGE_RANGES else "24h"
+    usage_window = _build_overview_usage_window(db, range_value=range_value)
+    task_summary = _build_overview_task_summary(db, telemetry_db=telemetry_db, range_value=range_value)
+    llm_summary = _build_overview_llm_summary(telemetry_db, range_value=range_value)
+    approval_summary = _build_overview_approval_summary(db)
+    compaction_summary = _build_overview_compaction_summary(db)
     return {
         "captured_at": datetime.now().isoformat(),
         "system": {
@@ -1703,10 +2148,9 @@ async def get_monitor_overview(
                 "visible_chats": visible_chat_count,
                 "messages": message_count,
                 "runtime_cards": runtime_card_count,
-                "approval_queue_total": approval_queue_total,
-                "approval_queue_pending": approval_queue_pending,
+                "approval_queue_total": approval_summary["queue"]["total"],
+                "approval_queue_pending": approval_summary["queue"]["pending"],
                 "context_compactions": context_compaction_count,
-                "policy_decision_events": policy_decision_event_count,
             },
             "features": {
                 "llm_enabled": True,
@@ -1720,26 +2164,34 @@ async def get_monitor_overview(
             },
             "last_message_at": latest_message.created_at.isoformat() if latest_message and latest_message.created_at else None,
         },
-        "usage_window": {
-            "runtime_cards_considered": len(summary_rows),
-            "llm_calls": llm_calls,
-            "tool_calls": tool_calls,
-            "tool_errors": tool_errors,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "estimated_cost_usd": estimated_cost,
-            "pricing": {
-                "input_per_1k": INPUT_PRICE_PER_1K,
-                "output_per_1k": OUTPUT_PRICE_PER_1K,
-            },
-            "by_agent": by_agent,
-            "top_tools": top_tools,
-        },
+        "usage_window": usage_window,
+        "tasks": task_summary,
+        "llm": llm_summary,
+        "approvals": approval_summary,
+        "compactions": compaction_summary,
+    }
+
+
+@router.get("/overview/activity")
+async def get_monitor_overview_activity(
+    runtime_limit: int = Query(OVERVIEW_ACTIVITY_RUNTIME_LIMIT, ge=12, le=160),
+    summary_window: int = Query(96, ge=24, le=320),
+    message_limit: int = Query(OVERVIEW_ACTIVITY_MESSAGE_LIMIT, ge=8, le=120),
+    compaction_limit: int = Query(OVERVIEW_ACTIVITY_COMPACTION_LIMIT, ge=4, le=64),
+    db: Session = Depends(get_db),
+):
+    recent_runtime, _summary_messages = _query_recent_runtime_activity(
+        db,
+        runtime_limit=runtime_limit,
+        summary_window=summary_window,
+    )
+    recent_messages = _query_recent_message_activity(db, message_limit=message_limit)
+    recent_compactions = _query_recent_compaction_activity(db, limit=compaction_limit)
+    return {
+        "captured_at": datetime.now().isoformat(),
         "recent_runtime": recent_runtime,
         "recent_messages": recent_messages,
         "recent_compactions": recent_compactions,
-        "recent_policy_decisions": recent_policy_decisions,
     }
 
 

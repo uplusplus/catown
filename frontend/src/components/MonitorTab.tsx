@@ -14,7 +14,10 @@ import type { FlowTopologyGraph, FlowTopologyNode, FlowTopologyStatus } from "./
 import type {
   ApprovalQueueItem,
   AgentInfo,
+  AuditLlmDetailResponse,
   ConfigResponse,
+  MonitorAuditOverviewResponse,
+  MonitorAuditTimelineEntry,
   MonitorTaskRunSummary,
   MonitorTaskRunStep,
   MonitorTaskRunStepsResponse,
@@ -28,6 +31,8 @@ import type {
   MonitorLogEntry,
   MonitorNetworkEvent,
   MonitorOverview,
+  MonitorOverviewActivity,
+  MonitorOverviewSummary,
   MonitorCompactionItem,
   MonitorContextCompactionsResponse,
   MonitorProcessEntry,
@@ -58,6 +63,7 @@ type MonitorPage = {
 
 const PRIMARY_PAGES = [
   { id: "overview", label: "Overview" },
+  { id: "audit", label: "Audit" },
   { id: "flow", label: "Flow" },
   { id: "network", label: "Network" },
   { id: "files", label: "Files" },
@@ -100,6 +106,7 @@ type LogLevel = "all" | "info" | "warn" | "error";
 type TaskRunStatusFilter = "all" | "running" | "completed" | "failed";
 type ProcessStatusFilter = "all" | "running" | "finished" | "failed";
 type FileToolFilter = "all" | "read_file" | "write_file" | "list_files" | "search_files" | "delete_file";
+type AuditKindFilter = "all" | "llm" | "tool" | "event";
 
 const RESUMABLE_TASK_RUN_KINDS = new Set([
   "multi_agent_orchestration",
@@ -364,6 +371,41 @@ function approvalStatusTone(status: string | null | undefined) {
   if (["approved", "approve", "allow", "allow_no_timeout"].includes(normalized)) return "success";
   if (["rejected", "reject", "deny"].includes(normalized)) return "error";
   return runtimeTone(normalized);
+}
+
+function auditEntryTone(entry: MonitorAuditTimelineEntry) {
+  if (entry.kind === "llm") {
+    return entry.error ? "error" : "success";
+  }
+  if (entry.kind === "tool") {
+    return entry.success === false ? "error" : "neutral";
+  }
+  return runtimeTone(entry.event_type || "event");
+}
+
+function auditEntryBadge(entry: MonitorAuditTimelineEntry) {
+  if (entry.kind === "llm") return "LLM";
+  if (entry.kind === "tool") return "Tool";
+  return "Event";
+}
+
+function auditEntryTitle(entry: MonitorAuditTimelineEntry) {
+  if (entry.kind === "llm") {
+    const model = entry.model || "unknown model";
+    const turn = typeof entry.turn_index === "number" ? `turn ${entry.turn_index}` : "llm call";
+    return `${model} · ${turn}`;
+  }
+  if (entry.kind === "tool") {
+    return entry.tool_name || "tool call";
+  }
+  return titleCaseLabel(entry.event_type || "event");
+}
+
+function auditEntryPreview(entry: MonitorAuditTimelineEntry) {
+  if (entry.summary?.trim()) return entry.summary.trim();
+  if (entry.kind === "llm") return "No response preview recorded.";
+  if (entry.kind === "tool") return "No tool result preview recorded.";
+  return "No event summary recorded.";
 }
 
 function approvalFollowupTone(status: string | null | undefined) {
@@ -953,18 +995,82 @@ function buildNetworkRawDump(entry: MonitorNetworkEvent) {
   return lines.join("\n").trim();
 }
 
-function NetworkRawDump({ entry }: { entry: MonitorNetworkEvent }) {
-  const [expanded, setExpanded] = useState(false);
+function NetworkRawDump({
+  entry,
+  expanded,
+}: {
+  entry: MonitorNetworkEvent;
+  expanded: boolean;
+}) {
   const dump = useMemo(() => (expanded ? buildNetworkRawDump(entry) : ""), [entry, expanded]);
 
+  if (!expanded) {
+    return null;
+  }
+
   return (
-    <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary className="small-note" style={{ cursor: "pointer", marginTop: 8 }}>
-        Request/response details
+    <pre className="monitor-pre" style={{ marginTop: 8, padding: "8px 10px", fontSize: 12, lineHeight: 1.45 }}>
+      {dump}
+    </pre>
+  );
+}
+
+function NetworkLogCard({ entry }: { entry: MonitorNetworkEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const direction = activeDirection(entry);
+  const { from: directionFrom, to: directionTo } = parseDirection(direction);
+  const fromVisual = getDirectionVisual(directionFrom);
+  const toVisual = getDirectionVisual(directionTo);
+  const flowColor = entry.flow_id ? hashFlowColor(entry.flow_id) : fromVisual.color;
+
+  return (
+    <details
+      key={entry.id}
+      className="card network-log-card"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      style={{
+        marginBottom: 8,
+        padding: "10px 12px",
+        width: "100%",
+        minWidth: 0,
+        boxSizing: "border-box",
+        borderLeft: entry.flow_id ? `4px solid ${flowColor}` : undefined,
+      }}
+    >
+      <summary className="network-log-card__summary" style={{ cursor: "pointer", listStyle: "none", width: "100%", minWidth: 0 }}>
+        <div className="network-log-card__head">
+          <div className="network-log-card__title">
+            <span
+              title={direction}
+              className="network-log-card__icon"
+              style={{
+                background: `${flowColor}1a`,
+                color: flowColor,
+              }}
+            >
+              <fromVisual.Icon size={16} strokeWidth={2.2} />
+            </span>
+            <strong>
+              {direction}
+              {" · "}
+              {entry.method || "NET"} {entry.path || entry.url}
+              {" · "}
+              {entry.protocol || "unknown"}
+              {" · "}
+              {formatBytes(entry.request_bytes)} out / {formatBytes(entry.response_bytes)} in
+              {" · "}
+              {formatDuration(entry.duration_ms)}
+              {entry.status_code ? ` · ${entry.status_code}` : ""}
+              {entry.flow_id ? ` · ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
+            </strong>
+          </div>
+          <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
+        </div>
       </summary>
-      <pre className="monitor-pre" style={{ marginTop: 8, padding: "8px 10px", fontSize: 12, lineHeight: 1.45 }}>
-        {dump}
-      </pre>
+      <div className="small-note" style={{ marginTop: 8, marginBottom: 8 }}>
+        {fromVisual.label} → {toVisual.label}
+      </div>
+      <NetworkRawDump entry={entry} expanded={expanded} />
     </details>
   );
 }
@@ -1241,7 +1347,29 @@ function normalizeMonitorOverviewRuntime(overview: MonitorOverview): MonitorOver
   return {
     ...overview,
     recent_runtime: mergeMonitorRuntime([], overview.recent_runtime),
+    recent_messages: mergeMonitorMessages([], overview.recent_messages),
+    recent_compactions: [...(overview.recent_compactions ?? [])],
   };
+}
+
+function applyOverviewActivitySnapshot(
+  overview: MonitorOverviewSummary,
+  activity: MonitorOverviewActivity | null,
+): MonitorOverview {
+  if (!activity) {
+    return normalizeMonitorOverviewRuntime({
+      ...overview,
+      recent_runtime: [],
+      recent_messages: [],
+      recent_compactions: [],
+    });
+  }
+  return normalizeMonitorOverviewRuntime({
+    ...overview,
+    recent_runtime: activity.recent_runtime ?? [],
+    recent_messages: activity.recent_messages ?? [],
+    recent_compactions: activity.recent_compactions ?? [],
+  });
 }
 
 function compareMonitorApprovalQueueItemsNewest(
@@ -3805,6 +3933,7 @@ function buildAgentDirectory(projects: ProjectSummary[], agents: AgentInfo[]): A
 export function MonitorTab() {
   const [activePage, setActivePage] = useState<MonitorPageId>(readInitialPage);
   const [overview, setOverview] = useState<MonitorOverview | null>(null);
+  const [overviewActivity, setOverviewActivity] = useState<MonitorOverviewActivity | null>(null);
   const [usage, setUsage] = useState<MonitorUsageResponse | null>(null);
   const [taskRunsResponse, setTaskRunsResponse] = useState<MonitorTaskRunsResponse | null>(null);
   const [processesResponse, setProcessesResponse] = useState<MonitorProcessesResponse | null>(null);
@@ -3812,6 +3941,17 @@ export function MonitorTab() {
   const [contextCompactionsResponse, setContextCompactionsResponse] = useState<MonitorContextCompactionsResponse | null>(null);
   const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
   const [approvalAuditResponse, setApprovalAuditResponse] = useState<MonitorApprovalAuditResponse | null>(null);
+  const [auditOverviewResponse, setAuditOverviewResponse] = useState<MonitorAuditOverviewResponse | null>(null);
+  const [auditKindFilter, setAuditKindFilter] = useState<AuditKindFilter>("all");
+  const [auditRunIdInput, setAuditRunIdInput] = useState("");
+  const [auditRunIdFilter, setAuditRunIdFilter] = useState<number | null>(null);
+  const [auditAgentFilter, setAuditAgentFilter] = useState("");
+  const [auditToolFilter, setAuditToolFilter] = useState("");
+  const [auditEventFilter, setAuditEventFilter] = useState("");
+  const [selectedAuditLlmId, setSelectedAuditLlmId] = useState<number | null>(null);
+  const [selectedAuditLlmDetail, setSelectedAuditLlmDetail] = useState<AuditLlmDetailResponse | null>(null);
+  const [selectedAuditLlmLoading, setSelectedAuditLlmLoading] = useState(false);
+  const [selectedAuditLlmError, setSelectedAuditLlmError] = useState("");
   const [approvalAuditFilter, setApprovalAuditFilter] = useState("all");
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -3868,8 +4008,9 @@ export function MonitorTab() {
   const monitorLoadPromiseRef = useRef<Promise<void> | null>(null);
   const monitorOverviewRef = useRef<MonitorOverview | null>(null);
   const monitorSocketConnectedOnceRef = useRef(false);
+  const shouldLoadOverviewActivityRef = useRef(false);
   const shouldStreamLogs = activePage === "logs";
-  const shouldStreamNetwork = activePage === "overview" || activePage === "flow" || activePage === "network";
+  const shouldStreamNetwork = activePage === "flow" || activePage === "network";
 
   useRegisterBackHandler(
     () => activePage !== "overview" || showCreateRuleForm || showSecurityCatalog,
@@ -3893,6 +4034,10 @@ export function MonitorTab() {
     monitorOverviewRef.current = overview;
   }, [overview]);
 
+  useEffect(() => {
+    shouldLoadOverviewActivityRef.current = ["flow", "transcripts", "brain", "runtime-map", "models", "security", "context"].includes(activePage);
+  }, [activePage]);
+
   const loadMonitor = useCallback((silent = false) => {
     if (monitorLoadPromiseRef.current) {
       return monitorLoadPromiseRef.current;
@@ -3912,7 +4057,12 @@ export function MonitorTab() {
           api.getAgents(),
           api.getConfig(),
         ]);
-        setOverview(normalizeMonitorOverviewRuntime(nextOverview));
+        let nextOverviewActivity: MonitorOverviewActivity | null = null;
+        if (shouldLoadOverviewActivityRef.current) {
+          nextOverviewActivity = await api.getMonitorOverviewActivity();
+        }
+        setOverviewActivity(nextOverviewActivity);
+        setOverview(applyOverviewActivitySnapshot(nextOverview, nextOverviewActivity));
         setProjects(nextProjects);
         setAgents(nextAgents);
         setConfig(nextConfig);
@@ -3978,6 +4128,12 @@ export function MonitorTab() {
   }, [activePage, networkCategory, networkFilter, showInternalNetwork]);
 
   useEffect(() => {
+    if (activePage !== "flow") return;
+    if (networkEntries.length > 0) return;
+    void refreshNetwork();
+  }, [activePage, networkEntries.length]);
+
+  useEffect(() => {
     if (activePage !== "tasks") return;
     void refreshTaskRuns();
   }, [activePage, historyRange]);
@@ -3986,6 +4142,16 @@ export function MonitorTab() {
     if (activePage !== "compactions" || contextCompactionsResponse) return;
     void refreshContextCompactions();
   }, [activePage, contextCompactionsResponse]);
+
+  useEffect(() => {
+    if (activePage !== "audit") return;
+    void refreshAuditOverview();
+  }, [activePage, auditRunIdFilter, auditAgentFilter, auditToolFilter, auditEventFilter]);
+
+  useEffect(() => {
+    if (activePage !== "audit" || selectedAuditLlmId === null) return;
+    void loadAuditLlmDetail(selectedAuditLlmId);
+  }, [activePage, selectedAuditLlmId]);
 
   useEffect(() => {
     if (activePage !== "approvals") return;
@@ -4002,6 +4168,17 @@ export function MonitorTab() {
     if (activePage !== "files" || !filesResponse) return;
     void refreshFiles();
   }, [activePage, fileFilter, fileToolFilter]);
+
+  useEffect(() => {
+    if (!["flow", "transcripts", "brain", "runtime-map", "models", "security", "context"].includes(activePage)) return;
+    if (overviewActivity) return;
+    void api.getMonitorOverviewActivity().then((activity) => {
+      setOverviewActivity(activity);
+      setOverview((current) => (current ? applyOverviewActivitySnapshot(current, activity) : current));
+    }).catch(() => {
+      // Keep overview usable even if activity snapshot refresh fails.
+    });
+  }, [activePage, overviewActivity]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4718,37 +4895,18 @@ export function MonitorTab() {
   }, [taskRunsResponse]);
 
   const modelPrimary = modelRows[0]?.name ?? config?.global_llm?.default_model ?? "unknown";
-  const autonomyScore = overview
-    ? clamp(
-        Math.round(
-          ((1 - overview.usage_window.tool_errors / Math.max(overview.usage_window.tool_calls || 1, 1)) * 0.55 +
-            Math.min(overview.usage_window.tool_calls / Math.max(overview.usage_window.llm_calls || 1, 1), 1) * 0.45) *
-            100,
-        ),
-        0,
-        100,
-      )
-    : 0;
   const contextWindow = resolveConfiguredContextWindow(config, modelRows[0]?.name ?? config?.global_llm?.default_model);
-  const contextUsage = overview ? clamp((overview.usage_window.total_tokens / contextWindow) * 100, 0, 100) : 0;
   const contextCompactionEntries = contextCompactionsResponse?.entries ?? overview?.recent_compactions ?? [];
   const latestCompaction = contextCompactionEntries[0];
   const pendingApprovalCount = approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending ?? 0;
   const approvalQueueTotal = approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total ?? 0;
-  const overviewFlowGraph = useMemo(
-    () =>
-      buildFlowTopologyGraph({
-        overview,
-        networkEntries,
-        agentDirectory,
-        modelPrimary,
-        connectionState,
-        pendingApprovalCount,
-        approvalQueueTotal,
-        compact: true,
-      }),
-    [agentDirectory, approvalQueueTotal, connectionState, modelPrimary, networkEntries, overview, pendingApprovalCount],
-  );
+  const overviewTaskCounts = overview?.tasks.counts;
+  const overviewTaskContext = overview?.tasks.context;
+  const overviewUsageFiles = overview?.usage_window.files;
+  const overviewTopSkills = overview?.usage_window.top_skills ?? [];
+  const overviewCompactionReasons = overview?.compactions.reasons ?? [];
+  const overviewTopTaskAgents = overview?.tasks.by_agent ?? [];
+  const overviewTopOutputs = overview?.tasks.artifacts.top_outputs ?? [];
   const detailFlowGraph = useMemo(
     () =>
       buildFlowTopologyGraph({
@@ -4798,64 +4956,6 @@ export function MonitorTab() {
   const passedChecks = securityChecks.filter((check) => check.pass).length;
   const failedChecks = securityChecks.length - passedChecks;
   const securityScore = securityChecks.length ? Math.round((passedChecks / securityChecks.length) * 100) : 0;
-  const overviewRuntimeStats = useMemo(
-    () => [
-      {
-        id: "spending",
-        icon: "$",
-        label: "Spending",
-        value: formatCost(overview?.usage_window.estimated_cost_usd),
-        sub: `input ${formatNumber(overview?.usage_window.input_tokens)} · output ${formatNumber(overview?.usage_window.output_tokens)}`,
-      },
-      {
-        id: "model",
-        icon: "AI",
-        label: "Model",
-        value: modelPrimary,
-        sub: `${formatNumber(modelRows.length)} distinct models observed`,
-      },
-      {
-        id: "tokens",
-        icon: "Tok",
-        label: "Tokens",
-        value: formatNumber(overview?.usage_window.total_tokens),
-        sub: `context window usage ${formatPercent(contextUsage, 1)}`,
-      },
-      {
-        id: "sessions",
-        icon: "Chat",
-        label: "Sessions",
-        value: formatNumber(overview?.system.stats.chatrooms),
-        sub: `${formatNumber(clusters.length)} hot chats in runtime window`,
-      },
-      {
-        id: "reliability",
-        icon: "OK",
-        label: "Reliability",
-        value: formatPercent(securityScore),
-        sub: `${passedChecks}/${securityChecks.length || 0} checks passed`,
-      },
-      {
-        id: "approvals",
-        icon: "Q",
-        label: "Approvals",
-        value: formatNumber(pendingApprovalCount),
-        sub: `${formatNumber(approvalQueueTotal)} queued decisions`,
-      },
-    ],
-    [
-      approvalQueueTotal,
-      clusters.length,
-      contextUsage,
-      modelPrimary,
-      modelRows.length,
-      overview,
-      passedChecks,
-      pendingApprovalCount,
-      securityChecks.length,
-      securityScore,
-    ],
-  );
 
   const approvalsPending = useMemo(
     () => approvalQueueResponse?.entries.filter((item) => item.status === "pending") ?? [],
@@ -4866,6 +4966,15 @@ export function MonitorTab() {
     [approvalQueueResponse],
   );
   const approvalAuditEntries = approvalAuditResponse?.entries ?? [];
+  const auditTimelineEntries = useMemo(() => {
+    const entries = auditOverviewResponse?.timeline ?? [];
+    if (auditKindFilter === "all") return entries;
+    return entries.filter((entry) => entry.kind === auditKindFilter);
+  }, [auditKindFilter, auditOverviewResponse]);
+  const auditTopAgents = auditOverviewResponse?.top_agents ?? [];
+  const auditTopModels = auditOverviewResponse?.top_models ?? [];
+  const auditTopTools = auditOverviewResponse?.top_tools ?? [];
+  const auditTopEvents = auditOverviewResponse?.top_events ?? [];
 
   const limitsRows = useMemo(() => {
     if (!overview) return [] as Array<{ label: string; value: number; max: number; detail: string }>;
@@ -4987,6 +5096,40 @@ export function MonitorTab() {
       setError(nextError instanceof Error ? nextError.message : "Failed to load monitor approval audit");
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function refreshAuditOverview() {
+    setRefreshing(true);
+    try {
+      const response = await api.getAuditOverview({
+        run_id: auditRunIdFilter ?? undefined,
+        agent: auditAgentFilter.trim() || undefined,
+        tool_name: auditToolFilter.trim() || undefined,
+        event_type: auditEventFilter.trim() || undefined,
+        limit: 160,
+      });
+      setAuditOverviewResponse(response);
+      setError("");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load audit overview");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function loadAuditLlmDetail(callId: number) {
+    setSelectedAuditLlmLoading(true);
+    setSelectedAuditLlmError("");
+    try {
+      const response = await api.getAuditLlmCall(callId);
+      setSelectedAuditLlmDetail(response);
+      setError("");
+    } catch (nextError) {
+      setSelectedAuditLlmDetail(null);
+      setSelectedAuditLlmError(nextError instanceof Error ? nextError.message : "Failed to load LLM audit detail");
+    } finally {
+      setSelectedAuditLlmLoading(false);
     }
   }
 
@@ -5132,153 +5275,499 @@ export function MonitorTab() {
       ) : null}
       {loading && !overview ? <div className="page active"><div className="empty-state">Loading Catown monitor...</div></div> : null}
 
-      <section className={pageClass("overview", "page--detail-full")} id="page-overview">
-        <div className="overview-summary-row">
-          <div className="card overview-hero-card">
-            <div>
-              <div className="card-title">How independent is your agent?</div>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-                <span className="card-value">{autonomyScore}%</span>
-                <span className={`tag ${autonomyScore >= 75 ? "tag--success" : autonomyScore >= 45 ? "tag--warning" : "tag--error"}`}>
-                  {autonomyScore >= 75 ? "healthy" : autonomyScore >= 45 ? "watch" : "needs work"}
-                </span>
-              </div>
-              <div className="card-sub">Weighted from tool success, tool adoption and recent runtime resilience.</div>
-            </div>
-            <div className="overview-hero-card__meta">
-              <div className="small-note">Last monitor window</div>
-              <div className="mono" style={{ fontSize: 13, marginTop: 6 }}>
-                {formatNumber(overview?.usage_window.llm_calls)} llm / {formatNumber(overview?.usage_window.tool_calls)} tools
-              </div>
-              <div className="small-note" style={{ marginTop: 6 }}>
-                {formatNumber(overview?.usage_window.tool_errors)} tool errors · {formatTimeAgo(overview?.captured_at)}
-              </div>
+      <section className={pageClass("audit", "page--dashboard-wide")} id="page-audit">
+        <div className="refresh-bar" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div className="section-title">Audit</div>
+            <div className="section-subtitle">Telemetry-backed runtime audit for LLM calls, tool calls, and immutable events.</div>
+          </div>
+          <div className="inline-actions">
+            <span className="small-note">{formatNumber(auditOverviewResponse?.counts.timeline ?? auditTimelineEntries.length)} records</span>
+            <button type="button" className="refresh-btn" onClick={() => void refreshAuditOverview()} disabled={refreshing}>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="card" style={{ marginBottom: 16 }}>
+          <SectionTitle title="Filters" subtitle="Narrow the audit stream by run, agent, tool, or event type." />
+          <div className="inline-actions" style={{ marginTop: 12, alignItems: "center" }}>
+            <input
+              value={auditRunIdInput}
+              onChange={(event) => setAuditRunIdInput(event.target.value)}
+              placeholder="run id"
+              className="search-input"
+              style={{ width: 120 }}
+              inputMode="numeric"
+            />
+            <button
+              type="button"
+              className="time-btn"
+              onClick={() => setAuditRunIdFilter(auditRunIdInput.trim() ? Number(auditRunIdInput.trim()) || null : null)}
+            >
+              Apply Run
+            </button>
+            <input
+              value={auditAgentFilter}
+              onChange={(event) => setAuditAgentFilter(event.target.value)}
+              placeholder="agent"
+              className="search-input"
+              style={{ width: 180 }}
+            />
+            <input
+              value={auditToolFilter}
+              onChange={(event) => setAuditToolFilter(event.target.value)}
+              placeholder="tool name"
+              className="search-input"
+              style={{ width: 180 }}
+            />
+            <input
+              value={auditEventFilter}
+              onChange={(event) => setAuditEventFilter(event.target.value)}
+              placeholder="event type"
+              className="search-input"
+              style={{ width: 180 }}
+            />
+            <button
+              type="button"
+              className="time-btn"
+              onClick={() => {
+                setAuditRunIdInput("");
+                setAuditRunIdFilter(null);
+                setAuditAgentFilter("");
+                setAuditToolFilter("");
+                setAuditEventFilter("");
+                setAuditKindFilter("all");
+                setSelectedAuditLlmId(null);
+                setSelectedAuditLlmDetail(null);
+              }}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="inline-actions" style={{ marginTop: 12 }}>
+            {(["all", "llm", "tool", "event"] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`time-btn ${auditKindFilter === kind ? "active" : ""}`}
+                onClick={() => setAuditKindFilter(kind)}
+              >
+                {kind === "all" ? "all" : kind.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-title">LLM Calls</div>
+            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.llm_calls)}</div>
+            <div className="card-sub">
+              {formatNumber(auditOverviewResponse?.counts.errored_llm_calls)} errored · {formatDuration(auditOverviewResponse?.durations.llm_total_ms)}
             </div>
           </div>
-
-          <div className="card overview-runtime-window-card">
-            <div className="card-title">Runtime Cards</div>
-            <div className="refresh-bar overview-runtime-window-card__bar" style={{ marginBottom: 0 }}>
-              <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-                ↻
-              </button>
-              <span className="pulse" />
-              <span className="live-badge">Live</span>
-              <span className="refresh-time">Live subscription · Runtime cards window {overview?.usage_window.runtime_cards_considered ?? 0}</span>
-            </div>
-            <div className="stats-footer overview-runtime-window-card__stats">
-              {overviewRuntimeStats.map((item) => (
-                <div key={item.id} className="stats-footer-item">
-                  <span className="stats-footer-icon">{item.icon}</span>
-                  <div>
-                    <div className="stats-footer-label">{item.label}</div>
-                    <div className="stats-footer-value">{item.value}</div>
-                    <div className="stats-footer-sub">{item.sub}</div>
-                  </div>
-                </div>
-              ))}
+          <div className="card">
+            <div className="card-title">Tool Calls</div>
+            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.tool_calls)}</div>
+            <div className="card-sub">{formatNumber(auditTopTools.length)} tools in current slice</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Events</div>
+            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.events)}</div>
+            <div className="card-sub">{formatNumber(auditTopEvents.length)} event types in current slice</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Tokens</div>
+            <div className="card-value">{formatNumber(auditOverviewResponse?.tokens.total)}</div>
+            <div className="card-sub">
+              {formatNumber(auditOverviewResponse?.tokens.input)} in / {formatNumber(auditOverviewResponse?.tokens.output)} out
             </div>
           </div>
         </div>
 
-        <div className="overview-split">
-          <div>
-            <div className="overview-flow-pane">
-              <div className="flow-container" id="overview-flow-container">
-                <FlowTopologyView graph={overviewFlowGraph} compact />
+        <div className="split-panels">
+          <div className="card">
+            <SectionTitle title="Audit Timeline" subtitle="Mixed feed ordered by captured time." />
+            {auditTimelineEntries.length > 0 ? (
+              <div className="feed-list" style={{ marginTop: 12 }}>
+                {auditTimelineEntries.map((entry) => (
+                  <div
+                    key={`${entry.kind}-${entry.id}`}
+                    className="feed-item"
+                    style={{ cursor: entry.kind === "llm" ? "pointer" : "default" }}
+                    onClick={() => {
+                      if (entry.kind === "llm") {
+                        setSelectedAuditLlmId(entry.id);
+                      }
+                    }}
+                  >
+                    <div className={`feed-badge feed-badge--${auditEntryTone(entry)}`}>{auditEntryBadge(entry)}</div>
+                    <div className="feed-body">
+                      <div className="feed-head">
+                        <strong>{auditEntryTitle(entry)}</strong>
+                        <span className="small-note">{formatTimeAgo(entry.created_at)}</span>
+                      </div>
+                      <div className="feed-meta">
+                        {entry.agent_name ? <span>{entry.agent_name}</span> : null}
+                        {typeof entry.run_id === "number" ? <span>run #{entry.run_id}</span> : null}
+                        {typeof entry.stage_id === "number" ? <span>stage #{entry.stage_id}</span> : null}
+                        {entry.kind === "tool" && entry.tool_name ? <span>{entry.tool_name}</span> : null}
+                        {entry.kind === "event" && entry.event_type ? <span>{entry.event_type}</span> : null}
+                        {entry.kind === "llm" && entry.model ? <span>{entry.model}</span> : null}
+                      </div>
+                      <div className="feed-preview">{auditEntryPreview(entry)}</div>
+                      <div className="approval-card__meta" style={{ marginTop: 8 }}>
+                        {entry.kind === "llm" ? <span className="tag">{formatNumber((entry.token_input ?? 0) + (entry.token_output ?? 0))} tokens</span> : null}
+                        {entry.kind === "llm" ? <span className="tag">{formatDuration(entry.duration_ms ?? undefined)}</span> : null}
+                        {entry.kind === "tool" ? <span className="tag">{entry.success === false ? "failed" : "success"}</span> : null}
+                        {entry.kind === "tool" ? <span className="tag">{formatDuration(entry.duration_ms ?? undefined)}</span> : null}
+                        {entry.kind === "event" && entry.stage_name ? <span className="tag">{entry.stage_name}</span> : null}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-            <div className="system-health-panel">
-              <div className="section-title">System Health</div>
-              <div className="health-group">
-                <div className="health-label">Services</div>
-                <div className="badge-row">
-                  {Object.entries(overview?.system.features ?? {}).map(([name, enabled]) => (
-                    <span key={name} className={`tag ${enabled ? "tag--success" : "tag--error"}`}>
-                      {name}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="health-group">
-                <div className="health-label">Workspace</div>
-                <div className="badge-row">
-                  <span className="tag">{formatNumber(overview?.system.stats.projects)} projects</span>
-                  <span className="tag">{formatNumber(overview?.system.stats.visible_chats)} visible chats</span>
-                  <span className="tag">{formatNumber(overview?.system.stats.runtime_cards)} runtime cards</span>
-                  <span className="tag">{formatNumber(overview?.system.stats.approval_queue_pending)} pending approvals</span>
-                </div>
-              </div>
-              <div className="health-group">
-                <div className="health-label">Collaboration</div>
+            ) : (
+              <div className="muted-block" style={{ marginTop: 12 }}>No audit records matched the current filter.</div>
+            )}
+          </div>
+
+          <div className="card">
+            <SectionTitle title="Detail" subtitle="Select an LLM call to inspect the full prompt and response payload." />
+            {selectedAuditLlmLoading ? <div className="muted-block" style={{ marginTop: 12 }}>Loading raw LLM audit detail...</div> : null}
+            {selectedAuditLlmError ? (
+              <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmError}</div>
+            ) : null}
+            {!selectedAuditLlmLoading && !selectedAuditLlmError && selectedAuditLlmDetail ? (
+              <div style={{ marginTop: 12 }}>
                 <div className="metric-list">
                   <div className="metric-row">
-                    <span>Active collaborators</span>
-                    <strong>{formatNumber(overview?.system.collaboration.active_collaborators)}</strong>
+                    <span>Model</span>
+                    <strong>{selectedAuditLlmDetail.model || "unknown"}</strong>
                   </div>
                   <div className="metric-row">
-                    <span>Pending tasks</span>
-                    <strong>{formatNumber(overview?.system.collaboration.pending_tasks)}</strong>
+                    <span>Agent</span>
+                    <strong>{selectedAuditLlmDetail.agent_name}</strong>
                   </div>
                   <div className="metric-row">
-                    <span>Monitor status</span>
-                    <strong>{overview?.system.collaboration.status ?? "--"}</strong>
+                    <span>Run</span>
+                    <strong>{selectedAuditLlmDetail.run_id ?? "--"}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Tokens</span>
+                    <strong>{formatNumber(selectedAuditLlmDetail.token_input + selectedAuditLlmDetail.token_output)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Duration</span>
+                    <strong>{formatDuration(selectedAuditLlmDetail.duration_ms)}</strong>
                   </div>
                 </div>
+                {selectedAuditLlmDetail.tool_calls.length > 0 ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    <strong>Tool calls</strong>
+                    <div className="small-note" style={{ marginTop: 6 }}>
+                      {selectedAuditLlmDetail.tool_calls.map((tool) => `${tool.tool_name} (${tool.success ? "ok" : "failed"})`).join(" · ")}
+                    </div>
+                  </div>
+                ) : null}
+                {selectedAuditLlmDetail.system_prompt ? (
+                  <LazyRawPayload label="System Prompt" value={selectedAuditLlmDetail.system_prompt} className="muted-block" style={{ marginTop: 12 }} />
+                ) : null}
+                {selectedAuditLlmDetail.messages ? (
+                  <LazyRawPayload label="Messages" value={selectedAuditLlmDetail.messages} className="muted-block" style={{ marginTop: 12 }} />
+                ) : null}
+                {selectedAuditLlmDetail.response_tool_calls ? (
+                  <LazyRawPayload label="Response Tool Calls" value={selectedAuditLlmDetail.response_tool_calls} className="muted-block" style={{ marginTop: 12 }} />
+                ) : null}
+                {selectedAuditLlmDetail.response_content ? (
+                  <LazyRawPayload label="Response Content" value={selectedAuditLlmDetail.response_content} className="muted-block" style={{ marginTop: 12 }} />
+                ) : null}
+                {selectedAuditLlmDetail.error ? (
+                  <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmDetail.error}</div>
+                ) : null}
               </div>
-              <div className="health-group">
-                <div className="health-label">Security posture</div>
-                <div className="badge-row">
-                  {securityChecks.map((check) => (
-                    <span key={check.label} className={`tag ${check.pass ? "tag--success" : "tag--warning"}`}>
-                      {check.label}
-                    </span>
-                  ))}
-                </div>
+            ) : null}
+            {!selectedAuditLlmLoading && !selectedAuditLlmError && !selectedAuditLlmDetail ? (
+              <div className="muted-block" style={{ marginTop: 12 }}>Pick an `LLM` row on the left to inspect full prompt/response audit data.</div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="split-panels" style={{ marginTop: 16 }}>
+          <div className="card">
+            <SectionTitle title="Top Agents" subtitle="Most active agents in the current filtered slice." />
+            {auditTopAgents.length > 0 ? (
+              <div className="feed-list" style={{ marginTop: 12 }}>
+                {auditTopAgents.map((item) => (
+                  <div key={item.name} className="feed-item">
+                    <div className="feed-badge">Agent</div>
+                    <div className="feed-body">
+                      <div className="feed-head">
+                        <strong>{item.name}</strong>
+                        <span className="small-note">{formatNumber(item.tokens)} tokens</span>
+                      </div>
+                      <div className="feed-meta">
+                        <span>{formatNumber(item.llm_calls)} llm</span>
+                        <span>{formatNumber(item.tool_calls)} tools</span>
+                        <span>{formatNumber(item.events)} events</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block" style={{ marginTop: 12 }}>No agent summary yet.</div>
+            )}
+          </div>
+
+          <div className="card">
+            <SectionTitle title="Model / Tool / Event Mix" subtitle="Quick distribution view for the current filter." />
+            <div className="feed-list" style={{ marginTop: 12 }}>
+              <div className="simple-row">
+                <strong>Models</strong>
+                <div className="small-note">{auditTopModels.map((item) => `${item.name} (${item.calls})`).join(" · ") || "none"}</div>
+              </div>
+              <div className="simple-row">
+                <strong>Tools</strong>
+                <div className="small-note">{auditTopTools.map((item) => `${item.name} (${item.count})`).join(" · ") || "none"}</div>
+              </div>
+              <div className="simple-row">
+                <strong>Events</strong>
+                <div className="small-note">{auditTopEvents.map((item) => `${item.name} (${item.count})`).join(" · ") || "none"}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className={pageClass("overview", "page--detail-full")} id="page-overview">
+        <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <div className="section-title">Overview</div>
+            <div className="section-subtitle">Aggregate stats and overall state only.</div>
+          </div>
+          <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
+            Refresh
+          </button>
+        </div>
+
+        <div className="grid" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-title">Monitor status</div>
+            <div className="card-value">{overview?.system.status ?? "--"}</div>
+            <div className="small-note">Realtime {connectionState} · last activity {formatTimeAgo(overview?.system.last_message_at)}</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Running tasks</div>
+            <div className="card-value">{formatNumber(overviewTaskCounts?.running)}</div>
+            <div className="small-note">
+              {formatNumber(overviewTaskCounts?.total)} total · {formatNumber(overviewTaskCounts?.awaiting_approval)} awaiting approval
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">LLM requests</div>
+            <div className="card-value">{formatNumber(overview?.llm.requests)}</div>
+            <div className="small-note">
+              {formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} success · avg {formatDuration(overview?.llm.avg_latency_ms ?? undefined)}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Tokens</div>
+            <div className="card-value">{formatNumber(overview?.usage_window.total_tokens)}</div>
+            <div className="small-note">
+              {formatNumber(overview?.usage_window.input_tokens)} in / {formatNumber(overview?.usage_window.output_tokens)} out
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Pending approvals</div>
+            <div className="card-value">{formatNumber(pendingApprovalCount)}</div>
+            <div className="small-note">
+              Queue total {formatNumber(approvalQueueTotal)} · remembered {formatNumber(overview?.approvals.audit.remembered)}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid">
+          <div className="card">
+            <SectionTitle title="Task Summary" subtitle="Task counts, token load and artifact output." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Total tasks</span>
+                <strong>{formatNumber(overviewTaskCounts?.total)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Completed / Failed</span>
+                <strong>{formatNumber(overviewTaskCounts?.completed)} / {formatNumber(overviewTaskCounts?.failed)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Task tokens</span>
+                <strong>{formatNumber(overview?.tasks.tokens.total)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Avg tokens / task</span>
+                <strong>{formatNumber(overview?.tasks.tokens.avg_per_task)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Artifacts recorded</span>
+                <strong>{formatNumber(overview?.tasks.artifacts.recorded)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Runs with outputs</span>
+                <strong>{formatNumber(overview?.tasks.artifacts.task_runs_with_artifacts)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Context usage</span>
+                <strong>{overviewTaskContext?.avg_usage_ratio != null ? formatPercent(overviewTaskContext.avg_usage_ratio * 100, 1) : "--"}</strong>
+              </div>
+            </div>
+            <div className="small-note" style={{ marginTop: 12 }}>
+              Top agents: {overviewTopTaskAgents.map((item) => `${item.agent_name} (${item.task_count})`).join(" · ") || "none"}
+            </div>
+            <div className="small-note" style={{ marginTop: 8 }}>
+              Top outputs: {overviewTopOutputs.map((item) => `${item.path} (${item.count})`).join(" · ") || "none"}
+            </div>
+          </div>
+
+          <div className="card">
+            <SectionTitle title="LLM Summary" subtitle="Connection health, request volume and models." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Status</span>
+                <strong>{overview?.llm.status ?? "--"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Primary model</span>
+                <strong>{modelPrimary}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Tokens</span>
+                <strong>{formatNumber(overview?.llm.tokens.total)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Errors</span>
+                <strong>{formatNumber(overview?.llm.errors)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Tool follow-ups</span>
+                <strong>{formatNumber(overview?.llm.tool_followups.calls)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Last request</span>
+                <strong>{formatTimeAgo(overview?.llm.last_request_at)}</strong>
               </div>
             </div>
           </div>
 
-          <div className="overview-side-stack">
-            <div className="card">
-              <div className="section-title">Active Tasks</div>
-              <div className="feed-list">
-                {(overview?.recent_runtime.slice(0, 8) ?? []).map((item) => (
-                  <div key={item.id} className="feed-item">
-                    <div className={`feed-badge feed-badge--${runtimeTone(item.type, item.success)}`}>{runtimeLabel(item.type)}</div>
-                    <div className="feed-body">
-                      <div className="feed-head">
-                        <strong>{item.title}</strong>
-                        <span className="small-note">{formatTimeAgo(item.created_at)}</span>
-                      </div>
-                      <div className="feed-meta">
-                        <span>{item.project_name || "Standalone"}</span>
-                        <span>{item.chat_title}</span>
-                        {item.stage ? <span>{item.stage}</span> : null}
-                      </div>
-                      {item.preview ? <div className="feed-preview">{item.preview}</div> : null}
-                    </div>
-                  </div>
-                ))}
+          <div className="card">
+            <SectionTitle title="Tools And Skills" subtitle="Tool call mix and skill injection activity." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Tool calls</span>
+                <strong>{formatNumber(overview?.usage_window.tool_calls)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Tool errors</span>
+                <strong>{formatNumber(overview?.usage_window.tool_errors)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Top tool</span>
+                <strong>{overview?.usage_window.top_tools[0]?.tool_name ?? "--"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Skill injects</span>
+                <strong>{formatNumber(overviewTopSkills.reduce((sum, item) => sum + item.inject_count, 0))}</strong>
               </div>
             </div>
+            <div className="small-note" style={{ marginTop: 12 }}>
+              Tools: {overview?.usage_window.top_tools.map((item) => `${item.tool_name} (${item.call_count})`).join(" · ") || "none"}
+            </div>
+            <div className="small-note" style={{ marginTop: 8 }}>
+              Skills: {overviewTopSkills.map((item) => `${item.skill_name} (${item.inject_count})`).join(" · ") || "none"}
+            </div>
+          </div>
 
-            <div className="card">
-              <div className="section-title">Brain Preview</div>
-              <div className="feed-list">
-                {brainEvents.slice(0, 10).map((event) => (
-                  <div key={event.id} className="simple-row">
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
-                      <strong>{event.label}</strong>
-                      <span className="small-note">{formatTimeAgo(event.createdAt)}</span>
-                    </div>
-                    <div className="small-note" style={{ marginBottom: 6 }}>
-                      {event.source} · {event.category}
-                    </div>
-                    <div className="muted-block">{event.detail}</div>
-                  </div>
-                ))}
+          <div className="card">
+            <SectionTitle title="File Summary" subtitle="Read/write/search/list/delete counts only." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Reads / Writes</span>
+                <strong>{formatNumber(overviewUsageFiles?.reads)} / {formatNumber(overviewUsageFiles?.writes)}</strong>
               </div>
+              <div className="metric-row">
+                <span>Searches / Lists</span>
+                <strong>{formatNumber(overviewUsageFiles?.searches)} / {formatNumber(overviewUsageFiles?.lists)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Deletes</span>
+                <strong>{formatNumber(overviewUsageFiles?.deletes)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Unique paths</span>
+                <strong>{formatNumber(overviewUsageFiles?.unique_paths)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Errors</span>
+                <strong>{formatNumber(overviewUsageFiles?.errors)}</strong>
+              </div>
+            </div>
+            <div className="small-note" style={{ marginTop: 12 }}>
+              Top paths: {overviewUsageFiles?.top_paths.map((item) => `${item.path} (${item.count})`).join(" · ") || "none"}
+            </div>
+          </div>
+
+          <div className="card">
+            <SectionTitle title="Approval Summary" subtitle="Queue pressure and approval behavior." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Pending / Total</span>
+                <strong>{formatNumber(overview?.approvals.queue.pending)} / {formatNumber(overview?.approvals.queue.total)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Approved / Rejected</span>
+                <strong>{formatNumber(overview?.approvals.audit.approved)} / {formatNumber(overview?.approvals.audit.rejected)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Remembered</span>
+                <strong>{formatNumber(overview?.approvals.audit.remembered)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Automatic</span>
+                <strong>{formatNumber(overview?.approvals.audit.automatic)}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <SectionTitle title="Compaction Summary" subtitle="Compression frequency and pressure." />
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Total compactions</span>
+                <strong>{formatNumber(overview?.compactions.total)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Task runs affected</span>
+                <strong>{formatNumber(overview?.compactions.task_runs)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Avg interval</span>
+                <strong>{overview?.compactions.avg_interval_minutes != null ? `${overview.compactions.avg_interval_minutes}m` : "--"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Avg per task</span>
+                <strong>{overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Avg usage ratio</span>
+                <strong>{overview?.compactions.avg_usage_ratio != null ? formatPercent(overview.compactions.avg_usage_ratio * 100, 1) : "--"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Last compaction</span>
+                <strong>{formatTimeAgo(overview?.compactions.last_compaction_at)}</strong>
+              </div>
+            </div>
+            <div className="small-note" style={{ marginTop: 12 }}>
+              Reasons: {overviewCompactionReasons.map((item) => `${item.reason} (${item.count})`).join(" · ") || "none"}
             </div>
           </div>
         </div>
@@ -5371,59 +5860,7 @@ export function MonitorTab() {
         </div>
         {visibleNetworkEntries.length > 0 ? (
           <div className="feed-list" style={{ gap: 8 }}>
-            {visibleNetworkEntries.map((entry) => {
-              const direction = activeDirection(entry);
-              const { from: directionFrom, to: directionTo } = parseDirection(direction);
-              const fromVisual = getDirectionVisual(directionFrom);
-              const toVisual = getDirectionVisual(directionTo);
-              const flowColor = entry.flow_id ? hashFlowColor(entry.flow_id) : fromVisual.color;
-              return (
-                <details
-                  key={entry.id}
-                  className="card network-log-card"
-                  style={{
-                    marginBottom: 8,
-                    padding: "10px 12px",
-                    width: "100%",
-                    minWidth: 0,
-                    boxSizing: "border-box",
-                    borderLeft: entry.flow_id ? `4px solid ${flowColor}` : undefined,
-                  }}
-                >
-                  <summary className="network-log-card__summary" style={{ cursor: "pointer", listStyle: "none", width: "100%", minWidth: 0 }}>
-                    <div className="network-log-card__head">
-                      <div className="network-log-card__title">
-                        <span
-                          title={direction}
-                          className="network-log-card__icon"
-                          style={{
-                            background: `${flowColor}1a`,
-                            color: flowColor,
-                          }}
-                        >
-                          <fromVisual.Icon size={16} strokeWidth={2.2} />
-                        </span>
-                        <strong>
-                          {direction}
-                          {" · "}
-                          {entry.method || "NET"} {entry.path || entry.url}
-                          {" · "}
-                          {entry.protocol || "unknown"}
-                          {" · "}
-                          {formatBytes(entry.request_bytes)} out / {formatBytes(entry.response_bytes)} in
-                          {" · "}
-                          {formatDuration(entry.duration_ms)}
-                          {entry.status_code ? ` · ${entry.status_code}` : ""}
-                          {entry.flow_id ? ` · ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
-                        </strong>
-                      </div>
-                      <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
-                    </div>
-                  </summary>
-                  <NetworkRawDump entry={entry} />
-                </details>
-              );
-            })}
+            {visibleNetworkEntries.map((entry) => <NetworkLogCard key={entry.id} entry={entry} />)}
           </div>
         ) : (
           <div className="muted-block">No network events captured for the current filter yet.</div>

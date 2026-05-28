@@ -92,10 +92,21 @@ class TestMonitorOverview:
         data = response.json()
         assert "system" in data
         assert "usage_window" in data
+        assert "tasks" in data
+        assert "llm" in data
+        assert "approvals" in data
+        assert "compactions" in data
+        assert "recent_runtime" not in data
+        assert "recent_messages" not in data
+        assert "recent_compactions" not in data
+
+    def test_overview_activity_returns_base_shape(self, client):
+        response = client.get("/api/monitor/overview/activity")
+        assert response.status_code == 200
+        data = response.json()
         assert "recent_runtime" in data
         assert "recent_messages" in data
         assert "recent_compactions" in data
-        assert "recent_policy_decisions" in data
 
     def test_overview_includes_collaboration_summary(self, client):
         from agents.collaboration import CollaborationTask, TaskStatus, collaboration_coordinator
@@ -218,19 +229,22 @@ class TestMonitorOverview:
         response = client.get("/api/monitor/overview")
         assert response.status_code == 200
         data = response.json()
+        activity_response = client.get("/api/monitor/overview/activity")
+        assert activity_response.status_code == 200
+        activity = activity_response.json()
 
         assert data["usage_window"]["llm_calls"] >= 1
         assert data["usage_window"]["tool_calls"] >= 1
         assert data["usage_window"]["tool_errors"] >= 1
         assert data["usage_window"]["input_tokens"] >= 120
         assert data["usage_window"]["output_tokens"] >= 48
-        assert any(item["type"] == "llm_call" for item in data["recent_runtime"])
-        assert any(item["tool_name"] == "read_file" for item in data["recent_runtime"])
+        assert any(item["type"] == "llm_call" for item in activity["recent_runtime"])
+        assert any(item["tool_name"] == "read_file" for item in activity["recent_runtime"])
         assert any(item["tool_name"] == "read_file" for item in data["usage_window"]["top_tools"])
-        assert any(item["content_preview"] == "Final answer to the user" for item in data["recent_messages"])
-        assert any(item["content"] == "Final answer to the user" for item in data["recent_messages"])
+        assert any(item["content_preview"] == "Final answer to the user" for item in activity["recent_messages"])
+        assert any(item["content"] == "Final answer to the user" for item in activity["recent_messages"])
 
-        llm_runtime = next(item for item in data["recent_runtime"] if item["type"] == "llm_call")
+        llm_runtime = next(item for item in activity["recent_runtime"] if item["type"] == "llm_call")
         assert llm_runtime["from_entity"] == agent_name
         assert llm_runtime["to_entity"] == "LLM"
         assert llm_runtime["operation_label"] == "llm"
@@ -241,7 +255,7 @@ class TestMonitorOverview:
         assert "Summarize the latest monitor status." in llm_runtime["prompt_preview"]
         assert "Generated answer" in llm_runtime["response_preview"]
 
-        tool_runtime = next(item for item in data["recent_runtime"] if item["type"] == "tool_call")
+        tool_runtime = next(item for item in activity["recent_runtime"] if item["type"] == "tool_call")
         assert tool_runtime["from_entity"] == agent_name
         assert tool_runtime["to_entity"] == "read_file"
         assert tool_runtime["operation_label"] == "read_file"
@@ -251,7 +265,7 @@ class TestMonitorOverview:
         assert tool_runtime["tool_call_id"] == "call-monitor-readme"
         assert "README.md" in tool_runtime["arguments_preview"]
 
-        text_message = next(item for item in data["recent_messages"] if item["content"] == "Final answer to the user")
+        text_message = next(item for item in activity["recent_messages"] if item["content"] == "Final answer to the user")
         assert text_message["client_turn_id"] == "turn-monitor-1"
 
         detail_response = client.get(f"/api/monitor/runtime-cards/{llm_runtime['id']}")
@@ -512,10 +526,13 @@ class TestMonitorOverview:
         assert response.status_code == 200
         data = response.json()
         assert data["system"]["stats"]["context_compactions"] >= 1
+        activity_response = client.get("/api/monitor/overview/activity")
+        assert activity_response.status_code == 200
+        activity = activity_response.json()
 
         entry = next(
             item
-            for item in data["recent_compactions"]
+            for item in activity["recent_compactions"]
             if item["summary"] == "analyst compacted context (dropped=2, truncated=1)."
         )
         assert entry["chat_title"] == "Compaction Chat"
@@ -528,85 +545,6 @@ class TestMonitorOverview:
         assert entry["scope_usage"]["run"]["selected_tokens"] == 1400
         assert "roles developer 1200 / user 2000" in entry["budget_summary"]
         assert "run 2/3 fragments, 1400/2200 tokens" in entry["scope_usage_summary"]
-
-    def test_overview_returns_recent_policy_decisions(self, client):
-        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
-        from services.policy_decision_contracts import build_policy_decision_event_payload
-
-        db = SessionLocal()
-        try:
-            project = Project(name="Policy Decision Project", status="active")
-            db.add(project)
-            db.commit()
-            db.refresh(project)
-
-            chatroom = Chatroom(
-                project_id=project.id,
-                title="Policy Decision Chat",
-                session_type="project-bound",
-                is_visible_in_chat_list=True,
-            )
-            db.add(chatroom)
-            db.commit()
-            db.refresh(chatroom)
-
-            task_run = TaskRun(
-                chatroom_id=chatroom.id,
-                project_id=project.id,
-                run_kind="chat_turn",
-                status="running",
-                title="Policy decision run",
-                user_request="Check policy decision monitor projection",
-                initiator="user",
-                target_agent_name="tester",
-            )
-            db.add(task_run)
-            db.commit()
-            db.refresh(task_run)
-
-            payload = build_policy_decision_event_payload(
-                {
-                    "kind": "policy_decision",
-                    "version": 1,
-                    "decision_id": "policy-decision-monitor-1",
-                    "decision_type": "action_request_policy",
-                    "subject": {
-                        "kind": "action_request",
-                        "id": "req-monitor-1",
-                    },
-                    "accepted": False,
-                    "stage_name": "testing",
-                }
-            )
-            db.add(
-                TaskRunEvent(
-                    task_run_id=task_run.id,
-                    event_index=1,
-                    event_type="policy_decision_recorded",
-                    agent_name="tester",
-                    summary="Policy decision rejected for action_request req-monitor-1.",
-                    payload_json=json.dumps(payload),
-                )
-            )
-            db.commit()
-        finally:
-            db.close()
-
-        response = client.get("/api/monitor/overview")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["system"]["stats"]["policy_decision_events"] >= 1
-
-        entry = next(
-            item
-            for item in data["recent_policy_decisions"]
-            if item["policy_decision_summary"]["decision_id"] == "policy-decision-monitor-1"
-        )
-        assert entry["chat_title"] == "Policy Decision Chat"
-        assert entry["project_name"] == "Policy Decision Project"
-        assert entry["accepted"] is False
-        assert entry["decision_type"] == "action_request_policy"
-        assert entry["subject_id"] == "req-monitor-1"
 
     def test_monitor_task_runs_returns_global_run_history(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent

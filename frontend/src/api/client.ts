@@ -15,12 +15,17 @@ import type {
   MonitorProcessesResponse,
   MonitorApprovalAuditResponse,
   MonitorApprovalQueueResponse,
+  MonitorAuditOverviewResponse,
   ApprovalQueueItem,
+  AuditLlmDetailResponse,
+  AuditLlmListResponse,
   MonitorRuntimeDetail,
   MonitorTaskRunStepsResponse,
   MonitorTaskRunsResponse,
   MessageItem,
   MonitorOverview,
+  MonitorOverviewActivity,
+  MonitorOverviewSummary,
   MonitorContextCompactionsResponse,
   MonitorUsageResponse,
   OrchestrationConfigPayload,
@@ -473,7 +478,10 @@ export const api = {
     });
   },
   getMonitorOverview() {
-    return request<MonitorOverview>("/api/monitor/overview?runtime_limit=80&summary_window=400&message_limit=40");
+    return request<MonitorOverviewSummary>("/api/monitor/overview?range=24h");
+  },
+  getMonitorOverviewActivity() {
+    return request<MonitorOverviewActivity>("/api/monitor/overview/activity?runtime_limit=80&summary_window=96&message_limit=40&compaction_limit=16");
   },
   getMonitorContextCompactions(limit = 120) {
     return request<MonitorContextCompactionsResponse>(`/api/monitor/context-compactions?limit=${limit}`);
@@ -505,6 +513,45 @@ export const api = {
       limit: String(limit),
     });
     return request<MonitorTaskRunsResponse>(`/api/monitor/task-runs?${params.toString()}`);
+  },
+  getAuditOverview(params?: {
+    run_id?: number;
+    agent?: string;
+    event_type?: string;
+    tool_name?: string;
+    limit?: number;
+  }) {
+    const search = new URLSearchParams();
+    if (typeof params?.run_id === "number" && Number.isFinite(params.run_id)) {
+      search.set("run_id", String(params.run_id));
+    }
+    if (params?.agent?.trim()) search.set("agent", params.agent.trim());
+    if (params?.event_type?.trim()) search.set("event_type", params.event_type.trim());
+    if (params?.tool_name?.trim()) search.set("tool_name", params.tool_name.trim());
+    search.set("limit", String(params?.limit ?? 120));
+    return request<MonitorAuditOverviewResponse>(`/api/audit/overview?${search.toString()}`);
+  },
+  getAuditLlmCalls(params?: {
+    run_id?: number;
+    agent?: string;
+    stage_id?: number;
+    limit?: number;
+    offset?: number;
+  }) {
+    const search = new URLSearchParams();
+    if (typeof params?.run_id === "number" && Number.isFinite(params.run_id)) {
+      search.set("run_id", String(params.run_id));
+    }
+    if (params?.agent?.trim()) search.set("agent", params.agent.trim());
+    if (typeof params?.stage_id === "number" && Number.isFinite(params.stage_id)) {
+      search.set("stage_id", String(params.stage_id));
+    }
+    search.set("limit", String(params?.limit ?? 60));
+    search.set("offset", String(params?.offset ?? 0));
+    return request<AuditLlmListResponse>(`/api/audit/llm?${search.toString()}`);
+  },
+  getAuditLlmCall(callId: number) {
+    return request<AuditLlmDetailResponse>(`/api/audit/llm/${callId}`);
   },
   getMonitorProcesses(limit = 30, tailChars = 0) {
     const params = new URLSearchParams({

@@ -564,6 +564,128 @@ export type MonitorApprovalAuditResponse = {
   entries: MonitorApprovalAuditEntry[];
 };
 
+export type MonitorAuditTimelineEntry = {
+  kind: "llm" | "tool" | "event";
+  id: number;
+  run_id?: number | null;
+  stage_id?: number | null;
+  project_id?: number | null;
+  stage_run_id?: number | null;
+  asset_id?: number | null;
+  agent_name?: string | null;
+  model?: string | null;
+  turn_index?: number | null;
+  token_input?: number | null;
+  token_output?: number | null;
+  duration_ms?: number | null;
+  error?: string | null;
+  tool_name?: string | null;
+  llm_call_id?: number | null;
+  success?: boolean | null;
+  result_length?: number | null;
+  event_type?: string | null;
+  stage_name?: string | null;
+  summary?: string | null;
+  created_at?: string | null;
+};
+
+export type MonitorAuditModelSummary = {
+  name: string;
+  calls: number;
+  tokens: number;
+};
+
+export type MonitorAuditAgentSummary = {
+  name: string;
+  llm_calls: number;
+  tool_calls: number;
+  events: number;
+  tokens: number;
+};
+
+export type MonitorAuditNamedCount = {
+  name: string;
+  count: number;
+};
+
+export type MonitorAuditOverviewResponse = {
+  captured_at: string;
+  filters: {
+    run_id?: number | null;
+    agent?: string | null;
+    event_type?: string | null;
+    tool_name?: string | null;
+    limit: number;
+  };
+  counts: {
+    llm_calls: number;
+    tool_calls: number;
+    events: number;
+    timeline: number;
+    errored_llm_calls: number;
+  };
+  tokens: {
+    input: number;
+    output: number;
+    total: number;
+  };
+  durations: {
+    llm_total_ms: number;
+  };
+  top_models: MonitorAuditModelSummary[];
+  top_agents: MonitorAuditAgentSummary[];
+  top_tools: MonitorAuditNamedCount[];
+  top_events: MonitorAuditNamedCount[];
+  timeline: MonitorAuditTimelineEntry[];
+};
+
+export type AuditLlmListItem = {
+  id: number;
+  run_id?: number | null;
+  stage_id?: number | null;
+  agent_name: string;
+  turn_index: number;
+  model?: string | null;
+  token_input: number;
+  token_output: number;
+  duration_ms: number;
+  error?: string | null;
+  content_preview?: string | null;
+  created_at?: string | null;
+};
+
+export type AuditLlmListResponse = {
+  total: number;
+  items: AuditLlmListItem[];
+};
+
+export type AuditLlmToolCall = {
+  id: number;
+  tool_name: string;
+  success: boolean;
+  duration_ms: number;
+  result_preview?: string | null;
+};
+
+export type AuditLlmDetailResponse = {
+  id: number;
+  run_id?: number | null;
+  stage_id?: number | null;
+  agent_name: string;
+  turn_index: number;
+  model?: string | null;
+  system_prompt?: string | null;
+  messages?: unknown;
+  response_content?: string | null;
+  response_tool_calls?: unknown;
+  token_input: number;
+  token_output: number;
+  duration_ms: number;
+  error?: string | null;
+  created_at?: string | null;
+  tool_calls: AuditLlmToolCall[];
+};
+
 export type MonitorCompactionItem = {
   id: number;
   task_run_id?: number | null;
@@ -1348,7 +1470,7 @@ export type MonitorNetworkResponse = {
   entries: MonitorNetworkEvent[];
 };
 
-export type MonitorOverview = {
+export type MonitorOverviewSummary = {
   captured_at: string;
   system: {
     status: string;
@@ -1375,6 +1497,7 @@ export type MonitorOverview = {
     last_message_at?: string | null;
   };
   usage_window: {
+    range?: "1h" | "6h" | "24h" | "7d" | "30d";
     runtime_cards_considered: number;
     llm_calls: number;
     tool_calls: number;
@@ -1389,8 +1512,116 @@ export type MonitorOverview = {
     };
     by_agent: MonitorAgentUsage[];
     top_tools: MonitorToolSummary[];
+    top_skills?: Array<{
+      skill_name: string;
+      inject_count: number;
+    }>;
+    files?: {
+      reads: number;
+      writes: number;
+      lists: number;
+      searches: number;
+      deletes: number;
+      errors: number;
+      unique_paths: number;
+      top_paths: Array<{
+        path: string;
+        count: number;
+      }>;
+    };
   };
+  tasks: {
+    range: "1h" | "6h" | "24h" | "7d" | "30d";
+    counts: {
+      total: number;
+      running: number;
+      completed: number;
+      failed: number;
+      awaiting_approval: number;
+    };
+    by_agent: Array<{
+      agent_name: string;
+      task_count: number;
+    }>;
+    tokens: {
+      input: number;
+      output: number;
+      total: number;
+      avg_per_task: number;
+    };
+    context: {
+      configured_window?: number | null;
+      avg_usage_ratio?: number | null;
+      max_usage_ratio?: number | null;
+      sampled_runs: number;
+    };
+    artifacts: {
+      recorded: number;
+      task_runs_with_artifacts: number;
+      top_outputs: Array<{
+        path: string;
+        count: number;
+      }>;
+    };
+  };
+  llm: {
+    range: "1h" | "6h" | "24h" | "7d" | "30d";
+    status: string;
+    requests: number;
+    success: number;
+    errors: number;
+    success_rate?: number | null;
+    avg_latency_ms?: number | null;
+    tokens: {
+      input: number;
+      output: number;
+      total: number;
+    };
+    tool_followups: {
+      calls: number;
+      errors: number;
+    };
+    top_models: Array<{
+      name: string;
+      calls: number;
+      tokens: number;
+    }>;
+    last_request_at?: string | null;
+  };
+  approvals: {
+    queue: {
+      total: number;
+      pending: number;
+      approved: number;
+      rejected: number;
+    };
+    audit: {
+      approved: number;
+      rejected: number;
+      remembered: number;
+      automatic: number;
+    };
+  };
+  compactions: {
+    total: number;
+    task_runs: number;
+    avg_interval_minutes?: number | null;
+    avg_per_task_run?: number | null;
+    avg_prompt_tokens?: number | null;
+    avg_usage_ratio?: number | null;
+    reasons: Array<{
+      reason: string;
+      count: number;
+    }>;
+    last_compaction_at?: string | null;
+  };
+};
+
+export type MonitorOverviewActivity = {
+  captured_at: string;
   recent_runtime: MonitorRuntimeItem[];
   recent_messages: MonitorMessageItem[];
-  recent_compactions?: MonitorCompactionItem[];
+  recent_compactions: MonitorCompactionItem[];
 };
+
+export type MonitorOverview = MonitorOverviewSummary & MonitorOverviewActivity;
