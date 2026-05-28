@@ -72,6 +72,13 @@ def test_tool_guidance_distinguishes_delegate_from_consult(monkeypatch):
 
 def test_runtime_environment_context_prefers_current_python(monkeypatch):
     monkeypatch.setattr("services.chat_runtime.sys.executable", "/opt/catown/venv/bin/python3")
+    monkeypatch.setattr("services.chat_runtime.platform.system", lambda: "Linux")
+    monkeypatch.setattr("services.chat_runtime.platform.release", lambda: "6.6.87.2-microsoft-standard-WSL2")
+    monkeypatch.setattr("services.chat_runtime.platform.python_version", lambda: "3.12.9")
+    monkeypatch.setattr("services.chat_runtime.os.name", "posix")
+    monkeypatch.setattr("services.chat_runtime.os.environ", {"SHELL": "/bin/bash"})
+    monkeypatch.setattr("services.chat_runtime.os.path.isfile", lambda path: path == "/bin/bash")
+    monkeypatch.setattr("services.chat_runtime.os.access", lambda path, mode: path == "/bin/bash")
     monkeypatch.setattr(
         "services.chat_runtime.shutil.which",
         lambda name: "/usr/bin/python3" if name == "python3" else None,
@@ -81,7 +88,10 @@ def test_runtime_environment_context_prefers_current_python(monkeypatch):
 
     assert "## Runtime Environment" in context
     assert "Workspace path: /workspace/catown" in context
+    assert "Host OS: Linux 6.6.87.2-microsoft-standard-WSL2 (posix)" in context
+    assert "Python runtime version: 3.12.9" in context
     assert "Recommended Python command for this session: /opt/catown/venv/bin/python3" in context
+    assert "`run_shell` shell on this host: /bin/bash -lc" in context
     assert "/opt/catown/venv/bin/python3 -m pytest backend/tests -q --tb=short --disable-warnings -r fE" in context
     assert "Do not assume `python` exists" in context
 

@@ -6768,6 +6768,40 @@ a {
   min-width: 0;
 }
 
+.task-run-inline-approval__details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+
+.task-run-inline-approval__detail-row {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.task-run-inline-approval__detail-label {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.task-run-inline-approval__detail-value {
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-run-inline-approval__detail-value--mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
 .task-run-approval-id {
   flex-shrink: 0;
   color: var(--muted);

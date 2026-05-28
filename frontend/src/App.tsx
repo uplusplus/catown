@@ -2184,6 +2184,7 @@ function App() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [refreshingMessages, setRefreshingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [approvalQueueRefreshNonce, setApprovalQueueRefreshNonce] = useState(0);
   const [creatingProject, setCreatingProject] = useState(false);
   const [creatingProjectFromChat, setCreatingProjectFromChat] = useState(false);
   const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
@@ -3977,6 +3978,7 @@ function App() {
     let liveLlmModel = "";
     let liveLlmTurn: number | undefined;
     let liveLlmTimings: ChatCardLlmTimings = {};
+    let controller: AbortController | null = null;
     const liveToolArgs = new Map<string, string>();
 
     try {
@@ -4003,7 +4005,7 @@ function App() {
         chatId = await ensureSelectedChatForProject(content);
       }
 
-      const controller = new AbortController();
+      controller = new AbortController();
       sendAbortRef.current?.abort();
       sendAbortRef.current = controller;
 
@@ -4230,15 +4232,11 @@ function App() {
               pushEvent(`Tool: ${toolName} ${failed ? "failed" : "completed"}`, failed ? "error" : "success");
             }
             break;
-          case "approval_pending": {
+          case "approval_queue_updated": {
             streamCompleted = true;
-            const finalAgentName =
-              typeof data.agent_name === "string" && data.agent_name
-                ? data.agent_name
-                : activeAgentName;
-            const pendingTool =
-              typeof data.tool === "string" && data.tool ? data.tool : "tool";
-            pushEvent(`Approval: ${pendingTool}`, "warning");
+            setApprovalQueueRefreshNonce((current) => current + 1);
+            const queueItemId = typeof data.queue_item_id === "number" ? data.queue_item_id : null;
+            pushEvent(queueItemId !== null ? `Approval #${queueItemId}` : "Approval requested", "warning");
             break;
           }
           case "done": {
@@ -4362,7 +4360,7 @@ function App() {
         window.clearTimeout(contentFlushTimer);
         contentFlushTimer = null;
       }
-      if (controller.signal.aborted && isAbortError(nextError)) {
+      if (controller?.signal.aborted && isAbortError(nextError)) {
         return;
       }
       const message = nextError instanceof Error ? nextError.message : "Failed to send message";
@@ -5018,6 +5016,7 @@ function App() {
             onOpenSettings={toggleConfigTab}
             onRefresh={() => refreshMessages(true)}
             onRefreshRuntime={refreshRuntimeForTaskRun}
+            approvalQueueRefreshNonce={approvalQueueRefreshNonce}
             onPatchSubagentRuntime={patchSubagentRuntime}
             onSyncProject={handleSyncProject}
             syncingProject={selectedProject ? syncingProjectId === selectedProject.id : false}

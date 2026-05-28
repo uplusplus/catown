@@ -509,7 +509,7 @@ async def iter_stream_orchestration_runtime_events(
                                 user_message=user_message,
                             )
                         continue
-                    if event["type"] == "approval_pending":
+                    if event["type"] == "approval_queue_updated":
                         awaiting_tool_approval = True
                         yield StreamOrchestrationRuntimeEvent(type="sse", payload=event)
                         continue

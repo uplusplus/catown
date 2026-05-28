@@ -13,6 +13,7 @@ from services.turn_state import ToolResultRecord, TurnContextState, normalize_to
 class NonStreamTurnFrame:
     turn_index: int
     messages: list[dict[str, Any]]
+    model: str | None = None
     response: dict[str, Any] = field(default_factory=dict)
     content: str = ""
     normalized_tool_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -53,6 +54,7 @@ async def execute_non_stream_turn_loop(
         frame = NonStreamTurnFrame(
             turn_index=turn_index,
             messages=assemble_messages(turn_state),
+            model=getattr(llm_client, "model", None),
         )
         if before_llm_call is not None:
             frame.state = await _maybe_await(before_llm_call(frame, turn_state))

@@ -253,6 +253,7 @@ def record_tool_round(
     )
     status_counts: dict[str, int] = {}
     blocked_tools: list[dict[str, Any]] = []
+    blocked_tool_records: list[Any] = []
     serialized_tool_results: list[dict[str, Any]] = []
     for result in normalized_tool_results:
         status = str(getattr(result, "status", "") or ("succeeded" if getattr(result, "success", True) else "failed"))
@@ -285,6 +286,7 @@ def record_tool_round(
                     "metadata": dict(getattr(result, "metadata", {}) or {}),
                 }
             )
+            blocked_tool_records.append(result)
     for result in normalized_blocked_tool_results:
         status = str(getattr(result, "status", "") or ("succeeded" if getattr(result, "success", True) else "failed"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -302,6 +304,7 @@ def record_tool_round(
                 "metadata": dict(getattr(result, "metadata", {}) or {}),
             }
         )
+        blocked_tool_records.append(result)
     merged_payload = {
         "turn": int(turn),
         "tool_names": normalized_tool_names,
@@ -355,7 +358,7 @@ def record_tool_round(
         summary=summary,
         payload=merged_payload,
     )
-    for blocked_tool in blocked_tools:
+    for blocked_tool, blocked_tool_record in zip(blocked_tools, blocked_tool_records):
         queue_item = None
         if task_run is not None:
             queue_kind = blocked_tool_queue_kind(blocked_tool["blocked_kind"])
@@ -411,6 +414,14 @@ def record_tool_round(
                 resume_supported,
                 turn,
             )
+            blocked_tool_metadata = blocked_tool.get("metadata")
+            if isinstance(blocked_tool_metadata, dict):
+                blocked_tool_metadata["queue_item_id"] = getattr(queue_item, "id", None)
+                blocked_tool_metadata["queue_item_public_id"] = getattr(queue_item, "public_id", None)
+            result_metadata = getattr(blocked_tool_record, "metadata", None)
+            if isinstance(result_metadata, dict):
+                result_metadata["queue_item_id"] = getattr(queue_item, "id", None)
+                result_metadata["queue_item_public_id"] = getattr(queue_item, "public_id", None)
             append_task_event(
                 db,
                 task_run,

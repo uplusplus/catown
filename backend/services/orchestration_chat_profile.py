@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from services.chat_runtime import build_runtime_environment_context
 from services.turn_state import TurnContextState, build_tool_result_record
 
 
@@ -53,6 +54,8 @@ def build_orchestration_sync_turn_profile(
 ) -> OrchestrationSyncTurnProfile:
     """Build the turn-level sync execution profile for one orchestration agent turn."""
 
+    runtime_context = build_runtime_environment_context(project)
+
     def _assemble_messages(current_turn_state: TurnContextState) -> list[dict[str, Any]]:
         return assemble_chat_messages(
             db=db,
@@ -67,6 +70,7 @@ def build_orchestration_sync_turn_profile(
             available_tools=runtime.available_tools,
             history_limit=4,
             standalone_note=standalone_note,
+            runtime_context=runtime_context,
             turn_state=current_turn_state,
             on_compaction=compaction_callback,
         )
@@ -179,6 +183,8 @@ def build_orchestration_stream_turn_profile(
 ) -> OrchestrationStreamTurnProfile:
     """Build the turn-level stream execution profile for one orchestration agent turn."""
 
+    runtime_context = build_runtime_environment_context(project)
+
     def _assemble_messages(current_turn_state: TurnContextState) -> list[dict[str, Any]]:
         return assemble_chat_messages(
             db=db,
@@ -193,6 +199,7 @@ def build_orchestration_stream_turn_profile(
             available_tools=runtime.available_tools,
             history_limit=history_limit,
             standalone_note=standalone_note,
+            runtime_context=runtime_context,
             turn_state=current_turn_state,
         )
 

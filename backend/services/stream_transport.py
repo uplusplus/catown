@@ -76,7 +76,7 @@ async def render_stream_turn_event(
         )
     if event_type == "turn_complete":
         return StreamTurnRenderResult(turn_complete_content=str(event.get("content") or ""))
-    if event_type == "approval_pending":
+    if event_type == "approval_queue_updated":
         return StreamTurnRenderResult(
             chunk=render_sse_payload(event, serialize_payload=serialize_payload),
             awaiting_tool_approval=True,

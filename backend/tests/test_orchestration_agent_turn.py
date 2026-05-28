@@ -168,6 +168,83 @@ async def test_run_orchestration_agent_turn_records_lifecycle_and_saves_message(
 
 
 @pytest.mark.asyncio
+async def test_run_orchestration_agent_turn_passes_runtime_environment_context(fresh_db, monkeypatch):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    captured = {}
+    try:
+        chatroom = fresh_db.Chatroom(title="Runtime context turn")
+        agent = fresh_db.Agent(agent_type="developer", name="Developer", role="developer")
+        db.add_all([chatroom, agent])
+        db.commit()
+        db.refresh(chatroom)
+        db.refresh(agent)
+
+        monkeypatch.setattr(
+            "services.orchestration_chat_profile.build_runtime_environment_context",
+            lambda project: "## Runtime Environment\n- Recommended Python command for this session: /usr/bin/python3",
+        )
+        monkeypatch.setattr(
+            "services.orchestration_agent_turn.make_nonstream_audit_callbacks",
+            lambda **kwargs: {
+                "before_llm_call": None,
+                "on_llm_response": None,
+                "on_llm_error": None,
+                "on_tool_round": None,
+            },
+        )
+
+        async def prepare_chat_turn_runtime(**kwargs):
+            return SimpleNamespace(
+                llm_client=FakeLLMClient(),
+                agent_label="Developer",
+                recent_messages=[],
+                available_tools=[],
+                tool_schemas=[],
+                runtime_kwargs={},
+                turn_state=TurnContextState(),
+            )
+
+        def assemble_chat_messages(**kwargs):
+            captured["runtime_context"] = kwargs.get("runtime_context")
+            return [{"role": "user", "content": kwargs["user_message"]}]
+
+        async def save_message(**kwargs):
+            return SimpleNamespace(id=42, created_at=datetime.now(), **kwargs)
+
+        deps = OrchestrationAgentTurnDeps(
+            ensure_collaboration_context=lambda agents, chatroom_id: None,
+            prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+            build_context_compaction_callback=lambda *args, **kwargs: None,
+            assemble_chat_messages=assemble_chat_messages,
+            save_message=save_message,
+            message_metadata=lambda client_turn_id: {"client_turn_id": client_turn_id},
+            schedule_memory_extraction=lambda *args, **kwargs: None,
+            max_tool_iterations=1,
+        )
+
+        content, message = await run_orchestration_agent_turn(
+            deps=deps,
+            agent=agent,
+            chatroom_id=chatroom.id,
+            project=None,
+            agents=[agent],
+            user_message="Implement this.",
+            extra_context="",
+            db=db,
+            client_turn_id="turn-ctx",
+            task_run=None,
+        )
+
+        assert content == "Implemented the requested orchestration slice."
+        assert message.id == 42
+        assert captured["runtime_context"].startswith("## Runtime Environment")
+        assert "/usr/bin/python3" in captured["runtime_context"]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_iter_stream_orchestration_agent_turn_events_records_start_and_yields_agent(fresh_db):
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
@@ -249,6 +326,81 @@ async def test_iter_stream_orchestration_agent_turn_events_records_start_and_yie
         assert task_run.events[0].event_type == "agent_turn_started"
         assert task_run.events[0].summary is None
         assert json.loads(task_run.events[0].payload_json)["client_turn_id"] == "stream-turn"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_orchestration_agent_turn_events_passes_runtime_environment_context(fresh_db, monkeypatch):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    captured = {}
+    try:
+        chatroom = fresh_db.Chatroom(title="Runtime context stream")
+        agent = fresh_db.Agent(agent_type="developer", name="Developer", role="developer")
+        db.add_all([chatroom, agent])
+        db.commit()
+        db.refresh(chatroom)
+        db.refresh(agent)
+
+        monkeypatch.setattr(
+            "services.orchestration_chat_profile.build_runtime_environment_context",
+            lambda project: "## Runtime Environment\n- Host OS: Linux\n- Recommended Python command for this session: /usr/bin/python3",
+        )
+        monkeypatch.setattr(
+            "services.orchestration_agent_turn.make_stream_audit_before_event",
+            lambda **kwargs: None,
+        )
+
+        async def prepare_chat_turn_runtime(**kwargs):
+            return SimpleNamespace(
+                llm_client=FakeStreamLLMClient(),
+                agent_label="Developer",
+                recent_messages=[],
+                available_tools=[],
+                tool_schemas=[],
+                runtime_kwargs={},
+                turn_state=TurnContextState(),
+            )
+
+        def assemble_chat_messages(**kwargs):
+            captured["runtime_context"] = kwargs.get("runtime_context")
+            return [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": kwargs["user_message"]},
+            ]
+
+        deps = StreamOrchestrationAgentTurnDeps(
+            ensure_collaboration_context=lambda agents, chatroom_id: None,
+            prepare_chat_turn_runtime=prepare_chat_turn_runtime,
+            assemble_chat_messages=assemble_chat_messages,
+            build_llm_card_payload=lambda **kwargs: {"agent": kwargs["agent_name"], "duration_ms": kwargs["duration_ms"]},
+            snapshot_messages=lambda messages: list(messages),
+            preview_tool_calls=lambda tool_calls: [],
+            format_prompt_messages=lambda messages: "formatted",
+            tool_result_success=lambda result: True,
+            max_tool_iterations=2,
+        )
+
+        events = [
+            event
+            async for event in iter_stream_orchestration_agent_turn_events(
+                deps=deps,
+                agent=agent,
+                chatroom_id=chatroom.id,
+                chatroom=chatroom,
+                project=None,
+                agents=[agent],
+                user_message="Stream this.",
+                db=db,
+                client_turn_id="stream-ctx",
+                task_run=None,
+            )
+        ]
+
+        assert events[-1]["type"] == "turn_complete"
+        assert captured["runtime_context"].startswith("## Runtime Environment")
+        assert "/usr/bin/python3" in captured["runtime_context"]
     finally:
         db.close()
 

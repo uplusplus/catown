@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -228,15 +229,23 @@ def build_runtime_environment_context(project: Any = None) -> str:
     workspace_path = str(getattr(project, "workspace_path", "") or os.environ.get("CATOWN_WORKSPACE", "") or os.getcwd())
     executable = sys.executable or ""
     executable_name = os.path.basename(executable) if executable else "python3"
+    host_os = str(platform.system() or os.name or "unknown").strip() or "unknown"
+    host_release = str(platform.release() or "").strip()
+    python_version = str(platform.python_version() or "").strip() or "unknown"
     python3_path = shutil.which("python3")
     python_path = shutil.which("python")
     recommended_python = executable or python3_path or python_path or "python3"
+    shell_invocation = _describe_run_shell_invocation()
     pytest_command = f"{_shell_quote(recommended_python)} -m pytest backend/tests -q --tb=short --disable-warnings -r fE"
+    host_os_line = f"{host_os} {host_release}".strip()
 
     lines = [
         "## Runtime Environment",
         f"- Workspace path: {workspace_path}",
+        f"- Host OS: {host_os_line} ({os.name})",
+        f"- Python runtime version: {python_version}",
         f"- Backend Python executable: {executable or 'unknown'}",
+        f"- `run_shell` shell on this host: {shell_invocation}",
         f"- `python3` on PATH: {python3_path or 'not found'}",
         f"- `python` on PATH: {python_path or 'not found'}",
         f"- Recommended Python command for this session: {_shell_quote(recommended_python)}",
@@ -358,3 +367,21 @@ def _shell_quote(value: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_@%+=:,./\\-]+", text):
         return text
     return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _describe_run_shell_invocation() -> str:
+    if os.name == "nt":
+        powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+        if powershell:
+            return f"{powershell} -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command"
+        comspec = os.environ.get("COMSPEC") or shutil.which("cmd")
+        return f"{comspec or 'cmd.exe'} /d /s /c"
+
+    shell = os.environ.get("SHELL")
+    if shell and os.path.isfile(shell) and os.access(shell, os.X_OK):
+        return f"{shell} -lc"
+    for candidate in ("bash", "sh"):
+        shell_path = shutil.which(candidate)
+        if shell_path:
+            return f"{shell_path} -lc"
+    return "not found"

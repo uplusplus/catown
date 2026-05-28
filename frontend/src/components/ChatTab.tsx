@@ -74,6 +74,7 @@ const ACTIVITY_SIDEBAR_MIN_WIDTH = 320;
 const ACTIVITY_SIDEBAR_MAX_WIDTH = 560;
 
 type StepExpansionValue = string | null;
+type ApprovalDetailRow = { label: string; value: string; mono?: boolean };
 
 function overlayScopeKey(chatId: number | null) {
   return chatId === null ? "pending" : `chat:${chatId}`;
@@ -360,6 +361,7 @@ type ChatTabProps = {
   onOpenSettings: () => void;
   onRefresh: () => Promise<void>;
   onRefreshRuntime?: (taskRunId: number) => Promise<void>;
+  approvalQueueRefreshNonce?: number;
   onPatchSubagentRuntime?: (patch: {
     taskRunId: number;
     stepId: string;
@@ -1799,19 +1801,124 @@ function resolveFreshTaskRunDetail(summary: TaskRunSummary, ...details: Array<Ta
   return details.find((detail) => isTaskRunDetailFresh(summary, detail)) ?? null;
 }
 
+function pendingApprovalItemsFromDetail(detail: TaskRunDetail | null) {
+  return detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
+}
+
+function patchResolvedApprovalItemInTaskRunDetail(
+  detail: TaskRunDetail | null | undefined,
+  updatedItem: ApprovalQueueItem,
+) {
+  if (!detail || !Array.isArray(detail.approval_queue_items)) return detail ?? null;
+  let changed = false;
+  const nextItems = detail.approval_queue_items.map((item) => {
+    if (item.id !== updatedItem.id) return item;
+    changed = true;
+    return { ...item, ...updatedItem };
+  });
+  if (!changed) return detail;
+  const pendingApprovalCount = nextItems.filter((item) => (item.status || "").toLowerCase() === "pending").length;
+  return {
+    ...detail,
+    approval_queue_items: nextItems,
+    pending_approval_count: pendingApprovalCount,
+    checkpoint_snapshot: detail.checkpoint_snapshot
+      ? { ...detail.checkpoint_snapshot, pending_approval_count: pendingApprovalCount }
+      : detail.checkpoint_snapshot,
+  };
+}
+
 function approvalRequestLabel(item: ApprovalQueueItem) {
   return `Approval #${item.id}`;
+}
+
+function readFirstTextField(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  for (const key of keys) {
+    const value = readTextField(record, key);
+    if (value) return value;
+  }
+  return null;
+}
+
+function pushApprovalDetailRow(
+  rows: ApprovalDetailRow[],
+  label: string,
+  value: string | null | undefined,
+  mono = false,
+) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) return;
+  if (rows.some((row) => row.label === label && row.value === normalized)) return;
+  rows.push({ label, value: normalized, mono });
+}
+
+function pushApprovalPathDetailRows(
+  rows: ApprovalDetailRow[],
+  label: string,
+  rawValue: string | null | undefined,
+  resolvedLabel: string,
+  workspacePath?: string | null,
+) {
+  const normalized = typeof rawValue === "string" ? normalizeBrowserPath(rawValue) : "";
+  if (!normalized) return;
+  pushApprovalDetailRow(rows, label, normalized, true);
+  const resolved = resolveApprovalDetailPath(normalized, workspacePath);
+  if (resolved && resolved !== normalized) {
+    pushApprovalDetailRow(rows, resolvedLabel, resolved, true);
+  }
+}
+
+function approvalRequestTitle(item: ApprovalQueueItem) {
+  return (
+    item.summary?.trim()
+    || item.title?.trim()
+    || item.target_name?.trim()
+    || readTextField(item.request_payload, "blocked_reason")
+    || "Approval request"
+  );
+}
+
+function approvalRequestDetailRows(item: ApprovalQueueItem, workspacePath?: string | null) {
+  const requestPayload = item.request_payload && typeof item.request_payload === "object"
+    ? item.request_payload
+    : null;
+  const argumentPayload = parseInteractiveToolJsonObject(requestPayload?.arguments);
+  const rows: ApprovalDetailRow[] = [];
+  const title = approvalRequestTitle(item);
+  const reason = readFirstTextField(requestPayload, ["blocked_reason"]) ?? item.summary ?? null;
+  const toolName = readFirstTextField(requestPayload, ["tool_name"]) ?? item.target_name ?? null;
+  const command = readFirstTextField(argumentPayload, ["command"]);
+  const requestedCwd = readFirstTextField(argumentPayload, ["cwd", "workdir", "working_directory"]);
+  const requestedPath = readFirstTextField(argumentPayload, ["file_path", "path", "target_path"]);
+  const requestedDirectory = readFirstTextField(argumentPayload, ["dir_path", "directory"]);
+  const sourcePath = readFirstTextField(argumentPayload, ["source_path"]);
+  const destinationPath = readFirstTextField(argumentPayload, ["destination_path"]);
+  const fromPath = readFirstTextField(argumentPayload, ["old_path"]);
+  const toPath = readFirstTextField(argumentPayload, ["new_path"]);
+
+  if (toolName) pushApprovalDetailRow(rows, "Tool", toolName, true);
+  if (reason && reason !== title) pushApprovalDetailRow(rows, "Reason", reason);
+  if (command) pushApprovalDetailRow(rows, "Command", command, true);
+  pushApprovalPathDetailRows(rows, "Requested CWD", requestedCwd, "Resolved CWD", workspacePath);
+  pushApprovalPathDetailRows(rows, "Requested path", requestedPath, "Resolved path", workspacePath);
+  pushApprovalPathDetailRows(rows, "Requested directory", requestedDirectory, "Resolved directory", workspacePath);
+  pushApprovalPathDetailRows(rows, "Source path", sourcePath, "Resolved source path", workspacePath);
+  pushApprovalPathDetailRows(rows, "Destination path", destinationPath, "Resolved destination path", workspacePath);
+  pushApprovalPathDetailRows(rows, "From path", fromPath, "Resolved from path", workspacePath);
+  pushApprovalPathDetailRows(rows, "To path", toPath, "Resolved to path", workspacePath);
+  return rows;
 }
 
 function summarizeTaskRunInlineStatus(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   activity: TaskActivityProjection | null,
+  approvalItems: ApprovalQueueItem[] = [],
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
   const chatProjection = chatFacingTaskRunText(taskRun, detail, actorName);
-  const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
+  const pendingApprovalItems = approvalItems.length > 0 ? approvalItems : pendingApprovalItemsFromDetail(detail);
   const pendingApprovalCount =
     typeof pendingApprovalOverride === "number"
       ? pendingApprovalOverride
@@ -2165,6 +2272,7 @@ function buildTaskRunCardSummary(
   taskRun: TaskRunSummary,
   detail: TaskRunDetail | null,
   activity: TaskActivityProjection | null,
+  approvalItems: ApprovalQueueItem[] = [],
   pendingApprovalOverride?: number,
   actorName = "Agent",
 ) {
@@ -2198,7 +2306,7 @@ function buildTaskRunCardSummary(
 
   const normalizedStatus = (taskRun.status || "").toLowerCase();
   if (normalizedStatus === "running") {
-    const pendingApprovalItems = detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
+    const pendingApprovalItems = approvalItems.length > 0 ? approvalItems : pendingApprovalItemsFromDetail(detail);
     const pendingApprovalCount =
       typeof pendingApprovalOverride === "number"
         ? pendingApprovalOverride
@@ -2386,6 +2494,48 @@ function collectStringValues(value: unknown, keys: string[], output: Set<string>
 
 function normalizeBrowserPath(path: string) {
   return path.replace(/\\/g, "/").replace(/^["'`]+|["'`.,;:)]+$/g, "").trim();
+}
+
+function collapseBrowserPath(path: string) {
+  const normalized = normalizeBrowserPath(path);
+  if (!normalized) return "";
+
+  let prefix = "";
+  let remainder = normalized;
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    prefix = normalized.slice(0, 2);
+    remainder = normalized.slice(3);
+  } else if (normalized.startsWith("/")) {
+    prefix = "/";
+    remainder = normalized.replace(/^\/+/, "");
+  }
+
+  const stack: string[] = [];
+  remainder.split("/").forEach((segment) => {
+    if (!segment || segment === ".") return;
+    if (segment === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else if (!prefix) {
+        stack.push(segment);
+      }
+      return;
+    }
+    stack.push(segment);
+  });
+
+  if (prefix === "/") return stack.length > 0 ? `/${stack.join("/")}` : "/";
+  if (prefix) return stack.length > 0 ? `${prefix}/${stack.join("/")}` : `${prefix}/`;
+  return stack.length > 0 ? stack.join("/") : ".";
+}
+
+function resolveApprovalDetailPath(path: string, workspacePath?: string | null) {
+  const normalized = normalizeBrowserPath(path);
+  if (!normalized) return "";
+  if (isAbsoluteBrowserPath(normalized)) return collapseBrowserPath(normalized);
+  const workspace = workspacePath ? collapseBrowserPath(workspacePath) : "";
+  if (!workspace) return normalized;
+  return collapseBrowserPath(`${workspace.replace(/\/+$/g, "")}/${normalized}`);
 }
 
 function browserPathBaseName(path: string) {
@@ -6113,6 +6263,7 @@ function renderTaskRunInlineCard(
   timeline: ChatTimelineProjection | null,
   cards: ThreadCard[],
   agents: AgentInfo[],
+  workspacePath: string | null | undefined,
   approvalItems: ApprovalQueueItem[],
   approvalQueueLoaded: boolean,
   approvalActionItemId: number | null,
@@ -6136,7 +6287,7 @@ function renderTaskRunInlineCard(
   const liveActivity = shouldUseLiveActivity ? shellStatus ?? summarizeTaskRunRuntimeCards(cards) : null;
   const actorName = resolveTaskRunActorName(taskRun, agents);
   const taskThemeStyle = buildAgentThemeStyle(taskRun.target_agent_name || actorName, agents);
-  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, activity, pendingApprovalOverride, actorName);
+  const summary = liveActivity?.detail || buildTaskRunCardSummary(taskRun, detail, activity, pendingItems, pendingApprovalOverride, actorName);
   const inlineStatus = liveActivity
     ? {
         tone:
@@ -6148,7 +6299,7 @@ function renderTaskRunInlineCard(
         label: liveActivity.actor ? `${liveActivity.actor} · ${liveActivity.title}` : liveActivity.title,
         detail: liveActivity.detail,
       }
-    : summarizeTaskRunInlineStatus(taskRun, detail, activity, pendingApprovalOverride, actorName);
+    : summarizeTaskRunInlineStatus(taskRun, detail, activity, pendingItems, pendingApprovalOverride, actorName);
   const trace = renderTaskRunTrace(taskRun, detail, activity, timeline, expandedStepId, onToggleStep, onAnalyzeFailureStep);
   const shellOutput = renderTaskRunShellOutput(taskRun, cards);
   const taskIdLabel = (taskRun.client_turn_id || "").trim().toLowerCase().startsWith("delegate-")
@@ -6219,14 +6370,32 @@ function renderTaskRunInlineCard(
               {pendingItems.map((item) => {
                 const isBusy = approvalActionItemId === item.id;
                 const labels = approvalQueueActionLabels(item);
+                const detailRows = approvalRequestDetailRows(item, workspacePath);
                 return (
                   <div key={item.id} className="task-run-inline-approval">
                     <div className="task-run-inline-approval__header">
                       <span className="task-run-approval-id">{approvalRequestLabel(item)}</span>
                       <span className="task-run-detail__summary">
-                        {item.summary || item.title || item.target_name || "Approval request"}
+                        {approvalRequestTitle(item)}
                       </span>
                     </div>
+                    {detailRows.length > 0 ? (
+                      <div className="task-run-inline-approval__details">
+                        {detailRows.map((row) => (
+                          <div
+                            key={`${item.id}-${row.label}-${row.value}`}
+                            className="task-run-inline-approval__detail-row"
+                          >
+                            <span className="task-run-inline-approval__detail-label">{row.label}</span>
+                            <span
+                              className={`task-run-inline-approval__detail-value${row.mono ? " task-run-inline-approval__detail-value--mono" : ""}`}
+                            >
+                              {row.value}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="task-run-approval-card__actions">
                       <button
                         type="button"
@@ -6440,6 +6609,7 @@ export function ChatTab({
   onOpenSettings,
   onRefresh,
   onRefreshRuntime,
+  approvalQueueRefreshNonce = 0,
   onPatchSubagentRuntime,
   onSyncProject,
   syncingProject,
@@ -6481,6 +6651,7 @@ export function ChatTab({
   const [subagentActionError, setSubagentActionError] = useState("");
   const [pendingApprovalItems, setPendingApprovalItems] = useState<ApprovalQueueItem[]>([]);
   const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
+  const approvalQueueRequestSeqRef = useRef(0);
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   // Attachment state for image/file uploads
@@ -6950,31 +7121,42 @@ export function ChatTab({
     };
   }, [liveTaskRunDetailsById, taskRunDetailsById, taskRuns]);
 
-  useEffect(() => {
-    if (!chat?.id) return;
-    let cancelled = false;
-
-    const load = async () => {
+  const invalidateTaskRunDetail = useCallback((taskRunId: number | null) => {
+    if (!taskRunId) return;
+    setTaskRunDetailsById((current) => {
+      if (!(taskRunId in current)) return current;
+      const next = { ...current };
+      delete next[taskRunId];
+      return next;
+    });
+  }, []);
+  const refreshPendingApprovalQueue = useCallback(
+    async (options?: { suppressError?: boolean }) => {
+      if (!chat?.id) return;
+      const requestSeq = ++approvalQueueRequestSeqRef.current;
       try {
         const items = await api.getApprovalQueue({
           chatroom_id: chat.id,
           status: "pending",
           limit: 100,
         });
-        if (cancelled) return;
+        if (requestSeq !== approvalQueueRequestSeqRef.current) return;
         setPendingApprovalItems(items);
         setApprovalQueueLoaded(true);
-      } catch {
-        if (cancelled) return;
+      } catch (error) {
+        if (requestSeq !== approvalQueueRequestSeqRef.current) return;
         setApprovalQueueLoaded(false);
+        if (!options?.suppressError) {
+          setApprovalActionError(error instanceof Error ? error.message : "Failed to refresh approvals");
+        }
       }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [chat?.id, taskRuns]);
+    },
+    [chat?.id],
+  );
+  useEffect(() => {
+    if (!chat?.id) return;
+    void refreshPendingApprovalQueue({ suppressError: true });
+  }, [approvalQueueRefreshNonce, chat?.id, refreshPendingApprovalQueue, taskRuns]);
 
   useEffect(() => {
     if (!chat?.id) return;
@@ -6994,16 +7176,6 @@ export function ChatTab({
       window.clearInterval(intervalId);
     };
   }, [chat?.id, onRefresh, pendingApprovalItems.length, taskRuns]);
-
-  const invalidateTaskRunDetail = useCallback((taskRunId: number | null) => {
-    if (!taskRunId) return;
-    setTaskRunDetailsById((current) => {
-      if (!(taskRunId in current)) return current;
-      const next = { ...current };
-      delete next[taskRunId];
-      return next;
-    });
-  }, []);
 
   const inspectTaskRun = useCallback((taskRunId: number) => {
     setSelectedTaskRunId(taskRunId);
@@ -7118,6 +7290,13 @@ export function ChatTab({
           });
         }
         setPendingApprovalItems((current) => current.filter((pendingItem) => pendingItem.id !== item.id));
+        setTaskRunDetailsById((current) => {
+          const taskRunId = item.task_run_id;
+          if (typeof taskRunId !== "number" || !(taskRunId in current)) return current;
+          const patched = patchResolvedApprovalItemInTaskRunDetail(current[taskRunId], updated);
+          if (!patched || patched === current[taskRunId]) return current;
+          return { ...current, [taskRunId]: patched };
+        });
         setApprovalQueueLoaded(true);
         setApprovalActionMessage(
           action === "approve"
@@ -7128,18 +7307,7 @@ export function ChatTab({
               ? `${remember ? "Rejected and remembered" : "Rejected"} ${item.target_name || item.target_kind || "request"}.`
               : "Approval updated.",
         );
-        if (chat?.id) {
-          void api.getApprovalQueue({
-            chatroom_id: chat.id,
-            status: "pending",
-            limit: 100,
-          }).then((nextPending) => {
-            setPendingApprovalItems(nextPending);
-            setApprovalQueueLoaded(true);
-          }).catch((error) => {
-            setApprovalActionError(error instanceof Error ? error.message : "Failed to refresh approvals");
-          });
-        }
+        void refreshPendingApprovalQueue();
         invalidateTaskRunDetail(item.task_run_id ?? selectedTaskRunSummary?.id ?? null);
         const refreshTaskRunId = item.task_run_id ?? selectedTaskRunSummary?.id ?? null;
         if (onRefreshRuntime && typeof refreshTaskRunId === "number") {
@@ -7153,7 +7321,7 @@ export function ChatTab({
         setApprovalActionItemId((current) => (current === item.id ? null : current));
       }
     },
-    [approvalActionItemId, chat?.id, invalidateTaskRunDetail, onRefresh, onRefreshRuntime, selectedTaskRunSummary?.id],
+    [approvalActionItemId, invalidateTaskRunDetail, onRefresh, onRefreshRuntime, refreshPendingApprovalQueue, selectedTaskRunSummary?.id],
   );
 
   const fallbackStepCardsByMessageId = useMemo(() => {
@@ -8601,6 +8769,7 @@ export function ChatTab({
                         taskTimelinesById[item.taskRun.id] ?? null,
                         item.cards,
                         agents,
+                        project?.workspace_path,
                         pendingApprovalItemsByTaskRunId[item.taskRun.id] ?? [],
                         approvalQueueLoaded,
                         approvalActionItemId,

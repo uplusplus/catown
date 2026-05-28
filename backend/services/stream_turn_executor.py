@@ -21,6 +21,7 @@ class StreamTurnFrame:
     prompt_snapshot: list[dict[str, Any]]
     system_prompt: str
     llm_started_at: float
+    model: str | None = None
     llm_content: str = ""
     executed_tool_calls: list[dict[str, Any]] | None = None
     blocked_tool_result: Any = None
@@ -62,6 +63,7 @@ async def iter_stream_turn_events(
             prompt_snapshot=prompt_snapshot,
             system_prompt=system_prompt,
             llm_started_at=time.time(),
+            model=getattr(llm_client, "model", None),
         )
         tool_calls_found = False
 
@@ -265,14 +267,18 @@ async def iter_stream_turn_events(
                     ),
                 }
                 if blocked_tool_result is not None:
+                    blocked_metadata = (
+                        getattr(blocked_tool_result, "metadata", {})
+                        if isinstance(getattr(blocked_tool_result, "metadata", None), dict)
+                        else {}
+                    )
                     yield {
-                        "type": "approval_pending",
+                        "type": "approval_queue_updated",
                         "agent_name": agent_name,
                         "client_turn_id": client_turn_id,
                         "turn": frame.turn_index,
-                        "tool": blocked_tool_result.tool_name,
-                        "blocked_kind": blocked_tool_result.blocked_kind,
-                        "blocked_reason": blocked_tool_result.blocked_reason,
+                        "queue_item_id": blocked_metadata.get("queue_item_id"),
+                        "queue_item_public_id": blocked_metadata.get("queue_item_public_id"),
                     }
                     return
                 continue

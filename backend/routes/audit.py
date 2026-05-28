@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, desc
 from sqlalchemy.orm import Session
 
-from models.database import get_db
+from models.database import get_telemetry_db
 from models.audit import LLMCall, ToolCall, Event
 
 logger = logging.getLogger("catown.audit")
@@ -28,7 +28,7 @@ async def list_llm_calls(
     stage_id: Optional[int] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_telemetry_db),
 ):
     """LLM 调用记录列表"""
     q = db.query(LLMCall).order_by(desc(LLMCall.created_at))
@@ -65,7 +65,7 @@ async def list_llm_calls(
 
 
 @router.get("/llm/{call_id}")
-async def get_llm_call(call_id: int, db: Session = Depends(get_db)):
+async def get_llm_call(call_id: int, db: Session = Depends(get_telemetry_db)):
     """单条 LLM 调用详情（含完整 prompt 和 response）"""
     c = db.query(LLMCall).filter(LLMCall.id == call_id).first()
     if not c:
@@ -128,7 +128,7 @@ async def list_tool_calls(
     tool_name: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_telemetry_db),
 ):
     """工具调用记录列表"""
     q = db.query(ToolCall).order_by(desc(ToolCall.created_at))
@@ -171,7 +171,7 @@ async def list_events(
     agent: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
     offset: int = Query(0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_telemetry_db),
 ):
     """事件流查询"""
     q = db.query(Event).order_by(desc(Event.created_at))
@@ -207,7 +207,7 @@ async def list_events(
 @router.get("/tokens/summary")
 async def token_summary(
     run_id: Optional[int] = Query(None),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_telemetry_db),
 ):
     """Token 汇总统计 + 成本估算（GPT-4 pricing）"""
     q = db.query(
@@ -275,7 +275,7 @@ async def token_summary(
 async def audit_timeline(
     run_id: int = Query(...),
     limit: int = Query(200, le=1000),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_telemetry_db),
 ):
     """聚合时间线：events + llm_calls + tool_calls 混合排序"""
     events = db.query(Event).filter(Event.run_id == run_id).all()
@@ -327,4 +327,189 @@ async def audit_timeline(
         "run_id": run_id,
         "total": len(timeline),
         "timeline": timeline[:limit],
+    }
+
+
+@router.get("/overview")
+async def audit_overview(
+    run_id: Optional[int] = Query(None),
+    agent: Optional[str] = Query(None),
+    event_type: Optional[str] = Query(None),
+    tool_name: Optional[str] = Query(None),
+    limit: int = Query(120, ge=10, le=500),
+    db: Session = Depends(get_telemetry_db),
+):
+    """Monitor-oriented audit snapshot with counts and a mixed activity feed."""
+    llm_query = db.query(LLMCall)
+    tool_query = db.query(ToolCall)
+    event_query = db.query(Event)
+
+    if run_id is not None:
+        llm_query = llm_query.filter(LLMCall.run_id == run_id)
+        tool_query = tool_query.filter(ToolCall.run_id == run_id)
+        event_query = event_query.filter(Event.run_id == run_id)
+    if agent:
+        llm_query = llm_query.filter(LLMCall.agent_name == agent)
+        tool_query = tool_query.filter(ToolCall.agent_name == agent)
+        event_query = event_query.filter(Event.agent_name == agent)
+    if tool_name:
+        tool_query = tool_query.filter(ToolCall.tool_name == tool_name)
+    if event_type:
+        event_query = event_query.filter(Event.event_type == event_type)
+
+    llm_count = llm_query.count()
+    tool_count = tool_query.count()
+    event_count = event_query.count()
+
+    llm_rows = llm_query.order_by(desc(LLMCall.created_at), desc(LLMCall.id)).limit(limit).all()
+    tool_rows = tool_query.order_by(desc(ToolCall.created_at), desc(ToolCall.id)).limit(limit).all()
+    event_rows = event_query.order_by(desc(Event.created_at), desc(Event.id)).limit(limit).all()
+
+    timeline: list[dict[str, object | None]] = []
+
+    for row in llm_rows:
+        timeline.append({
+            "kind": "llm",
+            "id": row.id,
+            "run_id": row.run_id,
+            "stage_id": row.stage_id,
+            "agent_name": row.agent_name,
+            "model": row.model,
+            "turn_index": row.turn_index,
+            "token_input": row.token_input,
+            "token_output": row.token_output,
+            "duration_ms": row.duration_ms,
+            "error": row.error,
+            "summary": (row.response_content or "")[:220] or None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        })
+
+    for row in tool_rows:
+        timeline.append({
+            "kind": "tool",
+            "id": row.id,
+            "run_id": row.run_id,
+            "stage_id": row.stage_id,
+            "agent_name": row.agent_name,
+            "tool_name": row.tool_name,
+            "llm_call_id": row.llm_call_id,
+            "success": row.success,
+            "duration_ms": row.duration_ms,
+            "result_length": row.result_length,
+            "summary": (row.result_summary or "")[:220] or None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        })
+
+    for row in event_rows:
+        timeline.append({
+            "kind": "event",
+            "id": row.id,
+            "run_id": row.run_id,
+            "project_id": row.project_id,
+            "stage_run_id": row.stage_run_id,
+            "asset_id": row.asset_id,
+            "event_type": row.event_type,
+            "agent_name": row.agent_name,
+            "stage_name": row.stage_name,
+            "summary": row.summary,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        })
+
+    timeline.sort(key=lambda item: ((item.get("created_at") or ""), int(item.get("id") or 0)), reverse=True)
+    visible_timeline = timeline[:limit]
+
+    total_input = 0
+    total_output = 0
+    total_duration_ms = 0
+    errored_llm_calls = 0
+    models: dict[str, dict[str, int | str]] = {}
+    agents_summary: dict[str, dict[str, int | str]] = {}
+    tool_summary: dict[str, int] = {}
+    event_summary: dict[str, int] = {}
+
+    for row in llm_rows:
+        total_input += int(row.token_input or 0)
+        total_output += int(row.token_output or 0)
+        total_duration_ms += int(row.duration_ms or 0)
+        if row.error:
+            errored_llm_calls += 1
+        model_key = (row.model or "unknown").strip() or "unknown"
+        model_bucket = models.setdefault(model_key, {"name": model_key, "calls": 0, "tokens": 0})
+        model_bucket["calls"] = int(model_bucket["calls"]) + 1
+        model_bucket["tokens"] = int(model_bucket["tokens"]) + int(row.token_input or 0) + int(row.token_output or 0)
+
+        agent_key = (row.agent_name or "unknown").strip() or "unknown"
+        agent_bucket = agents_summary.setdefault(
+            agent_key,
+            {"name": agent_key, "llm_calls": 0, "tool_calls": 0, "events": 0, "tokens": 0},
+        )
+        agent_bucket["llm_calls"] = int(agent_bucket["llm_calls"]) + 1
+        agent_bucket["tokens"] = int(agent_bucket["tokens"]) + int(row.token_input or 0) + int(row.token_output or 0)
+
+    for row in tool_rows:
+        tool_key = (row.tool_name or "unknown").strip() or "unknown"
+        tool_summary[tool_key] = tool_summary.get(tool_key, 0) + 1
+        agent_key = (row.agent_name or "unknown").strip() or "unknown"
+        agent_bucket = agents_summary.setdefault(
+            agent_key,
+            {"name": agent_key, "llm_calls": 0, "tool_calls": 0, "events": 0, "tokens": 0},
+        )
+        agent_bucket["tool_calls"] = int(agent_bucket["tool_calls"]) + 1
+
+    for row in event_rows:
+        event_key = (row.event_type or "unknown").strip() or "unknown"
+        event_summary[event_key] = event_summary.get(event_key, 0) + 1
+        agent_key = (row.agent_name or "unknown").strip() or "unknown"
+        agent_bucket = agents_summary.setdefault(
+            agent_key,
+            {"name": agent_key, "llm_calls": 0, "tool_calls": 0, "events": 0, "tokens": 0},
+        )
+        agent_bucket["events"] = int(agent_bucket["events"]) + 1
+
+    top_models = sorted(models.values(), key=lambda item: (int(item["calls"]), int(item["tokens"])), reverse=True)[:8]
+    top_agents = sorted(
+        agents_summary.values(),
+        key=lambda item: (int(item["llm_calls"]) + int(item["tool_calls"]) + int(item["events"]), int(item["tokens"])),
+        reverse=True,
+    )[:12]
+    top_tools = sorted(
+        ({"name": name, "count": count} for name, count in tool_summary.items()),
+        key=lambda item: (int(item["count"]), str(item["name"])),
+        reverse=True,
+    )[:12]
+    top_events = sorted(
+        ({"name": name, "count": count} for name, count in event_summary.items()),
+        key=lambda item: (int(item["count"]), str(item["name"])),
+        reverse=True,
+    )[:12]
+
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "filters": {
+            "run_id": run_id,
+            "agent": agent,
+            "event_type": event_type,
+            "tool_name": tool_name,
+            "limit": limit,
+        },
+        "counts": {
+            "llm_calls": llm_count,
+            "tool_calls": tool_count,
+            "events": event_count,
+            "timeline": llm_count + tool_count + event_count,
+            "errored_llm_calls": errored_llm_calls,
+        },
+        "tokens": {
+            "input": total_input,
+            "output": total_output,
+            "total": total_input + total_output,
+        },
+        "durations": {
+            "llm_total_ms": total_duration_ms,
+        },
+        "top_models": top_models,
+        "top_agents": top_agents,
+        "top_tools": top_tools,
+        "top_events": top_events,
+        "timeline": visible_timeline,
     }

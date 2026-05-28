@@ -5627,8 +5627,6 @@ def _delete_task_runs_by_ids(db: Session, task_run_ids: List[int]) -> None:
     db.query(TaskRun).filter(TaskRun.id.in_(unique_task_run_ids)).delete(synchronize_session=False)
 
 
-
-
 def _delete_pipeline_records_by_project_ids(db: Session, project_ids: List[int]) -> List[int]:
     unique_project_ids = [project_id for project_id in dict.fromkeys(project_ids) if project_id]
     if not unique_project_ids:
@@ -5790,6 +5788,8 @@ def _delete_project_domain_records(db: Session, project_ids: List[int]) -> None:
         db.query(Decision).filter(Decision.id.in_(decision_ids)).delete(synchronize_session=False)
     if stage_run_ids:
         db.query(StageRun).filter(StageRun.id.in_(stage_run_ids)).delete(synchronize_session=False)
+
+
 def _serialize_chat(db: Session, chatroom: Chatroom) -> ChatInfo:
     project = _resolve_chatroom_project(db, chatroom)
     agent_count = 0
@@ -7090,6 +7090,16 @@ def _validate_run_shell_approval_can_continue(
     cursor = cursor if isinstance(cursor, dict) else {}
     active_records = _active_tracked_run_shell_records_for_task_run(getattr(item, "task_run_id", None))
     active_claim = _latest_run_shell_continuation_claim(task_run)
+    cursor_queue_item_id = cursor.get("queue_item_id")
+
+    # A newer pending approval owns the continuation cursor, so an older claim
+    # for another queue item should not block the next approval attempt.
+    if (
+        active_claim is not None
+        and cursor_queue_item_id is not None
+        and active_claim.get("queue_item_id") not in {None, cursor_queue_item_id}
+    ):
+        active_claim = None
 
     if active_claim is not None and active_claim.get("queue_item_id") != getattr(item, "id", None):
         raise HTTPException(
@@ -7101,7 +7111,6 @@ def _validate_run_shell_approval_can_continue(
                 active_claim=active_claim,
             ),
         )
-    cursor_queue_item_id = cursor.get("queue_item_id")
     if cursor_queue_item_id != getattr(item, "id", None):
         raise HTTPException(
             status_code=409,

@@ -4813,7 +4813,8 @@ class TestSSEStreaming:
         )
 
         assert stream.status_code == 200
-        assert '"type": "approval_pending"' in stream.text or '"type":"approval_pending"' in stream.text
+        assert '"type": "approval_queue_updated"' in stream.text or '"type":"approval_queue_updated"' in stream.text
+        assert '"queue_item_id":' in stream.text or '"queue_item_id":' in stream.text
 
         cards = client.get(f"/api/chatrooms/{cid}/runtime-cards").json()
         tool_cards = [card for card in cards if card.get("type") == "tool_call" and card.get("client_turn_id") == turn_id]
@@ -5289,6 +5290,143 @@ class TestSSEStreaming:
         assert "working directory outside workspace" not in (
             resolved_event["payload"].get("replay_result_preview", "").lower()
         )
+
+    def test_approve_run_shell_queue_item_ignores_superseded_claim(self, client):
+        import models.database as db_mod
+        import routes.api as api_routes
+        from types import SimpleNamespace
+        from services.runner_lifecycle import record_tool_round
+
+        project = client.post(
+            "/api/projects",
+            json={"name": "Superseded run_shell Claim Project", "agent_names": ["analyst"]},
+        ).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                run_kind="project_single_agent",
+                status="running",
+                title="Superseded run_shell claim",
+                user_request="Superseded run_shell claim",
+                initiator="user",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            first_arguments = json.dumps(
+                {
+                    "command": "python -m pytest -q",
+                    "cwd": ".",
+                    "timeout_seconds": 60,
+                },
+                ensure_ascii=False,
+            )
+            record_tool_round(
+                db,
+                task_run,
+                agent_name="analyst",
+                turn=1,
+                tool_names=["run_shell"],
+                tool_results=[],
+                blocked_tool_results=[
+                    SimpleNamespace(
+                        tool_call_id="call_run_shell_first",
+                        tool_name="run_shell",
+                        arguments=first_arguments,
+                        status="approval_blocked",
+                        success=False,
+                        blocked=True,
+                        blocked_kind="approval",
+                        blocked_reason="run_shell blocked in project chat",
+                        result="run_shell blocked in project chat",
+                        metadata={},
+                    )
+                ],
+                summary="run_shell blocked in project chat",
+            )
+            first_queue_item = (
+                db.query(db_mod.ApprovalQueueItem)
+                .filter(db_mod.ApprovalQueueItem.task_run_id == task_run.id)
+                .filter(db_mod.ApprovalQueueItem.status == "pending")
+                .order_by(db_mod.ApprovalQueueItem.id.asc())
+                .first()
+            )
+            assert first_queue_item is not None
+            first_queue_item_id = first_queue_item.id
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        with patch.object(api_routes, "_spawn_approval_followup_worker"):
+            first_approved = client.post(
+                f"/api/approval-queue/{first_queue_item_id}/approve",
+                json={"note": "Approve first run_shell."},
+            ).json()
+        assert first_approved["status"] == "approved"
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == task_run_id).first()
+            assert task_run is not None
+            second_arguments = json.dumps(
+                {
+                    "command": "find tests -maxdepth 1 -type f",
+                    "cwd": ".",
+                    "timeout_seconds": 60,
+                },
+                ensure_ascii=False,
+            )
+            record_tool_round(
+                db,
+                task_run,
+                agent_name="analyst",
+                turn=2,
+                tool_names=["run_shell"],
+                tool_results=[],
+                blocked_tool_results=[
+                    SimpleNamespace(
+                        tool_call_id="call_run_shell_second",
+                        tool_name="run_shell",
+                        arguments=second_arguments,
+                        status="approval_blocked",
+                        success=False,
+                        blocked=True,
+                        blocked_kind="approval",
+                        blocked_reason="run_shell blocked in project chat",
+                        result="run_shell blocked in project chat",
+                        metadata={},
+                    )
+                ],
+                summary="run_shell blocked in project chat again",
+            )
+            pending_queue_items = (
+                db.query(db_mod.ApprovalQueueItem)
+                .filter(db_mod.ApprovalQueueItem.task_run_id == task_run.id)
+                .filter(db_mod.ApprovalQueueItem.status == "pending")
+                .order_by(db_mod.ApprovalQueueItem.id.asc())
+                .all()
+            )
+            assert len(pending_queue_items) == 1
+            second_queue_item_id = pending_queue_items[0].id
+        finally:
+            db.close()
+
+        with patch.object(api_routes, "_spawn_approval_followup_worker"):
+            response = client.post(
+                f"/api/approval-queue/{second_queue_item_id}/approve",
+                json={"note": "Approve second run_shell."},
+            )
+
+        assert response.status_code == 200
+        second_approved = response.json()
+        assert second_approved["status"] == "approved"
+        assert second_approved["id"] == second_queue_item_id
 
     def test_approve_tool_queue_item_during_shutdown_skips_followup_worker(self, tmp_path):
         _make_app(tmp_path)

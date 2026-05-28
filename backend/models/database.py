@@ -1585,3 +1585,12 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_telemetry_db():
+    """Yield a telemetry database session."""
+    db = TelemetrySessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

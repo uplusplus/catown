@@ -113,10 +113,13 @@ def fresh_db(tmp_path, monkeypatch):
 
     clear_mappers()
     import models.database as db_mod
+    import models.audit as audit_mod
     importlib.reload(db_mod)
+    importlib.reload(audit_mod)
     _reload_model_bound_service_modules(importlib)
 
     db_mod.Base.metadata.create_all(bind=db_mod.engine)
+    db_mod.TelemetryBase.metadata.create_all(bind=db_mod.telemetry_engine)
     return db_mod
 
 
