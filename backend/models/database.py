@@ -946,6 +946,35 @@ def init_database():
 
     Base.metadata.create_all(bind=engine)
     audit.TelemetryBase.metadata.create_all(bind=telemetry_engine)
+    with telemetry_engine.begin() as connection:
+        existing_monitor_network_columns = _column_names(connection, "monitor_network_records")
+        if existing_monitor_network_columns:
+            existing_monitor_network_columns = _ensure_sqlite_column(
+                connection,
+                "monitor_network_records",
+                "task_run_id",
+                "INTEGER",
+                existing_columns=existing_monitor_network_columns,
+            )
+            existing_monitor_network_columns = _ensure_sqlite_column(
+                connection,
+                "monitor_network_records",
+                "chatroom_id",
+                "INTEGER",
+                existing_columns=existing_monitor_network_columns,
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_monitor_network_records_task_run_id "
+                    "ON monitor_network_records (task_run_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_monitor_network_records_chatroom_id "
+                    "ON monitor_network_records (chatroom_id)"
+                )
+            )
     with engine.begin() as connection:
         existing_agent_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(agents)")).fetchall()

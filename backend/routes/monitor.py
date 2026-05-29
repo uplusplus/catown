@@ -1477,7 +1477,7 @@ async def get_monitor_network_events(
 
 @router.post("/network/ingest")
 async def ingest_monitor_network_event(payload: dict[str, Any]):
-    event = monitor_network_buffer.append(payload)
+    event = monitor_network_buffer.append(payload, require_persisted_id=True)
     return {"ok": True, "event_id": event["id"]}
 
 
@@ -1496,6 +1496,10 @@ async def stream_monitor_network_events(
     async def event_generator():
         last_seen_id = cursor
         idle_ticks = 0
+
+        # Flush SSE headers immediately so the frontend can enter "connected"
+        # state even when there are no new events yet.
+        yield ": connected\n\n"
 
         while True:
             if await request.is_disconnected():
@@ -1555,6 +1559,10 @@ async def stream_monitor_logs(
     async def event_generator():
         last_seen_id = cursor
         idle_ticks = 0
+
+        # Flush SSE headers immediately so the frontend can enter "connected"
+        # state even when there are no new log entries yet.
+        yield ": connected\n\n"
 
         while True:
             if await request.is_disconnected():

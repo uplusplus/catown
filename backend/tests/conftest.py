@@ -22,6 +22,14 @@ def reset_app_modules(module_names):
     """Reload app modules for a new test environment without orphaning collected imports."""
 
     requested = [module_name for module_name in module_names if module_name not in _APP_RESET_SKIP_RELOAD]
+    telemetry_writer_module = sys.modules.get("services.telemetry_writer")
+    if telemetry_writer_module is not None:
+        writer = getattr(telemetry_writer_module, "telemetry_writer", None)
+        if writer is not None:
+            try:
+                writer.stop(drain=True)
+            except Exception:
+                pass
     if "main" in requested and "services.runtime_lifecycle" not in requested:
         requested.append("services.runtime_lifecycle")
     if "models.database" in requested:

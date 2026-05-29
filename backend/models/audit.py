@@ -85,6 +85,8 @@ class MonitorNetworkRecord(TelemetryBase):
 
     id = Column(Integer, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.now, index=True, nullable=False)
+    task_run_id = Column(Integer, nullable=True, index=True)
+    chatroom_id = Column(Integer, nullable=True, index=True)
     category = Column(String, nullable=False, index=True)
     source = Column(String, nullable=False, index=True)
     protocol = Column(String, nullable=False)

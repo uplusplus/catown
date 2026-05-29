@@ -567,6 +567,32 @@ class TestLLMClientChatStream:
 
 
 class TestLLMClientNetworkCapture:
+    def test_append_network_event_inherits_runtime_context(self):
+        from llm.client import LLMClient
+        from monitoring import monitor_network_buffer
+        from services.llm_runtime_context import llm_runtime_context
+
+        client = LLMClient(base_url="https://example.com/v1", api_key="test", model="test-model", agent_name="valet")
+        monitor_network_buffer.clear()
+
+        with llm_runtime_context(task_run_id=42, chatroom_id=7):
+            event = monitor_network_buffer.append(
+                {
+                    "category": "backend_llm",
+                    "source": "backend",
+                    "protocol": "HTTPS",
+                    "from_entity": client.agent_name,
+                    "to_entity": "LLM (example.com)",
+                    "method": "POST",
+                    "url": client.base_url,
+                    "host": "example.com",
+                    "path": "/v1",
+                }
+            )
+
+        assert event["task_run_id"] == 42
+        assert event["chatroom_id"] == 7
+
     @pytest.mark.asyncio
     async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
         from llm.client import LLMClient

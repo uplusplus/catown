@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from config import settings
+from services.llm_runtime_context import get_active_llm_runtime_context
 from services.telemetry_writer import telemetry_writer
 
 logger = logging.getLogger("catown.monitor.network")
@@ -25,6 +26,7 @@ class MonitorNetworkBuffer:
         self._last_cleanup_monotonic = 0.0
         self._ready_databases: set[str] = set()
         self._warned_databases: set[str] = set()
+        self._cleanup_thread: threading.Thread | None = None
 
     def install(self) -> bool:
         """Ensure persistence is ready and trim data outside the retention window."""
@@ -37,9 +39,9 @@ class MonitorNetworkBuffer:
             self._last_cleanup_monotonic = time.monotonic()
         return True
 
-    def append(self, event: dict[str, Any]) -> dict[str, Any]:
+    def append(self, event: dict[str, Any], *, require_persisted_id: bool = False) -> dict[str, Any]:
         normalized = self._normalize(event)
-        persisted = self._persist(normalized) or dict(normalized)
+        persisted = self._persist(normalized, require_persisted_id=require_persisted_id) or dict(normalized)
         self._append_memory(persisted)
         try:
             self._maybe_cleanup()
@@ -97,6 +99,7 @@ class MonitorNetworkBuffer:
     def _normalize(self, event: dict[str, Any]) -> dict[str, Any]:
         timestamp = self._system_timestamp()
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        runtime_context = get_active_llm_runtime_context()
         from_entity = str(event.get("from_entity") or "unknown")
         to_entity = str(event.get("to_entity") or "unknown")
         request_direction = str(
@@ -122,6 +125,8 @@ class MonitorNetworkBuffer:
         normalized = {
             "id": self._int_or_none(event.get("id")) or 0,
             "created_at": self._coerce_datetime_string(event.get("created_at") or timestamp),
+            "task_run_id": self._int_or_none(event.get("task_run_id")),
+            "chatroom_id": self._int_or_none(event.get("chatroom_id")),
             "category": str(event.get("category") or "unknown"),
             "source": str(event.get("source") or "unknown"),
             "protocol": str(event.get("protocol") or "unknown"),
@@ -164,6 +169,10 @@ class MonitorNetworkBuffer:
 
         if normalized["total_bytes"] <= 0:
             normalized["total_bytes"] = normalized["request_bytes"] + normalized["response_bytes"]
+        if normalized["task_run_id"] is None:
+            normalized["task_run_id"] = runtime_context.task_run_id
+        if normalized["chatroom_id"] is None:
+            normalized["chatroom_id"] = runtime_context.chatroom_id
 
         return normalized
 
@@ -205,9 +214,15 @@ class MonitorNetworkBuffer:
             snapshot = snapshot[:limit]
         return snapshot
 
-    def _persist(self, normalized: dict[str, Any]) -> dict[str, Any] | None:
+    def _persist(self, normalized: dict[str, Any], *, require_persisted_id: bool) -> dict[str, Any] | None:
         if not self._ensure_persisted_table():
             return None
+        if require_persisted_id:
+            record_id = telemetry_writer.create_network_record(normalized)
+            return {
+                **normalized,
+                "id": record_id,
+            }
         telemetry_writer.enqueue_network_record(normalized)
         return None
 
@@ -268,25 +283,68 @@ class MonitorNetworkBuffer:
 
     def _maybe_cleanup(self) -> None:
         now = time.monotonic()
-        if now - self._last_cleanup_monotonic < settings.MONITOR_NETWORK_CLEANUP_INTERVAL_SECONDS:
-            return
-        self._last_cleanup_monotonic = now
-        self._cleanup_persisted()
+        with self._lock:
+            if now - self._last_cleanup_monotonic < settings.MONITOR_NETWORK_CLEANUP_INTERVAL_SECONDS:
+                return
+            if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+                return
+            self._last_cleanup_monotonic = now
+            self._cleanup_thread = threading.Thread(
+                target=self._run_cleanup,
+                name="monitor-network-cleanup",
+                daemon=True,
+            )
+            self._cleanup_thread.start()
+
+    def _run_cleanup(self) -> None:
+        try:
+            self._cleanup_persisted()
+        except Exception as exc:
+            self._warn_persistence_fallback(exc)
+        finally:
+            with self._lock:
+                self._cleanup_thread = None
 
     def _cleanup_persisted(self) -> None:
         if not self._ensure_persisted_table():
             return
         from models.audit import MonitorNetworkRecord
-        from models.database import TelemetrySessionLocal
+        from models.database import SessionLocal, TaskRun, TelemetrySessionLocal
+
+        try:
+            telemetry_writer.flush(timeout=5.0)
+        except Exception as exc:
+            self._warn_persistence_fallback(exc)
+            return
 
         db = TelemetrySessionLocal()
         try:
+            app_db = SessionLocal()
+            try:
+                active_task_run_ids = {
+                    int(task_run_id)
+                    for (task_run_id,) in app_db.query(TaskRun.id).all()
+                    if task_run_id is not None
+                }
+            finally:
+                app_db.close()
             cutoff = datetime.now() - timedelta(hours=settings.MONITOR_NETWORK_RETENTION_HOURS)
-            db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.created_at < cutoff).delete()
+            db.query(MonitorNetworkRecord).filter(
+                MonitorNetworkRecord.task_run_id.is_(None),
+                MonitorNetworkRecord.created_at < cutoff,
+            ).delete()
+            orphaned_rows = db.query(MonitorNetworkRecord).filter(
+                MonitorNetworkRecord.task_run_id.is_not(None)
+            )
+            if active_task_run_ids:
+                orphaned_rows = orphaned_rows.filter(
+                    ~MonitorNetworkRecord.task_run_id.in_(active_task_run_ids)
+                )
+            orphaned_rows.delete(synchronize_session=False)
             db.commit()
 
             while True:
-                total = db.query(MonitorNetworkRecord).count()
+                total = db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.task_run_id.is_(None)).count()
                 overflow = total - settings.MONITOR_NETWORK_MAX_PERSISTED
                 if overflow <= 0:
                     break
@@ -294,6 +352,7 @@ class MonitorNetworkBuffer:
                     row_id
                     for (row_id,) in (
                         db.query(MonitorNetworkRecord.id)
+                        .filter(MonitorNetworkRecord.task_run_id.is_(None))
                         .order_by(MonitorNetworkRecord.created_at.asc(), MonitorNetworkRecord.id.asc())
                         .limit(overflow)
                         .all()
@@ -363,6 +422,8 @@ class MonitorNetworkBuffer:
         return {
             "id": int(row.id),
             "created_at": MonitorNetworkBuffer._format_datetime(row.created_at) if row.created_at else None,
+            "task_run_id": MonitorNetworkBuffer._int_or_none(getattr(row, "task_run_id", None)),
+            "chatroom_id": MonitorNetworkBuffer._int_or_none(getattr(row, "chatroom_id", None)),
             "category": row.category,
             "source": row.source,
             "protocol": row.protocol,

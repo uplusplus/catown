@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -41,8 +42,10 @@ def _make_app(tmp_path):
         "services.approval_audit",
         "services.approval_queue",
         "services.approval_replay",
+        "services.llm_runtime_context",
         "services.monitor_projection",
         "services.run_shell_processes",
+        "services.telemetry_writer",
         "services.tool_execution_preferences",
     ]
     from tests.conftest import reset_app_modules
@@ -1565,6 +1568,8 @@ class TestMonitorOverview:
             assert response.status_code == 200
             line_iter = response.iter_lines()
             payload_line = next(line_iter)
+            while not payload_line.startswith("data: "):
+                payload_line = next(line_iter)
             assert payload_line.startswith("data: ")
             payload = json.loads(payload_line.removeprefix("data: "))
 
@@ -1604,11 +1609,11 @@ class TestMonitorOverview:
     def test_network_append_recreates_missing_table(self, tmp_path):
         _make_app(tmp_path)
         from models.audit import MonitorNetworkRecord
-        from models.database import engine
+        from models.database import telemetry_engine
         from monitoring import monitor_network_buffer
 
         monitor_network_buffer.clear()
-        MonitorNetworkRecord.__table__.drop(bind=engine, checkfirst=True)
+        MonitorNetworkRecord.__table__.drop(bind=telemetry_engine, checkfirst=True)
 
         event = monitor_network_buffer.append(
             {
@@ -1628,20 +1633,20 @@ class TestMonitorOverview:
         )
 
         entries = monitor_network_buffer.list_entries(limit=20)
-        assert event["id"] >= 1
-        assert any(entry["id"] == event["id"] and entry["path"] == "/recreated" for entry in entries)
+        assert any(entry["path"] == "/recreated" for entry in entries)
 
     def test_network_cleanup_prefers_age_then_count(self, tmp_path):
         from datetime import datetime, timedelta
 
         _make_app(tmp_path)
+        from config import settings
         from monitoring import monitor_network_buffer
 
         monitor_network_buffer.clear()
-        previous_max = os.environ.get("MONITOR_NETWORK_MAX_PERSISTED")
-        previous_hours = os.environ.get("MONITOR_NETWORK_RETENTION_HOURS")
-        os.environ["MONITOR_NETWORK_MAX_PERSISTED"] = "2"
-        os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = "1"
+        previous_max = settings.MONITOR_NETWORK_MAX_PERSISTED
+        previous_hours = settings.MONITOR_NETWORK_RETENTION_HOURS
+        settings.MONITOR_NETWORK_MAX_PERSISTED = 2
+        settings.MONITOR_NETWORK_RETENTION_HOURS = 1
         try:
             monitor_network_buffer.append(
                 {
@@ -1687,33 +1692,75 @@ class TestMonitorOverview:
             monitor_network_buffer._cleanup_persisted()
             entries = monitor_network_buffer.list_entries(limit=10)
         finally:
-            if previous_max is None:
-                os.environ.pop("MONITOR_NETWORK_MAX_PERSISTED", None)
-            else:
-                os.environ["MONITOR_NETWORK_MAX_PERSISTED"] = previous_max
-            if previous_hours is None:
-                os.environ.pop("MONITOR_NETWORK_RETENTION_HOURS", None)
-            else:
-                os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = previous_hours
+            settings.MONITOR_NETWORK_MAX_PERSISTED = previous_max
+            settings.MONITOR_NETWORK_RETENTION_HOURS = previous_hours
 
         urls = [entry["url"] for entry in entries]
         assert "https://old.example.com/a" not in urls
         assert len(entries) <= 2
         assert "https://new.example.com/d" in urls
 
+    def test_network_append_schedules_cleanup_without_blocking_request_path(self, tmp_path, monkeypatch):
+        import threading
+
+        _make_app(tmp_path)
+        from monitoring import monitor_network_buffer
+
+        monitor_network_buffer.clear()
+        monitor_network_buffer._last_cleanup_monotonic = 0.0
+
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+
+        def slow_cleanup():
+            cleanup_started.set()
+            release_cleanup.wait(timeout=2)
+
+        monkeypatch.setattr(monitor_network_buffer, "_cleanup_persisted", slow_cleanup)
+
+        started = time.perf_counter()
+        event = monitor_network_buffer.append(
+            {
+                "category": "backend_other",
+                "source": "test",
+                "protocol": "HTTPS",
+                "from_entity": "Backend",
+                "to_entity": "WWW",
+                "method": "GET",
+                "url": "https://example.com/nonblocking",
+                "host": "example.com",
+                "path": "/nonblocking",
+                "status_code": 200,
+                "success": True,
+                "preview": "GET /nonblocking",
+            }
+        )
+        elapsed = time.perf_counter() - started
+
+        assert event["path"] == "/nonblocking"
+        assert cleanup_started.wait(timeout=0.5) is True
+        assert elapsed < 0.5
+
+        release_cleanup.set()
+        cleanup_thread = monitor_network_buffer._cleanup_thread
+        if cleanup_thread is not None:
+            cleanup_thread.join(timeout=2)
+
     def test_network_install_trims_persisted_rows_to_one_week(self, tmp_path):
         from datetime import datetime, timedelta
 
         _make_app(tmp_path)
         from models.audit import MonitorNetworkRecord
-        from models.database import SessionLocal
+        from models.database import TelemetrySessionLocal
         from monitoring import monitor_network_buffer
 
         monitor_network_buffer.clear()
-        previous_hours = os.environ.get("MONITOR_NETWORK_RETENTION_HOURS")
-        os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = "168"
+        from config import settings
+
+        previous_hours = settings.MONITOR_NETWORK_RETENTION_HOURS
+        settings.MONITOR_NETWORK_RETENTION_HOURS = 24 * 7
         try:
-            db = SessionLocal()
+            db = TelemetrySessionLocal()
             try:
                 db.add(
                     MonitorNetworkRecord(
@@ -1754,10 +1801,7 @@ class TestMonitorOverview:
             assert monitor_network_buffer.install() is True
             entries = monitor_network_buffer.list_entries(limit=10)
         finally:
-            if previous_hours is None:
-                os.environ.pop("MONITOR_NETWORK_RETENTION_HOURS", None)
-            else:
-                os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = previous_hours
+            settings.MONITOR_NETWORK_RETENTION_HOURS = previous_hours
 
         urls = [entry["url"] for entry in entries]
         assert "https://old.example.com/stale" not in urls
@@ -1813,3 +1857,35 @@ class TestMonitorOverview:
         urls = [entry["url"] for entry in payload["entries"]]
         assert "https://example.com/v1/chat/completions" in urls
         assert all(entry["category"] != "frontend_backend" for entry in payload["entries"])
+
+    def test_network_api_returns_task_and_chatroom_ids(self, client):
+        from monitoring import monitor_network_buffer
+
+        monitor_network_buffer.clear()
+        monitor_network_buffer.append(
+            {
+                "category": "backend_llm",
+                "source": "backend",
+                "protocol": "HTTPS",
+                "from_entity": "developer",
+                "to_entity": "LLM (example.com)",
+                "method": "POST",
+                "url": "https://example.com/v1/chat/completions",
+                "host": "example.com",
+                "path": "/v1/chat/completions",
+                "status_code": 200,
+                "success": True,
+                "task_run_id": 99,
+                "chatroom_id": 5,
+                "metadata": {"frame_type": "response_chunk"},
+            }
+        )
+
+        response = client.get("/api/monitor/network?limit=20")
+        assert response.status_code == 200
+        payload = response.json()
+        entry = next(
+            item for item in payload["entries"] if item["url"] == "https://example.com/v1/chat/completions"
+        )
+        assert entry["task_run_id"] == 99
+        assert entry["chatroom_id"] == 5

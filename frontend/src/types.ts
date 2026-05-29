@@ -1432,6 +1432,8 @@ export type MonitorLogsResponse = {
 export type MonitorNetworkEvent = {
   id: number;
   created_at: string;
+  task_run_id?: number | null;
+  chatroom_id?: number | null;
   category: "frontend_backend" | "backend_llm" | "backend_other" | "frontend_other" | string;
   source: string;
   protocol: string;

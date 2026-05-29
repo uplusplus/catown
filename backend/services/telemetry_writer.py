@@ -70,6 +70,9 @@ class TelemetryWriter:
         self.start()
         self._queue.put(_Request(kind="network_record", payload=dict(payload)))
 
+    def create_network_record(self, payload: dict[str, Any], *, timeout: float = 5.0) -> int:
+        return int(self._request("create_network_record", payload, timeout=timeout))
+
     def create_llm_call(self, payload: dict[str, Any], *, timeout: float = 5.0) -> int:
         return int(self._request("create_llm_call", payload, timeout=timeout))
 
@@ -123,6 +126,8 @@ class TelemetryWriter:
     def _process_batch(self, batch: list[_Request]) -> None:
         db = TelemetrySessionLocal()
         try:
+            if any(req.kind in {"network_record", "create_network_record"} for req in batch):
+                MonitorNetworkRecord.__table__.create(bind=db.get_bind(), checkfirst=True)
             for req in batch:
                 if req.kind == "__flush__":
                     continue
@@ -145,6 +150,11 @@ class TelemetryWriter:
             row = self._build_network_record(payload)
             db.add(row)
             return None
+        if kind == "create_network_record":
+            row = self._build_network_record(payload)
+            db.add(row)
+            db.flush()
+            return int(row.id)
         if kind == "create_llm_call":
             row = LLMCall(**self._filtered_model_payload(LLMCall, payload))
             db.add(row)
@@ -174,6 +184,8 @@ class TelemetryWriter:
     def _build_network_record(self, normalized: dict[str, Any]) -> MonitorNetworkRecord:
         return MonitorNetworkRecord(
             created_at=self._coerce_datetime(normalized["created_at"]),
+            task_run_id=normalized.get("task_run_id"),
+            chatroom_id=normalized.get("chatroom_id"),
             category=normalized["category"],
             source=normalized["source"],
             protocol=normalized["protocol"],
