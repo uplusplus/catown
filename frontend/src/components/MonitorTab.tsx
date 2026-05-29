@@ -30,6 +30,7 @@ import type {
   MonitorFilesResponse,
   MonitorLogEntry,
   MonitorNetworkEvent,
+  MonitorNetworkResponse,
   MonitorOverview,
   MonitorOverviewActivity,
   MonitorOverviewSummary,
@@ -53,6 +54,7 @@ const MONITOR_STREAM_RECONNECT_DELAY_MS = 3000;
 const ERROR_AUTO_DISMISS_MS = 8000;
 const MONITOR_NETWORK_RETAIN_LIMIT = 300;
 const MONITOR_NETWORK_RENDER_LIMIT = 120;
+const MONITOR_NETWORK_CACHE_KEY_LIMIT = 6;
 const TASK_RUN_EVENT_RENDER_LIMIT = 80;
 const TASK_RUN_STEP_RENDER_LIMIT = 80;
 
@@ -408,6 +410,41 @@ function auditEntryPreview(entry: MonitorAuditTimelineEntry) {
   return "No event summary recorded.";
 }
 
+function auditEntrySortWeight(entry: MonitorAuditTimelineEntry) {
+  if (entry.kind === "llm" && entry.error) return 0;
+  if (entry.kind === "tool" && entry.success === false) return 1;
+  if (entry.kind === "event" && /error|reject|fail|blocked/i.test(entry.event_type || "")) return 2;
+  if (entry.kind === "event") return 3;
+  if (entry.kind === "tool") return 4;
+  return 5;
+}
+
+function auditEntryKey(entry: MonitorAuditTimelineEntry) {
+  return `${entry.kind}-${entry.id}`;
+}
+
+function auditEntryTimestamp(entry: MonitorAuditTimelineEntry) {
+  const raw = entry.created_at ? Date.parse(entry.created_at) : Number.NaN;
+  return Number.isFinite(raw) ? raw : 0;
+}
+
+function auditEntrySearchText(entry: MonitorAuditTimelineEntry) {
+  return [
+    entry.kind,
+    entry.agent_name,
+    entry.model,
+    entry.tool_name,
+    entry.event_type,
+    entry.stage_name,
+    entry.summary,
+    entry.run_id,
+    entry.stage_id,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 function approvalFollowupTone(status: string | null | undefined) {
   const normalized = (status || "").toLowerCase();
   if (normalized === "continued") return "success";
@@ -534,7 +571,7 @@ function continuationStateSummary(value: unknown): string | null {
     Array.isArray(state.consumed_layers) && state.consumed_layers.length
       ? state.consumed_layers.join(", ")
       : null,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" Â· ");
 }
 
 function continuationCursorSummary(value: unknown): string | null {
@@ -557,7 +594,7 @@ function continuationCursorSummary(value: unknown): string | null {
     cursor.ready_step_count !== null && cursor.ready_step_count !== undefined ? `${cursor.ready_step_count} ready` : null,
     cursor.running_step_count !== null && cursor.running_step_count !== undefined ? `${cursor.running_step_count} running` : null,
     cursor.waiting_step_count !== null && cursor.waiting_step_count !== undefined ? `${cursor.waiting_step_count} waiting` : null,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" Â· ");
 }
 
 function schedulerRuntimeSummary(value: unknown): string | null {
@@ -574,7 +611,7 @@ function schedulerRuntimeSummary(value: unknown): string | null {
     if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
     return `${raw} ${label}`;
   }).filter(Boolean) as string[];
-  return parts.length ? parts.join(" · ") : null;
+  return parts.length ? parts.join(" Â· ") : null;
 }
 
 type RunScheduleStep = {
@@ -782,6 +819,26 @@ function mergeMonitorNetwork(current: MonitorNetworkEvent[], incoming: MonitorNe
   return [...merged.values()]
     .sort((left, right) => right.id - left.id)
     .slice(0, MONITOR_NETWORK_RETAIN_LIMIT);
+}
+
+type MonitorNetworkCacheEntry = {
+  entries: MonitorNetworkEvent[];
+  latestId: number;
+  updatedAt: string;
+};
+
+function trimMonitorNetworkCache(
+  cache: Record<string, MonitorNetworkCacheEntry>,
+  preferredKey?: string,
+) {
+  const entries = Object.entries(cache)
+    .sort((left, right) => {
+      if (preferredKey && left[0] === preferredKey) return -1;
+      if (preferredKey && right[0] === preferredKey) return 1;
+      return Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt);
+    })
+    .slice(0, MONITOR_NETWORK_CACHE_KEY_LIMIT);
+  return Object.fromEntries(entries);
 }
 
 function historyRangeStart(range: HistoryRange) {
@@ -1022,6 +1079,16 @@ function NetworkLogCard({ entry }: { entry: MonitorNetworkEvent }) {
   const fromVisual = getDirectionVisual(directionFrom);
   const toVisual = getDirectionVisual(directionTo);
   const flowColor = entry.flow_id ? hashFlowColor(entry.flow_id) : fromVisual.color;
+  const summaryLabel = [
+    direction,
+    `${entry.method || "NET"} ${entry.path || entry.url}`,
+    entry.protocol || "unknown",
+    `${formatBytes(entry.request_bytes)} out / ${formatBytes(entry.response_bytes)} in`,
+    formatDuration(entry.duration_ms),
+    entry.status_code ? String(entry.status_code) : "",
+    entry.flow_id ? `${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : "",
+  ].filter(Boolean).join(" | ");
+  const routeLabel = `${fromVisual.label} -> ${toVisual.label}`;
 
   return (
     <details
@@ -1050,25 +1117,29 @@ function NetworkLogCard({ entry }: { entry: MonitorNetworkEvent }) {
             >
               <fromVisual.Icon size={16} strokeWidth={2.2} />
             </span>
-            <strong>
+            <strong>{summaryLabel}</strong>
+            <strong hidden aria-hidden="true">
               {direction}
-              {" · "}
+              {" Â· "}
               {entry.method || "NET"} {entry.path || entry.url}
-              {" · "}
+              {" Â· "}
               {entry.protocol || "unknown"}
-              {" · "}
+              {" Â· "}
               {formatBytes(entry.request_bytes)} out / {formatBytes(entry.response_bytes)} in
-              {" · "}
+              {" Â· "}
               {formatDuration(entry.duration_ms)}
-              {entry.status_code ? ` · ${entry.status_code}` : ""}
-              {entry.flow_id ? ` · ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
+              {entry.status_code ? ` Â· ${entry.status_code}` : ""}
+              {entry.flow_id ? ` Â· ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
             </strong>
           </div>
           <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
         </div>
       </summary>
-      <div className="small-note" style={{ marginTop: 8, marginBottom: 8 }}>
-        {fromVisual.label} → {toVisual.label}
+      <div className="small-note network-log-card__route" style={{ marginTop: 8, marginBottom: 8 }}>
+        {routeLabel}
+      </div>
+      <div hidden aria-hidden="true" className="small-note network-log-card__legacy-route" style={{ marginTop: 8, marginBottom: 8 }}>
+        {fromVisual.label} â?{toVisual.label}
       </div>
       <NetworkRawDump entry={entry} expanded={expanded} />
     </details>
@@ -1790,7 +1861,7 @@ function taskRunSchedulerSummary(run: MonitorTaskRunSummary | TaskRunDetail | nu
 function latestAgentTurnPreview(detail: TaskRunDetail | null | undefined) {
   const latestTurn = detail?.checkpoint_snapshot?.latest_agent_turn;
   if (!latestTurn?.response_preview) return null;
-  return `${latestTurn.agent_name || "agent"} · ${latestTurn.response_preview}`;
+  return `${latestTurn.agent_name || "agent"} Â· ${latestTurn.response_preview}`;
 }
 
 function formatCompactionScopeUsage(
@@ -2197,7 +2268,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
     const sections: BrainEventSection[] = [];
     if (event.messageContent) {
       sections.push({
-        label: event.messageType === "text" ? `Message · ${routeLabel}` : `Message · ${event.messageType || "text"} · ${routeLabel}`,
+        label: event.messageType === "text" ? `Message Â· ${routeLabel}` : `Message Â· ${event.messageType || "text"} Â· ${routeLabel}`,
         content: event.messageContent,
         format: "text",
         tone: "success",
@@ -2258,7 +2329,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
   });
   if (exchangeMeta) {
     sections.push({
-      label: `Exchange Meta · ${routeLabel}`,
+      label: `Exchange Meta Â· ${routeLabel}`,
       content: exchangeMeta,
       tone: "neutral",
       format: "json",
@@ -2269,7 +2340,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
   const rawCard = formatUnknownDetail(card);
   if (rawCard) {
     sections.push({
-      label: `Raw Event Payload · ${routeLabel}`,
+      label: `Raw Event Payload Â· ${routeLabel}`,
       content: rawCard,
       tone: "neutral",
       format: "json",
@@ -2387,6 +2458,139 @@ function BarChart({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+type OverviewVizItem = {
+  label: string;
+  value: number;
+  accent?: string;
+};
+
+function OverviewSegmentBar({ items }: { items: OverviewVizItem[] }) {
+  const visibleItems = items.filter((item) => item.value > 0);
+  if (!visibleItems.length) {
+    return <div className="overview-segment-bar overview-segment-bar--empty" />;
+  }
+  return (
+    <div className="overview-segment-bar">
+      {visibleItems.map((item) => (
+        <span
+          key={item.label}
+          className="overview-segment-bar__slice"
+          style={{
+            flexGrow: Math.max(item.value, 1),
+            background: item.accent ?? "#0f6fff",
+          }}
+          title={`${item.label}: ${formatNumber(item.value)}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function OverviewBand({
+  title,
+  items,
+  formatter = formatNumber,
+}: {
+  title: string;
+  items: OverviewVizItem[];
+  formatter?: (value: number) => string;
+}) {
+  const visibleItems = items.filter((item) => item.value > 0);
+  const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
+  return (
+    <div className="overview-band">
+      <div className="overview-band__head">
+        <strong>{title}</strong>
+        <span>{formatter(total)}</span>
+      </div>
+      <OverviewSegmentBar items={items} />
+      <div className="overview-legend">
+        {(visibleItems.length ? visibleItems : items).map((item) => (
+          <div key={item.label} className="overview-legend__item">
+            <div className="overview-legend__label">
+              <span className="overview-dot" style={{ background: item.accent ?? "#0f6fff" }} />
+              <span>{item.label}</span>
+            </div>
+            <strong>{formatter(item.value)}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OverviewRingStat({
+  label,
+  ratio,
+  valueText,
+  detail,
+  accent = "#0f6fff",
+}: {
+  label: string;
+  ratio: number | null;
+  valueText: string;
+  detail: string;
+  accent?: string;
+}) {
+  const safeRatio = clamp(ratio ?? 0, 0, 1);
+  return (
+    <div className="overview-ring-card">
+      <div
+        className="overview-ring"
+        style={
+          {
+            "--ring-accent": accent,
+            "--ring-progress": `${Math.round(safeRatio * 360)}deg`,
+          } as CSSProperties
+        }
+      >
+        <div className="overview-ring__value">{valueText}</div>
+      </div>
+      <div className="overview-ring-card__body">
+        <div className="overview-ring-card__label">{label}</div>
+        <div className="overview-ring-card__detail">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function OverviewRankBars({
+  items,
+  formatter = formatNumber,
+  accent = "linear-gradient(90deg, #71b6ff, #0f6fff)",
+}: {
+  items: OverviewVizItem[];
+  formatter?: (value: number) => string;
+  accent?: string;
+}) {
+  const visibleItems = items.filter((item) => item.value > 0);
+  if (!visibleItems.length) {
+    return <div className="muted-block">No summary yet.</div>;
+  }
+  const max = Math.max(1, ...visibleItems.map((item) => item.value));
+  return (
+    <div className="overview-rank-list">
+      {visibleItems.map((item) => (
+        <div key={item.label} className="overview-rank-row">
+          <div className="overview-rank-row__head">
+            <span className="overview-rank-row__label" title={item.label}>{item.label}</span>
+            <strong className="overview-rank-row__value">{formatter(item.value)}</strong>
+          </div>
+          <div className="overview-rank-row__track">
+            <span
+              className="overview-rank-row__fill"
+              style={{
+                width: `${clamp((item.value / max) * 100, 6, 100)}%`,
+                background: item.accent ?? accent,
+              }}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2978,7 +3182,7 @@ function buildFlowTopologyGraph({
         { label: "Errs", value: formatNumber(frontendRequestErrors) },
         { label: "Bytes", value: formatBytes(frontendBytes) },
       ],
-      preview: `Status ${overview?.system.status ?? "unknown"} · last traffic ${formatLastActive(Math.max(frontendLastAt, runtimeLastAt))}.`,
+      preview: `Status ${overview?.system.status ?? "unknown"} Â· last traffic ${formatLastActive(Math.max(frontendLastAt, runtimeLastAt))}.`,
     },
     {
       id: "flow-runtime",
@@ -3019,7 +3223,7 @@ function buildFlowTopologyGraph({
       ],
       chips: sortedCounterKeys(activeModels, compact ? 2 : 4),
       preview:
-        sortedCounterKeys(activeModels, compact ? 2 : 4).join(" · ") ||
+        sortedCounterKeys(activeModels, compact ? 2 : 4).join(" Â· ") ||
         "No recent model activity captured in the current runtime window.",
     },
   ];
@@ -3156,14 +3360,14 @@ function buildFlowTopologyGraph({
             : [...summary.configuredAgents].slice(0, compact ? 2 : 4),
       preview:
         key === "subagents"
-          ? `Active ${formatNumber(activeCollaborators)} · pending ${formatNumber(pendingTasks)} · last runtime ${formatLastActive(runtimeLastAt)}.`
+          ? `Active ${formatNumber(activeCollaborators)} Â· pending ${formatNumber(pendingTasks)} Â· last runtime ${formatLastActive(runtimeLastAt)}.`
           : key === "approval"
             ? pendingApprovalCount > 0
               ? "Manual decisions are currently blocking one or more runtime actions."
               : "Approval rail is configured and currently clear."
             : key === "memory"
               ? `Recent memory activity ${formatLastActive(summary.lastAt)}.`
-              : `${topTools.join(" · ") || "Configured tools present."} · last active ${formatLastActive(summary.lastAt)}.`,
+              : `${topTools.join(" Â· ") || "Configured tools present."} Â· last active ${formatLastActive(summary.lastAt)}.`,
     });
 
     edges.push({
@@ -3485,7 +3689,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
     const llmTarget = "LLM";
     const outboundDetail =
       runtimeRequestPreview(item) ||
-      [item.model, typeof item.turn === "number" ? `turn ${item.turn}` : ""].filter(Boolean).join(" · ") ||
+      [item.model, typeof item.turn === "number" ? `turn ${item.turn}` : ""].filter(Boolean).join(" Â· ") ||
       "Prompt payload captured.";
     const inboundDetail =
       runtimeResponsePreview(item) ||
@@ -4006,11 +4210,15 @@ export function MonitorTab() {
   const networkCursorRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
   const monitorLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const networkSnapshotPromiseRef = useRef<Promise<MonitorNetworkResponse> | null>(null);
+  const networkSnapshotKeyRef = useRef("");
+  const networkCacheRef = useRef<Record<string, MonitorNetworkCacheEntry>>({});
   const monitorOverviewRef = useRef<MonitorOverview | null>(null);
   const monitorSocketConnectedOnceRef = useRef(false);
   const shouldLoadOverviewActivityRef = useRef(false);
   const shouldStreamLogs = activePage === "logs";
   const shouldStreamNetwork = activePage === "flow" || activePage === "network";
+  const networkStreamKey = `${networkCategory}\n${networkFilter.trim()}\n${showInternalNetwork ? "1" : "0"}`;
 
   useRegisterBackHandler(
     () => activePage !== "overview" || showCreateRuleForm || showSecurityCatalog,
@@ -4051,8 +4259,13 @@ export function MonitorTab() {
 
     const request = (async () => {
       try {
-        const [nextOverview, nextProjects, nextAgents, nextConfig] = await Promise.all([
-          api.getMonitorOverview(),
+        const nextOverview = await api.getMonitorOverview();
+        if (!silent) {
+          setOverview(applyOverviewActivitySnapshot(nextOverview, null));
+          setLoading(false);
+        }
+
+        const [nextProjects, nextAgents, nextConfig] = await Promise.all([
           api.getProjects(),
           api.getAgents(),
           api.getConfig(),
@@ -4075,7 +4288,9 @@ export function MonitorTab() {
         if (monitorLoadPromiseRef.current === request) {
           monitorLoadPromiseRef.current = null;
         }
-        setLoading(false);
+        if (monitorOverviewRef.current !== null) {
+          setLoading(false);
+        }
         setRefreshing(false);
       }
     })();
@@ -4084,12 +4299,81 @@ export function MonitorTab() {
     return request;
   }, []);
 
+  const writeNetworkCache = useCallback((key: string, entry: MonitorNetworkCacheEntry) => {
+    networkCacheRef.current = trimMonitorNetworkCache({
+      ...networkCacheRef.current,
+      [key]: entry,
+    }, key);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("catown.monitor.network-cache", JSON.stringify(networkCacheRef.current));
+    } catch {
+      // Ignore storage quota and serialization issues.
+    }
+  }, []);
+
+  const readNetworkCache = useCallback((key: string) => {
+    const cached = networkCacheRef.current[key];
+    if (!cached) return null;
+    const entries = mergeMonitorNetwork([], cached.entries);
+    const latestId = Math.max(cached.latestId, entries[0]?.id ?? 0);
+    return {
+      ...cached,
+      entries,
+      latestId,
+    };
+  }, []);
+
+  const loadNetworkSnapshot = useCallback(async () => {
+    if (networkSnapshotPromiseRef.current) {
+      setNetworkStreamState((current) => (current === "connected" ? current : "connecting"));
+      return networkSnapshotPromiseRef.current;
+    }
+
+    setNetworkStreamState((current) => (current === "connected" ? current : "connecting"));
+    const request = api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork).then((response) => {
+      const mergedEntries = mergeMonitorNetwork([], response.entries);
+      const latestId = Math.max(response.latest_id, mergedEntries[0]?.id ?? 0);
+      setNetworkEntries(mergedEntries);
+      networkCursorRef.current = latestId;
+      networkSnapshotKeyRef.current = networkStreamKey;
+      writeNetworkCache(networkStreamKey, {
+        entries: mergedEntries,
+        latestId,
+        updatedAt: new Date().toISOString(),
+      });
+      return response;
+    });
+
+    networkSnapshotPromiseRef.current = request;
+    try {
+      return await request;
+    } finally {
+      if (networkSnapshotPromiseRef.current === request) {
+        networkSnapshotPromiseRef.current = null;
+      }
+    }
+  }, [networkCategory, networkFilter, networkStreamKey, showInternalNetwork, writeNetworkCache]);
+
   useEffect(() => {
     if (!error) return undefined;
 
     const timeoutId = window.setTimeout(() => setError(""), ERROR_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timeoutId);
   }, [error]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("catown.monitor.network-cache");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, MonitorNetworkCacheEntry>;
+      if (!parsed || typeof parsed !== "object") return;
+      networkCacheRef.current = trimMonitorNetwork(parsed);
+    } catch {
+      networkCacheRef.current = {};
+    }
+  }, []);
 
   useEffect(() => {
     function handleHashChange() {
@@ -4123,9 +4407,13 @@ export function MonitorTab() {
   }, [activePage, historyRange]);
 
   useEffect(() => {
-    if (activePage !== "network") return;
-    void refreshNetwork();
-  }, [activePage, networkCategory, networkFilter, showInternalNetwork]);
+    const cached = readNetworkCache(networkStreamKey);
+    if (!cached) return;
+    setNetworkEntries(cached.entries);
+    networkCursorRef.current = cached.latestId;
+    networkSnapshotKeyRef.current = networkStreamKey;
+    setNetworkStreamState("connecting");
+  }, [networkStreamKey, readNetworkCache]);
 
   useEffect(() => {
     if (activePage !== "flow") return;
@@ -4412,12 +4700,17 @@ export function MonitorTab() {
 
     async function loadAndStreamNetwork() {
       try {
-        setNetworkStreamState("connecting");
-        const response = await api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork);
-        if (cancelled) return;
+        const needsFreshSnapshot =
+          networkEntries.length === 0
+          || networkCursorRef.current <= 0
+          || networkSnapshotKeyRef.current !== networkStreamKey;
 
-        setNetworkEntries(mergeMonitorNetwork([], response.entries));
-        networkCursorRef.current = response.latest_id;
+        const response = needsFreshSnapshot
+          ? await loadNetworkSnapshot()
+          : {
+              latest_id: networkCursorRef.current,
+            };
+        if (cancelled) return;
 
         streamAbortController = new AbortController();
         const params = new URLSearchParams({
@@ -4459,15 +4752,23 @@ export function MonitorTab() {
               .find((line) => line.startsWith("data: "));
             if (!dataLine) continue;
 
-            try {
-              const nextEntry = JSON.parse(dataLine.slice(6)) as MonitorNetworkEvent;
-              networkCursorRef.current = Math.max(networkCursorRef.current, nextEntry.id);
-              if (!cancelled) {
-                setNetworkEntries((current) => mergeMonitorNetwork(current, [nextEntry]));
+              try {
+                const nextEntry = JSON.parse(dataLine.slice(6)) as MonitorNetworkEvent;
+                networkCursorRef.current = Math.max(networkCursorRef.current, nextEntry.id);
+                if (!cancelled) {
+                  setNetworkEntries((current) => {
+                    const merged = mergeMonitorNetwork(current, [nextEntry]);
+                    writeNetworkCache(networkStreamKey, {
+                      entries: merged,
+                      latestId: Math.max(networkCursorRef.current, merged[0]?.id ?? 0),
+                      updatedAt: new Date().toISOString(),
+                    });
+                    return merged;
+                  });
+                }
+              } catch {
+                // Ignore malformed frames without breaking the stream.
               }
-            } catch {
-              // Ignore malformed frames without breaking the stream.
-            }
           }
         }
 
@@ -4495,7 +4796,7 @@ export function MonitorTab() {
       }
       streamAbortController?.abort();
     };
-  }, [networkCategory, networkFilter, shouldStreamNetwork, showInternalNetwork]);
+  }, [loadNetworkSnapshot, networkCategory, networkFilter, shouldStreamNetwork, showInternalNetwork]);
 
   const sortedProjects = useMemo(
     () => [...projects].sort((left, right) => left.display_order - right.display_order),
@@ -4907,6 +5208,164 @@ export function MonitorTab() {
   const overviewCompactionReasons = overview?.compactions.reasons ?? [];
   const overviewTopTaskAgents = overview?.tasks.by_agent ?? [];
   const overviewTopOutputs = overview?.tasks.artifacts.top_outputs ?? [];
+  const overviewTaskStatusItems = useMemo(
+    () => [
+      { label: "Running", value: overviewTaskCounts?.running ?? 0, accent: "#2563eb" },
+      { label: "Completed", value: overviewTaskCounts?.completed ?? 0, accent: "#16a34a" },
+      { label: "Failed", value: overviewTaskCounts?.failed ?? 0, accent: "#dc2626" },
+      { label: "Awaiting approval", value: overviewTaskCounts?.awaiting_approval ?? 0, accent: "#d97706" },
+    ],
+    [overviewTaskCounts],
+  );
+  const overviewTokenMixItems = useMemo(
+    () => [
+      { label: "Input", value: overview?.usage_window.input_tokens ?? 0, accent: "#0f6fff" },
+      { label: "Output", value: overview?.usage_window.output_tokens ?? 0, accent: "#7c3aed" },
+    ],
+    [overview],
+  );
+  const overviewToolMixItems = useMemo(
+    () => [
+      { label: "LLM", value: overview?.usage_window.llm_calls ?? 0, accent: "#0f6fff" },
+      { label: "Tools", value: overview?.usage_window.tool_calls ?? 0, accent: "#0ea5e9" },
+      { label: "Tool errors", value: overview?.usage_window.tool_errors ?? 0, accent: "#dc2626" },
+    ],
+    [overview],
+  );
+  const overviewRuntimeMixItems = useMemo(
+    () => [
+      { label: "LLM", value: overview?.usage_window.llm_calls ?? 0, accent: "#0f6fff" },
+      { label: "Tools", value: overview?.usage_window.tool_calls ?? 0, accent: "#0ea5e9" },
+      { label: "Skills", value: overviewTopSkills.reduce((sum, item) => sum + item.inject_count, 0), accent: "#7c3aed" },
+    ],
+    [overview, overviewTopSkills],
+  );
+  const overviewApprovalMixItems = useMemo(
+    () => [
+      { label: "Pending", value: overview?.approvals.queue.pending ?? 0, accent: "#d97706" },
+      { label: "Approved", value: overview?.approvals.audit.approved ?? 0, accent: "#16a34a" },
+      { label: "Rejected", value: overview?.approvals.audit.rejected ?? 0, accent: "#dc2626" },
+      { label: "Remembered", value: overview?.approvals.audit.remembered ?? 0, accent: "#7c3aed" },
+    ],
+    [overview],
+  );
+  const overviewFileMixItems = useMemo(
+    () => [
+      { label: "Read", value: overviewUsageFiles?.reads ?? 0, accent: "#0f6fff" },
+      { label: "Write", value: overviewUsageFiles?.writes ?? 0, accent: "#16a34a" },
+      { label: "Search", value: overviewUsageFiles?.searches ?? 0, accent: "#8b5cf6" },
+      { label: "List", value: overviewUsageFiles?.lists ?? 0, accent: "#06b6d4" },
+      { label: "Delete", value: overviewUsageFiles?.deletes ?? 0, accent: "#dc2626" },
+    ],
+    [overviewUsageFiles],
+  );
+  const overviewTopToolItems = useMemo(
+    () =>
+      (overview?.usage_window.top_tools ?? []).slice(0, 6).map((item) => ({
+        label: item.tool_name,
+        value: item.call_count,
+        accent: item.failure_count > 0 ? "linear-gradient(90deg, #f97316, #dc2626)" : "linear-gradient(90deg, #38bdf8, #2563eb)",
+      })),
+    [overview],
+  );
+  const overviewTopSkillItems = useMemo(
+    () =>
+      overviewTopSkills.slice(0, 6).map((item) => ({
+        label: item.skill_name,
+        value: item.inject_count,
+        accent: "linear-gradient(90deg, #c084fc, #7c3aed)",
+      })),
+    [overviewTopSkills],
+  );
+  const overviewTopModelItems = useMemo(
+    () =>
+      (overview?.llm.top_models ?? []).slice(0, 6).map((item) => ({
+        label: item.name,
+        value: item.calls,
+        accent: "linear-gradient(90deg, #67e8f9, #0891b2)",
+      })),
+    [overview],
+  );
+  const overviewTopAgentItems = useMemo(
+    () =>
+      overviewTopTaskAgents.slice(0, 6).map((item) => ({
+        label: item.agent_name,
+        value: item.task_count,
+        accent: "linear-gradient(90deg, #93c5fd, #2563eb)",
+      })),
+    [overviewTopTaskAgents],
+  );
+  const overviewTopOutputItems = useMemo(
+    () =>
+      overviewTopOutputs.slice(0, 6).map((item) => ({
+        label: compactMonitorText(item.path, 28),
+        value: item.count,
+        accent: "linear-gradient(90deg, #86efac, #16a34a)",
+      })),
+    [overviewTopOutputs],
+  );
+  const overviewTopPathItems = useMemo(
+    () =>
+      (overviewUsageFiles?.top_paths ?? []).slice(0, 6).map((item) => ({
+        label: compactMonitorText(item.path, 28),
+        value: item.count,
+        accent: "linear-gradient(90deg, #c4b5fd, #7c3aed)",
+      })),
+    [overviewUsageFiles],
+  );
+  const overviewCompactionReasonItems = useMemo(
+    () =>
+      overviewCompactionReasons.slice(0, 6).map((item) => ({
+        label: titleCaseLabel(item.reason),
+        value: item.count,
+        accent: "linear-gradient(90deg, #fbbf24, #d97706)",
+      })),
+    [overviewCompactionReasons],
+  );
+  const overviewHealthScore = useMemo(() => {
+    const llmSuccess = overview?.llm.success_rate ?? 0;
+    const approvalPendingPenalty = Math.min((overview?.approvals.queue.pending ?? 0) * 0.08, 0.32);
+    const errorPenalty = Math.min((overview?.llm.errors ?? 0) * 0.05 + (overview?.usage_window.tool_errors ?? 0) * 0.03, 0.4);
+    return clamp(llmSuccess - approvalPendingPenalty - errorPenalty, 0, 1);
+  }, [overview]);
+  const overviewContextPressure = useMemo(
+    () => clamp(overviewTaskContext?.avg_usage_ratio ?? overview?.compactions.avg_usage_ratio ?? 0, 0, 1),
+    [overview, overviewTaskContext],
+  );
+  const overviewCompactionPressure = useMemo(() => {
+    const perTask = overview?.compactions.avg_per_task_run ?? 0;
+    return clamp(perTask / 3, 0, 1);
+  }, [overview]);
+  const overviewLatencyScore = useMemo(() => {
+    const latency = overview?.llm.avg_latency_ms ?? 0;
+    if (!latency) return 0;
+    return clamp(latency / 4000, 0, 1);
+  }, [overview]);
+  const overviewLeadStats = useMemo(
+    () => [
+      {
+        label: "Monitor",
+        value: overview?.system.status ?? "--",
+        detail: `Realtime ${connectionState} Â· last ${formatTimeAgo(overview?.system.last_message_at)}`,
+      },
+      {
+        label: "Tasks",
+        value: formatNumber(overviewTaskCounts?.running),
+        detail: `${formatNumber(overviewTaskCounts?.total)} total Â· ${formatNumber(overviewTaskCounts?.awaiting_approval)} blocked`,
+      },
+      {
+        label: "LLM",
+        value: formatNumber(overview?.llm.requests),
+        detail: `${formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} success Â· avg ${formatDuration(overview?.llm.avg_latency_ms ?? undefined)}`,
+      },
+      {
+        label: "Tokens",
+        value: formatNumber(overview?.usage_window.total_tokens),
+        detail: `${formatNumber(overview?.usage_window.input_tokens)} in Â· ${formatNumber(overview?.usage_window.output_tokens)} out`,
+      },
+    ],
+    [connectionState, overview, overviewTaskCounts],
+  );
   const detailFlowGraph = useMemo(
     () =>
       buildFlowTopologyGraph({
@@ -4975,6 +5434,135 @@ export function MonitorTab() {
   const auditTopModels = auditOverviewResponse?.top_models ?? [];
   const auditTopTools = auditOverviewResponse?.top_tools ?? [];
   const auditTopEvents = auditOverviewResponse?.top_events ?? [];
+  const auditCounts = auditOverviewResponse?.counts;
+  const auditTokens = auditOverviewResponse?.tokens;
+  const auditDurations = auditOverviewResponse?.durations;
+  const auditTotalRecords = auditCounts?.timeline ?? auditTimelineEntries.length;
+  const auditErrorRate = useMemo(() => {
+    const llmCalls = auditCounts?.llm_calls ?? 0;
+    if (llmCalls <= 0) return 0;
+    return ((auditCounts?.errored_llm_calls ?? 0) / llmCalls) * 100;
+  }, [auditCounts]);
+  const auditEventfulRate = useMemo(() => {
+    const total = auditTotalRecords;
+    if (total <= 0) return 0;
+    return (((auditCounts?.events ?? 0) + (auditCounts?.tool_calls ?? 0)) / total) * 100;
+  }, [auditCounts, auditTotalRecords]);
+  const auditAverageTokensPerLlm = useMemo(() => {
+    const llmCalls = auditCounts?.llm_calls ?? 0;
+    if (llmCalls <= 0) return 0;
+    return Math.round((auditTokens?.total ?? 0) / llmCalls);
+  }, [auditCounts, auditTokens]);
+  const auditAverageLlmLatency = useMemo(() => {
+    const llmCalls = auditCounts?.llm_calls ?? 0;
+    if (llmCalls <= 0) return 0;
+    return Math.round((auditDurations?.llm_total_ms ?? 0) / llmCalls);
+  }, [auditCounts, auditDurations]);
+  const auditSignalRings = useMemo(
+    () => [
+      {
+        label: "LLM Failure Rate",
+        ratio: clamp(auditErrorRate / 100, 0, 1),
+        valueText: formatPercent(auditErrorRate, 1),
+        detail: `${formatNumber(auditCounts?.errored_llm_calls ?? 0)} failed of ${formatNumber(auditCounts?.llm_calls ?? 0)} calls`,
+        accent: auditErrorRate >= 10 ? "#dc2626" : auditErrorRate >= 3 ? "#f59e0b" : "#16a34a",
+      },
+      {
+        label: "Event Pressure",
+        ratio: clamp(auditEventfulRate / 100, 0, 1),
+        valueText: formatPercent(auditEventfulRate, 0),
+        detail: `${formatNumber((auditCounts?.events ?? 0) + (auditCounts?.tool_calls ?? 0))} tool or event records in slice`,
+        accent: "#2563eb",
+      },
+      {
+        label: "Avg Tokens / LLM",
+        ratio: clamp(auditAverageTokensPerLlm / 12000, 0, 1),
+        valueText: formatNumber(auditAverageTokensPerLlm),
+        detail: `${formatNumber(auditTokens?.input ?? 0)} in / ${formatNumber(auditTokens?.output ?? 0)} out`,
+        accent: "#0891b2",
+      },
+      {
+        label: "Avg LLM Latency",
+        ratio: clamp(auditAverageLlmLatency / 8000, 0, 1),
+        valueText: formatDuration(auditAverageLlmLatency),
+        detail: `${formatDuration(auditDurations?.llm_total_ms ?? 0)} cumulative runtime`,
+        accent: auditAverageLlmLatency >= 3000 ? "#f97316" : "#7c3aed",
+      },
+    ],
+    [auditAverageLlmLatency, auditAverageTokensPerLlm, auditCounts, auditDurations, auditErrorRate, auditEventfulRate, auditTokens],
+  );
+  const auditMixItems = useMemo(
+    () => [
+      { label: "LLM", value: auditCounts?.llm_calls ?? 0, accent: "linear-gradient(90deg, #38bdf8, #2563eb)" },
+      { label: "Tools", value: auditCounts?.tool_calls ?? 0, accent: "linear-gradient(90deg, #34d399, #059669)" },
+      { label: "Events", value: auditCounts?.events ?? 0, accent: "linear-gradient(90deg, #f59e0b, #ea580c)" },
+    ],
+    [auditCounts],
+  );
+  const auditTopModelChartItems = useMemo(
+    () => auditTopModels.slice(0, 8).map((item) => ({ label: compactMonitorText(item.name, 18), value: item.calls, accent: "linear-gradient(180deg, #67e8f9, #0891b2)" })),
+    [auditTopModels],
+  );
+  const auditTopToolChartItems = useMemo(
+    () => auditTopTools.slice(0, 8).map((item) => ({ label: compactMonitorText(item.name, 18), value: item.count, accent: "linear-gradient(180deg, #86efac, #16a34a)" })),
+    [auditTopTools],
+  );
+  const auditTopEventChartItems = useMemo(
+    () => auditTopEvents.slice(0, 8).map((item) => ({ label: compactMonitorText(item.name, 18), value: item.count, accent: "linear-gradient(180deg, #fdba74, #ea580c)" })),
+    [auditTopEvents],
+  );
+  const auditTopAgentRows = useMemo(
+    () =>
+      auditTopAgents.slice(0, 8).map((item) => ({
+        ...item,
+        total: item.llm_calls + item.tool_calls + item.events,
+      })),
+    [auditTopAgents],
+  );
+  const auditCriticalEntries = useMemo(() => {
+    return [...auditTimelineEntries]
+      .sort((left, right) => {
+        const weightDiff = auditEntrySortWeight(left) - auditEntrySortWeight(right);
+        if (weightDiff !== 0) return weightDiff;
+        return auditEntryTimestamp(right) - auditEntryTimestamp(left);
+      })
+      .slice(0, 8);
+  }, [auditTimelineEntries]);
+  const auditGroupedTimeline = useMemo(() => {
+    const groups = new Map<string, { key: string; label: string; entries: MonitorAuditTimelineEntry[] }>();
+    for (const entry of auditTimelineEntries) {
+      const label =
+        entry.kind === "llm"
+          ? entry.model || "Unknown model"
+          : entry.kind === "tool"
+            ? entry.tool_name || "Unknown tool"
+            : titleCaseLabel(entry.event_type || "event");
+      const key = `${entry.kind}:${label}`;
+      if (!groups.has(key)) {
+        groups.set(key, { key, label, entries: [] });
+      }
+      groups.get(key)?.entries.push(entry);
+    }
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        entries: group.entries.sort((left, right) => auditEntryTimestamp(right) - auditEntryTimestamp(left)),
+      }))
+      .sort((left, right) => {
+        const leftSeverity = Math.min(...left.entries.map(auditEntrySortWeight));
+        const rightSeverity = Math.min(...right.entries.map(auditEntrySortWeight));
+        if (leftSeverity !== rightSeverity) return leftSeverity - rightSeverity;
+        if (right.entries.length !== left.entries.length) return right.entries.length - left.entries.length;
+        return auditEntryTimestamp(right.entries[0]) - auditEntryTimestamp(left.entries[0]);
+      })
+      .slice(0, 10);
+  }, [auditTimelineEntries]);
+  const selectedAuditSummaryEntry = useMemo(() => {
+    if (!selectedAuditLlmDetail) return null;
+    return auditTimelineEntries.find((entry) => entry.kind === "llm" && entry.id === selectedAuditLlmDetail.id) ?? null;
+  }, [auditTimelineEntries, selectedAuditLlmDetail]);
+  const selectedAuditHasError =
+    selectedAuditSummaryEntry?.kind === "llm" ? Boolean(selectedAuditSummaryEntry.error) : Boolean(selectedAuditLlmDetail?.error);
 
   const limitsRows = useMemo(() => {
     if (!overview) return [] as Array<{ label: string; value: number; max: number; detail: string }>;
@@ -5146,10 +5734,7 @@ export function MonitorTab() {
 
   async function refreshNetwork() {
     try {
-      const response = await api.getMonitorNetwork(300, networkCategory, networkFilter, showInternalNetwork);
-      setNetworkEntries(mergeMonitorNetwork([], response.entries));
-      networkCursorRef.current = Math.max(networkCursorRef.current, response.latest_id);
-      setNetworkStreamState((current) => (current === "connected" ? current : "connecting"));
+      await loadNetworkSnapshot();
     } catch {
       setNetworkStreamState("disconnected");
       // Keep the current snapshot on fetch failures.
@@ -5279,495 +5864,626 @@ export function MonitorTab() {
         <div className="refresh-bar" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div className="section-title">Audit</div>
-            <div className="section-subtitle">Telemetry-backed runtime audit for LLM calls, tool calls, and immutable events.</div>
+            <div className="section-subtitle">Telemetry-backed audit console for model calls, tool execution, and immutable runtime events.</div>
           </div>
           <div className="inline-actions">
-            <span className="small-note">{formatNumber(auditOverviewResponse?.counts.timeline ?? auditTimelineEntries.length)} records</span>
+            <span className="small-note">{formatNumber(auditTotalRecords)} records · captured {formatTimeAgo(auditOverviewResponse?.captured_at)}</span>
             <button type="button" className="refresh-btn" onClick={() => void refreshAuditOverview()} disabled={refreshing}>
               Refresh
             </button>
           </div>
         </div>
 
-        <div className="card" style={{ marginBottom: 16 }}>
-          <SectionTitle title="Filters" subtitle="Narrow the audit stream by run, agent, tool, or event type." />
-          <div className="inline-actions" style={{ marginTop: 12, alignItems: "center" }}>
-            <input
-              value={auditRunIdInput}
-              onChange={(event) => setAuditRunIdInput(event.target.value)}
-              placeholder="run id"
-              className="search-input"
-              style={{ width: 120 }}
-              inputMode="numeric"
-            />
-            <button
-              type="button"
-              className="time-btn"
-              onClick={() => setAuditRunIdFilter(auditRunIdInput.trim() ? Number(auditRunIdInput.trim()) || null : null)}
-            >
-              Apply Run
-            </button>
-            <input
-              value={auditAgentFilter}
-              onChange={(event) => setAuditAgentFilter(event.target.value)}
-              placeholder="agent"
-              className="search-input"
-              style={{ width: 180 }}
-            />
-            <input
-              value={auditToolFilter}
-              onChange={(event) => setAuditToolFilter(event.target.value)}
-              placeholder="tool name"
-              className="search-input"
-              style={{ width: 180 }}
-            />
-            <input
-              value={auditEventFilter}
-              onChange={(event) => setAuditEventFilter(event.target.value)}
-              placeholder="event type"
-              className="search-input"
-              style={{ width: 180 }}
-            />
-            <button
-              type="button"
-              className="time-btn"
-              onClick={() => {
-                setAuditRunIdInput("");
-                setAuditRunIdFilter(null);
-                setAuditAgentFilter("");
-                setAuditToolFilter("");
-                setAuditEventFilter("");
-                setAuditKindFilter("all");
-                setSelectedAuditLlmId(null);
-                setSelectedAuditLlmDetail(null);
-              }}
-            >
-              Clear
-            </button>
-          </div>
-          <div className="inline-actions" style={{ marginTop: 12 }}>
-            {(["all", "llm", "tool", "event"] as const).map((kind) => (
-              <button
-                key={kind}
-                type="button"
-                className={`time-btn ${auditKindFilter === kind ? "active" : ""}`}
-                onClick={() => setAuditKindFilter(kind)}
-              >
-                {kind === "all" ? "all" : kind.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid" style={{ marginBottom: 16 }}>
-          <div className="card">
-            <div className="card-title">LLM Calls</div>
-            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.llm_calls)}</div>
-            <div className="card-sub">
-              {formatNumber(auditOverviewResponse?.counts.errored_llm_calls)} errored · {formatDuration(auditOverviewResponse?.durations.llm_total_ms)}
+        <div className="audit-shell">
+          <div className="audit-hero">
+            <div className="card audit-hero__summary">
+              <SectionTitle title="Signal Summary" subtitle="Start here: where is the anomaly concentrated in the current slice?" />
+              <div className="audit-hero__stats">
+                <div className="audit-kpi audit-kpi--primary">
+                  <div className="audit-kpi__label">Records</div>
+                  <div className="audit-kpi__value">{formatNumber(auditTotalRecords)}</div>
+                  <div className="audit-kpi__detail">
+                    {formatNumber(auditCounts?.llm_calls ?? 0)} llm · {formatNumber(auditCounts?.tool_calls ?? 0)} tools · {formatNumber(auditCounts?.events ?? 0)} events
+                  </div>
+                </div>
+                <div className="audit-kpi">
+                  <div className="audit-kpi__label">Tokens</div>
+                  <div className="audit-kpi__value">{formatNumber(auditTokens?.total ?? 0)}</div>
+                  <div className="audit-kpi__detail">{formatNumber(auditTokens?.input ?? 0)} in / {formatNumber(auditTokens?.output ?? 0)} out</div>
+                </div>
+                <div className="audit-kpi">
+                  <div className="audit-kpi__label">LLM Runtime</div>
+                  <div className="audit-kpi__value">{formatDuration(auditDurations?.llm_total_ms ?? 0)}</div>
+                  <div className="audit-kpi__detail">{formatDuration(auditAverageLlmLatency)} avg latency</div>
+                </div>
+                <div className="audit-kpi">
+                  <div className="audit-kpi__label">Failures</div>
+                  <div className="audit-kpi__value">{formatPercent(auditErrorRate, 1)}</div>
+                  <div className="audit-kpi__detail">{formatNumber(auditCounts?.errored_llm_calls ?? 0)} errored llm calls</div>
+                </div>
+              </div>
+              <div className="audit-band-grid">
+                <OverviewBand title="Record Mix" items={auditMixItems} />
+                <OverviewBand title="Top Models by Calls" items={auditTopModelChartItems.length ? auditTopModelChartItems : [{ label: "none", value: 0, accent: "#cbd5e1" }]} />
+              </div>
             </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Tool Calls</div>
-            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.tool_calls)}</div>
-            <div className="card-sub">{formatNumber(auditTopTools.length)} tools in current slice</div>
-          </div>
-          <div className="card">
-            <div className="card-title">Events</div>
-            <div className="card-value">{formatNumber(auditOverviewResponse?.counts.events)}</div>
-            <div className="card-sub">{formatNumber(auditTopEvents.length)} event types in current slice</div>
-          </div>
-          <div className="card">
-            <div className="card-title">Tokens</div>
-            <div className="card-value">{formatNumber(auditOverviewResponse?.tokens.total)}</div>
-            <div className="card-sub">
-              {formatNumber(auditOverviewResponse?.tokens.input)} in / {formatNumber(auditOverviewResponse?.tokens.output)} out
-            </div>
-          </div>
-        </div>
 
-        <div className="split-panels">
-          <div className="card">
-            <SectionTitle title="Audit Timeline" subtitle="Mixed feed ordered by captured time." />
-            {auditTimelineEntries.length > 0 ? (
-              <div className="feed-list" style={{ marginTop: 12 }}>
-                {auditTimelineEntries.map((entry) => (
-                  <div
-                    key={`${entry.kind}-${entry.id}`}
-                    className="feed-item"
-                    style={{ cursor: entry.kind === "llm" ? "pointer" : "default" }}
-                    onClick={() => {
-                      if (entry.kind === "llm") {
-                        setSelectedAuditLlmId(entry.id);
-                      }
-                    }}
+            <div className="card">
+              <SectionTitle title="Filters" subtitle="Focus the audit space by run, principal, tool, or event family." />
+              <div className="audit-filter-grid">
+                <div className="audit-filter-field">
+                  <span>Run</span>
+                  <div className="inline-actions" style={{ margin: 0 }}>
+                    <input
+                      value={auditRunIdInput}
+                      onChange={(event) => setAuditRunIdInput(event.target.value)}
+                      placeholder="run id"
+                      className="search-input"
+                      style={{ width: 120 }}
+                      inputMode="numeric"
+                    />
+                    <button
+                      type="button"
+                      className="time-btn"
+                      onClick={() => setAuditRunIdFilter(auditRunIdInput.trim() ? Number(auditRunIdInput.trim()) || null : null)}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+                <label className="audit-filter-field">
+                  <span>Agent</span>
+                  <input
+                    value={auditAgentFilter}
+                    onChange={(event) => setAuditAgentFilter(event.target.value)}
+                    placeholder="agent name"
+                    className="search-input"
+                  />
+                </label>
+                <label className="audit-filter-field">
+                  <span>Tool</span>
+                  <input
+                    value={auditToolFilter}
+                    onChange={(event) => setAuditToolFilter(event.target.value)}
+                    placeholder="tool name"
+                    className="search-input"
+                  />
+                </label>
+                <label className="audit-filter-field">
+                  <span>Event</span>
+                  <input
+                    value={auditEventFilter}
+                    onChange={(event) => setAuditEventFilter(event.target.value)}
+                    placeholder="event type"
+                    className="search-input"
+                  />
+                </label>
+              </div>
+              <div className="audit-chip-row" style={{ marginTop: 14 }}>
+                {(["all", "llm", "tool", "event"] as const).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className={`time-btn ${auditKindFilter === kind ? "active" : ""}`}
+                    onClick={() => setAuditKindFilter(kind)}
                   >
-                    <div className={`feed-badge feed-badge--${auditEntryTone(entry)}`}>{auditEntryBadge(entry)}</div>
-                    <div className="feed-body">
-                      <div className="feed-head">
+                    {kind === "all" ? "All records" : kind.toUpperCase()}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="time-btn"
+                  onClick={() => {
+                    setAuditRunIdInput("");
+                    setAuditRunIdFilter(null);
+                    setAuditAgentFilter("");
+                    setAuditToolFilter("");
+                    setAuditEventFilter("");
+                    setAuditKindFilter("all");
+                    setSelectedAuditLlmId(null);
+                    setSelectedAuditLlmDetail(null);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="audit-filter-foot">
+                <span className="tag">slice {formatNumber(auditTimelineEntries.length)}</span>
+                {auditRunIdFilter !== null ? <span className="tag mono">run #{auditRunIdFilter}</span> : null}
+                {auditAgentFilter.trim() ? <span className="tag">{auditAgentFilter.trim()}</span> : null}
+                {auditToolFilter.trim() ? <span className="tag">{auditToolFilter.trim()}</span> : null}
+                {auditEventFilter.trim() ? <span className="tag">{auditEventFilter.trim()}</span> : null}
+              </div>
+            </div>
+          </div>
+
+          <div className="audit-density-grid">
+            <div className="card">
+              <SectionTitle title="Pressure Signals" subtitle="Fast readouts for failure rate, event pressure, latency, and token density." />
+              <div className="overview-ring-grid">
+                {auditSignalRings.map((item) => (
+                  <OverviewRingStat
+                    key={item.label}
+                    label={item.label}
+                    ratio={item.ratio}
+                    valueText={item.valueText}
+                    detail={item.detail}
+                    accent={item.accent}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="card">
+              <SectionTitle title="Critical Queue" subtitle="Most suspicious records across the current slice, ordered by severity first." />
+              {auditCriticalEntries.length > 0 ? (
+                <div className="audit-critical-list">
+                  {auditCriticalEntries.map((entry) => (
+                    <button
+                      key={auditEntryKey(entry)}
+                      type="button"
+                      className={`audit-critical-item audit-critical-item--${auditEntryTone(entry)}`}
+                      onClick={() => {
+                        if (entry.kind === "llm") {
+                          setSelectedAuditLlmId(entry.id);
+                        }
+                      }}
+                    >
+                      <div className="audit-critical-item__head">
+                        <span className={`feed-badge feed-badge--${auditEntryTone(entry)}`}>{auditEntryBadge(entry)}</span>
                         <strong>{auditEntryTitle(entry)}</strong>
                         <span className="small-note">{formatTimeAgo(entry.created_at)}</span>
                       </div>
-                      <div className="feed-meta">
+                      <div className="audit-critical-item__meta">
                         {entry.agent_name ? <span>{entry.agent_name}</span> : null}
+                        {entry.model ? <span>{entry.model}</span> : null}
+                        {entry.tool_name ? <span>{entry.tool_name}</span> : null}
+                        {entry.event_type ? <span>{entry.event_type}</span> : null}
                         {typeof entry.run_id === "number" ? <span>run #{entry.run_id}</span> : null}
-                        {typeof entry.stage_id === "number" ? <span>stage #{entry.stage_id}</span> : null}
-                        {entry.kind === "tool" && entry.tool_name ? <span>{entry.tool_name}</span> : null}
-                        {entry.kind === "event" && entry.event_type ? <span>{entry.event_type}</span> : null}
-                        {entry.kind === "llm" && entry.model ? <span>{entry.model}</span> : null}
                       </div>
-                      <div className="feed-preview">{auditEntryPreview(entry)}</div>
-                      <div className="approval-card__meta" style={{ marginTop: 8 }}>
-                        {entry.kind === "llm" ? <span className="tag">{formatNumber((entry.token_input ?? 0) + (entry.token_output ?? 0))} tokens</span> : null}
-                        {entry.kind === "llm" ? <span className="tag">{formatDuration(entry.duration_ms ?? undefined)}</span> : null}
-                        {entry.kind === "tool" ? <span className="tag">{entry.success === false ? "failed" : "success"}</span> : null}
-                        {entry.kind === "tool" ? <span className="tag">{formatDuration(entry.duration_ms ?? undefined)}</span> : null}
-                        {entry.kind === "event" && entry.stage_name ? <span className="tag">{entry.stage_name}</span> : null}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="muted-block" style={{ marginTop: 12 }}>No audit records matched the current filter.</div>
-            )}
-          </div>
-
-          <div className="card">
-            <SectionTitle title="Detail" subtitle="Select an LLM call to inspect the full prompt and response payload." />
-            {selectedAuditLlmLoading ? <div className="muted-block" style={{ marginTop: 12 }}>Loading raw LLM audit detail...</div> : null}
-            {selectedAuditLlmError ? (
-              <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmError}</div>
-            ) : null}
-            {!selectedAuditLlmLoading && !selectedAuditLlmError && selectedAuditLlmDetail ? (
-              <div style={{ marginTop: 12 }}>
-                <div className="metric-list">
-                  <div className="metric-row">
-                    <span>Model</span>
-                    <strong>{selectedAuditLlmDetail.model || "unknown"}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Agent</span>
-                    <strong>{selectedAuditLlmDetail.agent_name}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Run</span>
-                    <strong>{selectedAuditLlmDetail.run_id ?? "--"}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Tokens</span>
-                    <strong>{formatNumber(selectedAuditLlmDetail.token_input + selectedAuditLlmDetail.token_output)}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Duration</span>
-                    <strong>{formatDuration(selectedAuditLlmDetail.duration_ms)}</strong>
-                  </div>
+                      <div className="audit-critical-item__preview">{auditEntryPreview(entry)}</div>
+                    </button>
+                  ))}
                 </div>
-                {selectedAuditLlmDetail.tool_calls.length > 0 ? (
-                  <div className="muted-block" style={{ marginTop: 12 }}>
-                    <strong>Tool calls</strong>
-                    <div className="small-note" style={{ marginTop: 6 }}>
-                      {selectedAuditLlmDetail.tool_calls.map((tool) => `${tool.tool_name} (${tool.success ? "ok" : "failed"})`).join(" · ")}
-                    </div>
-                  </div>
-                ) : null}
-                {selectedAuditLlmDetail.system_prompt ? (
-                  <LazyRawPayload label="System Prompt" value={selectedAuditLlmDetail.system_prompt} className="muted-block" style={{ marginTop: 12 }} />
-                ) : null}
-                {selectedAuditLlmDetail.messages ? (
-                  <LazyRawPayload label="Messages" value={selectedAuditLlmDetail.messages} className="muted-block" style={{ marginTop: 12 }} />
-                ) : null}
-                {selectedAuditLlmDetail.response_tool_calls ? (
-                  <LazyRawPayload label="Response Tool Calls" value={selectedAuditLlmDetail.response_tool_calls} className="muted-block" style={{ marginTop: 12 }} />
-                ) : null}
-                {selectedAuditLlmDetail.response_content ? (
-                  <LazyRawPayload label="Response Content" value={selectedAuditLlmDetail.response_content} className="muted-block" style={{ marginTop: 12 }} />
-                ) : null}
-                {selectedAuditLlmDetail.error ? (
-                  <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmDetail.error}</div>
-                ) : null}
-              </div>
-            ) : null}
-            {!selectedAuditLlmLoading && !selectedAuditLlmError && !selectedAuditLlmDetail ? (
-              <div className="muted-block" style={{ marginTop: 12 }}>Pick an `LLM` row on the left to inspect full prompt/response audit data.</div>
-            ) : null}
+              ) : (
+                <div className="muted-block">No critical audit records matched the current filter.</div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="split-panels" style={{ marginTop: 16 }}>
-          <div className="card">
-            <SectionTitle title="Top Agents" subtitle="Most active agents in the current filtered slice." />
-            {auditTopAgents.length > 0 ? (
-              <div className="feed-list" style={{ marginTop: 12 }}>
-                {auditTopAgents.map((item) => (
-                  <div key={item.name} className="feed-item">
-                    <div className="feed-badge">Agent</div>
-                    <div className="feed-body">
-                      <div className="feed-head">
+          <div className="audit-classification-grid">
+            <div className="card">
+              <SectionTitle title="Principal Breakdown" subtitle="Which agent owns the most audit surface in this slice?" />
+              {auditTopAgentRows.length > 0 ? (
+                <div className="audit-ranking-list">
+                  {auditTopAgentRows.map((item) => (
+                    <div key={item.name} className="audit-ranking-item">
+                      <div className="audit-ranking-item__head">
                         <strong>{item.name}</strong>
                         <span className="small-note">{formatNumber(item.tokens)} tokens</span>
                       </div>
-                      <div className="feed-meta">
+                      <MetricBar value={item.total} max={Math.max(...auditTopAgentRows.map((row) => row.total), 1)} />
+                      <div className="audit-ranking-item__meta">
                         <span>{formatNumber(item.llm_calls)} llm</span>
                         <span>{formatNumber(item.tool_calls)} tools</span>
                         <span>{formatNumber(item.events)} events</span>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              ) : (
+                <div className="muted-block">No principal summary yet.</div>
+              )}
+            </div>
+
+            <div className="card">
+              <SectionTitle title="Distribution Matrix" subtitle="Quick distribution views for models, tools, and event families." />
+              <div className="audit-distribution-stack">
+                <div>
+                  <div className="audit-distribution-stack__title">Models</div>
+                  {auditTopModelChartItems.length > 0 ? <BarChart items={auditTopModelChartItems} className="bar-chart--compact" autoLabels /> : <div className="muted-block">No model distribution yet.</div>}
+                </div>
+                <div>
+                  <div className="audit-distribution-stack__title">Tools</div>
+                  {auditTopToolChartItems.length > 0 ? <BarChart items={auditTopToolChartItems} className="bar-chart--compact" autoLabels /> : <div className="muted-block">No tool distribution yet.</div>}
+                </div>
+                <div>
+                  <div className="audit-distribution-stack__title">Events</div>
+                  {auditTopEventChartItems.length > 0 ? <BarChart items={auditTopEventChartItems} className="bar-chart--compact" autoLabels /> : <div className="muted-block">No event distribution yet.</div>}
+                </div>
               </div>
-            ) : (
-              <div className="muted-block" style={{ marginTop: 12 }}>No agent summary yet.</div>
-            )}
+            </div>
           </div>
 
-          <div className="card">
-            <SectionTitle title="Model / Tool / Event Mix" subtitle="Quick distribution view for the current filter." />
-            <div className="feed-list" style={{ marginTop: 12 }}>
-              <div className="simple-row">
-                <strong>Models</strong>
-                <div className="small-note">{auditTopModels.map((item) => `${item.name} (${item.calls})`).join(" · ") || "none"}</div>
+          <div className="audit-workbench">
+            <div className="card">
+              <SectionTitle title="Grouped Timeline" subtitle="Grouped by dominant dimension so repeated patterns are easier to scan than a flat log." />
+              {auditGroupedTimeline.length > 0 ? (
+                <div className="audit-cluster-list">
+                  {auditGroupedTimeline.map((group) => {
+                    const latest = group.entries[0];
+                    const latestTime = latest?.created_at;
+                    const failures = group.entries.filter((entry) => auditEntrySortWeight(entry) <= 2).length;
+                    return (
+                      <div key={group.key} className="audit-cluster-card">
+                        <div className="audit-cluster-card__head">
+                          <div>
+                            <strong>{group.label}</strong>
+                            <div className="small-note">
+                              {group.entries[0]?.kind.toUpperCase()} · {formatNumber(group.entries.length)} records · latest {formatTimeAgo(latestTime)}
+                            </div>
+                          </div>
+                          <div className="audit-cluster-card__badges">
+                            <span className="tag">{formatNumber(group.entries.length)} total</span>
+                            {failures > 0 ? <span className="tag tag--error">{formatNumber(failures)} suspicious</span> : null}
+                          </div>
+                        </div>
+                        <div className="audit-cluster-card__items">
+                          {group.entries.slice(0, 4).map((entry) => (
+                            <button
+                              key={auditEntryKey(entry)}
+                              type="button"
+                              className={`audit-cluster-entry audit-cluster-entry--${auditEntryTone(entry)}`}
+                              onClick={() => {
+                                if (entry.kind === "llm") {
+                                  setSelectedAuditLlmId(entry.id);
+                                }
+                              }}
+                            >
+                              <div className="audit-cluster-entry__head">
+                                <span className={`feed-badge feed-badge--${auditEntryTone(entry)}`}>{auditEntryBadge(entry)}</span>
+                                <strong>{auditEntryTitle(entry)}</strong>
+                                <span className="small-note">{formatTimeAgo(entry.created_at)}</span>
+                              </div>
+                              <div className="audit-cluster-entry__meta">
+                                {entry.agent_name ? <span>{entry.agent_name}</span> : null}
+                                {typeof entry.run_id === "number" ? <span>run #{entry.run_id}</span> : null}
+                                {entry.kind === "llm" && entry.model ? <span>{entry.model}</span> : null}
+                                {entry.kind === "tool" && entry.tool_name ? <span>{entry.tool_name}</span> : null}
+                                {entry.kind === "event" && entry.event_type ? <span>{entry.event_type}</span> : null}
+                              </div>
+                              <div className="audit-cluster-entry__preview">{auditEntryPreview(entry)}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="muted-block">No audit records matched the current filter.</div>
+              )}
+            </div>
+
+            <div className="audit-detail-stack">
+              <div className="card">
+                <SectionTitle title="Selected LLM Detail" subtitle="Raw evidence pane for prompt, message stack, tool calls, and response." />
+                {selectedAuditLlmLoading ? <div className="muted-block" style={{ marginTop: 12 }}>Loading raw LLM audit detail...</div> : null}
+                {selectedAuditLlmError ? (
+                  <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmError}</div>
+                ) : null}
+                {!selectedAuditLlmLoading && !selectedAuditLlmError && selectedAuditLlmDetail ? (
+                  <div className="audit-detail-pane">
+                    <div className="audit-detail-pane__summary">
+                      <div className="audit-detail-pane__hero">
+                        <strong>{selectedAuditLlmDetail.model || "unknown"}</strong>
+                        <div className="small-note">
+                          {selectedAuditLlmDetail.agent_name} · run #{selectedAuditLlmDetail.run_id ?? "--"} · turn {selectedAuditLlmDetail.turn_index}
+                        </div>
+                      </div>
+                      <div className="audit-detail-pane__chips">
+                        <span className="tag">{formatNumber(selectedAuditLlmDetail.token_input + selectedAuditLlmDetail.token_output)} tokens</span>
+                        <span className="tag">{formatDuration(selectedAuditLlmDetail.duration_ms)}</span>
+                        {selectedAuditHasError ? <span className="tag tag--error">errored</span> : <span className="tag tag--success">completed</span>}
+                        {selectedAuditLlmDetail.tool_calls.length > 0 ? <span className="tag">{selectedAuditLlmDetail.tool_calls.length} tools</span> : null}
+                      </div>
+                    </div>
+
+                    <div className="audit-detail-pane__metrics">
+                      <div className="metric-row">
+                        <span>Input tokens</span>
+                        <strong>{formatNumber(selectedAuditLlmDetail.token_input)}</strong>
+                      </div>
+                      <div className="metric-row">
+                        <span>Output tokens</span>
+                        <strong>{formatNumber(selectedAuditLlmDetail.token_output)}</strong>
+                      </div>
+                      <div className="metric-row">
+                        <span>Duration</span>
+                        <strong>{formatDuration(selectedAuditLlmDetail.duration_ms)}</strong>
+                      </div>
+                      <div className="metric-row">
+                        <span>Captured</span>
+                        <strong>{preciseSystemTime(selectedAuditLlmDetail.created_at)}</strong>
+                      </div>
+                    </div>
+
+                    {selectedAuditLlmDetail.tool_calls.length > 0 ? (
+                      <div className="audit-detail-pane__tool-list">
+                        {selectedAuditLlmDetail.tool_calls.map((tool) => (
+                          <div key={tool.id} className="audit-tool-chip-row">
+                            <span className={`tag ${tool.success ? "tag--success" : "tag--error"}`}>{tool.success ? "ok" : "failed"}</span>
+                            <strong>{tool.tool_name}</strong>
+                            <span className="small-note">{formatDuration(tool.duration_ms)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {selectedAuditLlmDetail.system_prompt ? (
+                      <LazyRawPayload label="System Prompt" value={selectedAuditLlmDetail.system_prompt} className="muted-block" style={{ marginTop: 12 }} />
+                    ) : null}
+                    {selectedAuditLlmDetail.messages ? (
+                      <LazyRawPayload label="Messages" value={selectedAuditLlmDetail.messages} className="muted-block" style={{ marginTop: 12 }} />
+                    ) : null}
+                    {selectedAuditLlmDetail.response_tool_calls ? (
+                      <LazyRawPayload label="Response Tool Calls" value={selectedAuditLlmDetail.response_tool_calls} className="muted-block" style={{ marginTop: 12 }} />
+                    ) : null}
+                    {selectedAuditLlmDetail.response_content ? (
+                      <LazyRawPayload label="Response Content" value={selectedAuditLlmDetail.response_content} className="muted-block" style={{ marginTop: 12 }} />
+                    ) : null}
+                    {selectedAuditLlmDetail.error ? (
+                      <div className="muted-block" style={{ marginTop: 12, color: "var(--danger, #ef4444)" }}>{selectedAuditLlmDetail.error}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!selectedAuditLlmLoading && !selectedAuditLlmError && !selectedAuditLlmDetail ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>Pick an `LLM` record from the grouped timeline or critical queue to inspect full prompt/response data.</div>
+                ) : null}
               </div>
-              <div className="simple-row">
-                <strong>Tools</strong>
-                <div className="small-note">{auditTopTools.map((item) => `${item.name} (${item.count})`).join(" · ") || "none"}</div>
-              </div>
-              <div className="simple-row">
-                <strong>Events</strong>
-                <div className="small-note">{auditTopEvents.map((item) => `${item.name} (${item.count})`).join(" · ") || "none"}</div>
+
+              <div className="card">
+                <SectionTitle title="Facet Notes" subtitle="Compact textual summary for quick handoff or screenshot-based review." />
+                <div className="audit-note-list">
+                  <div className="simple-row">
+                    <strong>Most active model</strong>
+                    <div className="small-note">{auditTopModels[0] ? `${auditTopModels[0].name} · ${formatNumber(auditTopModels[0].calls)} calls` : "No model activity yet."}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Most active tool</strong>
+                    <div className="small-note">{auditTopTools[0] ? `${auditTopTools[0].name} · ${formatNumber(auditTopTools[0].count)} calls` : "No tool activity yet."}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Dominant event family</strong>
+                    <div className="small-note">{auditTopEvents[0] ? `${auditTopEvents[0].name} · ${formatNumber(auditTopEvents[0].count)} records` : "No event activity yet."}</div>
+                  </div>
+                  <div className="simple-row">
+                    <strong>Critical pattern</strong>
+                    <div className="small-note">{auditCriticalEntries[0] ? auditEntrySearchText(auditCriticalEntries[0]).slice(0, 180) : "No critical pattern detected."}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
+
       </section>
 
       <section className={pageClass("overview", "page--detail-full")} id="page-overview">
         <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 16 }}>
           <div>
             <div className="section-title">Overview</div>
-            <div className="section-subtitle">Aggregate stats and overall state only.</div>
+            <div className="section-subtitle">Charts first, dense summary second, event feed nowhere.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
             Refresh
           </button>
         </div>
 
-        <div className="grid" style={{ marginBottom: 16 }}>
-          <div className="card">
-            <div className="card-title">Monitor status</div>
-            <div className="card-value">{overview?.system.status ?? "--"}</div>
-            <div className="small-note">Realtime {connectionState} · last activity {formatTimeAgo(overview?.system.last_message_at)}</div>
-          </div>
-          <div className="card">
-            <div className="card-title">Running tasks</div>
-            <div className="card-value">{formatNumber(overviewTaskCounts?.running)}</div>
-            <div className="small-note">
-              {formatNumber(overviewTaskCounts?.total)} total · {formatNumber(overviewTaskCounts?.awaiting_approval)} awaiting approval
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">LLM requests</div>
-            <div className="card-value">{formatNumber(overview?.llm.requests)}</div>
-            <div className="small-note">
-              {formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} success · avg {formatDuration(overview?.llm.avg_latency_ms ?? undefined)}
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Tokens</div>
-            <div className="card-value">{formatNumber(overview?.usage_window.total_tokens)}</div>
-            <div className="small-note">
-              {formatNumber(overview?.usage_window.input_tokens)} in / {formatNumber(overview?.usage_window.output_tokens)} out
-            </div>
-          </div>
-          <div className="card">
-            <div className="card-title">Pending approvals</div>
-            <div className="card-value">{formatNumber(pendingApprovalCount)}</div>
-            <div className="small-note">
-              Queue total {formatNumber(approvalQueueTotal)} · remembered {formatNumber(overview?.approvals.audit.remembered)}
-            </div>
-          </div>
-        </div>
-
-        <div className="grid">
-          <div className="card">
-            <SectionTitle title="Task Summary" subtitle="Task counts, token load and artifact output." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Total tasks</span>
-                <strong>{formatNumber(overviewTaskCounts?.total)}</strong>
+        <div className="overview-board">
+          <div className="card overview-lead-card">
+            <div className="overview-lead-card__header">
+              <div>
+                <div className="card-title">System Snapshot</div>
+                <div className="overview-lead-card__headline">Catown runtime at a glance</div>
               </div>
-              <div className="metric-row">
-                <span>Completed / Failed</span>
-                <strong>{formatNumber(overviewTaskCounts?.completed)} / {formatNumber(overviewTaskCounts?.failed)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Task tokens</span>
-                <strong>{formatNumber(overview?.tasks.tokens.total)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Avg tokens / task</span>
-                <strong>{formatNumber(overview?.tasks.tokens.avg_per_task)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Artifacts recorded</span>
-                <strong>{formatNumber(overview?.tasks.artifacts.recorded)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Runs with outputs</span>
-                <strong>{formatNumber(overview?.tasks.artifacts.task_runs_with_artifacts)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Context usage</span>
-                <strong>{overviewTaskContext?.avg_usage_ratio != null ? formatPercent(overviewTaskContext.avg_usage_ratio * 100, 1) : "--"}</strong>
+              <div className={`status-pill ${connectionState === "connected" ? "status-pill--live" : "status-pill--offline"}`}>
+                {connectionState === "connected" ? "ws live" : "ws offline"}
               </div>
             </div>
-            <div className="small-note" style={{ marginTop: 12 }}>
-              Top agents: {overviewTopTaskAgents.map((item) => `${item.agent_name} (${item.task_count})`).join(" · ") || "none"}
+            <div className="overview-lead-card__stats">
+              {overviewLeadStats.map((item) => (
+                <div key={item.label} className="overview-lead-stat">
+                  <div className="overview-lead-stat__label">{item.label}</div>
+                  <div className="overview-lead-stat__value">{item.value}</div>
+                  <div className="overview-lead-stat__detail">{item.detail}</div>
+                </div>
+              ))}
             </div>
-            <div className="small-note" style={{ marginTop: 8 }}>
-              Top outputs: {overviewTopOutputs.map((item) => `${item.path} (${item.count})`).join(" · ") || "none"}
+            <div className="overview-lead-card__bands">
+              <OverviewBand title="Task state" items={overviewTaskStatusItems} />
+              <OverviewBand title="Token mix" items={overviewTokenMixItems} />
+              <OverviewBand title="Approval mix" items={overviewApprovalMixItems} />
             </div>
           </div>
 
-          <div className="card">
-            <SectionTitle title="LLM Summary" subtitle="Connection health, request volume and models." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Status</span>
-                <strong>{overview?.llm.status ?? "--"}</strong>
+          <div className="card overview-pressure-card">
+            <SectionTitle title="Pressure Map" subtitle="Primary status rings for health, latency, context and compaction." />
+            <div className="overview-ring-grid">
+              <OverviewRingStat
+                label="Health"
+                ratio={overviewHealthScore}
+                valueText={formatPercent(overviewHealthScore * 100, 0)}
+                detail={`${formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} LLM success`}
+                accent="#16a34a"
+              />
+              <OverviewRingStat
+                label="Latency"
+                ratio={overviewLatencyScore}
+                valueText={formatDuration(overview?.llm.avg_latency_ms ?? undefined)}
+                detail={`${formatNumber(overview?.llm.requests)} requests`}
+                accent="#0f6fff"
+              />
+              <OverviewRingStat
+                label="Context"
+                ratio={overviewContextPressure}
+                valueText={formatPercent(overviewContextPressure * 100, 0)}
+                detail={`${formatNumber(overviewTaskContext?.sampled_runs)} sampled runs`}
+                accent="#d97706"
+              />
+              <OverviewRingStat
+                label="Compaction"
+                ratio={overviewCompactionPressure}
+                valueText={overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}
+                detail={`${formatNumber(overview?.compactions.total)} total events`}
+                accent="#7c3aed"
+              />
+            </div>
+            <div className="overview-pressure-card__footer">
+              <div className="small-note">
+                Version {overview?.system.version ?? "--"} Â· captured {shortDate(overview?.captured_at)}
               </div>
-              <div className="metric-row">
-                <span>Primary model</span>
-                <strong>{modelPrimary}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Tokens</span>
-                <strong>{formatNumber(overview?.llm.tokens.total)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Errors</span>
-                <strong>{formatNumber(overview?.llm.errors)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Tool follow-ups</span>
-                <strong>{formatNumber(overview?.llm.tool_followups.calls)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Last request</span>
-                <strong>{formatTimeAgo(overview?.llm.last_request_at)}</strong>
+              <div className="small-note">
+                Last request {formatTimeAgo(overview?.llm.last_request_at)} Â· last compaction {formatTimeAgo(overview?.compactions.last_compaction_at)}
               </div>
             </div>
           </div>
 
-          <div className="card">
-            <SectionTitle title="Tools And Skills" subtitle="Tool call mix and skill injection activity." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Tool calls</span>
-                <strong>{formatNumber(overview?.usage_window.tool_calls)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Tool errors</span>
-                <strong>{formatNumber(overview?.usage_window.tool_errors)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Top tool</span>
-                <strong>{overview?.usage_window.top_tools[0]?.tool_name ?? "--"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Skill injects</span>
-                <strong>{formatNumber(overviewTopSkills.reduce((sum, item) => sum + item.inject_count, 0))}</strong>
+          <div className="overview-summary-grid">
+            <div className="card overview-summary-card">
+              <SectionTitle title="Tasks" subtitle="Status, top agents and output concentration." />
+              <OverviewBand title="Task pipeline" items={overviewTaskStatusItems} />
+              <div className="overview-summary-card__split">
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top agents</div>
+                  <OverviewRankBars items={overviewTopAgentItems} />
+                </div>
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top outputs</div>
+                  <OverviewRankBars items={overviewTopOutputItems} />
+                </div>
               </div>
             </div>
-            <div className="small-note" style={{ marginTop: 12 }}>
-              Tools: {overview?.usage_window.top_tools.map((item) => `${item.tool_name} (${item.call_count})`).join(" · ") || "none"}
-            </div>
-            <div className="small-note" style={{ marginTop: 8 }}>
-              Skills: {overviewTopSkills.map((item) => `${item.skill_name} (${item.inject_count})`).join(" · ") || "none"}
-            </div>
-          </div>
 
-          <div className="card">
-            <SectionTitle title="File Summary" subtitle="Read/write/search/list/delete counts only." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Reads / Writes</span>
-                <strong>{formatNumber(overviewUsageFiles?.reads)} / {formatNumber(overviewUsageFiles?.writes)}</strong>
+            <div className="card overview-summary-card">
+              <SectionTitle title="LLM" subtitle="Request load, token mix and model concentration." />
+              <OverviewBand title="Token mix" items={overviewTokenMixItems} />
+              <div className="card" style={{ padding: 12, marginTop: 12, marginBottom: 12 }}>
+                <BarChart items={overviewTopModelItems} className="bar-chart--compact" autoLabels />
               </div>
-              <div className="metric-row">
-                <span>Searches / Lists</span>
-                <strong>{formatNumber(overviewUsageFiles?.searches)} / {formatNumber(overviewUsageFiles?.lists)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Deletes</span>
-                <strong>{formatNumber(overviewUsageFiles?.deletes)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Unique paths</span>
-                <strong>{formatNumber(overviewUsageFiles?.unique_paths)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Errors</span>
-                <strong>{formatNumber(overviewUsageFiles?.errors)}</strong>
+              <div className="overview-summary-card__split">
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top models</div>
+                  <OverviewRankBars items={overviewTopModelItems} />
+                </div>
+                <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Primary model</span>
+                    <strong>{modelPrimary}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Total tokens</span>
+                    <strong>{formatNumber(overview?.llm.tokens.total)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Errors</span>
+                    <strong>{formatNumber(overview?.llm.errors)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Tool follow-ups</span>
+                    <strong>{formatNumber(overview?.llm.tool_followups.calls)}</strong>
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="small-note" style={{ marginTop: 12 }}>
-              Top paths: {overviewUsageFiles?.top_paths.map((item) => `${item.path} (${item.count})`).join(" · ") || "none"}
-            </div>
-          </div>
 
-          <div className="card">
-            <SectionTitle title="Approval Summary" subtitle="Queue pressure and approval behavior." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Pending / Total</span>
-                <strong>{formatNumber(overview?.approvals.queue.pending)} / {formatNumber(overview?.approvals.queue.total)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Approved / Rejected</span>
-                <strong>{formatNumber(overview?.approvals.audit.approved)} / {formatNumber(overview?.approvals.audit.rejected)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Remembered</span>
-                <strong>{formatNumber(overview?.approvals.audit.remembered)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Automatic</span>
-                <strong>{formatNumber(overview?.approvals.audit.automatic)}</strong>
+            <div className="card overview-summary-card">
+              <SectionTitle title="Tools And Skills" subtitle="Which capabilities dominate the monitor window." />
+              <OverviewBand title="Capability mix" items={overviewRuntimeMixItems} />
+              <div className="overview-summary-card__split">
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top tools</div>
+                  <OverviewRankBars items={overviewTopToolItems} />
+                </div>
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top skills</div>
+                  <OverviewRankBars items={overviewTopSkillItems} />
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="card">
-            <SectionTitle title="Compaction Summary" subtitle="Compression frequency and pressure." />
-            <div className="metric-list">
-              <div className="metric-row">
-                <span>Total compactions</span>
-                <strong>{formatNumber(overview?.compactions.total)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Task runs affected</span>
-                <strong>{formatNumber(overview?.compactions.task_runs)}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Avg interval</span>
-                <strong>{overview?.compactions.avg_interval_minutes != null ? `${overview.compactions.avg_interval_minutes}m` : "--"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Avg per task</span>
-                <strong>{overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Avg usage ratio</span>
-                <strong>{overview?.compactions.avg_usage_ratio != null ? formatPercent(overview.compactions.avg_usage_ratio * 100, 1) : "--"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Last compaction</span>
-                <strong>{formatTimeAgo(overview?.compactions.last_compaction_at)}</strong>
+            <div className="card overview-summary-card">
+              <SectionTitle title="Files" subtitle="Read/write bias, path concentration and churn." />
+              <OverviewBand title="File action mix" items={overviewFileMixItems} />
+              <div className="overview-summary-card__split">
+                <div>
+                  <div className="overview-summary-card__eyebrow">Top touched paths</div>
+                  <OverviewRankBars items={overviewTopPathItems} />
+                </div>
+                <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Unique paths</span>
+                    <strong>{formatNumber(overviewUsageFiles?.unique_paths)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Writes</span>
+                    <strong>{formatNumber(overviewUsageFiles?.writes)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Reads</span>
+                    <strong>{formatNumber(overviewUsageFiles?.reads)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Errors</span>
+                    <strong>{formatNumber(overviewUsageFiles?.errors)}</strong>
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="small-note" style={{ marginTop: 12 }}>
-              Reasons: {overviewCompactionReasons.map((item) => `${item.reason} (${item.count})`).join(" · ") || "none"}
+
+            <div className="card overview-summary-card">
+              <SectionTitle title="Approvals" subtitle="Queue pressure and what approvals turn into." />
+              <OverviewBand title="Approval outcomes" items={overviewApprovalMixItems} />
+              <div className="overview-summary-card__split">
+                <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Pending / Total</span>
+                    <strong>{formatNumber(overview?.approvals.queue.pending)} / {formatNumber(overview?.approvals.queue.total)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Remembered</span>
+                    <strong>{formatNumber(overview?.approvals.audit.remembered)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Automatic</span>
+                    <strong>{formatNumber(overview?.approvals.audit.automatic)}</strong>
+                  </div>
+                </div>
+                <div className="overview-callout">
+                  <div className="overview-callout__value">{formatNumber(pendingApprovalCount)}</div>
+                  <div className="overview-callout__label">Awaiting action</div>
+                  <div className="overview-callout__detail">Queue total {formatNumber(approvalQueueTotal)}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card overview-summary-card">
+              <SectionTitle title="Compactions" subtitle="How often context gets compressed and why." />
+              <OverviewBand title="Compaction reasons" items={overviewCompactionReasonItems} />
+              <div className="overview-summary-card__split">
+                <div>
+                  <div className="overview-summary-card__eyebrow">Reason ranks</div>
+                  <OverviewRankBars items={overviewCompactionReasonItems} />
+                </div>
+                <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Total compactions</span>
+                    <strong>{formatNumber(overview?.compactions.total)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Avg interval</span>
+                    <strong>{overview?.compactions.avg_interval_minutes != null ? `${overview.compactions.avg_interval_minutes}m` : "--"}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Avg per task</span>
+                    <strong>{overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Avg usage</span>
+                    <strong>{overview?.compactions.avg_usage_ratio != null ? formatPercent(overview.compactions.avg_usage_ratio * 100, 1) : "--"}</strong>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -6009,7 +6725,7 @@ export function MonitorTab() {
       <section className={pageClass("usage", "page--viz-readable")} id="page-usage">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshUsage()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             TODO Export CSV
@@ -6042,7 +6758,7 @@ export function MonitorTab() {
         <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
           <SectionTitle
             title="Token Usage"
-            subtitle={`Persisted runtime cards bucketed by system time${usage ? ` · scanned ${formatNumber(usage.scanned_runtime_cards)} LLM calls` : ""}.`}
+            subtitle={`Persisted runtime cards bucketed by system time${usage ? ` Â· scanned ${formatNumber(usage.scanned_runtime_cards)} LLM calls` : ""}.`}
           />
           <div className="inline-actions">
             {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
@@ -6197,7 +6913,7 @@ export function MonitorTab() {
       <section className={pageClass("transcripts", "page--dashboard-wide")} id="page-transcripts">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             TODO Replay
@@ -6232,7 +6948,7 @@ export function MonitorTab() {
             {selectedTranscript ? (
               <>
                 <div className="small-note">
-                  {selectedTranscript.projectName} · {selectedTranscript.chatTitle} · {selectedTranscript.messages.length} recent messages
+                  {selectedTranscript.projectName} Â· {selectedTranscript.chatTitle} Â· {selectedTranscript.messages.length} recent messages
                 </div>
                 <div className="transcript-messages">
                   {selectedTranscript.messages.map((message) => (
@@ -6262,7 +6978,7 @@ export function MonitorTab() {
       <section className={pageClass("logs", "page--detail-full")} id="page-logs">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshLogs()}>
-            ↻ Refresh
+            â?Refresh
           </button>
           <input
             value={logFilter}
@@ -6299,10 +7015,10 @@ export function MonitorTab() {
                   <span className={`level ${level}`}>{level}</span>
                   <span className={`log-source log-source--${source}`}>{source}</span>
                   <span>
-                    <strong>{entry.logger}</strong> · {entry.message}
+                    <strong>{entry.logger}</strong> Â· {entry.message}
                     <br />
                     <span className="small-note mono">
-                      {entry.pathname ? `${entry.pathname}:${entry.lineno ?? 0}` : "runtime"} · {entry.thread_name || "main"}
+                      {entry.pathname ? `${entry.pathname}:${entry.lineno ?? 0}` : "runtime"} Â· {entry.thread_name || "main"}
                     </span>
                   </span>
                 </div>
@@ -6329,8 +7045,7 @@ export function MonitorTab() {
               All files
             </button>
             <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-              ↻
-            </button>
+              â?            </button>
           </div>
         </div>
 
@@ -6462,7 +7177,7 @@ export function MonitorTab() {
             <div className="section-subtitle">All runtime cards and recent messages flowing through one stream.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
 
@@ -6597,7 +7312,7 @@ export function MonitorTab() {
                       <div className="brain-event-card__detail">{event.detail}</div>
                     </div>
                     <span className="brain-event-card__toggle" aria-hidden="true">
-                      {isExpanded ? "−" : "+"}
+                      {isExpanded ? "-" : "+"}
                     </span>
                   </button>
 
@@ -6668,7 +7383,7 @@ export function MonitorTab() {
               Browser
             </button>
             <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-              ↻ Refresh
+              â?Refresh
             </button>
           </div>
         </div>
@@ -6755,7 +7470,7 @@ export function MonitorTab() {
       <section className={pageClass("models", "page--viz-readable")} id="page-models">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <div className="grid">
@@ -6825,7 +7540,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Why compaction happened, and how large each prompt module was at the time.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshContextCompactions()} disabled={refreshing}>
-            鈫?Refresh
+            é?Refresh
           </button>
         </div>
 
@@ -6838,7 +7553,7 @@ export function MonitorTab() {
           <div className="card">
             <div className="card-title">Latest Prompt</div>
             <div className="card-value">{formatNumber(latestCompaction?.prompt_total?.tokens)}</div>
-            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)} · {formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
+            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)} Â· {formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
           </div>
           <div className="card">
             <div className="card-title">Dropped / Truncated</div>
@@ -6860,7 +7575,7 @@ export function MonitorTab() {
                 {Object.entries(latestCompaction.prompt_components).map(([name, size]) => (
                   <div key={name} className="metric-row">
                     <span>{name.replace(/_/g, " ")}</span>
-                    <strong>{formatNumber(size.tokens)} tok · {formatBytes(size.bytes)}</strong>
+                    <strong>{formatNumber(size.tokens)} tok Â· {formatBytes(size.bytes)}</strong>
                   </div>
                 ))}
               </div>
@@ -6908,12 +7623,12 @@ export function MonitorTab() {
                     <CompactionEventDetail item={item} />
                     <div className="compaction-event-card__legacy">
                     <div className="small-note" style={{ marginBottom: 6 }}>
-                      {item.chat_title || "Unknown chat"} {item.project_name ? `路 ${item.project_name}` : ""}
-                      {item.task_run_title ? ` 路 ${item.task_run_title}` : ""}
+                      {item.chat_title || "Unknown chat"} {item.project_name ? `è·?${item.project_name}` : ""}
+                      {item.task_run_title ? ` è·?${item.task_run_title}` : ""}
                     </div>
                     <div className="feed-preview">
                       {item.reason_summary || monitorCompactionPreview(item)}
-                      {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens · {formatBytes(item.prompt_total?.bytes)} · selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
+                      {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens Â· {formatBytes(item.prompt_total?.bytes)} Â· selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
                     </div>
                     {item.prompt_components ? (
                       <div className="usage-table" style={{ marginTop: 10 }}>
@@ -6983,7 +7698,7 @@ export function MonitorTab() {
             <div className="section-subtitle">See exactly what context is assembled and sent to the LLM each turn.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <div className="card" style={{ marginBottom: 16 }}>
@@ -7057,8 +7772,8 @@ export function MonitorTab() {
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
                       <div className="small-note" style={{ marginBottom: 6 }}>
-                        {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
-                        {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
+                        {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
                       </div>
                       <div className="feed-preview">{monitorCompactionPreview(item)}</div>
                     </div>
@@ -7076,7 +7791,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Sub-Agent Tree</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <div className="grid">
@@ -7112,8 +7827,7 @@ export function MonitorTab() {
           <div>
             <div className="section-title">Background Tasks</div>
             <div className="section-subtitle">
-              平铺查看后台任务，以及当前任务内的执行步骤。
-            </div>
+              å¹³éºæ¥çåå°ä»»å¡ï¼ä»¥åå½åä»»å¡åçæ§è¡æ­¥éª¤ã?            </div>
           </div>
           <div className="inline-actions">
             {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
@@ -7145,8 +7859,7 @@ export function MonitorTab() {
               <div>
                 <div className="section-title">Task List</div>
                 <div className="small-note">
-                  {historyRange} 内 {taskRunCounts.total} 个任务，当前筛选后 {visibleTaskRuns.length} 个。
-                </div>
+                  {historyRange} å?{taskRunCounts.total} ä¸ªä»»å¡ï¼å½åç­éå {visibleTaskRuns.length} ä¸ªã?                </div>
               </div>
               <button type="button" className="refresh-btn" onClick={() => void refreshTaskRuns()} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
@@ -7235,7 +7948,7 @@ export function MonitorTab() {
                 </div>
 
                 {taskRunStepLoading[selectedTaskRunSummary.id] ? (
-                  <div className="muted-block" style={{ marginTop: 12 }}>Loading task steps…</div>
+                  <div className="muted-block" style={{ marginTop: 12 }}>Loading task steps...</div>
                 ) : null}
                 {taskRunStepErrors[selectedTaskRunSummary.id] ? (
                   <div className="muted-block" style={{ marginTop: 12 }}>
@@ -7620,7 +8333,7 @@ export function MonitorTab() {
                             selectedTaskRunSummary.latest_continuation_event_at
                               ? shortDate(selectedTaskRunSummary.latest_continuation_event_at)
                               : null,
-                          ].filter(Boolean).join(" · ")
+                          ].filter(Boolean).join(" Â· ")
                         : "No continuation event summary recorded."}
                     </div>
                   </div>
@@ -7671,15 +8384,15 @@ export function MonitorTab() {
                       <div>
                         <strong>Scheduler Plan</strong>
                         <div className="small-note">
-                          {titleCaseLabel(selectedTaskRunSchedulePlan.mode)} · {selectedTaskRunSchedulePlan.blockingStepCount} blocking / {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
+                          {titleCaseLabel(selectedTaskRunSchedulePlan.mode)} Â· {selectedTaskRunSchedulePlan.blockingStepCount} blocking / {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
                         </div>
                         <div className="small-note">
                           Sidecar policy: {selectedTaskRunSchedulePlan.sidecarAgentTypes.length > 0
-                            ? selectedTaskRunSchedulePlan.sidecarAgentTypes.join(" · ")
+                            ? selectedTaskRunSchedulePlan.sidecarAgentTypes.join(" Â· ")
                             : "disabled"}
                         </div>
                         <div className="small-note">
-                          Runtime: {selectedTaskRunSchedulePlan.completedStepCount} completed · {selectedTaskRunSchedulePlan.runningStepCount} running · {selectedTaskRunSchedulePlan.waitingStepCount} waiting
+                          Runtime: {selectedTaskRunSchedulePlan.completedStepCount} completed Â· {selectedTaskRunSchedulePlan.runningStepCount} running Â· {selectedTaskRunSchedulePlan.waitingStepCount} waiting
                         </div>
                       </div>
                       <div className="run-detail-hero__badges">
@@ -7772,7 +8485,7 @@ export function MonitorTab() {
                   </div>
                 ) : null}
                 {taskRunDetailLoading[selectedTaskRunSummary.id] ? (
-                  <div className="muted-block" style={{ marginTop: 12 }}>Loading ordered task-run events…</div>
+                  <div className="muted-block" style={{ marginTop: 12 }}>Loading ordered task-run events...</div>
                 ) : null}
                 {taskRunDetailErrors[selectedTaskRunSummary.id] ? (
                   <div className="muted-block" style={{ marginTop: 12 }}>
@@ -7804,7 +8517,7 @@ export function MonitorTab() {
                         <strong>Latest Event</strong>
                         <div className="small-note">
                           {selectedTaskRunDetail.checkpoint_snapshot.latest_event_type
-                            ? `${titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.latest_event_type)} · ${shortDate(selectedTaskRunDetail.checkpoint_snapshot.latest_event_at)}`
+                            ? `${titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.latest_event_type)} Â· ${shortDate(selectedTaskRunDetail.checkpoint_snapshot.latest_event_at)}`
                             : "No events recorded."}
                         </div>
                       </div>
@@ -7855,7 +8568,7 @@ export function MonitorTab() {
                                 selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool?.["tool_name"]
                                   ? `blocked ${String(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool["tool_name"])}`
                                   : null,
-                              ].filter(Boolean).join(" · ")
+                              ].filter(Boolean).join(" Â· ")
                             : "No turn-local continuation payload derived."}
                         </div>
                       </div>
@@ -7905,7 +8618,7 @@ export function MonitorTab() {
                       <div key={event.id} className={`run-event-row run-event-row--${taskRunEventTone(event.event_type)}`}>
                         <div className="run-event-row__head">
                           <strong>
-                            #{event.event_index} · {titleCaseLabel(event.event_type)}
+                            #{event.event_index} Â· {titleCaseLabel(event.event_type)}
                           </strong>
                           <span className="small-note">{shortDate(event.created_at)}</span>
                         </div>
@@ -7938,7 +8651,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>API Rate Limit Monitor</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <p className="small-note" style={{ marginTop: 0, marginBottom: 14 }}>
@@ -7972,7 +8685,7 @@ export function MonitorTab() {
               onClick={() => void Promise.all([refreshApprovalQueue(), refreshApprovalAudit()])}
               disabled={refreshing}
             >
-              ↻ Refresh
+              â?Refresh
             </button>
           </div>
         </div>
@@ -7981,7 +8694,7 @@ export function MonitorTab() {
             <div className="card-title">Approval Audit</div>
             <div className="card-value">{formatNumber(approvalAuditResponse?.counts.all ?? approvalAuditEntries.length)}</div>
             <div className="card-sub">
-              {formatNumber(approvalAuditResponse?.counts.automatic ?? 0)} automatic · {formatNumber(approvalAuditResponse?.counts.remembered ?? 0)} remembered rules
+              {formatNumber(approvalAuditResponse?.counts.automatic ?? 0)} automatic Â· {formatNumber(approvalAuditResponse?.counts.remembered ?? 0)} remembered rules
             </div>
           </div>
           <div className="card">
@@ -7990,7 +8703,7 @@ export function MonitorTab() {
               {formatNumber((approvalAuditResponse?.counts.approve ?? 0) + (approvalAuditResponse?.counts.reject ?? 0))}
             </div>
             <div className="card-sub">
-              {formatNumber(approvalAuditResponse?.counts.approve ?? 0)} approved · {formatNumber(approvalAuditResponse?.counts.reject ?? 0)} rejected
+              {formatNumber(approvalAuditResponse?.counts.approve ?? 0)} approved Â· {formatNumber(approvalAuditResponse?.counts.reject ?? 0)} rejected
             </div>
           </div>
         </div>
@@ -8007,8 +8720,8 @@ export function MonitorTab() {
                     <div className="small-note">{formatTimeAgo(item.created_at)}</div>
                   </div>
                   <div className="small-note" style={{ marginTop: 6 }}>
-                    {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
-                    {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                    {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
+                    {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
                   </div>
                   <div className="muted-block" style={{ marginTop: 8 }}>
                     {approvalQueuePreview(item) || "Awaiting operator decision."}
@@ -8186,8 +8899,8 @@ export function MonitorTab() {
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
                       <div className="small-note" style={{ marginBottom: 6 }}>
-                        {item.chat_title || "Unknown chat"} {item.project_name ? `· ${item.project_name}` : ""}
-                        {item.task_run_title ? ` · ${item.task_run_title}` : ""}
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
+                        {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
                       </div>
                       {item.resolution_preview || item.summary ? (
                         <div className="feed-preview">{item.resolution_preview || item.summary}</div>
@@ -8226,7 +8939,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Session Clusters</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <AdaptiveCardDeck className="cluster-grid" itemCount={clusters.length} minCardWidth={280} idealCardWidth={320} maxCardWidth={380} maxColumns={4}>
@@ -8256,7 +8969,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Threat detection and posture summary copied from ClawMetry.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Scan
+            â?Scan
           </button>
         </div>
 
@@ -8377,7 +9090,7 @@ export function MonitorTab() {
       <section className={pageClass("crons", "page--dashboard-wide")} id="page-crons">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             + New Job
@@ -8400,7 +9113,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Catown does not expose NemoClaw yet; page shell is copied for later integration.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <div className="split-panels">
@@ -8430,7 +9143,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Upgrade Impact</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            ↻ Refresh
+            â?Refresh
           </button>
         </div>
         <div className="grid">
