@@ -6657,14 +6657,21 @@ export function ChatTab({
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   // Attachment state for image/file uploads
+  type UploadedAttachment = { file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string };
   type PendingAttachment = {
+    id: string;
     file: File;
     previewUrl: string | null;
     uploading: boolean;
     error: string | null;
-    uploaded: { file_path: string; file_name: string; file_size: number; mime_type?: string } | null;
+    uploaded: UploadedAttachment | null;
   };
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
+  const attachmentUploadPromisesRef = useRef<Map<string, Promise<UploadedAttachment>>>(new Map());
+  const attachmentSubmitInFlightRef = useRef(false);
+  const [waitingForAttachments, setWaitingForAttachments] = useState(false);
+  const composerBusy = sending || waitingForAttachments;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const draftHistoryByChatRef = useRef<Record<string, string[]>>(readDraftHistoryStore());
@@ -8108,9 +8115,69 @@ export function ChatTab({
     }
   }
 
+  function updatePendingAttachments(updater: (current: PendingAttachment[]) => PendingAttachment[]) {
+    const next = updater(pendingAttachmentsRef.current);
+    pendingAttachmentsRef.current = next;
+    setPendingAttachments(next);
+  }
+
+  function makeAttachmentId(file: File, index: number) {
+    return `attachment-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}-${file.name}`;
+  }
+
+  function reportSendFailure(clientTurnId: string, message: string) {
+    setLocalOverlayMessages((current) => {
+      const failedAt = new Date();
+      const failureMessage: MessageItem = {
+        id: -Math.floor(failedAt.getTime()) - 1,
+        content: `Error: ${message}`,
+        message_type: "text",
+        created_at: failedAt.toISOString(),
+        agent_name: getAgentDisplayName(primaryAgent),
+        client_turn_id: clientTurnId,
+        optimisticKind: "assistant_placeholder",
+        localOnly: true,
+      };
+      const nextMessages = [...current, failureMessage].sort(
+        (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+      );
+      writeOverlayMessages(chat?.id ?? null, nextMessages);
+      return nextMessages;
+    });
+  }
+
+  async function collectAttachmentsForSend(attachments: PendingAttachment[]) {
+    const uploadedAttachments = await Promise.all(
+      attachments.map(async (attachment) => {
+        const latest = pendingAttachmentsRef.current.find((item) => item.id === attachment.id) ?? attachment;
+        if (latest.uploaded) return latest.uploaded;
+        if (latest.error) {
+          throw new Error(`Upload failed for ${latest.file.name}: ${latest.error}`);
+        }
+        const pendingUpload = attachmentUploadPromisesRef.current.get(latest.id);
+        if (pendingUpload) return pendingUpload;
+        return uploadAttachment(latest);
+      }),
+    );
+    return uploadedAttachments.filter(Boolean);
+  }
+
+  function clearAttachments(attachments: PendingAttachment[]) {
+    const ids = new Set(attachments.map((attachment) => attachment.id));
+    updatePendingAttachments((current) => {
+      for (const attachment of current) {
+        if (ids.has(attachment.id) && attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      }
+      return current.filter((attachment) => !ids.has(attachment.id));
+    });
+    for (const id of ids) {
+      attachmentUploadPromisesRef.current.delete(id);
+    }
+  }
+
   function submitContent(rawContent: string) {
     const next = rawContent.trim();
-    if (!next || sending) return;
+    if (!next || sending || waitingForAttachments || attachmentSubmitInFlightRef.current) return;
 
     // Clear autocomplete
     setCommandSuggestions([]);
@@ -8172,37 +8239,34 @@ export function ChatTab({
       });
     });
 
-    window.requestAnimationFrame(() => {
-      // Collect uploaded attachments
-      const uploadedAttachments = pendingAttachments
-        .filter((a) => a.uploaded !== null)
-        .map((a) => a.uploaded!);
-      // Clear pending attachments after collecting
-      if (uploadedAttachments.length > 0) {
-        clearAllAttachments();
-      }
+    const attachmentsForSend = pendingAttachmentsRef.current;
+    const shouldWaitForUploads = attachmentsForSend.some((attachment) => !attachment.uploaded);
+    attachmentSubmitInFlightRef.current = true;
+    if (shouldWaitForUploads) {
+      setWaitingForAttachments(true);
+    }
 
-      void onSend(next, { clientTurnId, attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined }).catch((error) => {
-        const message = error instanceof Error ? error.message : "Send failed";
-        setLocalOverlayMessages((current) => {
-          const failedAt = new Date();
-          const failureMessage: MessageItem = {
-            id: -Math.floor(failedAt.getTime()) - 1,
-            content: `Error: ${message}`,
-            message_type: "text",
-            created_at: failedAt.toISOString(),
-            agent_name: getAgentDisplayName(primaryAgent),
-            client_turn_id: clientTurnId,
-            optimisticKind: "assistant_placeholder",
-            localOnly: true,
-          };
-          const nextMessages = [...current, failureMessage].sort(
-            (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
-          );
-          writeOverlayMessages(chat?.id ?? null, nextMessages);
-          return nextMessages;
-        });
-      });
+    window.requestAnimationFrame(() => {
+      void (async () => {
+        try {
+          const uploadedAttachments = await collectAttachmentsForSend(attachmentsForSend);
+          if (uploadedAttachments.length > 0) {
+            clearAttachments(attachmentsForSend);
+          }
+          setWaitingForAttachments(false);
+          void onSend(next, { clientTurnId, attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined })
+            .catch((error) => {
+              reportSendFailure(clientTurnId, error instanceof Error ? error.message : "Send failed");
+            })
+            .finally(() => {
+              attachmentSubmitInFlightRef.current = false;
+            });
+        } catch (error) {
+          attachmentSubmitInFlightRef.current = false;
+          setWaitingForAttachments(false);
+          reportSendFailure(clientTurnId, error instanceof Error ? error.message : "Upload failed");
+        }
+      })();
     });
   }
 
@@ -8218,51 +8282,75 @@ export function ChatTab({
     );
     if (supportedFiles.length === 0) return;
 
-    const newAttachments: PendingAttachment[] = supportedFiles.map((file) => ({
+    const newAttachments: PendingAttachment[] = supportedFiles.map((file, index) => ({
+      id: makeAttachmentId(file, index),
       file,
       previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
       uploading: false,
       error: null,
       uploaded: null,
     }));
-    setPendingAttachments((current) => [...current, ...newAttachments]);
+    updatePendingAttachments((current) => [...current, ...newAttachments]);
 
     // Auto-upload each file
     for (const attachment of newAttachments) {
-      void uploadAttachment(attachment);
+      void uploadAttachment(attachment).catch(() => {});
     }
   }
 
-  async function uploadAttachment(attachment: PendingAttachment) {
-    if (!chat?.id) return;
-    setPendingAttachments((current) =>
-      current.map((a) => (a.file === attachment.file ? { ...a, uploading: true, error: null } : a))
-    );
-    try {
-      const result = await api.uploadFile(chat.id, attachment.file);
-      setPendingAttachments((current) =>
-        current.map((a) => (a.file === attachment.file ? { ...a, uploading: false, uploaded: result } : a))
+  function uploadAttachment(attachment: PendingAttachment): Promise<UploadedAttachment> {
+    const existingUpload = attachmentUploadPromisesRef.current.get(attachment.id);
+    if (existingUpload) return existingUpload;
+
+    if (!chat?.id) {
+      const errorMsg = "Chat not ready";
+      updatePendingAttachments((current) =>
+        current.map((a) => (a.id === attachment.id ? { ...a, uploading: false, error: errorMsg } : a))
       );
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Upload failed";
-      setPendingAttachments((current) =>
-        current.map((a) => (a.file === attachment.file ? { ...a, uploading: false, error: errorMsg } : a))
-      );
+      return Promise.reject(new Error(errorMsg));
     }
+
+    updatePendingAttachments((current) =>
+      current.map((a) => (a.id === attachment.id ? { ...a, uploading: true, error: null } : a))
+    );
+
+    const uploadPromise = api.uploadFile(chat.id, attachment.file)
+      .then((result) => {
+        updatePendingAttachments((current) =>
+          current.map((a) => (a.id === attachment.id ? { ...a, uploading: false, uploaded: result } : a))
+        );
+        return result;
+      })
+      .catch((err) => {
+        const errorMsg = err instanceof Error ? err.message : "Upload failed";
+        updatePendingAttachments((current) =>
+          current.map((a) => (a.id === attachment.id ? { ...a, uploading: false, error: errorMsg } : a))
+        );
+        throw new Error(errorMsg);
+      })
+      .finally(() => {
+        if (attachmentUploadPromisesRef.current.get(attachment.id) === uploadPromise) {
+          attachmentUploadPromisesRef.current.delete(attachment.id);
+        }
+      });
+    attachmentUploadPromisesRef.current.set(attachment.id, uploadPromise);
+    return uploadPromise;
   }
 
   function removeAttachment(index: number) {
-    setPendingAttachments((current) => {
+    updatePendingAttachments((current) => {
       const removed = current[index];
       if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removed) attachmentUploadPromisesRef.current.delete(removed.id);
       return current.filter((_, i) => i !== index);
     });
   }
 
   function clearAllAttachments() {
-    setPendingAttachments((current) => {
+    updatePendingAttachments((current) => {
       for (const a of current) {
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+        attachmentUploadPromisesRef.current.delete(a.id);
       }
       return [];
     });
@@ -9212,7 +9300,7 @@ export function ChatTab({
                       key={agent.id}
                       type="button"
                       className={`agent-strip__chip ${isWorking ? "is-working" : isWaiting ? "is-waiting" : ""}`}
-                      disabled={sending}
+                      disabled={composerBusy}
                       onClick={() => insertMention(getAgentType(agent))}
                       title={`Mention ${getAgentDisplayName(agent)} (@${getAgentType(agent)})`}
                       style={buildAgentThemeStyle(getAgentType(agent), agents)}
@@ -9340,7 +9428,7 @@ export function ChatTab({
                 }}
                 placeholder={chat ? "Send a message..." : "Start a conversation..."}
                 rows={1}
-                disabled={sending}
+                disabled={composerBusy}
               />
               <div className="agent-chat__toolbar">
                 <div className="agent-chat__toolbar-left">
@@ -9358,16 +9446,16 @@ export function ChatTab({
                   <button
                     type="button"
                     className="agent-chat__input-btn attachment-btn"
-                    disabled={sending}
+                    disabled={composerBusy}
                     onClick={() => fileInputRef.current?.click()}
-                    title="Attach image (📎)"
+                    title="Attach image or PDF"
                   >
                     📎
                   </button>
                   <button
                     type="button"
                     className="agent-chat__input-btn"
-                    disabled={sending}
+                    disabled={composerBusy}
                     onClick={handleMentionTriggerClick}
                     title="Mention an agent"
                   >
@@ -9376,7 +9464,7 @@ export function ChatTab({
                   <button
                     type="button"
                     className="agent-chat__input-btn"
-                    disabled={sending}
+                    disabled={composerBusy}
                     onClick={() => {
                       draftHistoryIndexRef.current = null;
                       draftHistoryPendingDraftRef.current = "";
@@ -9390,14 +9478,16 @@ export function ChatTab({
                 </div>
 
                 <div className="agent-chat__toolbar-right">
-                  <span className="compose-status">{sending ? `${getAgentDisplayName(primaryAgent)} thinking...` : connectionCopy}</span>
+                  <span className="compose-status">
+                    {waitingForAttachments ? "Uploading attachments..." : sending ? `${getAgentDisplayName(primaryAgent)} thinking...` : connectionCopy}
+                  </span>
                   <button
                     type="submit"
                     className="chat-send-btn"
-                    disabled={sending || draft.trim() === ""}
+                    disabled={composerBusy || draft.trim() === ""}
                     aria-label="Send message"
                   >
-                    {sending ? "..." : <SendHorizontal size={16} aria-hidden="true" />}
+                    {composerBusy ? "..." : <SendHorizontal size={16} aria-hidden="true" />}
                   </button>
                 </div>
               </div>
