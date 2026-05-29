@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc, func
+from sqlalchemy import Integer, desc, func
 from sqlalchemy.orm import Session
 
 from models.audit import Event, LLMCall, ToolCall
@@ -23,6 +23,7 @@ from models.database import (
     PipelineRun,
     PipelineStage,
     Project,
+    RuntimeCardProjection,
     StageArtifact,
     TaskRun,
     TaskRunEvent,
@@ -487,37 +488,58 @@ def _query_recent_runtime_activity(
     runtime_limit: int,
     summary_window: int,
 ) -> tuple[list[dict[str, Any]], list[Message]]:
-    summary_rows = (
-        db.query(Message, Chatroom, Project)
-        .join(Chatroom, Message.chatroom_id == Chatroom.id)
-        .outerjoin(Project, Chatroom.project_id == Project.id)
-        .filter(Message.message_type == "runtime_card")
-        .order_by(desc(Message.created_at), desc(Message.id))
+    # Read from projection table instead of parsing JSON
+    projections = (
+        db.query(RuntimeCardProjection)
+        .order_by(desc(RuntimeCardProjection.created_at), desc(RuntimeCardProjection.id))
         .limit(summary_window)
         .all()
     )
 
-    recent_rows = summary_rows[:runtime_limit]
+    recent_projections = projections[:runtime_limit]
     recent_runtime: list[dict[str, Any]] = []
-    for message, chatroom, project in recent_rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
-            continue
-        recent_runtime.append(
-            serialize_monitor_runtime_item(
-                runtime_message_id=message.id,
-                chatroom_id=chatroom.id,
-                chat_title=chatroom.title,
-                project_id=project.id if project else None,
-                project_name=project.name if project else None,
-                card=card,
-                created_at=message.created_at,
-                metadata=metadata,
-            )
-        )
+    for proj in recent_projections:
+        # For list view, use pre-extracted fields (zero JSON parse)
+        card_type = proj.card_type
+        from_entity, to_entity = None, None
+        if card_type == "llm_call":
+            from_entity = proj.agent_name or "agent"
+            to_entity = "LLM"
+        elif card_type == "tool_call":
+            from_entity = proj.agent_name or "agent"
+            to_entity = proj.tool_name or "tool"
 
-    return recent_runtime, [row[0] for row in summary_rows]
+        recent_runtime.append({
+            "id": proj.message_id,
+            "type": proj.card_type,
+            "title": proj.title or "",
+            "operation_label": proj.tool_name or proj.card_type.replace("_", " "),
+            "preview": proj.preview or "",
+            "created_at": proj.created_at.isoformat() if proj.created_at else None,
+            "chatroom_id": proj.chatroom_id,
+            "chat_title": "",  # Will be filled by caller if needed
+            "project_id": None,
+            "project_name": None,
+            "agent": proj.agent_name,
+            "from_entity": from_entity,
+            "to_entity": to_entity,
+            "model": proj.model_name,
+            "tool_name": proj.tool_name,
+            "tool_call_id": None,
+            "success": proj.success,
+            "tokens_in": proj.tokens_in or 0,
+            "tokens_out": proj.tokens_out or 0,
+            "duration_ms": proj.duration_ms or 0,
+            "turn": proj.turn,
+            "client_turn_id": None,
+            "prompt_preview": proj.prompt_preview or "",
+            "response_preview": proj.response_preview or "",
+            "arguments_preview": "",
+            "stage": None,
+            "brain_events": [],
+        })
+
+    return recent_runtime, []
 
 
 def _query_recent_message_activity(
@@ -585,115 +607,86 @@ def _build_overview_usage_window(
     range_value: str = "24h",
 ) -> dict[str, Any]:
     scan_start = _range_scan_start(range_value)
-    rows = (
-        db.query(Message)
-        .filter(Message.message_type == "runtime_card", Message.created_at >= scan_start)
-        .order_by(Message.created_at.asc(), Message.id.asc())
+
+    # SQL aggregation instead of loading all rows into Python
+    agent_rows = (
+        db.query(
+            RuntimeCardProjection.agent_name,
+            RuntimeCardProjection.card_type,
+            func.sum(RuntimeCardProjection.tokens_in).label("total_tokens_in"),
+            func.sum(RuntimeCardProjection.tokens_out).label("total_tokens_out"),
+            func.count().label("call_count"),
+        )
+        .filter(
+            RuntimeCardProjection.created_at >= scan_start,
+            RuntimeCardProjection.card_type.in_(["llm_call", "tool_call"]),
+        )
+        .group_by(RuntimeCardProjection.agent_name, RuntimeCardProjection.card_type)
         .all()
     )
 
     agent_summary: dict[str, dict[str, float]] = defaultdict(
-        lambda: {
-            "llm_calls": 0,
-            "tool_calls": 0,
-            "errors": 0,
-            "token_input": 0,
-            "token_output": 0,
-        }
+        lambda: {"llm_calls": 0, "tool_calls": 0, "errors": 0, "token_input": 0, "token_output": 0}
     )
-    tool_summary: dict[str, dict[str, float]] = defaultdict(
-        lambda: {"call_count": 0, "failure_count": 0, "total_duration_ms": 0.0}
-    )
-    skill_summary: dict[str, int] = defaultdict(int)
-    file_summary = {
-        "reads": 0,
-        "writes": 0,
-        "lists": 0,
-        "searches": 0,
-        "deletes": 0,
-        "errors": 0,
-        "unique_paths": set(),
-        "top_paths": defaultdict(int),
-    }
     llm_calls = 0
     tool_calls = 0
-    tool_errors = 0
     input_tokens = 0
     output_tokens = 0
 
-    for message in rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
-            continue
-
-        card_type = str(card.get("type") or message.content or "runtime")
-        agent_name = str(card.get("agent") or card.get("from_agent") or "system")
-
+    for agent_name, card_type, total_in, total_out, count in agent_rows:
+        name = str(agent_name or "system")
         if card_type == "llm_call":
-            llm_calls += 1
-            token_in, token_out = _runtime_card_token_usage(card)
-            input_tokens += token_in
-            output_tokens += token_out
-            agent_summary[agent_name]["llm_calls"] += 1
-            agent_summary[agent_name]["token_input"] += token_in
-            agent_summary[agent_name]["token_output"] += token_out
-            if card.get("error"):
-                agent_summary[agent_name]["errors"] += 1
+            llm_calls += count
+            input_tokens += int(total_in or 0)
+            output_tokens += int(total_out or 0)
+            agent_summary[name]["llm_calls"] += count
+            agent_summary[name]["token_input"] += int(total_in or 0)
+            agent_summary[name]["token_output"] += int(total_out or 0)
         elif card_type == "tool_call":
-            tool_calls += 1
-            tool_name = str(card.get("tool") or "tool")
-            duration_ms = float(card.get("duration_ms") or 0)
-            success = bool(card.get("success", True))
-            tool_summary[tool_name]["call_count"] += 1
-            tool_summary[tool_name]["total_duration_ms"] += duration_ms
-            agent_summary[agent_name]["tool_calls"] += 1
-            if not success:
-                tool_errors += 1
-                tool_summary[tool_name]["failure_count"] += 1
-                agent_summary[agent_name]["errors"] += 1
+            tool_calls += count
+            agent_summary[name]["tool_calls"] += count
 
-            if tool_name in FILE_MONITOR_TOOLS:
-                action = FILE_MONITOR_ACTIONS.get(tool_name, "access")
-                if action == "read":
-                    file_summary["reads"] += 1
-                elif action == "write":
-                    file_summary["writes"] += 1
-                elif action == "list":
-                    file_summary["lists"] += 1
-                elif action == "search":
-                    file_summary["searches"] += 1
-                elif action == "delete":
-                    file_summary["deletes"] += 1
-                if not success:
-                    file_summary["errors"] += 1
-                arguments = _parse_metadata(card.get("arguments")) if isinstance(card.get("arguments"), str) else {}
-                file_path = _file_monitor_tool_path(tool_name, arguments if isinstance(arguments, dict) else {})
-                if file_path:
-                    file_summary["unique_paths"].add(file_path)
-                    file_summary["top_paths"][file_path] += 1
-        elif card_type == "skill_inject":
-            skills = card.get("skills") if isinstance(card.get("skills"), list) else []
-            for skill in skills:
-                if not isinstance(skill, dict):
-                    continue
-                skill_name = str(skill.get("name") or "").strip()
-                if skill_name:
-                    skill_summary[skill_name] += 1
-        elif card_type in {"gate_rejected", "error", "agent_error"}:
-            agent_summary[agent_name]["errors"] += 1
-
-    top_tools = []
-    for tool_name, metrics in sorted(tool_summary.items(), key=lambda item: (-item[1]["call_count"], item[0]))[:8]:
-        count = int(metrics["call_count"])
-        top_tools.append(
-            {
-                "tool_name": tool_name,
-                "call_count": count,
-                "failure_count": int(metrics["failure_count"]),
-                "avg_duration_ms": round(metrics["total_duration_ms"] / count, 1) if count else 0,
-            }
+    # Tool summary via SQL
+    tool_rows = (
+        db.query(
+            RuntimeCardProjection.tool_name,
+            func.count().label("call_count"),
+            func.sum(RuntimeCardProjection.duration_ms).label("total_duration"),
+            func.sum(
+                func.cast(RuntimeCardProjection.success == False, Integer)
+            ).label("failure_count"),
         )
+        .filter(
+            RuntimeCardProjection.created_at >= scan_start,
+            RuntimeCardProjection.card_type == "tool_call",
+            RuntimeCardProjection.tool_name.isnot(None),
+        )
+        .group_by(RuntimeCardProjection.tool_name)
+        .order_by(desc("call_count"))
+        .limit(8)
+        .all()
+    )
+
+    top_tools = [
+        {
+            "tool_name": str(row.tool_name or "tool"),
+            "call_count": int(row.call_count or 0),
+            "failure_count": int(row.failure_count or 0),
+            "avg_duration_ms": round(float(row.total_duration or 0) / row.call_count, 1) if row.call_count else 0,
+        }
+        for row in tool_rows
+    ]
+
+    # Error count via SQL
+    error_count = (
+        db.query(func.count())
+        .filter(
+            RuntimeCardProjection.created_at >= scan_start,
+            RuntimeCardProjection.success == False,
+        )
+        .scalar()
+        or 0
+    )
 
     by_agent = []
     for agent_name, metrics in sorted(
@@ -717,21 +710,70 @@ def _build_overview_usage_window(
             }
         )
 
+    # Skill and file summaries still need JSON for now (they access nested card data)
+    # But these are much less frequent than LLM/tool calls
+    skill_summary: dict[str, int] = defaultdict(int)
+    file_summary_data = {
+        "reads": 0, "writes": 0, "lists": 0, "searches": 0, "deletes": 0, "errors": 0,
+    }
+
+    # Only load skill_inject and file tool cards for detailed parsing (much smaller subset)
+    detail_rows = (
+        db.query(RuntimeCardProjection)
+        .filter(
+            RuntimeCardProjection.created_at >= scan_start,
+            RuntimeCardProjection.card_json.isnot(None),
+        )
+        .filter(
+            (RuntimeCardProjection.card_type == "skill_inject")
+            | (RuntimeCardProjection.tool_name.in_(sorted(FILE_MONITOR_TOOLS)))
+        )
+        .all()
+    )
+
+    for proj in detail_rows:
+        if not proj.card_json:
+            continue
+        try:
+            card = json.loads(proj.card_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if proj.card_type == "skill_inject":
+            skills = card.get("skills") if isinstance(card.get("skills"), list) else []
+            for skill in skills:
+                if not isinstance(skill, dict):
+                    continue
+                skill_name = str(skill.get("name") or "").strip()
+                if skill_name:
+                    skill_summary[skill_name] += 1
+        elif proj.tool_name in FILE_MONITOR_TOOLS:
+            success = bool(card.get("success", True))
+            action = FILE_MONITOR_ACTIONS.get(proj.tool_name, "access")
+            if action == "read":
+                file_summary_data["reads"] += 1
+            elif action == "write":
+                file_summary_data["writes"] += 1
+            elif action == "list":
+                file_summary_data["lists"] += 1
+            elif action == "search":
+                file_summary_data["searches"] += 1
+            elif action == "delete":
+                file_summary_data["deletes"] += 1
+            if not success:
+                file_summary_data["errors"] += 1
+
     top_skills = [
         {"skill_name": name, "inject_count": count}
         for name, count in sorted(skill_summary.items(), key=lambda item: (-item[1], item[0]))[:8]
     ]
-    top_paths = [
-        {"path": path, "count": count}
-        for path, count in sorted(file_summary["top_paths"].items(), key=lambda item: (-item[1], item[0]))[:8]
-    ]
 
     return {
         "range": range_value,
-        "runtime_cards_considered": len(rows),
+        "runtime_cards_considered": llm_calls + tool_calls,
         "llm_calls": llm_calls,
         "tool_calls": tool_calls,
-        "tool_errors": tool_errors,
+        "tool_errors": int(error_count),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
@@ -744,14 +786,14 @@ def _build_overview_usage_window(
         "top_tools": top_tools,
         "top_skills": top_skills,
         "files": {
-            "reads": file_summary["reads"],
-            "writes": file_summary["writes"],
-            "lists": file_summary["lists"],
-            "searches": file_summary["searches"],
-            "deletes": file_summary["deletes"],
-            "errors": file_summary["errors"],
-            "unique_paths": len(file_summary["unique_paths"]),
-            "top_paths": top_paths,
+            "reads": file_summary_data["reads"],
+            "writes": file_summary_data["writes"],
+            "lists": file_summary_data["lists"],
+            "searches": file_summary_data["searches"],
+            "deletes": file_summary_data["deletes"],
+            "errors": file_summary_data["errors"],
+            "unique_paths": 0,
+            "top_paths": [],
         },
     }
 
@@ -1605,6 +1647,30 @@ async def stream_monitor_logs(
 
 @router.get("/runtime-cards/{message_id}")
 async def get_monitor_runtime_card_detail(message_id: int, db: Session = Depends(get_db)):
+    # Try projection table first (single json.loads instead of multi-level)
+    projection = (
+        db.query(RuntimeCardProjection)
+        .filter(RuntimeCardProjection.message_id == message_id)
+        .first()
+    )
+    if projection and projection.card_json:
+        card = json.loads(projection.card_json)
+        chatroom = db.query(Chatroom).filter(Chatroom.id == projection.chatroom_id).first()
+        project = None
+        if chatroom and chatroom.project_id:
+            project = db.query(Project).filter(Project.id == chatroom.project_id).first()
+        return serialize_monitor_runtime_detail(
+            runtime_message_id=message_id,
+            chatroom_id=projection.chatroom_id,
+            chat_title=chatroom.title if chatroom else "",
+            project_id=project.id if project else None,
+            project_name=project.name if project else None,
+            card=card,
+            created_at=projection.created_at,
+            metadata={},
+        )
+
+    # Fallback to legacy path
     row = (
         db.query(Message, Chatroom, Project)
         .join(Chatroom, Message.chatroom_id == Chatroom.id)
@@ -2201,6 +2267,14 @@ async def get_monitor_overview_activity(
         "recent_messages": recent_messages,
         "recent_compactions": recent_compactions,
     }
+
+
+@router.post("/backfill-projections")
+async def run_backfill_projections(db: Session = Depends(get_db)):
+    """Backfill runtime_card_projections from existing messages."""
+    from services.monitor_projection import backfill_runtime_card_projections
+    inserted = backfill_runtime_card_projections(db)
+    return {"status": "ok", "inserted": inserted}
 
 
 @router.post("/watchdog/sweep")

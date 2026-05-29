@@ -863,6 +863,40 @@ class StageRunAsset(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class RuntimeCardProjection(Base):
+    """Structured projection of runtime card data for fast Monitor queries."""
+    __tablename__ = "runtime_card_projections"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False, unique=True, index=True)
+    chatroom_id = Column(Integer, nullable=False, index=True)
+    task_run_id = Column(Integer, nullable=True, index=True)
+
+    # Pre-extracted high-frequency query fields
+    card_type = Column(String, nullable=False, index=True)
+    agent_name = Column(String, nullable=True, index=True)
+    tool_name = Column(String, nullable=True)
+    model_name = Column(String, nullable=True)
+    turn = Column(Integer, nullable=True)
+
+    # Pre-aggregated numeric fields
+    tokens_in = Column(Integer, default=0)
+    tokens_out = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    success = Column(Boolean, nullable=True)
+
+    # Pre-truncated preview fields (for list views)
+    title = Column(String, nullable=True)
+    preview = Column(Text, nullable=True)
+    prompt_preview = Column(Text, nullable=True)
+    response_preview = Column(Text, nullable=True)
+
+    # Original card JSON (only read by detail endpoint on demand)
+    card_json = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, index=True)
+
+
 @event.listens_for(SessionLocal, "before_flush")
 def _populate_stable_public_identity(session, _flush_context, _instances):
     for obj in list(session.new) + list(session.dirty):
@@ -976,6 +1010,18 @@ def init_database():
                 )
             )
     with engine.begin() as connection:
+        # --- ADR-034: Runtime Card Projection table ---
+        RuntimeCardProjection.__table__.create(bind=connection, checkfirst=True)
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_rcp_created ON runtime_card_projections (created_at)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_rcp_type_agent ON runtime_card_projections (card_type, agent_name)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_rcp_task_run ON runtime_card_projections (task_run_id)"
+        ))
+
         existing_agent_columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(agents)")).fetchall()
         }

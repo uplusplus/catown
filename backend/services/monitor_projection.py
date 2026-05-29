@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -751,3 +752,96 @@ def serialize_monitor_policy_decision_item(
         "policy_decision_summary": decision_summary,
         "policy_decision": decision_payload,
     }
+
+
+def upsert_runtime_card_projection(
+    db: Session,
+    *,
+    message_id: int,
+    chatroom_id: int,
+    task_run_id: int | None,
+    card: dict[str, Any],
+    created_at: Any,
+) -> None:
+    """Write a structured projection row alongside the runtime_card message."""
+    from models.database import RuntimeCardProjection
+
+    card_type = str(card.get("type") or "runtime")
+    agent_name = str(card.get("agent") or card.get("from_agent") or "system")
+    tool_name = str(card.get("tool")) if card.get("tool") else None
+    model_name = str(card.get("model")) if card.get("model") else None
+    turn = int(card.get("turn") or 0) or None
+    tokens_in = int(card.get("tokens_in") or 0)
+    tokens_out = int(card.get("tokens_out") or 0)
+    duration_ms = int(card.get("duration_ms") or 0)
+    success = card.get("success")
+    if success is not None:
+        success = bool(success)
+
+    title = build_runtime_title(card)
+    preview = build_runtime_preview(card)
+    prompt_preview = extract_prompt_preview(card)
+    response_preview = compact_preview(card.get("response") or card.get("result"))
+
+    projection = RuntimeCardProjection(
+        message_id=message_id,
+        chatroom_id=chatroom_id,
+        task_run_id=task_run_id,
+        card_type=card_type,
+        agent_name=agent_name,
+        tool_name=tool_name,
+        model_name=model_name,
+        turn=turn,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        duration_ms=duration_ms,
+        success=success,
+        title=title,
+        preview=preview,
+        prompt_preview=prompt_preview,
+        response_preview=response_preview,
+        card_json=json.dumps(card, ensure_ascii=False) if card else None,
+        created_at=created_at or datetime.now(),
+    )
+    db.add(projection)
+
+
+def backfill_runtime_card_projections(db: Session) -> int:
+    """Backfill projection table from existing messages. Returns count of rows inserted."""
+    from models.database import Message, RuntimeCardProjection
+
+    existing_ids = {
+        row[0]
+        for row in db.query(RuntimeCardProjection.message_id).all()
+    }
+
+    rows = (
+        db.query(Message)
+        .filter(Message.message_type == "runtime_card")
+        .order_by(Message.id.asc())
+        .all()
+    )
+
+    inserted = 0
+    for message in rows:
+        if message.id in existing_ids:
+            continue
+        metadata = parse_metadata(message.metadata_json)
+        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        if not card:
+            continue
+        upsert_runtime_card_projection(
+            db,
+            message_id=message.id,
+            chatroom_id=message.chatroom_id,
+            task_run_id=None,
+            card=card,
+            created_at=message.created_at,
+        )
+        inserted += 1
+        if inserted % 200 == 0:
+            db.flush()
+
+    if inserted > 0:
+        db.commit()
+    return inserted

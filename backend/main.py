@@ -404,13 +404,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             else:
                 logger.debug(f"[HTTP] {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
 
+            # ADR-034: Skip full response body for monitor routes to reduce telemetry write amplification
+            _is_monitor_route = request.url.path.startswith("/api/monitor/")
             _record_frontend_backend_event(
                 request,
                 status_code=response.status_code,
                 duration_ms=duration_ms,
                 response_bytes=_response_content_length(response),
-                request_body=request_body,
-                response_body=getattr(response, "body", b""),
+                request_body=b"" if _is_monitor_route else request_body,
+                response_body=b"" if _is_monitor_route else getattr(response, "body", b""),
                 response_headers=_sanitize_headers(response.headers),
             )
             return response
