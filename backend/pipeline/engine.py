@@ -78,6 +78,11 @@ from services.artifact_output_path_policy import (
 )
 from services.artifact_contracts import parse_artifact_contract
 from services.artifact_publication import ArtifactPublicationPolicyResult
+from services.file_overwrite_policy import (
+    decide_file_overwrite,
+    format_file_overwrite_failure,
+)
+from services.llm_runtime_context import llm_runtime_context
 from services.output_header_policy import format_output_header_failure, validate_output_header
 from services.policy_decision_contracts import (
     build_policy_decision_gate_result,
@@ -639,7 +644,12 @@ def _tool_read_file(workspace: Path, file_path: str) -> str:
     return target.read_text(encoding="utf-8", errors="replace")
 
 
-def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
+def _tool_write_file(
+    workspace: Path,
+    file_path: str,
+    content: str,
+    allow_overwrite: bool = False,
+) -> str:
     """写入 workspace 内的文件"""
     target = workspace / file_path
     # 校验目标路径
@@ -656,6 +666,9 @@ def _tool_write_file(workspace: Path, file_path: str, content: str) -> str:
     header_decision = validate_output_header(path=file_path, content=content)
     if not header_decision.accepted:
         return f"Error: {format_output_header_failure(path=file_path, decision=header_decision)}"
+    overwrite_decision = decide_file_overwrite(target, allow_overwrite=allow_overwrite)
+    if not overwrite_decision.allowed:
+        return f"Error: {format_file_overwrite_failure(file_path, overwrite_decision)}"
     target.parent.mkdir(parents=True, exist_ok=True)
     archive_workspace_artifact_snapshot(workspace, file_path, next_content=content)
     target.write_text(content, encoding="utf-8")
@@ -823,7 +836,11 @@ def _tool_send_message_placeholder(workspace: Path, **kwargs) -> str:
 
 TOOL_REGISTRY: Dict[str, Any] = {
     "read_file": {"fn": _tool_read_file, "params": ["file_path"], "desc": "Read a file from workspace"},
-    "write_file": {"fn": _tool_write_file, "params": ["file_path", "content"], "desc": "Write content to a file in workspace"},
+    "write_file": {
+        "fn": _tool_write_file,
+        "params": ["file_path", "content", "allow_overwrite?"],
+        "desc": "Write content to a file in workspace. Replacing an existing file requires allow_overwrite=true.",
+    },
     "list_files": {"fn": _tool_list_files, "params": ["dir_path?"], "desc": "List files in workspace directory"},
     "execute_code": {"fn": _tool_execute_code, "params": ["code", "language?"], "desc": "Execute code (python)"},
     "run_shell": {"fn": _tool_run_shell, "params": ["command", "cwd?", "timeout_seconds?"], "desc": "Run a shell command in the workspace"},
@@ -2788,19 +2805,23 @@ class PipelineEngine:
                 },
             )
 
-        loop_result = await execute_non_stream_turn_loop(
-            llm_client=llm_client,
-            tools=tools,
-            turn_state=turn_state,
-            assemble_messages=_assemble_pipeline_stage_messages,
-            execute_tool_call=_execute_pipeline_tool,
-            max_turns=20,
-            before_turn=_before_pipeline_turn,
-            before_llm_call=_before_pipeline_llm_call,
-            on_llm_response=_on_pipeline_llm_response,
-            on_llm_error=_on_pipeline_llm_error,
-            on_tool_round=_on_pipeline_tool_round,
-        )
+        with llm_runtime_context(
+            task_run_id=getattr(linked_task_run, "id", None),
+            chatroom_id=getattr(linked_task_run, "chatroom_id", None),
+        ):
+            loop_result = await execute_non_stream_turn_loop(
+                llm_client=llm_client,
+                tools=tools,
+                turn_state=turn_state,
+                assemble_messages=_assemble_pipeline_stage_messages,
+                execute_tool_call=_execute_pipeline_tool,
+                max_turns=20,
+                before_turn=_before_pipeline_turn,
+                before_llm_call=_before_pipeline_llm_call,
+                on_llm_response=_on_pipeline_llm_response,
+                on_llm_error=_on_pipeline_llm_error,
+                on_tool_round=_on_pipeline_tool_round,
+            )
         if loop_result.awaiting_tool_approval:
             return ""
         final_content = loop_result.final_content

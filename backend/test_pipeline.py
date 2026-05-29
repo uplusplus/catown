@@ -208,13 +208,17 @@ class TestTools:
         workspace = TEST_DIR / "test_tools_rw"
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # 写文件
         result = TOOL_REGISTRY["write_file"]["fn"](workspace, "test.md", "# Hello")
         assert "Written" in result
 
-        # 读文件
+        result = TOOL_REGISTRY["write_file"]["fn"](workspace, "test.md", "# Updated")
+        assert "overwrite is disabled by default" in result.lower()
+
+        result = TOOL_REGISTRY["write_file"]["fn"](workspace, "test.md", "# Updated", allow_overwrite=True)
+        assert "Written" in result
+
         result = TOOL_REGISTRY["read_file"]["fn"](workspace, "test.md")
-        assert result == "# Hello"
+        assert result == "# Updated"
 
         shutil.rmtree(workspace, ignore_errors=True)
 

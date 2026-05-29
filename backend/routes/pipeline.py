@@ -20,6 +20,10 @@ from pipeline.engine import pipeline_engine, event_bus
 from pipeline.config import pipeline_config_manager
 from services.approval_audit import record_approval_audit
 from services.artifact_history import archive_workspace_artifact_snapshot
+from services.file_overwrite_policy import (
+    decide_file_overwrite,
+    format_file_overwrite_failure,
+)
 from services.workflow_spec_contracts import WorkflowSpec
 from services.workflow_spec_policy import validate_workflow_spec_for_execution
 
@@ -466,6 +470,7 @@ async def write_file(pipeline_id: int, body: dict, db: Session = Depends(get_db)
     from pathlib import Path
     file_path = body.get("path")
     content = body.get("content")
+    allow_overwrite = bool(body.get("allow_overwrite"))
     if not file_path or content is None:
         raise HTTPException(status_code=400, detail="Missing 'path' or 'content'")
 
@@ -487,6 +492,13 @@ async def write_file(pipeline_id: int, body: dict, db: Session = Depends(get_db)
 
     if not str(target).startswith(str(workspace)):
         raise HTTPException(status_code=403, detail="Path traversal detected")
+
+    overwrite_decision = decide_file_overwrite(target, allow_overwrite=allow_overwrite)
+    if not overwrite_decision.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=format_file_overwrite_failure(file_path, overwrite_decision),
+        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     archive_workspace_artifact_snapshot(workspace, file_path, next_content=content)

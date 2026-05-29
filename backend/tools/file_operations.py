@@ -12,6 +12,10 @@ import subprocess
 
 from .base import BaseTool
 from services.artifact_history import archive_workspace_artifact_snapshot
+from services.file_overwrite_policy import (
+    decide_file_overwrite,
+    format_file_overwrite_failure,
+)
 from services.output_header_policy import (
     format_output_header_failure,
     validate_output_header,
@@ -148,15 +152,28 @@ class WriteFileTool(BaseTool):
     """Tool for writing content to files"""
     
     name = "write_file"
-    description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Use for creating or updating files."
+    description = "Write content to a file. Creates the file if it doesn't exist. Replacing an existing file requires allow_overwrite=true. Use for creating or updating files."
     
     def __init__(self, workspace: str = None):
         self.workspace = os.path.realpath(workspace or os.getcwd())
     
-    async def execute(self, file_path: str, content: str, mode: str = "write", **kwargs) -> str:
-        return await asyncio.to_thread(self._execute_sync, file_path, content, mode)
+    async def execute(
+        self,
+        file_path: str,
+        content: str,
+        mode: str = "write",
+        allow_overwrite: bool = False,
+        **kwargs,
+    ) -> str:
+        return await asyncio.to_thread(self._execute_sync, file_path, content, mode, allow_overwrite)
 
-    def _execute_sync(self, file_path: str, content: str, mode: str = "write") -> str:
+    def _execute_sync(
+        self,
+        file_path: str,
+        content: str,
+        mode: str = "write",
+        allow_overwrite: bool = False,
+    ) -> str:
         """
         Write content to file
         
@@ -178,6 +195,11 @@ class WriteFileTool(BaseTool):
                 decision = validate_output_header(path=file_path, content=content)
                 if not decision.accepted:
                     return f"[Write File] Error: {format_output_header_failure(path=file_path, decision=decision)}"
+
+            if mode == "write":
+                overwrite_decision = decide_file_overwrite(full_path, allow_overwrite=allow_overwrite)
+                if not overwrite_decision.allowed:
+                    return f"[Write File] Error: {format_file_overwrite_failure(file_path, overwrite_decision)}"
             
             # Create directory if needed
             dir_path = os.path.dirname(full_path)
@@ -222,9 +244,14 @@ class WriteFileTool(BaseTool):
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Write mode: 'write' to overwrite, 'append' to add to end",
+                    "description": "Write mode: 'write' to create or replace, 'append' to add to end",
                     "enum": ["write", "append"],
                     "default": "write"
+                },
+                "allow_overwrite": {
+                    "type": "boolean",
+                    "description": "Required when mode='write' and the target file already exists.",
+                    "default": False,
                 }
             },
             "required": ["file_path", "content"]

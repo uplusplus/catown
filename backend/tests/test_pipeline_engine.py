@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _reload_pipeline_engine():
     for module_name in [
-        "models.audit",
         "services.approval_queue",
         "services.approval_replay",
         "services.turn_state",
@@ -146,6 +145,40 @@ def test_start_pipeline_creates_task_run_ledger_bridge(fresh_db):
         db.close()
 
 
+def test_pipeline_tool_write_file_rejects_overwrite_without_allow(tmp_path):
+    import pipeline.engine as engine_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "reports" / "releases" / "changelog.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "Purpose: old release notes\n"
+        "Overview: old summary\n"
+        "Author: Release\n"
+        "Created At: 2026-05-27 10:00\n"
+        "Modification Log:\n"
+        "- 2026-05-27 10:00 Created release note\n",
+        encoding="utf-8",
+    )
+
+    result = engine_mod._tool_write_file(
+        workspace,
+        "reports/releases/changelog.md",
+        (
+            "Purpose: new release notes\n"
+            "Overview: updated summary\n"
+            "Author: Release\n"
+            "Created At: 2026-05-27 10:00\n"
+            "Modification Log:\n"
+            "- 2026-05-28 10:00 Updated release note\n"
+        ),
+    )
+
+    assert "overwrite is disabled by default" in result.lower()
+    assert target.read_text(encoding="utf-8").startswith("Purpose: old release notes")
+
+
 def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
     import pipeline.engine as engine_mod
 
@@ -174,6 +207,7 @@ def test_pipeline_tool_write_file_archives_overwritten_artifact(tmp_path):
             "Modification Log:\n"
             "- 2026-05-28 10:00 Updated release note\n"
         ),
+        allow_overwrite=True,
     )
 
     archived = list((workspace / ".catown" / "artifact-history" / "reports" / "releases").glob("*--changelog.md"))

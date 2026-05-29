@@ -81,6 +81,7 @@ from services.monitor_projection import (
 )
 from services.assistant_handoff import maybe_schedule_assistant_handoff
 from services.chat_publish import publish_saved_chat_message
+from services.delegated_task_guard import has_incomplete_delegated_child_runs
 from services.context_builder import (
     ContextSelector,
     assemble_messages,
@@ -133,6 +134,10 @@ from services.run_shell_processes import (
     tracked_run_shell_has_exit,
     tracked_run_shell_is_active,
     wait_for_tracked_run_shell,
+)
+from services.file_overwrite_policy import (
+    decide_file_overwrite,
+    format_file_overwrite_failure,
 )
 from services.orchestration_scheduler import (
     DEFAULT_SIDECAR_AGENT_TYPES,
@@ -276,6 +281,7 @@ from services.tool_execution_preferences import (
     upsert_authorization_rule,
 )
 from services.nonstream_turn_executor import execute_non_stream_turn_loop
+from services.llm_runtime_context import llm_runtime_context
 from services.subagent_lifecycle import wait_timeout_seconds
 from services.subagent_runtime_control import (
     SubagentRuntimeControlError,
@@ -1726,18 +1732,22 @@ async def trigger_agent_response(
                 # Then original handler
                 return await _original_on_tool_round(frame, tool_results, turn_state)
 
-            loop_result = await execute_non_stream_turn_loop(
-                llm_client=runtime.llm_client,
-                tools=runtime.tool_schemas,
-                turn_state=runtime.turn_state,
-                assemble_messages=_assemble_project_single_agent_messages,
-                execute_tool_call=_execute_project_single_agent_tool,
-                max_turns=MAX_TOOL_ITERATIONS,
-                on_tool_round=_chained_on_tool_round,
-                before_llm_call=audit_cbs["before_llm_call"],
-                on_llm_response=audit_cbs["on_llm_response"],
-                on_llm_error=audit_cbs["on_llm_error"],
-            )
+            with llm_runtime_context(
+                task_run_id=getattr(task_run, "id", None),
+                chatroom_id=chatroom_id,
+            ):
+                loop_result = await execute_non_stream_turn_loop(
+                    llm_client=runtime.llm_client,
+                    tools=runtime.tool_schemas,
+                    turn_state=runtime.turn_state,
+                    assemble_messages=_assemble_project_single_agent_messages,
+                    execute_tool_call=_execute_project_single_agent_tool,
+                    max_turns=MAX_TOOL_ITERATIONS,
+                    on_tool_round=_chained_on_tool_round,
+                    before_llm_call=audit_cbs["before_llm_call"],
+                    on_llm_response=audit_cbs["on_llm_response"],
+                    on_llm_error=audit_cbs["on_llm_error"],
+                )
             awaiting_tool_approval = loop_result.awaiting_tool_approval
             awaiting_background_tool = loop_result.awaiting_background_tool
             return loop_result.final_content or None
@@ -2272,6 +2282,8 @@ def _terminalize_interrupted_single_agent_task_run(
         if str(getattr(item, "status", "") or "").strip().lower() == "pending"
     ]
     if pending_approvals:
+        return False
+    if has_incomplete_delegated_child_runs(db, task_run):
         return False
 
     latest_event = (
@@ -2999,6 +3011,8 @@ def _materialize_project_asset_workspace_file(
     project: Project | None,
     relative_path: str,
     content: str,
+    *,
+    allow_overwrite: bool = False,
 ) -> str | None:
     workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
     normalized_relative = str(relative_path or "").replace("\\", "/").strip().lstrip("/")
@@ -3012,6 +3026,9 @@ def _materialize_project_asset_workspace_file(
         try:
             target.relative_to(workspace)
         except ValueError:
+            return None
+        overwrite_decision = decide_file_overwrite(target, allow_overwrite=allow_overwrite)
+        if not overwrite_decision.allowed:
             return None
         target.parent.mkdir(parents=True, exist_ok=True)
         archive_workspace_artifact_snapshot(workspace, normalized_relative, next_content=content)
@@ -4608,6 +4625,7 @@ class ProjectFileWriteRequest(BaseModel):
     path: str
     content: str
     expected_mtime: Optional[float] = None
+    allow_overwrite: bool = False
 
 
 class ProjectUpdate(BaseModel):
@@ -5519,6 +5537,14 @@ def _write_project_workspace_file(workspace_path: str, request: ProjectFileWrite
     current_preview = file_path.read_bytes()[:PROJECT_FILE_READ_MAX_BYTES]
     if b"\x00" in current_preview:
         raise HTTPException(status_code=400, detail="Binary files cannot be edited from chat")
+
+    allow_overwrite = request.allow_overwrite or request.expected_mtime is not None
+    overwrite_decision = decide_file_overwrite(file_path, allow_overwrite=allow_overwrite)
+    if not overwrite_decision.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=format_file_overwrite_failure(request.path, overwrite_decision),
+        )
 
     archive_workspace_artifact_snapshot(workspace, request.path, next_content=request.content)
     file_path.write_text(request.content, encoding="utf-8")
@@ -9173,7 +9199,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             if task_run is not None:
                 try:
                     task_run = get_task_run(db, task_run.id)
-                    if task_run and (task_run.status or "").strip().lower() == "running":
+                    if (
+                        task_run
+                        and (task_run.status or "").strip().lower() == "running"
+                        and not has_incomplete_delegated_child_runs(db, task_run)
+                    ):
                         append_task_event(
                             db, task_run,
                             EventType.TASK_RUN_INTERRUPTED,

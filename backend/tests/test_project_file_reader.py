@@ -69,6 +69,28 @@ def test_write_project_workspace_file_saves_text(tmp_path):
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
+def test_write_project_workspace_file_rejects_overwrite_without_explicit_allow(tmp_path):
+    from routes.api import ProjectFileWriteRequest, _write_project_workspace_file
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.md"
+    target.write_text("old\n", encoding="utf-8")
+
+    try:
+        _write_project_workspace_file(
+            str(workspace),
+            ProjectFileWriteRequest(path="notes.md", content="new\n"),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "overwrite is disabled by default" in exc.detail.lower()
+    else:
+        raise AssertionError("Expected overwrite without allow signal to be rejected")
+
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
 def test_write_project_workspace_file_archives_overwritten_artifact(tmp_path):
     from routes.api import ProjectFileWriteRequest, _read_project_workspace_file, _write_project_workspace_file
 

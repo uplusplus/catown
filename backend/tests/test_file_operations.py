@@ -88,8 +88,9 @@ class TestWriteFileTool:
         from tools.file_operations import WriteFileTool
         (tmp_path / "exist.txt").write_text("old")
         tool = WriteFileTool(workspace=str(tmp_path))
-        await tool.execute(file_path="exist.txt", content="new")
-        assert (tmp_path / "exist.txt").read_text() == "new"
+        result = await tool.execute(file_path="exist.txt", content="new")
+        assert "overwrite is disabled by default" in result.lower()
+        assert (tmp_path / "exist.txt").read_text() == "old"
 
     @pytest.mark.asyncio
     async def test_write_overwrite_archives_artifact_history(self, tmp_path):
@@ -114,6 +115,7 @@ class TestWriteFileTool:
                 "Modification Log:\n"
                 "- 2026-05-28 10:00 Updated artifact\n"
             ),
+            allow_overwrite=True,
         )
 
         archived = list((tmp_path / ".catown" / "artifact-history").glob("*--PRD.md"))
@@ -184,6 +186,7 @@ class TestWriteFileTool:
         assert "file_path" in props
         assert "content" in props
         assert "mode" in props
+        assert "allow_overwrite" in props
 
 
 class TestListFilesTool:
