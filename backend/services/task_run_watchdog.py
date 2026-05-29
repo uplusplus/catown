@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from models.database import TaskRun, TaskRunEvent, ApprovalQueueItem
 from models.enums import EventType
+from services.delegated_task_guard import has_incomplete_delegated_child_runs
 from services.task_run_state import derive_task_run_status, is_terminal_status
 
 
@@ -80,6 +81,8 @@ def sweep_stale_task_runs(
     swept: list[dict] = []
     for task_run in stale_runs:
         if not _is_stale(db, task_run, cutoff):
+            continue
+        if has_incomplete_delegated_child_runs(db, task_run):
             continue
 
         latest = _latest_event(db, task_run.id)

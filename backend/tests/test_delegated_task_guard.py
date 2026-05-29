@@ -1,8 +1,10 @@
 import pytest
+from datetime import datetime, timedelta
 
-from services.delegated_task_guard import find_incomplete_delegated_child_runs
+from services.delegated_task_guard import find_incomplete_delegated_child_runs, has_incomplete_delegated_child_runs
 from services.run_ledger import append_task_event
 from services.single_agent_session_terminal import persist_single_agent_session_success
+from services.task_run_watchdog import sweep_stale_task_runs
 
 
 @pytest.mark.asyncio
@@ -142,6 +144,79 @@ def test_delegated_child_guard_ignores_terminal_child_run(fresh_db):
         )
 
         assert find_incomplete_delegated_child_runs(db, parent_run) == []
+    finally:
+        db.close()
+
+
+def test_delegated_child_guard_blocks_stale_watchdog_for_waiting_parent(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Waiting delegated watchdog guard")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        parent_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="project_single_agent_stream",
+            status="running",
+            title="Waiting Parent",
+            client_turn_id="parent-waiting",
+        )
+        db.add(parent_run)
+        db.commit()
+        db.refresh(parent_run)
+
+        append_task_event(
+            db,
+            parent_run,
+            "delegated_task_dispatched",
+            agent_name="Valet",
+            payload={
+                "task_id": "task-watchdog",
+                "task_title": "Wait for delegated result",
+                "target_agent_name": "Developer",
+                "parent_task_run_public_id": parent_run.public_id,
+                "parent_chatroom_public_id": parent_run.chatroom_public_id,
+                "child_client_turn_id": "delegate-watchdog-child",
+            },
+        )
+        append_task_event(
+            db,
+            parent_run,
+            "task_run_waiting_for_delegated_work",
+            agent_name="Valet",
+            summary="Waiting for delegated work: 'Wait for delegated result' assigned to Developer.",
+            payload={
+                "pending_delegated_work": [
+                    {
+                        "task_id": "task-watchdog",
+                        "task_title": "Wait for delegated result",
+                        "target_agent_name": "Developer",
+                        "child_client_turn_id": "delegate-watchdog-child",
+                        "child_task_run_id": None,
+                        "child_status": "not_started",
+                    }
+                ]
+            },
+        )
+
+        stale_time = datetime.now() - timedelta(minutes=45)
+        parent_run.updated_at = stale_time
+        db.add(parent_run)
+        db.commit()
+        db.refresh(parent_run)
+
+        assert has_incomplete_delegated_child_runs(db, parent_run) is True
+
+        swept = sweep_stale_task_runs(db, threshold_minutes=30, now=datetime.now())
+
+        db.refresh(parent_run)
+        assert swept == []
+        assert parent_run.status == "running"
+        event_types = [event.event_type for event in parent_run.events]
+        assert event_types.count("task_run_interrupted") == 0
     finally:
         db.close()
 

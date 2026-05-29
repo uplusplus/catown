@@ -366,6 +366,9 @@ export const api = {
     search.set("limit", String(params?.limit ?? 50));
     return request<ApprovalQueueItem[]>(`/api/approval-queue?${search.toString()}`);
   },
+  getApprovalQueueItem(itemId: number) {
+    return request<ApprovalQueueItem>(`/api/approval-queue/${itemId}`);
+  },
   resumeTaskRun(taskRunId: number) {
     return request<TaskRunResumeResponse>(`/api/task-runs/${taskRunId}/resume`, {
       method: "POST",

@@ -36,7 +36,14 @@ class ManagedSingleAgentStreamTransport:
 
 
 @dataclass(frozen=True)
+class ManagedLlmRuntimeContext:
+    task_run_id: int | None = None
+    chatroom_id: int | None = None
+
+
+@dataclass(frozen=True)
 class ManagedSingleAgentSessionSpec:
     session: UnifiedSingleAgentSessionSpec
     callbacks: ManagedSingleAgentSessionCallbacks
     stream_transport: ManagedSingleAgentStreamTransport | None = None
+    llm_runtime_context: ManagedLlmRuntimeContext | None = None

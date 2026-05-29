@@ -15,6 +15,7 @@ from services.single_agent_session_callbacks import (
     build_single_agent_sync_callbacks,
 )
 from services.single_agent_session_contracts import (
+    ManagedLlmRuntimeContext,
     ManagedSingleAgentSessionCallbacks,
     ManagedSingleAgentSessionSpec,
     ManagedSingleAgentStreamTransport,
@@ -45,6 +46,7 @@ from services.single_agent_stream_session import (
     SingleAgentStreamTransportContext,
     iter_single_agent_stream_session,
 )
+from services.llm_runtime_context import llm_runtime_context
 from services.stream_transport import render_sse_payload
 
 
@@ -160,16 +162,20 @@ async def run_managed_single_agent_sync_session(
     spec: ManagedSingleAgentSessionSpec,
 ) -> UnifiedSingleAgentSessionOutcome:
     """Run one sync single-agent session through the managed stack surface."""
-
-    result = await run_single_agent_session(
-        build_single_agent_session_runner_deps_from_execution_context(
-            execution=build_single_agent_sync_execution_context(
-                execute_turn=lambda: _consume_sync_session(spec.session),
-            ),
-            finalize_success=spec.callbacks.finalize_success,
-            finalize_failure=spec.callbacks.finalize_failure,
+    context_value = spec.llm_runtime_context or ManagedLlmRuntimeContext()
+    with llm_runtime_context(
+        task_run_id=context_value.task_run_id,
+        chatroom_id=context_value.chatroom_id,
+    ):
+        result = await run_single_agent_session(
+            build_single_agent_session_runner_deps_from_execution_context(
+                execution=build_single_agent_sync_execution_context(
+                    execute_turn=lambda: _consume_sync_session(spec.session),
+                ),
+                finalize_success=spec.callbacks.finalize_success,
+                finalize_failure=spec.callbacks.finalize_failure,
+            )
         )
-    )
     return UnifiedSingleAgentSessionOutcome(
         final_content=result.final_content,
         outcome=result.outcome,
@@ -183,32 +189,37 @@ async def iter_managed_single_agent_stream_session(
 
     transport = _require_stream_transport(spec)
     final_content = ""
-    try:
-        async for item in iter_unified_single_agent_stream_session(spec.session):
-            if item.awaiting_tool_approval:
+    context_value = spec.llm_runtime_context or ManagedLlmRuntimeContext()
+    with llm_runtime_context(
+        task_run_id=context_value.task_run_id,
+        chatroom_id=context_value.chatroom_id,
+    ):
+        try:
+            async for item in iter_unified_single_agent_stream_session(spec.session):
+                if item.awaiting_tool_approval:
+                    if item.chunk is not None:
+                        yield item
+                    return
+                if item.final_content is not None:
+                    final_content = item.final_content
+                    continue
                 if item.chunk is not None:
                     yield item
-                return
-            if item.final_content is not None:
-                final_content = item.final_content
-                continue
-            if item.chunk is not None:
-                yield item
-    except Exception as exc:
-        finalized = await spec.callbacks.finalize_failure(exc)
+        except Exception as exc:
+            finalized = await spec.callbacks.finalize_failure(exc)
+            yield UnifiedSingleAgentSessionOutcome(
+                chunk=render_sse_payload(finalized.payload, serialize_payload=transport.serialize_payload),
+                payload=dict(finalized.payload or {}),
+                error_text=getattr(finalized, "error_text", None),
+            )
+            return
+
+        finalized = await spec.callbacks.finalize_success(final_content)
         yield UnifiedSingleAgentSessionOutcome(
+            final_content=final_content,
             chunk=render_sse_payload(finalized.payload, serialize_payload=transport.serialize_payload),
             payload=dict(finalized.payload or {}),
-            error_text=getattr(finalized, "error_text", None),
         )
-        return
-
-    finalized = await spec.callbacks.finalize_success(final_content)
-    yield UnifiedSingleAgentSessionOutcome(
-        final_content=final_content,
-        chunk=render_sse_payload(finalized.payload, serialize_payload=transport.serialize_payload),
-        payload=dict(finalized.payload or {}),
-    )
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -267,6 +278,7 @@ def build_managed_single_agent_sync_session_spec(
     *,
     execution: SingleAgentSyncExecutionContext,
     callbacks: ManagedSingleAgentSessionCallbacks,
+    llm_runtime_context_value: ManagedLlmRuntimeContext | None = None,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a sync single-agent session."""
 
@@ -276,6 +288,7 @@ def build_managed_single_agent_sync_session_spec(
             on_empty=execution.on_empty,
         ),
         callbacks=callbacks,
+        llm_runtime_context=llm_runtime_context_value,
     )
 
 
@@ -283,6 +296,7 @@ def build_managed_single_agent_stream_session_spec(
     *,
     deps: SingleAgentStreamSessionDeps,
     callbacks: ManagedSingleAgentSessionCallbacks,
+    llm_runtime_context_value: ManagedLlmRuntimeContext | None = None,
 ) -> ManagedSingleAgentSessionSpec:
     """Build the higher-level managed spec for a streaming single-agent session."""
 
@@ -292,6 +306,7 @@ def build_managed_single_agent_stream_session_spec(
         stream_transport=ManagedSingleAgentStreamTransport(
             serialize_payload=deps.serialize_payload,
         ),
+        llm_runtime_context=llm_runtime_context_value,
     )
 
 
@@ -501,6 +516,10 @@ def build_single_agent_runtime_profile(
                         min_response_length=runtime.min_response_length,
                     )
                 ),
+                llm_runtime_context_value=ManagedLlmRuntimeContext(
+                    task_run_id=getattr(runtime.task_run, "id", None),
+                    chatroom_id=runtime.chatroom_id,
+                ),
             )
         )
 
@@ -551,6 +570,10 @@ def build_single_agent_runtime_profile(
                         empty_response_text=resolved_stream_failure.empty_response_text,
                         min_response_length=runtime.min_response_length,
                     )
+                ),
+                llm_runtime_context_value=ManagedLlmRuntimeContext(
+                    task_run_id=getattr(runtime.task_run, "id", None),
+                    chatroom_id=runtime.chatroom_id,
                 ),
             )
         )

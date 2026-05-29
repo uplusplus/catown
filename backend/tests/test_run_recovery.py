@@ -414,6 +414,93 @@ def test_startup_recovery_terminalizes_interrupted_single_agent_run(tmp_path):
         db.close()
 
 
+def test_startup_recovery_keeps_waiting_delegated_parent_running(tmp_path):
+    _make_app(tmp_path)
+
+    from models.database import SessionLocal, TaskRun
+    import routes.api as api_routes
+    from services.run_ledger import append_task_event
+    from services.session_service import SessionService
+
+    db = SessionLocal()
+    try:
+        project, chatroom, agents = SessionService(db).create_project_directly(
+            name="Waiting Delegated Parent Recovery Project",
+            description="Recovery should not interrupt delegated waiting parent",
+            agent_names=["valet", "developer"],
+        )
+        parent_run = TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            client_turn_id="parent-delegated-waiting",
+            run_kind="project_single_agent_stream",
+            status="running",
+            title="Waiting on delegated child",
+            user_request="Continue after delegated developer result",
+            initiator="user",
+            target_agent_name="Valet",
+        )
+        db.add(parent_run)
+        db.commit()
+        db.refresh(parent_run)
+
+        append_task_event(
+            db,
+            parent_run,
+            "delegated_task_dispatched",
+            agent_name="Valet",
+            payload={
+                "task_id": "task-delegated-parent",
+                "task_title": "Developer implementation analysis",
+                "from_agent": "Valet",
+                "target_agent_name": "Developer",
+                "child_client_turn_id": "delegate-child-waiting",
+                "parent_task_run_public_id": parent_run.public_id,
+                "parent_chatroom_public_id": parent_run.chatroom_public_id,
+            },
+        )
+        append_task_event(
+            db,
+            parent_run,
+            "task_run_waiting_for_delegated_work",
+            agent_name="Valet",
+            summary="Waiting for delegated work: 'Developer implementation analysis' assigned to Developer.",
+            payload={
+                "pending_delegated_work": [
+                    {
+                        "task_id": "task-delegated-parent",
+                        "task_title": "Developer implementation analysis",
+                        "target_agent_name": "Developer",
+                        "child_client_turn_id": "delegate-child-waiting",
+                        "child_task_run_id": None,
+                        "child_status": "not_started",
+                    }
+                ]
+            },
+        )
+        task_run_id = parent_run.id
+    finally:
+        db.close()
+
+    summary = asyncio.run(api_routes.recover_interrupted_task_runs(limit=10))
+    assert summary["detected"] == 1
+    assert summary["recovered"] == 0
+    assert summary["interrupted"] == 0
+    assert summary["skipped"] == 1
+    assert summary["failed"] == 0
+
+    db = SessionLocal()
+    try:
+        detail = db.query(TaskRun).filter(TaskRun.id == task_run_id).first()
+        assert detail is not None
+        assert detail.status == "running"
+        event_types = [event.event_type for event in detail.events]
+        assert "task_run_interrupted" not in event_types
+        assert "task_run_waiting_for_delegated_work" in event_types
+    finally:
+        db.close()
+
+
 def test_startup_recovery_resumes_interrupted_single_agent_followup(tmp_path):
     _make_app(tmp_path)
 

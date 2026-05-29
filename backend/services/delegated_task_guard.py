@@ -71,6 +71,15 @@ def build_pending_delegated_work_summary(pending: list[dict[str, Any]]) -> str:
     return f"Waiting for delegated work: '{title}' assigned to {target}{suffix}."
 
 
+def has_incomplete_delegated_child_runs(
+    db: Session,
+    task_run: Any | None,
+) -> bool:
+    """Return whether the parent task run is still legitimately waiting on delegated work."""
+
+    return bool(find_incomplete_delegated_child_runs(db, task_run))
+
+
 def _load_payload(payload_json: str | None) -> Any:
     if not payload_json:
         return {}

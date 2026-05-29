@@ -57,6 +57,7 @@ const MONITOR_NETWORK_RENDER_LIMIT = 120;
 const MONITOR_NETWORK_CACHE_KEY_LIMIT = 6;
 const TASK_RUN_EVENT_RENDER_LIMIT = 80;
 const TASK_RUN_STEP_RENDER_LIMIT = 80;
+const MONITOR_META_SEPARATOR = " - ";
 
 type MonitorPage = {
   id: string;
@@ -571,7 +572,7 @@ function continuationStateSummary(value: unknown): string | null {
     Array.isArray(state.consumed_layers) && state.consumed_layers.length
       ? state.consumed_layers.join(", ")
       : null,
-  ].filter(Boolean).join(" Â· ");
+  ].filter(Boolean).join(MONITOR_META_SEPARATOR);
 }
 
 function continuationCursorSummary(value: unknown): string | null {
@@ -594,7 +595,7 @@ function continuationCursorSummary(value: unknown): string | null {
     cursor.ready_step_count !== null && cursor.ready_step_count !== undefined ? `${cursor.ready_step_count} ready` : null,
     cursor.running_step_count !== null && cursor.running_step_count !== undefined ? `${cursor.running_step_count} running` : null,
     cursor.waiting_step_count !== null && cursor.waiting_step_count !== undefined ? `${cursor.waiting_step_count} waiting` : null,
-  ].filter(Boolean).join(" Â· ");
+  ].filter(Boolean).join(MONITOR_META_SEPARATOR);
 }
 
 function schedulerRuntimeSummary(value: unknown): string | null {
@@ -611,7 +612,7 @@ function schedulerRuntimeSummary(value: unknown): string | null {
     if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
     return `${raw} ${label}`;
   }).filter(Boolean) as string[];
-  return parts.length ? parts.join(" Â· ") : null;
+  return parts.length ? parts.join(MONITOR_META_SEPARATOR) : null;
 }
 
 type RunScheduleStep = {
@@ -1120,16 +1121,16 @@ function NetworkLogCard({ entry }: { entry: MonitorNetworkEvent }) {
             <strong>{summaryLabel}</strong>
             <strong hidden aria-hidden="true">
               {direction}
-              {" Â· "}
+              {MONITOR_META_SEPARATOR}
               {entry.method || "NET"} {entry.path || entry.url}
-              {" Â· "}
+              {MONITOR_META_SEPARATOR}
               {entry.protocol || "unknown"}
-              {" Â· "}
+              {MONITOR_META_SEPARATOR}
               {formatBytes(entry.request_bytes)} out / {formatBytes(entry.response_bytes)} in
-              {" Â· "}
+              {MONITOR_META_SEPARATOR}
               {formatDuration(entry.duration_ms)}
-              {entry.status_code ? ` Â· ${entry.status_code}` : ""}
-              {entry.flow_id ? ` Â· ${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
+              {entry.status_code ? `${MONITOR_META_SEPARATOR}${entry.status_code}` : ""}
+              {entry.flow_id ? `${MONITOR_META_SEPARATOR}${entry.flow_id}${entry.flow_seq ? `#${entry.flow_seq}` : ""}` : ""}
             </strong>
           </div>
           <span className="small-note mono" title={entry.created_at}>{preciseSystemTime(entry.created_at)}</span>
@@ -1139,7 +1140,7 @@ function NetworkLogCard({ entry }: { entry: MonitorNetworkEvent }) {
         {routeLabel}
       </div>
       <div hidden aria-hidden="true" className="small-note network-log-card__legacy-route" style={{ marginTop: 8, marginBottom: 8 }}>
-        {fromVisual.label} â?{toVisual.label}
+        {fromVisual.label} -&gt; {toVisual.label}
       </div>
       <NetworkRawDump entry={entry} expanded={expanded} />
     </details>
@@ -1861,7 +1862,7 @@ function taskRunSchedulerSummary(run: MonitorTaskRunSummary | TaskRunDetail | nu
 function latestAgentTurnPreview(detail: TaskRunDetail | null | undefined) {
   const latestTurn = detail?.checkpoint_snapshot?.latest_agent_turn;
   if (!latestTurn?.response_preview) return null;
-  return `${latestTurn.agent_name || "agent"} Â· ${latestTurn.response_preview}`;
+  return `${latestTurn.agent_name || "agent"}${MONITOR_META_SEPARATOR}${latestTurn.response_preview}`;
 }
 
 function formatCompactionScopeUsage(
@@ -2268,7 +2269,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
     const sections: BrainEventSection[] = [];
     if (event.messageContent) {
       sections.push({
-        label: event.messageType === "text" ? `Message Â· ${routeLabel}` : `Message Â· ${event.messageType || "text"} Â· ${routeLabel}`,
+        label: event.messageType === "text" ? `Message${MONITOR_META_SEPARATOR}${routeLabel}` : `Message${MONITOR_META_SEPARATOR}${event.messageType || "text"}${MONITOR_META_SEPARATOR}${routeLabel}`,
         content: event.messageContent,
         format: "text",
         tone: "success",
@@ -2329,7 +2330,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
   });
   if (exchangeMeta) {
     sections.push({
-      label: `Exchange Meta Â· ${routeLabel}`,
+      label: `Exchange Meta${MONITOR_META_SEPARATOR}${routeLabel}`,
       content: exchangeMeta,
       tone: "neutral",
       format: "json",
@@ -2340,7 +2341,7 @@ function buildBrainEventSections(event: BrainEvent, detail: MonitorRuntimeDetail
   const rawCard = formatUnknownDetail(card);
   if (rawCard) {
     sections.push({
-      label: `Raw Event Payload Â· ${routeLabel}`,
+      label: `Raw Event Payload${MONITOR_META_SEPARATOR}${routeLabel}`,
       content: rawCard,
       tone: "neutral",
       format: "json",
@@ -3182,7 +3183,7 @@ function buildFlowTopologyGraph({
         { label: "Errs", value: formatNumber(frontendRequestErrors) },
         { label: "Bytes", value: formatBytes(frontendBytes) },
       ],
-      preview: `Status ${overview?.system.status ?? "unknown"} Â· last traffic ${formatLastActive(Math.max(frontendLastAt, runtimeLastAt))}.`,
+      preview: `Status ${overview?.system.status ?? "unknown"}${MONITOR_META_SEPARATOR}last traffic ${formatLastActive(Math.max(frontendLastAt, runtimeLastAt))}.`,
     },
     {
       id: "flow-runtime",
@@ -3223,7 +3224,7 @@ function buildFlowTopologyGraph({
       ],
       chips: sortedCounterKeys(activeModels, compact ? 2 : 4),
       preview:
-        sortedCounterKeys(activeModels, compact ? 2 : 4).join(" Â· ") ||
+        sortedCounterKeys(activeModels, compact ? 2 : 4).join(MONITOR_META_SEPARATOR) ||
         "No recent model activity captured in the current runtime window.",
     },
   ];
@@ -3360,14 +3361,14 @@ function buildFlowTopologyGraph({
             : [...summary.configuredAgents].slice(0, compact ? 2 : 4),
       preview:
         key === "subagents"
-          ? `Active ${formatNumber(activeCollaborators)} Â· pending ${formatNumber(pendingTasks)} Â· last runtime ${formatLastActive(runtimeLastAt)}.`
+          ? `Active ${formatNumber(activeCollaborators)}${MONITOR_META_SEPARATOR}pending ${formatNumber(pendingTasks)}${MONITOR_META_SEPARATOR}last runtime ${formatLastActive(runtimeLastAt)}.`
           : key === "approval"
             ? pendingApprovalCount > 0
               ? "Manual decisions are currently blocking one or more runtime actions."
               : "Approval rail is configured and currently clear."
             : key === "memory"
               ? `Recent memory activity ${formatLastActive(summary.lastAt)}.`
-              : `${topTools.join(" Â· ") || "Configured tools present."} Â· last active ${formatLastActive(summary.lastAt)}.`,
+              : `${topTools.join(MONITOR_META_SEPARATOR) || "Configured tools present."}${MONITOR_META_SEPARATOR}last active ${formatLastActive(summary.lastAt)}.`,
     });
 
     edges.push({
@@ -3689,7 +3690,7 @@ function buildRuntimeBrainEvents(item: MonitorOverview["recent_runtime"][number]
     const llmTarget = "LLM";
     const outboundDetail =
       runtimeRequestPreview(item) ||
-      [item.model, typeof item.turn === "number" ? `turn ${item.turn}` : ""].filter(Boolean).join(" Â· ") ||
+    [item.model, typeof item.turn === "number" ? `turn ${item.turn}` : ""].filter(Boolean).join(MONITOR_META_SEPARATOR) ||
       "Prompt payload captured.";
     const inboundDetail =
       runtimeResponsePreview(item) ||
@@ -5346,22 +5347,22 @@ export function MonitorTab() {
       {
         label: "Monitor",
         value: overview?.system.status ?? "--",
-        detail: `Realtime ${connectionState} Â· last ${formatTimeAgo(overview?.system.last_message_at)}`,
+      detail: `Realtime ${connectionState}${MONITOR_META_SEPARATOR}last ${formatTimeAgo(overview?.system.last_message_at)}`,
       },
       {
         label: "Tasks",
         value: formatNumber(overviewTaskCounts?.running),
-        detail: `${formatNumber(overviewTaskCounts?.total)} total Â· ${formatNumber(overviewTaskCounts?.awaiting_approval)} blocked`,
+      detail: `${formatNumber(overviewTaskCounts?.total)} total${MONITOR_META_SEPARATOR}${formatNumber(overviewTaskCounts?.awaiting_approval)} blocked`,
       },
       {
         label: "LLM",
         value: formatNumber(overview?.llm.requests),
-        detail: `${formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} success Â· avg ${formatDuration(overview?.llm.avg_latency_ms ?? undefined)}`,
+      detail: `${formatPercent((overview?.llm.success_rate ?? 0) * 100, 1)} success${MONITOR_META_SEPARATOR}avg ${formatDuration(overview?.llm.avg_latency_ms ?? undefined)}`,
       },
       {
         label: "Tokens",
         value: formatNumber(overview?.usage_window.total_tokens),
-        detail: `${formatNumber(overview?.usage_window.input_tokens)} in Â· ${formatNumber(overview?.usage_window.output_tokens)} out`,
+      detail: `${formatNumber(overview?.usage_window.input_tokens)} in${MONITOR_META_SEPARATOR}${formatNumber(overview?.usage_window.output_tokens)} out`,
       },
     ],
     [connectionState, overview, overviewTaskCounts],
@@ -6331,10 +6332,10 @@ export function MonitorTab() {
             </div>
             <div className="overview-pressure-card__footer">
               <div className="small-note">
-                Version {overview?.system.version ?? "--"} Â· captured {shortDate(overview?.captured_at)}
+              Version {overview?.system.version ?? "--"}{MONITOR_META_SEPARATOR}captured {shortDate(overview?.captured_at)}
               </div>
               <div className="small-note">
-                Last request {formatTimeAgo(overview?.llm.last_request_at)} Â· last compaction {formatTimeAgo(overview?.compactions.last_compaction_at)}
+              Last request {formatTimeAgo(overview?.llm.last_request_at)}{MONITOR_META_SEPARATOR}last compaction {formatTimeAgo(overview?.compactions.last_compaction_at)}
               </div>
             </div>
           </div>
@@ -6725,7 +6726,7 @@ export function MonitorTab() {
       <section className={pageClass("usage", "page--viz-readable")} id="page-usage">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshUsage()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             TODO Export CSV
@@ -6758,7 +6759,7 @@ export function MonitorTab() {
         <div className="refresh-bar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
           <SectionTitle
             title="Token Usage"
-            subtitle={`Persisted runtime cards bucketed by system time${usage ? ` Â· scanned ${formatNumber(usage.scanned_runtime_cards)} LLM calls` : ""}.`}
+            subtitle={`Persisted runtime cards bucketed by system time${usage ? `${MONITOR_META_SEPARATOR}scanned ${formatNumber(usage.scanned_runtime_cards)} LLM calls` : ""}.`}
           />
           <div className="inline-actions">
             {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
@@ -6913,7 +6914,7 @@ export function MonitorTab() {
       <section className={pageClass("transcripts", "page--dashboard-wide")} id="page-transcripts">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             TODO Replay
@@ -6948,7 +6949,7 @@ export function MonitorTab() {
             {selectedTranscript ? (
               <>
                 <div className="small-note">
-                  {selectedTranscript.projectName} Â· {selectedTranscript.chatTitle} Â· {selectedTranscript.messages.length} recent messages
+                  {selectedTranscript.projectName}{MONITOR_META_SEPARATOR}{selectedTranscript.chatTitle}{MONITOR_META_SEPARATOR}{selectedTranscript.messages.length} recent messages
                 </div>
                 <div className="transcript-messages">
                   {selectedTranscript.messages.map((message) => (
@@ -6978,7 +6979,7 @@ export function MonitorTab() {
       <section className={pageClass("logs", "page--detail-full")} id="page-logs">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshLogs()}>
-            â?Refresh
+            Refresh
           </button>
           <input
             value={logFilter}
@@ -7015,10 +7016,10 @@ export function MonitorTab() {
                   <span className={`level ${level}`}>{level}</span>
                   <span className={`log-source log-source--${source}`}>{source}</span>
                   <span>
-                    <strong>{entry.logger}</strong> Â· {entry.message}
+                    <strong>{entry.logger}</strong>{MONITOR_META_SEPARATOR}{entry.message}
                     <br />
                     <span className="small-note mono">
-                      {entry.pathname ? `${entry.pathname}:${entry.lineno ?? 0}` : "runtime"} Â· {entry.thread_name || "main"}
+                      {entry.pathname ? `${entry.pathname}:${entry.lineno ?? 0}` : "runtime"}{MONITOR_META_SEPARATOR}{entry.thread_name || "main"}
                     </span>
                   </span>
                 </div>
@@ -7045,7 +7046,8 @@ export function MonitorTab() {
               All files
             </button>
             <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-              â?            </button>
+              Refresh
+            </button>
           </div>
         </div>
 
@@ -7177,7 +7179,7 @@ export function MonitorTab() {
             <div className="section-subtitle">All runtime cards and recent messages flowing through one stream.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
 
@@ -7383,7 +7385,7 @@ export function MonitorTab() {
               Browser
             </button>
             <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-              â?Refresh
+              Refresh
             </button>
           </div>
         </div>
@@ -7470,7 +7472,7 @@ export function MonitorTab() {
       <section className={pageClass("models", "page--viz-readable")} id="page-models">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <div className="grid">
@@ -7540,7 +7542,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Why compaction happened, and how large each prompt module was at the time.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshContextCompactions()} disabled={refreshing}>
-            é?Refresh
+            Refresh
           </button>
         </div>
 
@@ -7553,7 +7555,7 @@ export function MonitorTab() {
           <div className="card">
             <div className="card-title">Latest Prompt</div>
             <div className="card-value">{formatNumber(latestCompaction?.prompt_total?.tokens)}</div>
-            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)} Â· {formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
+            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)}{MONITOR_META_SEPARATOR}{formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
           </div>
           <div className="card">
             <div className="card-title">Dropped / Truncated</div>
@@ -7575,7 +7577,7 @@ export function MonitorTab() {
                 {Object.entries(latestCompaction.prompt_components).map(([name, size]) => (
                   <div key={name} className="metric-row">
                     <span>{name.replace(/_/g, " ")}</span>
-                    <strong>{formatNumber(size.tokens)} tok Â· {formatBytes(size.bytes)}</strong>
+                    <strong>{formatNumber(size.tokens)} tok{MONITOR_META_SEPARATOR}{formatBytes(size.bytes)}</strong>
                   </div>
                 ))}
               </div>
@@ -7623,12 +7625,12 @@ export function MonitorTab() {
                     <CompactionEventDetail item={item} />
                     <div className="compaction-event-card__legacy">
                     <div className="small-note" style={{ marginBottom: 6 }}>
-                      {item.chat_title || "Unknown chat"} {item.project_name ? `è·?${item.project_name}` : ""}
-                      {item.task_run_title ? ` è·?${item.task_run_title}` : ""}
+                      {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
+                      {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                     </div>
                     <div className="feed-preview">
                       {item.reason_summary || monitorCompactionPreview(item)}
-                      {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens Â· {formatBytes(item.prompt_total?.bytes)} Â· selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
+                      {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens{MONITOR_META_SEPARATOR}{formatBytes(item.prompt_total?.bytes)}{MONITOR_META_SEPARATOR}selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
                     </div>
                     {item.prompt_components ? (
                       <div className="usage-table" style={{ marginTop: 10 }}>
@@ -7698,7 +7700,7 @@ export function MonitorTab() {
             <div className="section-subtitle">See exactly what context is assembled and sent to the LLM each turn.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <div className="card" style={{ marginBottom: 16 }}>
@@ -7772,8 +7774,8 @@ export function MonitorTab() {
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
                       <div className="small-note" style={{ marginBottom: 6 }}>
-                        {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
-                        {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
+                        {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                       </div>
                       <div className="feed-preview">{monitorCompactionPreview(item)}</div>
                     </div>
@@ -7791,7 +7793,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Sub-Agent Tree</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <div className="grid">
@@ -7827,7 +7829,8 @@ export function MonitorTab() {
           <div>
             <div className="section-title">Background Tasks</div>
             <div className="section-subtitle">
-              å¹³éºæ¥çåå°ä»»å¡ï¼ä»¥åå½åä»»å¡åçæ§è¡æ­¥éª¤ã?            </div>
+              平铺查看后台任务，以及当前任务内的执行步骤。
+            </div>
           </div>
           <div className="inline-actions">
             {(["1h", "6h", "24h", "7d", "30d"] as const).map((range) => (
@@ -7859,7 +7862,8 @@ export function MonitorTab() {
               <div>
                 <div className="section-title">Task List</div>
                 <div className="small-note">
-                  {historyRange} å?{taskRunCounts.total} ä¸ªä»»å¡ï¼å½åç­éå {visibleTaskRuns.length} ä¸ªã?                </div>
+                  {historyRange} 内共 {taskRunCounts.total} 个任务，当前筛选后 {visibleTaskRuns.length} 个。
+                </div>
               </div>
               <button type="button" className="refresh-btn" onClick={() => void refreshTaskRuns()} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
@@ -8333,7 +8337,7 @@ export function MonitorTab() {
                             selectedTaskRunSummary.latest_continuation_event_at
                               ? shortDate(selectedTaskRunSummary.latest_continuation_event_at)
                               : null,
-                          ].filter(Boolean).join(" Â· ")
+                          ].filter(Boolean).join(MONITOR_META_SEPARATOR)
                         : "No continuation event summary recorded."}
                     </div>
                   </div>
@@ -8384,15 +8388,15 @@ export function MonitorTab() {
                       <div>
                         <strong>Scheduler Plan</strong>
                         <div className="small-note">
-                          {titleCaseLabel(selectedTaskRunSchedulePlan.mode)} Â· {selectedTaskRunSchedulePlan.blockingStepCount} blocking / {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
+                          {titleCaseLabel(selectedTaskRunSchedulePlan.mode)}{MONITOR_META_SEPARATOR}{selectedTaskRunSchedulePlan.blockingStepCount} blocking / {selectedTaskRunSchedulePlan.sidecarStepCount} sidecar
                         </div>
                         <div className="small-note">
                           Sidecar policy: {selectedTaskRunSchedulePlan.sidecarAgentTypes.length > 0
-                            ? selectedTaskRunSchedulePlan.sidecarAgentTypes.join(" Â· ")
+                            ? selectedTaskRunSchedulePlan.sidecarAgentTypes.join(MONITOR_META_SEPARATOR)
                             : "disabled"}
                         </div>
                         <div className="small-note">
-                          Runtime: {selectedTaskRunSchedulePlan.completedStepCount} completed Â· {selectedTaskRunSchedulePlan.runningStepCount} running Â· {selectedTaskRunSchedulePlan.waitingStepCount} waiting
+                          Runtime: {selectedTaskRunSchedulePlan.completedStepCount} completed{MONITOR_META_SEPARATOR}{selectedTaskRunSchedulePlan.runningStepCount} running{MONITOR_META_SEPARATOR}{selectedTaskRunSchedulePlan.waitingStepCount} waiting
                         </div>
                       </div>
                       <div className="run-detail-hero__badges">
@@ -8517,7 +8521,7 @@ export function MonitorTab() {
                         <strong>Latest Event</strong>
                         <div className="small-note">
                           {selectedTaskRunDetail.checkpoint_snapshot.latest_event_type
-                            ? `${titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.latest_event_type)} Â· ${shortDate(selectedTaskRunDetail.checkpoint_snapshot.latest_event_at)}`
+                            ? `${titleCaseLabel(selectedTaskRunDetail.checkpoint_snapshot.latest_event_type)}${MONITOR_META_SEPARATOR}${shortDate(selectedTaskRunDetail.checkpoint_snapshot.latest_event_at)}`
                             : "No events recorded."}
                         </div>
                       </div>
@@ -8568,7 +8572,7 @@ export function MonitorTab() {
                                 selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool?.["tool_name"]
                                   ? `blocked ${String(selectedTaskRunDetail.checkpoint_snapshot.turn_local_state.blocked_tool["tool_name"])}`
                                   : null,
-                              ].filter(Boolean).join(" Â· ")
+                              ].filter(Boolean).join(MONITOR_META_SEPARATOR)
                             : "No turn-local continuation payload derived."}
                         </div>
                       </div>
@@ -8618,7 +8622,7 @@ export function MonitorTab() {
                       <div key={event.id} className={`run-event-row run-event-row--${taskRunEventTone(event.event_type)}`}>
                         <div className="run-event-row__head">
                           <strong>
-                            #{event.event_index} Â· {titleCaseLabel(event.event_type)}
+                            #{event.event_index}{MONITOR_META_SEPARATOR}{titleCaseLabel(event.event_type)}
                           </strong>
                           <span className="small-note">{shortDate(event.created_at)}</span>
                         </div>
@@ -8651,7 +8655,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>API Rate Limit Monitor</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <p className="small-note" style={{ marginTop: 0, marginBottom: 14 }}>
@@ -8682,10 +8686,10 @@ export function MonitorTab() {
             <button
               type="button"
               className="refresh-btn"
-              onClick={() => void Promise.all([refreshApprovalQueue(), refreshApprovalAudit()])}
+              Refresh
               disabled={refreshing}
             >
-              â?Refresh
+              Refresh
             </button>
           </div>
         </div>
@@ -8694,7 +8698,7 @@ export function MonitorTab() {
             <div className="card-title">Approval Audit</div>
             <div className="card-value">{formatNumber(approvalAuditResponse?.counts.all ?? approvalAuditEntries.length)}</div>
             <div className="card-sub">
-              {formatNumber(approvalAuditResponse?.counts.automatic ?? 0)} automatic Â· {formatNumber(approvalAuditResponse?.counts.remembered ?? 0)} remembered rules
+              {formatNumber(approvalAuditResponse?.counts.automatic ?? 0)} automatic{MONITOR_META_SEPARATOR}{formatNumber(approvalAuditResponse?.counts.remembered ?? 0)} remembered rules
             </div>
           </div>
           <div className="card">
@@ -8703,7 +8707,7 @@ export function MonitorTab() {
               {formatNumber((approvalAuditResponse?.counts.approve ?? 0) + (approvalAuditResponse?.counts.reject ?? 0))}
             </div>
             <div className="card-sub">
-              {formatNumber(approvalAuditResponse?.counts.approve ?? 0)} approved Â· {formatNumber(approvalAuditResponse?.counts.reject ?? 0)} rejected
+              {formatNumber(approvalAuditResponse?.counts.approve ?? 0)} approved{MONITOR_META_SEPARATOR}{formatNumber(approvalAuditResponse?.counts.reject ?? 0)} rejected
             </div>
           </div>
         </div>
@@ -8720,8 +8724,8 @@ export function MonitorTab() {
                     <div className="small-note">{formatTimeAgo(item.created_at)}</div>
                   </div>
                   <div className="small-note" style={{ marginTop: 6 }}>
-                    {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
-                    {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
+                    {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
+                    {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                   </div>
                   <div className="muted-block" style={{ marginTop: 8 }}>
                     {approvalQueuePreview(item) || "Awaiting operator decision."}
@@ -8899,8 +8903,8 @@ export function MonitorTab() {
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
                       <div className="small-note" style={{ marginBottom: 6 }}>
-                        {item.chat_title || "Unknown chat"} {item.project_name ? `Â· ${item.project_name}` : ""}
-                        {item.task_run_title ? ` Â· ${item.task_run_title}` : ""}
+                        {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
+                        {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                       </div>
                       {item.resolution_preview || item.summary ? (
                         <div className="feed-preview">{item.resolution_preview || item.summary}</div>
@@ -8939,7 +8943,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Session Clusters</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <AdaptiveCardDeck className="cluster-grid" itemCount={clusters.length} minCardWidth={280} idealCardWidth={320} maxCardWidth={380} maxColumns={4}>
@@ -8969,7 +8973,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Threat detection and posture summary copied from ClawMetry.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Scan
+            Scan
           </button>
         </div>
 
@@ -9090,7 +9094,7 @@ export function MonitorTab() {
       <section className={pageClass("crons", "page--dashboard-wide")} id="page-crons">
         <div className="refresh-bar">
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
           <button type="button" className="refresh-btn" disabled>
             + New Job
@@ -9113,7 +9117,7 @@ export function MonitorTab() {
             <div className="section-subtitle">Catown does not expose NemoClaw yet; page shell is copied for later integration.</div>
           </div>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <div className="split-panels">
@@ -9143,7 +9147,7 @@ export function MonitorTab() {
         <div className="refresh-bar">
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Upgrade Impact</h2>
           <button type="button" className="refresh-btn" onClick={() => void refreshMonitor()} disabled={refreshing}>
-            â?Refresh
+            Refresh
           </button>
         </div>
         <div className="grid">

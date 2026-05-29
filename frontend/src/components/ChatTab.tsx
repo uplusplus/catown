@@ -362,6 +362,7 @@ type ChatTabProps = {
   onRefresh: () => Promise<void>;
   onRefreshRuntime?: (taskRunId: number) => Promise<void>;
   approvalQueueRefreshNonce?: number;
+  latestApprovalQueueItemId?: number | null;
   onPatchSubagentRuntime?: (patch: {
     taskRunId: number;
     stepId: string;
@@ -6610,6 +6611,7 @@ export function ChatTab({
   onRefresh,
   onRefreshRuntime,
   approvalQueueRefreshNonce = 0,
+  latestApprovalQueueItemId = null,
   onPatchSubagentRuntime,
   onSyncProject,
   syncingProject,
@@ -7153,10 +7155,52 @@ export function ChatTab({
     },
     [chat?.id],
   );
+
+  const refreshSingleApprovalQueueItem = useCallback(
+    async (itemId: number, options?: { suppressError?: boolean }) => {
+      if (!chat?.id || !Number.isFinite(itemId)) return;
+      const requestSeq = ++approvalQueueRequestSeqRef.current;
+      try {
+        const item = await api.getApprovalQueueItem(itemId);
+        if (requestSeq !== approvalQueueRequestSeqRef.current) return;
+        if (item.chatroom_id !== chat.id) return;
+        setPendingApprovalItems((current) => {
+          const pending = (item.status || "").toLowerCase() === "pending";
+          const others = current.filter((entry) => entry.id !== item.id);
+          if (!pending) return others;
+          return [item, ...others].sort((left, right) => {
+            const leftTime = Date.parse(left.created_at || "") || 0;
+            const rightTime = Date.parse(right.created_at || "") || 0;
+            if (leftTime !== rightTime) return rightTime - leftTime;
+            return right.id - left.id;
+          });
+        });
+        setApprovalQueueLoaded(true);
+      } catch (error) {
+        if (requestSeq !== approvalQueueRequestSeqRef.current) return;
+        if (!options?.suppressError) {
+          setApprovalActionError(error instanceof Error ? error.message : "Failed to refresh approval");
+        }
+        void refreshPendingApprovalQueue({ suppressError: options?.suppressError });
+      }
+    },
+    [chat?.id, refreshPendingApprovalQueue],
+  );
+
   useEffect(() => {
     if (!chat?.id) return;
+    if (typeof latestApprovalQueueItemId === "number" && latestApprovalQueueItemId > 0) {
+      void refreshSingleApprovalQueueItem(latestApprovalQueueItemId, { suppressError: true });
+      return;
+    }
     void refreshPendingApprovalQueue({ suppressError: true });
-  }, [approvalQueueRefreshNonce, chat?.id, refreshPendingApprovalQueue, taskRuns]);
+  }, [
+    approvalQueueRefreshNonce,
+    chat?.id,
+    latestApprovalQueueItemId,
+    refreshPendingApprovalQueue,
+    refreshSingleApprovalQueueItem,
+  ]);
 
   useEffect(() => {
     if (!chat?.id) return;

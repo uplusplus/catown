@@ -2185,6 +2185,7 @@ function App() {
   const [refreshingMessages, setRefreshingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [approvalQueueRefreshNonce, setApprovalQueueRefreshNonce] = useState(0);
+  const [latestApprovalQueueItemId, setLatestApprovalQueueItemId] = useState<number | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [creatingProjectFromChat, setCreatingProjectFromChat] = useState(false);
   const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
@@ -4236,6 +4237,7 @@ function App() {
             streamCompleted = true;
             setApprovalQueueRefreshNonce((current) => current + 1);
             const queueItemId = typeof data.queue_item_id === "number" ? data.queue_item_id : null;
+            setLatestApprovalQueueItemId(queueItemId);
             pushEvent(queueItemId !== null ? `Approval #${queueItemId}` : "Approval requested", "warning");
             break;
           }
@@ -5017,6 +5019,7 @@ function App() {
             onRefresh={() => refreshMessages(true)}
             onRefreshRuntime={refreshRuntimeForTaskRun}
             approvalQueueRefreshNonce={approvalQueueRefreshNonce}
+            latestApprovalQueueItemId={latestApprovalQueueItemId}
             onPatchSubagentRuntime={patchSubagentRuntime}
             onSyncProject={handleSyncProject}
             syncingProject={selectedProject ? syncingProjectId === selectedProject.id : false}
