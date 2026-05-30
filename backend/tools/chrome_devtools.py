@@ -774,6 +774,16 @@ class ChromeDevtoolsTool(BaseTool):
         metrics_output: str = "",
         collect_delay_ms: int = _PERF_COLLECT_DELAY_MS,
         target_id: str = "",
+        # screenshot / action-specific params
+        path: str = "",
+        selector: str = "",
+        value: str = "",
+        text: str = "",
+        expression: str = "",
+        delay_ms: int = 0,
+        ms: int = 0,
+        dx: int = 0,
+        dy: int = 0,
         **kwargs,
     ) -> str:
         """
@@ -831,6 +841,8 @@ class ChromeDevtoolsTool(BaseTool):
                 trace=trace, trace_categories=trace_categories,
                 trace_output=trace_output, metrics_output=metrics_output,
                 collect_delay_ms=collect_delay_ms,
+                path=path, selector=selector, value=value, text=text,
+                expression=expression, delay_ms=delay_ms, ms=ms, dx=dx, dy=dy,
             )
             result["duration_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
             result["cdp_host"] = host
@@ -873,9 +885,9 @@ class ChromeDevtoolsTool(BaseTool):
             return {"success": False, "error": f"Unknown action: '{action}'", "available_actions": available}
 
         action_spec = {"kind": kind}
-        # 从 kwargs 构建 action spec
+        # 从 kwargs 构建 action spec（跳过空值）
         for k in ("url", "selector", "value", "text", "delay_ms", "ms", "expression", "path", "dx", "dy"):
-            if k in kwargs and kwargs[k] is not None:
+            if k in kwargs and kwargs[k] is not None and kwargs[k] != "" and kwargs[k] != 0:
                 action_spec[k] = kwargs[k]
 
         action_result = await _execute_action(cdp, action_spec)
