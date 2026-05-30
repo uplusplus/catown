@@ -2321,13 +2321,22 @@ def _terminalize_interrupted_single_agent_task_run(
 
 
 def _find_tracked_run_shell_from_runtime_cards(db: Session, task_run: TaskRun) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    rows = (
-        db.query(Message)
-        .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
-        .order_by(Message.created_at.desc(), Message.id.desc())
-        .limit(500)
+    # Pre-filter via projection table: only load run_shell cards
+    candidate_ids = [
+        row[0] for row in
+        db.query(RuntimeCardProjection.message_id)
+        .filter(
+            RuntimeCardProjection.chatroom_id == task_run.chatroom_id,
+            RuntimeCardProjection.tool_name == "run_shell",
+        )
+        .order_by(RuntimeCardProjection.created_at.desc())
+        .limit(200)
         .all()
-    )
+    ]
+    if not candidate_ids:
+        return None, {}
+
+    rows = db.query(Message).filter(Message.id.in_(candidate_ids)).all()
     for row in rows:
         try:
             metadata = json.loads(row.metadata_json or "{}")
