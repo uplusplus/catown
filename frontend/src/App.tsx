@@ -2257,6 +2257,7 @@ function App() {
 
   const socketRef = useRef<WebSocket | null>(null);
   const bootstrappedRef = useRef<boolean>(bootstrapped);
+  const bootstrapInFlightRef = useRef(false);
   const selectedChatIdRef = useRef<number | null>(selectedChatId);
   const selectedProjectIdRef = useRef<number | null>(selectedProjectId);
   const chatsRef = useRef<ChatSummary[]>(chats);
@@ -3325,6 +3326,8 @@ function App() {
   }, [bootstrapped, optimisticMessages]);
 
   async function loadBootstrapData() {
+    if (bootstrapInFlightRef.current) return;
+    bootstrapInFlightRef.current = true;
     try {
       setError("");
       const preferredChatId = readLastChatId();
@@ -3506,7 +3509,7 @@ function App() {
       window.clearInterval(fallbackPoll);
       controller.abort();
     };
-  }, [appVisible, bootstrapped, projectBrowserIndex?.truncated, selectedProject]);
+  }, [appVisible, bootstrapped, projectBrowserIndex?.truncated, selectedProject?.id, selectedProject?.workspace_path]);
 
   useEffect(() => {
     if (!bootstrapped) return;
@@ -3586,7 +3589,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeChat, bootstrapped, selectedChatId]);
+  }, [bootstrapped, selectedChatId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3620,7 +3623,8 @@ function App() {
           }
           socket.send(JSON.stringify({ type: "join", chatroom_id: roomId }));
           joinedRoomRef.current = roomId;
-          void refreshMessages(false, roomId);
+          // Skip refreshMessages on initial open — loadBootstrapData already loaded data.
+          // refreshMessages will be triggered by subsequent room-join useEffect when user switches chats.
         }
       };
 

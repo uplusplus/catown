@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Component, FormEvent, KeyboardEvent, MouseEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { Archive, BookOpen, Bot, Boxes, Braces, CheckSquare, ChevronDown, ChevronRight, ClipboardCheck, File, FileText, Folder, FolderTree, Menu, Monitor, PackageCheck, PanelRightOpen, ScrollText, Search, SendHorizontal, Settings, Shell, Square, TestTube2, Workflow, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -4450,40 +4450,42 @@ function renderFileReaderPreview(path: string, content: string, onOpenLinkedFile
     return (
       <div className="file-reader-card__rendered file-reader-card__rendered--markdown">
         <div className="message-markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={content.length <= LARGE_MARKDOWN_HIGHLIGHT_LIMIT ? [rehypeHighlight] : []}
-            components={{
-              a: ({ node: _node, href, children, ...props }) => {
-                const linkedPath = resolveMarkdownFileLink(path, href);
-                if (!linkedPath || !onOpenLinkedFile) {
-                  return <a href={href} {...props} target="_blank" rel="noreferrer">{children}</a>;
-                }
-                return (
-                  <a
-                    href={href}
-                    {...props}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      onOpenLinkedFile(linkedPath);
-                    }}
-                    title={`Open ${linkedPath}`}
-                  >
-                    {children}
-                  </a>
-                );
-              },
-              table: ({ node: _node, ...props }) => (
-                <div className="message-markdown__table-wrap">
-                  <table {...props} />
-                </div>
-              ),
-              input: ({ node: _node, ...props }) =>
-                props.type === "checkbox" ? <input {...props} disabled readOnly className="message-markdown__checkbox" /> : <input {...props} />,
-            }}
-          >
-            {content}
-          </ReactMarkdown>
+          <MarkdownErrorBoundary content={content}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={content.length <= LARGE_MARKDOWN_HIGHLIGHT_LIMIT ? [rehypeHighlight] : []}
+              components={{
+                a: ({ node: _node, href, children, ...props }) => {
+                  const linkedPath = resolveMarkdownFileLink(path, href);
+                  if (!linkedPath || !onOpenLinkedFile) {
+                    return <a href={href} {...props} target="_blank" rel="noreferrer">{children}</a>;
+                  }
+                  return (
+                    <a
+                      href={href}
+                      {...props}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenLinkedFile(linkedPath);
+                      }}
+                      title={`Open ${linkedPath}`}
+                    >
+                      {children}
+                    </a>
+                  );
+                },
+                table: ({ node: _node, ...props }) => (
+                  <div className="message-markdown__table-wrap">
+                    <table {...props} />
+                  </div>
+                ),
+                input: ({ node: _node, ...props }) =>
+                  props.type === "checkbox" ? <input {...props} disabled readOnly className="message-markdown__checkbox" /> : <input {...props} />,
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+          </MarkdownErrorBoundary>
         </div>
       </div>
     );
@@ -5091,28 +5093,61 @@ function renderLlmDetailLayout(
   );
 }
 
+type MarkdownErrorBoundaryProps = { content?: string; children: ReactNode };
+type MarkdownErrorBoundaryState = { hasError: boolean; errorContent?: string };
+
+class MarkdownErrorBoundary extends Component<MarkdownErrorBoundaryProps, MarkdownErrorBoundaryState> {
+  state: MarkdownErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(_error: Error): Partial<MarkdownErrorBoundaryState> {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    console.warn("[MarkdownErrorBoundary] Caught render error:", error.message);
+  }
+
+  componentDidUpdate(prevProps: MarkdownErrorBoundaryProps) {
+    // Reset when content changes so new content gets a fresh render attempt
+    if (this.state.hasError && prevProps.content !== this.props.content) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      // Fallback: render content as plain preformatted text
+      const raw = this.props.content ?? "";
+      return <pre className="message-markdown-fallback">{raw}</pre>;
+    }
+    return this.props.children;
+  }
+}
+
 function renderMarkdownContent(content: string | undefined, className: string, options?: { highlight?: boolean }) {
   if (!content) return null;
   const enableHighlight = options?.highlight ?? content.length <= LARGE_MARKDOWN_HIGHLIGHT_LIMIT;
   return (
     <div className={className}>
-      <ReactMarkdown
-        className="message-markdown"
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={enableHighlight ? [rehypeHighlight] : []}
-        components={{
-          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
-          table: ({ node: _node, ...props }) => (
-            <div className="message-markdown__table-wrap">
-              <table {...props} />
-            </div>
-          ),
-          input: ({ node: _node, ...props }) =>
-            props.type === "checkbox" ? <input {...props} disabled readOnly className="message-markdown__checkbox" /> : <input {...props} />,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+      <MarkdownErrorBoundary content={content}>
+        <ReactMarkdown
+          className="message-markdown"
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={enableHighlight ? [rehypeHighlight] : []}
+          components={{
+            a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+            table: ({ node: _node, ...props }) => (
+              <div className="message-markdown__table-wrap">
+                <table {...props} />
+              </div>
+            ),
+            input: ({ node: _node, ...props }) =>
+              props.type === "checkbox" ? <input {...props} disabled readOnly className="message-markdown__checkbox" /> : <input {...props} />,
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </MarkdownErrorBoundary>
     </div>
   );
 }
