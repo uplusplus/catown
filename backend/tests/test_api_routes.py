@@ -1281,11 +1281,14 @@ class TestProjectEndpoints:
         assert payloads[0]["added_paths"] == []
         assert payloads[0]["updated_paths"] == []
         assert payloads[0]["removed_paths"] == []
+        assert payloads[0]["operations"] == []
         assert payloads[1]["type"] == "refresh_needed"
         assert payloads[1]["changed"] is True
         assert "docs/prd/project-browser-artifact-lifecycle.md" in payloads[1]["changed_paths"]
         assert payloads[1]["added_paths"] == []
         assert payloads[1]["updated_paths"] == ["docs/prd/project-browser-artifact-lifecycle.md"]
+        assert payloads[1]["operations"][0]["type"] == "update"
+        assert payloads[1]["operations"][0]["path"] == "docs/prd/project-browser-artifact-lifecycle.md"
         assert any(item["path"] == "docs/prd/project-browser-artifact-lifecycle.md" for item in payloads[1]["files"])
         assert any(item["path"] == "docs/prd/project-browser-artifact-lifecycle.md" for item in payloads[1]["artifacts"])
 
@@ -1313,7 +1316,51 @@ class TestProjectEndpoints:
         assert payloads[1]["added_paths"] == [watched.relative_to(workspace).as_posix()]
         assert payloads[1]["updated_paths"] == []
         assert payloads[1]["removed_paths"] == []
+        assert payloads[1]["operations"][0]["type"] == "add"
+        assert payloads[1]["operations"][0]["path"] == watched.relative_to(workspace).as_posix()
         assert any(item["path"] == watched.relative_to(workspace).as_posix() for item in payloads[1]["artifacts"])
+
+    def test_project_browser_watch_diff_emits_semantic_operations(self, client):
+        import routes.api as api_mod
+
+        project = client.post("/api/projects", json={"name": "BrowserWatchOps"}).json()
+        workspace = Path(project["workspace_path"])
+        (workspace / "src").mkdir(parents=True)
+        (workspace / "docs").mkdir(parents=True)
+        (workspace / "lib").mkdir(parents=True)
+
+        update_path = workspace / "src" / "update.txt"
+        delete_path = workspace / "src" / "delete.txt"
+        move_path = workspace / "src" / "move.txt"
+        rename_path = workspace / "docs" / "old-name.md"
+        add_path = workspace / "src" / "add.txt"
+
+        update_path.write_text("update-old\n", encoding="utf-8")
+        delete_path.write_text("delete-only\n", encoding="utf-8")
+        move_path.write_text("move-preserve-size\n", encoding="utf-8")
+        rename_path.write_text("rename-preserve-size\n", encoding="utf-8")
+        previous = api_mod._project_browser_watch_snapshot(str(workspace))
+
+        update_path.write_text("update-new-with-different-size\n", encoding="utf-8")
+        delete_path.unlink()
+        move_target = workspace / "lib" / "move.txt"
+        move_path.replace(move_target)
+        rename_target = workspace / "docs" / "new-name.md"
+        rename_path.replace(rename_target)
+        add_path.write_text("brand-new-file\n", encoding="utf-8")
+        current = api_mod._project_browser_watch_snapshot(str(workspace))
+        diff = api_mod._diff_project_browser_watch_snapshots(previous, current)
+
+        operation_keys = {
+            (operation["type"], operation.get("path"), operation.get("from_path"), operation.get("to_path"))
+            for operation in diff["operations"]
+        }
+
+        assert ("update", "src/update.txt", None, None) in operation_keys
+        assert ("delete", "src/delete.txt", None, None) in operation_keys
+        assert ("add", "src/add.txt", None, None) in operation_keys
+        assert ("move", None, "src/move.txt", "lib/move.txt") in operation_keys
+        assert ("rename", None, "docs/old-name.md", "docs/new-name.md") in operation_keys
 
     def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod

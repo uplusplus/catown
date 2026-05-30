@@ -104,6 +104,15 @@ export type ProjectBrowserStreamBatch = ProjectBrowserIndex & {
   type: "start" | "batch" | "done";
 };
 
+export type ProjectBrowserWatchOperation = {
+  type: "add" | "delete" | "update" | "move" | "rename" | string;
+  path?: string | null;
+  from_path?: string | null;
+  to_path?: string | null;
+  file?: ProjectBrowserFileItem | null;
+  artifact?: ProjectBrowserArtifactItem | null;
+};
+
 export type ProjectBrowserWatchEvent = {
   type: "ready" | "refresh_needed";
   workspace_path: string;
@@ -115,6 +124,7 @@ export type ProjectBrowserWatchEvent = {
   files: ProjectBrowserFileItem[];
   artifacts: ProjectBrowserArtifactItem[];
   removed_paths: string[];
+  operations?: ProjectBrowserWatchOperation[];
   truncated: boolean;
   snapshot_id?: string | null;
 };

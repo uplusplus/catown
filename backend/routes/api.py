@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, UploadFile, File as FastAPIFile
 from fastapi.responses import StreamingResponse
@@ -4604,6 +4604,15 @@ class ProjectBrowserInfo(BaseModel):
     truncated: bool = False
 
 
+class ProjectBrowserWatchOperation(BaseModel):
+    type: str
+    path: Optional[str] = None
+    from_path: Optional[str] = None
+    to_path: Optional[str] = None
+    file: Optional[ProjectBrowserFileInfo] = None
+    artifact: Optional[ProjectBrowserArtifactInfo] = None
+
+
 class ProjectBrowserWatchEvent(BaseModel):
     type: str
     workspace_path: str
@@ -4615,6 +4624,7 @@ class ProjectBrowserWatchEvent(BaseModel):
     files: List[ProjectBrowserFileInfo] = Field(default_factory=list)
     artifacts: List[ProjectBrowserArtifactInfo] = Field(default_factory=list)
     removed_paths: List[str] = Field(default_factory=list)
+    operations: List[ProjectBrowserWatchOperation] = Field(default_factory=list)
     truncated: bool = False
     snapshot_id: Optional[str] = None
 
@@ -5049,6 +5059,19 @@ def _project_browser_watch_snapshot(workspace_path: str) -> dict[str, Any]:
     }
 
 
+def _project_browser_path_parent(path: str) -> str:
+    parent = PurePosixPath(path).parent.as_posix()
+    return "" if parent == "." else parent
+
+
+def _project_browser_path_move_type(from_path: str, to_path: str) -> str:
+    from_parent = _project_browser_path_parent(from_path)
+    to_parent = _project_browser_path_parent(to_path)
+    if from_parent == to_parent:
+        return "rename"
+    return "move"
+
+
 def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     previous_files = previous.get("files", {})
     current_files = current.get("files", {})
@@ -5064,6 +5087,8 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
     workspace = Path(current.get("workspace_path") or "").expanduser().resolve()
     file_updates: list[ProjectBrowserFileInfo] = []
     artifact_updates: list[ProjectBrowserArtifactInfo] = []
+    file_updates_by_path: dict[str, ProjectBrowserFileInfo] = {}
+    artifact_updates_by_path: dict[str, ProjectBrowserArtifactInfo] = {}
 
     for path in changed_paths:
         if path not in current_files:
@@ -5073,8 +5098,70 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
             continue
         file_info, artifact_info = records
         file_updates.append(file_info)
+        file_updates_by_path[path] = file_info
         if artifact_info is not None:
             artifact_updates.append(artifact_info)
+            artifact_updates_by_path[path] = artifact_info
+
+    removed_by_signature: dict[tuple[int, int], list[str]] = {}
+    added_by_signature: dict[tuple[int, int], list[str]] = {}
+    for path in removed_paths:
+        signature = previous_files.get(path)
+        if signature is not None:
+            removed_by_signature.setdefault(signature, []).append(path)
+    for path in added_paths:
+        signature = current_files.get(path)
+        if signature is not None:
+            added_by_signature.setdefault(signature, []).append(path)
+
+    unpaired_added_paths = set(added_paths)
+    unpaired_removed_paths = set(removed_paths)
+    operations: list[dict[str, Any]] = []
+
+    for signature, removed_group in removed_by_signature.items():
+        added_group = added_by_signature.get(signature, [])
+        if len(removed_group) != 1 or len(added_group) != 1:
+            continue
+        from_path = removed_group[0]
+        to_path = added_group[0]
+        unpaired_removed_paths.discard(from_path)
+        unpaired_added_paths.discard(to_path)
+        operations.append(
+            {
+                "type": _project_browser_path_move_type(from_path, to_path),
+                "from_path": from_path,
+                "to_path": to_path,
+                "file": file_updates_by_path.get(to_path).model_dump() if to_path in file_updates_by_path else None,
+                "artifact": artifact_updates_by_path.get(to_path).model_dump()
+                if to_path in artifact_updates_by_path
+                else None,
+            }
+        )
+
+    for path in sorted(unpaired_removed_paths):
+        operations.append({"type": "delete", "path": path})
+    for path in updated_paths:
+        operations.append(
+            {
+                "type": "update",
+                "path": path,
+                "file": file_updates_by_path.get(path).model_dump() if path in file_updates_by_path else None,
+                "artifact": artifact_updates_by_path.get(path).model_dump()
+                if path in artifact_updates_by_path
+                else None,
+            }
+        )
+    for path in sorted(unpaired_added_paths):
+        operations.append(
+            {
+                "type": "add",
+                "path": path,
+                "file": file_updates_by_path.get(path).model_dump() if path in file_updates_by_path else None,
+                "artifact": artifact_updates_by_path.get(path).model_dump()
+                if path in artifact_updates_by_path
+                else None,
+            }
+        )
 
     return {
         "changed": changed,
@@ -5084,6 +5171,7 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
         "files": [item.model_dump() for item in file_updates],
         "artifacts": [item.model_dump() for item in artifact_updates],
         "removed_paths": removed_paths[:64],
+        "operations": operations,
         "truncated": bool(current.get("truncated")),
         "snapshot_id": current.get("snapshot_id"),
     }
@@ -5110,6 +5198,7 @@ async def _stream_project_browser_watch_events(
             files=[],
             artifacts=[],
             removed_paths=[],
+            operations=[],
             truncated=bool(previous.get("truncated")),
             snapshot_id=previous.get("snapshot_id"),
         ).model_dump(),
@@ -5140,6 +5229,7 @@ async def _stream_project_browser_watch_events(
                     files=[ProjectBrowserFileInfo(**item) for item in diff.get("files", [])],
                     artifacts=[ProjectBrowserArtifactInfo(**item) for item in diff.get("artifacts", [])],
                     removed_paths=diff.get("removed_paths", []),
+                    operations=[ProjectBrowserWatchOperation(**item) for item in diff.get("operations", [])],
                     truncated=diff["truncated"],
                     snapshot_id=diff["snapshot_id"],
                 ).model_dump(),
