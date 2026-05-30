@@ -306,6 +306,49 @@ def _safe_text(value: bytes | str | None, limit: int | None = None) -> str:
     return text if limit is None else text[:limit]
 
 
+_REQUEST_BODY_CAPTURE_MAX_BYTES = 64 * 1024
+_REQUEST_BODY_BINARY_TYPES = {
+    "application/octet-stream",
+    "application/pdf",
+    "application/zip",
+    "application/x-zip-compressed",
+}
+_REQUEST_BODY_BINARY_PREFIXES = ("image/", "audio/", "video/")
+
+
+def _request_content_length(request: Request) -> int | None:
+    try:
+        return max(int(str(request.headers.get("content-length") or "").strip()), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _request_content_type(request: Request) -> str:
+    return str(request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+
+
+def _should_capture_request_body(request: Request) -> bool:
+    content_type = _request_content_type(request)
+    if content_type == "multipart/form-data":
+        return False
+    if content_type in _REQUEST_BODY_BINARY_TYPES:
+        return False
+    if any(content_type.startswith(prefix) for prefix in _REQUEST_BODY_BINARY_PREFIXES):
+        return False
+
+    content_length = _request_content_length(request)
+    if content_length is not None and content_length > _REQUEST_BODY_CAPTURE_MAX_BYTES:
+        return False
+    return True
+
+
+def _omitted_request_body_marker(request: Request) -> str:
+    content_type = request.headers.get("content-type", "") or "unknown"
+    content_length = _request_content_length(request)
+    byte_label = str(content_length) if content_length is not None else "unknown"
+    return f"<request body omitted: content_type={content_type} bytes={byte_label}>"
+
+
 def _sanitize_headers(headers: Any) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in dict(headers).items():
@@ -387,7 +430,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         import time as _time
         start = _time.time()
-        request_body = await request.body()
+        if _should_capture_request_body(request):
+            request_body: bytes | str = await request.body()
+        else:
+            request_body = _omitted_request_body_marker(request)
         path = (
             f"source={_request_client_source(request)} "
             f"ui={_request_ui_version(request)} "
