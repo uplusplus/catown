@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -1900,27 +1901,64 @@ async def get_monitor_task_run_steps(
         raise HTTPException(status_code=404, detail="Task run not found")
 
     scan_limit = max(TASK_RUN_STEP_SCAN_MIN, min(TASK_RUN_STEP_SCAN_MAX, limit * TASK_RUN_STEP_SCAN_MULTIPLIER))
-    runtime_rows = (
-        db.query(Message)
-        .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
-        .order_by(Message.id.desc())
+
+    # Use projection table with task_run_id filter for direct match
+    proj_filters = [
+        RuntimeCardProjection.chatroom_id == task_run.chatroom_id,
+    ]
+    if task_run.id is not None:
+        proj_filters.append(RuntimeCardProjection.task_run_id == task_run.id)
+
+    projections = (
+        db.query(RuntimeCardProjection)
+        .filter(*proj_filters)
+        .order_by(RuntimeCardProjection.id.desc())
         .limit(scan_limit)
         .all()
     )
 
     runtime_steps: list[dict[str, Any]] = []
     runtime_message_ids: list[int] = []
-    for message in runtime_rows:
+    for proj in projections:
         if len(runtime_steps) >= limit:
             break
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
+        if not proj.card_json:
             continue
-        if not _runtime_card_matches_task_run(task_run=task_run, metadata=metadata, card=card):
+        try:
+            card = json.loads(proj.card_json)
+        except (json.JSONDecodeError, TypeError):
             continue
-        runtime_steps.append(_serialize_runtime_step(message=message, card=card))
-        runtime_message_ids.append(message.id)
+        if not isinstance(card, dict):
+            continue
+        # Build a minimal message-like object for _serialize_runtime_step compatibility
+        message_proxy = SimpleNamespace(
+            id=proj.message_id,
+            created_at=proj.created_at,
+            metadata_json=proj.card_json,
+        )
+        runtime_steps.append(_serialize_runtime_step(message=message_proxy, card=card))
+        runtime_message_ids.append(proj.message_id)
+
+    # Fallback: if no task_run_id matches, try client_turn_id matching
+    if not runtime_steps and task_run.client_turn_id:
+        fallback_rows = (
+            db.query(Message)
+            .filter(Message.chatroom_id == task_run.chatroom_id, Message.message_type == "runtime_card")
+            .order_by(Message.id.desc())
+            .limit(scan_limit)
+            .all()
+        )
+        for message in fallback_rows:
+            if len(runtime_steps) >= limit:
+                break
+            metadata = _parse_metadata(message.metadata_json)
+            card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+            if not card:
+                continue
+            if not _runtime_card_matches_task_run(task_run=task_run, metadata=metadata, card=card):
+                continue
+            runtime_steps.append(_serialize_runtime_step(message=message, card=card))
+            runtime_message_ids.append(message.id)
 
     pipeline_run_ids = [
         run.id
