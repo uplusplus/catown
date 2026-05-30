@@ -62,7 +62,8 @@ const OVERLAY_MAX_CONTENT_CHARS = 1200;
 const OVERLAY_MAX_STEP_COUNT = 1;
 const OVERLAY_MAX_STEP_LABEL_CHARS = 120;
 const OVERLAY_MAX_STEP_DETAIL_CHARS = 180;
-const STREAM_TRACE_RECENT_STEP_COUNT = 5;
+const STREAM_TRACE_COLLAPSE_STEP_THRESHOLD = 5;
+const STREAM_TRACE_VISIBLE_STEP_COUNT = 3;
 const STREAM_TRACE_HISTORY_ID_PREFIX = "__stream-history__";
 const TASK_RUN_SHELL_TAIL_MAX_CHARS = 5000;
 const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
@@ -3314,12 +3315,12 @@ function streamTraceHistoryId(scope: string | number) {
 }
 
 function splitTraceSteps(steps: MessageStreamStep[]) {
-  if (steps.length <= STREAM_TRACE_RECENT_STEP_COUNT) {
+  if (steps.length < STREAM_TRACE_COLLAPSE_STEP_THRESHOLD) {
     return { historySteps: [] as MessageStreamStep[], recentSteps: steps };
   }
   return {
-    historySteps: steps.slice(0, -STREAM_TRACE_RECENT_STEP_COUNT),
-    recentSteps: steps.slice(-STREAM_TRACE_RECENT_STEP_COUNT),
+    historySteps: steps.slice(0, -STREAM_TRACE_VISIBLE_STEP_COUNT),
+    recentSteps: steps.slice(-STREAM_TRACE_VISIBLE_STEP_COUNT),
   };
 }
 
