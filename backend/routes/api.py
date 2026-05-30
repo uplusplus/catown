@@ -64,6 +64,7 @@ from models.database import (
     StageRun,
     StageRunAsset,
     ToolExecutionPreference,
+    RuntimeCardProjection,
     SessionLocal,
     Base,
 )
@@ -6389,26 +6390,28 @@ async def get_runtime_cards(chatroom_id: int, limit: int = 200, db: Session = De
 
     reconcile_tracked_run_shell_runtime_cards(db, chatroom_id, limit=max(limit, 200))
 
-    rows = (
-        db.query(Message)
-        .filter(Message.chatroom_id == chatroom_id, Message.message_type == "runtime_card")
-        .order_by(Message.created_at.asc())
+    projections = (
+        db.query(RuntimeCardProjection)
+        .filter(RuntimeCardProjection.chatroom_id == chatroom_id)
+        .order_by(RuntimeCardProjection.created_at.asc())
         .limit(limit)
         .all()
     )
 
     cards: List[Dict[str, Any]] = []
-    for row in rows:
+    for proj in projections:
+        if not proj.card_json:
+            continue
         try:
-            metadata = json.loads(row.metadata_json or "{}")
-        except json.JSONDecodeError:
-            metadata = {}
-        card = metadata.get("card")
-        if isinstance(card, dict):
-            card_payload = public_runtime_card_payload(dict(card))
-            card_payload.setdefault("created_at", row.created_at.isoformat())
-            card_payload.setdefault("runtime_message_id", row.id)
-            cards.append(card_payload)
+            card = json.loads(proj.card_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(card, dict):
+            continue
+        card_payload = public_runtime_card_payload(card)
+        card_payload.setdefault("created_at", proj.created_at.isoformat())
+        card_payload.setdefault("runtime_message_id", proj.message_id)
+        cards.append(card_payload)
 
     return cards
 
