@@ -3491,10 +3491,21 @@ def _spawn_tracked_run_shell_followup(task_run_id: int, next_card: Dict[str, Any
 
 
 def reconcile_tracked_run_shell_runtime_cards(db: Session, chatroom_id: int | None = None, *, limit: int = 500) -> int:
-    query = db.query(Message).filter(Message.message_type == "runtime_card")
+    # Pre-filter via projection table: only load Message rows for run_shell cards
+    proj_query = db.query(RuntimeCardProjection.message_id).filter(
+        RuntimeCardProjection.tool_name == "run_shell",
+        RuntimeCardProjection.success.is_(None),  # still-running cards
+    )
     if chatroom_id is not None:
-        query = query.filter(Message.chatroom_id == chatroom_id)
-    rows = query.order_by(Message.created_at.desc(), Message.id.desc()).limit(max(1, limit)).all()
+        proj_query = proj_query.filter(RuntimeCardProjection.chatroom_id == chatroom_id)
+    candidate_ids = [
+        row[0] for row in
+        proj_query.order_by(RuntimeCardProjection.created_at.desc()).limit(max(1, limit)).all()
+    ]
+    if not candidate_ids:
+        return 0
+
+    rows = db.query(Message).filter(Message.id.in_(candidate_ids)).all()
 
     updated = 0
     for row in rows:
