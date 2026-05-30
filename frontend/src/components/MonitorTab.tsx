@@ -4216,10 +4216,15 @@ export function MonitorTab() {
   const networkCacheRef = useRef<Record<string, MonitorNetworkCacheEntry>>({});
   const monitorOverviewRef = useRef<MonitorOverview | null>(null);
   const monitorSocketConnectedOnceRef = useRef(false);
+  const activePageRef = useRef(activePage);
   const shouldLoadOverviewActivityRef = useRef(false);
   const shouldStreamLogs = activePage === "logs";
   const shouldStreamNetwork = activePage === "flow" || activePage === "network";
   const networkStreamKey = `${networkCategory}\n${networkFilter.trim()}\n${showInternalNetwork ? "1" : "0"}`;
+
+  useEffect(() => {
+    activePageRef.current = activePage;
+  }, [activePage]);
 
   useRegisterBackHandler(
     () => activePage !== "overview" || showCreateRuleForm || showSecurityCatalog,
@@ -4530,6 +4535,13 @@ export function MonitorTab() {
                   entry as MonitorTaskRunSummary | null,
                 ),
               );
+            }
+            return;
+          }
+
+          if (data.type === "approval_queue_item_changed" && data.payload && typeof data.payload === "object") {
+            if (activePageRef.current === "approvals") {
+              void refreshApprovalQueue();
             }
             return;
           }

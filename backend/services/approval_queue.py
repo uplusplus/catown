@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -49,6 +50,62 @@ def find_pending_queue_item(
 
 # Default TTL for approval queue items (24 hours).
 DEFAULT_APPROVAL_TTL_SECONDS = 24 * 60 * 60
+
+
+def build_approval_queue_item_notification_payload(
+    item: ApprovalQueueItem | None,
+    *,
+    reason: str,
+) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    return {
+        "queue_item_id": item.id,
+        "queue_item_public_id": getattr(item, "public_id", None),
+        "task_run_id": item.task_run_id,
+        "chatroom_id": item.chatroom_id,
+        "project_id": item.project_id,
+        "queue_kind": item.queue_kind,
+        "target_kind": item.target_kind,
+        "target_name": item.target_name,
+        "status": item.status,
+        "reason": (reason or "").strip() or "updated",
+        "captured_at": datetime.now().isoformat(),
+    }
+
+
+def schedule_approval_queue_item_notification(
+    item: ApprovalQueueItem | None,
+    *,
+    reason: str,
+) -> None:
+    payload = build_approval_queue_item_notification_payload(item, reason=reason)
+    if payload is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_broadcast_approval_queue_item_notification(payload))
+
+
+async def _broadcast_approval_queue_item_notification(payload: dict[str, Any]) -> None:
+    from routes.websocket import websocket_manager
+
+    message = {
+        "type": "approval_queue_item_changed",
+        "payload": payload,
+    }
+    await websocket_manager.broadcast_to_topic(message, "monitor")
+    chatroom_id = payload.get("chatroom_id")
+    if isinstance(chatroom_id, int):
+        await websocket_manager.broadcast_to_room(
+            {
+                **message,
+                "chatroom_id": chatroom_id,
+            },
+            chatroom_id,
+        )
 
 
 def create_approval_queue_item(
@@ -104,6 +161,7 @@ def create_approval_queue_item(
     db.add(item)
     db.commit()
     db.refresh(item)
+    schedule_approval_queue_item_notification(item, reason="created")
     return item
 
 
@@ -134,6 +192,7 @@ def resolve_approval_queue_item(
     db.add(item)
     db.commit()
     db.refresh(item)
+    schedule_approval_queue_item_notification(item, reason="resolved")
     return item
 
 
@@ -337,4 +396,5 @@ def expire_stale_approvals(
         db.commit()
         for item in expired:
             db.refresh(item)
+            schedule_approval_queue_item_notification(item, reason="expired")
     return expired

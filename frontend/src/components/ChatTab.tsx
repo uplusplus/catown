@@ -1808,6 +1808,23 @@ function pendingApprovalItemsFromDetail(detail: TaskRunDetail | null) {
   return detail?.approval_queue_items?.filter((item) => (item.status || "").toLowerCase() === "pending") ?? [];
 }
 
+function compareApprovalQueueItemsNewest(left: ApprovalQueueItem, right: ApprovalQueueItem) {
+  const leftTime = Date.parse(left.created_at || "") || 0;
+  const rightTime = Date.parse(right.created_at || "") || 0;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return right.id - left.id;
+}
+
+function mergePendingApprovalItems(...lists: ApprovalQueueItem[][]) {
+  const merged = new Map<number, ApprovalQueueItem>();
+  lists.forEach((items) => {
+    items.forEach((item) => {
+      merged.set(item.id, { ...(merged.get(item.id) ?? {}), ...item });
+    });
+  });
+  return [...merged.values()].sort(compareApprovalQueueItemsNewest);
+}
+
 function patchResolvedApprovalItemInTaskRunDetail(
   detail: TaskRunDetail | null | undefined,
   updatedItem: ApprovalQueueItem,
@@ -7073,10 +7090,16 @@ export function ChatTab({
     pendingApprovalItems.forEach((item) => {
       const runId = item.task_run_id;
       if (typeof runId !== "number") return;
-      grouped[runId] = [...(grouped[runId] ?? []), item];
+      grouped[runId] = mergePendingApprovalItems(grouped[runId] ?? [], [item]);
+    });
+    taskRuns.forEach((run) => {
+      const detail = resolveFreshTaskRunDetail(run, liveTaskRunDetailsById[run.id], taskRunDetailsById[run.id]);
+      const detailItems = pendingApprovalItemsFromDetail(detail);
+      if (detailItems.length === 0) return;
+      grouped[run.id] = mergePendingApprovalItems(grouped[run.id] ?? [], detailItems);
     });
     return grouped;
-  }, [pendingApprovalItems]);
+  }, [liveTaskRunDetailsById, pendingApprovalItems, taskRunDetailsById, taskRuns]);
   const runtimeMonitorViewModel = useMemo(
     () =>
       buildRuntimeMonitorViewModel({

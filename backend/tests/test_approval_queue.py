@@ -110,3 +110,62 @@ def test_approval_queue_item_carries_stable_identity_snapshots(fresh_db):
         assert serialized["task_run_public_id"] == task_run.public_id
     finally:
         db.close()
+
+
+def test_approval_queue_item_notification_payload_refers_to_durable_row(fresh_db):
+    from services.approval_queue import (
+        build_approval_queue_item_notification_payload,
+        create_approval_queue_item,
+        resolve_approval_queue_item,
+    )
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Approval notification chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        item = create_approval_queue_item(
+            db,
+            task_run=None,
+            chatroom_id=chatroom.id,
+            project_id=None,
+            queue_kind="approval",
+            source="runtime",
+            title="Approval needed",
+            summary="sandbox blocked",
+            agent_name="developer",
+            target_kind="tool",
+            target_name="run_shell",
+            request_key="approval-notification-payload",
+            request_payload={"turn": 3},
+        )
+
+        created_payload = build_approval_queue_item_notification_payload(item, reason="created")
+        assert created_payload == {
+            "queue_item_id": item.id,
+            "queue_item_public_id": item.public_id,
+            "task_run_id": item.task_run_id,
+            "chatroom_id": chatroom.id,
+            "project_id": item.project_id,
+            "queue_kind": "approval",
+            "target_kind": "tool",
+            "target_name": "run_shell",
+            "status": "pending",
+            "reason": "created",
+            "captured_at": created_payload["captured_at"],
+        }
+        assert isinstance(created_payload["captured_at"], str) and created_payload["captured_at"]
+
+        resolved = resolve_approval_queue_item(db, item, status="approved", resolved_by="user")
+        resolved_payload = build_approval_queue_item_notification_payload(resolved, reason="resolved")
+        assert resolved_payload is not None
+        assert resolved_payload["queue_item_id"] == item.id
+        assert resolved_payload["chatroom_id"] == chatroom.id
+        assert resolved_payload["status"] == "approved"
+        assert resolved_payload["reason"] == "resolved"
+    finally:
+        db.close()

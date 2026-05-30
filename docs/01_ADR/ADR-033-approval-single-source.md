@@ -2,53 +2,31 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
-The chat runtime has two independent paths that notify the frontend about pending tool approvals:
+The chat runtime originally had two independent ways to surface pending tool approvals to the frontend:
 
-1. **SSE `approval_pending` event** — emitted directly by `stream_turn_executor.py` when a tool call is blocked during an LLM turn. Carries a full payload (`tool`, `blocked_kind`, `blocked_reason`, etc.) and the frontend renders an approval dialog directly from this event.
+1. `approval_pending` / `approval_queue_updated` events on the request-scoped SSE stream.
+2. Persistent `ApprovalQueueItem` rows in the database.
 
-2. **`ApprovalQueueItem` (DB)** — created by `approval_queue.py` as a persistent record of the approval request. Supports full lifecycle: `pending → approved/rejected/expired`, TTL auto-expiry, resolution lease for concurrency control, and audit trail.
+Those two paths evolved for different purposes:
 
-These two paths evolved independently:
-- The SSE event is a **streaming control signal** from the executor layer: "this turn is blocked, stop waiting."
-- The ApprovalQueueItem is a **business state entity** from the service layer: "there is a request that needs human approval."
+- The SSE event is a streaming control signal from the executor layer: "this turn is blocked, stop waiting."
+- The `ApprovalQueueItem` is the business-state entity that owns the approval lifecycle: pending, approved, rejected, expired, leases, TTL, and auditability.
 
-Because the frontend listens to both independently, it renders two overlapping approval dialogs when a tool is blocked.
-
-### Affected files
-
-- `backend/services/stream_turn_executor.py` — yields `approval_pending` SSE event
-- `backend/services/approval_queue.py` — creates/persists `ApprovalQueueItem`
-- `backend/services/tool_governance.py` — classifies tool results as blocked
-- `backend/services/stream_transport.py` — renders `approval_pending` as SSE chunk
-- `backend/services/orchestration_stream_runner.py` — forwards `approval_pending` to client
-- `frontend/src/components/ChatTab.tsx` — consumes both signals
+When the frontend treated both paths as approval UI sources, it produced duplicate dialogs, stale cards, and delayed refresh behavior when background or delegated approvals appeared outside the currently active SSE turn.
 
 ## Decision
 
-**`ApprovalQueueItem` is the single source of truth for approval state. The SSE stream must not carry independent approval payloads.**
+`ApprovalQueueItem` is the single source of truth for approval state. Streaming transports may notify the frontend that approval state changed, but they must not become an independent approval-state model.
 
-### Changes
+## Changes
 
-#### 1. SSE stream: replace `approval_pending` with lightweight notification
+### 1. Keep SSE lightweight and request-scoped
 
-`stream_turn_executor.py` currently yields:
-
-```python
-yield {
-    "type": "approval_pending",
-    "agent_name": agent_name,
-    "tool": blocked_tool_result.tool_name,
-    "blocked_kind": blocked_tool_result.blocked_kind,
-    "blocked_reason": blocked_tool_result.blocked_reason,
-    ...
-}
-```
-
-Replace with:
+`stream_turn_executor.py` emits:
 
 ```python
 yield {
@@ -58,38 +36,55 @@ yield {
 }
 ```
 
-The SSE event no longer carries the full approval payload. It is purely a **signal** that the queue has changed.
+This SSE event remains a lightweight signal for the in-flight turn. It is not the canonical approval UI payload, and Chat should not depend on it to build approval cards.
 
-#### 2. `execute_tool` callback: create `ApprovalQueueItem` before yielding
+### 2. Queue item must exist before notification
 
-Ensure the `execute_tool` callback in `routes/api.py` creates the `ApprovalQueueItem` **before** the stream executor yields the notification. The queue item ID must be available so the SSE notification can reference it.
+The queue item must be written before any transport notifies the frontend. This preserves the invariant that every notification can be resolved back to a durable `ApprovalQueueItem`.
 
-#### 3. Frontend: single approval source
+### 3. WebSocket is the short-term notification rail for backend-initiated approval changes
+
+The existing `/ws` channel already supports chatroom room joins and generic topic subscriptions. Short-term, approval changes should fan out there as `approval_queue_item_changed` notifications:
+
+- Broadcast after queue item create / resolve / expire.
+- Fan out to the owning chatroom room when `chatroom_id` exists so Chat can react immediately.
+- Fan out to the `monitor` topic so Monitor can refresh from the same signal.
+- Keep the payload signal-oriented: `queue_item_id`, `chatroom_id`, `task_run_id`, `status`, `reason`, `captured_at`, plus lightweight identity fields.
+
+The notification payload is not the approval-state authority; it only tells the frontend what durable row to refresh.
+
+### 4. Chat consumes approval changes from durable queue data
 
 `ChatTab.tsx` must:
-- On receiving `approval_queue_updated` SSE event → call `api.getApprovalQueue()` (or use the pushed item ID) to fetch the queue item.
-- Render the approval dialog **only** from `ApprovalQueueItem` data.
-- Remove any direct rendering of `approval_pending` SSE payloads as approval dialogs.
 
-#### 4. Retain `approval_pending` as internal-only (optional)
+- React to `/ws` `approval_queue_item_changed` notifications by refreshing the targeted queue item when possible.
+- Render approval UI only from `ApprovalQueueItem` data, including the `approval_queue_items` already embedded in `task_run_update.detail`.
+- Avoid using the SSE `approval_queue_updated` event as the primary source for approval-card state.
 
-If the executor layer still needs to signal "turn blocked" for internal bookkeeping (e.g., `orchestration_stream_runner.py` uses it to `return` early), keep the event type but mark it as `internal: true` and strip it before sending to the client.
+### 5. Monitor refreshes from the same notification family
+
+`MonitorTab.tsx` should react to the same `approval_queue_item_changed` notification and refresh the approval queue snapshot when the approvals page is active. `monitor_task_run.detail.approval_queue_items` remains a valid enriched projection, but it is no longer the only fast path for surfacing approval changes.
+
+### 6. Internal executor behavior is unchanged
+
+The executor still needs to know a tool was blocked so it can stop the current turn and preserve continuation state. This ADR changes the outbound approval-notification model, not the executor's internal control flow.
 
 ## Consequences
 
 ### Positive
 
-- **No duplicate dialogs.** Single signal path = single UI.
-- **Resilient to reconnects.** If the SSE connection drops and reconnects, the frontend can query the approval queue to recover pending approvals. The current `approval_pending` event is lost on disconnect.
-- **Consistent lifecycle.** Approve/reject/expire all operate on one entity. No synchronization between SSE state and DB state.
-- **Auditability.** All approval state transitions are in the DB, not scattered across ephemeral SSE events.
-- **Simpler frontend.** One code path to render approval UI instead of two.
+- No duplicate approval dialogs.
+- Background and delegated approvals no longer depend on an active SSE turn to become visible.
+- Approval lifecycle stays anchored to one durable entity.
+- Reconnect and recovery behavior improves because the frontend can always refresh from the queue item or queue snapshot.
+- Chat and Monitor can converge on the same notification family while still reading truth from the database-backed APIs.
 
 ### Negative
 
-- **Slight latency increase.** The frontend needs to fetch the queue item after receiving the SSE notification, adding one round-trip. Mitigated by including the `queue_item_id` in the SSE event so the fetch is a targeted lookup, not a full list query.
-- **`execute_tool` must ensure DB write before SSE yield.** The ordering constraint (create queue item → then yield notification) must be enforced. If the stream executor yields before the queue item is created, the frontend will query and find nothing.
+- The frontend still performs a follow-up fetch after notification in some cases.
+- Two transports remain in the short term: SSE for request-scoped live turn streaming, WebSocket for cross-cutting approval change notifications.
+- Ordering still matters: queue row first, notification second.
 
 ### Neutral
 
-- The `stream_turn_executor.py` still needs to know that a tool was blocked (to break the turn loop). This internal control flow is unchanged; only the **outbound SSE payload** changes.
+- This ADR does not require a full transport unification yet. It only defines which transport is allowed to carry approval-state truth, and that remains the persistent queue model.

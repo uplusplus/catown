@@ -3722,6 +3722,14 @@ function App() {
             return;
           }
 
+          if (data.type === "approval_queue_item_changed" && data.payload && typeof data.payload === "object") {
+            const payload = data.payload as Record<string, unknown>;
+            const queueItemId = typeof payload.queue_item_id === "number" ? payload.queue_item_id : null;
+            setApprovalQueueRefreshNonce((current) => current + 1);
+            setLatestApprovalQueueItemId(queueItemId);
+            return;
+          }
+
           if (data.type === "task_run_update" && data.payload && typeof data.payload === "object") {
             const payload = data.payload as Record<string, unknown>;
             const entry = payload.entry as TaskRunSummary | undefined;
@@ -4311,9 +4319,7 @@ function App() {
             break;
           case "approval_queue_updated": {
             streamCompleted = true;
-            setApprovalQueueRefreshNonce((current) => current + 1);
             const queueItemId = typeof data.queue_item_id === "number" ? data.queue_item_id : null;
-            setLatestApprovalQueueItemId(queueItemId);
             pushEvent(queueItemId !== null ? `Approval #${queueItemId}` : "Approval requested", "warning");
             break;
           }
