@@ -12,6 +12,8 @@ from models.database import TaskRun, TaskRunEvent
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 ERROR_MARKERS = ("failed", "error", "cancel")
 DETAIL_TEXT_LIMIT = 12000
+FACT_TEXT_LIMIT = 800
+FACT_LIST_PREVIEW_LIMIT = 8
 
 
 def build_user_visible_runtime_steps(task_run: TaskRun) -> list[dict[str, Any]]:
@@ -562,16 +564,44 @@ def _payload(event: TaskRunEvent) -> dict[str, Any]:
 
 def _facts(payload: dict[str, Any]) -> dict[str, Any]:
     omitted = {"system_prompt", "prompt_messages", "raw_response"}
-    facts = {
-        key: value
-        for key, value in payload.items()
-        if value is not None and key not in omitted
-    }
+    facts: dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None or key in omitted:
+            continue
+        compact = _compact_fact_value(value)
+        if compact is not None:
+            facts[key] = compact
     if not facts.get("prompt_preview") and isinstance(payload.get("prompt_messages"), list):
         prompt_preview = _prompt_messages_preview(payload.get("prompt_messages") or [])
         if prompt_preview:
             facts["prompt_preview"] = prompt_preview
     return facts
+
+
+def _compact_fact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _compact_text(value, FACT_TEXT_LIMIT)
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, item in value.items():
+            if item is None:
+                continue
+            if isinstance(item, (dict, list)):
+                if isinstance(item, list):
+                    compact[f"{key}_count"] = len(item)
+                continue
+            compact[str(key)] = _compact_fact_value(item)
+        return compact or None
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list)) for item in value):
+            items = [_compact_fact_value(item) for item in value[:FACT_LIST_PREVIEW_LIMIT]]
+            if len(value) > FACT_LIST_PREVIEW_LIMIT:
+                items.append(f"...{len(value) - FACT_LIST_PREVIEW_LIMIT} more")
+            return items
+        return {"count": len(value)}
+    return str(value)
 
 
 def _detail_content(event: TaskRunEvent, payload: dict[str, Any], summary: str) -> str:

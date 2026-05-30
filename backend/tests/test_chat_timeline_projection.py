@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 
@@ -411,6 +412,97 @@ def test_task_run_timeline_projects_completed_parallel_scheduler_as_done_work_un
         db.close()
 
 
+def test_task_activity_projection_bounds_long_history_and_compacts_runtime_facts(fresh_db):
+    from services.task_activity_projection import build_task_activity_projection
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Bounded Activity")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration",
+            status="completed",
+            title="Large bounded activity run",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        runtime = {
+            "step_count": 50,
+            "running_step_count": 0,
+            "completed_step_count": 50,
+            "steps": [
+                {
+                    "step_id": f"child-{index}",
+                    "agent": "Worker",
+                    "status": "completed",
+                    "large_marker": "runtime-child-payload-" + ("x" * 1000),
+                }
+                for index in range(50)
+            ],
+        }
+        for index in range(160):
+            db.add(
+                fresh_db.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=index + 1,
+                    event_type="tool_call_started",
+                    agent_name="Worker",
+                    summary=f"Tool call {index}",
+                    payload_json=json.dumps(
+                        {
+                            "tool_name": "read_file",
+                            "tool_call_id": f"call-{index}",
+                            "runtime": runtime,
+                            "tool_results": [
+                                {
+                                    "tool_name": "read_file",
+                                    "result": "tool-result-payload-" + ("y" * 5000),
+                                }
+                            ],
+                            "step_state": {
+                                "status": "completed",
+                                "nested": {"large_marker": "nested-payload-" + ("z" * 1000)},
+                                "items": list(range(20)),
+                            },
+                        }
+                    ),
+                )
+            )
+
+        task_run.status = "completed"
+        db.add(task_run)
+        db.commit()
+        db.expire_all()
+        task_run = db.query(fresh_db.TaskRun).filter(fresh_db.TaskRun.id == task_run.id).first()
+        assert task_run is not None
+        task_run.events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        activity = build_task_activity_projection(task_run)
+        serialized = json.dumps(activity, ensure_ascii=False)
+
+        assert activity["truncated"] is True
+        assert activity["timeline"]["truncated"] is True
+        assert activity["total_step_count"] > len(activity["steps"])
+        assert len(activity["steps"]) <= 120
+        assert len(serialized) < 400_000
+        assert "runtime-child-payload" not in serialized
+        assert "tool-result-payload" not in serialized
+        assert "nested-payload" not in serialized
+    finally:
+        db.close()
+
+
 def test_completed_task_run_has_no_live_user_visible_steps(fresh_db):
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
@@ -433,7 +525,12 @@ def test_completed_task_run_has_no_live_user_visible_steps(fresh_db):
         _append_task_event(db, task_run, "agent_turn_started", agent_name="Valet")
         _append_task_event(db, task_run, "llm_request_created", agent_name="Valet", payload={"turn": 1})
 
-        db.refresh(task_run)
+        task_run.status = "completed"
+        db.add(task_run)
+        db.commit()
+        db.expire_all()
+        task_run = db.query(fresh_db.TaskRun).filter(fresh_db.TaskRun.id == task_run.id).first()
+        assert task_run is not None
         timeline = _build_task_run_timeline_projection(task_run)
 
         assert timeline["steps"]

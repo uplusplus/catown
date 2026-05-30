@@ -13,6 +13,8 @@ from services.run_ledger import serialize_task_run_summary
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 ERROR_EVENT_MARKERS = ("failed", "error", "cancel")
+ACTIVITY_HEAD_STEP_COUNT = 20
+ACTIVITY_TAIL_STEP_COUNT = 100
 LIVE_EVENT_TYPES = {
     "agent_turn_started",
     "tool_call_started",
@@ -30,7 +32,7 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
     events = list(getattr(task_run, "events", []) or [])
     latest_event_index = max((int(getattr(event, "event_index", 0) or 0) for event in events), default=0)
     summary = serialize_task_run_summary(task_run)
-    timeline = build_task_run_timeline_projection(task_run)
+    timeline = _bounded_timeline_projection(build_task_run_timeline_projection(task_run))
     steps = [_timeline_step_to_activity_step(step) for step in timeline.get("steps", [])]
     current_step = _resolve_current_step(steps)
     active_subagent_handle = _active_subagent_handle(summary)
@@ -71,6 +73,50 @@ def build_task_activity_projection(task_run: TaskRun) -> dict[str, Any]:
         "active_consult_handle": active_consult_handle,
         "steps": steps,
         "timeline": timeline,
+        "truncated": bool(timeline.get("truncated")),
+        "total_step_count": timeline.get("total_step_count", len(steps)),
+    }
+
+
+def _bounded_timeline_projection(timeline: dict[str, Any]) -> dict[str, Any]:
+    steps = timeline.get("steps") if isinstance(timeline.get("steps"), list) else []
+    total_step_count = len(steps)
+    if total_step_count <= ACTIVITY_HEAD_STEP_COUNT + ACTIVITY_TAIL_STEP_COUNT:
+        return timeline
+
+    current_step_id = str(timeline.get("current_step_id") or "").strip()
+    selected_steps = [
+        *steps[:ACTIVITY_HEAD_STEP_COUNT],
+        *steps[-ACTIVITY_TAIL_STEP_COUNT:],
+    ]
+    if current_step_id and not any(str(step.get("id") or "") == current_step_id for step in selected_steps if isinstance(step, dict)):
+        current_step = next(
+            (
+                step
+                for step in steps
+                if isinstance(step, dict) and str(step.get("id") or "") == current_step_id
+            ),
+            None,
+        )
+        if current_step is not None:
+            selected_steps.append(current_step)
+
+    bounded_by_id: dict[str, dict[str, Any]] = {}
+    for step in selected_steps:
+        if not isinstance(step, dict):
+            continue
+        key = str(step.get("id") or step.get("sequence") or len(bounded_by_id))
+        bounded_by_id[key] = step
+
+    bounded_steps = sorted(
+        bounded_by_id.values(),
+        key=lambda step: int(step.get("sequence") or 0),
+    )
+    return {
+        **timeline,
+        "steps": bounded_steps,
+        "truncated": True,
+        "total_step_count": total_step_count,
     }
 
 

@@ -412,6 +412,8 @@ export type TaskActivityProjection = {
   background?: Record<string, unknown>;
   steps: TaskActivityStep[];
   timeline?: ChatTimelineProjection | null;
+  truncated?: boolean;
+  total_step_count?: number;
 };
 
 export type ChatTimelineStep = {
@@ -442,6 +444,8 @@ export type ChatTimelineProjection = {
   version: number;
   current_step_id?: string | null;
   steps: ChatTimelineStep[];
+  truncated?: boolean;
+  total_step_count?: number;
 };
 
 export type ApprovalQueueItem = {
