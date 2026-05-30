@@ -1730,10 +1730,13 @@ async def get_monitor_usage(
         "month": _empty_usage_totals(),
     }
 
-    rows = (
-        db.query(Message)
-        .filter(Message.message_type == "runtime_card", Message.created_at >= scan_start)
-        .order_by(Message.created_at.asc(), Message.id.asc())
+    projections = (
+        db.query(RuntimeCardProjection)
+        .filter(
+            RuntimeCardProjection.card_type == "llm_call",
+            RuntimeCardProjection.created_at >= scan_start,
+        )
+        .order_by(RuntimeCardProjection.created_at.asc(), RuntimeCardProjection.id.asc())
         .all()
     )
 
@@ -1741,17 +1744,13 @@ async def get_monitor_usage(
     day_start = _period_start("day")
     week_start = _period_start("week")
 
-    for message in rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card or str(card.get("type") or "") != "llm_call":
-            continue
-
-        created_at = message.created_at
+    for proj in projections:
+        created_at = proj.created_at
         if created_at is None:
             continue
 
-        tokens_in, tokens_out = _runtime_card_token_usage(card)
+        tokens_in = proj.tokens_in or 0
+        tokens_out = proj.tokens_out or 0
         scanned_runtime_cards += 1
 
         if created_at >= day_start:
