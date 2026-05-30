@@ -28,15 +28,9 @@ logger = logging.getLogger("catown.consult_agent")
 async def _store_consult_runtime_card(chatroom_id: Any, payload: dict[str, Any]) -> None:
     if not chatroom_id:
         return
-    from chatrooms.manager import chatroom_manager
+    from services.stream_runtime_persistence import store_runtime_card
 
-    await chatroom_manager.send_message(
-        chatroom_id=int(chatroom_id),
-        agent_id=None,
-        content=payload.get("type", "runtime_card"),
-        message_type="runtime_card",
-        metadata={"card": payload},
-    )
+    await store_runtime_card(int(chatroom_id), payload)
 
 
 def _consult_step_payload(

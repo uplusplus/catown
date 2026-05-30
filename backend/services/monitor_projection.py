@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models.database import ApprovalQueueItem, Chatroom, Project, TaskRun, TaskRunEvent
@@ -16,6 +17,13 @@ INPUT_PRICE_PER_1K = 0.03
 OUTPUT_PRICE_PER_1K = 0.06
 
 
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_metadata(metadata_json: str | None) -> dict[str, Any]:
     if not metadata_json:
         return {}
@@ -24,6 +32,61 @@ def parse_metadata(metadata_json: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def extract_runtime_card_task_run_id(
+    *,
+    card: dict[str, Any] | None,
+    metadata: dict[str, Any] | None = None,
+) -> int | None:
+    metadata = metadata or {}
+    card = card or {}
+    for candidate in (
+        card.get("task_run_id"),
+        card.get("run_id"),
+        metadata.get("task_run_id"),
+        metadata.get("run_id"),
+    ):
+        coerced = _coerce_int(candidate)
+        if coerced and coerced > 0:
+            return coerced
+    return None
+
+
+def extract_runtime_card_message_payload(message: Any) -> tuple[dict[str, Any] | None, int | None, dict[str, Any]]:
+    metadata = parse_metadata(getattr(message, "metadata_json", None))
+    card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+    task_run_id = extract_runtime_card_task_run_id(card=card, metadata=metadata)
+    return card, task_run_id, metadata
+
+
+def get_runtime_card_projection_health(db: Session) -> dict[str, int]:
+    from models.database import Message, RuntimeCardProjection
+
+    runtime_card_count = int(
+        db.query(func.count(Message.id))
+        .filter(Message.message_type == "runtime_card")
+        .scalar()
+        or 0
+    )
+    projection_count = int(
+        db.query(func.count(RuntimeCardProjection.id)).scalar() or 0
+    )
+    missing_count = int(
+        db.query(func.count(Message.id))
+        .outerjoin(RuntimeCardProjection, RuntimeCardProjection.message_id == Message.id)
+        .filter(
+            Message.message_type == "runtime_card",
+            RuntimeCardProjection.message_id.is_(None),
+        )
+        .scalar()
+        or 0
+    )
+    return {
+        "runtime_cards": runtime_card_count,
+        "projections": projection_count,
+        "missing": missing_count,
+    }
 
 
 def compact_preview(value: Any, limit: int = 220) -> str:
@@ -762,9 +825,15 @@ def upsert_runtime_card_projection(
     task_run_id: int | None,
     card: dict[str, Any],
     created_at: Any,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Write a structured projection row alongside the runtime_card message."""
     from models.database import RuntimeCardProjection
+
+    projection_card = dict(card)
+    client_turn_id = metadata_client_turn_id(metadata or {})
+    if client_turn_id and not projection_card.get("client_turn_id"):
+        projection_card["client_turn_id"] = client_turn_id
 
     card_type = str(card.get("type") or "runtime")
     agent_name = str(card.get("agent") or card.get("from_agent") or "system")
@@ -800,7 +869,7 @@ def upsert_runtime_card_projection(
         preview=preview,
         prompt_preview=prompt_preview,
         response_preview=response_preview,
-        card_json=json.dumps(card, ensure_ascii=False) if card else None,
+        card_json=json.dumps(projection_card, ensure_ascii=False) if projection_card else None,
         created_at=created_at or datetime.now(),
     )
     db.add(projection)
@@ -826,17 +895,17 @@ def backfill_runtime_card_projections(db: Session) -> int:
     for message in rows:
         if message.id in existing_ids:
             continue
-        metadata = parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
+        card, task_run_id, metadata = extract_runtime_card_message_payload(message)
         if not card:
             continue
         upsert_runtime_card_projection(
             db,
             message_id=message.id,
             chatroom_id=message.chatroom_id,
-            task_run_id=None,
+            task_run_id=task_run_id,
             card=card,
             created_at=message.created_at,
+            metadata=metadata,
         )
         inserted += 1
         if inserted % 200 == 0:

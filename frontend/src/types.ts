@@ -1279,6 +1279,19 @@ export type MonitorFilesResponse = {
   };
   by_tool: { tool_name: string; count: number }[];
   by_agent: { agent: string; count: number }[];
+  diagnostics?: {
+    projection_health: {
+      runtime_cards: number;
+      projections: number;
+      missing: number;
+      status: string;
+    };
+    scope: {
+      mode: string;
+      tool_names: string[];
+      shell_activity_included: boolean;
+    };
+  };
   entries: MonitorFileEvent[];
 };
 
@@ -1501,6 +1514,8 @@ export type MonitorOverviewSummary = {
       visible_chats: number;
       messages: number;
       runtime_cards: number;
+      runtime_card_projections?: number;
+      runtime_card_projection_missing?: number;
       approval_queue_total?: number;
       approval_queue_pending?: number;
       context_compactions?: number;
@@ -1510,6 +1525,12 @@ export type MonitorOverviewSummary = {
       active_collaborators: number;
       chatrooms: number;
       pending_tasks: number;
+      status: string;
+    };
+    projections?: {
+      runtime_cards: number;
+      projections: number;
+      missing: number;
       status: string;
     };
     last_message_at?: string | null;

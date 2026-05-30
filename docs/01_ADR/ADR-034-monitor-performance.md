@@ -142,6 +142,58 @@ CREATE TABLE runtime_card_projections (
 - 修改 Monitor 路由，从投影表读取
 - 需要数据回填脚本（从现有 messages 表提取）
 
+#### P0-1A: Projection durability contract（补足 runtime_card -> projection 断层）
+
+**2026-05-30 live 现场验证**（WSL DB `/home/sun/.catown/state/catown.db`）：
+- `messages WHERE message_type='runtime_card' = 738`
+- `runtime_card_projections = 0`
+- 文件类 `tool_call` runtime card = 22（`list_files=19`, `read_file=3`）
+- `/api/monitor/files` 只查询 `runtime_card_projections`，因此会出现“前台已有 runtime card，Files 仍为空”的假阴性
+
+**问题本质**：
+- `runtime_card_projections` 不能被当成“可选缓存”或“后续再补”的索引表。
+- 它已经是 Monitor 多个页面的主读模型；如果实时写入未接入，Monitor 得到的是错误的空结果，而不是单纯变慢。
+- 只要仍允许多个调用点直接 `chatroom_manager.send_message(..., message_type="runtime_card", ...)`，就会持续出现“有 message、无 projection”的读模型漂移。
+
+**补充决策**：
+- 所有 `runtime_card` 写入路径必须统一收敛到一个 shared persistence helper，单入口完成：
+  1. 持久化 `messages` 行
+  2. 同事务调用 `upsert_runtime_card_projection(...)`
+  3. `flush/commit` 后再发布 room / monitor websocket 事件
+- 禁止新的运行时路径直接调用 `chatroom_manager.send_message(..., message_type="runtime_card", ...)` 绕过投影写入；现有分支（如 `store_runtime_card`、consult/runtime 辅助路径）也必须收敛到同一 helper。
+- `runtime_card_projections.message_id` 的唯一键保持幂等；同一 message 可以安全地被 backfill/reconcile 重放而不产生重复投影。
+
+**为什么不让 `/monitor/files` 永久回退扫 `messages`**：
+- 这会把性能问题重新带回热路径，隐藏 projection 漂移，并让“空页面”退化成静默降级。
+- 正确做法是修复读模型 contract，并在缺口出现时显式暴露健康状态。
+
+#### P0-1B: Startup / background reconcile（补齐历史与漏写）
+
+**目标**：projection 缺口应自动收敛，而不是完全依赖人工点击 backfill。
+
+**方案**：
+- 保留 `POST /api/monitor/backfill-projections` 作为 operator repair endpoint。
+- 启动时执行幂等 reconcile：扫描缺失 `message_id` 的 runtime card 并补写 projection，直到 backlog = 0。
+- 在高频写入期增加低频后台 sweep，用于修复极端异常、重启中断或历史遗留 gap。
+- 在 overview/health 响应中暴露 `runtime_card_count`、`projection_count`、`missing_projection_count`、`last_backfill_at`，让前端与运维能区分“无数据”和“投影落后”。
+
+**收益**：
+- 既能修复已有数据库，又能把未来漏写从“用户先看到空白页面”前移成“系统自愈 + 明确告警”。
+- backfill 不再只是一次性迁移脚本，而是长期的 read-model repair 机制。
+
+#### P0-1C: `/monitor/files` 统计口径显式化
+
+**现状**：
+- Files 页面只统计 `read_file`、`write_file`、`list_files`、`delete_file`、`search_files` 这 5 个显式 file tools。
+- 现场大部分“代理在读写文件”的 activity 实际来自 `run_shell`；它们不会进入该页面。
+- 因此前台可见文件相关操作，Files 页却接近空白，这不一定是写库失败，也可能是产品口径差异。
+
+**决策**：
+- `Files` 默认继续保持“显式 file tools 审计”语义，不把 `run_shell` 的任意命令文本或命令结果混入同一数据集。
+- 页面与接口需要明确标注：shell 方式的文件访问不计入 `Files`。
+- 如果后续需要覆盖 shell 文件活动，应以单独的数据源/标签实现（例如 `shell_file_access` 或 `best_effort`），而不是污染 file-tool 审计口径。
+- 当 `missing_projection_count > 0` 且存在 file-tool runtime card 时，Files 页面应显示 `projection lag / backfill needed` 诊断态，而不是空列表的成功态。
+
 #### P0-2: 中间件瘦身（解决根因 3 的放大器）
 
 **目标**：详情接口的响应体不再完整写入 monitor telemetry。
@@ -199,6 +251,8 @@ CREATE TABLE runtime_card_projections (
 - Overview 聚合延迟：从 500ms-2s 降至 10-30ms（SQL 聚合）
 - 详情接口抖动：消除 JSON parse 导致的 CPU 阻塞，配合中间件瘦身消除写入放大
 - 写入路径增加一次投影写入开销（INSERT 时多一次 JSON extract，~0.5ms）
+- `runtime_card_projections` 从“性能优化缓存”升级为“Monitor 正确性依赖的 durable read model”
+- `/monitor/files` 不再把 projection 漏写与“确实没有文件操作”混成同一种空状态
 
 ### 不采纳
 
@@ -213,3 +267,4 @@ CREATE TABLE runtime_card_projections (
 - Codex 分析：runtime-card 详情接口 telemetry 数据（142ms ~ 5913ms 抖动）
 - 架构分析：`models/database.py` 73KB 单文件、双 SQLite 数据库设计
 - 性能分析：`network_buffer._list_persisted()` Python 过滤、`_build_overview_*()` 全表扫描
+- 2026-05-30 live WSL DB 验证：`messages.runtime_card = 738`、`runtime_card_projections = 0`、文件类 runtime card = 22（`list_files=19`, `read_file=3`）

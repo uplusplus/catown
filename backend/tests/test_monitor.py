@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -86,6 +87,22 @@ def client(tmp_path):
     return TestClient(_make_app(tmp_path), base_url="http://testserver", headers={"X-Catown-Client": "test"})
 
 
+def _insert_runtime_card_without_projection(db_mod, db, chatroom_id, payload, *, content="runtime_card"):
+    result = db.execute(
+        db_mod.Message.__table__.insert().values(
+            chatroom_id=chatroom_id,
+            public_id=f"raw-runtime-{uuid4().hex}",
+            chatroom_public_id=None,
+            agent_id=None,
+            content=content,
+            message_type="runtime_card",
+            metadata_json=json.dumps(payload),
+        )
+    )
+    db.commit()
+    return result.inserted_primary_key[0]
+
+
 class TestMonitorOverview:
     def test_monitor_page_route(self, client):
         response = client.get("/monitor")
@@ -102,6 +119,7 @@ class TestMonitorOverview:
         assert "llm" in data
         assert "approvals" in data
         assert "compactions" in data
+        assert "projections" in data["system"]
         assert "recent_runtime" not in data
         assert "recent_messages" not in data
         assert "recent_compactions" not in data
@@ -249,6 +267,8 @@ class TestMonitorOverview:
         assert any(item["tool_name"] == "read_file" for item in data["usage_window"]["top_tools"])
         assert any(item["content_preview"] == "Final answer to the user" for item in activity["recent_messages"])
         assert any(item["content"] == "Final answer to the user" for item in activity["recent_messages"])
+        assert data["system"]["projections"]["missing"] == 0
+        assert data["system"]["projections"]["status"] == "healthy"
 
         llm_runtime = next(item for item in activity["recent_runtime"] if item["type"] == "llm_call")
         assert llm_runtime["from_entity"] == agent_name
@@ -441,6 +461,102 @@ class TestMonitorOverview:
         assert entry["project_name"] == "Files Project"
         assert entry["client_turn_id"] == "turn-files-1"
         assert entry["arguments"]["content"] == "print('ok')"
+        assert data["diagnostics"]["projection_health"]["missing"] == 0
+        assert data["diagnostics"]["scope"]["shell_activity_included"] is False
+
+    def test_files_endpoint_surfaces_projection_lag(self, client):
+        import models.database as db_mod
+        from models.database import Chatroom, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Files Lag Project", status="active", workspace_path="/tmp/catown-files-lag")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Files Lag Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            _insert_runtime_card_without_projection(
+                db_mod,
+                db,
+                chatroom.id,
+                {
+                    "client_turn_id": "turn-files-lag-1",
+                    "card": {
+                        "type": "tool_call",
+                        "agent": "Developer",
+                        "tool": "write_file",
+                        "arguments": json.dumps({"file_path": "src/lag.py", "content": "pass"}),
+                        "success": True,
+                    },
+                },
+                content="tool_call",
+            )
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/files?tool=write_file")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["total"] == 0
+        assert data["diagnostics"]["projection_health"]["status"] == "lagging"
+        assert data["diagnostics"]["projection_health"]["missing"] >= 1
+
+    def test_overview_marks_projection_lag_as_degraded(self, client):
+        import models.database as db_mod
+        from models.database import Chatroom, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Projection Lag Project", status="active", workspace_path="/tmp/catown-projection-lag")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Projection Lag Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            _insert_runtime_card_without_projection(
+                db_mod,
+                db,
+                chatroom.id,
+                {
+                    "client_turn_id": "turn-projection-lag-1",
+                    "card": {
+                        "type": "llm_call",
+                        "agent": "Developer",
+                        "model": "gpt-4.1-mini",
+                        "tokens_in": 42,
+                        "tokens_out": 12,
+                    },
+                },
+                content="llm_call",
+            )
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/overview")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["system"]["status"] == "degraded"
+        assert data["system"]["stats"]["runtime_card_projection_missing"] >= 1
+        assert data["system"]["projections"]["status"] == "lagging"
 
     def test_overview_returns_recent_context_compactions(self, client):
         from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent

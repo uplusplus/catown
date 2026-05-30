@@ -17,6 +17,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -88,7 +89,7 @@ def app_and_db(tmp_path):
 def client(tmp_path):
     from fastapi.testclient import TestClient
     app = _make_app(tmp_path)
-    return TestClient(app, base_url="testserver", headers={"X-Catown-Client": "test"})
+    return TestClient(app, base_url="http://testserver", headers={"X-Catown-Client": "test"})
 
 
 def _insert_runtime_card(db_mod, db, chatroom_id, card, created_at=None):
@@ -104,6 +105,26 @@ def _insert_runtime_card(db_mod, db, chatroom_id, card, created_at=None):
     db.commit()
     db.refresh(msg)
     return msg
+
+
+def _insert_runtime_card_without_projection(db_mod, db, chatroom_id, card, created_at=None):
+    """Insert a runtime_card row through Core SQL so projection backfill can be exercised."""
+    created_value = created_at or datetime.now()
+    result = db.execute(
+        db_mod.Message.__table__.insert().values(
+            chatroom_id=chatroom_id,
+            public_id=f"raw-runtime-{uuid4().hex}",
+            chatroom_public_id=None,
+            agent_id=None,
+            content="runtime_card",
+            message_type="runtime_card",
+            metadata_json=json.dumps({"card": card}),
+            created_at=created_value,
+        )
+    )
+    db.commit()
+    message_id = result.inserted_primary_key[0]
+    return db.query(db_mod.Message).filter(db_mod.Message.id == message_id).first()
 
 
 def _make_llm_card(agent="Developer", model="gpt-4", tokens_in=500, tokens_out=200, turn=1):
@@ -313,14 +334,13 @@ class TestBackfillRuntimeCardProjections:
             db.refresh(chatroom)
 
             for i in range(5):
-                db.add(db_mod.Message(
-                    chatroom_id=chatroom.id,
-                    content="runtime_card",
-                    message_type="runtime_card",
-                    metadata_json=json.dumps({"card": _make_llm_card(tokens_in=100 * i, tokens_out=50 * i)}),
+                _insert_runtime_card_without_projection(
+                    db_mod,
+                    db,
+                    chatroom.id,
+                    _make_llm_card(tokens_in=100 * i, tokens_out=50 * i),
                     created_at=datetime.now() - timedelta(minutes=5 - i),
-                ))
-            db.commit()
+                )
 
             count = backfill_runtime_card_projections(db)
             assert count == 5
@@ -343,14 +363,13 @@ class TestBackfillRuntimeCardProjections:
 
             msg = _insert_runtime_card(db_mod, db, chatroom.id, _make_llm_card())
 
-            db.add(db_mod.Message(
-                chatroom_id=chatroom.id,
-                content="runtime_card",
-                message_type="runtime_card",
-                metadata_json=json.dumps({"card": _make_tool_card()}),
+            _insert_runtime_card_without_projection(
+                db_mod,
+                db,
+                chatroom.id,
+                _make_tool_card(),
                 created_at=datetime.now(),
-            ))
-            db.commit()
+            )
 
             count = backfill_runtime_card_projections(db)
             assert count == 1
@@ -377,13 +396,19 @@ class TestBackfillRuntimeCardProjections:
                 message_type="text",
                 created_at=datetime.now(),
             ))
-            db.add(db_mod.Message(
-                chatroom_id=chatroom.id,
-                content="runtime_card",
-                message_type="runtime_card",
-                metadata_json=json.dumps({}),
-                created_at=datetime.now(),
-            ))
+            db.commit()
+            db.execute(
+                db_mod.Message.__table__.insert().values(
+                    chatroom_id=chatroom.id,
+                    public_id=f"raw-runtime-{uuid4().hex}",
+                    chatroom_public_id=None,
+                    agent_id=None,
+                    content="runtime_card",
+                    message_type="runtime_card",
+                    metadata_json=json.dumps({}),
+                    created_at=datetime.now(),
+                )
+            )
             db.commit()
 
             count = backfill_runtime_card_projections(db)
@@ -685,14 +710,13 @@ class TestBackfillEndpoint:
             db.refresh(chatroom)
 
             for i in range(3):
-                db.add(db_mod.Message(
-                    chatroom_id=chatroom.id,
-                    content="runtime_card",
-                    message_type="runtime_card",
-                    metadata_json=json.dumps({"card": _make_llm_card(tokens_in=10 * i)}),
+                _insert_runtime_card_without_projection(
+                    db_mod,
+                    db,
+                    chatroom.id,
+                    _make_llm_card(tokens_in=10 * i),
                     created_at=datetime.now() - timedelta(minutes=3 - i),
-                ))
-            db.commit()
+                )
         finally:
             db.close()
 
@@ -701,11 +725,13 @@ class TestBackfillEndpoint:
         data = r.json()
         assert data["status"] == "ok"
         assert data["inserted"] == 3
+        assert data["health"]["missing"] == 0
 
         # Running again should insert 0 (idempotent)
         r2 = client.post("/api/monitor/backfill-projections")
         assert r2.status_code == 200
         assert r2.json()["inserted"] == 0
+        assert r2.json()["health"]["status"] == "healthy"
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +791,7 @@ class TestOverviewActivityIntegration:
         finally:
             db.close()
 
-        r = client.get("/api/monitor/overview/activity?runtime_limit=10&summary_window=20")
+        r = client.get("/api/monitor/overview/activity?runtime_limit=12&summary_window=24")
         assert r.status_code == 200
         data = r.json()
         assert "recent_runtime" in data

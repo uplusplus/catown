@@ -1,4 +1,5 @@
 import importlib
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -112,3 +113,48 @@ async def test_persist_stream_failure_creates_visible_fallback_and_uses_shared_s
     assert stored_cards[0][0] == 7
     assert stored_cards[0][1]["type"] == "agent_error"
     assert "本轮执行中断" in published_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_store_runtime_card_persists_projection(monkeypatch, fresh_db):
+    import services.stream_runtime_persistence as persistence_mod
+
+    persistence_mod = importlib.reload(persistence_mod)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Runtime Store Chat")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+    finally:
+        db.close()
+
+    publish_mock = AsyncMock()
+    monkeypatch.setattr(persistence_mod, "publish_runtime_card_event", publish_mock)
+
+    message = await persistence_mod.store_runtime_card(
+        chatroom.id,
+        {
+            "type": "tool_call",
+            "agent": "Developer",
+            "tool": "write_file",
+            "arguments": "{\"file_path\":\"src/app.py\",\"content\":\"print('ok')\"}",
+            "success": True,
+            "result": "ok",
+            "run_id": 77,
+        },
+    )
+
+    db = fresh_db.SessionLocal()
+    try:
+        projection = (
+            db.query(fresh_db.RuntimeCardProjection)
+            .filter(fresh_db.RuntimeCardProjection.message_id == message.id)
+            .first()
+        )
+        assert projection is not None
+        assert projection.tool_name == "write_file"
+        assert projection.task_run_id == 77
+        assert projection.success is True
+    finally:
+        db.close()

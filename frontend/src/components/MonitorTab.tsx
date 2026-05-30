@@ -4209,6 +4209,7 @@ export function MonitorTab() {
   const [approvalQueueActionMessages, setApprovalQueueActionMessages] = useState<Record<number, string>>({});
   const logCursorRef = useRef(0);
   const networkCursorRef = useRef(0);
+  const filesRequestSeqRef = useRef(0);
   const monitorSocketRef = useRef<WebSocket | null>(null);
   const monitorLoadPromiseRef = useRef<Promise<void> | null>(null);
   const networkSnapshotPromiseRef = useRef<Promise<MonitorNetworkResponse> | null>(null);
@@ -4454,13 +4455,12 @@ export function MonitorTab() {
   }, [activePage, approvalAuditFilter]);
 
   useEffect(() => {
-    if (activePage !== "files" || filesResponse) return;
-    void refreshFiles();
-  }, [activePage, filesResponse]);
-
-  useEffect(() => {
-    if (activePage !== "files" || !filesResponse) return;
-    void refreshFiles();
+    if (activePage !== "files") return;
+    const abortController = new AbortController();
+    void refreshFiles({ signal: abortController.signal });
+    return () => {
+      abortController.abort();
+    };
   }, [activePage, fileFilter, fileToolFilter]);
 
   useEffect(() => {
@@ -5009,6 +5009,10 @@ export function MonitorTab() {
   }, [processStatusFilter, processesResponse]);
 
   const visibleFileEvents = filesResponse?.entries ?? [];
+  const filesProjectionHealth = filesResponse?.diagnostics?.projection_health ?? null;
+  const filesProjectionMissing = filesProjectionHealth?.missing ?? 0;
+  const filesProjectionLag = filesProjectionMissing > 0;
+  const filesShellIncluded = filesResponse?.diagnostics?.scope?.shell_activity_included ?? false;
 
   const selectedTaskRunSummary = useMemo(
     () => visibleTaskRuns.find((entry) => entry.id === selectedTaskRunId) ?? visibleTaskRuns[0] ?? null,
@@ -5754,11 +5758,14 @@ export function MonitorTab() {
     }
   }
 
-  async function refreshFiles() {
+  async function refreshFiles(options?: { signal?: AbortSignal }) {
+    const requestSeq = ++filesRequestSeqRef.current;
     try {
-      const response = await api.getMonitorFiles(200, fileToolFilter, fileFilter);
+      const response = await api.getMonitorFiles(200, fileToolFilter, fileFilter, options?.signal);
+      if (options?.signal?.aborted || requestSeq !== filesRequestSeqRef.current) return;
       setFilesResponse(response);
     } catch (nextError) {
+      if (options?.signal?.aborted && isAbortError(nextError)) return;
       setError(nextError instanceof Error ? nextError.message : "Failed to load file monitor events");
     }
   }
@@ -6602,12 +6609,20 @@ export function MonitorTab() {
             <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
               <div>
                 <div className="section-title">Files</div>
-                <div className="section-subtitle">Agent file tool activity captured from persisted runtime cards.</div>
+                <div className="section-subtitle">Agent file tool activity captured from persisted runtime-card projections.</div>
               </div>
               <button type="button" className="refresh-btn" onClick={() => void refreshFiles()}>
                 Refresh
               </button>
             </div>
+            <div className="small-note" style={{ marginTop: 0, marginBottom: 12 }}>
+              Tracks explicit file tools only; shell-driven file access is {filesShellIncluded ? "included" : "excluded"} from this dataset.
+            </div>
+            {filesProjectionLag ? (
+              <div className="muted-block" style={{ marginBottom: 16 }}>
+                Projection lag detected: {formatNumber(filesProjectionMissing)} runtime cards are still missing projections, so this page may under-report recent file activity until reconcile catches up.
+              </div>
+            ) : null}
 
             <div className="grid" style={{ marginBottom: 16 }}>
               <div className="card">

@@ -1144,6 +1144,7 @@ class RuntimeCardProjection(Base):
 
 @event.listens_for(SessionLocal, "before_flush")
 def _populate_stable_public_identity(session, _flush_context, _instances):
+    runtime_projection_candidates = session.info.setdefault("_runtime_card_projection_candidates", {})
     for obj in list(session.new) + list(session.dirty):
         if isinstance(obj, Chatroom):
             if not _normalized_text(getattr(obj, "public_id", None)):
@@ -1160,6 +1161,8 @@ def _populate_stable_public_identity(session, _flush_context, _instances):
                 if not _normalized_text(getattr(chatroom, "public_id", None)):
                     chatroom.public_id = _generate_public_id()
                 obj.chatroom_public_id = _normalized_text(getattr(chatroom, "public_id", None))
+            if obj in session.new and str(getattr(obj, "message_type", "") or "").strip() == "runtime_card":
+                runtime_projection_candidates[id(obj)] = obj
             continue
 
         if isinstance(obj, TaskRun):
@@ -1217,6 +1220,59 @@ def _populate_stable_public_identity(session, _flush_context, _instances):
                 if not _normalized_text(getattr(pipeline_run, "public_id", None)):
                     pipeline_run.public_id = _generate_public_id()
                 obj.pipeline_run_public_id = _normalized_text(getattr(pipeline_run, "public_id", None))
+
+
+@event.listens_for(SessionLocal, "after_flush_postexec")
+def _sync_runtime_card_projections(session, _flush_context):
+    if session.info.get("_syncing_runtime_card_projections"):
+        return
+
+    candidates = session.info.pop("_runtime_card_projection_candidates", {})
+    if not candidates:
+        return
+
+    messages = [
+        obj
+        for obj in candidates.values()
+        if isinstance(obj, Message)
+        and str(getattr(obj, "message_type", "") or "").strip() == "runtime_card"
+        and getattr(obj, "id", None) is not None
+    ]
+    if not messages:
+        return
+
+    from services.monitor_projection import (
+        extract_runtime_card_message_payload,
+        upsert_runtime_card_projection,
+    )
+
+    message_ids = [int(message.id) for message in messages if getattr(message, "id", None) is not None]
+    existing_ids = {
+        row[0]
+        for row in session.query(RuntimeCardProjection.message_id)
+        .filter(RuntimeCardProjection.message_id.in_(message_ids))
+        .all()
+    }
+
+    session.info["_syncing_runtime_card_projections"] = True
+    try:
+        for message in messages:
+            if message.id in existing_ids:
+                continue
+            card, task_run_id, metadata = extract_runtime_card_message_payload(message)
+            if not card:
+                continue
+            upsert_runtime_card_projection(
+                session,
+                message_id=message.id,
+                chatroom_id=message.chatroom_id,
+                task_run_id=task_run_id,
+                card=card,
+                created_at=message.created_at,
+                metadata=metadata,
+            )
+    finally:
+        session.info.pop("_syncing_runtime_card_projections", None)
 
 
 def init_database():

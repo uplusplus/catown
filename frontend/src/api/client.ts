@@ -503,12 +503,12 @@ export const api = {
   getMonitorRuntimeCardDetail(messageId: number) {
     return request<MonitorRuntimeDetail>(`/api/monitor/runtime-cards/${messageId}`);
   },
-  getMonitorFiles(limit = 200, tool = "all", query = "") {
+  getMonitorFiles(limit = 200, tool = "all", query = "", signal?: AbortSignal) {
     const params = new URLSearchParams({ limit: String(limit), tool });
     if (query.trim()) {
       params.set("query", query.trim());
     }
-    return request<MonitorFilesResponse>(`/api/monitor/files?${params.toString()}`);
+    return request<MonitorFilesResponse>(`/api/monitor/files?${params.toString()}`, signal ? { signal } : undefined);
   },
   getMonitorTaskRuns(range = "24h", limit = 120) {
     const params = new URLSearchParams({

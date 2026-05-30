@@ -36,6 +36,7 @@ from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_audit import list_approval_audit_logs, serialize_approval_audit_log
 from services.approval_queue import list_approval_queue_items
 from services.monitor_projection import (
+    get_runtime_card_projection_health,
     serialize_monitor_approval_queue_item,
     serialize_monitor_compaction_item,
     serialize_monitor_runtime_detail,
@@ -60,6 +61,14 @@ FILE_MONITOR_ACTIONS = {
     "delete_file": "delete",
     "search_files": "search",
 }
+
+
+def _projection_health_payload(db: Session) -> dict[str, Any]:
+    health = get_runtime_card_projection_health(db)
+    return {
+        **health,
+        "status": "lagging" if health["missing"] > 0 else "healthy",
+    }
 TASK_RUN_STEP_SCAN_MULTIPLIER = 4
 TASK_RUN_STEP_SCAN_MIN = 200
 TASK_RUN_STEP_SCAN_MAX = 800
@@ -527,9 +536,10 @@ def _query_recent_runtime_activity(
     runtime_limit: int,
     summary_window: int,
 ) -> tuple[list[dict[str, Any]], list[Message]]:
-    # Read from projection table instead of parsing JSON
     projections = (
-        db.query(RuntimeCardProjection)
+        db.query(RuntimeCardProjection, Chatroom, Project)
+        .join(Chatroom, RuntimeCardProjection.chatroom_id == Chatroom.id)
+        .outerjoin(Project, Chatroom.project_id == Project.id)
         .order_by(desc(RuntimeCardProjection.created_at), desc(RuntimeCardProjection.id))
         .limit(summary_window)
         .all()
@@ -537,8 +547,30 @@ def _query_recent_runtime_activity(
 
     recent_projections = projections[:runtime_limit]
     recent_runtime: list[dict[str, Any]] = []
-    for proj in recent_projections:
-        # For list view, use pre-extracted fields (zero JSON parse)
+    for proj, chatroom, project in recent_projections:
+        card: dict[str, Any] | None = None
+        if proj.card_json:
+            try:
+                parsed = json.loads(proj.card_json)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                card = parsed
+        if card:
+            recent_runtime.append(
+                serialize_monitor_runtime_item(
+                    runtime_message_id=proj.message_id,
+                    chatroom_id=proj.chatroom_id,
+                    chat_title=chatroom.title,
+                    project_id=project.id if project else None,
+                    project_name=project.name if project else None,
+                    card=card,
+                    created_at=proj.created_at,
+                    metadata={"card": card},
+                )
+            )
+            continue
+
         card_type = proj.card_type
         from_entity, to_entity = None, None
         if card_type == "llm_call":
@@ -556,9 +588,9 @@ def _query_recent_runtime_activity(
             "preview": proj.preview or "",
             "created_at": proj.created_at.isoformat() if proj.created_at else None,
             "chatroom_id": proj.chatroom_id,
-            "chat_title": "",  # Will be filled by caller if needed
-            "project_id": None,
-            "project_name": None,
+            "chat_title": chatroom.title,
+            "project_id": project.id if project else None,
+            "project_name": project.name if project else None,
             "agent": proj.agent_name,
             "from_entity": from_entity,
             "to_entity": to_entity,
@@ -2165,6 +2197,7 @@ async def get_monitor_files(
     if normalized_tool != "all" and normalized_tool not in FILE_MONITOR_TOOLS:
         raise HTTPException(status_code=400, detail="Unsupported file monitor tool")
 
+    projection_health = _projection_health_payload(db)
     query_text = query.strip().lower()
     proj_filters = [
         RuntimeCardProjection.card_type == "tool_call",
@@ -2261,6 +2294,14 @@ async def get_monitor_files(
         },
         "by_tool": [{"tool_name": name, "count": count} for name, count in sorted(tool_counts.items())],
         "by_agent": [{"agent": name, "count": count} for name, count in sorted(agent_counts.items())],
+        "diagnostics": {
+            "projection_health": projection_health,
+            "scope": {
+                "mode": "explicit_file_tools",
+                "tool_names": sorted(FILE_MONITOR_TOOLS),
+                "shell_activity_included": False,
+            },
+        },
         "entries": entries,
     }
 
@@ -2278,6 +2319,7 @@ async def get_monitor_overview(
     visible_chat_count = db.query(Chatroom).filter(Chatroom.is_visible_in_chat_list.is_(True)).count()
     message_count = db.query(Message).filter(Message.message_type != "runtime_card").count()
     runtime_card_count = db.query(Message).filter(Message.message_type == "runtime_card").count()
+    projection_health = _projection_health_payload(db)
     latest_message = db.query(Message).order_by(desc(Message.created_at), desc(Message.id)).first()
     context_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
     range_value = range if range in USAGE_RANGES else "24h"
@@ -2289,7 +2331,7 @@ async def get_monitor_overview(
     return {
         "captured_at": datetime.now().isoformat(),
         "system": {
-            "status": "healthy",
+            "status": "degraded" if projection_health["missing"] > 0 else "healthy",
             "version": "1.0.0",
             "stats": {
                 "agents": agent_count,
@@ -2299,6 +2341,8 @@ async def get_monitor_overview(
                 "visible_chats": visible_chat_count,
                 "messages": message_count,
                 "runtime_cards": runtime_card_count,
+                "runtime_card_projections": projection_health["projections"],
+                "runtime_card_projection_missing": projection_health["missing"],
                 "approval_queue_total": approval_summary["queue"]["total"],
                 "approval_queue_pending": approval_summary["queue"]["pending"],
                 "context_compactions": context_compaction_count,
@@ -2313,6 +2357,7 @@ async def get_monitor_overview(
                 **get_runtime_collaboration_status(),
                 "status": "active",
             },
+            "projections": projection_health,
             "last_message_at": latest_message.created_at.isoformat() if latest_message and latest_message.created_at else None,
         },
         "usage_window": usage_window,
@@ -2351,7 +2396,11 @@ async def run_backfill_projections(db: Session = Depends(get_db)):
     """Backfill runtime_card_projections from existing messages."""
     from services.monitor_projection import backfill_runtime_card_projections
     inserted = backfill_runtime_card_projections(db)
-    return {"status": "ok", "inserted": inserted}
+    return {
+        "status": "ok",
+        "inserted": inserted,
+        "health": _projection_health_payload(db),
+    }
 
 
 @router.post("/watchdog/sweep")
