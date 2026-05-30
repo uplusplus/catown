@@ -4132,7 +4132,7 @@ function App() {
     content: string,
     options?: {
       clientTurnId?: string;
-      attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+      attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string }>;
     },
   ) {
     await cancelCurrentChatProcessing({
@@ -4163,7 +4163,7 @@ function App() {
     content: string,
     options?: {
       clientTurnId?: string;
-      attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+      attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string }>;
       queueMode?: string;
     },
   ) {
@@ -4173,6 +4173,7 @@ function App() {
     const createdAt = new Date().toISOString();
     const clientTurnId = options?.clientTurnId;
     const queueMode = options?.queueMode;
+    const userMessageMetadata = options?.attachments?.length ? { attachments: options.attachments } : undefined;
     const sendSequence = ++sendSequenceRef.current;
     let activeAgentName = getAgentDisplayName(primaryAgent);
     let streamCompleted = false;
@@ -4204,6 +4205,7 @@ function App() {
             created_at: createdAt,
             agent_name: null,
             client_turn_id: clientTurnId,
+            metadata: userMessageMetadata,
             optimisticKind: "user",
           },
         ]),

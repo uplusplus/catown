@@ -329,6 +329,15 @@ function writeDraftHistoryStore(store: Record<string, string[]>, preferredKeys: 
   }
 }
 
+type MessageAttachmentSummary = {
+  file_id?: string;
+  file_path: string;
+  file_name: string;
+  file_size: number;
+  mime_type?: string;
+  upload_time?: string;
+};
+
 type ChatTabProps = {
   chat: ChatSummary | null;
   project: ProjectSummary | null;
@@ -355,8 +364,8 @@ type ChatTabProps = {
   events: ChatEventItem[];
   expandCurrentStepByDefault: boolean;
   onEnsureChat?: (content: string) => Promise<number>;
-  onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
-  onSteerSend?: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
+  onSend: (content: string, options?: { clientTurnId?: string; attachments?: MessageAttachmentSummary[] }) => Promise<void>;
+  onSteerSend?: (content: string, options?: { clientTurnId?: string; attachments?: MessageAttachmentSummary[] }) => Promise<void>;
   onAbortCurrentProcessing?: () => Promise<boolean | void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
@@ -3083,6 +3092,42 @@ function readObjectArray(value: unknown) {
     : [];
 }
 
+function mergeMessageMetadata(
+  primary: Record<string, unknown> | null | undefined,
+  secondary: Record<string, unknown> | null | undefined,
+) {
+  const primaryRecord = readRecord(primary);
+  const secondaryRecord = readRecord(secondary);
+  if (!primaryRecord && !secondaryRecord) return null;
+  return {
+    ...(secondaryRecord ?? {}),
+    ...(primaryRecord ?? {}),
+  };
+}
+
+function readMessageAttachments(message: MessageItem): MessageAttachmentSummary[] {
+  const metadata = readRecord(message.metadata);
+  return readObjectArray(metadata?.["attachments"])
+    .map((attachment) => {
+      const filePath = readTextField(attachment, "file_path") || readTextField(attachment, "path") || "";
+      const fileName =
+        readTextField(attachment, "file_name")
+        || readTextField(attachment, "name")
+        || filePath.split(/[\\/]/).filter(Boolean).pop()
+        || "Attachment";
+      const fileSize = readNumber(attachment["file_size"]) ?? readNumber(attachment["size"]) ?? 0;
+      return {
+        file_id: readTextField(attachment, "file_id") ?? undefined,
+        file_path: filePath || fileName,
+        file_name: fileName,
+        file_size: fileSize,
+        mime_type: readTextField(attachment, "mime_type") ?? undefined,
+        upload_time: readTextField(attachment, "upload_time") ?? undefined,
+      };
+    })
+    .filter((attachment) => Boolean(attachment.file_name || attachment.file_path));
+}
+
 type AgentStripStatus = "online" | "waiting" | "working";
 
 function taskRunAgentStripStatus(taskRun: TaskRunSummary): AgentStripStatus {
@@ -3311,6 +3356,47 @@ function readMessageTestReportArtifact(message: MessageItem) {
     title,
     storagePath,
   };
+}
+
+function attachmentKindLabel(attachment: MessageAttachmentSummary) {
+  const mimeType = (attachment.mime_type || "").toLowerCase();
+  const name = `${attachment.file_name} ${attachment.file_path}`.toLowerCase();
+  if (mimeType === "application/pdf" || /\.pdf\b/.test(name)) return "PDF";
+  if (mimeType.startsWith("image/")) return "Image";
+  if (mimeType) return mimeType.split("/").pop()?.toUpperCase() || "File";
+  return "File";
+}
+
+function renderMessageAttachmentSummary(message: MessageItem) {
+  const attachments = readMessageAttachments(message);
+  if (attachments.length === 0) return null;
+
+  return (
+    <div className="message-attachment-list" aria-label="Message attachments">
+      {attachments.map((attachment, index) => {
+        const label = attachmentKindLabel(attachment);
+        const titleParts = [
+          attachment.file_name,
+          attachment.file_path && attachment.file_path !== attachment.file_name ? attachment.file_path : "",
+          attachment.file_id ? `file_id: ${attachment.file_id}` : "",
+        ].filter(Boolean);
+        return (
+          <div
+            className="message-attachment-chip"
+            key={`${attachment.file_id || attachment.file_path || attachment.file_name}-${index}`}
+            title={titleParts.join("\n")}
+          >
+            <span className="message-attachment-chip__icon">
+              {label === "Image" ? <File size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />}
+            </span>
+            <span className="message-attachment-chip__name">{attachment.file_name}</span>
+            <span className="message-attachment-chip__meta">{label}</span>
+            <span className="message-attachment-chip__meta">{formatFileSize(attachment.file_size)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function renderMessageArtifactSummary(message: MessageItem) {
@@ -3846,6 +3932,7 @@ function mergeVisibleMessagePair(left: MessageItem, right: MessageItem): Message
     agent_name: primary.agent_name ?? secondary.agent_name,
     message_type: primary.message_type || secondary.message_type,
     client_turn_id: primary.client_turn_id ?? secondary.client_turn_id,
+    metadata: mergeMessageMetadata(primary.metadata, secondary.metadata),
     isStreaming: server ? Boolean(primary.isStreaming) : Boolean(left.isStreaming || right.isStreaming),
     statusDetail: primary.statusDetail ?? secondary.statusDetail,
     streamSteps:
@@ -6224,6 +6311,7 @@ function renderMessage(
       ? renderStreamingTextContent(messageBodyContent, messageBodyClassName)
       : renderStreamingStatusContent(message, messageBodyClassName)
     : renderMarkdownContent(messageBodyContent, messageBodyClassName);
+  const messageAttachments = renderMessageAttachmentSummary(message);
   // Choice Box: interactive decision component embedded in chat
   const choiceBoxData = message.metadata?.choice_box as ChoiceBoxData | undefined;
   const choiceBoxElement = choiceBoxData && choiceBoxData.status === "pending" ? (
@@ -6291,12 +6379,14 @@ function renderMessage(
             <>
               {messageTrace}
               {messageBody}
+              {messageAttachments}
               {choiceBoxElement}
               {messageUsageFooter}
             </>
           ) : (
             <>
               {messageBody}
+              {messageAttachments}
               {choiceBoxElement}
               {messageTrace}
               {messageUsageFooter}
@@ -6755,7 +6845,7 @@ export function ChatTab({
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   // Attachment state for image/file uploads
-  type UploadedAttachment = { file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string };
+  type UploadedAttachment = MessageAttachmentSummary;
   type PendingAttachment = {
     id: string;
     file: File;
@@ -8061,6 +8151,12 @@ export function ChatTab({
             return item;
           }
           usedMatches.add(matchedIndex);
+          const matched = optimisticMessages[matchedIndex];
+          const nextMetadata = mergeMessageMetadata(item.metadata, matched.metadata);
+          if (nextMetadata !== item.metadata) {
+            changed = true;
+            return { ...item, metadata: nextMetadata };
+          }
           return item;
         }
 
@@ -8321,6 +8417,24 @@ export function ChatTab({
     }
   }
 
+  function attachFilesToLocalUserMessage(clientTurnId: string, attachments: MessageAttachmentSummary[]) {
+    if (attachments.length === 0) return;
+    setLocalOverlayMessages((current) => {
+      let changed = false;
+      const nextMessages = current.map((message) => {
+        if (message.client_turn_id !== clientTurnId || message.optimisticKind !== "user") return message;
+        changed = true;
+        return {
+          ...message,
+          metadata: mergeMessageMetadata({ attachments }, message.metadata),
+        };
+      });
+      if (!changed) return current;
+      writeOverlayMessages(chat?.id ?? null, nextMessages);
+      return nextMessages;
+    });
+  }
+
   function submitContent(rawContent: string, options?: { queueMode?: "steer" }) {
     const next = rawContent.trim();
     const queueMode = options?.queueMode;
@@ -8403,6 +8517,7 @@ export function ChatTab({
         try {
           const uploadedAttachments = await collectAttachmentsForSend(attachmentsForSend);
           if (uploadedAttachments.length > 0) {
+            attachFilesToLocalUserMessage(clientTurnId, uploadedAttachments);
             clearAttachments(attachmentsForSend);
           }
           setWaitingForAttachments(false);
