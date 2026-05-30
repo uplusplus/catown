@@ -66,6 +66,7 @@ const STREAM_TRACE_RECENT_STEP_COUNT = 5;
 const STREAM_TRACE_HISTORY_ID_PREFIX = "__stream-history__";
 const TASK_RUN_SHELL_TAIL_MAX_CHARS = 5000;
 const TASK_RUN_SHELL_TAIL_MAX_LINES = 28;
+const CHAT_TASK_RUN_DETAIL_EVENT_LIMIT = 80;
 const DRAFT_HISTORY_MAX_CHATS = 30;
 const DRAFT_HISTORY_MAX_ITEMS_PER_CHAT = 50;
 const DRAFT_HISTORY_MAX_ITEM_CHARS = 4000;
@@ -2808,12 +2809,24 @@ function buildWorkspaceBrowserFileEntries(projectBrowserIndex: ProjectBrowserInd
   });
 }
 
-function mergeBrowserFileEntries(workspaceEntries: BrowserFileEntry[], runtimeEntries: BrowserFileEntry[], workspacePath?: string | null) {
+function mergeBrowserFileEntries(
+  workspaceEntries: BrowserFileEntry[],
+  runtimeEntries: BrowserFileEntry[],
+  workspacePath?: string | null,
+  workspaceIndexLoaded = false,
+) {
   const merged = new Map<string, BrowserFileEntry>();
-  workspaceEntries.forEach((entry) => merged.set(normalizeBrowserPath(entry.path), entry));
+  const workspaceEntryPaths = new Set<string>();
+  workspaceEntries.forEach((entry) => {
+    const key = relativeBrowserPath(entry.path, workspacePath) || normalizeBrowserPath(entry.path);
+    workspaceEntryPaths.add(key);
+    merged.set(key, entry);
+  });
   runtimeEntries.forEach((entry) => {
     if (!isRuntimePathInsideWorkspace(entry.path, workspacePath)) return;
     const key = relativeBrowserPath(entry.path, workspacePath);
+    if (!key) return;
+    if (workspaceIndexLoaded && !workspaceEntryPaths.has(key)) return;
     const existing = merged.get(key) ?? merged.get(normalizeBrowserPath(entry.path));
     merged.set(existing ? normalizeBrowserPath(existing.path) : key, existing ? { ...existing, ...entry, path: existing.path } : entry);
   });
@@ -4501,9 +4514,34 @@ function FileReaderCard({
   const dirty = isEditing && (state.draft ?? "") !== (data?.content ?? "");
   const canGoBack = (state.historyIndex ?? 0) > 0;
   const canGoForward = (state.historyIndex ?? 0) < (state.history?.length ?? 0) - 1;
+  const cardRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (isEditing) return;
+    cardRef.current?.focus({ preventScroll: true });
+  }, [isEditing, path]);
+
+  function handleKeyDownCapture(event: KeyboardEvent<HTMLElement>) {
+    if (event.nativeEvent.isComposing || (event.key !== "Escape" && event.code !== "Escape")) return;
+    if (isEditing) {
+      event.preventDefault();
+      event.stopPropagation();
+      onDiscard();
+      return;
+    }
+    if (!onClose) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  }
 
   return (
-    <article className="file-reader-card">
+    <article
+      ref={cardRef}
+      className="file-reader-card"
+      tabIndex={-1}
+      onKeyDownCapture={handleKeyDownCapture}
+    >
       <div className="file-reader-card__header">
         <div className="file-reader-card__title">
           <span className="file-reader-card__icon" aria-hidden="true"><FileText size={16} /></span>
@@ -6654,6 +6692,7 @@ export function ChatTab({
   const [pendingApprovalItems, setPendingApprovalItems] = useState<ApprovalQueueItem[]>([]);
   const [approvalQueueLoaded, setApprovalQueueLoaded] = useState(false);
   const approvalQueueRequestSeqRef = useRef(0);
+  const taskRunDetailRequestsRef = useRef<Map<number, Promise<TaskRunDetail>>>(new Map());
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   // Attachment state for image/file uploads
@@ -6809,8 +6848,13 @@ export function ChatTab({
     [projectBrowserIndex],
   );
   const browserFileEntries = useMemo(
-    () => mergeBrowserFileEntries(workspaceBrowserFileEntries, runtimeBrowserFileEntries, project?.workspace_path),
-    [project?.workspace_path, runtimeBrowserFileEntries, workspaceBrowserFileEntries],
+    () => mergeBrowserFileEntries(
+      workspaceBrowserFileEntries,
+      runtimeBrowserFileEntries,
+      project?.workspace_path,
+      projectBrowserIndex !== null,
+    ),
+    [project?.workspace_path, projectBrowserIndex, runtimeBrowserFileEntries, workspaceBrowserFileEntries],
   );
   const browserFileTree = useMemo(
     () => buildBrowserFileTree(browserFileEntries, project?.workspace_path, project?.name || chat?.title),
@@ -7022,6 +7066,21 @@ export function ChatTab({
     () => (selectedTaskRunSummary?.id ? pendingApprovalItemsByTaskRunId[selectedTaskRunSummary.id] ?? [] : []),
     [pendingApprovalItemsByTaskRunId, selectedTaskRunSummary?.id],
   );
+  const requestTaskRunDetail = useCallback((runId: number) => {
+    const currentRequest = taskRunDetailRequestsRef.current.get(runId);
+    if (currentRequest) return currentRequest;
+    const request = api.getTaskRunDetail(runId, CHAT_TASK_RUN_DETAIL_EVENT_LIMIT)
+      .finally(() => {
+        if (taskRunDetailRequestsRef.current.get(runId) === request) {
+          taskRunDetailRequestsRef.current.delete(runId);
+        }
+      });
+    taskRunDetailRequestsRef.current.set(runId, request);
+    return request;
+  }, []);
+  const storeTaskRunDetail = useCallback((runId: number, detail: TaskRunDetail) => {
+    setTaskRunDetailsById((current) => (current[runId] === detail ? current : { ...current, [runId]: detail }));
+  }, []);
 
   useEffect(() => {
     if (draftHistoryKey !== globalDraftHistoryKey) {
@@ -7087,10 +7146,10 @@ export function ChatTab({
     setTaskRunDetailError("");
     setLoadingTaskRunId(runId);
 
-    api.getTaskRunDetail(runId)
+    requestTaskRunDetail(runId)
       .then((detail) => {
         if (cancelled) return;
-        setTaskRunDetailsById((current) => ({ ...current, [runId]: detail }));
+        storeTaskRunDetail(runId, detail);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -7104,7 +7163,7 @@ export function ChatTab({
     return () => {
       cancelled = true;
     };
-  }, [loadingTaskRunId, selectedTaskRunDetail, selectedTaskRunSummary]);
+  }, [loadingTaskRunId, requestTaskRunDetail, selectedTaskRunDetail, selectedTaskRunSummary, storeTaskRunDetail]);
 
   useEffect(() => {
     const candidateRuns = taskRuns.filter((run) => shouldRenderInlineTaskRun(run));
@@ -7117,9 +7176,9 @@ export function ChatTab({
     void Promise.all(
       missingRunIds.map(async (runId) => {
         try {
-          const detail = await api.getTaskRunDetail(runId);
+          const detail = await requestTaskRunDetail(runId);
           if (cancelled) return;
-          setTaskRunDetailsById((current) => ({ ...current, [runId]: detail }));
+          storeTaskRunDetail(runId, detail);
         } catch {
           // Best-effort prefetch; selected-run loader already surfaces errors.
         }
@@ -7128,7 +7187,7 @@ export function ChatTab({
     return () => {
       cancelled = true;
     };
-  }, [liveTaskRunDetailsById, taskRunDetailsById, taskRuns]);
+  }, [liveTaskRunDetailsById, requestTaskRunDetail, storeTaskRunDetail, taskRunDetailsById, taskRuns]);
 
   const invalidateTaskRunDetail = useCallback((taskRunId: number | null) => {
     if (!taskRunId) return;

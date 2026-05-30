@@ -27,11 +27,13 @@ import type {
   GlobalConfigPayload,
   MessageItem,
   MessageStreamStep,
+  ProjectBrowserArtifactItem,
   ProjectBrowserFileItem,
   PermissionsConfigPayload,
   ProjectBrowserIndex,
   ProjectBrowserStreamBatch,
   ProjectBrowserWatchEvent,
+  ProjectBrowserWatchOperation,
   ProjectSummary,
   TaskActivityProjection,
   TaskRunDetail,
@@ -1969,6 +1971,13 @@ function buildProjectBrowserOrderMap(items: { path: string }[]) {
   return new Map(items.map((item, index) => [item.path, index]));
 }
 
+function transferProjectBrowserOrder(order: Map<string, number>, fromPath: string, toPath: string) {
+  const previousOrder = order.get(fromPath);
+  if (typeof previousOrder !== "number") return;
+  order.delete(fromPath);
+  order.set(toPath, previousOrder);
+}
+
 function sortProjectBrowserItems<T extends { path: string }>(
   items: Iterable<T>,
   previousOrder: Map<string, number>,
@@ -3052,6 +3061,70 @@ function App() {
     };
   }
 
+  function projectBrowserWatchOperations(event: ProjectBrowserWatchEvent): ProjectBrowserWatchOperation[] {
+    if ((event.operations?.length ?? 0) > 0) return event.operations ?? [];
+    const fileUpdatesByPath = new Map((event.files ?? []).map((item) => [item.path, item]));
+    const artifactUpdatesByPath = new Map((event.artifacts ?? []).map((item) => [item.path, item]));
+    return [
+      ...(event.removed_paths ?? []).map((path) => ({ type: "delete", path })),
+      ...(event.updated_paths ?? []).map((path) => ({
+        type: "update",
+        path,
+        file: fileUpdatesByPath.get(path) ?? null,
+        artifact: artifactUpdatesByPath.get(path) ?? null,
+      })),
+      ...(event.added_paths ?? []).map((path) => ({
+        type: "add",
+        path,
+        file: fileUpdatesByPath.get(path) ?? null,
+        artifact: artifactUpdatesByPath.get(path) ?? null,
+      })),
+    ];
+  }
+
+  function applyProjectBrowserOperation(
+    fileMap: Map<string, ProjectBrowserFileItem>,
+    artifactMap: Map<string, ProjectBrowserArtifactItem>,
+    fileOrder: Map<string, number>,
+    artifactOrder: Map<string, number>,
+    operation: ProjectBrowserWatchOperation,
+  ) {
+    const operationType = operation.type.toLowerCase();
+    const path = operation.path || operation.to_path || "";
+    const file = operation.file ?? null;
+    const artifact = operation.artifact ?? null;
+
+    if (operationType === "delete") {
+      if (!operation.path) return;
+      fileMap.delete(operation.path);
+      artifactMap.delete(operation.path);
+      return;
+    }
+
+    if (operationType === "move" || operationType === "rename") {
+      if (!operation.from_path || !operation.to_path) return;
+      fileMap.delete(operation.from_path);
+      artifactMap.delete(operation.from_path);
+      transferProjectBrowserOrder(fileOrder, operation.from_path, operation.to_path);
+      transferProjectBrowserOrder(artifactOrder, operation.from_path, operation.to_path);
+      if (file) fileMap.set(operation.to_path, file);
+      if (artifact) {
+        artifactMap.set(operation.to_path, artifact);
+      } else {
+        artifactMap.delete(operation.to_path);
+      }
+      return;
+    }
+
+    if (!path) return;
+    if (file) fileMap.set(path, file);
+    if (artifact) {
+      artifactMap.set(path, artifact);
+    } else {
+      artifactMap.delete(path);
+    }
+  }
+
   function applyProjectBrowserWatchPatch(
     current: ProjectBrowserIndex | null,
     event: ProjectBrowserWatchEvent,
@@ -3059,34 +3132,16 @@ function App() {
     const workspacePath = event.workspace_path || current?.workspace_path || "";
     const fileMap = new Map((current?.files ?? []).map((item) => [item.path, item]));
     const artifactMap = new Map((current?.artifacts ?? []).map((item) => [item.path, item]));
-    const previousFileOrder = buildProjectBrowserOrderMap(current?.files ?? []);
-    const previousArtifactOrder = buildProjectBrowserOrderMap(current?.artifacts ?? []);
-    const listChangedPaths = new Set([...(event.added_paths ?? []), ...(event.removed_paths ?? [])]);
-
-    for (const removedPath of event.removed_paths ?? []) {
-      fileMap.delete(removedPath);
-      artifactMap.delete(removedPath);
-    }
-    for (const item of event.files ?? []) {
-      if (!listChangedPaths.has(item.path)) continue;
-      fileMap.set(item.path, item);
-    }
-    const artifactPathsInPatch = new Set((event.artifacts ?? []).map((item) => item.path));
-    for (const changedPath of event.changed_paths ?? []) {
-      if (!listChangedPaths.has(changedPath)) continue;
-      if (!artifactPathsInPatch.has(changedPath) && fileMap.has(changedPath)) {
-        artifactMap.delete(changedPath);
-      }
-    }
-    for (const item of event.artifacts ?? []) {
-      if (!listChangedPaths.has(item.path)) continue;
-      artifactMap.set(item.path, item);
+    const fileOrder = buildProjectBrowserOrderMap(current?.files ?? []);
+    const artifactOrder = buildProjectBrowserOrderMap(current?.artifacts ?? []);
+    for (const operation of projectBrowserWatchOperations(event)) {
+      applyProjectBrowserOperation(fileMap, artifactMap, fileOrder, artifactOrder, operation);
     }
 
     return {
       workspace_path: workspacePath,
-      files: sortProjectBrowserItems(fileMap.values(), previousFileOrder, compareProjectBrowserFileItem),
-      artifacts: sortProjectBrowserItems(artifactMap.values(), previousArtifactOrder, compareProjectBrowserArtifactItem),
+      files: sortProjectBrowserItems(fileMap.values(), fileOrder, compareProjectBrowserFileItem),
+      artifacts: sortProjectBrowserItems(artifactMap.values(), artifactOrder, compareProjectBrowserArtifactItem),
       truncated: Boolean(event.truncated || current?.truncated),
     };
   }
@@ -3097,14 +3152,30 @@ function App() {
     signal?: AbortSignal,
   ) {
     if (signal?.aborted) return;
+    let nextSnapshot: ProjectBrowserIndex | null = null;
     await api.streamProjectBrowser(
       projectId,
       (batch) => {
         if (signal?.aborted) return;
-        setProjectBrowserIndex((current) => mergeProjectBrowserBatch(current, batch));
+        nextSnapshot = mergeProjectBrowserBatch(nextSnapshot, batch);
       },
       signal,
     );
+    if (signal?.aborted || !nextSnapshot) return;
+    const completedSnapshot = nextSnapshot;
+    setProjectBrowserIndex((current) => {
+      const previousFileOrder = buildProjectBrowserOrderMap(current?.files ?? []);
+      const previousArtifactOrder = buildProjectBrowserOrderMap(current?.artifacts ?? []);
+      return {
+        ...completedSnapshot,
+        files: sortProjectBrowserItems(completedSnapshot.files, previousFileOrder, compareProjectBrowserFileItem),
+        artifacts: sortProjectBrowserItems(
+          completedSnapshot.artifacts,
+          previousArtifactOrder,
+          compareProjectBrowserArtifactItem,
+        ),
+      };
+    });
   }
 
   async function scheduleProjectBrowserReload(
@@ -3321,7 +3392,7 @@ function App() {
   }, [activeTab]);
 
   useRegisterBackHandler(
-    () => sidebarDrawerOpen || activityDrawerOpen || activeTab !== "chat" || selectedChatId !== null || selectedProjectId !== null,
+    () => sidebarDrawerOpen || activityDrawerOpen || activeTab !== "chat",
     () => {
       if (sidebarDrawerOpen) {
         setSidebarDrawerOpen(false);
@@ -3333,10 +3404,6 @@ function App() {
       }
       if (activeTab === "config" || activeTab === "projects") {
         setActiveTab("chat");
-        return true;
-      }
-      if (selectedChatId !== null || selectedProjectId !== null) {
-        applyChatSelection(null, null);
         return true;
       }
       return false;
@@ -3396,9 +3463,14 @@ function App() {
         if (!appVisible) {
           return;
         }
-        if ((event.added_paths?.length ?? 0) > 0 || (event.removed_paths?.length ?? 0) > 0) {
+        const hasListOperations = (
+          (event.operations?.length ?? 0) > 0 ||
+          (event.added_paths?.length ?? 0) > 0 ||
+          (event.updated_paths?.length ?? 0) > 0 ||
+          (event.removed_paths?.length ?? 0) > 0
+        );
+        if (hasListOperations) {
           setProjectBrowserIndex((current) => applyProjectBrowserWatchPatch(current, event));
-          return;
         }
         if ((event.updated_paths?.length ?? 0) > 0) {
           const updatedPaths = new Set(event.updated_paths ?? []);
