@@ -283,6 +283,44 @@ def _file_monitor_item_from_runtime_card(
     }
 
 
+def _file_monitor_item_from_projection(
+    *,
+    proj: RuntimeCardProjection,
+    chatroom: Chatroom,
+    project: Project | None,
+    card: dict[str, Any],
+) -> dict[str, Any] | None:
+    tool_name = proj.tool_name or str(card.get("tool") or "")
+    if tool_name not in FILE_MONITOR_TOOLS:
+        return None
+    arguments = _parse_json_object(card.get("arguments"))
+    file_path = _file_monitor_tool_path(tool_name, arguments)
+    return {
+        "id": f"runtime-{proj.message_id}",
+        "source": "runtime_card",
+        "runtime_message_id": proj.message_id,
+        "created_at": proj.created_at.isoformat() if proj.created_at else None,
+        "agent": proj.agent_name or card.get("agent") or card.get("from_agent") or "agent",
+        "tool_name": tool_name,
+        "action": FILE_MONITOR_ACTIONS.get(tool_name, "access"),
+        "file_path": file_path,
+        "project_id": project.id if project else None,
+        "project_name": project.name if project else None,
+        "chatroom_id": proj.chatroom_id,
+        "chat_title": chatroom.title,
+        "success": proj.success if proj.success is not None else card.get("success"),
+        "status": card.get("status"),
+        "blocked": card.get("blocked"),
+        "duration_ms": proj.duration_ms or int(card.get("duration_ms") or 0),
+        "turn": proj.turn or int(card.get("turn") or 0) or None,
+        "client_turn_id": card.get("client_turn_id") if isinstance(card.get("client_turn_id"), str) else None,
+        "arguments": arguments,
+        "arguments_preview": _compact_preview(card.get("arguments")),
+        "result_preview": _compact_preview(card.get("result"), limit=320),
+        "result_size": _file_monitor_result_size(card.get("result")),
+    }
+
+
 def _metadata_client_turn_id(metadata: dict[str, Any]) -> str | None:
     client_turn_id = metadata.get("client_turn_id")
     if isinstance(client_turn_id, str) and client_turn_id:
@@ -2090,37 +2128,39 @@ async def get_monitor_files(
         raise HTTPException(status_code=400, detail="Unsupported file monitor tool")
 
     query_text = query.strip().lower()
-    sql_filters = [
-        Message.message_type == "runtime_card",
-        func.json_extract(Message.metadata_json, "$.card.type") == "tool_call",
-        func.json_extract(Message.metadata_json, "$.card.tool").in_(sorted(FILE_MONITOR_TOOLS)),
+    proj_filters = [
+        RuntimeCardProjection.card_type == "tool_call",
+        RuntimeCardProjection.tool_name.in_(sorted(FILE_MONITOR_TOOLS)),
     ]
     if normalized_tool != "all":
-        sql_filters.append(func.json_extract(Message.metadata_json, "$.card.tool") == normalized_tool)
+        proj_filters.append(RuntimeCardProjection.tool_name == normalized_tool)
 
     scan_limit = min(max(limit * 8, 400), 4000) if query_text else limit
-    rows = (
-        db.query(Message, Chatroom, Project)
-        .join(Chatroom, Message.chatroom_id == Chatroom.id)
+    projections = (
+        db.query(RuntimeCardProjection, Chatroom, Project)
+        .join(Chatroom, RuntimeCardProjection.chatroom_id == Chatroom.id)
         .outerjoin(Project, Chatroom.project_id == Project.id)
-        .filter(*sql_filters)
-        .order_by(desc(Message.created_at), desc(Message.id))
+        .filter(*proj_filters)
+        .order_by(desc(RuntimeCardProjection.created_at), desc(RuntimeCardProjection.id))
         .limit(scan_limit)
         .all()
     )
 
     entries: list[dict[str, Any]] = []
-    for message, chatroom, project in rows:
-        metadata = _parse_metadata(message.metadata_json)
-        card = metadata.get("card") if isinstance(metadata.get("card"), dict) else None
-        if not card:
+    for proj, chatroom, project in projections:
+        if not proj.card_json:
             continue
-        entry = _file_monitor_item_from_runtime_card(
-            message=message,
+        try:
+            card = json.loads(proj.card_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(card, dict):
+            continue
+        entry = _file_monitor_item_from_projection(
+            proj=proj,
             chatroom=chatroom,
             project=project,
             card=card,
-            metadata=metadata,
         )
         if not entry:
             continue
