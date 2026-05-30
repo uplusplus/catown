@@ -6,7 +6,7 @@
 **Author**: Codex
 
 **Related**:
-- [ADR-020: Prompt Guidance vs Runtime Contracts](./ADR-020-prompt-vs-runtime-contracts.md)
+- [ADR-020: Prompt Guidance vs Runtime Contracts](../01_ADR/ADR-020-prompt-vs-runtime-contracts.md)
 
 ---
 
@@ -234,9 +234,9 @@ Generated follow-ups:
 
 Implemented in:
 
-- [backend/services/assistant_handoff.py](/mnt/c/Users/sun/AI/catown/backend/services/assistant_handoff.py)
-- [backend/services/context_builder.py](/mnt/c/Users/sun/AI/catown/backend/services/context_builder.py)
-- [backend/services/agent_action_runtime.py](/mnt/c/Users/sun/AI/catown/backend/services/agent_action_runtime.py)
+- [backend/services/assistant_handoff.py](../../backend/services/assistant_handoff.py)
+- [backend/services/context_builder.py](../../backend/services/context_builder.py)
+- [backend/services/agent_action_runtime.py](../../backend/services/agent_action_runtime.py)
 
 ### Runtime changes
 
@@ -378,9 +378,9 @@ Mitigation:
 
 The implementation is covered by targeted tests in:
 
-- [backend/tests/test_assistant_handoff.py](/mnt/c/Users/sun/AI/catown/backend/tests/test_assistant_handoff.py)
-- [backend/tests/test_prompt_context_builder.py](/mnt/c/Users/sun/AI/catown/backend/tests/test_prompt_context_builder.py)
-- [backend/tests/test_agent_action_runtime.py](/mnt/c/Users/sun/AI/catown/backend/tests/test_agent_action_runtime.py)
+- [backend/tests/test_assistant_handoff.py](../../backend/tests/test_assistant_handoff.py)
+- [backend/tests/test_prompt_context_builder.py](../../backend/tests/test_prompt_context_builder.py)
+- [backend/tests/test_agent_action_runtime.py](../../backend/tests/test_agent_action_runtime.py)
 
 Verified command:
 

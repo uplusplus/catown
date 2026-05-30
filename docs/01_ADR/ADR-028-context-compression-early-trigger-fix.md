@@ -516,7 +516,7 @@ Monitor → Compactions 面板应能回答：
 ## 参考
 
 - RTK (Rust Token Killer): https://github.com/rtk-ai/rtk
-- ADR-009 上下文压缩策略: `docs/ADR-009-context-compression.md`
-- ADR-012 LLM 会话上下文管理: `docs/ADR-012-llm-session-context-management.md`
-- ADR-026 动态上下文控制触发流: `docs/ADR-026-dynamic-context-control-trigger-flow.md`
-- ADR-008 Skills 渐进式披露: `docs/ADR-008-skills-progressive-disclosure.md`
+- ADR-009 上下文压缩策略: `docs/01_ADR/ADR-009-context-compression.md`
+- ADR-012 LLM 会话上下文管理: `docs/01_ADR/ADR-012-llm-session-context-management.md`
+- ADR-026 动态上下文控制触发流: `docs/01_ADR/ADR-026-dynamic-context-control-trigger-flow.md`
+- ADR-008 Skills 渐进式披露: `docs/01_ADR/ADR-008-skills-progressive-disclosure.md`

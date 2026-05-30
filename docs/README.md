@@ -1,14 +1,14 @@
 # Catown 文档索引
 
-`docs/` 是 Catown 的设计知识库。它按文档用途拆成 ADR、PRD、Schema、Spec 和参考资料，方便 Prompt 按需渐进式披露，也方便人在开发前快速找到相关设计背景。
+`docs/` 是 Catown 主仓库内的当前设计知识库。它只保留仍可作为 Prompt 或实现参考的文档；旧的总 PRD、旧技术扫描、早期业务流讨论和 OpenAI 背景科普已移入 GitHub wiki 存档，避免被误读为当前架构事实。
 
 推荐阅读顺序：
 
 1. 项目概览先读根目录 [README.md](../README.md)。
-2. 产品和目标读 [02_PRD/PRD.md](02_PRD/PRD.md)。
-3. 当前代码架构读 [04_Spec/tech-spec.md](04_Spec/tech-spec.md) 和 [01_ADR/Architecture.md](01_ADR/Architecture.md)。
-4. 具体实现争议或历史决策读 [01_ADR/](01_ADR/) 下的对应 ADR。
-5. 涉及运行时协议、产物、策略或评估契约时读 [03_Schema/](03_Schema/)。
+2. 当前架构读 [01_ADR/Architecture.md](01_ADR/Architecture.md) 和 [01_ADR/Session-Project-Flow.md](01_ADR/Session-Project-Flow.md)。
+3. 具体实现争议或历史决策读 [01_ADR/](01_ADR/) 下的对应 ADR；若 ADR 冲突，优先参考编号更靠后的近期 ADR。
+4. 涉及运行时协议、产物、策略或评估契约时读 [03_Schema/](03_Schema/)。
+5. 涉及具体功能背景时读 [02_PRD/](02_PRD/) 中的 feature doc。
 
 说明：文件路径是当前导航锚点；个别历史文档标题中的 ADR 编号保留原始记录。
 
@@ -17,18 +17,26 @@
 ```text
 docs/
   01_ADR/     架构决策、运行时边界、状态机、监控、安全和演进记录
-  02_PRD/     产品需求、功能需求和用户体验方向
+  02_PRD/     当前保留的功能需求和 feature docs
   03_Schema/  稳定协议对象和数据契约
-  04_Spec/    当前代码架构分析和技术说明
-  05_Ref/     外部协议与背景参考
 ```
+
+## Wiki 存档
+
+以下旧入口已从主仓库删除，并归档到 GitHub wiki 页面 `Archived-Project-Docs-2026-05-30`：
+
+| 原路径 | 原因 |
+|------|------|
+| `docs/02_PRD/PRD.md` | 旧总 PRD，包含已过时的 Pipeline Dashboard、审计表和实施进度叙述 |
+| `docs/04_Spec/tech-spec.md` | 旧技术扫描，未覆盖后续 event-sourced TaskRun、stable public IDs、approval single source、runtime projections 等演进 |
+| `docs/01_ADR/Business-Flow.md` | 早期业务流讨论，不再作为当前架构入口 |
+| `docs/05_Ref/OpenAi.md` | 外部协议背景资料，不是当前实现契约或最新官方参考 |
 
 ## 01_ADR - 架构与决策记录
 
 | 文档 | 主题 |
 |------|------|
 | [Architecture.md](01_ADR/Architecture.md) | Catown logic architecture, runtime boundaries, workflow contracts, monitor read model |
-| [Business-Flow.md](01_ADR/Business-Flow.md) | 对话驱动项目管理、项目/会话/工作区关系和同步机制 |
 | [Session-Project-Flow.md](01_ADR/Session-Project-Flow.md) | Session、Project、Workspace 的创建、展示、孵化和计数规则 |
 | [ADR-001-queue-modes.md](01_ADR/ADR-001-queue-modes.md) | LLM 对话系统队列调度模式 |
 | [ADR-004-knowledge-graph.md](01_ADR/ADR-004-knowledge-graph.md) | 知识图谱集成方案 |
@@ -66,15 +74,15 @@ docs/
 | [ADR-033-approval-single-source.md](01_ADR/ADR-033-approval-single-source.md) | Approval Notification Single Source of Truth |
 | [ADR-034-monitor-performance.md](01_ADR/ADR-034-monitor-performance.md) | Monitor/Network 页面性能问题根因分析与改进方案 |
 
-## 02_PRD - 产品与功能需求
+## 02_PRD - 功能需求与 Feature Docs
 
 | 文档 | 主题 |
 |------|------|
-| [PRD.md](02_PRD/PRD.md) | Catown 产品需求、用户故事、Agent 体系、Pipeline、产物、监控和运行配置 |
 | [skills-prd.md](02_PRD/skills-prd.md) | Skills 功能 PRD |
 | [feature-agent-avatars.md](02_PRD/feature-agent-avatars.md) | Agent-specific business avatars in chat |
 | [feature-agent-color-identity.md](02_PRD/feature-agent-color-identity.md) | Agent color identity across chat, tasks, artifacts, and processes |
 | [feature-chat-handoff-tail-mention.md](02_PRD/feature-chat-handoff-tail-mention.md) | Chat handoff tail-mention trigger rule |
+| [feature-chrome-devtools-performance.md](02_PRD/feature-chrome-devtools-performance.md) | Chrome DevTools performance tool feature |
 | [feature-right-sidebar-runtime-monitor.md](02_PRD/feature-right-sidebar-runtime-monitor.md) | Right sidebar runtime monitor and Monitor runtime map |
 
 ## 03_Schema - 协议与数据契约
@@ -87,15 +95,3 @@ docs/
 | [Schema-Evaluation-Rubric-v1.md](03_Schema/Schema-Evaluation-Rubric-v1.md) | 评估 Rubric 结构 |
 | [Schema-Policy-Decision-v1.md](03_Schema/Schema-Policy-Decision-v1.md) | 运行时策略判断和违规结果结构 |
 | [Schema-Workflow-Spec-v1.md](03_Schema/Schema-Workflow-Spec-v1.md) | Workflow / Pipeline 阶段规格 |
-
-## 04_Spec - 技术说明
-
-| 文档 | 主题 |
-|------|------|
-| [tech-spec.md](04_Spec/tech-spec.md) | 当前项目架构分析、模块职责、数据流、风险、技术债和后续改进建议 |
-
-## 05_Ref - 参考资料
-
-| 文档 | 主题 |
-|------|------|
-| [OpenAi.md](05_Ref/OpenAi.md) | OpenAI 兼容协议、Chat Completions、Tool Calling、Structured Output 和实现参考 |

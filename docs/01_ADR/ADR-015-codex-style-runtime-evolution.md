@@ -6396,7 +6396,7 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 
 本轮产出：
 
-- 新增 `docs/Schema-Action-Request-v1.md`
+- 新增 `docs/03_Schema/Schema-Action-Request-v1.md`
 - 新增 `backend/services/action_request_contracts.py`
 - 定义 v1 支持的 bounded request kinds：
   - `use_tool`
@@ -6435,7 +6435,7 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 
 本轮先补 `artifact_contract schema v1` 草案：
 
-- 新增 `docs/Schema-Artifact-Contract-v1.md`
+- 新增 `docs/03_Schema/Schema-Artifact-Contract-v1.md`
 - 新增 `backend/services/artifact_contracts.py`
 - 新增四种 bounded artifact modes：
   - `workspace_file`
@@ -6540,7 +6540,7 @@ P1.5 先解决“cancel 只改 ledger，不影响正在运行的 executor loop�
 
 本轮先补 `workflow_spec schema v1` 草案：
 
-- 新增 `docs/Schema-Workflow-Spec-v1.md`
+- 新增 `docs/03_Schema/Schema-Workflow-Spec-v1.md`
 - 新增 `backend/services/workflow_spec_contracts.py`
 - 新增兼容编译器，把当前 pipeline template payload 编译成 `workflow_spec`
 
@@ -6897,7 +6897,7 @@ v1 当前覆盖：
 本轮新增：
 
 - `backend/services/evaluation_rubric_contracts.py`
-- `docs/Schema-Evaluation-Rubric-v1.md`
+- `docs/03_Schema/Schema-Evaluation-Rubric-v1.md`
 
 v1 覆盖：
 
@@ -6938,7 +6938,7 @@ v1 覆盖：
 本轮新增：
 
 - `backend/services/evaluation_result_contracts.py`
-- `docs/Schema-Evaluation-Result-v1.md`
+- `docs/03_Schema/Schema-Evaluation-Result-v1.md`
 
 v1 覆盖：
 
@@ -7301,7 +7301,7 @@ publish_artifact action_request
 
 本轮新增：
 
-- `docs/Schema-Policy-Decision-v1.md`
+- `docs/03_Schema/Schema-Policy-Decision-v1.md`
 - `backend/services/policy_decision_contracts.py`
 - `backend/tests/test_policy_decision_contracts.py`
 

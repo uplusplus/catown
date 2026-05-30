@@ -500,4 +500,4 @@ return filtered.output  # Agent 拿到过滤后的输出；原始输出存 tee/
 - RTK 架构文档: docs/contributing/ARCHITECTURE.md
 - LLMLingua-2: https://www.microsoft.com/en-us/research/project/llmlingua/llmlingua-2/
 - FastKV (KV Cache 压缩): https://arxiv.org/abs/2502.01068
-- Catown ADR-008 (Skills 渐进式披露): docs/ADR-008-skills-progressive-disclosure.md
+- Catown ADR-008 (Skills 渐进式披露): docs/01_ADR/ADR-008-skills-progressive-disclosure.md

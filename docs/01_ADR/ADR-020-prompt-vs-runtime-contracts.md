@@ -5,7 +5,7 @@
 **Decision makers**: BOSS + Catown Runtime
 
 **Related**:
-- [Chat Handoff Tail-Mention Feature Doc](./feature-chat-handoff-tail-mention.md)
+- [Chat Handoff Tail-Mention Feature Doc](../02_PRD/feature-chat-handoff-tail-mention.md)
 
 ## Context
 
@@ -97,7 +97,7 @@ software-owned.
    if the work is meant to be executed and waited on.
 
    The concrete lightweight chat-routing protocol for mention-based handoff is documented
-   in [Chat Handoff Tail-Mention Feature Doc](./feature-chat-handoff-tail-mention.md).
+   in [Chat Handoff Tail-Mention Feature Doc](../02_PRD/feature-chat-handoff-tail-mention.md).
 
 6. Completion must be objective-scoped.
    A parent or coordinator run must not be marked completed merely because the

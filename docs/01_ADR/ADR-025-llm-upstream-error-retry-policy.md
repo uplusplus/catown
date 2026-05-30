@@ -8,7 +8,8 @@
 - [ADR-014: Network Monitor Semantics](./ADR-014-network-monitor-semantics.md)
 - [ADR-020: Prompt Guidance vs Runtime Contracts](./ADR-020-prompt-vs-runtime-contracts.md)
 - [ADR-023: Execution and Authorization Timing](./ADR-023-execution-authorization-timing.md)
-- [PRD](./PRD.md)
+- Archived legacy PRD, now superseded by numbered ADRs and retained in the
+  [project wiki archive](https://github.com/uplusplus/catown/wiki/Archived-Project-Docs-2026-05-30)
 
 ## Context
 

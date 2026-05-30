@@ -339,8 +339,9 @@ project created
 
 历史文档已经明确表明 Catown 的聊天体系是多 agent 协作容器，而不是单助手对话：
 
-- [PRD.md](./PRD.md)
-  已定义多种 agent 角色，如 analyst、architect、developer、tester、release、assistant。
+- 历史 PRD 已归档到
+  [project wiki archive](https://github.com/uplusplus/catown/wiki/Archived-Project-Docs-2026-05-30)，
+  其中曾定义多种 agent 角色，如 analyst、architect、developer、tester、release、assistant。
 - [ADR-011-chatroom-full-event-cards.md](./ADR-011-chatroom-full-event-cards.md)
   已将 Agent 间消息视为聊天室中的核心事件类型之一。
 - [ADR-012-llm-session-context-management.md](./ADR-012-llm-session-context-management.md)

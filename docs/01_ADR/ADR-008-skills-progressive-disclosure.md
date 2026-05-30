@@ -246,7 +246,7 @@ Developer Agent 的 system prompt（development stage）:
 | `backend/configs/pipelines.json` | stage 新增 `active_skills` / `hint_only_skills` |
 | `backend/pipeline/engine.py` | `build_system_prompt()` 改为三级注入；启动时写 `.catown/skills/` |
 | `backend/agents/config_manager.py` | 加载 skills.json，校验 agent skills 与 tools 一致性 |
-| `docs/PRD.md` | §4.5 更新为三级模型 |
+| Legacy PRD | §4.5 was updated in the archived monolithic PRD; current feature docs live under `docs/02_PRD/` |
 | `wiki/skills.md` | 更新数据模型和工作机制 |
 
 ## 与 PRD 的关系

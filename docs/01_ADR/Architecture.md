@@ -266,7 +266,7 @@ Representative config source:
 
 Representative contract:
 
-- [Evaluation Rubric Schema v1](Schema-Evaluation-Rubric-v1.md)
+- [Evaluation Rubric Schema v1](../03_Schema/Schema-Evaluation-Rubric-v1.md)
 
 Examples:
 
@@ -565,27 +565,27 @@ If no, then and only then consider adding a new runtime primitive.
 
 The first concrete draft produced from this principle is:
 
-- [Action Request Schema v1](Schema-Action-Request-v1.md)
+- [Action Request Schema v1](../03_Schema/Schema-Action-Request-v1.md)
 
 The second concrete draft is:
 
-- [Artifact Contract Schema v1](Schema-Artifact-Contract-v1.md)
+- [Artifact Contract Schema v1](../03_Schema/Schema-Artifact-Contract-v1.md)
 
 The third concrete draft is:
 
-- [Workflow Spec Schema v1](Schema-Workflow-Spec-v1.md)
+- [Workflow Spec Schema v1](../03_Schema/Schema-Workflow-Spec-v1.md)
 
 The fourth concrete draft is:
 
-- [Evaluation Rubric Schema v1](Schema-Evaluation-Rubric-v1.md)
+- [Evaluation Rubric Schema v1](../03_Schema/Schema-Evaluation-Rubric-v1.md)
 
 The fifth concrete draft is:
 
-- [Evaluation Result Schema v1](Schema-Evaluation-Result-v1.md)
+- [Evaluation Result Schema v1](../03_Schema/Schema-Evaluation-Result-v1.md)
 
 The sixth concrete draft is:
 
-- [Policy Decision Schema v1](Schema-Policy-Decision-v1.md)
+- [Policy Decision Schema v1](../03_Schema/Schema-Policy-Decision-v1.md)
 
 These schemas keep workflow structure, runtime intent, produced objects, semantic criteria, semantic results, and local software verdicts as separate protocol objects.
 
