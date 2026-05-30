@@ -210,7 +210,8 @@
         "analyze_image",
         "screenshot",
         "browser",
-        "screenshot_compare"
+        "screenshot_compare",
+        "chrome_devtools"
       ],
       "skills": [
         "code-generation",
@@ -287,7 +288,8 @@
         "knowledge_graph",
         "analyze_image",
         "screenshot",
-        "screenshot_compare"
+        "screenshot_compare",
+        "chrome_devtools"
       ],
       "skills": [
         "test-generation",

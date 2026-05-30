@@ -314,6 +314,29 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "side_effect_scope": "artifact_capture",
         "external_targets": ["web"],
     },
+    "chrome_devtools": {
+        "risk_level": "high",
+        "approval": {
+            "kind": "conditional",
+            "notes": [
+                "Read-only metrics collection is safe. "
+                "Page interactions (click/fill/type) may mutate remote state. "
+                "Launching Chrome spawns a local process.",
+            ],
+        },
+        "sandbox": {
+            "mode": "browser_runtime",
+            "workspace_scope": "temp_or_explicit_path",
+            "network_access": "enabled",
+        },
+        "escalation": {
+            "possible": True,
+            "hint": "Escalate when page interactions may submit forms or write data.",
+            "triggers": ["remote_mutation", "chrome_process_launch"],
+        },
+        "side_effect_scope": "browser_interaction",
+        "external_targets": ["web", "chrome_devtools"],
+    },
 }
 
 

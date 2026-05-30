@@ -1,138 +1,325 @@
-# Catown - AI 软件工厂
+# Catown — AI 软件工厂
 
-Catown 是一个面向软件交付的多 Agent 工作台：用户用自然语言描述需求，系统把需求分析、架构设计、开发、测试、发布和人工审批组织成可追踪的运行时流程。它的核心不是单次聊天，而是把聊天、项目、工作区、Agent 协作、工具调用、审批、审计和监控放进同一个可恢复、可观察的产品运行时。
+输入原始需求，输出可发布产品。全流程自动化，BOSS 可实时监控和介入。
 
-这份 README 是给人和 Prompt 共用的一级入口。短上下文只读本文件；需要深入时，再按下面的文档地图渐进式加载 `docs/` 中的 PRD、ADR、Schema、Spec 和参考资料。
+## 🌟 核心特性
 
-## 项目目标
+- 🏭 **AI 软件工厂**：需求分析 → 架构设计 → 开发 → 测试 → 发布，全链路自动
+- 🤖 **6 个专业 Agent**：analyst / architect / developer / tester / release / valet
+- 💬 **Agent 间实时消息**：Agent 可直接互相提问，BOSS 实时可见
+- 🧠 **SOUL 体系**：三层 prompt 结构（灵魂 → 角色 → 规则 → 记忆注入）
+- 🛡️ **安全隔离**：工具白名单 + Workspace 路径防护 + .catown 保护
+- 📊 **Pipeline Dashboard**：实时进度、Agent 通信、产出物管理
+- 🔧 **25 个内置工具**：文件、代码执行、Shell、浏览器、搜索、协作、记忆、性能分析等
+- ⚙️ **全可配置**：LLM 模型、Pipeline 流程、Agent 角色、Skills 全部由 JSON 驱动
+- ↩️ **统一返回语义**：全局 `Esc` 现在用于退出或返回上一级，已覆盖主界面、聊天子层和 `/monitor` 子页面，并为移动端返回手势与系统返回键预留统一 back-action 接口
+- 📦 **Skills 三级披露**：hint → guide → full，按需注入 Agent 上下文
 
-- 用对话启动项目，并把需求沉淀为可执行的项目上下文、工作区文件和阶段产物。
-- 让 `analyst`、`architect`、`developer`、`tester`、`release`、`valet` 等 Agent 在同一运行时中协作，而不是各自孤立地生成文本。
-- 把语义判断留给 Prompt 和 Agent，把安全、审批、状态流转、产物契约、上下文压缩、监控审计等稳定规则落实到后端运行时。
-- 让 BOSS/用户可以实时看到任务进展、Agent 消息、工具调用、审批队列、网络/LLM 调用和失败原因，并能在关键节点介入。
-- 支持本地优先的开发体验：FastAPI 后端、React/Vite 前端、SQLite 本地状态、OpenAI 兼容 LLM、JSON 驱动配置和可扩展 Skills。
+## 🚀 快速开始
 
-## 架构概览
+### 环境要求
 
-Catown 当前是一个模块化单体，前端负责交互和运行时可视化，后端负责 Agent 编排、工具执行、状态持久化和运行时策略。
+- Python 3.10+（推荐 3.12）
+- Git
+- 一个 OpenAI 兼容的 LLM API（OpenAI / DeepSeek / Ollama / vLLM 等）
 
-```text
-User / BOSS
-  -> Frontend (React + TypeScript + Vite)
-  -> Backend API (FastAPI routes)
-  -> Services (chat, project, runtime, audit, policy, memory)
-  -> Runtime Kernel (pipeline, agents, tools, LLM client)
-  -> Persistence (business DB + telemetry DB + workspace files)
-  -> Monitor / Chat projections (SSE, WebSocket, polling, read models)
-```
-
-主要边界：
-
-- `frontend/`：聊天主界面、项目浏览、配置界面、`/monitor` 监控面板和运行时状态展示。
-- `backend/routes/`：HTTP/SSE/WebSocket API 边界，承接前端请求并调用 service 层。
-- `backend/services/`：业务和运行时策略层，包括项目、聊天、审批、审计、上下文、监控、文件写入和工具执行策略。
-- `backend/pipeline/`：Pipeline 执行引擎，负责多阶段软件交付流程的调度。
-- `backend/agents/`：Agent 注册、角色、SOUL/prompt 装配、协作和运行上下文。
-- `backend/tools/`：文件、Shell、代码执行、浏览器、搜索、协作、记忆等工具能力。
-- `backend/models/`：SQLAlchemy 模型。业务状态和高频观测数据按当前 ADR 拆分为主状态库与 telemetry 写入路径。
-- `backend/configs/` 与 `${CATOWN_HOME:-~/.catown}/config/`：Agent、Pipeline、Skills、授权和 UI 等运行时配置。
-- `${CATOWN_HOME:-~/.catown}/projects` 与 `${CATOWN_HOME:-~/.catown}/workspaces`：项目产物与 Agent 工作区。
-
-## Prompt 渐进式披露
-
-当本仓库被作为 Prompt 上下文引用时，建议按任务风险逐层加载：
-
-1. 项目方向和边界：只加载本 `README.md`。
-2. 产品意图：再加载 [docs/02_PRD/PRD.md](docs/02_PRD/PRD.md)。
-3. 当前架构：再加载 [docs/04_Spec/tech-spec.md](docs/04_Spec/tech-spec.md) 和 [docs/01_ADR/Architecture.md](docs/01_ADR/Architecture.md)。
-4. 具体设计决策：按问题加载 [docs/01_ADR/](docs/01_ADR/) 中的对应 ADR。
-5. 数据/协议契约：按接口加载 [docs/03_Schema/](docs/03_Schema/) 中的 Schema 文档。
-6. 外部协议背景：需要 OpenAI 兼容协议时加载 [docs/05_Ref/OpenAi.md](docs/05_Ref/OpenAi.md)。
-
-完整文档索引见 [docs/README.md](docs/README.md)。
-
-## 设计文档地图
-
-| 目录 | 作用 | 优先阅读 |
-|------|------|----------|
-| [docs/01_ADR/](docs/01_ADR/) | 架构决策、运行时边界、状态机、审批、安全、监控、上下文和长期演进记录 | [Architecture.md](docs/01_ADR/Architecture.md), [Business-Flow.md](docs/01_ADR/Business-Flow.md), [Session-Project-Flow.md](docs/01_ADR/Session-Project-Flow.md) |
-| [docs/02_PRD/](docs/02_PRD/) | 产品需求、核心用户故事、Agent/Skills 体系和具体功能 PRD | [PRD.md](docs/02_PRD/PRD.md), [skills-prd.md](docs/02_PRD/skills-prd.md) |
-| [docs/03_Schema/](docs/03_Schema/) | Action、Artifact、Workflow、Policy、Evaluation 等稳定协议对象 | [Schema-Workflow-Spec-v1.md](docs/03_Schema/Schema-Workflow-Spec-v1.md), [Schema-Action-Request-v1.md](docs/03_Schema/Schema-Action-Request-v1.md) |
-| [docs/04_Spec/](docs/04_Spec/) | 当前代码架构分析、模块职责、数据流、风险和改进建议 | [tech-spec.md](docs/04_Spec/tech-spec.md) |
-| [docs/05_Ref/](docs/05_Ref/) | 外部协议和背景材料 | [OpenAi.md](docs/05_Ref/OpenAi.md) |
-
-高频 ADR 入口：
-
-- [ADR-008: Skills 渐进式披露机制](docs/01_ADR/ADR-008-skills-progressive-disclosure.md)
-- [ADR-015: Codex 风格运行时内核演进](docs/01_ADR/ADR-015-codex-style-runtime-evolution.md)
-- [ADR-020: Prompt Guidance vs Runtime Contracts](docs/01_ADR/ADR-020-prompt-vs-runtime-contracts.md)
-- [ADR-024: Configurable Tool Authorization Policy](docs/01_ADR/ADR-024-configurable-tool-authorization-policy.md)
-- [ADR-030: Event-Sourced TaskRun State](docs/01_ADR/ADR-030-event-sourced-taskrun-state.md)
-- [ADR-031: Telemetry Split DB and Serial Write Adapter](docs/01_ADR/ADR-031-telemetry-storage-and-serial-write-adapter.md)
-- [ADR-032: Stable Public Identifiers and Recovery-Safe Identity Boundaries](docs/01_ADR/ADR-032-stable-public-identifiers-and-recovery-safe-identity.md)
-- [ADR-033: Approval Notification Single Source of Truth](docs/01_ADR/ADR-033-approval-single-source.md)
-- [ADR-034: Monitor/Network 页面性能问题根因分析与改进方案](docs/01_ADR/ADR-034-monitor-performance.md)
-
-## 运行方式
-
-环境要求：
-
-- Python 3.10+，推荐 Python 3.12。
-- Git。
-- 一个 OpenAI 兼容的 LLM API，例如 OpenAI、DeepSeek、Ollama、vLLM 或兼容网关。
-
-一键启动：
+### 方式一：一键启动（推荐）
 
 ```bash
 git clone https://github.com/uplusplus/catown.git
 cd catown
-./run.sh        # Linux / macOS / WSL
+./run.sh        # Linux / macOS
 run.bat         # Windows
 ```
 
-启动后：
+`run.sh` 会自动完成：
+1. 检测 Python 3.10+
+2. 创建虚拟环境（`backend/.venv`）
+3. 安装依赖
+4. 初始化运行时目录 `${CATOWN_HOME:-~/.catown}`
+5. 启动 uvicorn（默认 `--reload` 热重载）
 
-- Web 主界面：http://localhost:8000
-- Monitor 面板：http://localhost:8000/monitor
-- FastAPI 文档：http://localhost:8000/docs
+启动后访问：
+- 🌐 Web 界面：http://localhost:8000
+- 📚 API 文档：http://localhost:8000/docs
 
-运行时配置通常位于 `${CATOWN_HOME:-~/.catown}`：
+运行中可输入 `q` 退出、`r` 重启。
 
-```text
-~/.catown/
-  .env
-  config/
-    agents.json
-    pipelines.json
-    skills.json
-    skill_marketplaces.json
-  state/
-  projects/
-  workspaces/
-```
-
-常用 LLM 环境变量：
+### 方式二：手动启动
 
 ```bash
+# 1. 克隆
+git clone https://github.com/uplusplus/catown.git
+cd catown
+
+# 2. 创建虚拟环境
+python3 -m venv backend/.venv
+source backend/.venv/bin/activate   # Linux/macOS
+# backend\.venv\Scripts\activate    # Windows
+
+# 3. 安装依赖
+cd backend
+pip install -r requirements.txt
+
+# 4. 初始化运行时目录
+mkdir -p ~/.catown/{config,state,projects,workspaces}
+cp configs/*.json ~/.catown/config/
+cp .env.example ~/.catown/.env
+
+# 5. 配置 LLM（见下方）
+vim ~/.catown/.env
+
+# 6. 启动
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 方式三：Docker
+
+```bash
+# docker-compose（含可选 PostgreSQL）
+docker compose up -d
+
+# 或纯 Docker
+docker build -t catown .
+docker run -p 8000:8000 \
+  -v catown-home:/var/lib/catown \
+  -e LLM_API_KEY=sk-xxx \
+  -e LLM_BASE_URL=https://api.openai.com/v1 \
+  -e LLM_MODEL=gpt-4o \
+  catown
+```
+
+### 配置 LLM
+
+编辑 `${CATOWN_HOME:-~/.catown}/.env`：
+
+```bash
+# OpenAI
 LLM_API_KEY=sk-xxx
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o
+
+# DeepSeek
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+
+# Ollama（本地）
+LLM_API_KEY=ollama
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=qwen2.5:72b
 ```
 
-## 开发与验证
+也可以编辑 `${CATOWN_HOME:-~/.catown}/config/agents.json` 做 per-agent 模型配置：
 
-后端测试：
+```json
+{
+  "global_llm": {
+    "provider": {
+      "baseUrl": "https://your-openai-compatible-endpoint.example/v1",
+      "apiKey": "${LLM_API_KEY}",
+      "models": [{"id": "your-model-id", "name": "Your Model"}]
+    },
+    "default_model": "your-model-id"
+  }
+}
+```
+
+## 📁 项目结构
+
+```
+catown/
+├── backend/
+│   ├── agents/            # Agent 核心（SOUL 体系、注册、协作）
+│   ├── chatrooms/         # 聊天室系统
+│   ├── configs/           # 配置模板（首次启动复制到 ~/.catown/config/）
+│   │   ├── agents.json    # Agent 角色 + LLM 配置
+│   │   ├── pipelines.json # Pipeline 流程定义
+│   │   ├── skills.json    # Skills 注册表
+│   │   └── skill_marketplaces.json
+│   ├── llm/               # LLM 客户端（OpenAI 兼容，per-agent 配置）
+│   ├── models/            # SQLAlchemy 数据库模型
+│   ├── pipeline/          # Pipeline 引擎（核心调度）
+│   ├── routes/            # FastAPI 路由（114 个端点）
+│   ├── services/          # 业务逻辑层（含 project_memory, short_term_memory, choice_box）
+│   ├── tools/             # 工具集合（24 个）
+│   ├── tests/             # 单元测试（94 个文件）
+│   └── main.py            # 应用入口
+├── frontend/              # React + TypeScript + Vite
+│   ├── src/               # 前端源码
+│   ├── index.html         # 主界面
+│   └── monitor.html       # 监控面板
+├── docs/                  # PRD + ADR（28 篇）
+├── Dockerfile
+├── docker-compose.yml
+├── run.sh                 # Linux/macOS 启动器
+└── run.bat                # Windows 启动器
+```
+
+## 🤖 Agent 角色
+
+| 角色 | 职责 | Gate |
+|------|------|------|
+| `analyst` | 需求分析，输出 `docs/prd/<subject>.md` | 人工审批 |
+| `architect` | 架构设计，输出 `docs/specs/<subject>.md` | 自动 |
+| `developer` | 编写代码 + 单元测试，代码写 `src/` | 自动 |
+| `tester` | 测试执行，输出 `reports/tests/<timestamp>--<subject>.md` | 自动 |
+| `release` | 版本管理，生成 CHANGELOG.md + Git tag | 人工审批 |
+| `valet` | 助理，协助其他 Agent，处理临时任务 | — |
+
+每个 Agent 有独立的 SOUL（灵魂）、角色、工具白名单、LLM 模型配置。
+
+### Pipeline 流程
+
+默认 Pipeline：`analysis → architecture → development → testing → release`
+
+配置文件：`~/.catown/config/pipelines.json`
+
+### 内置工具（25 个）
+
+| 类别 | 工具 |
+|------|------|
+| 文件操作 | `read_file`, `write_file`, `list_files`, `delete_file`, `search_files`, `open_file_for_user` |
+| 代码执行 | `execute_code`（Python + Node.js 沙箱）, `run_shell` |
+| 网络 | `web_search`, `web_fetch`, `browser`, `screenshot` |
+| 性能分析 | `chrome_devtools`（CDP 连接、性能采集、Trace 录制） |
+| 协作 | `send_direct_message`, `consult_agent`, `delegate_task`, `broadcast_message`, `invite_agent`, `list_agents`, `list_collaborators`, `check_task_status` |
+| 记忆 | `retrieve_memory`, `save_memory` |
+| 其他 | `github_manager`, `skill_manager`, `user_file_interaction` |
+
+## 🧠 Skills 体系
+
+Skills 按三级渐进披露，按需注入 Agent 上下文（ADR-008）：
+
+| 级别 | 内容 | 场景 |
+|------|------|------|
+| `hint` | 一句话提示 | 默认注入，不占太多 token |
+| `guide` | 简要指南 | Agent 需要更多指导时 |
+| `full` | 完整文档 | 复杂任务，需要详细参考 |
+
+内置 Skills：代码生成、单元测试、重构等。可通过 `skill_manager` 从 marketplace 安装更多。
+
+## 🛡️ 安全机制
+
+- **工具白名单**：Agent 仅能调用 `agents.json` 中声明的工具
+- **路径校验**：统一 `_validate_path()` — symlink 解析 + 目录穿越检测 + `.catown/` 保护
+- **Workspace 隔离**：每个项目独立目录，Agent 无法访问其他项目数据
+- **工具执行授权**：可配置 per-tool 授权策略（自动 / 需审批 / 禁止）
+- **审批队列**：敏感操作需 BOSS 审批，支持 TTL 自动过期
+
+## 📊 可观测性
+
+- **Pipeline Dashboard**：实时进度、Agent 通信、产出物管理
+- **Monitor 面板**：`/monitor` — Agent 状态、事件流、网络监控
+- **上下文压缩诊断**：`/context-compactions` — 查看每次压缩的原因、scope 分布、token 节省
+- **工具输出过滤**：工具结果 metadata 包含 `output_filter` 字段，可查过滤节省量
+- **LLM 调用审计**：`LLMCall` / `ToolCall` / `Event` 表全量记录
+
+## 🧪 测试
 
 ```bash
-cd backend
-python -m pytest
+# 运行全部测试
+cd backend && python -m pytest -v
+
+# 并行加速
+cd backend && python -m pytest -n auto --dist loadscope
+
+# 运行特定测试
+cd backend && python -m pytest tests/test_adr028_context_compression.py -v
+
+# 仅收集（不执行）
+cd backend && python -m pytest --collect-only
 ```
 
-前端构建：
+- 测试文件：94 个
+- 测试框架：pytest + pytest-asyncio + pytest-xdist
 
-```bash
-cd frontend
-npm run build
+## ⚙️ 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CATOWN_HOME` | `~/.catown` | 运行时根目录 |
+| `CATOWN_RELOAD` | `1` | uvicorn 热重载 |
+| `RUN_HOST` | `0.0.0.0` | 监听地址 |
+| `RUN_PORT` | `8000` | 监听端口 |
+| `LLM_API_KEY` | — | LLM API 密钥 |
+| `LLM_BASE_URL` | — | LLM API 地址 |
+| `LLM_MODEL` | — | 默认模型 ID |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+| `DATABASE_URL` | SQLite | 数据库 URL（支持 PostgreSQL） |
+| `MONITOR_NETWORK_RETENTION_HOURS` | `168` | 网络事件保留天数 |
+| `CORS_ORIGINS` | `*` | CORS 允许源 |
+
+## 📁 运行时目录
+
+首次启动后，`~/.catown/` 目录结构：
+
+```
+~/.catown/
+├── .env                      # 环境变量（LLM 密钥等）
+├── config/
+│   ├── agents.json           # Agent 角色 + LLM 配置
+│   ├── pipelines.json        # Pipeline 流程定义
+│   ├── skills.json           # Skills 注册表
+│   └── skill_marketplaces.json
+├── state/
+│   ├── catown.db             # SQLite 数据库
+│   └── tee/                  # 工具输出原始日志（ADR-028）
+├── projects/                 # 项目数据
+└── workspaces/               # Agent 工作目录
 ```
 
-文档和架构类改动至少应确认相关 Markdown 链接仍能解析，并检查 `docs/README.md` 是否继续反映最新目录结构。
+## 📋 实施进度
+
+| 模块 | 状态 | 日期 |
+|------|------|------|
+| 数据模型 + 配置 | ✅ 完成 | 2026-04-07 |
+| Pipeline 引擎 + API | ✅ 完成 | 2026-04-07 |
+| 前端 Dashboard | ✅ 完成 | 2026-04-07 |
+| Git 集成 + 产出物查看 | ✅ 完成 | 2026-04-07 |
+| Agent SOUL 体系 | ✅ 完成 | 2026-04-08 |
+| Skills 三级注入 (ADR-008) | ✅ 完成 | 2026-04-10 |
+| 工具白名单 + Workspace 隔离 | ✅ 完成 | 2026-04-10 |
+| 知识图谱 Skill 定义 (ADR-004) | ✅ 完成 | 2026-04-10 |
+| 上下文压缩修复 (ADR-028) | ✅ 完成 | 2026-05-25 |
+| Chat Runtime 状态机加固 (ADR-027) | ✅ 完成 | 2026-05-25 |
+| 短期记忆 | ✅ 完成 | 2026-05-25 |
+| 项目记忆 | ✅ 完成 | 2026-05-25 |
+| Choice Box 交互组件 | ✅ 完成 | 2026-05-25 |
+| Agent 操作可视化 | ✅ 完成 | 2026-05-25 |
+| 聊天框输入体验 | ✅ 完成 | 2026-05-25 |
+| 工具授权流程 | ✅ 完成 | 2026-05-26 |
+| 审计日志 | ✅ 完成 | 2026-05-25 |
+| 知识图谱集成（接 Choice Box） | ✅ 完成 | 2026-05-26 |
+| 长期记忆 (ChromaDB) | ✅ 完成 | 2026-05-26 |
+| 睡眠整理调度器 | ✅ 完成 | 2026-05-26 |
+| OMNI 多模态集成 | ✅ 完成 | 2026-05-26 |
+| UI/UX Pro Max Phase 2 | ✅ 完成 | 2026-05-26 |
+| Knowledge Graph 进阶 | ✅ 完成 | 2026-05-26 |
+
+## 📖 文档
+
+| 文档 | 说明 |
+|------|------|
+| [PRD](docs/PRD.md) | 产品需求文档 |
+| [Architecture](docs/Architecture.md) | 架构设计 |
+| [Business Flow](docs/Business-Flow.md) | 业务流程 |
+| [ADR 索引](docs/) | 28 篇架构决策记录 |
+| [Wiki](https://github.com/uplusplus/catown.wiki.git) | ADR 索引、开发日志 |
+
+### ADR 列表（28 篇）
+
+| ADR | 主题 |
+|-----|------|
+| ADR-004 | 知识图谱 |
+| ADR-008 | Skills 渐进式披露 |
+| ADR-009 | 上下文压缩策略 |
+| ADR-012 | LLM 会话上下文管理 |
+| ADR-026 | 动态上下文控制触发流 |
+| ADR-027 | Chat Runtime 状态机加固 |
+| ADR-028 | 上下文压缩提前触发修复 |
+| ... | 其余见 `docs/` 目录 |
+
+## 📄 License
+
+MIT License

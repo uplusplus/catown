@@ -35,6 +35,7 @@ from .user_file_interaction import OpenFileForUserTool
 from .knowledge_graph import KnowledgeGraphTool
 from .analyze_image import AnalyzeImageTool
 from .screenshot_compare import ScreenshotCompareTool
+from .chrome_devtools import ChromeDevtoolsTool
 
 # Initialize tool registry
 tool_registry = ToolRegistry()
@@ -84,6 +85,7 @@ tool_registry.register(OpenFileForUserTool())
 tool_registry.register(KnowledgeGraphTool())
 tool_registry.register(AnalyzeImageTool())
 tool_registry.register(ScreenshotCompareTool())
+tool_registry.register(ChromeDevtoolsTool())
 
 def init_collaboration_tools(coordinator):
     """Initialize collaboration tools with coordinator"""
@@ -122,6 +124,7 @@ __all__ = [
     'KnowledgeGraphTool',
     'AnalyzeImageTool',
     'ScreenshotCompareTool',
+    'ChromeDevtoolsTool',
     'set_collaboration_coordinator',
     'init_collaboration_tools'
 ]
