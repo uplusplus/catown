@@ -5301,30 +5301,34 @@ def _dedupe_process_entries(entries: List[ChatProcessNodeInfo]) -> List[ChatProc
 def _build_chat_process_entries(db: Session, chatroom_id: int, *, limit: int = CHAT_PROCESSES_LIMIT) -> List[ChatProcessNodeInfo]:
     entries: List[ChatProcessNodeInfo] = []
 
-    card_rows = (
-        db.query(Message)
-        .filter(Message.chatroom_id == chatroom_id, Message.message_type == "runtime_card")
-        .order_by(Message.created_at.desc(), Message.id.desc())
+    shell_projections = (
+        db.query(RuntimeCardProjection)
+        .filter(
+            RuntimeCardProjection.chatroom_id == chatroom_id,
+            RuntimeCardProjection.tool_name == "run_shell",
+        )
+        .order_by(RuntimeCardProjection.created_at.desc(), RuntimeCardProjection.id.desc())
         .limit(200)
         .all()
     )
-    for row in card_rows:
+    for proj in shell_projections:
+        if not proj.card_json:
+            continue
         try:
-            metadata = json.loads(row.metadata_json or "{}")
-        except json.JSONDecodeError:
-            metadata = {}
-        card = metadata.get("card")
+            card = json.loads(proj.card_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
         if not isinstance(card, dict):
             continue
-        card_payload = public_runtime_card_payload(dict(card))
+        card_payload = public_runtime_card_payload(card)
         if not _is_shell_process_card(card_payload):
             continue
-        created_at = getattr(row, "created_at", None)
+        created_at = proj.created_at
         process_status = _shell_process_card_status(card_payload, created_at)
         command = _read_shell_command_preview(card_payload.get("arguments")) or str(card_payload.get("display_name") or "run_shell")
         pid, output = _running_shell_card_process_snapshot(card_payload)
         entries.append(ChatProcessNodeInfo(
-            id=_running_shell_process_entry_id(card_payload, row.id),
+            id=_running_shell_process_entry_id(card_payload, proj.message_id),
             label=command,
             kind="command",
             detail=str(card_payload.get("summary") or _one_line_preview(output or card_payload.get("result"), "Shell process is running.", 140)),
