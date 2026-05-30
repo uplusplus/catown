@@ -364,6 +364,7 @@ INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS = {
     RunKind.STANDALONE_ASSISTANT,
     RunKind.STANDALONE_ASSISTANT_STREAM,
 }
+INTERRUPTIBLE_CHATROOM_RUN_KINDS = RECOVERABLE_ORCHESTRATION_RUN_KINDS.union(INTERRUPTIBLE_SINGLE_AGENT_RUN_KINDS)
 RECOVERY_LEASE_SECONDS = max(60, int(os.getenv("CATOWN_RECOVERY_LEASE_SECONDS", "900")))
 RECOVERY_INSTANCE_ID = (
     os.getenv("CATOWN_INSTANCE_ID")
@@ -4683,6 +4684,7 @@ class MessageRequest(BaseModel):
     content: str
     client_turn_id: Optional[str] = None
     attachments: Optional[List[Dict[str, Any]]] = None
+    queue_mode: Optional[str] = None
 
 
 class MessageAttachment(BaseModel):
@@ -4747,6 +4749,54 @@ def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[D
     if client_turn_id:
         metadata["client_turn_id"] = client_turn_id
     return metadata
+
+
+def _normalize_message_queue_mode(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "steer":
+        return normalized
+    raise HTTPException(status_code=400, detail=f"Unsupported queue_mode '{value}'.")
+
+
+def _steer_runtime_note(content: str, client_turn_id: Optional[str]) -> str:
+    preview = _compact_runtime_text(content, limit=120) or "Queued steer input"
+    turn_suffix = f" (client_turn_id={client_turn_id})" if client_turn_id else ""
+    return f"Cancelled by steer input{turn_suffix}: {preview}"
+
+
+def _cancel_interruptible_chatroom_task_runs_for_steer(
+    db: Session,
+    *,
+    chatroom_id: int,
+    content: str,
+    client_turn_id: Optional[str],
+) -> List[int]:
+    running_task_runs = (
+        db.query(TaskRun)
+        .filter(TaskRun.chatroom_id == chatroom_id, TaskRun.status == "running")
+        .order_by(TaskRun.created_at.desc(), TaskRun.id.desc())
+        .all()
+    )
+    cancelled_ids: List[int] = []
+    note = _steer_runtime_note(content, client_turn_id)
+    for task_run in running_task_runs:
+        if task_run.run_kind not in INTERRUPTIBLE_CHATROOM_RUN_KINDS:
+            continue
+        try:
+            cancel_runtime_task_run(
+                db,
+                task_run.id,
+                cancelled_by="steer",
+                note=note,
+            )
+        except SubagentRuntimeControlError as exc:
+            if getattr(exc, "status_code", None) == 409:
+                continue
+            raise
+        cancelled_ids.append(task_run.id)
+    return cancelled_ids
 
 
 async def _publish_agent_handoff_card(
@@ -8669,9 +8719,18 @@ async def upload_file(
 async def send_message(chatroom_id: int, message: MessageRequest, db: Session = Depends(get_db)):
     """发送消息到聊天室"""
     logger.info(f"[API] send_message called: chatroom_id={chatroom_id}, content={message.content[:50]}...")
+    queue_mode = _normalize_message_queue_mode(message.queue_mode)
 
     chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
     project = _resolve_chatroom_project(db, chatroom) if chatroom else None
+    steer_cancelled_task_run_ids: List[int] = []
+    if queue_mode == "steer":
+        steer_cancelled_task_run_ids = _cancel_interruptible_chatroom_task_runs_for_steer(
+            db,
+            chatroom_id=chatroom_id,
+            content=message.content,
+            client_turn_id=message.client_turn_id,
+        )
     message_attachments = _ensure_cached_attachment_refs(
         db,
         project=project,
@@ -8682,6 +8741,10 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
     # 发送用户消息
     # Build metadata with attachments info
     msg_metadata = _message_metadata_with_turn(message.client_turn_id)
+    if queue_mode:
+        msg_metadata["queue_mode"] = queue_mode
+    if steer_cancelled_task_run_ids:
+        msg_metadata["steer_cancelled_task_run_ids"] = steer_cancelled_task_run_ids
     if message_attachments:
         msg_metadata["attachments"] = message_attachments
 
@@ -8711,8 +8774,12 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
     
     logger.info(f"[API] User message saved: id={response_msg.id}")
 
-    # Build extra context from attachments
-    extra_context = ""
+    # Build extra context from queue mode + attachments
+    extra_context_parts: List[str] = []
+    if queue_mode == "steer":
+        extra_context_parts.append(
+            "This message was sent in steer mode after intentionally interrupting the previous in-flight chat task. Treat it as a higher-priority correction or redirect."
+        )
     if message_attachments:
         attachment_lines = []
         for att in message_attachments:
@@ -8721,11 +8788,12 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
             if att_path:
                 attachment_lines.append(f"- {att_path} ({att_mime})")
         if attachment_lines:
-            extra_context = (
+            extra_context_parts.append(
                 "The user has attached the following files with their message:\n"
                 + "\n".join(attachment_lines)
                 + "\n\nUse the attachment paths above when deciding whether to inspect an image, read a text file, or reason directly from multimodal input."
             )
+    extra_context = "\n\n".join(part for part in extra_context_parts if part.strip())
 
     task_run = create_task_run(
         db,
@@ -8748,6 +8816,8 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
             "content": message.content,
             "content_preview": _compact_runtime_text(message.content, limit=220),
             "client_turn_id": message.client_turn_id,
+            "queue_mode": queue_mode,
+            "steer_cancelled_task_run_ids": steer_cancelled_task_run_ids,
         },
     )
 
@@ -8816,6 +8886,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
     stream_error = ""
     flow_id = f"sse-{_uuid.uuid4().hex[:12]}"
     flow_seq = 0
+    queue_mode = _normalize_message_queue_mode(message.queue_mode)
 
     def _safe_headers(headers: dict[str, Any]) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -8958,6 +9029,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             active_agent_id = agent_id
 
         stream_attachments: Optional[List[Dict[str, Any]]] = None
+        steer_cancelled_task_run_ids: List[int] = []
 
         try:
             chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
@@ -8965,6 +9037,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom found'})}\n\n"
                 return
             project = _resolve_chatroom_project(db, chatroom)
+            if queue_mode == "steer":
+                steer_cancelled_task_run_ids = _cancel_interruptible_chatroom_task_runs_for_steer(
+                    db,
+                    chatroom_id=chatroom_id,
+                    content=message.content,
+                    client_turn_id=message.client_turn_id,
+                )
             stream_attachments = _ensure_cached_attachment_refs(
                 db,
                 project=project,
@@ -8974,6 +9053,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             # 1. 保存用户消息（含附件元数据）
             stream_msg_metadata = _message_metadata_with_turn(message.client_turn_id)
+            if queue_mode:
+                stream_msg_metadata["queue_mode"] = queue_mode
+            if steer_cancelled_task_run_ids:
+                stream_msg_metadata["steer_cancelled_task_run_ids"] = steer_cancelled_task_run_ids
             if stream_attachments:
                 stream_msg_metadata["attachments"] = stream_attachments
 
@@ -9001,8 +9084,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 metadata=stream_msg_metadata,
             )
 
-            # Build extra context from attachments
-            stream_extra_context = ""
+            # Build extra context from queue mode + attachments
+            stream_extra_context_parts: List[str] = []
+            if queue_mode == "steer":
+                stream_extra_context_parts.append(
+                    "This message was sent in steer mode after intentionally interrupting the previous in-flight chat task. Treat it as a higher-priority correction or redirect."
+                )
             if stream_attachments:
                 att_lines = []
                 for att in stream_attachments:
@@ -9011,11 +9098,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     if att_path:
                         att_lines.append(f"- {att_path} ({att_mime})")
                 if att_lines:
-                    stream_extra_context = (
+                    stream_extra_context_parts.append(
                         "The user has attached the following files with their message:\n"
                         + "\n".join(att_lines)
                         + "\n\nUse the attachment paths above when deciding whether to inspect an image, read a text file, or reason directly from multimodal input."
                     )
+            stream_extra_context = "\n\n".join(part for part in stream_extra_context_parts if part.strip())
 
             effective_user_text = message.content + ("\n\n" + stream_extra_context if stream_extra_context else "")
 
@@ -9046,9 +9134,11 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     "content": message.content,
                     "content_preview": _compact_runtime_text(message.content, limit=220),
                     "client_turn_id": message.client_turn_id,
+                    "queue_mode": queue_mode,
+                    "steer_cancelled_task_run_ids": steer_cancelled_task_run_ids,
                 },
             )
-            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id, 'client_turn_id': message.client_turn_id, 'task_run_id': task_run.id})}\n\n"
+            yield f"data: {_json.dumps({'type': 'user_saved', 'id': user_msg.id, 'client_turn_id': message.client_turn_id, 'task_run_id': task_run.id, 'queue_mode': queue_mode})}\n\n"
             workspace_token = set_active_workspace(project.workspace_path if project and project.workspace_path else None)
             if not project:
                 mentioned_names = [normalize_agent_type(name) for name in re.findall(r'@(\w+)', message.content)] if '@' in message.content else []

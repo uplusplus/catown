@@ -74,6 +74,7 @@ const DRAFT_HISTORY_MAX_ITEM_CHARS = 4000;
 const ACTIVITY_SIDEBAR_DEFAULT_WIDTH = 380;
 const ACTIVITY_SIDEBAR_MIN_WIDTH = 320;
 const ACTIVITY_SIDEBAR_MAX_WIDTH = 560;
+const BUSY_ESC_DECISION_WINDOW_MS = 420;
 
 type StepExpansionValue = string | null;
 type ApprovalDetailRow = { label: string; value: string; mono?: boolean };
@@ -355,6 +356,8 @@ type ChatTabProps = {
   expandCurrentStepByDefault: boolean;
   onEnsureChat?: (content: string) => Promise<number>;
   onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
+  onSteerSend?: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
+  onAbortCurrentProcessing?: () => Promise<boolean | void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
   onOpenActivity: () => void;
@@ -6693,6 +6696,8 @@ export function ChatTab({
   expandCurrentStepByDefault,
   onEnsureChat,
   onSend,
+  onSteerSend,
+  onAbortCurrentProcessing,
   onOpenWorkspace,
   onOpenSidebar,
   onOpenActivity,
@@ -6711,6 +6716,7 @@ export function ChatTab({
   onCreateProjectFromChat,
 }: ChatTabProps) {
   const [draft, setDraft] = useState("");
+  const [queuedBusyDrafts, setQueuedBusyDrafts] = useState<string[]>([]);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const [messageSelectionMode, setMessageSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set());
@@ -6764,6 +6770,8 @@ export function ChatTab({
   const attachmentSubmitInFlightRef = useRef(false);
   const [waitingForAttachments, setWaitingForAttachments] = useState(false);
   const composerBusy = sending || waitingForAttachments;
+  const composerInputDisabled = waitingForAttachments;
+  const busyQueueCount = queuedBusyDrafts.length;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const draftHistoryByChatRef = useRef<Record<string, string[]>>(readDraftHistoryStore());
@@ -6771,6 +6779,9 @@ export function ChatTab({
   const draftHistoryPendingDraftRef = useRef("");
   const isComposingRef = useRef(false);
   const pendingComposerCaretRef = useRef<number | null>(null);
+  const busyEscTimerRef = useRef<number | null>(null);
+  const busyEscArmedAtRef = useRef<number | null>(null);
+  const busyEscActionRef = useRef<"steer" | "abort" | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
   const currentScopeRef = useRef<string>(overlayScopeKey(chat?.id ?? null));
@@ -7163,6 +7174,8 @@ export function ChatTab({
     setCopiedSelection(false);
     setCommandSuggestions([]);
     setHistorySuggestions([]);
+    setQueuedBusyDrafts([]);
+    clearBusyEscDecision();
 
     // Load server-side input history for cross-session recall
     if (chat?.id) {
@@ -7181,6 +7194,21 @@ export function ChatTab({
       draftHistoryPendingDraftRef.current = draft;
     }
   }, [draft]);
+
+  useEffect(() => {
+    if (sending || waitingForAttachments) return;
+    if (busyEscActionRef.current === "steer") return;
+    clearBusyEscDecision();
+    if (draft.trim() || queuedBusyDrafts.length === 0) return;
+    const nextQueuedDraft = queuedBusyDrafts[0] ?? "";
+    if (!nextQueuedDraft) return;
+    setDraft(nextQueuedDraft);
+    setQueuedBusyDrafts((current) => current.slice(1));
+  }, [draft, queuedBusyDrafts, sending, waitingForAttachments]);
+
+  useEffect(() => () => {
+    clearBusyEscDecision();
+  }, []);
 
   useEffect(() => {
     if (taskRuns.length === 0) {
@@ -8293,9 +8321,14 @@ export function ChatTab({
     }
   }
 
-  function submitContent(rawContent: string) {
+  function submitContent(rawContent: string, options?: { queueMode?: "steer" }) {
     const next = rawContent.trim();
-    if (!next || sending || waitingForAttachments || attachmentSubmitInFlightRef.current) return;
+    const queueMode = options?.queueMode;
+    const isSteerSend = queueMode === "steer";
+    if (!next || waitingForAttachments) return false;
+    if (attachmentSubmitInFlightRef.current && !isSteerSend) return false;
+    if (sending && !isSteerSend) return false;
+    clearBusyEscDecision();
 
     // Clear autocomplete
     setCommandSuggestions([]);
@@ -8332,7 +8365,7 @@ export function ChatTab({
         };
         setLocalOverlayMessages((current) => [...current, failureMessage]);
       });
-      return;
+      return true;
     }
     const now = new Date();
     const baseId = -Math.floor(now.getTime());
@@ -8363,6 +8396,7 @@ export function ChatTab({
     if (shouldWaitForUploads) {
       setWaitingForAttachments(true);
     }
+    const sendAction = isSteerSend ? (onSteerSend ?? onSend) : onSend;
 
     window.requestAnimationFrame(() => {
       void (async () => {
@@ -8372,7 +8406,7 @@ export function ChatTab({
             clearAttachments(attachmentsForSend);
           }
           setWaitingForAttachments(false);
-          void onSend(next, { clientTurnId, attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined })
+          void sendAction(next, { clientTurnId, attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined })
             .catch((error) => {
               reportSendFailure(clientTurnId, error instanceof Error ? error.message : "Send failed");
             })
@@ -8386,6 +8420,7 @@ export function ChatTab({
         }
       })();
     });
+    return true;
   }
 
   function submitDraft() {
@@ -8585,6 +8620,50 @@ export function ChatTab({
     return draftHistoryByChatRef.current[globalDraftHistoryKey] ?? [];
   }
 
+  function clearBusyEscDecision() {
+    if (busyEscTimerRef.current !== null) {
+      window.clearTimeout(busyEscTimerRef.current);
+      busyEscTimerRef.current = null;
+    }
+    busyEscArmedAtRef.current = null;
+    busyEscActionRef.current = null;
+  }
+
+  function queueBusyDraft(rawContent: string) {
+    const next = rawContent.trim();
+    if (!next) return;
+    clearBusyEscDecision();
+    draftHistoryIndexRef.current = null;
+    draftHistoryPendingDraftRef.current = "";
+    setQueuedBusyDrafts((current) => [...current, next]);
+    setDraft("");
+    setShowMentionPicker(false);
+    setCommandSuggestions([]);
+    setHistorySuggestions([]);
+    setSelectedSuggestionIndex(0);
+  }
+
+  function dispatchQueuedBusyDraftAsSteer() {
+    const nextQueuedDraft = queuedBusyDrafts[0] ?? "";
+    if (!nextQueuedDraft.trim()) return;
+    const accepted = submitContent(nextQueuedDraft, { queueMode: "steer" });
+    if (!accepted) return;
+    setQueuedBusyDrafts((current) => current.slice(1));
+  }
+
+  function armBusyEscDecision(action: "steer" | "abort") {
+    clearBusyEscDecision();
+    busyEscArmedAtRef.current = Date.now();
+    busyEscActionRef.current = action;
+    busyEscTimerRef.current = window.setTimeout(() => {
+      const armedAction = busyEscActionRef.current;
+      clearBusyEscDecision();
+      if (armedAction === "steer") {
+        dispatchQueuedBusyDraftAsSteer();
+      }
+    }, BUSY_ESC_DECISION_WINDOW_MS);
+  }
+
   function insertMention(agentType: string) {
     setDraft((current) => {
       if (/(?:^|\s)@([a-zA-Z0-9_-]*)$/.test(current)) {
@@ -8747,6 +8826,34 @@ export function ChatTab({
       return;
     }
 
+    if (!isEscapeKey && busyEscActionRef.current) {
+      clearBusyEscDecision();
+    }
+
+    if (sending) {
+      if (isEscapeKey) {
+        event.preventDefault();
+        const armedAt = busyEscArmedAtRef.current;
+        const armedAction = busyEscActionRef.current;
+        const armedWithinWindow = armedAt !== null && Date.now() - armedAt <= BUSY_ESC_DECISION_WINDOW_MS;
+        if (armedAction && armedWithinWindow) {
+          clearBusyEscDecision();
+          void onAbortCurrentProcessing?.();
+          return;
+        }
+        armBusyEscDecision(busyQueueCount > 0 ? "steer" : "abort");
+        return;
+      }
+
+      if (isEnterKey && !event.shiftKey) {
+        event.preventDefault();
+        if (draft.trim()) {
+          queueBusyDraft(draft);
+        }
+        return;
+      }
+    }
+
     if (!isEnterKey || event.shiftKey) return;
     event.preventDefault();
     void submitDraft();
@@ -8903,6 +9010,15 @@ export function ChatTab({
       : connectionState === "connecting"
         ? "Connecting realtime"
         : "Realtime offline";
+  const composeStatusCopy = waitingForAttachments
+    ? "Uploading attachments..."
+    : sending
+      ? busyQueueCount > 0
+        ? `${getAgentDisplayName(primaryAgent)} thinking... Queue ${busyQueueCount} ready. Esc steer, Esc Esc abort`
+        : `${getAgentDisplayName(primaryAgent)} thinking... Enter queues draft. Esc Esc abort`
+      : busyQueueCount > 0
+        ? `Queued follow-ups: ${busyQueueCount}`
+        : connectionCopy;
   const workspaceCopy = project?.workspace_path?.replace(/\\/g, "/") ?? "";
   const workspaceLabel =
     workspaceCopy.length > 54 ? `...${workspaceCopy.slice(-54)}` : workspaceCopy;
@@ -9546,7 +9662,7 @@ export function ChatTab({
                 }}
                 placeholder={chat ? "Send a message..." : "Start a conversation..."}
                 rows={1}
-                disabled={composerBusy}
+                disabled={composerInputDisabled}
               />
               <div className="agent-chat__toolbar">
                 <div className="agent-chat__toolbar-left">
@@ -9582,7 +9698,7 @@ export function ChatTab({
                   <button
                     type="button"
                     className="agent-chat__input-btn"
-                    disabled={composerBusy}
+                    disabled={waitingForAttachments}
                     onClick={() => {
                       draftHistoryIndexRef.current = null;
                       draftHistoryPendingDraftRef.current = "";
@@ -9597,7 +9713,7 @@ export function ChatTab({
 
                 <div className="agent-chat__toolbar-right">
                   <span className="compose-status">
-                    {waitingForAttachments ? "Uploading attachments..." : sending ? `${getAgentDisplayName(primaryAgent)} thinking...` : connectionCopy}
+                    {composeStatusCopy}
                   </span>
                   <button
                     type="submit"

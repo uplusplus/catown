@@ -1539,6 +1539,20 @@ function taskRunTerminalState(taskRun: TaskRunSummary) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+const INTERRUPTIBLE_CHAT_RUN_KINDS = new Set([
+  "multi_agent_orchestration",
+  "multi_agent_orchestration_stream",
+  "project_single_agent",
+  "project_single_agent_stream",
+  "standalone_assistant",
+  "standalone_assistant_stream",
+]);
+
+function isInterruptibleChatRun(taskRun: TaskRunSummary | TaskRunDetail | null | undefined) {
+  const runKind = (taskRun?.run_kind || "").trim().toLowerCase();
+  return INTERRUPTIBLE_CHAT_RUN_KINDS.has(runKind);
+}
+
 function isInternalTaskRunSummary(value: string | null | undefined) {
   const normalized = (value || "").trim().toLowerCase();
   if (!normalized) return false;
@@ -2268,6 +2282,11 @@ function App() {
   const tempMessageIdRef = useRef(-1);
   const streamingAssistantIdRef = useRef<number | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
+  const sendingMessageRef = useRef<boolean>(sendingMessage);
+  const taskRunsRef = useRef<TaskRunSummary[]>(taskRuns);
+  const activeSendClientTurnIdRef = useRef<string | null>(null);
+  const activeSendTaskRunIdRef = useRef<number | null>(null);
+  const sendSequenceRef = useRef(0);
   const processRefreshTimerRef = useRef<number | null>(null);
   const lastProcessRefreshByChatRef = useRef<Record<number, number>>({});
   const projectBrowserRefreshInFlightRef = useRef(false);
@@ -3271,8 +3290,16 @@ function App() {
   }, [chats]);
 
   useEffect(() => {
+    taskRunsRef.current = taskRuns;
+  }, [taskRuns]);
+
+  useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
+
+  useEffect(() => {
+    sendingMessageRef.current = sendingMessage;
+  }, [sendingMessage]);
 
   useEffect(() => {
     activeChatRef.current = activeChat;
@@ -4030,6 +4057,91 @@ function App() {
     }
   }
 
+  async function waitForSendToSettle(timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    while (sendingMessageRef.current && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 25));
+    }
+  }
+
+  function findLatestInterruptibleRunningTaskRun(rows: TaskRunSummary[]) {
+    return rows.find((run) => (run.status || "").toLowerCase() === "running" && isInterruptibleChatRun(run)) ?? null;
+  }
+
+  async function resolveActiveTaskRunIdForCurrentSend(chatId: number) {
+    if (typeof activeSendTaskRunIdRef.current === "number" && activeSendTaskRunIdRef.current > 0) {
+      return activeSendTaskRunIdRef.current;
+    }
+
+    const activeTurnId = activeSendClientTurnIdRef.current?.trim();
+    if (activeTurnId) {
+      try {
+        const rows = await api.getTaskRuns(chatId, activeTurnId);
+        const matchingRun = findLatestInterruptibleRunningTaskRun(rows);
+        if (matchingRun) {
+          activeSendTaskRunIdRef.current = matchingRun.id;
+          return matchingRun.id;
+        }
+      } catch {
+        // Fall back to the latest in-memory task run below.
+      }
+    }
+
+    const matchingRun = findLatestInterruptibleRunningTaskRun(
+      taskRunsRef.current.filter((run) => run.chatroom_id === chatId),
+    );
+    return matchingRun?.id ?? null;
+  }
+
+  async function cancelCurrentChatProcessing(options: { note?: string; suppressSuccessEvent?: boolean } = {}) {
+    const chatId = selectedChatIdRef.current;
+    const controller = sendAbortRef.current;
+    if (!chatId && !controller) return false;
+
+    const taskRunId = chatId ? await resolveActiveTaskRunIdForCurrentSend(chatId) : null;
+    controller?.abort();
+
+    let cancelled = false;
+    if (typeof taskRunId === "number" && taskRunId > 0) {
+      try {
+        await api.cancelTaskRun(taskRunId, {
+          cancelled_by: "user",
+          note: options.note || "User aborted current chat processing.",
+        });
+        cancelled = true;
+      } catch (nextError) {
+        const message = nextError instanceof Error ? nextError.message : "Failed to cancel current task run";
+        const normalized = message.trim().toLowerCase();
+        if (!normalized.includes("only running task runs can be cancelled")) {
+          pushEvent(`Cancel current processing failed: ${message}`, "warning");
+        }
+      }
+      void refreshRuntimeForTaskRun(taskRunId);
+    } else if (chatId) {
+      void refreshMessages(false, chatId);
+    }
+
+    await waitForSendToSettle();
+    if (cancelled && !options.suppressSuccessEvent) {
+      pushEvent("Current processing cancelled", "warning");
+    }
+    return cancelled || Boolean(controller);
+  }
+
+  async function handleSteerMessage(
+    content: string,
+    options?: {
+      clientTurnId?: string;
+      attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+    },
+  ) {
+    await cancelCurrentChatProcessing({
+      note: "Superseded by steer input.",
+      suppressSuccessEvent: true,
+    });
+    return handleSendMessage(content, { ...options, queueMode: "steer" });
+  }
+
   async function ensureSelectedChatForProject(content: string) {
     let targetProject = selectedProjectIdRef.current
       ? projectsRef.current.find((project) => project.id === selectedProjectIdRef.current) ?? null
@@ -4047,12 +4159,21 @@ function App() {
     return created.id;
   }
 
-  async function handleSendMessage(content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) {
+  async function handleSendMessage(
+    content: string,
+    options?: {
+      clientTurnId?: string;
+      attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+      queueMode?: string;
+    },
+  ) {
     let chatId = selectedChatId;
     let streamReceivedEvent = false;
     const userTempId = nextTempMessageId();
     const createdAt = new Date().toISOString();
     const clientTurnId = options?.clientTurnId;
+    const queueMode = options?.queueMode;
+    const sendSequence = ++sendSequenceRef.current;
     let activeAgentName = getAgentDisplayName(primaryAgent);
     let streamCompleted = false;
     let assistantDraftContent = "";
@@ -4067,6 +4188,9 @@ function App() {
     const liveToolArgs = new Map<string, string>();
 
     try {
+      sendingMessageRef.current = true;
+      activeSendClientTurnIdRef.current = clientTurnId ?? null;
+      activeSendTaskRunIdRef.current = null;
       setSendingMessage(true);
       setLoadingMessages(false);
       setError("");
@@ -4084,7 +4208,7 @@ function App() {
           },
         ]),
       );
-      pushEvent(`Sent: ${content.slice(0, 72)}`, "info");
+      pushEvent(queueMode === "steer" ? `Steer: ${content.slice(0, 72)}` : `Sent: ${content.slice(0, 72)}`, "info");
 
       if (!chatId) {
         chatId = await ensureSelectedChatForProject(content);
@@ -4094,7 +4218,11 @@ function App() {
       sendAbortRef.current?.abort();
       sendAbortRef.current = controller;
 
-      const response = await api.streamMessage(chatId, content, controller.signal, clientTurnId, options?.attachments);
+      const response = await api.streamMessage(chatId, content, controller.signal, {
+        clientTurnId,
+        attachments: options?.attachments,
+        queueMode,
+      });
       if (!response.ok || !response.body) {
         let detail = `Request failed: ${response.status}`;
         try {
@@ -4175,6 +4303,9 @@ function App() {
               commitOptimisticMessages((current) => replaceMessageId(current, userTempId, data.id));
             }
             if (typeof data.task_run_id === "number") {
+              if (!clientTurnId || sameClientTurn(String(data.client_turn_id || ""), clientTurnId)) {
+                activeSendTaskRunIdRef.current = data.task_run_id;
+              }
               void refreshRuntimeForTaskRun(data.task_run_id);
             }
             break;
@@ -4454,7 +4585,11 @@ function App() {
         commitOptimisticMessages((current) => current.filter((item) => item.id >= 0));
         pushEvent("Streaming unavailable, falling back to sync send", "warning");
         try {
-          const saved = await api.sendMessage(chatId, content, clientTurnId);
+          const saved = await api.sendMessage(chatId, content, {
+            clientTurnId,
+            attachments: options?.attachments,
+            queueMode,
+          });
           setMessages((current) => mergeMessages(current, [saved]));
           if (connectionState !== "connected") {
             await refreshMessages(false, chatId);
@@ -4487,9 +4622,14 @@ function App() {
       if (contentFlushTimer !== null) {
         window.clearTimeout(contentFlushTimer);
       }
-      sendAbortRef.current = null;
-      streamingAssistantIdRef.current = null;
-      setSendingMessage(false);
+      if (sendSequenceRef.current === sendSequence) {
+        sendAbortRef.current = null;
+        streamingAssistantIdRef.current = null;
+        activeSendClientTurnIdRef.current = null;
+        activeSendTaskRunIdRef.current = null;
+        sendingMessageRef.current = false;
+        setSendingMessage(false);
+      }
     }
   }
 
@@ -5086,6 +5226,8 @@ function App() {
             expandCurrentStepByDefault={config?.ui?.chat_cards?.expand_current_step_by_default ?? false}
             onEnsureChat={ensureSelectedChatForProject}
             onSend={handleSendMessage}
+            onSteerSend={handleSteerMessage}
+            onAbortCurrentProcessing={() => cancelCurrentChatProcessing()}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSidebar={() => {
               setActivityDrawerOpen(false);

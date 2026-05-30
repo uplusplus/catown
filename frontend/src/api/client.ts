@@ -374,6 +374,12 @@ export const api = {
       method: "POST",
     });
   },
+  cancelTaskRun(taskRunId: number, payload?: { note?: string; cancelled_by?: string }) {
+    return request<Record<string, unknown>>(`/api/task-runs/${taskRunId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
   getMonitorApprovalQueue(status = "all", limit = 120) {
     const params = new URLSearchParams({
       status,
@@ -419,13 +425,35 @@ export const api = {
       method: "DELETE",
     });
   },
-  sendMessage(chatroomId: number, content: string, clientTurnId?: string, attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
+  sendMessage(
+    chatroomId: number,
+    content: string,
+    options?: {
+      clientTurnId?: string;
+      attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+      queueMode?: string;
+    },
+  ) {
     return request<MessageItem>(`/api/chatrooms/${chatroomId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, client_turn_id: clientTurnId, attachments }),
+      body: JSON.stringify({
+        content,
+        client_turn_id: options?.clientTurnId,
+        attachments: options?.attachments,
+        queue_mode: options?.queueMode,
+      }),
     });
   },
-  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string, attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
+  streamMessage(
+    chatroomId: number,
+    content: string,
+    signal?: AbortSignal,
+    options?: {
+      clientTurnId?: string;
+      attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>;
+      queueMode?: string;
+    },
+  ) {
     return fetch(`/api/chatrooms/${chatroomId}/messages/stream`, {
       method: "POST",
       headers: {
@@ -433,7 +461,12 @@ export const api = {
         "X-Catown-Client": getClientSource(),
         "X-Catown-UI-Version": UI_VERSION,
       },
-      body: JSON.stringify({ content, client_turn_id: clientTurnId, attachments }),
+      body: JSON.stringify({
+        content,
+        client_turn_id: options?.clientTurnId,
+        attachments: options?.attachments,
+        queue_mode: options?.queueMode,
+      }),
       signal,
     }).then((response) => {
       handleServerVersionHeaders(response.headers, `/api/chatrooms/${chatroomId}/messages/stream`);

@@ -150,6 +150,35 @@ def _seed_task_run_with_queue_item(*, chatroom_id: int, project_id: int | None =
         db.close()
 
 
+def _seed_running_interruptible_task_run(
+    *,
+    chatroom_id: int,
+    project_id: int | None = None,
+    client_turn_id: str = "turn-busy",
+    run_kind: str = "project_single_agent_stream",
+) -> int:
+    import models.database as db_mod
+
+    db = db_mod.SessionLocal()
+    try:
+        task_run = db_mod.TaskRun(
+            chatroom_id=chatroom_id,
+            project_id=project_id,
+            run_kind=run_kind,
+            status="running",
+            title="Busy Task Run",
+            user_request="Previous input",
+            initiator="user",
+            client_turn_id=client_turn_id,
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+        return task_run.id
+    finally:
+        db.close()
+
+
 def _seed_pipeline_run_for_project(*, project_id: int, chatroom_id: int) -> tuple[int, int, int]:
     import models.database as db_mod
 
@@ -2420,6 +2449,100 @@ class TestChatEndpoints:
             message.get("client_turn_id") == "turn-sync-1" and not message.get("agent_name")
             for message in messages
         )
+
+    def test_send_message_rejects_unknown_queue_mode(self, client):
+        project = client.post("/api/projects", json={
+            "name": "QueueModeValidation", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={"content": "Hello!", "queue_mode": "bogus"},
+        )
+
+        assert response.status_code == 400
+        assert "Unsupported queue_mode" in response.json()["detail"]
+
+    def test_send_message_steer_cancels_running_task_run(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={
+            "name": "SteerSync", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        busy_task_run_id = _seed_running_interruptible_task_run(
+            chatroom_id=cid,
+            project_id=project["id"],
+            client_turn_id="turn-busy-sync",
+        )
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages",
+            json={
+                "content": "Override the current plan",
+                "client_turn_id": "turn-steer-sync",
+                "queue_mode": "steer",
+            },
+        )
+
+        assert response.status_code == 200
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+        steer_message = next(
+            message for message in messages
+            if message.get("client_turn_id") == "turn-steer-sync" and not message.get("agent_name")
+        )
+        assert steer_message["metadata"]["queue_mode"] == "steer"
+        assert busy_task_run_id in steer_message["metadata"]["steer_cancelled_task_run_ids"]
+
+        db = db_mod.SessionLocal()
+        try:
+            cancelled_run = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == busy_task_run_id).first()
+            assert cancelled_run is not None
+            assert cancelled_run.status == "cancelled"
+        finally:
+            db.close()
+
+    def test_send_message_stream_steer_cancels_running_task_run(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={
+            "name": "SteerStream", "agent_names": ["analyst"]
+        }).json()
+        cid = project["chatroom_id"]
+        busy_task_run_id = _seed_running_interruptible_task_run(
+            chatroom_id=cid,
+            project_id=project["id"],
+            client_turn_id="turn-busy-stream",
+        )
+
+        response = client.post(
+            f"/api/chatrooms/{cid}/messages/stream",
+            json={
+                "content": "Interrupt and redirect",
+                "client_turn_id": "turn-steer-stream",
+                "queue_mode": "steer",
+            },
+        )
+
+        assert response.status_code == 200
+        assert '"queue_mode": "steer"' in response.text
+
+        messages = client.get(f"/api/chatrooms/{cid}/messages").json()
+        steer_message = next(
+            message for message in messages
+            if message.get("client_turn_id") == "turn-steer-stream" and not message.get("agent_name")
+        )
+        assert steer_message["metadata"]["queue_mode"] == "steer"
+        assert busy_task_run_id in steer_message["metadata"]["steer_cancelled_task_run_ids"]
+
+        db = db_mod.SessionLocal()
+        try:
+            cancelled_run = db.query(db_mod.TaskRun).filter(db_mod.TaskRun.id == busy_task_run_id).first()
+            assert cancelled_run is not None
+            assert cancelled_run.status == "cancelled"
+        finally:
+            db.close()
 
     def test_upload_pdf_attachment(self, client):
         project = client.post("/api/projects", json={
