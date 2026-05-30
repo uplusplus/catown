@@ -174,6 +174,11 @@ from services.runner_lifecycle import (
     start_agent_turn as record_agent_turn_started,
 )
 from services.multimodal_log_redaction import redact_multimodal_payload
+from services.log_secret_codec import (
+    SENSITIVE_HEADER_NAMES,
+    encode_log_secrets_in_text,
+    encode_sensitive_header_value,
+)
 from services.multimodal_file_refs import (
     link_cached_multimodal_file_to_message,
     register_data_uri_for_cached_file,
@@ -8816,9 +8821,13 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
         result: dict[str, str] = {}
         for key, value in headers.items():
             normalized = str(key).lower()
-            if normalized in {"authorization", "cookie", "set-cookie"}:
+            if normalized in {"cookie", "set-cookie"}:
                 continue
-            result[str(key)] = str(value)
+            result[str(key)] = (
+                encode_sensitive_header_value(str(value))
+                if normalized in SENSITIVE_HEADER_NAMES
+                else str(value)
+            )
         return result
 
     def _record_stream_network_event(success: bool, error: str = "") -> None:
@@ -8840,7 +8849,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 "flow_kind": "frontend_backend_sse",
                 "aggregated": True,
                 "method": request.method,
-                "url": str(request.url),
+                "url": encode_log_secrets_in_text(str(request.url)),
                 "host": request.url.hostname or "",
                 "path": request.url.path,
                 "success": success,
@@ -8851,8 +8860,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 "content_type": "text/event-stream",
                 "preview": f"{request.method} {request.url.path}",
                 "error": error,
-                "raw_request": _json.dumps(message.model_dump(), ensure_ascii=False)[:40000],
-                "raw_response": response_text[:40000],
+                "raw_request": encode_log_secrets_in_text(
+                    _json.dumps(message.model_dump(), ensure_ascii=False)
+                )[:40000],
+                "raw_response": encode_log_secrets_in_text(response_text)[:40000],
                 "request_headers": _safe_headers(dict(request.headers)),
                 "response_headers": {
                     "Cache-Control": "no-cache",
@@ -8892,7 +8903,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 "flow_seq": flow_seq,
                 "aggregated": False,
                 "method": request.method,
-                "url": str(request.url),
+                "url": encode_log_secrets_in_text(str(request.url)),
                 "host": request.url.hostname or "",
                 "path": request.url.path,
                 "success": True,
@@ -8900,9 +8911,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 "response_bytes": len(chunk.encode("utf-8")),
                 "duration_ms": int((_time.perf_counter() - request_started_at) * 1000),
                 "content_type": "text/event-stream",
-                "preview": chunk[:280],
+                "preview": encode_log_secrets_in_text(chunk)[:280],
                 "raw_request": "",
-                "raw_response": chunk[:40000],
+                "raw_response": encode_log_secrets_in_text(chunk)[:40000],
                 "request_headers": {},
                 "response_headers": {},
                 "metadata": {

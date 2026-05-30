@@ -27,6 +27,10 @@ from services.multimodal_log_redaction import (
     sanitized_json_dumps,
     sanitize_text_for_logging,
 )
+from services.log_secret_codec import (
+    encode_log_secrets_in_text,
+    encode_sensitive_headers_for_logging,
+)
 
 logger = logging.getLogger("catown.llm")
 
@@ -229,16 +233,7 @@ class _MonitorContentDecoder:
 
 
 def _sanitize_http_headers(headers: Any) -> dict[str, str]:
-    if not headers:
-        return {}
-    try:
-        items = headers.multi_items()
-    except AttributeError:
-        try:
-            items = headers.items()
-        except AttributeError:
-            return {}
-    return {str(key): str(value) for key, value in items}
+    return encode_sensitive_headers_for_logging(headers)
 
 
 class _ObservedAsyncResponseStream(httpx.AsyncByteStream):
@@ -441,7 +436,9 @@ class LLMClient:
     async def _capture_http_request(self, request: httpx.Request) -> None:
         body = await request.aread()
         body_text = _safe_text_bytes(body)
-        sanitized_body_text = sanitize_text_for_logging(body_text, limit=40000)
+        sanitized_body_text = encode_log_secrets_in_text(
+            sanitize_text_for_logging(body_text, limit=40000)
+        )
         url = request.url
         host = url.netloc.decode("ascii", errors="ignore") if isinstance(url.netloc, bytes) else url.netloc
         path = url.raw_path.decode("utf-8", errors="replace").split("?", 1)[0] if isinstance(url.raw_path, bytes) else str(url.path)
@@ -456,7 +453,7 @@ class LLMClient:
             "protocol": (url.scheme or "https").upper(),
             "host": host,
             "path": path or "/",
-            "url": str(url),
+            "url": encode_log_secrets_in_text(str(url)),
         }
         request.extensions["catown_raw_capture"] = context
         self._append_network_event(

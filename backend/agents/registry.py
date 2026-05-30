@@ -18,6 +18,7 @@ from agents.core import Agent, AgentConfig
 from agents.config_models import AgentConfigV2, create_agent_config_from_provider
 from agents.identity import DEFAULT_AGENT_TYPE, default_agent_name, legacy_default_agent_names, normalize_agent_type
 from config import settings
+from services.log_secret_codec import encode_log_secrets_in_text
 import json
 import os
 
@@ -193,7 +194,9 @@ def register_builtin_agents():
                 "soul": json.dumps(config.soul.model_dump(), ensure_ascii=False),
                 "tools": json.dumps(config.tools),
                 "skills": json.dumps(config.skills),
-                "config": json.dumps(config.model_dump(), ensure_ascii=False, default=str),
+                "config": encode_log_secrets_in_text(
+                    json.dumps(config.model_dump(), ensure_ascii=False, default=str)
+                ),
                 "is_active": True,
             }
             if existing:

@@ -41,6 +41,11 @@ from config import settings
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.runtime_lifecycle import mark_runtime_starting, mark_runtime_shutting_down
 from services.telemetry_writer import telemetry_writer
+from services.log_secret_codec import (
+    SENSITIVE_HEADER_NAMES,
+    encode_log_secrets_in_text,
+    encode_sensitive_header_value,
+)
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
@@ -297,6 +302,7 @@ def _safe_text(value: bytes | str | None, limit: int | None = None) -> str:
         text = value.decode("utf-8", errors="replace")
     else:
         text = value
+    text = encode_log_secrets_in_text(text)
     return text if limit is None else text[:limit]
 
 
@@ -304,9 +310,13 @@ def _sanitize_headers(headers: Any) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in dict(headers).items():
         normalized = str(key).lower()
-        if normalized in {"authorization", "cookie", "set-cookie", "x-openai-api-key"}:
+        if normalized in {"cookie", "set-cookie"}:
             continue
-        result[str(key)] = str(value)
+        result[str(key)] = (
+            encode_sensitive_header_value(str(value))
+            if normalized in SENSITIVE_HEADER_NAMES
+            else str(value)
+        )
     return result
 
 
@@ -347,7 +357,7 @@ def _record_frontend_backend_event(
             "request_direction": f"Frontend ({client_source}) -> Backend API",
             "response_direction": f"Backend API -> Frontend ({client_source})",
             "method": request.method,
-            "url": str(request.url),
+            "url": encode_log_secrets_in_text(str(request.url)),
             "host": request.url.hostname or "",
             "path": request.url.path,
             "status_code": status_code,
@@ -364,7 +374,7 @@ def _record_frontend_backend_event(
             "request_headers": _sanitize_headers(request.headers),
             "response_headers": response_headers or {},
             "metadata": {
-                "query": request.url.query,
+                "query": encode_log_secrets_in_text(request.url.query),
                 "ui_version": _request_ui_version(request),
                 "http_version": request.scope.get("http_version"),
             },

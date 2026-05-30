@@ -12,8 +12,15 @@ import sys
 import os
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _builtin_agent_names() -> set[str]:
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "agents.json"
+    data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    return {agent["name"] for agent in data.get("agents", {}).values()}
 
 
 def _make_app(tmp_path):
@@ -99,10 +106,10 @@ class TestStartupDataLoad:
         r = client.get("/api/agents")
         assert r.status_code == 200
         agents = r.json()
-        # agents.json 中定义了 6 个角色
-        assert len(agents) == 6
+        expected_names = _builtin_agent_names()
+        assert len(agents) == len(expected_names)
         names = {a["name"] for a in agents}
-        assert names == {"Analyst", "Architect", "Developer", "Tester", "Release", "Valet"}
+        assert names == expected_names
 
     def test_load_projects_empty_on_fresh_start(self, client):
         """全新启动时 projects 为空"""
