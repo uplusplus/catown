@@ -70,6 +70,8 @@ def _make_app(tmp_path):
         'services.tool_execution_preferences',
         'services.telemetry_writer',
         'services.audit_recorder',
+        'services.multimodal_file_refs',
+        'services.multimodal_log_redaction',
     ]
     from tests.conftest import reset_app_modules
     reset_app_modules(modules_to_clear)
@@ -2387,9 +2389,23 @@ class TestChatEndpoints:
 
         assert response.status_code == 200
         payload = response.json()
+        assert payload["file_id"].startswith("file_")
         assert payload["mime_type"] == "application/pdf"
         assert payload["file_name"].endswith(".pdf")
         assert payload["file_path"].startswith("uploads/")
+        from models.database import CachedMultimodalFile, SessionLocal
+
+        db = SessionLocal()
+        try:
+            record = db.query(CachedMultimodalFile).filter(CachedMultimodalFile.file_id == payload["file_id"]).first()
+            assert record is not None
+            assert record.file_path == payload["file_path"]
+            assert record.file_name == payload["file_name"]
+            assert record.mime_type == "application/pdf"
+            assert record.file_size == payload["file_size"]
+            assert record.sha256
+        finally:
+            db.close()
 
     def test_send_message_passes_multimodal_project_content_to_llm(self, client):
         import llm.client as llm_mod
@@ -2582,6 +2598,21 @@ class TestChatEndpoints:
         assert final_user_message["content"][1]["type"] == "file"
         assert final_user_message["content"][1]["file"]["filename"] == "sample.pdf"
         assert final_user_message["content"][1]["file"]["file_data"].startswith("data:application/pdf;base64,")
+        from models.database import CachedMultimodalFile, SessionLocal
+
+        db = SessionLocal()
+        try:
+            record = (
+                db.query(CachedMultimodalFile)
+                .filter(CachedMultimodalFile.file_path == "uploads/sample.pdf")
+                .first()
+            )
+            assert record is not None
+            assert record.file_id.startswith("file_")
+            assert record.message_id is not None
+            assert record.mime_type == "application/pdf"
+        finally:
+            db.close()
 
     def test_stream_message_passes_pdf_attachment_to_llm_as_file_content(self, client):
         import llm.client as llm_mod

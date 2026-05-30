@@ -60,6 +60,10 @@ def _generate_public_id() -> str:
     return uuid4().hex
 
 
+def _generate_cached_file_id() -> str:
+    return f"file_{uuid4().hex}"
+
+
 def _normalized_text(value: Any) -> str | None:
     text_value = str(value or "").strip()
     return text_value or None
@@ -371,6 +375,27 @@ class Message(Base):
 
     chatroom = relationship("Chatroom", back_populates="messages")
     agent = relationship("Agent", back_populates="messages")
+
+
+class CachedMultimodalFile(Base):
+    """Server-side file cache index used by multimodal audit/log redaction."""
+
+    __tablename__ = "cached_multimodal_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_id = Column(String, unique=True, index=True, nullable=False, default=_generate_cached_file_id)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    workspace_path = Column(Text, nullable=True)
+    file_path = Column(Text, nullable=False)
+    file_name = Column(String, nullable=False)
+    mime_type = Column(String, nullable=True, index=True)
+    file_size = Column(Integer, nullable=False, default=0)
+    sha256 = Column(String, nullable=True, index=True)
+    source = Column(String, nullable=False, default="chat_upload")
+    created_at = Column(DateTime, default=datetime.now)
+    last_seen_at = Column(DateTime, default=datetime.now)
 
 
 class TaskRun(Base):

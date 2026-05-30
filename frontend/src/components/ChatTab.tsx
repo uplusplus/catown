@@ -352,7 +352,7 @@ type ChatTabProps = {
   events: ChatEventItem[];
   expandCurrentStepByDefault: boolean;
   onEnsureChat?: (content: string) => Promise<number>;
-  onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
+  onSend: (content: string, options?: { clientTurnId?: string; attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }> }) => Promise<void>;
   onOpenWorkspace: () => Promise<void>;
   onOpenSidebar: () => void;
   onOpenActivity: () => void;
@@ -6657,7 +6657,7 @@ export function ChatTab({
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   // Attachment state for image/file uploads
-  type UploadedAttachment = { file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string };
+  type UploadedAttachment = { file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time?: string };
   type PendingAttachment = {
     id: string;
     file: File;

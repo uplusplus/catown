@@ -419,13 +419,13 @@ export const api = {
       method: "DELETE",
     });
   },
-  sendMessage(chatroomId: number, content: string, clientTurnId?: string, attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
+  sendMessage(chatroomId: number, content: string, clientTurnId?: string, attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
     return request<MessageItem>(`/api/chatrooms/${chatroomId}/messages`, {
       method: "POST",
       body: JSON.stringify({ content, client_turn_id: clientTurnId, attachments }),
     });
   },
-  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string, attachments?: Array<{ file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
+  streamMessage(chatroomId: number, content: string, signal?: AbortSignal, clientTurnId?: string, attachments?: Array<{ file_id?: string; file_path: string; file_name: string; file_size: number; mime_type?: string }>) {
     return fetch(`/api/chatrooms/${chatroomId}/messages/stream`, {
       method: "POST",
       headers: {
@@ -440,7 +440,7 @@ export const api = {
       return response;
     });
   },
-  async uploadFile(chatroomId: number, file: File): Promise<{ file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time: string }> {
+  async uploadFile(chatroomId: number, file: File): Promise<{ file_id: string; file_path: string; file_name: string; file_size: number; mime_type?: string; upload_time: string }> {
     const formData = new FormData();
     formData.append("file", file);
     const response = await fetch(`/api/chatrooms/${chatroomId}/upload`, {

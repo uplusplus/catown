@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from models.audit import Event, LLMCall, ToolCall
+from services.multimodal_log_redaction import redact_multimodal_payload
 from services.telemetry_writer import telemetry_writer
 
 logger = logging.getLogger("catown.audit")
@@ -31,6 +32,7 @@ def _truncate(text: Any, limit: int = 100000) -> Optional[str]:
 def _json_dumps_safe(value: Any, limit: int = 100000) -> Optional[str]:
     if value is None:
         return None
+    value = redact_multimodal_payload(value)
     try:
         s = json.dumps(value, ensure_ascii=False, default=str)
     except Exception:

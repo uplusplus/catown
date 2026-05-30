@@ -20,6 +20,7 @@ from services.approval_replay import (
     build_blocked_tool_request_key,
     build_blocked_tool_request_payload,
 )
+from services.multimodal_log_redaction import redact_multimodal_payload
 
 
 logger = logging.getLogger("catown.runner_lifecycle")
@@ -72,7 +73,7 @@ def build_llm_request_prompt_payload(
     if prompt_messages is None:
         prompt_messages = getattr(frame, "messages", None)
     if prompt_messages is not None:
-        safe_messages = _json_safe(prompt_messages)
+        safe_messages = _json_safe(redact_multimodal_payload(prompt_messages))
         payload["prompt_messages"] = safe_messages
         if isinstance(safe_messages, list):
             payload["prompt_message_count"] = len(safe_messages)

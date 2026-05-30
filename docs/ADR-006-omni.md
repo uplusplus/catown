@@ -243,12 +243,19 @@ BOSS 在聊天框可直接发送图片：
 
 **当前已实现的图片上传链路（2026-05-27）**：
 1. 前端选图后，先调用 `/api/chatrooms/{chatroom_id}/upload`，以 `multipart/form-data` 把图片上传到 Catown 后端。
-2. 后端校验 MIME type 和大小后，将文件落盘到当前项目 workspace 的 `uploads/` 目录，并返回 `file_path`、`file_name`、`file_size`、`mime_type` 等附件元数据。
+2. 后端校验 MIME type 和大小后，将文件落盘到当前项目 workspace 的 `uploads/` 目录，并在主业务库 `cached_multimodal_files` 中记录可恢复索引，返回 `file_id`、`file_path`、`file_name`、`file_size`、`mime_type` 等附件元数据。
 3. 用户真正发送聊天消息时，前端通过 `/messages` 或 `/messages/stream` 发送的是文本内容加附件元数据，不再重复发送图片二进制。
 4. 后端在生成本轮 user message 时，根据 `file_path` 回到 workspace 内重新读取图片文件，将其编码为 `data:image/...;base64,...`。
 5. `LLMClient` 再将它组装成 OpenAI 兼容的多模态 `content` 数组，例如 `[{type: "text", ...}, {type: "image_url", image_url: {url: "data:...", detail: "auto"}}]`，并通过 `chat.completions.create(messages=...)` 发给 LLM。
 
 这意味着当前实现是“Catown 后端中转并内联图片字节到 JSON 请求”，不是“前端把文件直接上传到 LLM 服务器”。当前原生多模态链路已覆盖项目内单 Agent 的同步与流式聊天入口。
+
+**审计与日志约束（2026-05-29 修订）**：
+- 真实发给 LLM 的请求仍按 provider 协议使用 `data:*;base64,...`，不额外塞入 Catown 私有字段，避免破坏 OpenAI 兼容格式。
+- 任何审计、Monitor 网络原文、runtime prompt snapshot 中的内联多模态 bytes 都不得直接持久化。
+- 日志副本必须保留原 JSON 结构和大小/类型信息，但将 data URI 替换成 `file_id` 占位，例如 `<cached_file file_id="file_..." mime="application/pdf" bytes="12345">`。
+- `file_id` 指向主业务库 `cached_multimodal_files`，该表记录 workspace 相对路径、文件名、MIME、大小、sha256、chatroom/message 关联等信息；需要还原时从该表定位服务器缓存文件。
+- 如果出现未登记的内联文件，只能标记为 `file_id="unregistered"`，不能伪造可恢复引用。
 
 ### 8. 文件存储
 

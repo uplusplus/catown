@@ -172,6 +172,13 @@ from services.runner_lifecycle import (
     start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
+from services.multimodal_log_redaction import redact_multimodal_payload
+from services.multimodal_file_refs import (
+    link_cached_multimodal_file_to_message,
+    register_data_uri_for_cached_file,
+    sha256_bytes,
+    upsert_cached_multimodal_file,
+)
 from services.approval_queue import (
     claim_approval_queue_resolution_lease,
     get_approval_queue_item,
@@ -618,21 +625,21 @@ def _list_global_agents(db: Session) -> List[Agent]:
 
 
 def _snapshot_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Create a JSON-safe snapshot of the exact messages sent to the LLM."""
+    """Create a JSON-safe prompt snapshot without inline media/document bytes."""
     normalized: List[Dict[str, Any]] = []
     for item in messages or []:
         if not isinstance(item, dict):
             normalized.append({"value": str(item)})
             continue
         try:
-            normalized.append(json.loads(json.dumps(item, ensure_ascii=False)))
+            normalized.append(redact_multimodal_payload(json.loads(json.dumps(item, ensure_ascii=False))))
         except TypeError:
             fallback: Dict[str, Any] = {}
             for key, value in item.items():
                 try:
-                    fallback[key] = json.loads(json.dumps(value, ensure_ascii=False))
+                    fallback[key] = redact_multimodal_payload(json.loads(json.dumps(value, ensure_ascii=False)))
                 except TypeError:
-                    fallback[key] = str(value)
+                    fallback[key] = redact_multimodal_payload(str(value))
             normalized.append(fallback)
     return normalized
 
@@ -682,7 +689,7 @@ def _append_current_user_message(messages: List[Dict[str, Any]], user_message: s
 
 
 def _format_json_block(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2)
+    return json.dumps(redact_multimodal_payload(value), ensure_ascii=False, indent=2)
 
 
 def _tool_result_succeeded(result: Any) -> bool:
@@ -4644,6 +4651,7 @@ class MessageRequest(BaseModel):
 
 class MessageAttachment(BaseModel):
     """Attachment metadata returned after upload."""
+    file_id: str
     file_path: str
     file_name: str
     file_size: int
@@ -8302,6 +8310,87 @@ def _resolve_attachment_file_path(project: Optional[Project], attachment: Dict[s
     return candidate
 
 
+def _ensure_cached_attachment_refs(
+    db: Session,
+    *,
+    project: Optional[Project],
+    chatroom_id: int,
+    attachments: Optional[List[Dict[str, Any]]],
+    message_id: int | None = None,
+) -> Optional[List[Dict[str, Any]]]:
+    if not attachments:
+        return attachments
+
+    normalized: List[Dict[str, Any]] = []
+    changed = False
+    db_changed = False
+    for attachment in attachments:
+        next_attachment = dict(attachment or {})
+        normalized.append(next_attachment)
+        mime_type = str(next_attachment.get("mime_type") or "").strip().lower()
+        if mime_type not in _UPLOAD_SUPPORTED_TYPES:
+            continue
+        file_path = _resolve_attachment_file_path(project, next_attachment)
+        if file_path is None:
+            continue
+        try:
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        digest = sha256_bytes(raw)
+        cached_file = upsert_cached_multimodal_file(
+            db,
+            project=project,
+            chatroom_id=chatroom_id,
+            relative_path=str(next_attachment.get("file_path") or ""),
+            file_name=str(next_attachment.get("file_name") or file_path.name),
+            mime_type=mime_type,
+            file_size=len(raw),
+            sha256=digest,
+            file_id=str(next_attachment.get("file_id") or "").strip() or None,
+            source="chat_upload",
+            message_id=message_id,
+        )
+        db_changed = True
+        if next_attachment.get("file_id") != cached_file.file_id:
+            next_attachment["file_id"] = cached_file.file_id
+            changed = True
+        if int(next_attachment.get("file_size") or 0) != len(raw):
+            next_attachment["file_size"] = len(raw)
+            changed = True
+        if not next_attachment.get("file_name"):
+            next_attachment["file_name"] = file_path.name
+            changed = True
+        if not next_attachment.get("mime_type"):
+            next_attachment["mime_type"] = mime_type
+            changed = True
+
+    if changed or db_changed or message_id is not None:
+        db.commit()
+    return normalized
+
+
+def _link_cached_attachments_to_message(
+    db: Session,
+    *,
+    chatroom_id: int,
+    attachments: Optional[List[Dict[str, Any]]],
+    message_id: int,
+) -> None:
+    changed = False
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        changed = link_cached_multimodal_file_to_message(
+            db,
+            file_id=str(attachment.get("file_id") or "").strip(),
+            message_id=message_id,
+            chatroom_id=chatroom_id,
+        ) or changed
+    if changed:
+        db.commit()
+
+
 def _build_multimodal_user_content(
     user_message: str,
     *,
@@ -8327,6 +8416,14 @@ def _build_multimodal_user_content(
         if len(raw) > _UPLOAD_MAX_SIZE_BYTES:
             continue
         data_uri = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        register_data_uri_for_cached_file(
+            data_uri=data_uri,
+            file_id=str((attachment or {}).get("file_id") or "").strip() or None,
+            mime_type=mime_type,
+            file_name=str((attachment or {}).get("file_name") or file_path.name),
+            file_size=len(raw),
+            sha256=str((attachment or {}).get("sha256") or "") or sha256_bytes(raw),
+        )
         if mime_type in _UPLOAD_IMAGE_TYPES:
             image_parts.append(
                 {
@@ -8421,9 +8518,23 @@ async def upload_file(
     # Return relative path from workspace
     workspace = Path(project.workspace_path).expanduser().resolve()
     relative_path = file_path.resolve().relative_to(workspace).as_posix()
+    cached_file = upsert_cached_multimodal_file(
+        db,
+        project=project,
+        chatroom_id=chatroom_id,
+        relative_path=relative_path,
+        file_name=unique_name,
+        mime_type=content_type,
+        file_size=len(content),
+        sha256=sha256_bytes(content),
+        source="chat_upload",
+    )
+    db.commit()
+    db.refresh(cached_file)
 
     from datetime import datetime as _dt
     return MessageAttachment(
+        file_id=cached_file.file_id,
         file_path=relative_path,
         file_name=unique_name,
         file_size=len(content),
@@ -8436,12 +8547,21 @@ async def upload_file(
 async def send_message(chatroom_id: int, message: MessageRequest, db: Session = Depends(get_db)):
     """发送消息到聊天室"""
     logger.info(f"[API] send_message called: chatroom_id={chatroom_id}, content={message.content[:50]}...")
-    
+
+    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    project = _resolve_chatroom_project(db, chatroom) if chatroom else None
+    message_attachments = _ensure_cached_attachment_refs(
+        db,
+        project=project,
+        chatroom_id=chatroom_id,
+        attachments=message.attachments,
+    )
+
     # 发送用户消息
     # Build metadata with attachments info
     msg_metadata = _message_metadata_with_turn(message.client_turn_id)
-    if message.attachments:
-        msg_metadata["attachments"] = message.attachments
+    if message_attachments:
+        msg_metadata["attachments"] = message_attachments
 
     response_msg = await chatroom_manager.send_message(
         chatroom_id=chatroom_id,
@@ -8449,6 +8569,12 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         content=message.content,
         message_type="text",
         metadata=msg_metadata,
+    )
+    _link_cached_attachments_to_message(
+        db,
+        chatroom_id=chatroom_id,
+        attachments=message_attachments,
+        message_id=response_msg.id,
     )
     await publish_saved_chat_message(
         db,
@@ -8465,9 +8591,9 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
 
     # Build extra context from attachments
     extra_context = ""
-    if message.attachments:
+    if message_attachments:
         attachment_lines = []
-        for att in message.attachments:
+        for att in message_attachments:
             att_path = att.get("file_path", "")
             att_mime = att.get("mime_type", "")
             if att_path:
@@ -8479,8 +8605,6 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
                 + "\n\nUse the attachment paths above when deciding whether to inspect an image, read a text file, or reason directly from multimodal input."
             )
 
-    chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-    project = _resolve_chatroom_project(db, chatroom) if chatroom else None
     task_run = create_task_run(
         db,
         chatroom_id=chatroom_id,
@@ -8510,7 +8634,7 @@ async def send_message(chatroom_id: int, message: MessageRequest, db: Session = 
         effective_user_content = _build_multimodal_user_content(
             message.content,
             project=project,
-            attachments=message.attachments,
+            attachments=message_attachments,
         )
 
         await trigger_agent_response(
@@ -8705,11 +8829,25 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             active_agent_name = agent_name
             active_agent_id = agent_id
 
+        stream_attachments: Optional[List[Dict[str, Any]]] = None
+
         try:
+            chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+            if not chatroom:
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom found'})}\n\n"
+                return
+            project = _resolve_chatroom_project(db, chatroom)
+            stream_attachments = _ensure_cached_attachment_refs(
+                db,
+                project=project,
+                chatroom_id=chatroom_id,
+                attachments=message.attachments,
+            )
+
             # 1. 保存用户消息（含附件元数据）
             stream_msg_metadata = _message_metadata_with_turn(message.client_turn_id)
-            if message.attachments:
-                stream_msg_metadata["attachments"] = message.attachments
+            if stream_attachments:
+                stream_msg_metadata["attachments"] = stream_attachments
 
             user_msg = await chatroom_manager.send_message(
                 chatroom_id=chatroom_id,
@@ -8717,6 +8855,12 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 content=message.content,
                 message_type="text",
                 metadata=stream_msg_metadata,
+            )
+            _link_cached_attachments_to_message(
+                db,
+                chatroom_id=chatroom_id,
+                attachments=stream_attachments,
+                message_id=user_msg.id,
             )
             await publish_saved_chat_message(
                 db,
@@ -8731,9 +8875,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
 
             # Build extra context from attachments
             stream_extra_context = ""
-            if message.attachments:
+            if stream_attachments:
                 att_lines = []
-                for att in message.attachments:
+                for att in stream_attachments:
                     att_path = att.get("file_path", "")
                     att_mime = att.get("mime_type", "")
                     if att_path:
@@ -8748,16 +8892,10 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
             effective_user_text = message.content + ("\n\n" + stream_extra_context if stream_extra_context else "")
 
             # 2. 获取聊天室和项目
-            chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
-            if not chatroom:
-                yield f"data: {_json.dumps({'type': 'error', 'error': 'No chatroom found'})}\n\n"
-                return
-
-            project = _resolve_chatroom_project(db, chatroom)
             effective_user_content = _build_multimodal_user_content(
                 message.content,
                 project=project,
-                attachments=message.attachments,
+                attachments=stream_attachments,
             )
             task_run = create_task_run(
                 db,

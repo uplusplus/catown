@@ -594,6 +594,55 @@ class TestLLMClientNetworkCapture:
         assert event["chatroom_id"] == 7
 
     @pytest.mark.asyncio
+    async def test_capture_http_request_redacts_multimodal_payload_for_monitor(self):
+        from llm.client import LLMClient
+        from services.multimodal_log_redaction import (
+            clear_multimodal_data_uri_references,
+            register_multimodal_data_uri_reference,
+        )
+
+        raw_pdf = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="
+        pdf_data_uri = f"data:application/pdf;base64,{raw_pdf}"
+        clear_multimodal_data_uri_references()
+        register_multimodal_data_uri_reference(
+            pdf_data_uri,
+            file_id="file_monitor123",
+            mime_type="application/pdf",
+            file_name="spec.pdf",
+            file_size=26,
+            sha256="monitor-sha",
+        )
+        body = (
+            '{"model":"test-model","messages":[{"role":"user","content":['
+            '{"type":"text","text":"read this"},'
+            '{"type":"file","file":{"filename":"spec.pdf","file_data":"'
+            + pdf_data_uri
+            + '"}}]}]}'
+        ).encode("utf-8")
+
+        client = LLMClient(base_url="https://example.com/v1", api_key="test", model="test-model", agent_name="valet")
+        events = []
+        client._append_network_event = lambda event: events.append(event)
+
+        request = httpx.Request(
+            "POST",
+            "https://example.com/v1/chat/completions",
+            headers={"content-type": "application/json"},
+            content=body,
+        )
+
+        await client._capture_http_request(request)
+
+        assert len(events) == 1
+        assert events[0]["request_bytes"] == len(body)
+        assert raw_pdf not in events[0]["raw_request"]
+        assert "data:application/pdf;base64" not in events[0]["raw_request"]
+        assert "<cached_file " in events[0]["raw_request"]
+        assert 'file_id=\\"file_monitor123\\"' in events[0]["raw_request"]
+        assert 'mime=\\"application/pdf\\"' in events[0]["raw_request"]
+        assert raw_pdf not in events[0]["preview"]
+
+    @pytest.mark.asyncio
     async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
         from llm.client import LLMClient
 

@@ -142,6 +142,8 @@ def _reload_model_bound_service_modules(importlib_module):
         "services.approval_audit",
         "services.telemetry_writer",
         "services.audit_recorder",
+        "services.multimodal_file_refs",
+        "services.multimodal_log_redaction",
         "services.chat_publish",
         "services.chat_prompt_builder",
         "services.chat_timeline_projection",

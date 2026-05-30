@@ -22,6 +22,11 @@ from urllib.parse import urlparse
 from agents.identity import DEFAULT_AGENT_TYPE, normalize_agent_type
 from config import settings
 from monitoring import monitor_network_buffer
+from services.multimodal_log_redaction import (
+    redact_multimodal_payload,
+    sanitized_json_dumps,
+    sanitize_text_for_logging,
+)
 
 logger = logging.getLogger("catown.llm")
 
@@ -435,6 +440,8 @@ class LLMClient:
 
     async def _capture_http_request(self, request: httpx.Request) -> None:
         body = await request.aread()
+        body_text = _safe_text_bytes(body)
+        sanitized_body_text = sanitize_text_for_logging(body_text, limit=40000)
         url = request.url
         host = url.netloc.decode("ascii", errors="ignore") if isinstance(url.netloc, bytes) else url.netloc
         path = url.raw_path.decode("utf-8", errors="replace").split("?", 1)[0] if isinstance(url.raw_path, bytes) else str(url.path)
@@ -464,8 +471,8 @@ class LLMClient:
                 "response_bytes": 0,
                 "duration_ms": 0,
                 "content_type": request.headers.get("content-type", "application/json"),
-                "preview": _compact_text(_safe_text_bytes(body)),
-                "raw_request": _safe_text_bytes(body),
+                "preview": _compact_text(sanitized_body_text),
+                "raw_request": sanitized_body_text,
                 "raw_response": "",
                 "request_headers": request_headers,
                 "response_headers": {},
@@ -569,6 +576,8 @@ class LLMClient:
         parsed = urlparse(self.base_url or "")
         protocol = (parsed.scheme or "https").upper()
         host = parsed.netloc or (self.base_url or "")
+        safe_request_payload = redact_multimodal_payload(request_payload)
+        safe_response_payload = redact_multimodal_payload(response_payload)
         monitor_network_buffer.append(
             {
                 "category": "backend_llm",
@@ -587,10 +596,10 @@ class LLMClient:
                 "response_bytes": _estimate_bytes(response_payload),
                 "duration_ms": duration_ms,
                 "content_type": "application/json",
-                "preview": _compact_text(response_payload or request_payload),
+                "preview": _compact_text(safe_response_payload or safe_request_payload),
                 "error": error,
-                "raw_request": json.dumps(request_payload, ensure_ascii=False, default=str)[:40000] if request_payload is not None else "",
-                "raw_response": json.dumps(response_payload, ensure_ascii=False, default=str)[:40000] if response_payload is not None else "",
+                "raw_request": sanitized_json_dumps(request_payload, limit=40000) if request_payload is not None else "",
+                "raw_response": sanitized_json_dumps(response_payload, limit=40000) if response_payload is not None else "",
                 "request_headers": {},
                 "response_headers": {},
                 "metadata": {
