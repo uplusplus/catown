@@ -2,7 +2,10 @@
 """
 Database model definitions.
 """
+import hashlib
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -49,11 +52,14 @@ def _configure_sqlite_engine(db_engine, database_url: str) -> None:
 
 engine = _build_engine(settings.SQLALCHEMY_DATABASE_URL)
 telemetry_engine = _build_engine(settings.TELEMETRY_SQLALCHEMY_DATABASE_URL)
+network_audit_engine = _build_engine(settings.NETWORK_AUDIT_SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 TelemetrySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=telemetry_engine)
+NetworkAuditSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=network_audit_engine)
 
 Base = declarative_base()
 TelemetryBase = declarative_base(metadata=MetaData())
+NetworkAuditBase = declarative_base(metadata=MetaData())
 
 
 def _generate_public_id() -> str:
@@ -89,6 +95,220 @@ def _ensure_sqlite_column(
         connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition_sql}"))
         columns.add(column_name)
     return columns
+
+
+_MONITOR_NETWORK_MIGRATION_COLUMNS = (
+    "id",
+    "created_at",
+    "task_run_id",
+    "chatroom_id",
+    "category",
+    "source",
+    "protocol",
+    "from_entity",
+    "to_entity",
+    "method",
+    "url",
+    "host",
+    "path",
+    "status_code",
+    "success",
+    "request_bytes",
+    "response_bytes",
+    "total_bytes",
+    "duration_ms",
+    "content_type",
+    "preview",
+    "error",
+    "client_source",
+    "raw_request",
+    "raw_response",
+    "raw_request_blob_id",
+    "raw_response_blob_id",
+    "request_headers_json",
+    "response_headers_json",
+    "metadata_json",
+)
+
+
+def _monitor_network_defaults(source_id: int | None = None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if source_id is not None:
+        metadata["migrated_from_telemetry_record_id"] = source_id
+    return {
+        "created_at": datetime.now(),
+        "task_run_id": None,
+        "chatroom_id": None,
+        "category": "unknown",
+        "source": "unknown",
+        "protocol": "unknown",
+        "from_entity": "unknown",
+        "to_entity": "unknown",
+        "method": "",
+        "url": "",
+        "host": "",
+        "path": "",
+        "status_code": None,
+        "success": None,
+        "request_bytes": 0,
+        "response_bytes": 0,
+        "total_bytes": 0,
+        "duration_ms": 0,
+        "content_type": "",
+        "preview": "",
+        "error": "",
+        "client_source": "",
+        "raw_request": "",
+        "raw_response": "",
+        "raw_request_blob_id": None,
+        "raw_response_blob_id": None,
+        "request_headers_json": "{}",
+        "response_headers_json": "{}",
+        "metadata_json": json.dumps(metadata, ensure_ascii=False),
+    }
+
+
+def _merge_monitor_network_migration_metadata(value: Any, source_id: int | None) -> str:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        parsed = {}
+    metadata = parsed if isinstance(parsed, dict) else {}
+    if source_id is not None:
+        metadata.setdefault("migrated_from_telemetry_record_id", source_id)
+    metadata.setdefault("audit_store", "network_audit")
+    return json.dumps(metadata, ensure_ascii=False)
+
+
+def _store_monitor_network_blob(connection, text_value: str, *, kind: str) -> tuple[str, int | None]:
+    if not text_value:
+        return "", None
+    data = text_value.encode("utf-8")
+    if len(data) <= settings.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES:
+        return text_value, None
+
+    digest = hashlib.sha256(data).hexdigest()
+    relative_path = Path(digest[:2]) / f"{digest}.txt"
+    absolute_path = settings.NETWORK_AUDIT_PAYLOADS_DIR / relative_path
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    if not absolute_path.exists():
+        absolute_path.write_bytes(data)
+
+    result = connection.execute(
+        text(
+            "INSERT INTO monitor_network_blobs "
+            "(created_at, kind, content_sha256, content_bytes, storage_path, content_type) "
+            "VALUES (:created_at, :kind, :content_sha256, :content_bytes, :storage_path, :content_type)"
+        ),
+        {
+            "created_at": datetime.now(),
+            "kind": kind,
+            "content_sha256": digest,
+            "content_bytes": len(data),
+            "storage_path": relative_path.as_posix(),
+            "content_type": "text/plain; charset=utf-8",
+        },
+    )
+    return "", int(result.lastrowid)
+
+
+def _migrate_monitor_network_records_to_network_audit() -> None:
+    """Copy legacy network rows out of telemetry.db into the dedicated audit DB."""
+    if str(telemetry_engine.url) == str(network_audit_engine.url):
+        return
+
+    with telemetry_engine.connect() as source_connection:
+        source_columns = _column_names(source_connection, "monitor_network_records")
+        if not source_columns:
+            return
+        source_rows = list(
+            source_connection.execute(
+                text("SELECT * FROM monitor_network_records ORDER BY id ASC")
+            ).mappings()
+        )
+    if not source_rows:
+        return
+
+    with network_audit_engine.begin() as target_connection:
+        target_columns = _column_names(target_connection, "monitor_network_records")
+        if not target_columns:
+            return
+        existing_ids = {
+            int(row_id)
+            for (row_id,) in target_connection.execute(
+                text("SELECT id FROM monitor_network_records")
+            ).fetchall()
+            if row_id is not None
+        }
+        migrated_source_ids = set()
+        for (metadata_json,) in target_connection.execute(
+            text("SELECT metadata_json FROM monitor_network_records")
+        ).fetchall():
+            try:
+                metadata = json.loads(str(metadata_json or "{}"))
+            except json.JSONDecodeError:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                continue
+            migrated_id = _coerce_int_for_migration(metadata.get("migrated_from_telemetry_record_id"))
+            if migrated_id is not None:
+                migrated_source_ids.add(migrated_id)
+        insert_columns = [
+            column
+            for column in _MONITOR_NETWORK_MIGRATION_COLUMNS
+            if column in target_columns and column != "id"
+        ]
+        insert_with_id_columns = ["id", *insert_columns]
+        for source_row in source_rows:
+            source_id = _coerce_int_for_migration(source_row.get("id"))
+            if source_id is not None and source_id in migrated_source_ids:
+                continue
+            preserve_id = source_id is not None and source_id not in existing_ids
+            values = _monitor_network_defaults(source_id)
+            for column in insert_columns:
+                if column in source_columns:
+                    values[column] = source_row.get(column)
+            values["metadata_json"] = _merge_monitor_network_migration_metadata(
+                values.get("metadata_json"),
+                source_id,
+            )
+            raw_request, raw_request_blob_id = _store_monitor_network_blob(
+                target_connection,
+                str(values.get("raw_request") or ""),
+                kind="request",
+            )
+            raw_response, raw_response_blob_id = _store_monitor_network_blob(
+                target_connection,
+                str(values.get("raw_response") or ""),
+                kind="response",
+            )
+            values["raw_request"] = raw_request
+            values["raw_response"] = raw_response
+            values["raw_request_blob_id"] = raw_request_blob_id
+            values["raw_response_blob_id"] = raw_response_blob_id
+
+            if preserve_id:
+                values["id"] = source_id
+                columns = insert_with_id_columns
+            else:
+                columns = insert_columns
+            target_connection.execute(
+                text(
+                    f"INSERT INTO monitor_network_records ({', '.join(columns)}) "
+                    f"VALUES ({', '.join(f':{column}' for column in columns)})"
+                ),
+                {column: values.get(column) for column in columns},
+            )
+            if source_id is not None:
+                existing_ids.add(source_id)
+                migrated_source_ids.add(source_id)
+
+
+def _coerce_int_for_migration(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _lookup_row_public_id(connection, table_name: str, row_id: Any) -> str | None:
@@ -1005,7 +1225,8 @@ def init_database():
 
     Base.metadata.create_all(bind=engine)
     audit.TelemetryBase.metadata.create_all(bind=telemetry_engine)
-    with telemetry_engine.begin() as connection:
+    audit.NetworkAuditBase.metadata.create_all(bind=network_audit_engine)
+    with network_audit_engine.begin() as connection:
         existing_monitor_network_columns = _column_names(connection, "monitor_network_records")
         if existing_monitor_network_columns:
             existing_monitor_network_columns = _ensure_sqlite_column(
@@ -1034,6 +1255,33 @@ def init_database():
                     "ON monitor_network_records (chatroom_id)"
                 )
             )
+            existing_monitor_network_columns = _ensure_sqlite_column(
+                connection,
+                "monitor_network_records",
+                "raw_request_blob_id",
+                "INTEGER",
+                existing_columns=existing_monitor_network_columns,
+            )
+            existing_monitor_network_columns = _ensure_sqlite_column(
+                connection,
+                "monitor_network_records",
+                "raw_response_blob_id",
+                "INTEGER",
+                existing_columns=existing_monitor_network_columns,
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_monitor_network_records_raw_request_blob_id "
+                    "ON monitor_network_records (raw_request_blob_id)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_monitor_network_records_raw_response_blob_id "
+                    "ON monitor_network_records (raw_response_blob_id)"
+                )
+            )
+    _migrate_monitor_network_records_to_network_audit()
     with engine.begin() as connection:
         # --- ADR-034: Runtime Card Projection table ---
         RuntimeCardProjection.__table__.create(bind=connection, checkfirst=True)
@@ -1690,6 +1938,15 @@ def get_db():
 def get_telemetry_db():
     """Yield a telemetry database session."""
     db = TelemetrySessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_network_audit_db():
+    """Yield a network audit database session."""
+    db = NetworkAuditSessionLocal()
     try:
         yield db
     finally:

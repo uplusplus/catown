@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String, Text
 
-from models.database import TelemetryBase
+from models.database import NetworkAuditBase, TelemetryBase
 
 
 class LLMCall(TelemetryBase):
@@ -78,7 +78,25 @@ class Event(TelemetryBase):
     )
 
 
-class MonitorNetworkRecord(TelemetryBase):
+class MonitorNetworkBlob(NetworkAuditBase):
+    """File-backed raw payload attached to one network audit record."""
+
+    __tablename__ = "monitor_network_blobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True, nullable=False)
+    kind = Column(String, nullable=False, index=True)
+    content_sha256 = Column(String, nullable=False, index=True)
+    content_bytes = Column(Integer, default=0)
+    storage_path = Column(Text, nullable=False)
+    content_type = Column(String, nullable=False, default="")
+
+    __table_args__ = (
+        Index("ix_monitor_network_blobs_created_kind", "created_at", "kind"),
+    )
+
+
+class MonitorNetworkRecord(NetworkAuditBase):
     """Persisted monitor network events for crash-safe troubleshooting."""
 
     __tablename__ = "monitor_network_records"
@@ -108,6 +126,8 @@ class MonitorNetworkRecord(TelemetryBase):
     client_source = Column(String, nullable=False, default="", index=True)
     raw_request = Column(Text, nullable=False, default="")
     raw_response = Column(Text, nullable=False, default="")
+    raw_request_blob_id = Column(Integer, nullable=True, index=True)
+    raw_response_blob_id = Column(Integer, nullable=True, index=True)
     request_headers_json = Column(Text, nullable=False, default="{}")
     response_headers_json = Column(Text, nullable=False, default="{}")
     metadata_json = Column(Text, nullable=False, default="{}")

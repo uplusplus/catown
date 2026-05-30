@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import hashlib
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
-from models.audit import Event, LLMCall, MonitorNetworkRecord, ToolCall
-from models.database import TelemetrySessionLocal
+from config import settings
+from models.audit import Event, LLMCall, MonitorNetworkBlob, MonitorNetworkRecord, ToolCall
+from models.database import NetworkAuditSessionLocal, TelemetrySessionLocal, network_audit_engine
 
 logger = logging.getLogger("catown.telemetry")
 
@@ -124,10 +127,21 @@ class TelemetryWriter:
                 self._queue.task_done()
 
     def _process_batch(self, batch: list[_Request]) -> None:
+        network_requests = [
+            req for req in batch if req.kind in {"network_record", "create_network_record"}
+        ]
+        telemetry_requests = [
+            req for req in batch if req.kind not in {"network_record", "create_network_record"}
+        ]
+
+        if network_requests:
+            self._process_network_batch(network_requests)
+        if telemetry_requests:
+            self._process_telemetry_batch(telemetry_requests)
+
+    def _process_telemetry_batch(self, batch: list[_Request]) -> None:
         db = TelemetrySessionLocal()
         try:
-            if any(req.kind in {"network_record", "create_network_record"} for req in batch):
-                MonitorNetworkRecord.__table__.create(bind=db.get_bind(), checkfirst=True)
             for req in batch:
                 if req.kind == "__flush__":
                     continue
@@ -145,13 +159,32 @@ class TelemetryWriter:
                 if req.done is not None:
                     req.done.set()
 
+    def _process_network_batch(self, batch: list[_Request]) -> None:
+        db = NetworkAuditSessionLocal()
+        try:
+            MonitorNetworkBlob.__table__.create(bind=network_audit_engine, checkfirst=True)
+            MonitorNetworkRecord.__table__.create(bind=network_audit_engine, checkfirst=True)
+            for req in batch:
+                req.result = self._dispatch(db, req.kind, req.payload)
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.warning("[TelemetryWriter] Failed to persist network audit batch: %s", exc)
+            for req in batch:
+                req.error = exc
+        finally:
+            db.close()
+            for req in batch:
+                if req.done is not None:
+                    req.done.set()
+
     def _dispatch(self, db, kind: str, payload: dict[str, Any]) -> Any:
         if kind == "network_record":
-            row = self._build_network_record(payload)
+            row = self._build_network_record(db, payload)
             db.add(row)
             return None
         if kind == "create_network_record":
-            row = self._build_network_record(payload)
+            row = self._build_network_record(db, payload)
             db.add(row)
             db.flush()
             return int(row.id)
@@ -181,7 +214,17 @@ class TelemetryWriter:
             return int(row.id)
         raise ValueError(f"Unknown telemetry writer request kind: {kind}")
 
-    def _build_network_record(self, normalized: dict[str, Any]) -> MonitorNetworkRecord:
+    def _build_network_record(self, db, normalized: dict[str, Any]) -> MonitorNetworkRecord:
+        raw_request, raw_request_blob_id = self._extract_network_payload_blob(
+            db,
+            normalized.get("raw_request", ""),
+            kind="request",
+        )
+        raw_response, raw_response_blob_id = self._extract_network_payload_blob(
+            db,
+            normalized.get("raw_response", ""),
+            kind="response",
+        )
         return MonitorNetworkRecord(
             created_at=self._coerce_datetime(normalized["created_at"]),
             task_run_id=normalized.get("task_run_id"),
@@ -205,12 +248,40 @@ class TelemetryWriter:
             preview=normalized["preview"],
             error=normalized["error"],
             client_source=normalized["client_source"],
-            raw_request=normalized["raw_request"],
-            raw_response=normalized["raw_response"],
+            raw_request=raw_request,
+            raw_response=raw_response,
+            raw_request_blob_id=raw_request_blob_id,
+            raw_response_blob_id=raw_response_blob_id,
             request_headers_json=json.dumps(normalized["request_headers"], ensure_ascii=False),
             response_headers_json=json.dumps(normalized["response_headers"], ensure_ascii=False),
             metadata_json=json.dumps(normalized["metadata"], ensure_ascii=False),
         )
+
+    def _extract_network_payload_blob(self, db, value: Any, *, kind: str) -> tuple[str, int | None]:
+        text = str(value or "")
+        if not text:
+            return "", None
+
+        data = text.encode("utf-8")
+        if len(data) <= settings.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES:
+            return text, None
+
+        digest = hashlib.sha256(data).hexdigest()
+        relative_path = Path(digest[:2]) / f"{digest}.txt"
+        absolute_path = settings.NETWORK_AUDIT_PAYLOADS_DIR / relative_path
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        if not absolute_path.exists():
+            absolute_path.write_bytes(data)
+        blob = MonitorNetworkBlob(
+            kind=kind,
+            content_sha256=digest,
+            content_bytes=len(data),
+            storage_path=relative_path.as_posix(),
+            content_type="text/plain; charset=utf-8",
+        )
+        db.add(blob)
+        db.flush()
+        return "", int(blob.id)
 
     @staticmethod
     def _filtered_model_payload(model_cls: type[Any], payload: dict[str, Any]) -> dict[str, Any]:

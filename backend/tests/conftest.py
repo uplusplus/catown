@@ -114,6 +114,9 @@ def fresh_db(tmp_path, monkeypatch):
     """创建全新的测试数据库（含所有表）"""
     db_path = str(tmp_path / "test_fresh.db")
     monkeypatch.setenv("DATABASE_URL", db_path)
+    monkeypatch.setenv("TELEMETRY_DATABASE_URL", str(tmp_path / "test_telemetry.db"))
+    monkeypatch.setenv("NETWORK_AUDIT_DATABASE_URL", str(tmp_path / "test_network_audit.db"))
+    monkeypatch.setenv("NETWORK_AUDIT_PAYLOADS_DIR", str(tmp_path / "network-audit-payloads"))
 
     # 重新导入以使用新的 DATABASE_URL
     import importlib
@@ -128,6 +131,7 @@ def fresh_db(tmp_path, monkeypatch):
 
     db_mod.Base.metadata.create_all(bind=db_mod.engine)
     db_mod.TelemetryBase.metadata.create_all(bind=db_mod.telemetry_engine)
+    db_mod.NetworkAuditBase.metadata.create_all(bind=db_mod.network_audit_engine)
     return db_mod
 
 

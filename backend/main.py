@@ -483,10 +483,11 @@ async def _start_file_watcher():
     file_watcher.start(loop)
     if monitor_network_buffer.install():
         logger.info(
-            "[Monitor] Network events persist to %s with %sh retention (max %s rows)",
-            settings.TELEMETRY_DATABASE_URL,
+            "[Monitor] Network audit events persist to %s with %sh retention (max %s rows, raw payloads in %s)",
+            settings.NETWORK_AUDIT_DATABASE_URL,
             settings.MONITOR_NETWORK_RETENTION_HOURS,
             settings.MONITOR_NETWORK_MAX_PERSISTED,
+            settings.NETWORK_AUDIT_PAYLOADS_DIR,
         )
 
     # Start sleep scheduler for memory consolidation

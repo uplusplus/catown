@@ -19,6 +19,9 @@ def _make_app(tmp_path):
     os.environ["DATABASE_URL"] = str(tmp_path / "test.db")
     os.environ["CATOWN_HOME"] = str(tmp_path / "catown-home")
     os.environ["CATOWN_STATE_DIR"] = str(tmp_path / "catown-state")
+    os.environ["TELEMETRY_DATABASE_URL"] = str(tmp_path / "catown-state" / "telemetry.db")
+    os.environ["NETWORK_AUDIT_DATABASE_URL"] = str(tmp_path / "catown-state" / "network_audit.db")
+    os.environ["NETWORK_AUDIT_PAYLOADS_DIR"] = str(tmp_path / "catown-state" / "network-audit-payloads")
     os.environ["MONITOR_NETWORK_RETENTION_HOURS"] = "24"
     os.environ["MONITOR_NETWORK_MAX_PERSISTED"] = "100"
 
@@ -1606,14 +1609,98 @@ class TestMonitorOverview:
         payload = get_response.json()
         assert any(entry["id"] == event_id and entry["host"] == "example.com" for entry in payload["entries"])
 
+    def test_network_startup_migrates_legacy_telemetry_records(self, tmp_path):
+        from datetime import datetime
+        from fastapi.testclient import TestClient
+        from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine
+
+        state_dir = tmp_path / "catown-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        telemetry_db = state_dir / "telemetry.db"
+        legacy_engine = create_engine(f"sqlite:///{telemetry_db}")
+        metadata = MetaData()
+        legacy_table = Table(
+            "monitor_network_records",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("created_at", DateTime),
+            Column("category", String),
+            Column("source", String),
+            Column("protocol", String),
+            Column("from_entity", String),
+            Column("to_entity", String),
+            Column("method", String),
+            Column("url", Text),
+            Column("host", String),
+            Column("path", String),
+            Column("status_code", Integer),
+            Column("success", Boolean),
+            Column("request_bytes", Integer),
+            Column("response_bytes", Integer),
+            Column("total_bytes", Integer),
+            Column("duration_ms", Integer),
+            Column("content_type", String),
+            Column("preview", Text),
+            Column("error", Text),
+            Column("client_source", String),
+            Column("raw_request", Text),
+            Column("raw_response", Text),
+            Column("request_headers_json", Text),
+            Column("response_headers_json", Text),
+            Column("metadata_json", Text),
+        )
+        metadata.create_all(bind=legacy_engine)
+        with legacy_engine.begin() as connection:
+            connection.execute(
+                legacy_table.insert(),
+                {
+                    "id": 42,
+                    "created_at": datetime.now(),
+                    "category": "backend_llm",
+                    "source": "backend",
+                    "protocol": "HTTPS",
+                    "from_entity": "agent",
+                    "to_entity": "LLM (legacy.example.com)",
+                    "method": "POST",
+                    "url": "https://legacy.example.com/v1/chat/completions",
+                    "host": "legacy.example.com",
+                    "path": "/v1/chat/completions",
+                    "status_code": 200,
+                    "success": True,
+                    "request_bytes": 12,
+                    "response_bytes": 34,
+                    "total_bytes": 46,
+                    "duration_ms": 123,
+                    "content_type": "application/json",
+                    "preview": "legacy network row",
+                    "error": "",
+                    "client_source": "pytest",
+                    "raw_request": "{\"legacy\":true}",
+                    "raw_response": "{\"ok\":true}",
+                    "request_headers_json": "{}",
+                    "response_headers_json": "{}",
+                    "metadata_json": "{}",
+                },
+            )
+
+        client = TestClient(_make_app(tmp_path), base_url="http://testserver", headers={"X-Catown-Client": "test"})
+        response = client.get("/api/monitor/network?limit=20")
+        assert response.status_code == 200
+        payload = response.json()
+        entry = next(item for item in payload["entries"] if item["host"] == "legacy.example.com")
+
+        assert entry["id"] == 42
+        assert entry["raw_request"] == "{\"legacy\":true}"
+        assert entry["metadata"]["migrated_from_telemetry_record_id"] == 42
+
     def test_network_append_recreates_missing_table(self, tmp_path):
         _make_app(tmp_path)
         from models.audit import MonitorNetworkRecord
-        from models.database import telemetry_engine
+        from models.database import network_audit_engine
         from monitoring import monitor_network_buffer
 
         monitor_network_buffer.clear()
-        MonitorNetworkRecord.__table__.drop(bind=telemetry_engine, checkfirst=True)
+        MonitorNetworkRecord.__table__.drop(bind=network_audit_engine, checkfirst=True)
 
         event = monitor_network_buffer.append(
             {
@@ -1751,7 +1838,7 @@ class TestMonitorOverview:
 
         _make_app(tmp_path)
         from models.audit import MonitorNetworkRecord
-        from models.database import TelemetrySessionLocal
+        from models.database import NetworkAuditSessionLocal
         from monitoring import monitor_network_buffer
 
         monitor_network_buffer.clear()
@@ -1760,7 +1847,7 @@ class TestMonitorOverview:
         previous_hours = settings.MONITOR_NETWORK_RETENTION_HOURS
         settings.MONITOR_NETWORK_RETENTION_HOURS = 24 * 7
         try:
-            db = TelemetrySessionLocal()
+            db = NetworkAuditSessionLocal()
             try:
                 db.add(
                     MonitorNetworkRecord(
@@ -1806,6 +1893,54 @@ class TestMonitorOverview:
         urls = [entry["url"] for entry in entries]
         assert "https://old.example.com/stale" not in urls
         assert "https://fresh.example.com/kept" in urls
+
+    def test_network_large_raw_payload_is_file_backed(self, tmp_path, monkeypatch):
+        _make_app(tmp_path)
+        from config import settings
+        from models.audit import MonitorNetworkBlob, MonitorNetworkRecord
+        from models.database import NetworkAuditSessionLocal
+        from monitoring import monitor_network_buffer
+
+        previous_inline_limit = settings.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES
+        settings.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES = 16
+        monitor_network_buffer.clear()
+        try:
+            monitor_network_buffer.append(
+                {
+                    "category": "backend_llm",
+                    "source": "backend",
+                    "protocol": "HTTPS",
+                    "from_entity": "developer",
+                    "to_entity": "LLM (example.com)",
+                    "method": "POST",
+                    "url": "https://example.com/v1/chat/completions",
+                    "host": "example.com",
+                    "path": "/v1/chat/completions",
+                    "raw_request": "x" * 64,
+                    "raw_response": "y" * 64,
+                },
+                require_persisted_id=True,
+            )
+            entries = monitor_network_buffer.list_entries(limit=20)
+            entry = next(item for item in entries if item["host"] == "example.com")
+
+            db = NetworkAuditSessionLocal()
+            try:
+                record = db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.id == entry["id"]).one()
+                blobs = db.query(MonitorNetworkBlob).all()
+            finally:
+                db.close()
+        finally:
+            settings.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES = previous_inline_limit
+
+        assert record.raw_request == ""
+        assert record.raw_response == ""
+        assert record.raw_request_blob_id is not None
+        assert record.raw_response_blob_id is not None
+        assert len(blobs) == 2
+        assert entry["raw_request"] == "x" * 64
+        assert entry["raw_response"] == "y" * 64
+        assert all((settings.NETWORK_AUDIT_PAYLOADS_DIR / blob.storage_path).exists() for blob in blobs)
 
     def test_network_api_skips_internal_traffic_before_limit(self, client):
         from monitoring import monitor_network_buffer

@@ -83,12 +83,15 @@ class MonitorNetworkBuffer:
         try:
             if not self._ensure_persisted_table():
                 return
-            from models.audit import MonitorNetworkRecord
-            from models.database import TelemetrySessionLocal
+            from models.audit import MonitorNetworkBlob, MonitorNetworkRecord
+            from models.database import NetworkAuditSessionLocal
 
-            db = TelemetrySessionLocal()
+            db = NetworkAuditSessionLocal()
             try:
+                for blob in db.query(MonitorNetworkBlob).all():
+                    self._delete_blob_file(blob.storage_path)
                 db.query(MonitorNetworkRecord).delete()
+                db.query(MonitorNetworkBlob).delete()
                 db.commit()
             finally:
                 db.close()
@@ -238,9 +241,9 @@ class MonitorNetworkBuffer:
             return []
         try:
             from models.audit import MonitorNetworkRecord
-            from models.database import TelemetrySessionLocal
+            from models.database import NetworkAuditSessionLocal
 
-            db = TelemetrySessionLocal()
+            db = NetworkAuditSessionLocal()
             try:
                 rows = db.query(MonitorNetworkRecord)
                 if after_id is not None:
@@ -269,10 +272,10 @@ class MonitorNetworkBuffer:
             return 0
         try:
             from models.audit import MonitorNetworkRecord
-            from models.database import TelemetrySessionLocal
+            from models.database import NetworkAuditSessionLocal
             from sqlalchemy import func
 
-            db = TelemetrySessionLocal()
+            db = NetworkAuditSessionLocal()
             try:
                 value = db.query(func.max(MonitorNetworkRecord.id)).scalar()
                 return int(value or 0)
@@ -308,8 +311,8 @@ class MonitorNetworkBuffer:
     def _cleanup_persisted(self) -> None:
         if not self._ensure_persisted_table():
             return
-        from models.audit import MonitorNetworkRecord
-        from models.database import SessionLocal, TaskRun, TelemetrySessionLocal
+        from models.audit import MonitorNetworkBlob, MonitorNetworkRecord
+        from models.database import NetworkAuditSessionLocal
 
         try:
             telemetry_writer.flush(timeout=5.0)
@@ -317,34 +320,17 @@ class MonitorNetworkBuffer:
             self._warn_persistence_fallback(exc)
             return
 
-        db = TelemetrySessionLocal()
+        db = NetworkAuditSessionLocal()
         try:
-            app_db = SessionLocal()
-            try:
-                active_task_run_ids = {
-                    int(task_run_id)
-                    for (task_run_id,) in app_db.query(TaskRun.id).all()
-                    if task_run_id is not None
-                }
-            finally:
-                app_db.close()
             cutoff = datetime.now() - timedelta(hours=settings.MONITOR_NETWORK_RETENTION_HOURS)
-            db.query(MonitorNetworkRecord).filter(
-                MonitorNetworkRecord.task_run_id.is_(None),
-                MonitorNetworkRecord.created_at < cutoff,
-            ).delete()
-            orphaned_rows = db.query(MonitorNetworkRecord).filter(
-                MonitorNetworkRecord.task_run_id.is_not(None)
-            )
-            if active_task_run_ids:
-                orphaned_rows = orphaned_rows.filter(
-                    ~MonitorNetworkRecord.task_run_id.in_(active_task_run_ids)
-                )
-            orphaned_rows.delete(synchronize_session=False)
+            expired_rows = db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.created_at < cutoff)
+            stale_ids = {row_id for (row_id,) in expired_rows.with_entities(MonitorNetworkRecord.id).all()}
+            if stale_ids:
+                self._delete_network_rows(db, sorted(stale_ids))
             db.commit()
 
             while True:
-                total = db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.task_run_id.is_(None)).count()
+                total = db.query(MonitorNetworkRecord).count()
                 overflow = total - settings.MONITOR_NETWORK_MAX_PERSISTED
                 if overflow <= 0:
                     break
@@ -352,7 +338,6 @@ class MonitorNetworkBuffer:
                     row_id
                     for (row_id,) in (
                         db.query(MonitorNetworkRecord.id)
-                        .filter(MonitorNetworkRecord.task_run_id.is_(None))
                         .order_by(MonitorNetworkRecord.created_at.asc(), MonitorNetworkRecord.id.asc())
                         .limit(overflow)
                         .all()
@@ -360,10 +345,25 @@ class MonitorNetworkBuffer:
                 ]
                 if not stale_ids:
                     break
-                db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.id.in_(stale_ids)).delete(
-                    synchronize_session=False
-                )
+                self._delete_network_rows(db, stale_ids)
                 db.commit()
+
+            referenced_blob_ids = {
+                int(blob_id)
+                for row in db.query(
+                    MonitorNetworkRecord.raw_request_blob_id,
+                    MonitorNetworkRecord.raw_response_blob_id,
+                ).all()
+                for blob_id in row
+                if blob_id is not None
+            }
+            blob_query = db.query(MonitorNetworkBlob)
+            if referenced_blob_ids:
+                blob_query = blob_query.filter(~MonitorNetworkBlob.id.in_(referenced_blob_ids))
+            for blob in blob_query.all():
+                self._delete_blob_file(blob.storage_path)
+                db.delete(blob)
+            db.commit()
         except Exception as exc:
             db.rollback()
             self._warn_persistence_fallback(exc)
@@ -372,8 +372,8 @@ class MonitorNetworkBuffer:
 
     def _ensure_persisted_table(self, *, force: bool = False) -> bool:
         try:
-            from models.audit import MonitorNetworkRecord
-            from models.database import telemetry_engine
+            from models.audit import MonitorNetworkBlob, MonitorNetworkRecord
+            from models.database import network_audit_engine
         except Exception as exc:
             self._warn_persistence_fallback(exc)
             return False
@@ -384,7 +384,8 @@ class MonitorNetworkBuffer:
                 return True
 
         try:
-            MonitorNetworkRecord.__table__.create(bind=telemetry_engine, checkfirst=True)
+            MonitorNetworkBlob.__table__.create(bind=network_audit_engine, checkfirst=True)
+            MonitorNetworkRecord.__table__.create(bind=network_audit_engine, checkfirst=True)
         except Exception as exc:
             self._warn_persistence_fallback(exc)
             return False
@@ -396,11 +397,54 @@ class MonitorNetworkBuffer:
 
     def _database_key(self) -> str:
         try:
-            from models.database import telemetry_engine
+            from models.database import network_audit_engine
 
-            return str(telemetry_engine.url)
+            return str(network_audit_engine.url)
         except Exception:
             return "<unknown>"
+
+    def _delete_network_rows(self, db: Any, row_ids: list[int]) -> None:
+        if not row_ids:
+            return
+        from models.audit import MonitorNetworkBlob, MonitorNetworkRecord
+
+        rows = db.query(
+            MonitorNetworkRecord.raw_request_blob_id,
+            MonitorNetworkRecord.raw_response_blob_id,
+        ).filter(MonitorNetworkRecord.id.in_(row_ids)).all()
+        blob_ids = {
+            int(blob_id)
+            for row in rows
+            for blob_id in row
+            if blob_id is not None
+        }
+        db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.id.in_(row_ids)).delete(
+            synchronize_session=False
+        )
+        db.flush()
+        if blob_ids:
+            for blob in db.query(MonitorNetworkBlob).filter(MonitorNetworkBlob.id.in_(blob_ids)).all():
+                still_referenced = db.query(MonitorNetworkRecord.id).filter(
+                    (MonitorNetworkRecord.raw_request_blob_id == blob.id)
+                    | (MonitorNetworkRecord.raw_response_blob_id == blob.id)
+                ).first()
+                if still_referenced:
+                    continue
+                self._delete_blob_file(blob.storage_path)
+                db.delete(blob)
+
+    @staticmethod
+    def _delete_blob_file(storage_path: str | None) -> None:
+        if not storage_path:
+            return
+        try:
+            target = (settings.NETWORK_AUDIT_PAYLOADS_DIR / storage_path).resolve()
+            root = settings.NETWORK_AUDIT_PAYLOADS_DIR.resolve()
+            if root not in target.parents and target != root:
+                return
+            target.unlink(missing_ok=True)
+        except Exception:
+            return
 
     def _warn_persistence_fallback(self, exc: Exception) -> None:
         database_key = self._database_key()
@@ -449,12 +493,38 @@ class MonitorNetworkBuffer:
             "preview": row.preview or "",
             "error": row.error or "",
             "client_source": row.client_source or "",
-            "raw_request": row.raw_request or "",
-            "raw_response": row.raw_response or "",
+            "raw_request": row.raw_request or MonitorNetworkBuffer._read_blob_text(getattr(row, "raw_request_blob_id", None)),
+            "raw_response": row.raw_response or MonitorNetworkBuffer._read_blob_text(getattr(row, "raw_response_blob_id", None)),
+            "raw_request_blob_id": MonitorNetworkBuffer._int_or_none(getattr(row, "raw_request_blob_id", None)),
+            "raw_response_blob_id": MonitorNetworkBuffer._int_or_none(getattr(row, "raw_response_blob_id", None)),
             "request_headers": MonitorNetworkBuffer._json_dict(row.request_headers_json),
             "response_headers": MonitorNetworkBuffer._json_dict(row.response_headers_json),
             "metadata": metadata,
         }
+
+    @staticmethod
+    def _read_blob_text(blob_id: Any) -> str:
+        normalized_blob_id = MonitorNetworkBuffer._int_or_none(blob_id)
+        if normalized_blob_id is None:
+            return ""
+        try:
+            from models.audit import MonitorNetworkBlob
+            from models.database import NetworkAuditSessionLocal
+
+            db = NetworkAuditSessionLocal()
+            try:
+                blob = db.query(MonitorNetworkBlob).filter(MonitorNetworkBlob.id == normalized_blob_id).first()
+                if blob is None:
+                    return ""
+                target = (settings.NETWORK_AUDIT_PAYLOADS_DIR / str(blob.storage_path or "")).resolve()
+                root = settings.NETWORK_AUDIT_PAYLOADS_DIR.resolve()
+                if root not in target.parents and target != root:
+                    return ""
+                return target.read_text(encoding="utf-8")
+            finally:
+                db.close()
+        except Exception:
+            return ""
 
     @staticmethod
     def _json_dict(value: str | None) -> dict[str, Any]:

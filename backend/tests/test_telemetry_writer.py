@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 from datetime import datetime, timezone
+from sqlalchemy import inspect
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -114,9 +115,13 @@ class TestTelemetryWriter:
                 llm = db.query(audit_mod.LLMCall).filter(audit_mod.LLMCall.id == llm_id).one()
                 tool = db.query(audit_mod.ToolCall).filter(audit_mod.ToolCall.id == tool_id).one()
                 event = db.query(audit_mod.Event).filter(audit_mod.Event.id == event_id).one()
-                records = db.query(audit_mod.MonitorNetworkRecord).all()
             finally:
                 db.close()
+            network_db = db_mod.NetworkAuditSessionLocal()
+            try:
+                records = network_db.query(audit_mod.MonitorNetworkRecord).all()
+            finally:
+                network_db.close()
 
             assert llm.response_content == "done"
             assert llm.token_input == 11
@@ -125,6 +130,8 @@ class TestTelemetryWriter:
             assert event.summary == "tool ok"
             assert len(records) == 1
             assert records[0].host == "example.com"
+            assert "monitor_network_records" not in inspect(db_mod.telemetry_engine).get_table_names()
+            assert "monitor_network_records" in inspect(db_mod.network_audit_engine).get_table_names()
         finally:
             writer.stop(drain=True)
 
@@ -191,7 +198,7 @@ class TestTelemetryWriter:
 
             assert writer.flush(timeout=10.0)
 
-            db = db_mod.TelemetrySessionLocal()
+            db = db_mod.NetworkAuditSessionLocal()
             try:
                 rows = db.query(audit_mod.MonitorNetworkRecord).order_by(
                     audit_mod.MonitorNetworkRecord.id.asc()

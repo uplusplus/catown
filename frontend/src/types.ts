@@ -1461,6 +1461,8 @@ export type MonitorNetworkEvent = {
   client_source?: string;
   raw_request?: string;
   raw_response?: string;
+  raw_request_blob_id?: number | null;
+  raw_response_blob_id?: number | null;
   request_headers?: Record<string, string>;
   response_headers?: Record<string, string>;
   metadata?: Record<string, unknown>;

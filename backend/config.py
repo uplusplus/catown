@@ -245,9 +245,18 @@ class Settings:
         self.TELEMETRY_DATABASE_URL: str = os.getenv(
             "TELEMETRY_DATABASE_URL", str(self.STATE_DIR / "telemetry.db")
         )
+        self.NETWORK_AUDIT_DATABASE_URL: str = os.getenv(
+            "NETWORK_AUDIT_DATABASE_URL", str(self.STATE_DIR / "network_audit.db")
+        )
+        self.NETWORK_AUDIT_PAYLOADS_DIR: Path = Path(
+            os.getenv("NETWORK_AUDIT_PAYLOADS_DIR", str(self.STATE_DIR / "network-audit-payloads"))
+        ).expanduser().resolve()
         self.SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(self.DATABASE_URL)
         self.TELEMETRY_SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(
             self.TELEMETRY_DATABASE_URL
+        )
+        self.NETWORK_AUDIT_SQLALCHEMY_DATABASE_URL: str = _to_sqlalchemy_db_url(
+            self.NETWORK_AUDIT_DATABASE_URL
         )
         self.DB_POOL_SIZE: int = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
         self.DB_MAX_OVERFLOW: int = max(0, int(os.getenv("DB_MAX_OVERFLOW", "20")))
@@ -264,6 +273,9 @@ class Settings:
         self.MONITOR_NETWORK_MAX_PERSISTED: int = max(
             1, int(os.getenv("MONITOR_NETWORK_MAX_PERSISTED", "50000"))
         )
+        self.MONITOR_NETWORK_RAW_INLINE_MAX_BYTES: int = max(
+            0, int(os.getenv("MONITOR_NETWORK_RAW_INLINE_MAX_BYTES", "8192"))
+        )
         self.MONITOR_NETWORK_CLEANUP_INTERVAL_SECONDS: int = max(
             10, int(os.getenv("MONITOR_NETWORK_CLEANUP_INTERVAL_SECONDS", "300"))
         )
@@ -278,6 +290,7 @@ class Settings:
             self.PROJECTS_ROOT,
             self.WORKSPACES_DIR,
             self.SKILLS_DIR,
+            self.NETWORK_AUDIT_PAYLOADS_DIR,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -331,6 +344,8 @@ class SettingsProxy:
         "SKILL_MARKETPLACES_CONFIG_FILE",
         "DATABASE_URL",
         "TELEMETRY_DATABASE_URL",
+        "NETWORK_AUDIT_DATABASE_URL",
+        "NETWORK_AUDIT_PAYLOADS_DIR",
         "DB_POOL_SIZE",
         "DB_MAX_OVERFLOW",
         "DB_POOL_TIMEOUT",
@@ -338,6 +353,7 @@ class SettingsProxy:
         "MONITOR_NETWORK_MEMORY_MAX_ENTRIES",
         "MONITOR_NETWORK_RETENTION_HOURS",
         "MONITOR_NETWORK_MAX_PERSISTED",
+        "MONITOR_NETWORK_RAW_INLINE_MAX_BYTES",
         "MONITOR_NETWORK_CLEANUP_INTERVAL_SECONDS",
     )
 

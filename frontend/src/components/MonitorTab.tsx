@@ -6544,10 +6544,10 @@ export function MonitorTab() {
           <h2 style={{ fontSize: 16, fontWeight: 800, margin: 0, flex: 1 }}>Network Transport</h2>
           <span className={`status-pill ${networkStreamState === "connected" ? "status-pill--live" : "status-pill--offline"}`}>
             {networkStreamState === "connected"
-              ? "Network stream live"
+              ? "Network tail live"
               : networkStreamState === "connecting"
-                ? "Network stream connecting"
-                : "Network stream offline"}
+                ? "Opening network tail"
+                : "Network tail offline"}
           </span>
           <button type="button" className="refresh-btn" onClick={() => void refreshNetwork()}>
             Refresh
@@ -6555,7 +6555,7 @@ export function MonitorTab() {
         </div>
         <div className="network-toolbar">
           <p className="small-note network-toolbar__note">
-            Debug view only. No aggregation; each record is shown as one title line plus one raw HTTP wire block.
+            Audit-backed view. Recent rows load from the local network audit store, then this page opens a live tail for new records.
           </p>
           <div className="network-toolbar__controls">
             <label className="small-note network-toolbar__toggle">
