@@ -513,9 +513,11 @@ def materialize_selector_profile_config(
     if cap_ratio is not None:
         ratio_cap = max(1, int(input_window * cap_ratio))
         configured_cap = _positive_int(materialized.get("max_tokens_cap"))
-        # Use max of ratio_cap and min_tokens_cap to ensure minimum budget
+        # effective_cap: ratio-derived value, floored at min_tokens_cap
         effective_cap = max(ratio_cap, min_tokens_cap)
-        materialized["max_tokens_cap"] = min(configured_cap, effective_cap) if configured_cap else effective_cap
+        # ADR-028 §9.6 fix: configured_cap is a floor, not a ceiling.
+        # Use max() so the ratio-derived value never undercuts an explicit config.
+        materialized["max_tokens_cap"] = max(configured_cap, effective_cap) if configured_cap else effective_cap
 
     _materialize_budget_ratio_map(materialized, "max_tokens_by_role", "max_tokens_by_role_ratio", input_window)
     _materialize_budget_ratio_map(materialized, "max_tokens_by_scope", "max_tokens_by_scope_ratio", input_window)
@@ -551,7 +553,9 @@ def _materialize_budget_ratio_map(
             continue
         ratio_budget = max(1, int(input_window * ratio))
         configured_budget = _positive_int(configured_map.get(key))
-        budget[str(key)] = min(configured_budget, ratio_budget) if configured_budget else ratio_budget
+        # ADR-028 §9.6 fix: configured budget is a floor, not a ceiling.
+        # Use max() so ratio-derived values never undercut explicit config.
+        budget[str(key)] = max(configured_budget, ratio_budget) if configured_budget else ratio_budget
     if configured_map:
         for key, value in configured_map.items():
             if str(key) not in budget:

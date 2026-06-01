@@ -513,6 +513,139 @@ Monitor → Compactions 面板应能回答：
 
 ---
 
+---
+
+## 9. 实施审计（2026-06-01）
+
+对 feature/v2 分支代码进行逐项审计，记录各 Phase 的实际落地状态和发现的新问题。
+
+### 9.1 Phase 0 审计：Fragment 预算 + 合并
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| `max_tokens_cap` 提高到 8000 | ✅ 已实施 | `_DEFAULT_SELECTOR_PROFILES["chat_interactive"]["max_tokens_cap"] = 8000` |
+| `max_fragments` 提高到 20 | ✅ 已实施 | |
+| `max_tokens_by_scope` 扩大 | ✅ 已实施 | run=4000, turn=1200, stage=1200 等 |
+| 碎片 fragment 合并 | ✅ 已实施 | `_build_project_chat_overview_fragment()` 合并了 6 个→1 个 |
+
+### 9.2 Phase 1 审计：工具输出过滤
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| `output_filter.py` 模块 | ✅ 存在 | 含 `filter_output()` + `FilterResult` + tee 机制 |
+| `filters/git_filter.py` | ✅ 存在 | |
+| `filters/test_filter.py` | ✅ 存在 | |
+| `filters/build_filter.py` | ✅ 存在 | |
+| `filters/generic_filter.py` | ✅ 存在 | |
+| **集成到 `run_shell_processes.py`** | ✅ **已接入** | `build_tracked_run_shell_result()` (line 767) 调用 `_apply_output_filter()` |
+| 截断顺序 | ⚠️ 可优化 | 先 `read_tracked_run_shell_tail(max_chars=50000)` 截断，再过滤。大输出可能在截断阶段丢失信息 |
+
+### 9.3 Phase 2 审计：History 渐进式压缩
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| `build_recent_history()` 增加 `summarize_threshold` 参数 | ✅ 已实施 | 默认 `limit * 2` |
+| 压缩层（compressed tier）逻辑 | ✅ 已实施 | `_trim_context_value(content, limit=120)` 将中间层消息压缩为 120 字符摘要 |
+| `build_history_summary_fragment()` | ✅ 存在 | 为更早消息生成摘要 fragment |
+
+### 9.4 Phase 3 审计：动态预算派生（Ratio Profiles）
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| `max_tokens_cap_ratio` 字段 | ✅ 已实施 | 默认 0.03 |
+| `max_tokens_by_role_ratio` 字段 | ✅ 已实施 | developer=0.01, user=0.02 |
+| `max_tokens_by_scope_ratio` 字段 | ✅ 已实施 | |
+| `materialize_selector_profile_config()` | ✅ 存在 | |
+| **`min_tokens_cap` 逻辑** | ❌ **有 bug** | 见下方 §9.6 |
+
+### 9.5 Phase 4/5 审计：跨阶段摘要 + LLM 辅助摘要
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| `build_stage_summaries_fragment()` | ✅ 已接入 | `pipeline/engine.py` line 2474 在构建 stage context 时调用 |
+| `summarize_for_context()` | ✅ 存在 | 使用轻量 LLM 做摘要，有 fallback 截断 |
+
+### 9.6 新发现：Ratio Profile `min_tokens_cap` 逻辑反转
+
+**文件**: `backend/services/chat_prompt_builder.py` — `materialize_selector_profile_config()`
+
+**问题代码**:
+
+```python
+min_tokens_cap = 3200
+cap_ratio = _ratio(materialized.pop("max_tokens_cap_ratio", None))
+if cap_ratio is not None:
+    ratio_cap = max(1, int(input_window * cap_ratio))
+    configured_cap = _positive_int(materialized.get("max_tokens_cap"))
+    effective_cap = max(ratio_cap, min_tokens_cap)       # ← 取 max
+    materialized["max_tokens_cap"] = min(configured_cap, effective_cap) if configured_cap else effective_cap
+```
+
+**推导（128K 模型，input_window ≈ 112K）**:
+
+```
+ratio_cap    = 112000 × 0.03 = 3360
+effective_cap = max(3360, 3200) = 3360
+configured_cap = 8000（Phase 0 设置的默认值）
+最终 max_tokens_cap = min(8000, 3360) = 3360  ← 远低于预期的 8000！
+```
+
+**根因**：`min(configured_cap, effective_cap)` 让 ratio cap 成了上限而非下限。本意是 "ratio 计算值不低于 3200 的保底"，实际效果是 "ratio 计算值覆盖了用户配置的更高值"。
+
+**同样的 bug 存在于 `_materialize_budget_ratio_map()` 中**，导致所有 role 和 scope 的预算都被 ratio 削减：
+
+| Scope | 配置值 | 旧值（bug） | 修复后 |
+|---|---|---|---|
+| turn | 1200 | 560 | 1200 |
+| run | 4000 | 1680 | 4000 |
+| stage | 1200 | 560 | 1200 |
+| session | 400 | 224 | 400 |
+| shared_fact | 600 | 336 | 600 |
+| agent_private | 600 | 336 | 600 |
+
+**修复方案**：将 `min()` 改为 `max()`，让配置值作为下限而非上限：
+
+```python
+# materialize_selector_profile_config: max_tokens_cap
+materialized["max_tokens_cap"] = max(configured_cap, effective_cap) if configured_cap else effective_cap
+
+# _materialize_budget_ratio_map: role/scope budgets
+budget[str(key)] = max(configured_budget, ratio_budget) if configured_budget else ratio_budget
+```
+
+### 9.6b 新发现：`stage_developer_context` scope 错误分配
+
+**文件**: `backend/services/context_builder.py` — `build_stage_developer_context()`
+
+**问题**：当 `stage_cfg is None`（聊天交互模式，非 Pipeline），`stage_developer_context`（工具列表 + skills 提示，约 400 tokens）被分配到 `TURN` scope。
+
+**影响**：`TURN` scope 预算 1200 tokens，但该 scope 下的 fragment 已有 ~1000 tokens（standalone_note + history_summary + boss_instruction + previous_agent_work + tool_round_summaries），加上 stage_developer_context 的 400 tokens 共 1400 tokens，溢出 17%。
+
+**修复**：将 fallback scope 从 `TURN` 改为 `RUN`。工具列表和 skills 提示是运行时常量，不随轮次变化，应归入 `RUN` scope。
+
+修复后 TURN scope 从 117% 降至 83%，RUN scope 从 37% 升至 41%，两者均在健康范围内。
+
+### 9.7 新发现：工具输出截断顺序与 fragment 预算交互
+
+**路径**: `run_shell_processes.py` → `read_tracked_run_shell_tail(max_chars=50000)` → `_apply_output_filter()`
+
+工具输出先截断到 50000 chars（≈12500 tokens），再经过 output_filter 压缩。对于超大输出（如 200+ 测试用例），截断阶段可能丢失尾部的失败信息。
+
+此外，过滤后的工具输出通过 `current_input_messages` 注入 prompt，受 `max_tokens_by_scope.turn` 约束（1200 tokens）。当多个工具调用结果累积时，turn scope 预算仍然紧张。
+
+### 9.8 修正优先级（修订）
+
+| 优先级 | 修正项 | 状态 | 预期效果 |
+|---|---|---|---|
+| **P0** | 修复 ratio `min_tokens_cap` 逻辑（含 role/scope budgets） | ✅ 已修复 | 所有预算从 ratio 削减恢复到配置值 |
+| **P0** | `stage_developer_context` scope TURN→RUN | ✅ 已修复 | TURN scope 从 117% 降至 83% |
+| **P0** | 接入 `output_filter` | ✅ 已接入 | 工具输出 token -60~96% |
+| **P1** | History 渐进式压缩 | ✅ 已实施 | 三层压缩（full/compressed/excluded） |
+| **P1** | 跨阶段摘要 | ✅ 已接入 | Pipeline stage summaries 注入下游 |
+| **P2** | 优化截断顺序（过滤前 vs 过滤后） | 待评估 | 大输出场景信息保留更完整 |
+
+---
+
 ## 参考
 
 - RTK (Rust Token Killer): https://github.com/rtk-ai/rtk

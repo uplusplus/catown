@@ -431,7 +431,9 @@ def build_stage_developer_context(
     return ContextFragment(
         role="developer",
         content="\n\n".join(parts),
-        scope=ContextScope.STAGE if stage_cfg is not None else ContextScope.TURN,
+        # ADR-028 fix: when no stage_cfg, tool/skill context is a runtime constant,
+        # not per-turn. Use RUN scope to avoid overcrowding the TURN budget.
+        scope=ContextScope.STAGE if stage_cfg is not None else ContextScope.RUN,
         visibility=ContextVisibility.AGENT,
         source="stage_developer_context",
         priority=40,
