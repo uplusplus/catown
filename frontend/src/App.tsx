@@ -4064,27 +4064,73 @@ function App() {
     }
   }
 
+  const ACTIVE_SEND_TASK_RUN_LOOKUP_TIMEOUT_MS = 900;
+  const ACTIVE_SEND_TASK_RUN_LOOKUP_POLL_INTERVAL_MS = 80;
+
   function findLatestInterruptibleRunningTaskRun(rows: TaskRunSummary[]) {
     return rows.find((run) => (run.status || "").toLowerCase() === "running" && isInterruptibleChatRun(run)) ?? null;
   }
 
-  async function resolveActiveTaskRunIdForCurrentSend(chatId: number) {
+  async function resolveActiveTaskRunIdForCurrentSend(
+    chatId: number,
+    options: {
+      clientTurnId?: string | null;
+      initialTaskRunId?: number | null;
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+    } = {},
+  ) {
+    const initialTaskRunId =
+      typeof options.initialTaskRunId === "number" && options.initialTaskRunId > 0
+        ? options.initialTaskRunId
+        : null;
+    if (initialTaskRunId !== null) {
+      return initialTaskRunId;
+    }
     if (typeof activeSendTaskRunIdRef.current === "number" && activeSendTaskRunIdRef.current > 0) {
       return activeSendTaskRunIdRef.current;
     }
 
-    const activeTurnId = activeSendClientTurnIdRef.current?.trim();
-    if (activeTurnId) {
-      try {
-        const rows = await api.getTaskRuns(chatId, activeTurnId);
-        const matchingRun = findLatestInterruptibleRunningTaskRun(rows);
-        if (matchingRun) {
-          activeSendTaskRunIdRef.current = matchingRun.id;
-          return matchingRun.id;
-        }
-      } catch {
-        // Fall back to the latest in-memory task run below.
+    const activeTurnId = (options.clientTurnId ?? activeSendClientTurnIdRef.current ?? "").trim();
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 0);
+    const pollIntervalMs = Math.max(40, options.pollIntervalMs ?? ACTIVE_SEND_TASK_RUN_LOOKUP_POLL_INTERVAL_MS);
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+      if (typeof activeSendTaskRunIdRef.current === "number" && activeSendTaskRunIdRef.current > 0) {
+        return activeSendTaskRunIdRef.current;
       }
+
+      if (activeTurnId) {
+        try {
+          const rows = await api.getTaskRuns(chatId, activeTurnId);
+          const matchingRun = findLatestInterruptibleRunningTaskRun(rows);
+          if (matchingRun) {
+            activeSendTaskRunIdRef.current = matchingRun.id;
+            return matchingRun.id;
+          }
+        } catch {
+          // Fall back to the latest in-memory task run below.
+        }
+      }
+
+      const inMemoryMatch = findLatestInterruptibleRunningTaskRun(
+        taskRunsRef.current.filter((run) =>
+          run.chatroom_id === chatId && (!activeTurnId || sameClientTurn(run.client_turn_id ?? undefined, activeTurnId))
+        ),
+      );
+      if (inMemoryMatch) {
+        return inMemoryMatch.id;
+      }
+
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
+    }
+
+    if (activeTurnId) {
+      return null;
     }
 
     const matchingRun = findLatestInterruptibleRunningTaskRun(
@@ -4098,8 +4144,20 @@ function App() {
     const controller = sendAbortRef.current;
     if (!chatId && !controller) return false;
 
-    const taskRunId = chatId ? await resolveActiveTaskRunIdForCurrentSend(chatId) : null;
+    const activeTurnId = activeSendClientTurnIdRef.current?.trim() || null;
+    const initialTaskRunId =
+      typeof activeSendTaskRunIdRef.current === "number" && activeSendTaskRunIdRef.current > 0
+        ? activeSendTaskRunIdRef.current
+        : null;
     controller?.abort();
+    const taskRunId = chatId
+      ? await resolveActiveTaskRunIdForCurrentSend(chatId, {
+          clientTurnId: activeTurnId,
+          initialTaskRunId,
+          timeoutMs: initialTaskRunId || !activeTurnId ? 0 : ACTIVE_SEND_TASK_RUN_LOOKUP_TIMEOUT_MS,
+          pollIntervalMs: ACTIVE_SEND_TASK_RUN_LOOKUP_POLL_INTERVAL_MS,
+        })
+      : null;
 
     let cancelled = false;
     if (typeof taskRunId === "number" && taskRunId > 0) {

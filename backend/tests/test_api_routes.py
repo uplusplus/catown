@@ -1391,6 +1391,30 @@ class TestProjectEndpoints:
         assert ("move", None, "src/move.txt", "lib/move.txt") in operation_keys
         assert ("rename", None, "docs/old-name.md", "docs/new-name.md") in operation_keys
 
+    @pytest.mark.asyncio
+    async def test_project_browser_watch_snapshot_async_runs_off_event_loop(self, client, monkeypatch):
+        import routes.api as api_mod
+
+        caller_thread_id = threading.get_ident()
+        worker_thread_ids: list[int] = []
+
+        def fake_snapshot(workspace_path: str):
+            worker_thread_ids.append(threading.get_ident())
+            return {
+                "workspace_path": workspace_path,
+                "files": {},
+                "truncated": False,
+                "snapshot_id": "test",
+            }
+
+        monkeypatch.setattr(api_mod, "_project_browser_watch_snapshot", fake_snapshot)
+
+        result = await api_mod._project_browser_watch_snapshot_async("/tmp/workspace")
+
+        assert result["workspace_path"] == "/tmp/workspace"
+        assert worker_thread_ids
+        assert worker_thread_ids[0] != caller_thread_id
+
     def test_chat_processes_are_projected_by_backend(self, client, monkeypatch):
         import models.database as db_mod
         import routes.api as api_mod

@@ -570,6 +570,30 @@ async def _start_file_watcher():
     except Exception as exc:
         logger.warning(f"[Recovery] Startup task-run recovery failed: {exc}")
 
+    try:
+        from models.database import SessionLocal
+        from services.monitor_projection import (
+            backfill_runtime_card_projections,
+            get_runtime_card_projection_health,
+        )
+
+        db = SessionLocal()
+        try:
+            inserted = backfill_runtime_card_projections(db)
+            projection_health = get_runtime_card_projection_health(db)
+            if inserted or projection_health["missing"]:
+                logger.info(
+                    "[Monitor] Runtime-card projection reconcile inserted %s rows (%s runtime cards / %s projections / %s missing).",
+                    inserted,
+                    projection_health["runtime_cards"],
+                    projection_health["projections"],
+                    projection_health["missing"],
+                )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("[Monitor] Startup runtime-card projection reconcile failed: %s", exc)
+
 @app.on_event("shutdown")
 async def _stop_file_watcher():
     mark_runtime_shutting_down()

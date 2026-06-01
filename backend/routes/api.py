@@ -5030,6 +5030,26 @@ def _stream_project_browser(workspace_path: str):
         yield json.dumps(batch, ensure_ascii=False) + "\n"
 
 
+def _next_project_browser_batch(iterator):
+    try:
+        return True, next(iterator)
+    except StopIteration:
+        return False, None
+
+
+async def _stream_project_browser_async(workspace_path: str, request: Request):
+    iterator = _iter_project_browser_batches(workspace_path)
+    while True:
+        if runtime_is_shutting_down() or await request.is_disconnected():
+            break
+        has_batch, batch = await asyncio.to_thread(_next_project_browser_batch, iterator)
+        if not has_batch:
+            break
+        if await request.is_disconnected():
+            break
+        yield json.dumps(batch, ensure_ascii=False) + "\n"
+
+
 def _scan_project_browser(workspace_path: str) -> ProjectBrowserInfo:
     files: List[ProjectBrowserFileInfo] = []
     artifacts: List[ProjectBrowserArtifactInfo] = []
@@ -5112,6 +5132,10 @@ def _project_browser_watch_snapshot(workspace_path: str) -> dict[str, Any]:
         "truncated": truncated,
         "snapshot_id": snapshot_hash.hexdigest(),
     }
+
+
+async def _project_browser_watch_snapshot_async(workspace_path: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_project_browser_watch_snapshot, workspace_path)
 
 
 def _project_browser_path_parent(path: str) -> str:
@@ -5232,6 +5256,13 @@ def _diff_project_browser_watch_snapshots(previous: dict[str, Any], current: dic
     }
 
 
+async def _diff_project_browser_watch_snapshots_async(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    return await asyncio.to_thread(_diff_project_browser_watch_snapshots, previous, current)
+
+
 async def _stream_project_browser_watch_events(
     workspace_path: str,
     request: Request,
@@ -5240,7 +5271,9 @@ async def _stream_project_browser_watch_events(
 ):
     interval = min(max(poll_interval_seconds, 0.75), 10.0)
     emitted_events = 0
-    previous = _project_browser_watch_snapshot(workspace_path)
+    if runtime_is_shutting_down() or await request.is_disconnected():
+        return
+    previous = await _project_browser_watch_snapshot_async(workspace_path)
     yield json.dumps(
         ProjectBrowserWatchEvent(
             type="ready",
@@ -5269,8 +5302,10 @@ async def _stream_project_browser_watch_events(
         await asyncio.sleep(interval)
         if runtime_is_shutting_down() or await request.is_disconnected():
             break
-        current = _project_browser_watch_snapshot(workspace_path)
-        diff = _diff_project_browser_watch_snapshots(previous, current)
+        current = await _project_browser_watch_snapshot_async(workspace_path)
+        if runtime_is_shutting_down() or await request.is_disconnected():
+            break
+        diff = await _diff_project_browser_watch_snapshots_async(previous, current)
         if diff["changed"]:
             yield json.dumps(
                 ProjectBrowserWatchEvent(
@@ -6366,14 +6401,14 @@ async def get_project_browser(project_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/projects/{project_id}/browser/stream")
-async def stream_project_browser(project_id: int, db: Session = Depends(get_db)):
+async def stream_project_browser(project_id: int, request: Request, db: Session = Depends(get_db)):
     """Stream workspace file/artifact batches as newline-delimited JSON."""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.workspace_path:
         raise HTTPException(status_code=400, detail="Project has no workspace path")
-    return StreamingResponse(_stream_project_browser(project.workspace_path), media_type="application/x-ndjson")
+    return StreamingResponse(_stream_project_browser_async(project.workspace_path, request), media_type="application/x-ndjson")
 
 
 @router.get("/projects/{project_id}/browser/watch")
@@ -6414,7 +6449,7 @@ async def read_project_file(project_id: int, path: str, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.workspace_path:
         raise HTTPException(status_code=400, detail="Project has no workspace path")
-    return _read_project_workspace_file(project.workspace_path, path)
+    return await asyncio.to_thread(_read_project_workspace_file, project.workspace_path, path)
 
 
 @router.put("/projects/{project_id}/files/write", response_model=ProjectFileReadInfo)
@@ -6425,7 +6460,7 @@ async def write_project_file(project_id: int, payload: ProjectFileWriteRequest, 
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.workspace_path:
         raise HTTPException(status_code=400, detail="Project has no workspace path")
-    return _write_project_workspace_file(project.workspace_path, payload)
+    return await asyncio.to_thread(_write_project_workspace_file, project.workspace_path, payload)
 
 
 @router.get("/projects/{project_id}/chat", response_model=ChatInfo)

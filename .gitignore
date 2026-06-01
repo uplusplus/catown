@@ -85,6 +85,7 @@ dmypy.json
 
 # Catown runtime data (only relevant if CATOWN_HOME is pointed into the repo)
 .catown/
+uploads/
 .env
 
 #codex
