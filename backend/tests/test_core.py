@@ -74,7 +74,7 @@ class TestToolRegistry:
         expected = [
             "web_search", "execute_code", "run_shell", "retrieve_memory", "save_memory",
             "read_file", "write_file", "list_files", "delete_file", "search_files",
-            "delegate_task", "broadcast_message", "check_task_status",
+            "analyze_document", "delegate_task", "broadcast_message", "check_task_status",
             "list_collaborators", "send_direct_message"
         ]
         for name in expected:

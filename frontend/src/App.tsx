@@ -39,6 +39,7 @@ import type {
   TaskRunDetail,
   TaskRunSummary,
   ToolAuthorizationRule,
+  MultimodalConfigPayload,
   UiConfigPayload,
 } from "./types";
 
@@ -104,6 +105,12 @@ const CONFIG_SECTION_META: Record<
     sidebarDescription: "Prompt budgets, selector caps, and compaction thresholds",
     title: "Context budgets",
     subtitle: "Tune how much runtime context Catown can inject before fragment dropping or truncation is applied.",
+  },
+  multimodal: {
+    sidebarLabel: "Multimodal",
+    sidebarDescription: "Attachment sizes and media analysis limits",
+    title: "Multimodal",
+    subtitle: "Control attachment limits used by uploads and multimodal analysis tools.",
   },
   interface: {
     sidebarLabel: "Interface",
@@ -2256,12 +2263,20 @@ function App() {
         badge: `${Object.keys(config?.context?.selector_profiles ?? {}).length}`,
       },
       {
+        id: "multimodal" as const,
+        label: CONFIG_SECTION_META.multimodal.sidebarLabel,
+        description: CONFIG_SECTION_META.multimodal.sidebarDescription,
+        badge: config?.multimodal?.max_upload_size_bytes
+          ? `${Math.round(config.multimodal.max_upload_size_bytes / 1024 / 1024)} MB`
+          : "20 MB",
+      },
+      {
         id: "interface" as const,
         label: CONFIG_SECTION_META.interface.sidebarLabel,
         description: CONFIG_SECTION_META.interface.sidebarDescription,
       },
     ],
-    [agents, config?.context?.selector_profiles],
+    [agents, config?.context?.selector_profiles, config?.multimodal?.max_upload_size_bytes],
   );
   const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
   const appShellStyle = useMemo(
@@ -5029,6 +5044,24 @@ function App() {
     }
   }
 
+  async function handleSaveMultimodal(payload: MultimodalConfigPayload) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.saveMultimodalConfig(payload);
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
+      setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
+      setNotice("Multimodal config saved.");
+      pushEvent("Multimodal config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save multimodal config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveAgent(
     agentName: string,
     payload: AgentConfigPayload,
@@ -5340,6 +5373,7 @@ function App() {
             onSavePermissions={handleSavePermissions}
             onSaveContext={handleSaveContext}
             onSaveUi={handleSaveUi}
+            onSaveMultimodal={handleSaveMultimodal}
             authorizationRules={authorizationRules}
             onRevokeAuthorizationRule={handleRevokeAuthorizationRule}
             onSaveAgent={handleSaveAgent}

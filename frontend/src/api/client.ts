@@ -28,6 +28,7 @@ import type {
   MonitorOverviewSummary,
   MonitorContextCompactionsResponse,
   MonitorUsageResponse,
+  MultimodalConfigPayload,
   OrchestrationConfigPayload,
   PermissionsConfigPayload,
   ProjectCreatePayload,
@@ -633,6 +634,12 @@ export const api = {
   },
   saveUiConfig(payload: UiConfigPayload) {
     return request<{ message: string }>("/api/config/ui", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  saveMultimodalConfig(payload: MultimodalConfigPayload) {
+    return request<{ message: string }>("/api/config/multimodal", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

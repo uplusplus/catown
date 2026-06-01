@@ -18,6 +18,9 @@
       "tester"
     ]
   },
+  "multimodal": {
+    "max_upload_size_bytes": 20971520
+  },
   "agents": {
     "analyst": {
       "name": "Analyst",
@@ -55,7 +58,8 @@
         "list_files",
         "execute_code",
         "web_fetch",
-        "analyze_image"
+        "analyze_image",
+        "analyze_document"
       ],
       "skills": [
         "document-analysis",
@@ -208,6 +212,7 @@
         "web_fetch",
         "knowledge_graph",
         "analyze_image",
+        "analyze_document",
         "screenshot",
         "browser",
         "screenshot_compare",
@@ -287,6 +292,7 @@
         "web_fetch",
         "knowledge_graph",
         "analyze_image",
+        "analyze_document",
         "screenshot",
         "screenshot_compare",
         "chrome_devtools"
@@ -430,6 +436,7 @@
         "web_search",
         "retrieve_memory",
         "analyze_image",
+        "analyze_document",
         "skill_manager",
         "delegate_task",
         "check_task_status",
@@ -527,6 +534,7 @@
         "browser",
         "screenshot_compare",
         "analyze_image",
+        "analyze_document",
         "consult_agent"
       ],
       "skills": [

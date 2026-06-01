@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from services.multimodal_config import multimodal_max_upload_size_bytes
 from tools.base import BaseTool
 from tools.file_operations import get_active_workspace
 
@@ -31,10 +32,6 @@ SUPPORTED_IMAGE_TYPES = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
 }
-
-# Max file size: 20MB
-MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
-
 
 def _workspace_root() -> Optional[str]:
     """Return the active workspace root directory, or None."""
@@ -80,10 +77,11 @@ def _resolve_image_path(image_path: str) -> Path:
 def _image_to_data_uri(file_path: Path) -> str:
     """Read an image file and convert to a base64 data URI."""
     file_size = file_path.stat().st_size
-    if file_size > MAX_FILE_SIZE_BYTES:
+    max_file_size_bytes = multimodal_max_upload_size_bytes()
+    if file_size > max_file_size_bytes:
         raise ValueError(
             f"Image file too large: {file_size} bytes "
-            f"(max {MAX_FILE_SIZE_BYTES} bytes)"
+            f"(max {max_file_size_bytes} bytes)"
         )
 
     suffix = file_path.suffix.lower()

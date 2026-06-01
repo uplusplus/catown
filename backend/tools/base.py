@@ -292,6 +292,20 @@ _DEFAULT_TOOL_POLICY_CATALOG: Dict[str, Dict[str, Any]] = {
         "side_effect_scope": "network_read",
         "external_targets": ["llm_api"],
     },
+    "analyze_document": {
+        "risk_level": "low",
+        "sandbox": {
+            "mode": "workspace_guarded",
+            "workspace_scope": "workspace_read",
+            "network_access": "enabled",
+            "notes": [
+                "Reads a PDF file from the workspace and extracts text locally.",
+                "When a prompt is provided, extracted text is sent to the LLM for analysis.",
+            ],
+        },
+        "side_effect_scope": "network_read",
+        "external_targets": ["llm_api"],
+    },
     "screenshot_compare": {
         "risk_level": "medium",
         "approval": {

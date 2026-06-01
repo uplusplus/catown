@@ -179,6 +179,13 @@ from services.log_secret_codec import (
     encode_log_secrets_in_text,
     encode_sensitive_header_value,
 )
+from services.multimodal_config import (
+    DEFAULT_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+    MAX_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+    MIN_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+    effective_multimodal_config,
+    multimodal_max_upload_size_bytes,
+)
 from services.multimodal_file_refs import (
     link_cached_multimodal_file_to_message,
     register_data_uri_for_cached_file,
@@ -576,6 +583,16 @@ class UiConfigModel(BaseModel):
     """Runtime UI preferences stored in agents.json."""
 
     chat_cards: UiChatCardsConfigModel = Field(default_factory=UiChatCardsConfigModel)
+
+
+class MultimodalConfigModel(BaseModel):
+    """Runtime multimodal upload preferences stored in agents.json."""
+
+    max_upload_size_bytes: int = Field(
+        default=DEFAULT_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+        ge=MIN_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+        le=MAX_MULTIMODAL_MAX_UPLOAD_SIZE_BYTES,
+    )
 
 
 router = APIRouter()
@@ -8497,7 +8514,6 @@ _UPLOAD_DOCUMENT_TYPES = {
     "application/pdf",
 }
 _UPLOAD_SUPPORTED_TYPES = _UPLOAD_IMAGE_TYPES | _UPLOAD_DOCUMENT_TYPES
-_UPLOAD_MAX_SIZE_BYTES = 20 * 1024 * 1024  # 20MB
 
 
 def _resolve_attachment_file_path(project: Optional[Project], attachment: Dict[str, Any]) -> Optional[Path]:
@@ -8620,7 +8636,7 @@ def _build_multimodal_user_content(
             raw = file_path.read_bytes()
         except OSError:
             continue
-        if len(raw) > _UPLOAD_MAX_SIZE_BYTES:
+        if len(raw) > multimodal_max_upload_size_bytes():
             continue
         data_uri = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
         register_data_uri_for_cached_file(
@@ -8698,10 +8714,11 @@ async def upload_file(
 
     # Read file content
     content = await file.read()
-    if len(content) > _UPLOAD_MAX_SIZE_BYTES:
+    max_upload_size_bytes = multimodal_max_upload_size_bytes()
+    if len(content) > max_upload_size_bytes:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large: {len(content)} bytes (max {_UPLOAD_MAX_SIZE_BYTES} bytes)"
+            detail=f"File too large: {len(content)} bytes (max {max_upload_size_bytes} bytes)"
         )
 
     # Determine file extension
@@ -9775,6 +9792,7 @@ async def get_config():
         "orchestration": _effective_orchestration_config(),
         "permissions": _effective_permissions_config(),
         "ui": _effective_ui_config(),
+        "multimodal": effective_multimodal_config(),
         "context": {
             "selector_profiles": effective_selector_profiles(),
             "default_selector_profiles": default_selector_profiles(),
@@ -9801,6 +9819,7 @@ async def get_config():
             config["orchestration"] = _effective_orchestration_config(agents_config)
             config["permissions"] = _effective_permissions_config(agents_config)
             config["ui"] = _effective_ui_config(agents_config)
+            config["multimodal"] = effective_multimodal_config(agents_config)
             config["context"] = {
                 "selector_profiles": effective_selector_profiles(agents_config),
                 "default_selector_profiles": default_selector_profiles(),
@@ -10072,6 +10091,31 @@ async def update_ui_config(config: UiConfigModel):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update UI config: {e}")
+
+
+@router.put("/config/multimodal")
+async def update_multimodal_config(config: MultimodalConfigModel):
+    """Update runtime multimodal upload preferences stored in agents.json."""
+
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["multimodal"] = config.model_dump()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return {
+            "message": "Multimodal config updated",
+            "multimodal": effective_multimodal_config(data),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update multimodal config: {e}")
 
 
 @router.put("/config/agent/{agent_name}")

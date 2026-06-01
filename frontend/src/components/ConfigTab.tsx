@@ -10,6 +10,7 @@ import type {
   ContextSelectorProfileConfig,
   ConfigResponse,
   ConfigSection,
+  MultimodalConfigPayload,
   PermissionsConfigPayload,
   PermissionRememberMatcher,
   PermissionRememberScope,
@@ -52,6 +53,7 @@ type ConfigTabProps = {
   onSavePermissions: (payload: PermissionsConfigPayload) => Promise<void>;
   onSaveContext: (payload: ContextConfigPayload) => Promise<void>;
   onSaveUi: (payload: UiConfigPayload) => Promise<void>;
+  onSaveMultimodal: (payload: MultimodalConfigPayload) => Promise<void>;
   authorizationRules: ToolAuthorizationRule[];
   onRevokeAuthorizationRule: (ruleId: number) => Promise<void>;
   onReload: () => Promise<void>;
@@ -84,6 +86,10 @@ type SelectorProfilesDraft = Record<string, ContextSelectorProfileConfig>;
 
 type UiDraft = {
   expandCurrentStepByDefault: boolean;
+};
+
+type MultimodalDraft = {
+  maxUploadSizeMb: string;
 };
 
 type AgentDraft = {
@@ -165,6 +171,17 @@ function buildContextDraft(config: ConfigResponse | null): ContextDraft {
 function buildUiDraft(config: ConfigResponse | null): UiDraft {
   return {
     expandCurrentStepByDefault: config?.ui?.chat_cards?.expand_current_step_by_default ?? false,
+  };
+}
+
+function bytesToWholeMegabytes(value: number | undefined | null, fallbackMb = 20) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return String(fallbackMb);
+  return String(Math.max(1, Math.round(value / 1024 / 1024)));
+}
+
+function buildMultimodalDraft(config: ConfigResponse | null): MultimodalDraft {
+  return {
+    maxUploadSizeMb: bytesToWholeMegabytes(config?.multimodal?.max_upload_size_bytes),
   };
 }
 
@@ -735,6 +752,7 @@ export function ConfigTab({
   onSavePermissions,
   onSaveContext,
   onSaveUi,
+  onSaveMultimodal,
   authorizationRules,
   onRevokeAuthorizationRule,
   onSaveAgent,
@@ -749,6 +767,7 @@ export function ConfigTab({
   const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
   const [contextDraft, setContextDraft] = useState<ContextDraft>(() => buildContextDraft(config));
   const [uiDraft, setUiDraft] = useState<UiDraft>(() => buildUiDraft(config));
+  const [multimodalDraft, setMultimodalDraft] = useState<MultimodalDraft>(() => buildMultimodalDraft(config));
   const [contextDraftError, setContextDraftError] = useState("");
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
@@ -870,6 +889,10 @@ export function ConfigTab({
 
   useEffect(() => {
     setUiDraft(buildUiDraft(config));
+  }, [config]);
+
+  useEffect(() => {
+    setMultimodalDraft(buildMultimodalDraft(config));
   }, [config]);
 
   useEffect(() => {
@@ -1268,6 +1291,22 @@ export function ConfigTab({
       },
     ],
     [uiDraft.expandCurrentStepByDefault],
+  );
+  const multimodalPreviewItems = useMemo(
+    () => {
+      const configuredMb = readPositiveInteger(multimodalDraft.maxUploadSizeMb) ?? 20;
+      return [
+        {
+          label: "Upload limit",
+          value: `${configuredMb} MB`,
+        },
+        {
+          label: "Applies to",
+          value: "Chat uploads and multimodal tools",
+        },
+      ];
+    },
+    [multimodalDraft.maxUploadSizeMb],
   );
 
   if (activeSection === "skills") {
@@ -1776,6 +1815,91 @@ export function ConfigTab({
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (activeSection === "multimodal") {
+    const minUploadSizeBytes = config?.multimodal?.min_upload_size_bytes;
+    const maxAllowedUploadSizeBytes = config?.multimodal?.max_allowed_upload_size_bytes;
+    const minUploadMb = typeof minUploadSizeBytes === "number" && Number.isFinite(minUploadSizeBytes)
+      ? Math.max(1, Math.round(minUploadSizeBytes / 1024 / 1024))
+      : 1;
+    const maxUploadMb = typeof maxAllowedUploadSizeBytes === "number" && Number.isFinite(maxAllowedUploadSizeBytes)
+      ? Math.max(minUploadMb, Math.round(maxAllowedUploadSizeBytes / 1024 / 1024))
+      : 200;
+
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className="panel-card panel-card--full">
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Attachment Limits</p>
+              <h2>Multimodal</h2>
+            </div>
+            <div className="config-actions-row config-actions-row--header">
+              <button
+                type="submit"
+                form="multimodal-config-form"
+                className="primary-button compact-button"
+                disabled={saving}
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button compact-button"
+                disabled={saving}
+                onClick={() => setMultimodalDraft(buildMultimodalDraft(config))}
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <form
+            id="multimodal-config-form"
+            className="project-form project-form--compact config-form settings-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const requestedUploadMb = readPositiveInteger(multimodalDraft.maxUploadSizeMb) ?? 20;
+              const uploadMb = Math.min(maxUploadMb, Math.max(minUploadMb, requestedUploadMb));
+              void onSaveMultimodal({
+                max_upload_size_bytes: uploadMb * 1024 * 1024,
+              });
+            }}
+          >
+            <label>
+              <span>Max upload size (MB)</span>
+              <input
+                type="number"
+                value={multimodalDraft.maxUploadSizeMb}
+                inputMode="numeric"
+                min={minUploadMb}
+                max={maxUploadMb}
+                onChange={(event) =>
+                  setMultimodalDraft((current) => ({
+                    ...current,
+                    maxUploadSizeMb: event.target.value,
+                  }))
+                }
+                placeholder="20"
+              />
+            </label>
+            <p className="small-note">
+              Valid range: {minUploadMb}-{maxUploadMb} MB.
+            </p>
+          </form>
+
+          <div style={{ marginTop: 16 }}>
+            <PreviewCard
+              title="Attachment policy"
+              subtitle="Effective multimodal file limit"
+              items={multimodalPreviewItems}
+              onActivate={() => undefined}
+            />
           </div>
         </div>
       </section>

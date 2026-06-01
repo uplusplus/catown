@@ -199,6 +199,7 @@ class TestToolRegistry:
         assert "skill_manager" in tool_registry.list_tools()
         assert "run_shell" in tool_registry.list_tools()
         assert "open_file_for_user" in tool_registry.list_tools()
+        assert "analyze_document" in tool_registry.list_tools()
 
     @pytest.mark.asyncio
     async def test_open_file_for_user_returns_interactive_file_payload(self):

@@ -34,6 +34,7 @@ from .skill_manager import SkillManagerTool
 from .user_file_interaction import OpenFileForUserTool
 from .knowledge_graph import KnowledgeGraphTool
 from .analyze_image import AnalyzeImageTool
+from .analyze_document import AnalyzeDocumentTool
 from .screenshot_compare import ScreenshotCompareTool
 from .chrome_devtools import ChromeDevtoolsTool
 
@@ -84,6 +85,7 @@ tool_registry.register(SkillManagerTool())
 tool_registry.register(OpenFileForUserTool())
 tool_registry.register(KnowledgeGraphTool())
 tool_registry.register(AnalyzeImageTool())
+tool_registry.register(AnalyzeDocumentTool())
 tool_registry.register(ScreenshotCompareTool())
 tool_registry.register(ChromeDevtoolsTool())
 
@@ -123,6 +125,7 @@ __all__ = [
     'OpenFileForUserTool',
     'KnowledgeGraphTool',
     'AnalyzeImageTool',
+    'AnalyzeDocumentTool',
     'ScreenshotCompareTool',
     'ChromeDevtoolsTool',
     'set_collaboration_coordinator',

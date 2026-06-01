@@ -174,6 +174,9 @@ class AgentConfigManager:
             "orchestration": {
                 "sidecar_agent_types": ["tester"]
             },
+            "multimodal": {
+                "max_upload_size_bytes": 20971520
+            },
             "agents": {
                 "valet": {
                     "name": "Valet",
@@ -187,7 +190,7 @@ class AgentConfigManager:
                         "responsibilities": ["回答问题", "协助处理一般任务"],
                         "rules": ["不确定时提问"]
                     },
-                    "tools": ["web_search", "retrieve_memory", "analyze_image", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
+                    "tools": ["web_search", "retrieve_memory", "analyze_image", "analyze_document", "skill_manager", "delegate_task", "check_task_status", "consult_agent", "web_fetch"],
                     "metadata": {
                         "runtime_contract": {
                             "mode": "coordinator",

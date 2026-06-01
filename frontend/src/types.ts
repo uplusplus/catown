@@ -1,5 +1,5 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context" | "interface";
+export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context" | "multimodal" | "interface";
 
 export type AgentSoul = {
   identity?: string;
@@ -949,6 +949,12 @@ export type ConfigUiDefinition = {
   };
 };
 
+export type ConfigMultimodalDefinition = {
+  max_upload_size_bytes?: number;
+  min_upload_size_bytes?: number;
+  max_allowed_upload_size_bytes?: number;
+};
+
 export type ConfigResponse = {
   global_llm?: {
     provider?: {
@@ -962,6 +968,7 @@ export type ConfigResponse = {
   permissions?: ConfigPermissionsDefinition;
   context?: ConfigContextDefinition;
   ui?: ConfigUiDefinition;
+  multimodal?: ConfigMultimodalDefinition;
   tools?: {
     tool_names?: string[];
     tool_policies?: Array<{
@@ -1114,6 +1121,10 @@ export type ContextConfigPayload = {
 };
 
 export type UiConfigPayload = ConfigUiDefinition;
+
+export type MultimodalConfigPayload = {
+  max_upload_size_bytes: number;
+};
 
 export type MonitorToolSummary = {
   tool_name: string;

@@ -294,16 +294,17 @@
   },
   "multimodal-analysis": {
     "name": "多模态分析",
-    "description": "使用 LLM 视觉能力分析和理解图片内容",
+    "description": "使用 LLM 多模态能力和本地解析能力分析图片与 PDF 文档",
     "required_tools": [
       "analyze_image",
+      "analyze_document",
       "read_file"
     ],
     "category": "analysis",
     "levels": {
-      "hint": "图片分析: 使用 analyze_image 工具，提供清晰的分析指令",
-      "guide": "## 图片分析规范\n- 使用 analyze_image 工具分析图片\n- 提供清晰的分析指令（prompt）\n- 支持 OCR、图表分析、UI 审查等场景\n- 图片需在 workspace 内",
-      "full": "## 多模态图片分析完整指南\n\n### 工具使用\n使用  工具：\n\n\n### 参数说明\n- image_path: 图片文件路径（workspace 内）\n- prompt: 分析指令\n- detail: low/high/auto（默认 auto）\n\n### 适用场景\n- UI 截图审查：识别布局问题、可访问性问题\n- OCR 文字提取：从图片中提取文字内容\n- 图表分析：解读图表数据和趋势\n- 设计稿审查：检查设计一致性\n- 错误截图分析：从错误截图中定位问题\n\n### 最佳实践\n- prompt 要具体明确，说明你想了解什么\n- 对于 OCR 任务，指定 \"提取图中所有文字\"\n- 对于 UI 审查，指定关注点（布局、颜色、可访问性）\n- 高分辨率图片用 detail=high，普通截图用 detail=auto\n\n### 注意事项\n- 图片必须在 workspace 内\n- 支持格式：PNG, JPEG, GIF, WebP, BMP, SVG\n- 最大文件大小：20MB\n- 需要 LLM 支持 vision 能力"
+      "hint": "多模态分析: 图片用 analyze_image，PDF 用 analyze_document，并提供清晰的分析指令",
+      "guide": "## 多模态分析规范\n- 使用 analyze_image 工具分析图片\n- 使用 analyze_document 工具分析 PDF 文档或提取 PDF 文本\n- 提供清晰的分析指令（prompt）\n- 图片支持 OCR、图表分析、UI 审查等场景\n- PDF 优先保留页码证据；扫描件 PDF 后续走 OCR/图片分析\n- 文件需在 workspace 内",
+      "full": "## 多模态分析完整指南\n\n### 工具使用\n- 图片: analyze_image\n- PDF 文档: analyze_document\n\n### 图片参数\n- image_path: 图片文件路径（workspace 内）\n- prompt: 分析指令\n- detail: low/high/auto（默认 auto）\n\n### PDF 参数\n- file_path: PDF 文件路径（workspace 内）\n- prompt: 分析指令；为空时仅返回提取文本\n- mode: auto/extract/analyze\n- page_start/max_pages/max_chars: 控制页码范围和文本预算\n\n### 适用场景\n- UI 截图审查：识别布局问题、可访问性问题\n- OCR 文字提取：从图片中提取文字内容\n- 图表分析：解读图表数据和趋势\n- 设计稿审查：检查设计一致性\n- 错误截图分析：从错误截图中定位问题\n- PDF 文档摘要、条款/风险抽取、需求/规范审查\n\n### 最佳实践\n- prompt 要具体明确，说明你想了解什么\n- 对于 OCR 任务，指定 \"提取图中所有文字\"\n- 对于 PDF，要求回答引用页码或页段\n- PDF 很长时先用 mode=extract 和 page_start/max_pages 缩小范围\n- 高分辨率图片用 detail=high，普通截图用 detail=auto\n\n### 注意事项\n- 文件必须在 workspace 内\n- 图片支持格式：PNG, JPEG, GIF, WebP, BMP, SVG\n- PDF 第一版支持文本层抽取；扫描件 PDF 需要后续 OCR 阶段\n- 单文件最大大小由 Settings > Multimodal 的 Max upload size (MB) 配置，默认 20MB\n- 图片分析需要 LLM 支持 vision 能力；PDF 兜底文本分析需要 pypdf"
     }
   },
   "ui-ux-pro-max": {

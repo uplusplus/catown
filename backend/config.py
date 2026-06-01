@@ -298,11 +298,11 @@ class Settings:
             agent_config_path = Path(self.AGENT_CONFIG_FILE)
             _copy_file_if_missing(DEFAULT_CONFIG_SOURCE_DIR / "agents.json", agent_config_path)
             _ensure_agent_tool(agent_config_path, "valet", "skill_manager")
-            _ensure_agent_tools(agent_config_path, "valet", ["analyze_image"])
-            _ensure_agent_tools(agent_config_path, "analyst", ["analyze_image"])
-            _ensure_agent_tools(agent_config_path, "developer", ["analyze_image", "browser", "screenshot", "screenshot_compare"])
-            _ensure_agent_tools(agent_config_path, "tester", ["analyze_image", "screenshot", "screenshot_compare"])
-            _ensure_agent_tools(agent_config_path, "ui-designer", ["analyze_image", "browser", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "valet", ["analyze_image", "analyze_document"])
+            _ensure_agent_tools(agent_config_path, "analyst", ["analyze_image", "analyze_document"])
+            _ensure_agent_tools(agent_config_path, "developer", ["analyze_image", "analyze_document", "browser", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "tester", ["analyze_image", "analyze_document", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "ui-designer", ["analyze_image", "analyze_document", "browser", "screenshot", "screenshot_compare"])
             _ensure_agent_rule(
                 agent_config_path,
                 "valet",

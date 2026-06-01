@@ -471,6 +471,64 @@ class TestConfigEndpoint:
             else:
                 os.environ["AGENT_CONFIG_FILE"] = previous_config_file
 
+    def test_update_multimodal_config_controls_upload_limit(self, tmp_path):
+        from fastapi.testclient import TestClient
+
+        config_path = tmp_path / "agents.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "agents": {
+                        "analyst": {
+                            "name": "Analyst",
+                            "soul": {"identity": "test analyst"},
+                            "role": {"title": "Analyst"},
+                            "tools": [],
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        previous_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        try:
+            os.environ["AGENT_CONFIG_FILE"] = str(config_path)
+            client = TestClient(
+                _make_app(tmp_path),
+                base_url="http://testserver",
+                headers={"X-Catown-Client": "test"},
+            )
+
+            response = client.put(
+                "/api/config/multimodal",
+                json={"max_upload_size_bytes": 2 * 1024 * 1024},
+            )
+
+            assert response.status_code == 200
+            refreshed = client.get("/api/config").json()
+            assert refreshed["multimodal"]["max_upload_size_bytes"] == 2 * 1024 * 1024
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            assert saved["multimodal"]["max_upload_size_bytes"] == 2 * 1024 * 1024
+
+            project = client.post(
+                "/api/projects",
+                json={"name": "MultimodalLimit", "agent_names": ["analyst"]},
+            ).json()
+            oversized = b"x" * (2 * 1024 * 1024 + 1)
+            upload_response = client.post(
+                f"/api/chatrooms/{project['chatroom_id']}/upload",
+                files={"file": ("too-large.pdf", oversized, "application/pdf")},
+            )
+
+            assert upload_response.status_code == 400
+            assert "max 2097152 bytes" in upload_response.json()["detail"]
+        finally:
+            if previous_config_file is None:
+                os.environ.pop("AGENT_CONFIG_FILE", None)
+            else:
+                os.environ["AGENT_CONFIG_FILE"] = previous_config_file
+
     def test_llm_card_payload_includes_usage_context(self, tmp_path):
         config_path = tmp_path / "agents.json"
         config_path.write_text(
