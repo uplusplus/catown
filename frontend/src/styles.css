@@ -1611,19 +1611,19 @@ a {
 .project-browser__tabs {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 
 .project-browser__tab {
   min-width: 0;
-  min-height: 38px;
+  min-height: 34px;
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) minmax(20px, auto);
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 7px 8px;
+  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--panel) 88%, black 12%);
@@ -1647,8 +1647,19 @@ a {
 }
 
 .project-browser__tab strong {
-  font-family: var(--mono);
-  font-size: 12px;
+  min-width: 20px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-accent) 70%, transparent);
+  color: var(--text);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
   justify-self: end;
 }
 
