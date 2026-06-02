@@ -62,17 +62,66 @@ def test_defaults_use_unified_catown_home(tmp_path, monkeypatch):
     assert agent_config["multimodal"]["max_upload_size_bytes"] == 20 * 1024 * 1024
 
     valet_tools = agent_config["agents"]["valet"]["tools"]
+    architect_tools = agent_config["agents"]["architect"]["tools"]
     developer_tools = agent_config["agents"]["developer"]["tools"]
     tester_tools = agent_config["agents"]["tester"]["tools"]
+    architect_skills = agent_config["agents"]["architect"]["skills"]
+    developer_skills = agent_config["agents"]["developer"]["skills"]
+    tester_skills = agent_config["agents"]["tester"]["skills"]
 
     assert "analyze_image" in valet_tools
     assert "analyze_document" in valet_tools
+    assert "knowledge_graph" in architect_tools
     assert "analyze_image" in developer_tools
     assert "analyze_document" in developer_tools
     assert "browser" in developer_tools
     assert "screenshot_compare" in developer_tools
+    assert "knowledge_graph" in developer_tools
     assert "analyze_image" in tester_tools
     assert "analyze_document" in tester_tools
+    assert "knowledge_graph" in tester_tools
+    assert "knowledge-graph" in architect_skills
+    assert "knowledge-graph" in developer_skills
+    assert "knowledge-graph" in tester_skills
+
+
+def test_existing_runtime_agent_config_gets_knowledge_graph_tools(tmp_path, monkeypatch):
+    catown_home = tmp_path / "catown-home"
+    runtime_config_dir = catown_home / "config"
+    runtime_config_dir.mkdir(parents=True)
+    runtime_agents = runtime_config_dir / "agents.json"
+    runtime_agents.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "architect": {"tools": ["read_file"], "skills": ["api-design"]},
+                    "developer": {"tools": ["read_file"], "skills": ["debugging"]},
+                    "tester": {"tools": ["read_file"], "skills": ["bug-reporting"]},
+                    "analyst": {"tools": ["read_file"], "skills": []},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CATOWN_HOME", str(catown_home))
+    monkeypatch.delenv("AGENT_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("PIPELINE_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("SKILLS_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("SKILL_MARKETPLACES_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("CATOWN_PROJECTS_ROOT", raising=False)
+    monkeypatch.delenv("CATOWN_WORKSPACES_DIR", raising=False)
+    monkeypatch.delenv("CATOWN_SKILLS_DIR", raising=False)
+
+    settings = _reload_config_module().settings
+    assert Path(settings.AGENT_CONFIG_FILE) == runtime_agents.resolve()
+
+    agent_config = json.loads(runtime_agents.read_text(encoding="utf-8"))
+    for agent_name in ("architect", "developer", "tester"):
+        assert "knowledge_graph" in agent_config["agents"][agent_name]["tools"]
+        assert "knowledge-graph" in agent_config["agents"][agent_name]["skills"]
+
+    assert "knowledge_graph" not in agent_config["agents"]["analyst"]["tools"]
 
 
 def test_explicit_config_override_is_not_seeded(tmp_path, monkeypatch):

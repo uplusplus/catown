@@ -28,6 +28,40 @@ from tools.file_operations import get_active_workspace
 GRAPHIFY_OUT_DIR = "graphify-out"
 GRAPH_JSON = "graph.json"
 GRAPH_REPORT = "GRAPH_REPORT.md"
+GRAPHIFY_INSTALL_HINT = "pip install graphifyy"
+GRAPHIFY_IGNORED_DIRS = {
+    ".git",
+    ".catown",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "graphify-out",
+    "htmlcov",
+    "node_modules",
+    "reports",
+    "uploads",
+}
+GRAPHIFY_SOURCE_EXTENSIONS = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".py",
+    ".rs",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
+}
 
 
 def _workspace_root() -> str:
@@ -52,6 +86,35 @@ def _graph_report_path() -> str:
 
 def _graph_exists() -> bool:
     return os.path.isfile(_graph_json_path())
+
+
+def _iter_graph_source_files(workspace: str):
+    """Yield source-ish files used for local graph staleness checks."""
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [
+            dirname
+            for dirname in dirs
+            if dirname not in GRAPHIFY_IGNORED_DIRS and not dirname.startswith(".")
+        ]
+        for filename in files:
+            _, ext = os.path.splitext(filename)
+            if ext.lower() not in GRAPHIFY_SOURCE_EXTENSIONS:
+                continue
+            yield os.path.join(root, filename)
+
+
+def _latest_source_mtime(workspace: str) -> tuple[float, str | None]:
+    latest_mtime = 0.0
+    latest_path: str | None = None
+    for path in _iter_graph_source_files(workspace):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime > latest_mtime:
+            latest_mtime = mtime
+            latest_path = path
+    return latest_mtime, latest_path
 
 
 def _graph_metadata() -> Dict[str, Any]:
@@ -168,7 +231,7 @@ class KnowledgeGraphTool(BaseTool):
         elif action == "path":
             return await self._action_path_async(query_text, target_node)
         elif action == "check_update":
-            return await self._action_check_update_async()
+            return await self._action_check_update_local_async()
         else:
             return build_structured_tool_result(
                 tool_name=self.name,
@@ -281,7 +344,7 @@ class KnowledgeGraphTool(BaseTool):
             logger.info("[KnowledgeGraph] BOSS approved graph build, running graphify...")
             try:
                 proc = subprocess.run(
-                    ["graphify", ".", "--no-viz"],
+                    ["graphify", "update", workspace],
                     cwd=workspace,
                     capture_output=True,
                     text=True,
@@ -323,7 +386,7 @@ class KnowledgeGraphTool(BaseTool):
             except subprocess.TimeoutExpired:
                 logger.error("[KnowledgeGraph] graphify build timed out (300s)")
             except FileNotFoundError:
-                logger.error("[KnowledgeGraph] graphify not found. Install with: pip install graphify")
+                logger.error("[KnowledgeGraph] graphify not found. Install with: %s", GRAPHIFY_INSTALL_HINT)
             except Exception as exc:
                 logger.error("[KnowledgeGraph] graphify build failed: %s", exc)
 
@@ -333,7 +396,7 @@ class KnowledgeGraphTool(BaseTool):
             f"📋 已创建知识图谱构建审批请求\n"
             f"  - Choice Box ID: {box.id}\n"
             f"  - 等待 BOSS 审批...\n"
-            f"  - BOSS 批准后将自动执行 graphify . --no-viz"
+            f"  - BOSS 批准后将自动执行 graphify update <workspace>"
         )
         return build_structured_tool_result(
             tool_name=self.name,
@@ -464,7 +527,7 @@ class KnowledgeGraphTool(BaseTool):
         except FileNotFoundError:
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                result_text=f"❌ graphify 未安装。请运行: {GRAPHIFY_INSTALL_HINT}",
                 success=False,
                 status="graphify_not_found",
             )
@@ -533,7 +596,7 @@ class KnowledgeGraphTool(BaseTool):
         except FileNotFoundError:
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                result_text=f"❌ graphify 未安装。请运行: {GRAPHIFY_INSTALL_HINT}",
                 success=False,
                 status="graphify_not_found",
             )
@@ -608,7 +671,7 @@ class KnowledgeGraphTool(BaseTool):
         except FileNotFoundError:
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                result_text=f"❌ graphify 未安装。请运行: {GRAPHIFY_INSTALL_HINT}",
                 success=False,
                 status="graphify_not_found",
             )
@@ -684,7 +747,7 @@ class KnowledgeGraphTool(BaseTool):
         except FileNotFoundError:
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text="❌ graphify 未安装。请运行: pip install graphify",
+                result_text=f"❌ graphify 未安装。请运行: {GRAPHIFY_INSTALL_HINT}",
                 success=False,
                 status="graphify_not_found",
             )
@@ -697,68 +760,54 @@ class KnowledgeGraphTool(BaseTool):
                 status="path_exception",
             )
 
-    async def _action_check_update_async(self) -> Dict[str, Any]:
-        """Check if semantic re-extraction is pending (no LLM cost)."""
+    async def _action_check_update_local_async(self) -> Dict[str, Any]:
+        """Check graph freshness with local source-file mtimes."""
         if not _graph_exists():
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text="❌ 知识图谱不存在。使用 action='request_build' 先构建图谱。",
+                result_text="Knowledge graph does not exist. Use action='request_build' first.",
                 success=False,
                 status="graph_not_found",
             )
 
-        import subprocess
-        workspace = _workspace_root()
-
         try:
-            proc = subprocess.run(
-                ["graphify", "check-update", workspace],
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=30,
+            workspace = _workspace_root()
+            graph_mtime = os.path.getmtime(_graph_json_path())
+            latest_mtime, latest_path = _latest_source_mtime(workspace)
+            needs_update = latest_mtime > graph_mtime
+            latest_rel_path = (
+                os.path.relpath(latest_path, workspace).replace("\\", "/")
+                if latest_path
+                else None
             )
-            output = proc.stdout.strip()
-            stderr = proc.stderr.strip()
-
-            if proc.returncode != 0:
-                return build_structured_tool_result(
-                    tool_name=self.name,
-                    result_text=f"❌ 检查失败:\n{stderr or output}",
-                    success=False,
-                    status="check_error",
-                )
-
-            needs_update = "needs update" in output.lower() or "pending" in output.lower()
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text=output or ("✅ 图谱是最新的" if not needs_update else "⚠️ 图谱需要更新"),
+                result_text=(
+                    f"Knowledge graph may need update; latest source file is {latest_rel_path}."
+                    if needs_update
+                    else "Knowledge graph appears current by local source-file mtimes."
+                ),
                 success=True,
                 status="needs_update" if needs_update else "up_to_date",
-                metadata={"needs_update": needs_update},
-            )
-        except subprocess.TimeoutExpired:
-            return build_structured_tool_result(
-                tool_name=self.name,
-                result_text="❌ 检查超时。",
-                success=False,
-                status="check_timeout",
-            )
-        except FileNotFoundError:
-            return build_structured_tool_result(
-                tool_name=self.name,
-                result_text="❌ graphify 未安装。请运行: pip install graphify",
-                success=False,
-                status="graphify_not_found",
+                metadata={
+                    "needs_update": needs_update,
+                    "graph_modified_at": graph_mtime,
+                    "latest_source_modified_at": latest_mtime,
+                    "latest_source_path": latest_rel_path,
+                },
             )
         except Exception as exc:
-            logger.error("[KnowledgeGraph] check_update failed: %s", exc)
+            logger.error("[KnowledgeGraph] local check_update failed: %s", exc)
             return build_structured_tool_result(
                 tool_name=self.name,
-                result_text=f"❌ 检查异常: {exc}",
+                result_text=f"Knowledge graph update check failed: {exc}",
                 success=False,
                 status="check_exception",
             )
+
+    async def _action_check_update_async(self) -> Dict[str, Any]:
+        """Backward-compatible alias for local graph freshness checks."""
+        return await self._action_check_update_local_async()
 
     def _action_report(self) -> Dict[str, Any]:
         """Read the GRAPH_REPORT.md summary."""

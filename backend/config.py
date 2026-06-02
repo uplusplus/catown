@@ -125,6 +125,34 @@ def _ensure_agent_tools(config_file: Path, agent_name: str, tool_names: list[str
         config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _ensure_agent_skills(config_file: Path, agent_name: str, skill_names: list[str]) -> None:
+    """Add newly introduced skills to an existing runtime agent config."""
+    if not config_file.exists():
+        return
+    try:
+        with config_file.open("r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    agents = data.get("agents")
+    if not isinstance(agents, dict) or agent_name not in agents:
+        return
+    skills = agents[agent_name].setdefault("skills", [])
+    if not isinstance(skills, list):
+        return
+
+    changed = False
+    for skill_name in skill_names or []:
+        normalized = str(skill_name or "").strip()
+        if not normalized or normalized in skills:
+            continue
+        skills.append(normalized)
+        changed = True
+
+    if changed:
+        config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _ensure_agent_rule(config_file: Path, agent_name: str, rule: str) -> None:
     """Add a newly introduced role rule to an existing runtime agent config."""
     if not config_file.exists():
@@ -303,6 +331,12 @@ class Settings:
             _ensure_agent_tools(agent_config_path, "developer", ["analyze_image", "analyze_document", "browser", "screenshot", "screenshot_compare"])
             _ensure_agent_tools(agent_config_path, "tester", ["analyze_image", "analyze_document", "screenshot", "screenshot_compare"])
             _ensure_agent_tools(agent_config_path, "ui-designer", ["analyze_image", "analyze_document", "browser", "screenshot", "screenshot_compare"])
+            _ensure_agent_tools(agent_config_path, "architect", ["knowledge_graph"])
+            _ensure_agent_tools(agent_config_path, "developer", ["knowledge_graph"])
+            _ensure_agent_tools(agent_config_path, "tester", ["knowledge_graph"])
+            _ensure_agent_skills(agent_config_path, "architect", ["knowledge-graph"])
+            _ensure_agent_skills(agent_config_path, "developer", ["knowledge-graph"])
+            _ensure_agent_skills(agent_config_path, "tester", ["knowledge-graph"])
             _ensure_agent_rule(
                 agent_config_path,
                 "valet",

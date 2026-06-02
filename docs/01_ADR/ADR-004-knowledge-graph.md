@@ -55,9 +55,16 @@ analysis → graphify → architecture → development → ...
 
 | 操作 | 决策方 | 理由 |
 |------|--------|------|
-| 建图（`graphify . --no-viz`） | BOSS 审批 | 需要 LLM API 调用，有时间和费用成本；不是所有项目都需要知识图谱 |
+| 建图（`graphify update <workspace>`） | BOSS 审批 | 需要扫描项目并生成/刷新图谱，有时间成本；不是所有项目都需要知识图谱 |
 | 查询（`graphify query`） | Agent 自主 | 纯本地计算，毫秒级响应，无成本 |
-| 增量更新（`graphify . --update`） | BOSS 审批 | 同样涉及 LLM API 调用 |
+| 增量更新（`graphify update <workspace>`） | Agent 自主 | 当前 graphifyy 0.4 CLI 的代码重提取不调用 LLM，可由 Agent 在已有图谱上按需刷新 |
+
+### 2026-06-02 Runtime 接入补充
+
+1. **runtime 配置是真实工具面**：仓库内的 `backend/configs/agents.json` 只定义内置默认值；已经存在的 live 配置在 `~/.catown/config/agents.json`。因此启动时必须把新增的 `knowledge_graph` 工具和 `knowledge-graph` skill 回填给 `architect`、`developer`、`tester`，否则 agent 即使看到 `graphify-out/graph.json` 也无法调用工具。
+2. **包名和 CLI 名分离**：Python 依赖包名是 `graphifyy`，安装后提供的 CLI 是 `graphify`。后端运行环境必须安装 `graphifyy`，错误提示和 requirements 也必须使用包名 `graphifyy`。
+3. **已有数据库直接可用**：当项目 workspace 下存在 `graphify-out/graph.json` 时，`query`、`report`、`explain`、`path` 可以直接运行，不再触发建图审批。
+4. **检查更新不依赖不存在的 CLI**：当前 CLI 暂无 `graphify check-update` 子命令；`knowledge_graph(action='check_update')` 使用本地源文件 mtime 与 `graph.json` mtime 做轻量 stale 检查。
 
 ## 决策理由
 

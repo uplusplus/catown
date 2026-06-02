@@ -37,6 +37,7 @@ from tools.run_shell import RunShellTool
 from tools.retrieve_memory import RetrieveMemoryTool
 from tools.github_manager import GitHubManagerTool
 from tools.skill_manager import SkillManagerTool
+from tools.knowledge_graph import KnowledgeGraphTool
 from tools.file_operations import DeleteFileTool
 from tools.user_file_interaction import OpenFileForUserTool
 from services.chat_runtime import merge_tool_execution_kwargs
@@ -914,6 +915,33 @@ description: Demo import.
         assert "graphify" in encoded
         assert "command_not_found" in encoded
         assert "marketplaces" in encoded
+
+class TestKnowledgeGraphTool:
+    @pytest.mark.asyncio
+    async def test_check_update_uses_local_mtimes(self, tmp_path):
+        from tools.file_operations import reset_active_workspace, set_active_workspace
+
+        graph_dir = tmp_path / "graphify-out"
+        graph_dir.mkdir()
+        graph_json = graph_dir / "graph.json"
+        graph_json.write_text("{}", encoding="utf-8")
+        source = tmp_path / "backend" / "app.py"
+        source.parent.mkdir()
+        source.write_text("print('newer')\n", encoding="utf-8")
+        os.utime(graph_json, (1000, 1000))
+        os.utime(source, (2000, 2000))
+
+        token = set_active_workspace(str(tmp_path))
+        try:
+            result = await KnowledgeGraphTool().execute(action="check_update")
+        finally:
+            reset_active_workspace(token)
+
+        assert result["success"] is True
+        assert result["status"] == "needs_update"
+        assert result["metadata"]["needs_update"] is True
+        assert result["metadata"]["latest_source_path"] == "backend/app.py"
+
 
 
 # ==================== WebSearchTool ====================
