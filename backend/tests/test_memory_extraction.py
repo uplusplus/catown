@@ -1,9 +1,13 @@
+import pytest
+
 from services.memory_extraction import (
     build_memory_extraction_messages,
+    extract_agent_memories,
     parse_memory_extraction_response,
     persist_extracted_memories,
     schedule_agent_memory_extraction,
 )
+from services.llm_network_context import get_active_llm_network_audit_context, llm_network_audit_context
 
 
 def test_build_memory_extraction_messages_uses_agent_type_label():
@@ -109,3 +113,64 @@ def test_schedule_agent_memory_extraction_uses_scheduler():
     assert task == "task"
     assert recorded["scheduled"] is not None
     recorded["scheduled"].close()
+
+
+def test_llm_network_audit_context_restores_previous_context():
+    assert get_active_llm_network_audit_context().call_purpose is None
+
+    with llm_network_audit_context(call_purpose="outer", metadata={"scope": "outer"}):
+        assert get_active_llm_network_audit_context().call_purpose == "outer"
+        with llm_network_audit_context(
+            call_purpose="memory_extraction",
+            purpose_label="memory extraction",
+            metadata={"memory_agent_type": "valet"},
+        ):
+            context = get_active_llm_network_audit_context()
+            assert context.call_purpose == "memory_extraction"
+            assert context.purpose_label == "memory extraction"
+            assert context.metadata["memory_agent_type"] == "valet"
+
+        restored = get_active_llm_network_audit_context()
+        assert restored.call_purpose == "outer"
+        assert restored.metadata["scope"] == "outer"
+
+
+@pytest.mark.asyncio
+async def test_extract_agent_memories_labels_llm_call_context(monkeypatch):
+    import llm.client as llm_client
+
+    recorded = {}
+
+    class FakeLLM:
+        async def chat(self, messages, **kwargs):
+            context = get_active_llm_network_audit_context()
+            recorded["messages"] = messages
+            recorded["kwargs"] = kwargs
+            recorded["context"] = {
+                "call_purpose": context.call_purpose,
+                "purpose_label": context.purpose_label,
+                "metadata": dict(context.metadata),
+            }
+            return "[]"
+
+    monkeypatch.setattr(llm_client, "get_llm_client_for_agent", lambda agent_type: FakeLLM())
+
+    persisted = await extract_agent_memories(
+        7,
+        "Valet",
+        "What changed?",
+        "I updated the network monitor.",
+    )
+
+    assert persisted == 0
+    assert recorded["kwargs"]["temperature"] == 0.3
+    assert recorded["kwargs"]["max_tokens"] == 500
+    assert recorded["context"] == {
+        "call_purpose": "memory_extraction",
+        "purpose_label": "memory extraction",
+        "metadata": {
+            "memory_agent_type": "valet",
+            "memory_extraction": True,
+        },
+    }
+    assert "Agent Valet:" in recorded["messages"][1]["content"]

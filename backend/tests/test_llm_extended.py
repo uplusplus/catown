@@ -1459,6 +1459,37 @@ class TestLLMClientNetworkCapture:
         assert raw_pdf not in events[0]["preview"]
 
     @pytest.mark.asyncio
+    async def test_capture_http_request_labels_memory_extraction_context(self):
+        from llm.client import LLMClient
+        from services.llm_network_context import llm_network_audit_context
+
+        client = LLMClient(base_url="https://example.com/v1", api_key="test", model="test-model", agent_name="valet")
+        events = []
+        client._append_network_event = lambda event: events.append(event)
+
+        request = httpx.Request(
+            "POST",
+            "https://example.com/v1/chat/completions",
+            headers={"content-type": "application/json"},
+            content=b'{"messages":[]}',
+        )
+
+        with llm_network_audit_context(
+            call_purpose="memory_extraction",
+            purpose_label="memory extraction",
+            metadata={"memory_agent_type": "valet"},
+        ):
+            await client._capture_http_request(request)
+
+        assert len(events) == 1
+        assert events[0]["request_direction"] == "valet memory extraction -> LLM (example.com)"
+        assert events[0]["response_direction"] == "LLM (example.com) -> valet memory extraction"
+        assert events[0]["metadata"]["llm_call_purpose"] == "memory_extraction"
+        assert events[0]["metadata"]["llm_call_purpose_label"] == "memory extraction"
+        assert events[0]["metadata"]["memory_agent_type"] == "valet"
+        assert events[0]["metadata"]["frame_type"] == "request"
+
+    @pytest.mark.asyncio
     async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
         from llm.client import LLMClient
 

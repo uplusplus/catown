@@ -24,6 +24,7 @@ from urllib.parse import urlparse, urlunparse
 from agents.identity import DEFAULT_AGENT_TYPE, normalize_agent_type
 from config import settings
 from monitoring import monitor_network_buffer
+from services.llm_network_context import get_active_llm_network_audit_context
 from services.multimodal_log_redaction import (
     redact_multimodal_payload,
     sanitized_json_dumps,
@@ -490,6 +491,29 @@ class LLMClient:
         parsed = urlparse(self.base_url or "")
         return f"LLM ({host or parsed.netloc or (self.base_url or '')})"
 
+    def _network_audit_context_payload(self, target: str) -> Dict[str, Any]:
+        context = get_active_llm_network_audit_context()
+        metadata = dict(context.metadata or {})
+        call_purpose = str(context.call_purpose or "").strip()
+        purpose_label = str(context.purpose_label or "").strip()
+        if call_purpose:
+            metadata.setdefault("llm_call_purpose", call_purpose)
+        if not purpose_label and call_purpose:
+            purpose_label = call_purpose.replace("_", " ")
+        if purpose_label:
+            metadata.setdefault("llm_call_purpose_label", purpose_label)
+            source = f"{self.agent_name} {purpose_label}"
+            return {
+                "request_direction": f"{source} -> {target}",
+                "response_direction": f"{target} -> {source}",
+                "metadata": metadata,
+            }
+        return {
+            "request_direction": "",
+            "response_direction": "",
+            "metadata": metadata,
+        }
+
     def _append_network_event(self, payload: Dict[str, Any]) -> None:
         parsed = urlparse(self.base_url or "")
         host = payload.get("host") or parsed.netloc or (self.base_url or "")
@@ -542,6 +566,8 @@ class LLMClient:
         host = url.netloc.decode("ascii", errors="ignore") if isinstance(url.netloc, bytes) else url.netloc
         path = url.raw_path.decode("utf-8", errors="replace").split("?", 1)[0] if isinstance(url.raw_path, bytes) else str(url.path)
         request_headers = _sanitize_http_headers(request.headers)
+        target = self._llm_target(host)
+        audit_context = self._network_audit_context_payload(target)
         context = {
             "flow_id": f"llm-http-{uuid.uuid4().hex[:12]}",
             "flow_kind": "llm_http",
@@ -553,6 +579,9 @@ class LLMClient:
             "host": host,
             "path": path or "/",
             "url": encode_log_secrets_in_text(str(url)),
+            "request_direction": audit_context["request_direction"],
+            "response_direction": audit_context["response_direction"],
+            "audit_metadata": audit_context["metadata"],
         }
         request.extensions["catown_raw_capture"] = context
         self._append_network_event(
@@ -566,6 +595,8 @@ class LLMClient:
                 "request_bytes": len(body),
                 "response_bytes": 0,
                 "duration_ms": 0,
+                "request_direction": context["request_direction"],
+                "response_direction": context["response_direction"],
                 "content_type": request.headers.get("content-type", "application/json"),
                 "preview": _compact_text(sanitized_body_text),
                 "raw_request": sanitized_body_text,
@@ -576,7 +607,7 @@ class LLMClient:
                 "flow_kind": context["flow_kind"],
                 "flow_seq": 1,
                 "aggregated": False,
-                "metadata": {"frame_type": "request"},
+                "metadata": {**context["audit_metadata"], "frame_type": "request"},
             }
         )
 
@@ -601,6 +632,8 @@ class LLMClient:
                 "request_bytes": 0,
                 "response_bytes": 0,
                 "duration_ms": int((time.perf_counter() - context["started_at"]) * 1000),
+                "request_direction": context.get("request_direction"),
+                "response_direction": context.get("response_direction"),
                 "content_type": response.headers.get("content-type", ""),
                 "preview": "",
                 "raw_request": "",
@@ -611,7 +644,7 @@ class LLMClient:
                 "flow_kind": context["flow_kind"],
                 "flow_seq": context["flow_seq"] + 1,
                 "aggregated": False,
-                "metadata": {"frame_type": "response_start"},
+                "metadata": {**(context.get("audit_metadata") or {}), "frame_type": "response_start"},
             }
         )
         context["flow_seq"] += 1
@@ -636,6 +669,8 @@ class LLMClient:
                     "request_bytes": 0,
                     "response_bytes": len(chunk),
                     "duration_ms": elapsed_ms,
+                    "request_direction": context.get("request_direction"),
+                    "response_direction": context.get("response_direction"),
                     "content_type": response.headers.get("content-type", ""),
                     "preview": _compact_text(display_chunk) if display_chunk else "",
                     "raw_request": "",
@@ -646,7 +681,7 @@ class LLMClient:
                     "flow_kind": context["flow_kind"],
                     "flow_seq": context["flow_seq"],
                     "aggregated": False,
-                    "metadata": {"frame_type": "response_chunk"},
+                    "metadata": {**(context.get("audit_metadata") or {}), "frame_type": "response_chunk"},
                 }
             )
 
@@ -672,6 +707,8 @@ class LLMClient:
         parsed = urlparse(self.base_url or "")
         protocol = (parsed.scheme or "https").upper()
         host = parsed.netloc or (self.base_url or "")
+        target = f"LLM ({host})"
+        audit_context = self._network_audit_context_payload(target)
         safe_request_payload = redact_multimodal_payload(request_payload)
         safe_response_payload = redact_multimodal_payload(response_payload)
         monitor_network_buffer.append(
@@ -680,9 +717,9 @@ class LLMClient:
                 "source": "backend",
                 "protocol": protocol,
                 "from_entity": self.agent_name,
-                "to_entity": f"LLM ({host})",
-                "request_direction": f"{self.agent_name} -> LLM ({host})",
-                "response_direction": f"LLM ({host}) -> {self.agent_name}",
+                "to_entity": target,
+                "request_direction": audit_context["request_direction"] or f"{self.agent_name} -> {target}",
+                "response_direction": audit_context["response_direction"] or f"{target} -> {self.agent_name}",
                 "method": "POST",
                 "url": self.base_url,
                 "host": host,
@@ -701,6 +738,7 @@ class LLMClient:
                 "metadata": {
                     "model": self.model,
                     "http_version": "1.1+",
+                    **audit_context["metadata"],
                     **(metadata or {}),
                 },
             }
