@@ -11,13 +11,15 @@ from openai._base_client import DefaultAsyncHttpxClient
 from copy import deepcopy
 import httpx
 import json
+import math
 import os
 import logging
 import time
 import traceback
 import uuid
 import zlib
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from agents.identity import DEFAULT_AGENT_TYPE, normalize_agent_type
 from config import settings
@@ -57,6 +59,21 @@ def _supports_stream_usage_fallback(error: Exception) -> bool:
             "not allowed",
             "extra inputs",
             "additional properties",
+        )
+    )
+
+
+def _responses_previous_response_id_unsupported(error: Exception) -> bool:
+    message = " ".join(fragment for fragment in _error_fragments(error) if fragment).lower()
+    return "previous_response_id" in message and any(
+        marker in message
+        for marker in (
+            "only supported",
+            "unsupported",
+            "not supported",
+            "unknown parameter",
+            "unrecognized",
+            "invalid_request_error",
         )
     )
 
@@ -166,6 +183,31 @@ def _estimate_bytes(value: Any) -> int:
         return len(str(value).encode("utf-8"))
 
 
+def _estimate_prompt_tokens(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        text = value.strip()
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False).strip()
+        except TypeError:
+            text = str(value).strip()
+    if not text:
+        return 0
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    non_ascii_chars = len(text) - ascii_chars
+    return max(1, math.ceil(ascii_chars / 4) + non_ascii_chars)
+
+
+def _estimate_responses_input_tokens(items: List[Dict[str, Any]]) -> int:
+    total = 0
+    for item in items or []:
+        total += 6
+        total += _estimate_prompt_tokens(item)
+    return total
+
+
 def _safe_text_bytes(value: bytes | str | None, limit: int | None = None) -> str:
     if value is None:
         return ""
@@ -236,6 +278,15 @@ def _sanitize_http_headers(headers: Any) -> dict[str, str]:
     return encode_sensitive_headers_for_logging(headers)
 
 
+def _connect_responses_websocket(uri: str, headers: Dict[str, str]):
+    import websockets
+
+    try:
+        return websockets.connect(uri, additional_headers=headers, max_size=None)
+    except TypeError:
+        return websockets.connect(uri, extra_headers=headers, max_size=None)
+
+
 class _ObservedAsyncResponseStream(httpx.AsyncByteStream):
     def __init__(
         self,
@@ -263,6 +314,43 @@ class _ObservedAsyncResponseStream(httpx.AsyncByteStream):
             await self._on_close()
 
 # 缓存已创建的客户端：agent_name → LLMClient
+PROVIDER_MODE_CHAT_COMPLETIONS = "chat_completions"
+PROVIDER_MODE_RESPONSES_HTTP = "responses_http"
+PROVIDER_MODE_RESPONSES_WEBSOCKET = "responses_websocket"
+
+SUPPORTED_PROVIDER_MODES = {
+    PROVIDER_MODE_CHAT_COMPLETIONS,
+    PROVIDER_MODE_RESPONSES_HTTP,
+    PROVIDER_MODE_RESPONSES_WEBSOCKET,
+}
+
+
+def _normalize_provider_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in SUPPORTED_PROVIDER_MODES:
+        return normalized
+    return PROVIDER_MODE_CHAT_COMPLETIONS
+
+
+def _runtime_config_from_payload(
+    payload: Dict[str, Any] | None,
+    *,
+    fallback: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    fallback_runtime = fallback.get("runtime") if isinstance(fallback, dict) else {}
+    runtime = payload.get("runtime") if isinstance(payload, dict) else {}
+    merged = {
+        **(fallback_runtime if isinstance(fallback_runtime, dict) else {}),
+        **(runtime if isinstance(runtime, dict) else {}),
+    }
+    return {
+        "provider_mode": _normalize_provider_mode(
+            merged.get("provider_mode")
+            or merged.get("providerMode")
+        )
+    }
+
+
 _client_cache: Dict[str, "LLMClient"] = {}
 
 # 旧测试夹具仍会直接注入这个全局 mock。
@@ -285,15 +373,26 @@ class LLMClient:
         "glm-4v", "deepseek-vl",
     )
 
-    def __init__(self, base_url: str = None, api_key: str = None, model: str = None, agent_name: str | None = None):
+    def __init__(
+        self,
+        base_url: str = None,
+        api_key: str = None,
+        model: str = None,
+        agent_name: str | None = None,
+        provider_mode: str | None = None,
+    ):
         if base_url is None or api_key is None or model is None:
             # 从环境变量获取默认配置（向后兼容）
             base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
             api_key = api_key or os.getenv("LLM_API_KEY", "")
             model = model or os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+            provider_mode = provider_mode or os.getenv("LLM_PROVIDER_MODE")
         self.base_url = base_url
+        self._api_key = api_key
         self.agent_name = agent_name or "agent"
         self.model = model
+        self.provider_mode = _normalize_provider_mode(provider_mode)
+        self.runtime_provider_mode = self.provider_mode
         self._stream_usage_supported: Optional[bool] = None
         self._http_client = DefaultAsyncHttpxClient(
             event_hooks={
@@ -783,7 +882,1128 @@ class LLMClient:
             )
             raise Exception(f"LLM API error with tools: {str(e)}") from e
 
-    async def chat_stream(self, messages: List[Dict], tools: List[Dict] = None):
+    @staticmethod
+    def _responses_content_from_chat_content(content: Any) -> str | List[Dict[str, Any]]:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+
+        parts: List[Dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                parts.append({"type": "input_text", "text": str(part)})
+                continue
+
+            part_type = part.get("type")
+            if part_type == "text":
+                parts.append({"type": "input_text", "text": str(part.get("text") or "")})
+                continue
+
+            if part_type == "image_url":
+                image = part.get("image_url") if isinstance(part.get("image_url"), dict) else {}
+                image_url = image.get("url") or part.get("image_url")
+                if image_url:
+                    parts.append(
+                        {
+                            "type": "input_image",
+                            "image_url": image_url,
+                            "detail": image.get("detail") or part.get("detail") or "auto",
+                        }
+                    )
+                continue
+
+            if part_type == "file":
+                file_payload = part.get("file") if isinstance(part.get("file"), dict) else {}
+                input_file = {"type": "input_file"}
+                for source_key, target_key in (
+                    ("file_data", "file_data"),
+                    ("file_id", "file_id"),
+                    ("file_url", "file_url"),
+                    ("filename", "filename"),
+                    ("detail", "detail"),
+                ):
+                    value = file_payload.get(source_key) or part.get(source_key)
+                    if value:
+                        input_file[target_key] = value
+                if len(input_file) > 1:
+                    parts.append(input_file)
+                continue
+
+            parts.append({"type": "input_text", "text": json.dumps(part, ensure_ascii=False)})
+
+        return parts if parts else ""
+
+    @staticmethod
+    def _content_as_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+        text_parts: List[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") in {"text", "input_text"}:
+                    text_parts.append(str(part.get("text") or ""))
+                else:
+                    text_parts.append(json.dumps(part, ensure_ascii=False))
+            else:
+                text_parts.append(str(part))
+        return "\n".join(item for item in text_parts if item)
+
+    def _responses_request_parts(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        previous_response_id: str | None = None,
+    ) -> tuple[str | None, List[Dict[str, Any]], Dict[str, Any]]:
+        instructions: List[str] = []
+        input_items: List[Dict[str, Any]] = []
+        normalized_messages = self._normalize_messages(messages)
+        for message in normalized_messages:
+            if not isinstance(message, dict):
+                input_items.append({"role": "user", "content": str(message)})
+                continue
+
+            role = str(message.get("role") or "user")
+            content = message.get("content")
+            if role in {"system", "developer"}:
+                text_content = self._content_as_text(content).strip()
+                if text_content:
+                    instructions.append(text_content)
+                continue
+
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "").strip()
+                if call_id:
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": self._content_as_text(content),
+                        }
+                    )
+                continue
+
+            if role == "assistant" and message.get("tool_calls"):
+                text_content = self._content_as_text(content).strip()
+                if text_content:
+                    input_items.append({"role": "assistant", "content": text_content})
+                for tool_call in message.get("tool_calls") or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                    name = str(function.get("name") or "").strip()
+                    arguments = function.get("arguments") or "{}"
+                    call_id = str(tool_call.get("id") or tool_call.get("call_id") or "").strip()
+                    if name and call_id:
+                        input_items.append(
+                            {
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": name,
+                                "arguments": str(arguments),
+                                "status": "completed",
+                            }
+                        )
+                continue
+
+            input_role = role if role in {"user", "assistant"} else "user"
+            input_items.append(
+                {
+                    "role": input_role,
+                    "content": self._responses_content_from_chat_content(content),
+                }
+            )
+
+        full_input_items = list(input_items)
+        full_input_count = len(full_input_items)
+        if previous_response_id:
+            input_items = self._responses_stateful_delta_items(normalized_messages, input_items)
+        full_input_tokens = _estimate_responses_input_tokens(full_input_items)
+        sent_input_tokens = _estimate_responses_input_tokens(input_items)
+        instruction_tokens = _estimate_prompt_tokens("\n\n".join(instructions))
+
+        diagnostics = {
+            "stateful_delta": bool(previous_response_id),
+            "full_input_item_count": full_input_count,
+            "sent_input_item_count": len(input_items),
+            "omitted_input_item_count": max(full_input_count - len(input_items), 0),
+            "estimated_full_input_tokens": full_input_tokens,
+            "estimated_sent_input_tokens": sent_input_tokens,
+            "estimated_omitted_input_tokens": max(full_input_tokens - sent_input_tokens, 0),
+            "estimated_instruction_tokens": instruction_tokens,
+        }
+        return ("\n\n".join(instructions) if instructions else None), input_items, diagnostics
+
+    def _responses_stateful_delta_items(
+        self,
+        messages: List[Dict[str, Any]],
+        fallback_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        last_protocol_role = None
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "")
+            if role not in {"system", "developer"}:
+                last_protocol_role = role
+                break
+
+        if last_protocol_role == "tool":
+            trailing_tool_messages: List[Dict[str, Any]] = []
+            for message in reversed(messages):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "")
+                if role == "tool":
+                    trailing_tool_messages.append(message)
+                    continue
+                if role not in {"system", "developer"}:
+                    break
+            tool_outputs = [
+                {
+                    "type": "function_call_output",
+                    "call_id": str(message.get("tool_call_id") or "").strip(),
+                    "output": self._content_as_text(message.get("content")),
+                }
+                for message in reversed(trailing_tool_messages)
+                if str(message.get("tool_call_id") or "").strip()
+            ]
+            if tool_outputs:
+                return tool_outputs
+
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "")
+            if role == "user":
+                return [
+                    {
+                        "role": "user",
+                        "content": self._responses_content_from_chat_content(message.get("content")),
+                    }
+                ]
+
+        return fallback_items[-1:] if fallback_items else []
+
+    @staticmethod
+    def _responses_tools_from_chat_tools(tools: List[Dict] | None) -> List[Dict[str, Any]] | None:
+        converted: List[Dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") != "function":
+                converted.append(dict(tool))
+                continue
+            function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+            name = str(function.get("name") or "").strip()
+            if not name:
+                continue
+            converted_tool: Dict[str, Any] = {
+                "type": "function",
+                "name": name,
+                "description": function.get("description") or "",
+                "parameters": function.get("parameters") or {},
+                "strict": False,
+            }
+            converted.append(converted_tool)
+        return converted or None
+
+    @staticmethod
+    def _event_value(event: Any, key: str, default: Any = None) -> Any:
+        if isinstance(event, dict):
+            return event.get(key, default)
+        return getattr(event, key, default)
+
+    @staticmethod
+    def _event_model_dump(value: Any) -> Dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            try:
+                return value.model_dump(mode="json")
+            except TypeError:
+                return value.model_dump()
+        return {
+            key: item
+            for key, item in vars(value).items()
+            if not key.startswith("_")
+        } if hasattr(value, "__dict__") else {}
+
+    @staticmethod
+    def _jsonable(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): LLMClient._jsonable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [LLMClient._jsonable(item) for item in value]
+        if hasattr(value, "model_dump"):
+            try:
+                return LLMClient._jsonable(value.model_dump(mode="json"))
+            except TypeError:
+                return LLMClient._jsonable(value.model_dump())
+        if hasattr(value, "__dict__"):
+            return {
+                key: LLMClient._jsonable(item)
+                for key, item in vars(value).items()
+                if not key.startswith("_")
+            }
+        return str(value)
+
+    @staticmethod
+    def _usage_from_responses_usage(usage: Any) -> Dict[str, int] | None:
+        if usage is None:
+            return None
+        if isinstance(usage, dict):
+            return {
+                "prompt_tokens": int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0),
+                "completion_tokens": int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0),
+                "total_tokens": int(usage.get("total_tokens", 0) or 0),
+            }
+        return {
+            "prompt_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        }
+
+    @staticmethod
+    def _response_summary(response: Any) -> Dict[str, Any]:
+        if response is None:
+            return {}
+        payload = LLMClient._event_model_dump(response)
+        return {
+            key: payload.get(key)
+            for key in (
+                "id",
+                "status",
+                "conversation",
+                "previous_response_id",
+                "prompt_cache_key",
+                "prompt_cache_retention",
+            )
+            if payload.get(key) is not None
+        }
+
+    @staticmethod
+    def _tool_call_from_responses_item(item: Any) -> Dict[str, Any] | None:
+        item_type = LLMClient._event_value(item, "type")
+        if item_type != "function_call":
+            return None
+        call_id = str(LLMClient._event_value(item, "call_id") or LLMClient._event_value(item, "id") or "").strip()
+        name = str(LLMClient._event_value(item, "name") or "").strip()
+        if not call_id or not name:
+            return None
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": str(LLMClient._event_value(item, "arguments") or ""),
+            },
+        }
+
+    @staticmethod
+    def _text_from_responses_output(output: Any) -> str:
+        text_parts: List[str] = []
+        for item in output if isinstance(output, list) else []:
+            item_type = LLMClient._event_value(item, "type")
+            if item_type == "message":
+                content = LLMClient._event_value(item, "content")
+                for part in content if isinstance(content, list) else []:
+                    part_type = LLMClient._event_value(part, "type")
+                    if part_type in {"output_text", "text"}:
+                        text = str(LLMClient._event_value(part, "text") or "")
+                        if text:
+                            text_parts.append(text)
+                continue
+            if item_type in {"output_text", "text"}:
+                text = str(LLMClient._event_value(item, "text") or "")
+                if text:
+                    text_parts.append(text)
+                continue
+            if LLMClient._event_value(item, "role") == "assistant":
+                content = LLMClient._event_value(item, "content")
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
+        return "".join(text_parts)
+
+    @staticmethod
+    def _compaction_item_from_output(output: Any) -> Dict[str, Any]:
+        for item in output if isinstance(output, list) else []:
+            if isinstance(item, dict) and item.get("type") == "compaction":
+                return item
+        return {}
+
+    @staticmethod
+    def _provider_compaction_context(provider_session: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        if not isinstance(provider_session, dict):
+            return None
+        checkpoint = provider_session.get("provider_compaction")
+        if not isinstance(checkpoint, dict) or not checkpoint.get("ready_for_next_request"):
+            return None
+        path_text = str(checkpoint.get("path") or "").strip()
+        if not path_text:
+            return None
+        try:
+            payload = json.loads(Path(path_text).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        output = payload.get("output")
+        if not isinstance(output, list) or not output:
+            return None
+        return {
+            "id": str(checkpoint.get("id") or payload.get("id") or "").strip(),
+            "kind": str(checkpoint.get("kind") or payload.get("kind") or "").strip(),
+            "input": output,
+            "path": path_text,
+        }
+
+    def _responses_request_kwargs(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict] | None,
+        *,
+        previous_response_id: str | None,
+        compact_context: Dict[str, Any] | None,
+        stream: bool,
+    ) -> tuple[Dict[str, Any], Dict[str, Any], str | None]:
+        instructions, input_items, input_diagnostics = self._responses_request_parts(
+            messages,
+            previous_response_id=previous_response_id,
+        )
+        compact_input_items = (
+            compact_context.get("input")
+            if isinstance(compact_context, dict) and isinstance(compact_context.get("input"), list)
+            else []
+        )
+        if compact_input_items:
+            _, full_input_items, full_input_diagnostics = self._responses_request_parts(
+                messages,
+                previous_response_id=None,
+            )
+            delta_items = self._responses_stateful_delta_items(
+                self._normalize_messages(messages),
+                full_input_items,
+            )
+            input_items = [*deepcopy(compact_input_items), *delta_items]
+            previous_response_id = None
+            sent_tokens = _estimate_responses_input_tokens(input_items)
+            full_tokens = int(full_input_diagnostics.get("estimated_full_input_tokens") or 0)
+            input_diagnostics = {
+                **full_input_diagnostics,
+                "stateful_delta": False,
+                "compact_window_reused": True,
+                "compact_checkpoint_id": compact_context.get("id"),
+                "compact_checkpoint_kind": compact_context.get("kind"),
+                "compacted_input_item_count": len(compact_input_items),
+                "sent_delta_item_count": len(delta_items),
+                "sent_input_item_count": len(input_items),
+                "estimated_sent_input_tokens": sent_tokens,
+                "estimated_omitted_input_tokens": max(full_tokens - sent_tokens, 0),
+            }
+
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "input": input_items,
+            "temperature": 0.7,
+            "store": True,
+        }
+        if stream:
+            kwargs["stream"] = True
+        if instructions:
+            kwargs["instructions"] = instructions
+        if previous_response_id:
+            kwargs["previous_response_id"] = previous_response_id
+        responses_tools = self._responses_tools_from_chat_tools(tools)
+        if responses_tools:
+            kwargs["tools"] = responses_tools
+        return kwargs, input_diagnostics, previous_response_id
+
+    def _responses_websocket_url(self) -> str:
+        parsed = urlparse(self.base_url or "https://api.openai.com/v1")
+        scheme = "ws" if parsed.scheme == "http" else "wss"
+        path = parsed.path.rstrip("/")
+        if path.endswith("/chat/completions"):
+            path = path[: -len("/chat/completions")]
+        if not path.endswith("/responses"):
+            path = f"{path}/responses" if path else "/responses"
+        return urlunparse((scheme, parsed.netloc, path, "", parsed.query, ""))
+
+    async def _iter_responses_stream_events(
+        self,
+        stream: Any,
+        *,
+        request_started_at: float,
+        timings: Dict[str, int],
+        input_diagnostics: Dict[str, Any],
+    ):
+        full_content = ""
+        accumulated_tool_calls: List[Dict[str, Any]] = []
+        tool_call_indexes: Dict[str, int] = {}
+        usage = None
+        finish_reason = None
+        response_payload: Dict[str, Any] = {}
+        response_id = None
+        first_chunk_seen = False
+        tool_call_ready_emitted = False
+        completed_event_seen = False
+
+        def ensure_tool_call(item_id: str, output_index: int | None = None) -> tuple[int, Dict[str, Any]]:
+            key = item_id or f"output:{output_index if output_index is not None else len(accumulated_tool_calls)}"
+            if key in tool_call_indexes:
+                idx = tool_call_indexes[key]
+                return idx, accumulated_tool_calls[idx]
+            idx = len(accumulated_tool_calls)
+            tool_call_indexes[key] = idx
+            accumulated_tool_calls.append(
+                {
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                }
+            )
+            return idx, accumulated_tool_calls[idx]
+
+        async for event in stream:
+            elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                timings["first_chunk_ms"] = elapsed_ms
+                yield {"type": "first_chunk", "elapsed_ms": elapsed_ms}
+
+            event_type = str(self._event_value(event, "type") or "")
+            if event_type == "response.output_text.delta":
+                delta = str(self._event_value(event, "delta") or "")
+                if delta:
+                    if "first_content_ms" not in timings:
+                        timings["first_content_ms"] = elapsed_ms
+                        yield {"type": "first_content", "elapsed_ms": elapsed_ms}
+                    full_content += delta
+                    yield {"type": "content", "delta": delta}
+                continue
+
+            if event_type == "response.function_call_arguments.delta":
+                item_id = str(self._event_value(event, "item_id") or "")
+                output_index = self._event_value(event, "output_index")
+                idx, tool_call = ensure_tool_call(item_id, output_index)
+                delta = str(self._event_value(event, "delta") or "")
+                if delta:
+                    tool_call["function"]["arguments"] += delta
+                if "first_tool_call_ms" not in timings:
+                    timings["first_tool_call_ms"] = elapsed_ms
+                snapshot = deepcopy(tool_call)
+                yield {
+                    "type": "tool_call_delta",
+                    "tool_call_index": idx,
+                    "tool_call": snapshot,
+                    "tool_name": snapshot.get("function", {}).get("name") or "",
+                    "arguments": snapshot.get("function", {}).get("arguments") or "",
+                    "elapsed_ms": elapsed_ms,
+                }
+                continue
+
+            if event_type == "response.function_call_arguments.done":
+                item_id = str(self._event_value(event, "item_id") or "")
+                output_index = self._event_value(event, "output_index")
+                _, tool_call = ensure_tool_call(item_id, output_index)
+                tool_call["function"]["arguments"] = str(self._event_value(event, "arguments") or "")
+                name = str(self._event_value(event, "name") or "").strip()
+                if name:
+                    tool_call["function"]["name"] = name
+                continue
+
+            if event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = self._event_value(event, "item")
+                tool_call = self._tool_call_from_responses_item(item)
+                if tool_call:
+                    item_id = str(self._event_value(item, "id") or self._event_value(event, "item_id") or "")
+                    output_index = self._event_value(event, "output_index")
+                    _, target = ensure_tool_call(item_id, output_index)
+                    target["id"] = tool_call["id"]
+                    target["function"]["name"] = tool_call["function"]["name"]
+                    if tool_call["function"]["arguments"]:
+                        target["function"]["arguments"] = tool_call["function"]["arguments"]
+                continue
+
+            if event_type in {"response.created", "response.in_progress", "response.completed"}:
+                response = self._event_value(event, "response")
+                response_payload = self._response_summary(response)
+                response_id = response_payload.get("id") or response_id
+                if event_type != "response.completed":
+                    continue
+                completed_event_seen = True
+                output_items = self._event_value(response, "output")
+                if not full_content:
+                    full_content = self._text_from_responses_output(output_items)
+                if isinstance(output_items, list):
+                    for output_index, item in enumerate(output_items):
+                        tool_call = self._tool_call_from_responses_item(item)
+                        if not tool_call:
+                            continue
+                        item_id = str(self._event_value(item, "id") or "")
+                        _, target = ensure_tool_call(item_id, output_index)
+                        target["id"] = tool_call["id"]
+                        target["function"]["name"] = tool_call["function"]["name"]
+                        target["function"]["arguments"] = tool_call["function"]["arguments"]
+                response_usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+                usage = self._usage_from_responses_usage(response_usage)
+                finish_reason = "tool_calls" if accumulated_tool_calls else "stop"
+                if accumulated_tool_calls and not tool_call_ready_emitted:
+                    tool_call_ready_emitted = True
+                    timings["tool_call_ready_ms"] = elapsed_ms
+                    yield {
+                        "type": "tool_call_ready",
+                        "elapsed_ms": elapsed_ms,
+                        "tool_calls": deepcopy(accumulated_tool_calls),
+                    }
+                timings["completed_ms"] = elapsed_ms
+                yield {
+                    "type": "done",
+                    "full_content": full_content,
+                    "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                    "usage": usage,
+                    "finish_reason": finish_reason,
+                    "timings": timings,
+                    "response_id": response_id,
+                    "response": response_payload,
+                    "provider_mode": self.provider_mode,
+                    "provider_request": input_diagnostics,
+                }
+                break
+
+            if event_type in {"response.failed", "response.incomplete"}:
+                response = self._event_value(event, "response")
+                response_payload = self._response_summary(response)
+                error = self._event_value(response, "error") if response is not None else None
+                raise RuntimeError(str(error or response_payload.get("status") or event_type))
+
+            if event_type == "error":
+                raise RuntimeError(str(self._event_value(event, "message") or "Responses stream error"))
+
+        if not completed_event_seen:
+            timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+            yield {
+                "type": "done",
+                "full_content": full_content,
+                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                "usage": usage,
+                "finish_reason": finish_reason,
+                "timings": timings,
+                "response_id": response_id,
+                "response": response_payload,
+                "provider_mode": self.provider_mode,
+                "provider_request": input_diagnostics,
+            }
+
+    async def compact_responses_context(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict] | None = None,
+    ) -> Dict[str, Any]:
+        """Call the provider-native Responses compact endpoint for a full context window."""
+
+        if self.provider_mode not in {PROVIDER_MODE_RESPONSES_HTTP, PROVIDER_MODE_RESPONSES_WEBSOCKET}:
+            raise RuntimeError("Responses compact requires a Responses provider mode")
+
+        compact_call = getattr(self.client.responses, "compact", None)
+        if compact_call is None:
+            raise RuntimeError("Responses compact is not supported by the installed OpenAI SDK")
+
+        instructions, input_items, input_diagnostics = self._responses_request_parts(
+            messages,
+            previous_response_id=None,
+        )
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "input": input_items,
+        }
+        if instructions:
+            kwargs["instructions"] = instructions
+        responses_tools = self._responses_tools_from_chat_tools(tools)
+        if responses_tools:
+            kwargs["tools"] = responses_tools
+
+        response = await compact_call(**kwargs)
+        payload = self._jsonable(response)
+        if not isinstance(payload, dict):
+            payload = {}
+        output = payload.get("output")
+        if not isinstance(output, list) or not output:
+            raise RuntimeError("Responses compact returned no output window")
+
+        compaction_item = self._compaction_item_from_output(output)
+        usage = self._usage_from_responses_usage(payload.get("usage"))
+        return {
+            "id": str(compaction_item.get("id") or payload.get("id") or "").strip() or None,
+            "response_id": str(payload.get("id") or "").strip() or None,
+            "status": payload.get("status"),
+            "output": output,
+            "usage": usage,
+            "request": {
+                "model": self.model,
+                "input_item_count": len(input_items),
+                "tool_count": len(responses_tools or []),
+                "has_instructions": bool(instructions),
+            },
+            "provider_request": input_diagnostics,
+            "response": {
+                key: payload.get(key)
+                for key in ("id", "status")
+                if payload.get(key) is not None
+            },
+            "compaction_item": compaction_item,
+        }
+
+    async def _responses_http_stream(
+        self,
+        messages: List[Dict],
+        tools: List[Dict] = None,
+        *,
+        previous_response_id: str | None = None,
+        compact_context: Dict[str, Any] | None = None,
+    ):
+        request_started_at = time.perf_counter()
+        timings: Dict[str, int] = {}
+        attempt = 0
+        retry_budget_seconds = 300.0
+        first_visible_event_emitted = False
+        try:
+            kwargs, input_diagnostics, previous_response_id = self._responses_request_kwargs(
+                messages,
+                tools,
+                previous_response_id=previous_response_id,
+                compact_context=compact_context,
+                stream=True,
+            )
+
+            request_dispatched_at = time.perf_counter()
+            timings["request_sent_ms"] = int((request_dispatched_at - request_started_at) * 1000)
+            yield {
+                "type": "request_sent",
+                "elapsed_ms": timings["request_sent_ms"],
+                "provider_mode": self.provider_mode,
+                "previous_response_id": previous_response_id,
+                "provider_request": input_diagnostics,
+            }
+
+            retried_without_previous_response_id = False
+            while True:
+                attempt += 1
+                try:
+                    stream = await self.client.responses.create(**kwargs)
+                    full_content = ""
+                    accumulated_tool_calls: List[Dict[str, Any]] = []
+                    tool_call_indexes: Dict[str, int] = {}
+                    usage = None
+                    finish_reason = None
+                    response_payload: Dict[str, Any] = {}
+                    response_id = None
+                    first_chunk_seen = False
+                    tool_call_ready_emitted = False
+                    completed_event_seen = False
+
+                    def ensure_tool_call(item_id: str, output_index: int | None = None) -> tuple[int, Dict[str, Any]]:
+                        key = item_id or f"output:{output_index if output_index is not None else len(accumulated_tool_calls)}"
+                        if key in tool_call_indexes:
+                            idx = tool_call_indexes[key]
+                            return idx, accumulated_tool_calls[idx]
+                        idx = len(accumulated_tool_calls)
+                        tool_call_indexes[key] = idx
+                        accumulated_tool_calls.append(
+                            {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        )
+                        return idx, accumulated_tool_calls[idx]
+
+                    async for event in stream:
+                        elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+                        if not first_chunk_seen:
+                            first_chunk_seen = True
+                            first_visible_event_emitted = True
+                            timings["first_chunk_ms"] = elapsed_ms
+                            yield {"type": "first_chunk", "elapsed_ms": elapsed_ms}
+
+                        event_type = str(self._event_value(event, "type") or "")
+                        if event_type == "response.output_text.delta":
+                            delta = str(self._event_value(event, "delta") or "")
+                            if delta:
+                                if "first_content_ms" not in timings:
+                                    timings["first_content_ms"] = elapsed_ms
+                                    yield {"type": "first_content", "elapsed_ms": elapsed_ms}
+                                full_content += delta
+                                first_visible_event_emitted = True
+                                yield {"type": "content", "delta": delta}
+                            continue
+
+                        if event_type == "response.function_call_arguments.delta":
+                            item_id = str(self._event_value(event, "item_id") or "")
+                            output_index = self._event_value(event, "output_index")
+                            idx, tool_call = ensure_tool_call(item_id, output_index)
+                            delta = str(self._event_value(event, "delta") or "")
+                            if delta:
+                                tool_call["function"]["arguments"] += delta
+                            if "first_tool_call_ms" not in timings:
+                                timings["first_tool_call_ms"] = elapsed_ms
+                            first_visible_event_emitted = True
+                            snapshot = deepcopy(tool_call)
+                            yield {
+                                "type": "tool_call_delta",
+                                "tool_call_index": idx,
+                                "tool_call": snapshot,
+                                "tool_name": snapshot.get("function", {}).get("name") or "",
+                                "arguments": snapshot.get("function", {}).get("arguments") or "",
+                                "elapsed_ms": elapsed_ms,
+                            }
+                            continue
+
+                        if event_type == "response.function_call_arguments.done":
+                            item_id = str(self._event_value(event, "item_id") or "")
+                            output_index = self._event_value(event, "output_index")
+                            _, tool_call = ensure_tool_call(item_id, output_index)
+                            tool_call["function"]["arguments"] = str(self._event_value(event, "arguments") or "")
+                            name = str(self._event_value(event, "name") or "").strip()
+                            if name:
+                                tool_call["function"]["name"] = name
+                            continue
+
+                        if event_type in {"response.output_item.added", "response.output_item.done"}:
+                            item = self._event_value(event, "item")
+                            tool_call = self._tool_call_from_responses_item(item)
+                            if tool_call:
+                                item_id = str(self._event_value(item, "id") or self._event_value(event, "item_id") or "")
+                                output_index = self._event_value(event, "output_index")
+                                _, target = ensure_tool_call(item_id, output_index)
+                                target["id"] = tool_call["id"]
+                                target["function"]["name"] = tool_call["function"]["name"]
+                                if tool_call["function"]["arguments"]:
+                                    target["function"]["arguments"] = tool_call["function"]["arguments"]
+                            continue
+
+                        if event_type in {"response.created", "response.in_progress", "response.completed"}:
+                            response = self._event_value(event, "response")
+                            response_payload = self._response_summary(response)
+                            response_id = response_payload.get("id") or response_id
+                            if event_type != "response.completed":
+                                continue
+                            completed_event_seen = True
+                            response_usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+                            usage = self._usage_from_responses_usage(response_usage)
+                            finish_reason = "tool_calls" if accumulated_tool_calls else "stop"
+                            if accumulated_tool_calls and not tool_call_ready_emitted:
+                                tool_call_ready_emitted = True
+                                timings["tool_call_ready_ms"] = elapsed_ms
+                                yield {
+                                    "type": "tool_call_ready",
+                                    "elapsed_ms": elapsed_ms,
+                                    "tool_calls": deepcopy(accumulated_tool_calls),
+                                }
+                            timings["completed_ms"] = elapsed_ms
+                            yield {
+                                "type": "done",
+                                "full_content": full_content,
+                                "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                                "usage": usage,
+                                "finish_reason": finish_reason,
+                                "timings": timings,
+                                "response_id": response_id,
+                                "response": response_payload,
+                                "provider_mode": self.provider_mode,
+                                "provider_request": input_diagnostics,
+                            }
+                            break
+
+                        if event_type in {"response.failed", "response.incomplete"}:
+                            response = self._event_value(event, "response")
+                            response_payload = self._response_summary(response)
+                            response_id = response_payload.get("id") or response_id
+                            error = getattr(response, "error", None)
+                            raise RuntimeError(str(error or response_payload.get("status") or event_type))
+
+                        if event_type == "error":
+                            raise RuntimeError(str(self._event_value(event, "message") or "Responses stream error"))
+
+                    if not completed_event_seen:
+                        timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+                        yield {
+                            "type": "done",
+                            "full_content": full_content,
+                            "tool_calls": accumulated_tool_calls if accumulated_tool_calls else None,
+                            "usage": usage,
+                            "finish_reason": finish_reason,
+                            "timings": timings,
+                            "response_id": response_id,
+                            "response": response_payload,
+                            "provider_mode": self.provider_mode,
+                            "provider_request": input_diagnostics,
+                        }
+                    break
+                except Exception as stream_error:
+                    if (
+                        previous_response_id
+                        and not first_visible_event_emitted
+                        and not retried_without_previous_response_id
+                        and _responses_previous_response_id_unsupported(stream_error)
+                    ):
+                        retried_without_previous_response_id = True
+                        logger.warning(
+                            "Responses HTTP provider rejected previous_response_id; retrying with full context: model=%s error=%r",
+                            self.model,
+                            stream_error,
+                        )
+                        self._record_network_event(
+                            request_payload=kwargs,
+                            duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+                            success=False,
+                            error=f"{type(stream_error).__name__}: {stream_error}",
+                            metadata={
+                                "stream": True,
+                                "provider_mode": self.provider_mode,
+                                "response_state_fallback": True,
+                                "retry_attempt": attempt,
+                            },
+                        )
+                        kwargs, input_diagnostics, previous_response_id = self._responses_request_kwargs(
+                            messages,
+                            tools,
+                            previous_response_id=None,
+                            compact_context=compact_context,
+                            stream=True,
+                        )
+                        input_diagnostics["response_state_fallback"] = True
+                        input_diagnostics["response_state_fallback_reason"] = "previous_response_id_unsupported"
+                        continue
+
+                    elapsed_seconds = time.perf_counter() - request_started_at
+                    delay_seconds = _tool_chat_retry_delay_seconds(attempt)
+                    next_elapsed_seconds = elapsed_seconds + delay_seconds
+                    will_retry = (
+                        not first_visible_event_emitted
+                        and _is_retryable_upstream_failure(stream_error)
+                        and next_elapsed_seconds <= retry_budget_seconds
+                    )
+                    if will_retry:
+                        logger.warning(
+                            "Responses stream upstream failure before first output; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
+                            self.model,
+                            attempt,
+                            elapsed_seconds,
+                            delay_seconds,
+                            retry_budget_seconds,
+                            stream_error,
+                        )
+                        self._record_network_event(
+                            request_payload=kwargs,
+                            duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+                            success=False,
+                            error=f"{type(stream_error).__name__}: {stream_error}",
+                            metadata={
+                                "stream": True,
+                                "provider_mode": self.provider_mode,
+                                "retryable": True,
+                                "retry_attempt": attempt,
+                                "will_retry": True,
+                                "retry_delay_seconds": delay_seconds,
+                                "retry_budget_seconds": retry_budget_seconds,
+                                "retry_phase": "pre_first_output",
+                            },
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    raise
+        except Exception as e:
+            if "completed_ms" not in timings:
+                timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+            logger.error(
+                "Responses stream failed: model=%s attempts=%s type=%s repr=%r cause=%r context=%r timings=%s\n%s",
+                self.model,
+                attempt,
+                type(e).__name__,
+                e,
+                e.__cause__,
+                e.__context__,
+                timings,
+                traceback.format_exc(),
+            )
+            self._record_network_event(
+                request_payload=locals().get("kwargs", {"messages": messages, "tools": tools, "stream": True}),
+                duration_ms=timings["completed_ms"],
+                success=False,
+                error=f"{type(e).__name__}: {e}",
+                metadata={"stream": True, "aggregated": True, "attempts": attempt, "provider_mode": self.provider_mode},
+            )
+            yield {"type": "error", "error": str(e), "timings": timings}
+
+    async def _responses_websocket_stream(
+        self,
+        messages: List[Dict],
+        tools: List[Dict] = None,
+        *,
+        previous_response_id: str | None = None,
+        compact_context: Dict[str, Any] | None = None,
+    ):
+        request_started_at = time.perf_counter()
+        timings: Dict[str, int] = {}
+        attempt = 0
+        retry_budget_seconds = 300.0
+        first_visible_event_emitted = False
+        kwargs: Dict[str, Any] = {"messages": messages, "tools": tools}
+        try:
+            kwargs, input_diagnostics, previous_response_id = self._responses_request_kwargs(
+                messages,
+                tools,
+                previous_response_id=previous_response_id,
+                compact_context=compact_context,
+                stream=False,
+            )
+            ws_url = self._responses_websocket_url()
+            headers = {"Authorization": f"Bearer {self._api_key or ''}"}
+            response_create_event = {
+                "type": "response.create",
+                **kwargs,
+            }
+
+            while True:
+                attempt += 1
+                try:
+                    async with _connect_responses_websocket(ws_url, headers) as websocket:
+                        await websocket.send(json.dumps(response_create_event, ensure_ascii=False))
+                        request_dispatched_at = time.perf_counter()
+                        timings["request_sent_ms"] = int((request_dispatched_at - request_started_at) * 1000)
+                        yield {
+                            "type": "request_sent",
+                            "elapsed_ms": timings["request_sent_ms"],
+                            "provider_mode": self.provider_mode,
+                            "previous_response_id": previous_response_id,
+                            "provider_request": input_diagnostics,
+                            "transport": "websocket",
+                        }
+
+                        async def websocket_events():
+                            async for raw_event in websocket:
+                                if isinstance(raw_event, bytes):
+                                    raw_event = raw_event.decode("utf-8", errors="replace")
+                                try:
+                                    payload = json.loads(str(raw_event or "{}"))
+                                except json.JSONDecodeError as exc:
+                                    raise RuntimeError("Responses WebSocket returned invalid JSON") from exc
+                                if isinstance(payload, dict):
+                                    yield payload
+
+                        async for event in self._iter_responses_stream_events(
+                            websocket_events(),
+                            request_started_at=request_started_at,
+                            timings=timings,
+                            input_diagnostics=input_diagnostics,
+                        ):
+                            if event.get("type") in {
+                                "first_chunk",
+                                "first_content",
+                                "content",
+                                "tool_call_delta",
+                                "tool_call_ready",
+                                "done",
+                            }:
+                                first_visible_event_emitted = True
+                            yield event
+                            if event.get("type") == "done":
+                                self._record_network_event(
+                                    request_payload=response_create_event,
+                                    response_payload=event.get("response") or {"response_id": event.get("response_id")},
+                                    duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+                                    success=True,
+                                    metadata={
+                                        "stream": True,
+                                        "transport": "websocket",
+                                        "aggregated": True,
+                                        "attempts": attempt,
+                                        "provider_mode": self.provider_mode,
+                                        "websocket_url": ws_url,
+                                    },
+                                )
+                                break
+                    break
+                except Exception as stream_error:
+                    elapsed_seconds = time.perf_counter() - request_started_at
+                    delay_seconds = _tool_chat_retry_delay_seconds(attempt)
+                    next_elapsed_seconds = elapsed_seconds + delay_seconds
+                    will_retry = (
+                        not first_visible_event_emitted
+                        and _is_retryable_upstream_failure(stream_error)
+                        and next_elapsed_seconds <= retry_budget_seconds
+                    )
+                    if will_retry:
+                        logger.warning(
+                            "Responses WebSocket upstream failure before first output; retrying: model=%s attempt=%s elapsed_s=%.1f next_delay_s=%.1f retry_budget_s=%.1f error=%r",
+                            self.model,
+                            attempt,
+                            elapsed_seconds,
+                            delay_seconds,
+                            retry_budget_seconds,
+                            stream_error,
+                        )
+                        self._record_network_event(
+                            request_payload=response_create_event,
+                            duration_ms=int((time.perf_counter() - request_started_at) * 1000),
+                            success=False,
+                            error=f"{type(stream_error).__name__}: {stream_error}",
+                            metadata={
+                                "stream": True,
+                                "transport": "websocket",
+                                "provider_mode": self.provider_mode,
+                                "retryable": True,
+                                "retry_attempt": attempt,
+                                "will_retry": True,
+                                "retry_delay_seconds": delay_seconds,
+                                "retry_budget_seconds": retry_budget_seconds,
+                                "retry_phase": "pre_first_output",
+                                "websocket_url": ws_url,
+                            },
+                        )
+                        await asyncio.sleep(delay_seconds)
+                        continue
+                    raise
+        except Exception as e:
+            if "completed_ms" not in timings:
+                timings["completed_ms"] = int((time.perf_counter() - request_started_at) * 1000)
+            logger.error(
+                "Responses WebSocket stream failed: model=%s attempts=%s type=%s repr=%r timings=%s\n%s",
+                self.model,
+                attempt,
+                type(e).__name__,
+                e,
+                timings,
+                traceback.format_exc(),
+            )
+            self._record_network_event(
+                request_payload=kwargs,
+                duration_ms=timings["completed_ms"],
+                success=False,
+                error=f"{type(e).__name__}: {e}",
+                metadata={
+                    "stream": True,
+                    "transport": "websocket",
+                    "aggregated": True,
+                    "attempts": attempt,
+                    "provider_mode": self.provider_mode,
+                },
+            )
+            yield {"type": "error", "error": str(e), "timings": timings}
+
+    async def chat_stream(
+        self,
+        messages: List[Dict],
+        tools: List[Dict] = None,
+        *,
+        previous_response_id: str | None = None,
+        provider_session: Dict[str, Any] | None = None,
+    ):
         """
         流式聊天（SSE generator，支持 multimodal content）
 
@@ -791,6 +2011,33 @@ class LLMClient:
             dict: {"type": "request_sent"|"first_chunk"|"first_content"|
                    "tool_call_delta"|"tool_call_ready"|"content"|"done"|"error", ...}
         """
+        if previous_response_id is None and isinstance(provider_session, dict):
+            previous_response_id = (
+                provider_session.get("previous_response_id")
+                or provider_session.get("last_response_id")
+            )
+        compact_context = self._provider_compaction_context(provider_session)
+        if compact_context is not None:
+            previous_response_id = None
+        if self.provider_mode == PROVIDER_MODE_RESPONSES_HTTP:
+            async for event in self._responses_http_stream(
+                messages,
+                tools,
+                previous_response_id=str(previous_response_id or "").strip() or None,
+                compact_context=compact_context,
+            ):
+                yield event
+            return
+        if self.provider_mode == PROVIDER_MODE_RESPONSES_WEBSOCKET:
+            async for event in self._responses_websocket_stream(
+                messages,
+                tools,
+                previous_response_id=str(previous_response_id or "").strip() or None,
+                compact_context=compact_context,
+            ):
+                yield event
+            return
+
         request_started_at = time.perf_counter()
         request_dispatched_at = request_started_at
         timings: Dict[str, int] = {}
@@ -1036,7 +2283,16 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
                     if models:
                         model = models[0].get("id", "")
                 if base_url and model:
-                    return {"base_url": base_url, "api_key": api_key, "model": model}
+                    runtime = _runtime_config_from_payload(
+                        agent_data,
+                        fallback=data.get("global_llm", {}),
+                    )
+                    return {
+                        "base_url": base_url,
+                        "api_key": api_key,
+                        "model": model,
+                        **runtime,
+                    }
 
         # fallback: 全局 LLM 配置
         return _load_global_provider(data)
@@ -1068,7 +2324,8 @@ def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
         if models:
             model = models[0].get("id", "")
     if base_url and model:
-        return {"base_url": base_url, "api_key": api_key, "model": model}
+        runtime = _runtime_config_from_payload(global_cfg)
+        return {"base_url": base_url, "api_key": api_key, "model": model, **runtime}
     return None
 
 
@@ -1094,6 +2351,7 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
             api_key=provider["api_key"],
             model=provider["model"],
             agent_name=agent_name,
+            provider_mode=provider.get("provider_mode"),
         )
         _client_cache[agent_name] = client
         logger.info(f"Created LLM client for agent '{agent_name}': {provider['base_url']} / {provider['model']}")
@@ -1107,6 +2365,7 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
             api_key=fallback["api_key"],
             model=fallback["model"],
             agent_name=agent_name,
+            provider_mode=fallback.get("provider_mode"),
         )
         _client_cache[agent_name] = client
         logger.warning(f"Agent '{agent_name}' has no provider config, using fallback: {fallback['model']}")
@@ -1138,6 +2397,7 @@ def get_default_llm_client() -> LLMClient:
             api_key=fallback["api_key"],
             model=fallback["model"],
             agent_name="default",
+            provider_mode=fallback.get("provider_mode"),
         )
         return client
 
@@ -1202,7 +2462,16 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
                     model = models[0].get("id", "")
 
             if base_url and model:
-                return {"base_url": base_url, "api_key": api_key, "model": model}
+                runtime = _runtime_config_from_payload(
+                    agent_data,
+                    fallback=data.get("global_llm", {}),
+                )
+                return {
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model": model,
+                    **runtime,
+                }
 
         # fallback: 全局配置
         return _load_global_provider(data)
@@ -1215,5 +2484,7 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
 
 def clear_client_cache():
     """清空客户端缓存（配置更新后调用）"""
+    global _default_client
     _client_cache.clear()
+    _default_client = None
     logger.info("LLM client cache cleared")

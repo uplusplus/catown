@@ -28,6 +28,7 @@ from services.tool_execution_preferences import (
     build_run_shell_command_matcher_value,
     build_shell_bin_matcher_value,
     build_tool_target_matcher_value,
+    shell_bins_for_command,
     save_wait_forever_preference,
     upsert_authorization_rule,
 )
@@ -193,6 +194,67 @@ class TestToolRegistry:
         assert result["success"] is True
         assert result["status"] == "succeeded"
         assert result["result"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_execute_adds_consult_agent_references_from_result(self):
+        registry = ToolRegistry()
+
+        class ConsultTool(BaseTool):
+            name = "consult_agent"
+            description = "Consult another agent"
+
+            async def execute(self, **kwargs) -> str:
+                return "[Response from analyst (Analyst)]:\nDetailed answer\n[consult_step_id] consult-analyst-1"
+
+        registry.register(ConsultTool())
+
+        result = await registry.execute(
+            "consult_agent",
+            target_agent="analyst",
+            question="What is the risk?",
+            task_run_id=42,
+            client_turn_id="turn-42",
+        )
+
+        assert result["success"] is True
+        assert result["metadata"]["consult_agent"] == {
+            "consult_step_id": "consult-analyst-1",
+            "task_run_id": 42,
+            "client_turn_id": "turn-42",
+        }
+
+    @pytest.mark.asyncio
+    async def test_execute_persists_long_non_shell_tool_output_reference(self, tmp_path, monkeypatch):
+        catown_home = tmp_path / "catown-home"
+        monkeypatch.setenv("CATOWN_HOME", str(catown_home))
+        monkeypatch.setenv("CATOWN_STATE_DIR", str(catown_home / "state"))
+        registry = ToolRegistry()
+
+        class BrowserLikeTool(BaseTool):
+            name = "browser"
+            description = "Browser-like tool"
+
+            async def execute(self, **kwargs) -> str:
+                return "browser output\n" + ("x" * 2500)
+
+        registry.register(BrowserLikeTool())
+
+        result = await registry.execute(
+            "browser",
+            action="get_text",
+            task_run_id=42,
+            tool_call_id="call-browser",
+        )
+
+        artifact = result["metadata"]["tool_output_artifact"]
+        artifact_path = artifact["path"]
+        assert result["success"] is True
+        assert artifact["tool_name"] == "browser"
+        assert artifact["chars"] == len(result["result"])
+        assert artifact["task_run_id"] == 42
+        assert artifact["tool_call_id"] == "call-browser"
+        assert os.path.exists(artifact_path)
+        assert open(artifact_path, encoding="utf-8").read() == result["result"]
 
     def test_builtin_registry_includes_skill_manager(self):
         from tools import tool_registry
@@ -719,6 +781,9 @@ class TestToolRegistry:
     async def test_saved_shell_bin_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
         registry = ToolRegistry()
         registry.register(RunShellTool(workspace=str(tmp_path)))
+        command = _mutating_probe_command()
+        parsed_shell_bins = shell_bins_for_command(command)
+        assert parsed_shell_bins
 
         db = fresh_db.SessionLocal()
         try:
@@ -731,12 +796,12 @@ class TestToolRegistry:
                 tool_name="run_shell",
                 scope="chatroom",
                 matcher_type=AUTH_MATCHER_SHELL_BIN,
-                matcher_value=build_shell_bin_matcher_value("python3"),
+                matcher_value=build_shell_bin_matcher_value(parsed_shell_bins[0]),
                 decision_kind=AUTH_DECISION_ALLOW,
                 chatroom_id=chatroom.id,
                 preference_kind=AUTH_PREFERENCE_KIND,
                 preference_value="granted",
-                command_preview="python3",
+                command_preview=parsed_shell_bins[0],
             )
             chatroom_id = chatroom.id
         finally:
@@ -744,12 +809,15 @@ class TestToolRegistry:
 
         result = await registry.execute(
             "run_shell",
-            command="python3 -c 'from pathlib import Path; Path(\"bin-created.txt\").write_text(\"ok\")'",
+            command=command,
             chatroom_id=chatroom_id,
         )
 
         assert result["success"] is True
-        assert (tmp_path / "bin-created.txt").read_text(encoding="utf-8") == "ok"
+        if os.name == "nt":
+            assert (tmp_path / "created-dir").is_dir()
+        else:
+            assert (tmp_path / "created.txt").is_file()
 
     @pytest.mark.asyncio
     async def test_saved_all_tools_allow_rule_bypasses_run_shell_approval(self, fresh_db, tmp_path):
@@ -916,6 +984,7 @@ description: Demo import.
         assert "command_not_found" in encoded
         assert "marketplaces" in encoded
 
+
 class TestKnowledgeGraphTool:
     @pytest.mark.asyncio
     async def test_check_update_uses_local_mtimes(self, tmp_path):
@@ -941,7 +1010,6 @@ class TestKnowledgeGraphTool:
         assert result["status"] == "needs_update"
         assert result["metadata"]["needs_update"] is True
         assert result["metadata"]["latest_source_path"] == "backend/app.py"
-
 
 
 # ==================== WebSearchTool ====================

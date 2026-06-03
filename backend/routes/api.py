@@ -57,6 +57,7 @@ from models.database import (
     TaskRun,
     TaskRunCheckpoint,
     TaskRunEvent,
+    LLMProviderSession,
     OrchestrationHandoffDelivery,
     ApprovalQueueItem,
     ApprovalAuditLog,
@@ -101,7 +102,26 @@ from services.chat_prompt_builder import (
     effective_selector_profiles,
     resolve_llm_context_window,
 )
+from services.tool_capability_profiles import (
+    default_tool_capability_profiles,
+    effective_tool_capability_profiles,
+)
 from services.model_context import context_window_from_provider
+from services.provider_sessions import (
+    PROVIDER_MODE_CHAT_COMPLETIONS,
+    PROVIDER_MODE_RESPONSES_HTTP,
+    PROVIDER_MODE_RESPONSES_WEBSOCKET,
+    ensure_provider_session,
+    extract_response_state,
+    serialize_provider_session,
+    touch_provider_session_request,
+    update_provider_session_response,
+)
+from services.provider_compaction import (
+    build_compaction_context_messages,
+    maybe_create_local_compaction_checkpoint,
+    maybe_create_provider_or_local_compaction_checkpoint,
+)
 from services.agent_lifecycle_runtime import (
     cancel_runtime_task_run,
     cancel_runtime_task_run_subagent,
@@ -406,6 +426,10 @@ class PreparedStandaloneTurnRuntime:
     assistant_label: str
     assistant_id: Optional[int]
     recent_messages: List[Any]
+    available_tools: List[str]
+    tool_schemas_before_filter: List[Dict[str, Any]]
+    tool_schemas: List[Dict[str, Any]]
+    tool_schema_filter: Dict[str, Any]
     tool_policy_pack: Dict[str, Any]
     turn_state: TurnContextState
 
@@ -567,10 +591,74 @@ class ContextSelectorProfileModel(BaseModel):
         return normalized
 
 
+def _normalize_config_string_list(values: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw_value in values or []:
+        value = str(raw_value or "").strip()
+        if not value or value in seen:
+            continue
+        normalized.append(value)
+        seen.add(value)
+    return normalized
+
+
+def _normalize_runtime_provider_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {
+        PROVIDER_MODE_CHAT_COMPLETIONS,
+        PROVIDER_MODE_RESPONSES_HTTP,
+        PROVIDER_MODE_RESPONSES_WEBSOCKET,
+    }:
+        return normalized
+    return PROVIDER_MODE_CHAT_COMPLETIONS
+
+
+def _runtime_provider_mode_from_config(
+    config: Dict[str, Any] | None,
+    *,
+    fallback: Dict[str, Any] | None = None,
+) -> str:
+    fallback_runtime = fallback.get("runtime") if isinstance(fallback, dict) else {}
+    runtime = config.get("runtime") if isinstance(config, dict) else {}
+    raw_value = None
+    if isinstance(fallback_runtime, dict):
+        raw_value = fallback_runtime.get("provider_mode") or fallback_runtime.get("providerMode")
+    if isinstance(runtime, dict):
+        raw_value = runtime.get("provider_mode") or runtime.get("providerMode") or raw_value
+    return _normalize_runtime_provider_mode(raw_value)
+
+
+class ToolCapabilityGroupModel(BaseModel):
+    """Conditional tool group in a runtime tool capability profile."""
+
+    tools: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+
+    @field_validator("tools", "keywords")
+    @classmethod
+    def normalize_string_list(cls, values: List[str]) -> List[str]:
+        return _normalize_config_string_list(values)
+
+
+class ToolCapabilityProfileModel(BaseModel):
+    """Runtime tool-schema surface config for one capability profile."""
+
+    always_tools: List[str] = Field(default_factory=list)
+    conditional_groups: Dict[str, ToolCapabilityGroupModel] = Field(default_factory=dict)
+    include_all: bool = False
+
+    @field_validator("always_tools")
+    @classmethod
+    def normalize_always_tools(cls, values: List[str]) -> List[str]:
+        return _normalize_config_string_list(values)
+
+
 class ContextConfigModel(BaseModel):
     """Runtime context management config stored in agents.json."""
 
     selector_profiles: Dict[str, ContextSelectorProfileModel] = Field(default_factory=dict)
+    tool_capability_profiles: Dict[str, ToolCapabilityProfileModel] = Field(default_factory=dict)
 
 
 class UiChatCardsConfigModel(BaseModel):
@@ -944,6 +1032,8 @@ def _build_llm_card_payload(
     usage: Optional[Dict[str, Any]] = None,
     finish_reason: Optional[str] = None,
     timings: Optional[Dict[str, Any]] = None,
+    provider_session: Optional[Dict[str, Any]] = None,
+    provider_request: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     usage = usage or {}
     model = getattr(llm_client, "model", "")
@@ -961,6 +1051,7 @@ def _build_llm_card_payload(
         "usage": usage,
         "finish_reason": finish_reason,
         "timings": timings or {},
+        "provider_request": provider_request if isinstance(provider_request, dict) else {},
     }
     return {
         "agent": agent_name,
@@ -978,6 +1069,13 @@ def _build_llm_card_payload(
         "raw_response": _format_json_block(raw_response),
         "tool_calls": tool_call_previews or _preview_tool_calls(raw_tool_calls),
         "timings": timings or {},
+        "provider_mode": (
+            str(provider_session.get("provider_mode") or "").strip()
+            if isinstance(provider_session, dict)
+            else "chat_completions"
+        ),
+        "provider_session": provider_session if isinstance(provider_session, dict) else {},
+        "provider_request": provider_request if isinstance(provider_request, dict) else {},
     }
 
 
@@ -988,11 +1086,13 @@ def _build_llm_fact_recorder(
     agent_name: str,
     llm_client: Any,
     client_turn_id: Optional[str],
+    provider_tools: Optional[List[Dict[str, Any]]] = None,
 ):
     """Build a stream event callback that records factual LLM timeline events."""
 
     seen_request_turns: set[int] = set()
     seen_response_started_turns: set[int] = set()
+    provider_sessions_by_turn: Dict[int, Any] = {}
 
     async def _record(frame: Any, event: Dict[str, Any], _turn_state: TurnContextState) -> None:
         event_type = str(event.get("type") or "")
@@ -1000,6 +1100,22 @@ def _build_llm_fact_recorder(
         step_id = f"llm:{agent_name}:{turn_index}"
         if event_type in {"agent_start", "request_sent"} and turn_index not in seen_request_turns:
             seen_request_turns.add(turn_index)
+            provider_session = ensure_provider_session(
+                db,
+                task_run=task_run,
+                agent_name=agent_name,
+                llm_client=llm_client,
+            )
+            previous_response_id = getattr(provider_session, "last_response_id", None)
+            provider_session = touch_provider_session_request(db, provider_session)
+            provider_sessions_by_turn[turn_index] = provider_session
+            provider_session_payload = serialize_provider_session(
+                provider_session,
+                previous_response_id=previous_response_id,
+            )
+            setattr(frame, "provider_session", provider_session_payload)
+            event["provider_session"] = provider_session_payload
+            event["provider_mode"] = provider_session_payload.get("provider_mode")
             record_llm_request_created(
                 db,
                 task_run,
@@ -1014,6 +1130,12 @@ def _build_llm_fact_recorder(
                 ),
             )
             return
+        provider_session = provider_sessions_by_turn.get(turn_index)
+        if provider_session is not None:
+            provider_session_payload = serialize_provider_session(provider_session)
+            setattr(frame, "provider_session", provider_session_payload)
+            event.setdefault("provider_session", provider_session_payload)
+            event.setdefault("provider_mode", provider_session_payload.get("provider_mode"))
         if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:
             seen_response_started_turns.add(turn_index)
             record_llm_response_started(
@@ -1026,6 +1148,18 @@ def _build_llm_fact_recorder(
             )
             return
         if event_type == "done":
+            response_state = extract_response_state(event)
+            provider_session = update_provider_session_response(
+                db,
+                provider_sessions_by_turn.get(turn_index),
+                response_id=response_state.get("response_id"),
+                provider_conversation_id=response_state.get("provider_conversation_id"),
+                compact_checkpoint_id=response_state.get("compact_checkpoint_id"),
+            )
+            provider_session_payload = serialize_provider_session(provider_session)
+            setattr(frame, "provider_session", provider_session_payload)
+            event["provider_session"] = provider_session_payload
+            event["provider_mode"] = provider_session_payload.get("provider_mode")
             record_llm_response_completed(
                 db,
                 task_run,
@@ -1037,7 +1171,36 @@ def _build_llm_fact_recorder(
                     "response_preview": str(event.get("full_content") or getattr(frame, "llm_content", "") or "")[:280],
                     "tool_call_count": len(event.get("tool_calls") or []),
                     "step_id": step_id,
+                    "provider_mode": provider_session_payload.get("provider_mode"),
+                    "provider_session": provider_session_payload,
+                    "provider_request": event.get("provider_request") if isinstance(event.get("provider_request"), dict) else {},
                 },
+            )
+            try:
+                db.expire(task_run, ["events"])
+            except Exception:
+                pass
+            checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+            latest_context_budget = (
+                checkpoint_snapshot.get("latest_context_budget_event")
+                if isinstance(checkpoint_snapshot.get("latest_context_budget_event"), dict)
+                else {}
+            )
+            compaction_messages = build_compaction_context_messages(
+                getattr(frame, "messages", None),
+                response_content=event.get("full_content") or getattr(frame, "llm_content", ""),
+                tool_calls=event.get("tool_calls"),
+            )
+            await maybe_create_provider_or_local_compaction_checkpoint(
+                db,
+                provider_session=provider_session,
+                task_run=task_run,
+                llm_client=llm_client,
+                messages=compaction_messages,
+                tools=provider_tools,
+                checkpoint_snapshot=checkpoint_snapshot,
+                diagnostics=latest_context_budget,
+                agent_name=agent_name,
             )
 
     return _record
@@ -1114,6 +1277,10 @@ async def _trigger_standalone_assistant_response(
         agents=[],
         recent_messages=runtime.recent_messages,
         user_message=user_message,
+        available_tools=runtime.available_tools,
+        tool_schemas=runtime.tool_schemas,
+        tool_schemas_before_filter=runtime.tool_schemas_before_filter,
+        tool_schema_filter=runtime.tool_schema_filter,
         tool_policy_pack=runtime.tool_policy_pack,
         history_limit=5,
         standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
@@ -1212,6 +1379,10 @@ async def _stream_standalone_assistant_response(
             agents=[],
             recent_messages=runtime.recent_messages,
             user_message=user_message,
+            available_tools=runtime.available_tools,
+            tool_schemas=runtime.tool_schemas,
+            tool_schemas_before_filter=runtime.tool_schemas_before_filter,
+            tool_schema_filter=runtime.tool_schema_filter,
             tool_policy_pack=runtime.tool_policy_pack,
             history_limit=5,
             standalone_note="This is a standalone chat. Reply directly, be concise, and help the user explore before creating a project if needed.",
@@ -1236,6 +1407,8 @@ async def _stream_standalone_assistant_response(
             usage=raw_event.get("usage"),
             finish_reason=raw_event.get("finish_reason"),
             timings=raw_event.get("timings"),
+            provider_session=raw_event.get("provider_session") if isinstance(raw_event.get("provider_session"), dict) else None,
+            provider_request=raw_event.get("provider_request") if isinstance(raw_event.get("provider_request"), dict) else None,
         )
     standalone_stream_runtime_inputs = build_single_agent_raw_runtime_inputs(
         db=db,
@@ -1279,6 +1452,7 @@ async def _stream_standalone_assistant_response(
                         agent_name=runtime.assistant_name,
                         llm_client=runtime.llm_client,
                         client_turn_id=client_turn_id,
+                        provider_tools=runtime.tool_schemas,
                     ),
                     make_stream_audit_before_event(
                         db=db,
@@ -1540,6 +1714,7 @@ async def trigger_agent_response(
             project=project,
             checkpoint_snapshot=checkpoint_snapshot,
             previous_agent_work=extra_context,
+            user_message=llm_user_content,
             recent_message_limit=20,
         )
         logger.debug(f"[ LLM client obtained for {_agent_type(target_agent)}: {runtime.llm_client.base_url}")
@@ -1577,6 +1752,9 @@ async def trigger_agent_response(
                 recent_messages=runtime.recent_messages,
                 user_message=llm_user_content,
                 available_tools=runtime.available_tools,
+                tool_schemas=runtime.tool_schemas,
+                tool_schemas_before_filter=runtime.tool_schemas_before_filter,
+                tool_schema_filter=runtime.tool_schema_filter,
                 tool_policy_pack=runtime.tool_policy_pack,
                 history_limit=5,
                 history_visibility="all" if visibility == "all" else "target",
@@ -1642,6 +1820,7 @@ async def trigger_agent_response(
                     client_turn_id=getattr(task_run, "client_turn_id", None) if task_run is not None else None,
                     tool_call_id=tool_call.get("id"),
                     turn=frame.turn_index + 1,
+                    __catown_runtime_card_managed_by_stream=(tool_name == "run_shell"),
                     progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
                 )
                 tool_success = _tool_result_succeeded(tool_result)
@@ -2172,6 +2351,19 @@ async def _prepare_standalone_turn_runtime(
         assistant_label=assistant_label,
         assistant_id=assistant_id,
         recent_messages=recent_messages,
+        available_tools=[],
+        tool_schemas_before_filter=[],
+        tool_schemas=[],
+        tool_schema_filter={
+            "profile_name": "standalone",
+            "original_tool_count": 0,
+            "active_tool_count": 0,
+            "excluded_tool_count": 0,
+            "active_tools": [],
+            "excluded_tools": [],
+            "activated_groups": [],
+            "mode": "standalone",
+        },
         tool_policy_pack=runtime_tool_registry.get_policy_pack([]),
         turn_state=turn_state,
     )
@@ -4761,6 +4953,11 @@ class TaskRunCancelRequest(BaseModel):
     cancelled_by: Optional[str] = "user"
 
 
+class TaskRunCompactionRequest(BaseModel):
+    reason: Optional[str] = "explicit_admin_request"
+    agent_name: Optional[str] = None
+
+
 def _message_metadata_with_turn(client_turn_id: Optional[str], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     metadata = dict(extra or {})
     if client_turn_id:
@@ -6789,6 +6986,76 @@ async def get_task_run_detail(
     return serialize_task_run_detail(task_run, event_limit=event_limit or None)
 
 
+def _latest_provider_session_for_task_run(db: Session, task_run: TaskRun) -> Optional[LLMProviderSession]:
+    query = db.query(LLMProviderSession).filter(LLMProviderSession.status == "active")
+    task_run_id = getattr(task_run, "id", None)
+    chatroom_id = getattr(task_run, "chatroom_id", None)
+    if task_run_id is not None and chatroom_id is not None:
+        query = query.filter(
+            or_(
+                LLMProviderSession.task_run_id == task_run_id,
+                LLMProviderSession.chatroom_id == chatroom_id,
+            )
+        )
+    elif task_run_id is not None:
+        query = query.filter(LLMProviderSession.task_run_id == task_run_id)
+    elif chatroom_id is not None:
+        query = query.filter(LLMProviderSession.chatroom_id == chatroom_id)
+    else:
+        return None
+    return (
+        query.order_by(
+            LLMProviderSession.last_used_at.desc().nullslast(),
+            LLMProviderSession.updated_at.desc().nullslast(),
+            LLMProviderSession.id.desc(),
+        )
+        .first()
+    )
+
+
+@router.post("/task-runs/{task_run_id}/compact")
+async def compact_task_run_context(
+    task_run_id: int,
+    req: TaskRunCompactionRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Create an explicit local compaction checkpoint for a task run."""
+
+    task_run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == task_run_id)
+        .first()
+    )
+    if not task_run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    provider_session = _latest_provider_session_for_task_run(db, task_run)
+    if provider_session is None:
+        raise HTTPException(status_code=409, detail="No active provider session found for task run")
+
+    try:
+        db.expire(task_run, ["events"])
+    except Exception:
+        pass
+    checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+    checkpoint = maybe_create_local_compaction_checkpoint(
+        db,
+        provider_session=provider_session,
+        task_run=task_run,
+        checkpoint_snapshot=checkpoint_snapshot,
+        diagnostics=None,
+        reason=(req.reason if req else None) or "explicit_admin_request",
+        agent_name=(req.agent_name if req else None) or task_run.target_agent_name or provider_session.agent_name,
+    )
+    if checkpoint is None:
+        raise HTTPException(status_code=409, detail="Compaction checkpoint was not created")
+    return {
+        "status": "ok",
+        "task_run_id": task_run.id,
+        "chatroom_id": task_run.chatroom_id,
+        **checkpoint,
+    }
+
+
 @router.get("/task-runs/{task_run_id}/activity")
 async def get_task_run_activity(task_run_id: int, db: Session = Depends(get_db)):
     """Return the chat-facing activity projection for one task run."""
@@ -7070,6 +7337,7 @@ async def _replay_runtime_blocked_tool_queue_item(
                 runtime_kwargs,
             ),
             __catown_approval_granted=True,
+            __catown_runtime_card_managed_by_stream=(tool_name == "run_shell"),
             tool_call_id=request_payload.get("tool_call_id"),
             turn=request_payload.get("turn"),
             progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
@@ -7219,6 +7487,7 @@ async def _start_approved_run_shell_queue_item(
                 runtime_kwargs,
             ),
             __catown_approval_granted=True,
+            __catown_runtime_card_managed_by_stream=True,
             tool_call_id=request_payload.get("tool_call_id"),
             turn=request_payload.get("turn"),
             progress_callback=emit_tool_progress,
@@ -7913,27 +8182,6 @@ async def _finalize_approved_queue_item_followup_async(
                     "resumed_after_approval": True,
                 },
             )
-            chatroom_id = getattr(item, "chatroom_id", None)
-            if isinstance(chatroom_id, int):
-                await store_runtime_card(
-                    chatroom_id,
-                    {
-                        "type": "tool_call",
-                        "source": "approval_replay",
-                        "agent": (item.agent_name or "").strip() or "agent",
-                        "tool": tool_name,
-                        "arguments": tool_arguments,
-                        "success": None,
-                        "status": "running",
-                        "blocked": False,
-                        "result": "Resumed after approval. Tool is running.",
-                        "pid": getattr(replay_result, "pid", None),
-                        "tool_call_id": getattr(replay_result, "tool_call_id", None),
-                        "client_turn_id": getattr(task_run, "client_turn_id", None) if task_run is not None else None,
-                        "run_id": getattr(task_run, "id", None) if task_run is not None else None,
-                        "turn": replay_turn,
-                    },
-                )
         record_runner_tool_round(
             db,
             task_run,
@@ -9404,6 +9652,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                 chatroom_id=chatroom_id,
                 project=project,
                 checkpoint_snapshot=checkpoint_snapshot,
+                user_message=effective_user_content,
                 recent_message_limit=10,
             )
             compaction_callback = _build_context_compaction_callback(
@@ -9445,6 +9694,9 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     recent_messages=runtime.recent_messages,
                     user_message=effective_user_content,
                     available_tools=runtime.available_tools,
+                    tool_schemas=runtime.tool_schemas,
+                    tool_schemas_before_filter=runtime.tool_schemas_before_filter,
+                    tool_schema_filter=runtime.tool_schema_filter,
                     tool_policy_pack=runtime.tool_policy_pack,
                     history_limit=6,
                     runtime_context=build_runtime_environment_context(project),
@@ -9490,6 +9742,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     client_turn_id=message.client_turn_id,
                     tool_call_id=tool_call_id,
                     turn=turn_index,
+                    __catown_runtime_card_managed_by_stream=True,
                     progress_callback=emit_tool_progress if tool_name == "run_shell" else None,
                 )
 
@@ -9529,6 +9782,8 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                     usage=raw_event.get("usage"),
                     finish_reason=raw_event.get("finish_reason"),
                     timings=raw_event.get("timings"),
+                    provider_session=raw_event.get("provider_session") if isinstance(raw_event.get("provider_session"), dict) else None,
+                    provider_request=raw_event.get("provider_request") if isinstance(raw_event.get("provider_request"), dict) else None,
                 )
             project_single_agent_stream_runtime_inputs = build_single_agent_raw_runtime_inputs(
                 db=db,
@@ -9572,6 +9827,7 @@ async def send_message_stream(chatroom_id: int, message: MessageRequest, request
                                 agent_name=target_agent_label,
                                 llm_client=runtime.llm_client,
                                 client_turn_id=message.client_turn_id,
+                                provider_tools=runtime.tool_schemas,
                             ),
                             make_stream_audit_before_event(
                                 db=db,
@@ -9796,6 +10052,8 @@ async def get_config():
         "context": {
             "selector_profiles": effective_selector_profiles(),
             "default_selector_profiles": default_selector_profiles(),
+            "tool_capability_profiles": effective_tool_capability_profiles(),
+            "default_tool_capability_profiles": default_tool_capability_profiles(),
         },
         "tools": {
             "tool_names": [],
@@ -9823,6 +10081,8 @@ async def get_config():
             config["context"] = {
                 "selector_profiles": effective_selector_profiles(agents_config),
                 "default_selector_profiles": default_selector_profiles(),
+                "tool_capability_profiles": effective_tool_capability_profiles(agents_config),
+                "default_tool_capability_profiles": default_tool_capability_profiles(),
             }
 
             agents_data = dict(agents_config.get("agents", {}))
@@ -9841,6 +10101,8 @@ async def get_config():
             # 全局 provider 摘要（用于显示 fallback 来源）
             global_provider = agents_config.get("global_llm", {}).get("provider", {})
             global_model = agents_config.get("global_llm", {}).get("default_model", "")
+            global_llm_config = agents_config.get("global_llm", {})
+            global_provider_mode = _runtime_provider_mode_from_config(global_llm_config)
             if not global_model:
                 gm = global_provider.get("models", [])
                 if gm:
@@ -9857,13 +10119,19 @@ async def get_config():
                 if has_own_provider:
                     effective_model = default_model or (models[0]["id"] if models else "")
                     effective_url = provider.get("baseUrl", "")
+                    provider_mode = _runtime_provider_mode_from_config(
+                        agent_data,
+                        fallback=global_llm_config,
+                    )
                 else:
                     effective_model = global_model
                     effective_url = global_provider.get("baseUrl", "")
+                    provider_mode = global_provider_mode
 
                 config["agent_llm_configs"][agent_name] = {
                     "baseUrl": effective_url,
                     "model": effective_model,
+                    "provider_mode": provider_mode,
                     "hasApiKey": bool(provider.get("apiKey", "") if has_own_provider else global_provider.get("apiKey", "")),
                     "models": [m["id"] for m in models] if has_own_provider else [m["id"] for m in global_provider.get("models", [])],
                     "source": "agent" if has_own_provider else "global"
@@ -10062,6 +10330,8 @@ async def update_context_config(config: ContextConfigModel):
             "context": {
                 "selector_profiles": effective_selector_profiles(data),
                 "default_selector_profiles": default_selector_profiles(),
+                "tool_capability_profiles": effective_tool_capability_profiles(data),
+                "default_tool_capability_profiles": default_tool_capability_profiles(),
             },
         }
     except Exception as e:
@@ -10154,7 +10424,7 @@ async def update_agent_llm_config(agent_name: str, config: Dict[str, Any]):
             raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
         # 更新 Agent 的完整配置字段
-        for field_name in ("provider", "default_model", "role", "soul", "tools", "skills"):
+        for field_name in ("provider", "default_model", "runtime", "role", "soul", "tools", "skills"):
             if field_name in config:
                 agents[agent_name][field_name] = canonical_tool_names(config[field_name]) if field_name == "tools" else config[field_name]
 
@@ -10276,16 +10546,44 @@ async def test_agent_config(agent_name: str = DEFAULT_AGENT_TYPE):
             api_key=provider["api_key"],
             base_url=provider["base_url"]
         )
-        response = await client.chat.completions.create(
-            model=provider["model"],
-            messages=[{"role": "user", "content": "Hello"}],
-            max_tokens=5
-        )
+        provider_mode = provider.get("provider_mode") or PROVIDER_MODE_CHAT_COMPLETIONS
+        response_id = None
+        if provider_mode == PROVIDER_MODE_RESPONSES_HTTP:
+            response = await client.responses.create(
+                model=provider["model"],
+                input="Hello",
+                max_output_tokens=5,
+                store=False,
+            )
+            response_id = getattr(response, "id", None)
+        elif provider_mode == PROVIDER_MODE_RESPONSES_WEBSOCKET:
+            llm_client = LLMClient(
+                base_url=provider["base_url"],
+                api_key=provider["api_key"],
+                model=provider["model"],
+                agent_name=agent_name,
+                provider_mode=provider_mode,
+            )
+            async for event in llm_client.chat_stream([{"role": "user", "content": "Hello"}]):
+                if event.get("type") == "error":
+                    raise RuntimeError(str(event.get("error") or "Responses WebSocket test failed"))
+                if event.get("type") == "done":
+                    response_id = event.get("response_id")
+                    break
+        else:
+            response = await client.chat.completions.create(
+                model=provider["model"],
+                messages=[{"role": "user", "content": "Hello"}],
+                max_tokens=5
+            )
+            response_id = getattr(response, "id", None)
         return {
             "status": "success",
             "agent": agent_name,
             "model": provider["model"],
-            "baseUrl": provider["base_url"]
+            "baseUrl": provider["base_url"],
+            "provider_mode": provider_mode,
+            "response_id": response_id,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")

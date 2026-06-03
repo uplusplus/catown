@@ -20,6 +20,12 @@ def _build_chatroom_timeline_projection(*args, **kwargs):
     return build_chatroom_timeline_projection(*args, **kwargs)
 
 
+def _build_task_activity_projection(*args, **kwargs):
+    from services.task_activity_projection import build_task_activity_projection
+
+    return build_task_activity_projection(*args, **kwargs)
+
+
 def test_task_run_timeline_uses_backend_sequence_over_timestamps(fresh_db):
     fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
     db = fresh_db.SessionLocal()
@@ -187,6 +193,71 @@ def test_task_run_timeline_projects_llm_fact_events(fresh_db):
             "llm_response_started",
             "llm_response_completed",
         ]
+    finally:
+        db.close()
+
+
+def test_task_run_timeline_surfaces_provider_request_delta(fresh_db):
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+    db = fresh_db.SessionLocal()
+    try:
+        chatroom = fresh_db.Chatroom(title="Provider Delta")
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            run_kind="multi_agent_orchestration_stream",
+            status="completed",
+            title="Provider delta run",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        _append_task_event(
+            db,
+            task_run,
+            "llm_request_created",
+            agent_name="Valet",
+            payload={"turn": 1, "step_id": "llm:Valet:1"},
+        )
+        _append_task_event(
+            db,
+            task_run,
+            "llm_response_completed",
+            agent_name="Valet",
+            payload={
+                "turn": 1,
+                "step_id": "llm:Valet:1",
+                "finish_reason": "stop",
+                "provider_mode": "responses_http",
+                "provider_request": {
+                    "stateful_delta": True,
+                    "full_input_item_count": 4,
+                    "sent_input_item_count": 1,
+                    "omitted_input_item_count": 3,
+                    "estimated_full_input_tokens": 148,
+                    "estimated_sent_input_tokens": 32,
+                    "estimated_omitted_input_tokens": 116,
+                    "estimated_instruction_tokens": 9,
+                },
+            },
+        )
+
+        db.refresh(task_run)
+        timeline = _build_task_run_timeline_projection(task_run)
+        step = timeline["steps"][0]
+
+        assert "Delta input 1 sent / 3 omitted" in step["summary"]
+        assert "approx 116 input tokens omitted" in step["summary"]
+        assert "### Provider Request" in step["detail_content"]
+        assert "- Estimated omitted input tokens: `116`" in step["detail_content"]
+        assert "provider_request" not in step["facts"]
+
+        activity = _build_task_activity_projection(task_run)
+        assert "Delta input 1 sent / 3 omitted" in activity["steps"][0]["summary"]
     finally:
         db.close()
 

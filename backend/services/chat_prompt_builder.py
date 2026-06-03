@@ -32,6 +32,7 @@ from services.model_context import (
     context_window_from_provider,
     resolve_model_context_metadata,
 )
+from services.runtime_event_helpers import should_emit_context_budget_event
 from services.task_state import build_task_state, build_task_state_fragments
 from skills import load_skill_registry
 
@@ -296,6 +297,9 @@ def assemble_chat_messages(
     recent_messages: Optional[List[Any]] = None,
     user_message: Any = "",
     available_tools: Optional[List[str]] = None,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    tool_schemas_before_filter: Optional[List[Dict[str, Any]]] = None,
+    tool_schema_filter: Optional[Dict[str, Any]] = None,
     tool_guidance: str = "",
     history_limit: int = 5,
     history_visibility: str = "all",
@@ -402,10 +406,13 @@ def assemble_chat_messages(
         user_fragments=user_fragments,
         history_messages=history,
         current_input_messages=current_input,
+        tool_schemas=tool_schemas,
+        tool_schemas_before_filter=tool_schemas_before_filter,
+        tool_schema_filter=tool_schema_filter,
         selector=selector,
     )
     diagnostics = assembly.selector_diagnostics if isinstance(assembly.selector_diagnostics, dict) else {}
-    if diagnostics.get("compacted") and on_compaction is not None:
+    if should_emit_context_budget_event(diagnostics) and on_compaction is not None:
         on_compaction(diagnostics)
     return assembly.to_messages()
 

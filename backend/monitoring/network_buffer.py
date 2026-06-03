@@ -9,6 +9,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import and_, func, or_
+
 from config import settings
 from services.llm_runtime_context import get_active_llm_runtime_context
 from services.telemetry_writer import telemetry_writer
@@ -41,8 +43,13 @@ class MonitorNetworkBuffer:
 
     def append(self, event: dict[str, Any], *, require_persisted_id: bool = False) -> dict[str, Any]:
         normalized = self._normalize(event)
-        persisted = self._persist(normalized, require_persisted_id=require_persisted_id) or dict(normalized)
-        self._append_memory(persisted)
+        persisted = self._should_persist_entry(normalized)
+        persisted_entry = (
+            self._persist(normalized, require_persisted_id=require_persisted_id) if persisted else None
+        )
+        persisted = persisted_entry or dict(normalized)
+        persisted["persisted"] = bool(persisted_entry)
+        persisted = self._append_memory(persisted)
         try:
             self._maybe_cleanup()
         except Exception as exc:
@@ -56,16 +63,43 @@ class MonitorNetworkBuffer:
         after_id: int | None = None,
         category: str | None = None,
         query: str | None = None,
+        include_internal: bool = False,
     ) -> list[dict[str, Any]]:
         persisted = self._list_persisted(
             limit=limit,
             after_id=after_id,
             category=category,
             query=query,
+            include_internal=include_internal,
         )
-        if persisted:
+        if persisted and not include_internal:
             return persisted
-        return self._list_memory(limit=limit, after_id=after_id, category=category, query=query)
+        memory_entries = self._list_memory(
+            limit=limit if include_internal else max(limit, settings.MONITOR_NETWORK_MEMORY_MAX_ENTRIES),
+            after_id=after_id,
+            category=category,
+            query=query,
+            include_internal=include_internal,
+        )
+        if not include_internal:
+            return memory_entries
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for entry in persisted + memory_entries:
+            entry_id = self._int_or_none(entry.get("id"))
+            if entry.get("persisted") is not False and entry_id is not None and entry_id in seen_ids:
+                continue
+            if entry.get("persisted") is not False and entry_id is not None:
+                seen_ids.add(entry_id)
+            merged.append(dict(entry))
+        merged.sort(
+            key=lambda entry: (
+                str(entry.get("created_at") or ""),
+                int(entry.get("id") or 0),
+            ),
+            reverse=True,
+        )
+        return merged[:limit] if limit > 0 else merged
 
     def latest_id(self) -> int:
         persisted = self._latest_persisted_id()
@@ -179,15 +213,22 @@ class MonitorNetworkBuffer:
 
         return normalized
 
-    def _append_memory(self, entry: dict[str, Any]) -> None:
+    def _append_memory(self, entry: dict[str, Any]) -> dict[str, Any]:
+        next_id_seed: int | None = None
+        if int(entry["id"]) <= 0 and self._next_id <= 1:
+            next_id_seed = self._latest_persisted_id() + 1
         with self._lock:
             if int(entry["id"]) <= 0:
                 entry = dict(entry)
+                if next_id_seed is not None:
+                    self._next_id = max(self._next_id, next_id_seed)
                 entry["id"] = self._next_id
                 self._next_id += 1
             else:
                 self._next_id = max(self._next_id, int(entry["id"]) + 1)
-            self._entries.append(dict(entry))
+            stored_entry = dict(entry)
+            self._entries.append(stored_entry)
+        return stored_entry
 
     def _list_memory(
         self,
@@ -196,6 +237,7 @@ class MonitorNetworkBuffer:
         after_id: int | None,
         category: str | None,
         query: str | None,
+        include_internal: bool,
     ) -> list[dict[str, Any]]:
         normalized_category = (category or "all").strip().lower()
         query_text = (query or "").strip().lower()
@@ -212,7 +254,15 @@ class MonitorNetworkBuffer:
         if query_text:
             snapshot = [entry for entry in snapshot if self._matches_query(entry, query_text)]
 
-        snapshot.sort(key=lambda entry: int(entry["id"]), reverse=True)
+        snapshot = [entry for entry in snapshot if self._entry_visible(entry, include_internal=include_internal)]
+
+        snapshot.sort(
+            key=lambda entry: (
+                str(entry.get("created_at") or ""),
+                int(entry.get("id") or 0),
+            ),
+            reverse=True,
+        )
         if limit > 0:
             snapshot = snapshot[:limit]
         return snapshot
@@ -236,6 +286,7 @@ class MonitorNetworkBuffer:
         after_id: int | None,
         category: str | None,
         query: str | None,
+        include_internal: bool,
     ) -> list[dict[str, Any]]:
         if not self._ensure_persisted_table():
             return []
@@ -254,18 +305,173 @@ class MonitorNetworkBuffer:
                     rows = rows.filter(MonitorNetworkRecord.category == normalized_category)
 
                 query_text = (query or "").strip().lower()
+                rows = rows.filter(*self._visibility_sql_filters(MonitorNetworkRecord, include_internal=include_internal))
+                if query_text:
+                    like_pattern = f"%{query_text}%"
+                    rows = rows.filter(
+                        or_(
+                            func.lower(func.coalesce(MonitorNetworkRecord.url, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.path, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.from_entity, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.to_entity, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.preview, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.error, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.raw_request, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.raw_response, "")).like(like_pattern),
+                            func.lower(func.coalesce(MonitorNetworkRecord.metadata_json, "")).like(like_pattern),
+                        )
+                    )
                 rows = rows.order_by(MonitorNetworkRecord.id.desc())
                 if limit > 0:
                     rows = rows.limit(limit)
 
-                result = [self._row_to_entry(row) for row in rows.all()]
-                if query_text:
-                    result = [entry for entry in result if self._matches_query(entry, query_text)]
-                return result[:limit] if limit > 0 else result
+                return [self._row_to_entry(row) for row in rows.all()]
             finally:
                 db.close()
         except Exception:
             return []
+
+    @staticmethod
+    def _visibility_sql_filters(record_model: Any, *, include_internal: bool):
+        metadata_json = record_model.metadata_json
+        flow_id_expr = func.lower(func.coalesce(func.json_extract(metadata_json, "$.flow_id"), ""))
+        flow_kind_expr = func.lower(func.coalesce(func.json_extract(metadata_json, "$.flow_kind"), ""))
+        frame_type_expr = func.lower(func.coalesce(func.json_extract(metadata_json, "$.frame_type"), ""))
+        aggregated_expr = func.lower(func.coalesce(func.json_extract(metadata_json, "$.aggregated"), ""))
+        path_expr = func.lower(func.coalesce(record_model.path, ""))
+        url_expr = func.lower(func.coalesce(record_model.url, ""))
+        from_entity_expr = func.lower(func.coalesce(record_model.from_entity, ""))
+        client_source_expr = func.lower(func.coalesce(record_model.client_source, ""))
+        category_expr = func.lower(func.coalesce(record_model.category, ""))
+        protocol_expr = func.lower(func.coalesce(record_model.protocol, ""))
+        raw_response_expr = func.lower(func.coalesce(record_model.raw_response, ""))
+        preview_expr = func.lower(func.coalesce(record_model.preview, ""))
+
+        filters = [
+            or_(flow_id_expr == "", aggregated_expr == "", aggregated_expr == "false", aggregated_expr == "0"),
+            or_(
+                category_expr != "backend_llm",
+                flow_kind_expr == "llm_http",
+                and_(
+                    flow_kind_expr != "llm_stream",
+                    ~frame_type_expr.in_(
+                        [
+                            "request_sent",
+                            "first_chunk",
+                            "first_content",
+                            "content",
+                            "tool_call_delta",
+                            "tool_call_ready",
+                            "done",
+                        ]
+                    ),
+                ),
+            ),
+        ]
+
+        if not include_internal:
+            heartbeat_expr = and_(
+                protocol_expr.like("%http%"),
+                or_(path_expr.like("%/stream"), preview_expr.like("% ping%")),
+                raw_response_expr != "",
+                ~raw_response_expr.like('%"type": "content"%'),
+                ~raw_response_expr.like('%"type":"content"%'),
+                ~raw_response_expr.like('%"type": "done"%'),
+                ~raw_response_expr.like('%"type":"done"%'),
+                or_(
+                    raw_response_expr.like("%: ping%"),
+                    raw_response_expr.like('%"type": "llm_wait"%'),
+                    raw_response_expr.like('%"type":"llm_wait"%'),
+                    raw_response_expr.like('%"type": "tool_wait"%'),
+                    raw_response_expr.like('%"type":"tool_wait"%'),
+                ),
+            )
+            filters.extend(
+                [
+                    category_expr != "frontend_backend",
+                    client_source_expr != "monitor",
+                    ~from_entity_expr.like("%frontend (monitor)%"),
+                    ~path_expr.like("/api/monitor%"),
+                    path_expr.notin_(["/monitor", "/monitor/", "/api/frontend-meta"]),
+                    ~url_expr.like("%/monitor%"),
+                    ~url_expr.like("%/api/monitor%"),
+                    ~url_expr.like("%/api/frontend-meta%"),
+                    ~heartbeat_expr,
+                ]
+            )
+
+        return filters
+
+    @staticmethod
+    def _should_persist_entry(entry: dict[str, Any]) -> bool:
+        return not MonitorNetworkBuffer._is_internal_entry(entry)
+
+    @staticmethod
+    def _is_internal_entry(entry: dict[str, Any]) -> bool:
+        category = str(entry.get("category") or "").lower()
+        path = str(entry.get("path") or "").lower()
+        url = str(entry.get("url") or "").lower()
+        client_source = str(entry.get("client_source") or "").lower()
+        from_entity = str(entry.get("from_entity") or "").lower()
+
+        if category == "frontend_backend":
+            return True
+        if (
+            client_source == "monitor"
+            or "frontend (monitor)" in from_entity
+            or path.startswith("/api/monitor")
+            or path in {"/monitor", "/monitor/"}
+            or path.endswith("/monitor.html")
+            or "/monitor" in url
+            or "/api/monitor" in url
+            or path == "/api/frontend-meta"
+            or "/api/frontend-meta" in url
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _entry_visible(cls, entry: dict[str, Any], *, include_internal: bool) -> bool:
+        if not include_internal and cls._is_internal_entry(entry):
+            return False
+
+        category = str(entry.get("category") or "").lower()
+        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        flow_kind = str(entry.get("flow_kind") or metadata.get("flow_kind") or "").lower()
+        frame_type = str(metadata.get("frame_type") or "").lower()
+        if category == "backend_llm" and flow_kind != "llm_http" and (
+            flow_kind == "llm_stream"
+            or frame_type in {"request_sent", "first_chunk", "first_content", "content", "tool_call_delta", "tool_call_ready", "done"}
+        ):
+            return False
+
+        protocol = str(entry.get("protocol") or "").lower()
+        raw_response = str(entry.get("raw_response") or "").strip()
+        preview = str(entry.get("preview") or "").lower()
+        path = str(entry.get("path") or "").lower()
+        if "http" in protocol:
+            normalized_raw_response = raw_response.replace("\r", "")
+            if raw_response and normalized_raw_response and all(
+                line.strip() == ": ping" for line in normalized_raw_response.splitlines() if line.strip()
+            ):
+                return include_internal
+            if (
+                (path.endswith("/stream") or " ping" in preview)
+                and raw_response
+                and '"type": "content"' not in raw_response
+                and '"type":"content"' not in raw_response
+                and '"type": "done"' not in raw_response
+                and '"type":"done"' not in raw_response
+                and (
+                    ": ping" in raw_response
+                    or '"type": "llm_wait"' in raw_response
+                    or '"type":"llm_wait"' in raw_response
+                    or '"type": "tool_wait"' in raw_response
+                    or '"type":"tool_wait"' in raw_response
+                )
+            ):
+                return include_internal
+        return bool(entry.get("aggregated") is False or not entry.get("flow_id"))
 
     def _latest_persisted_id(self) -> int:
         if not self._ensure_persisted_table():

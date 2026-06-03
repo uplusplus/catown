@@ -714,6 +714,30 @@ class TaskRunCheckpoint(Base):
     task_run = relationship("TaskRun", back_populates="checkpoints")
 
 
+class LLMProviderSession(Base):
+    """Provider-side conversation state tracked per chatroom/agent/model."""
+
+    __tablename__ = "llm_provider_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chatroom_id = Column(Integer, ForeignKey("chatrooms.id"), nullable=False, index=True)
+    task_run_id = Column(Integer, ForeignKey("task_runs.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    agent_name = Column(String, nullable=False, index=True)
+    provider_mode = Column(String, nullable=False, default="chat_completions", index=True)
+    provider_host = Column(String, nullable=True, index=True)
+    model_name = Column(String, nullable=True, index=True)
+    provider_conversation_id = Column(String, nullable=True, index=True)
+    last_response_id = Column(String, nullable=True, index=True)
+    compact_checkpoint_id = Column(String, nullable=True, index=True)
+    status = Column(String, nullable=False, default="active", index=True)
+    turn_count = Column(Integer, nullable=False, default=0)
+    metadata_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+    last_used_at = Column(DateTime, nullable=True, index=True)
+
+
 class OrchestrationHandoffDelivery(Base):
     """Durable orchestration handoff inbox entry for a scheduler step."""
 
@@ -1339,6 +1363,17 @@ def init_database():
             )
     _migrate_monitor_network_records_to_network_audit()
     with engine.begin() as connection:
+        # --- ADR-035: LLM provider session state table ---
+        LLMProviderSession.__table__.create(bind=connection, checkfirst=True)
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_llm_provider_sessions_lookup "
+            "ON llm_provider_sessions (chatroom_id, agent_name, provider_mode, model_name, status)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_llm_provider_sessions_last_used "
+            "ON llm_provider_sessions (last_used_at)"
+        ))
+
         # --- ADR-034: Runtime Card Projection table ---
         RuntimeCardProjection.__table__.create(bind=connection, checkfirst=True)
         connection.execute(text(

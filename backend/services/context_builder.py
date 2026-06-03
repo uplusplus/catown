@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Iterable, Literal, Mapping, Optional
 
@@ -12,6 +13,10 @@ from services.output_header_policy import output_header_guidance_text
 
 
 ContextRole = Literal["system", "developer", "user"]
+_TOOL_RESULT_SUMMARY_RE = re.compile(
+    r"^\[Tool Result Summary\].*?\breturned\s+(?P<original_chars>\d+)\s+characters\s+\((?P<stored_chars>\d+)\s+stored\);",
+    re.MULTILINE,
+)
 
 
 class ContextScope:
@@ -576,7 +581,7 @@ def build_runtime_user_fragments(
             )
         )
 
-    # Merged: project + chatroom + routing + lineage → 1 fragment (was 6)
+    # Merged: project + chatroom + routing + lineage into one fragment.
     overview_fragment = _build_project_chat_overview_fragment(project, chatroom, source_chatroom)
     if overview_fragment is not None:
         fragments.append(overview_fragment)
@@ -882,6 +887,9 @@ def assemble_messages(
     user_fragments: Optional[Iterable[Optional[ContextFragment]]] = None,
     history_messages: Optional[Iterable[dict[str, Any]]] = None,
     current_input_messages: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schemas: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schemas_before_filter: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schema_filter: Optional[Mapping[str, Any]] = None,
     selector: Optional[ContextSelector] = None,
     developer_role_supported: bool = True,
 ) -> PromptAssembly:
@@ -900,13 +908,45 @@ def assemble_messages(
             system_content = f"{system_content}\n\n## Developer Context\n{developer_text}"
         developer = []
 
-    selector_diagnostics["prompt"] = _prompt_diagnostics_payload(
+    prompt_diagnostics = _prompt_diagnostics_payload(
         system_message={"role": "system", "content": system_content},
         developer_fragments=selected_developer,
         user_fragments=selected_user,
         history_messages=history_messages,
         current_input_messages=current_input_messages,
+        tool_schemas=tool_schemas,
+        tool_schemas_before_filter=tool_schemas_before_filter,
+        tool_schema_filter=tool_schema_filter,
     )
+    selector_diagnostics["prompt"] = prompt_diagnostics
+    tool_output_budget = (
+        prompt_diagnostics.get("tool_output_budget")
+        if isinstance(prompt_diagnostics.get("tool_output_budget"), dict)
+        else {}
+    )
+    if (
+        not selector_diagnostics.get("semantic_compaction")
+        and not selector_diagnostics.get("selection_changed")
+        and int(tool_output_budget.get("estimated_saved_tokens") or 0) > 0
+    ):
+        selector_diagnostics["event_kind"] = "tool_output_budget"
+        selector_diagnostics["context_pressure_kind"] = "tool_output_budget"
+    tool_schema_budget = (
+        prompt_diagnostics.get("tool_schema_budget")
+        if isinstance(prompt_diagnostics.get("tool_schema_budget"), dict)
+        else {}
+    )
+    if (
+        not selector_diagnostics.get("semantic_compaction")
+        and not selector_diagnostics.get("selection_changed")
+        and selector_diagnostics.get("event_kind") in {None, "selection_pass"}
+        and (
+            int(tool_schema_budget.get("tokens") or 0) > 0
+            or int(tool_schema_budget.get("estimated_saved_tokens") or 0) > 0
+        )
+    ):
+        selector_diagnostics["event_kind"] = "tool_schema_budget"
+        selector_diagnostics["context_pressure_kind"] = "tool_schema_budget"
 
     return PromptAssembly(
         system_message={"role": "system", "content": system_content},
@@ -985,8 +1025,16 @@ def _selector_diagnostics_payload(
         scope: asdict(report)
         for scope, report in sorted(scope_reports.items(), key=lambda item: (_scope_rank(item[0]), item[0]))
     }
+    selected_tokens = developer_report.selected_tokens + user_report.selected_tokens
+    usage_band = _selector_usage_band(selected_tokens=selected_tokens, selector=selector)
     return {
-        "compacted": compaction_applied,
+        "selection_changed": compaction_applied,
+        "semantic_compaction": False,
+        "event_kind": "selection_truncation" if compaction_applied else "selection_pass",
+        "context_pressure_kind": _selector_context_pressure_kind(
+            compaction_applied=compaction_applied,
+            usage_band=usage_band,
+        ),
         "reasons": _selector_compaction_reasons(
             selector=selector,
             developer_report=developer_report,
@@ -1001,10 +1049,7 @@ def _selector_diagnostics_payload(
             "reserved_completion_tokens": selector.reserved_completion_tokens,
             "prompt_overhead_tokens": selector.prompt_overhead_tokens,
             "static_tokens": selector.static_tokens,
-            "usage_band": _selector_usage_band(
-                selected_tokens=developer_report.selected_tokens + user_report.selected_tokens,
-                selector=selector,
-            ),
+            "usage_band": usage_band,
             "max_tokens_by_role": dict(selector.max_tokens_by_role or {}),
             "max_tokens_by_scope": dict(selector.max_tokens_by_scope or {}),
             "truncate_to_budget": selector.truncate_to_budget,
@@ -1126,6 +1171,19 @@ def _selector_usage_band(*, selected_tokens: int, selector: ContextSelector) -> 
     }
 
 
+def _selector_context_pressure_kind(
+    *,
+    compaction_applied: bool,
+    usage_band: Mapping[str, Any],
+) -> str:
+    band = str(usage_band.get("band") or "").strip().lower()
+    if band in {"orange", "red"}:
+        return "model_window_pressure"
+    if compaction_applied:
+        return "prompt_budget_pressure"
+    return "none"
+
+
 def _prompt_diagnostics_payload(
     *,
     system_message: dict[str, Any],
@@ -1133,13 +1191,26 @@ def _prompt_diagnostics_payload(
     user_fragments: Iterable[ContextFragment],
     history_messages: Optional[Iterable[dict[str, Any]]] = None,
     current_input_messages: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schemas: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schemas_before_filter: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schema_filter: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     history_list = list(history_messages or [])
     current_input_list = list(current_input_messages or [])
     developer_list = list(developer_fragments or [])
     user_list = list(user_fragments or [])
+    history_tool_messages = [message for message in history_list if _is_tool_output_message(message)]
+    history_non_tool_messages = [message for message in history_list if not _is_tool_output_message(message)]
+    current_tool_messages = [message for message in current_input_list if _is_tool_output_message(message)]
+    current_non_tool_messages = [message for message in current_input_list if not _is_tool_output_message(message)]
+    tool_messages = [*history_tool_messages, *current_tool_messages]
     developer_messages = [fragment.to_message() for fragment in developer_list]
     user_messages = [fragment.to_message() for fragment in user_list]
+    tool_schema_budget = _tool_schema_budget_payload(
+        tool_schemas,
+        tool_schemas_before_filter=tool_schemas_before_filter,
+        tool_schema_filter=tool_schema_filter,
+    )
     all_messages = [
         system_message,
         *developer_messages,
@@ -1155,6 +1226,16 @@ def _prompt_diagnostics_payload(
         "history": _message_collection_size(history_list),
         "current_input": _message_collection_size(current_input_list),
     }
+    tool_output_inline = _message_collection_size(tool_messages)
+    token_categories = {
+        "system_static": _message_collection_size([system_message]),
+        "developer_context": _fragment_collection_size(developer_list),
+        "runtime_fragments": _fragment_collection_size(user_list),
+        "history": _message_collection_size(history_non_tool_messages),
+        "current_input": _message_collection_size(current_non_tool_messages),
+        "tool_output_inline": tool_output_inline,
+        "tool_schema": tool_schema_budget,
+    }
     fragments = [
         _fragment_size_payload(fragment, selected=True)
         for fragment in [*developer_list, *user_list]
@@ -1162,9 +1243,21 @@ def _prompt_diagnostics_payload(
     return {
         "total": _message_collection_size(all_messages),
         "components": components,
+        "token_categories": token_categories,
+        "tool_schema_budget": tool_schema_budget,
+        "tool_output_budget": _tool_output_budget_payload(tool_messages, prompt_visible_size=tool_output_inline),
         "fragments": fragments,
         "message_count": len(all_messages),
     }
+
+
+def _is_tool_output_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    role = str(message.get("role") or "").strip().lower()
+    if role == "tool":
+        return True
+    return bool(message.get("tool_call_id"))
 
 
 def _fragment_collection_size(fragments: Iterable[ContextFragment]) -> dict[str, Any]:
@@ -1183,6 +1276,216 @@ def _message_collection_size(messages: Iterable[dict[str, Any]]) -> dict[str, An
         "tokens": estimate_messages_tokens(message_list),
         "message_count": len(message_list),
     }
+
+
+def _tool_schema_budget_payload(
+    tool_schemas: Optional[Iterable[dict[str, Any]]],
+    *,
+    tool_schemas_before_filter: Optional[Iterable[dict[str, Any]]] = None,
+    tool_schema_filter: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    active_schemas = [dict(schema) for schema in tool_schemas or [] if isinstance(schema, Mapping)]
+    active_budget = _basic_tool_schema_budget_payload(active_schemas)
+    original_budget = _basic_tool_schema_budget_payload(tool_schemas_before_filter)
+    filter_payload = dict(tool_schema_filter or {})
+    if original_budget["tokens"] <= 0:
+        return active_budget
+
+    active_tool_names = {_tool_schema_name(schema) for schema in active_schemas}
+    excluded_by_tool = [
+        item
+        for item in original_budget.get("by_tool", [])
+        if str(item.get("tool_name") or "").strip() not in active_tool_names
+    ]
+    estimated_saved_tokens = max(0, int(original_budget.get("tokens") or 0) - int(active_budget.get("tokens") or 0))
+    return {
+        **active_budget,
+        "original_bytes": original_budget["bytes"],
+        "original_tokens": original_budget["tokens"],
+        "original_tool_count": original_budget["tool_count"],
+        "original_schema_count": original_budget["schema_count"],
+        "estimated_saved_tokens": estimated_saved_tokens,
+        "estimated_savings_pct": (
+            round((estimated_saved_tokens / original_budget["tokens"]) * 100, 1)
+            if original_budget["tokens"] > 0
+            else 0.0
+        ),
+        "filtered_tool_count": max(0, original_budget["tool_count"] - active_budget["tool_count"]),
+        "filtered_schema_count": max(0, original_budget["schema_count"] - active_budget["schema_count"]),
+        "filter": filter_payload,
+        "excluded_by_tool": sorted(
+            excluded_by_tool,
+            key=lambda item: (-int(item.get("tokens") or 0), str(item.get("tool_name") or "")),
+        )[:12],
+    }
+
+
+def _basic_tool_schema_budget_payload(tool_schemas: Optional[Iterable[dict[str, Any]]]) -> dict[str, Any]:
+    schemas = [dict(schema) for schema in tool_schemas or [] if isinstance(schema, Mapping)]
+    if not schemas:
+        return {
+            "bytes": 0,
+            "tokens": 0,
+            "tool_count": 0,
+            "schema_count": 0,
+            "by_tool": [],
+        }
+
+    by_tool: list[dict[str, Any]] = []
+    total_bytes = 0
+    total_tokens = 0
+    for schema in schemas:
+        tool_name = _tool_schema_name(schema)
+        schema_bytes = _json_bytes(schema)
+        schema_tokens = estimate_text_tokens(_safe_json(schema))
+        total_bytes += schema_bytes
+        total_tokens += schema_tokens
+        by_tool.append(
+            {
+                "tool_name": tool_name,
+                "bytes": schema_bytes,
+                "tokens": schema_tokens,
+            }
+        )
+
+    return {
+        "bytes": total_bytes,
+        "tokens": total_tokens,
+        "tool_count": len({item["tool_name"] for item in by_tool}),
+        "schema_count": len(schemas),
+        "by_tool": sorted(by_tool, key=lambda item: (-int(item.get("tokens") or 0), str(item.get("tool_name") or "")))[:12],
+    }
+
+
+def _tool_schema_name(schema: Mapping[str, Any]) -> str:
+    function = schema.get("function") if isinstance(schema.get("function"), Mapping) else {}
+    return str(function.get("name") or schema.get("name") or "tool").strip() or "tool"
+
+
+def _tool_output_budget_payload(
+    messages: Iterable[dict[str, Any]],
+    *,
+    prompt_visible_size: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    message_list = [message for message in messages or [] if isinstance(message, Mapping)]
+    prompt_size = dict(prompt_visible_size or _message_collection_size(message_list))
+    original_chars = 0
+    stored_chars = 0
+    prompt_visible_chars = 0
+    summarized_message_count = 0
+    by_tool: dict[str, dict[str, Any]] = {}
+
+    for message in message_list:
+        content = _message_content_text(message.get("content"))
+        content_chars = len(content)
+        prompt_visible_chars += content_chars
+        tool_name = _tool_output_message_name(message)
+        tool_payload = by_tool.setdefault(
+            tool_name,
+            {
+                "message_count": 0,
+                "summarized_message_count": 0,
+                "original_chars": 0,
+                "stored_chars": 0,
+                "prompt_visible_chars": 0,
+            },
+        )
+        tool_payload["message_count"] += 1
+        tool_payload["prompt_visible_chars"] += content_chars
+        match = _TOOL_RESULT_SUMMARY_RE.search(content)
+        if match:
+            summarized_message_count += 1
+            original_for_message = _positive_int(match.group("original_chars"))
+            stored_for_message = _positive_int(match.group("stored_chars"))
+            original_chars += original_for_message
+            stored_chars += stored_for_message
+            tool_payload["summarized_message_count"] += 1
+            tool_payload["original_chars"] += original_for_message
+            tool_payload["stored_chars"] += stored_for_message
+        else:
+            original_chars += content_chars
+            stored_chars += content_chars
+            tool_payload["original_chars"] += content_chars
+            tool_payload["stored_chars"] += content_chars
+
+    estimated_original_tokens = _estimate_tokens_from_chars(original_chars)
+    prompt_visible_tokens = int(prompt_size.get("tokens") or 0)
+    estimated_saved_tokens = max(0, estimated_original_tokens - prompt_visible_tokens)
+    by_tool = {
+        tool_name: _finalize_tool_output_budget_tool_payload(payload)
+        for tool_name, payload in sorted(by_tool.items())
+    }
+    return {
+        "message_count": len(message_list),
+        "summarized_message_count": summarized_message_count,
+        "original_chars": original_chars,
+        "stored_chars": stored_chars,
+        "prompt_visible_chars": prompt_visible_chars,
+        "estimated_original_tokens": estimated_original_tokens,
+        "prompt_visible_tokens": prompt_visible_tokens,
+        "estimated_saved_tokens": estimated_saved_tokens,
+        "estimated_savings_pct": (
+            round((estimated_saved_tokens / estimated_original_tokens) * 100, 1)
+            if estimated_original_tokens > 0
+            else 0.0
+        ),
+        "by_tool": by_tool,
+    }
+
+
+def _tool_output_message_name(message: Mapping[str, Any]) -> str:
+    name = str(message.get("name") or message.get("tool_name") or "").strip()
+    if name:
+        return name
+    return "tool"
+
+
+def _finalize_tool_output_budget_tool_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    original_chars = int(payload.get("original_chars") or 0)
+    prompt_visible_chars = int(payload.get("prompt_visible_chars") or 0)
+    estimated_original_tokens = _estimate_tokens_from_chars(original_chars)
+    prompt_visible_tokens = _estimate_tokens_from_chars(prompt_visible_chars)
+    estimated_saved_tokens = max(0, estimated_original_tokens - prompt_visible_tokens)
+    return {
+        "message_count": int(payload.get("message_count") or 0),
+        "summarized_message_count": int(payload.get("summarized_message_count") or 0),
+        "original_chars": original_chars,
+        "stored_chars": int(payload.get("stored_chars") or 0),
+        "prompt_visible_chars": prompt_visible_chars,
+        "estimated_original_tokens": estimated_original_tokens,
+        "prompt_visible_tokens": prompt_visible_tokens,
+        "estimated_saved_tokens": estimated_saved_tokens,
+        "estimated_savings_pct": (
+            round((estimated_saved_tokens / estimated_original_tokens) * 100, 1)
+            if estimated_original_tokens > 0
+            else 0.0
+        ),
+    }
+
+
+def _message_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except TypeError:
+        return str(content)
+
+
+def _estimate_tokens_from_chars(char_count: int) -> int:
+    if char_count <= 0:
+        return 0
+    return max(1, math.ceil(char_count / 4))
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
 
 
 def _fragment_size_payload(fragment: ContextFragment, *, selected: bool) -> dict[str, Any]:
@@ -1211,6 +1514,13 @@ def _json_bytes(value: Any) -> int:
         return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
     except TypeError:
         return len(str(value).encode("utf-8"))
+
+
+def _safe_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return str(value)
 
 
 def _scope_rank(scope: str) -> int:

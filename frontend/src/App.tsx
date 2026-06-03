@@ -102,7 +102,7 @@ const CONFIG_SECTION_META: Record<
   },
   context: {
     sidebarLabel: "Context",
-    sidebarDescription: "Prompt budgets, selector caps, and compaction thresholds",
+    sidebarDescription: "Prompt budgets, selector caps, and semantic compaction thresholds",
     title: "Context budgets",
     subtitle: "Tune how much runtime context Catown can inject before fragment dropping or truncation is applied.",
   },
@@ -1612,11 +1612,11 @@ function taskRunDetailEvents(taskRun: TaskRunSummary | TaskRunDetail) {
   return "events" in taskRun && Array.isArray(taskRun.events) ? taskRun.events : [];
 }
 
-function latestTaskRunDetailEvent(taskRun: TaskRunSummary | TaskRunDetail, options?: { skipCompaction?: boolean }) {
+function latestTaskRunDetailEvent(taskRun: TaskRunSummary | TaskRunDetail, options?: { skipContextBudget?: boolean }) {
   const events = taskRunDetailEvents(taskRun);
   if (events.length === 0) return null;
-  if (options?.skipCompaction) {
-    return [...events].reverse().find((event) => event.event_type !== "context_compaction") ?? events[events.length - 1];
+  if (options?.skipContextBudget) {
+    return [...events].reverse().find((event) => !["context_budget_event", "context_compaction"].includes(event.event_type)) ?? events[events.length - 1];
   }
   return events[events.length - 1];
 }
@@ -1633,7 +1633,7 @@ function latestTaskRunToolResult(taskRun: TaskRunSummary | TaskRunDetail) {
 }
 
 function taskRunLatestEventType(taskRun: TaskRunSummary | TaskRunDetail) {
-  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
+  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipContextBudget: true });
   return (
     latestEvent?.event_type ||
     taskRun.latest_event_type ||
@@ -1684,6 +1684,25 @@ function readObjectArray(value: unknown) {
 
 function readNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatCompactNumber(value: number) {
+  return Number.isFinite(value) ? value.toLocaleString() : String(value);
+}
+
+function readProviderRequestSummary(payload: Record<string, unknown> | null | undefined) {
+  const request = readRecord(payload?.provider_request);
+  if (!request?.stateful_delta) return "";
+  const sentItems = readNumber(request.sent_input_item_count);
+  const omittedItems = readNumber(request.omitted_input_item_count);
+  const omittedTokens = readNumber(request.estimated_omitted_input_tokens);
+  const parts = [
+    sentItems !== null && omittedItems !== null
+      ? `delta ${formatCompactNumber(sentItems)} sent / ${formatCompactNumber(omittedItems)} omitted`
+      : "",
+    omittedTokens ? `~${formatCompactNumber(omittedTokens)} input tokens omitted` : "",
+  ].filter(Boolean);
+  return parts.join("; ");
 }
 
 function formatTaskProgressCounts(runtime: Record<string, unknown> | null) {
@@ -1784,7 +1803,7 @@ function latestTaskRunEventOfType(taskRun: TaskRunSummary | TaskRunDetail, event
 }
 
 function buildTaskRunStatusDetail(taskRun: TaskRunSummary | TaskRunDetail, actor = "Agent") {
-  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipCompaction: true });
+  const latestEvent = latestTaskRunDetailEvent(taskRun, { skipContextBudget: true });
   const payload = readRecord(latestEvent?.payload);
   const latestEventType = taskRunLatestEventType(taskRun);
   const lines: string[] = [];
@@ -1856,8 +1875,10 @@ function buildTaskRunStatusDetail(taskRun: TaskRunSummary | TaskRunDetail, actor
     pushLine("Turn", turn !== null ? String(turn) : "");
   } else if (latestEventType === "llm_response_completed") {
     const finishReason = readTextField(payload, "finish_reason");
+    const providerRequestSummary = readProviderRequestSummary(payload);
     pushLine("LLM", "response_completed");
     pushLine("Finish", finishReason);
+    pushLine("Input", providerRequestSummary);
   } else if (latestEventType === "agent_turn_started") {
     pushLine("Agent", latestEvent?.agent_name || actor);
     pushLine("Turn", readNumber(payload?.turn) !== null ? String(readNumber(payload?.turn)) : "");
@@ -1916,9 +1937,9 @@ function formatInlineSourceList(values: string[]) {
   return values.length > 0 ? values.map((value) => `\`${value}\``).join(", ") : "none";
 }
 
-function buildContextCompactionStepDetail(payload: Record<string, unknown> | null, fallbackSummary?: string | null) {
+function buildContextBudgetStepDetail(payload: Record<string, unknown> | null, fallbackSummary?: string | null) {
   const diagnostics = readRecord(payload?.selector_diagnostics);
-  if (!diagnostics) return { detail: fallbackSummary || "Context was compacted.", detailContent: fallbackSummary || "" };
+  if (!diagnostics) return { detail: fallbackSummary || "Context budget was adjusted.", detailContent: fallbackSummary || "" };
 
   const selector = readRecord(diagnostics.selector);
   const summary = readRecord(diagnostics.summary);
@@ -1955,7 +1976,7 @@ function buildContextCompactionStepDetail(payload: Record<string, unknown> | nul
   ].filter(Boolean).join(" · ");
   const detailContent = [
     fallbackSummary ? `### Summary\n\n${fallbackSummary}` : "",
-    `### Why\n\nThe context selector compacted the prompt${budget ? ` to fit the ${budget} budget` : ""}.`,
+    `### Why\n\nThe context selector adjusted the prompt${budget ? ` to fit the ${budget} budget` : ""}.`,
     [
       "### What Changed",
       "",

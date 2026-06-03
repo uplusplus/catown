@@ -442,9 +442,12 @@ def _llm_summary(event: TaskRunEvent, payload: dict[str, Any], phase: str) -> st
     actor = _actor(event, payload) or "Agent"
     if phase == "response":
         finish = str(payload.get("finish_reason") or "").strip()
+        provider_summary = _provider_request_summary(payload)
         if finish == "tool_calls":
-            return f"{actor} received tool instructions from the model."
-        return f"{actor} received a model response."
+            base = f"{actor} received tool instructions from the model."
+        else:
+            base = f"{actor} received a model response."
+        return f"{base} {provider_summary}" if provider_summary else base
     if phase == "response_started":
         return f"{actor} is receiving a model response."
     return f"{actor} asked the model."
@@ -562,8 +565,53 @@ def _payload(event: TaskRunEvent) -> dict[str, Any]:
         return {"raw": str(raw)}
 
 
+def _provider_request_summary(payload: dict[str, Any]) -> str:
+    request = payload.get("provider_request") if isinstance(payload.get("provider_request"), dict) else {}
+    if not request.get("stateful_delta"):
+        return ""
+    sent_items = _coerce_int(request.get("sent_input_item_count"))
+    omitted_items = _coerce_int(request.get("omitted_input_item_count"))
+    omitted_tokens = _coerce_int(request.get("estimated_omitted_input_tokens"))
+    parts = []
+    if sent_items is not None and omitted_items is not None:
+        parts.append(f"Delta input {sent_items} sent / {omitted_items} omitted")
+    if omitted_tokens:
+        parts.append(f"approx {omitted_tokens} input tokens omitted")
+    return "; ".join(parts) + "." if parts else "Stateful delta input was used."
+
+
+def _provider_request_detail_lines(payload: dict[str, Any]) -> list[str]:
+    request = payload.get("provider_request") if isinstance(payload.get("provider_request"), dict) else {}
+    if not request:
+        return []
+    mode = str(payload.get("provider_mode") or "").strip()
+    lines = []
+    if mode:
+        lines.append(f"- Provider mode: `{mode}`")
+    lines.extend(
+        line
+        for line in (
+            f"- Stateful delta: `{bool(request.get('stateful_delta'))}`",
+            _provider_metric_line(request, "full_input_item_count", "Full input items"),
+            _provider_metric_line(request, "sent_input_item_count", "Sent input items"),
+            _provider_metric_line(request, "omitted_input_item_count", "Omitted input items"),
+            _provider_metric_line(request, "estimated_full_input_tokens", "Estimated full input tokens"),
+            _provider_metric_line(request, "estimated_sent_input_tokens", "Estimated sent input tokens"),
+            _provider_metric_line(request, "estimated_omitted_input_tokens", "Estimated omitted input tokens"),
+            _provider_metric_line(request, "estimated_instruction_tokens", "Estimated instruction tokens"),
+        )
+        if line
+    )
+    return lines
+
+
+def _provider_metric_line(request: dict[str, Any], key: str, label: str) -> str:
+    value = _coerce_int(request.get(key))
+    return f"- {label}: `{value}`" if value is not None else ""
+
+
 def _facts(payload: dict[str, Any]) -> dict[str, Any]:
-    omitted = {"system_prompt", "prompt_messages", "raw_response"}
+    omitted = {"system_prompt", "prompt_messages", "raw_response", "provider_request"}
     facts: dict[str, Any] = {}
     for key, value in payload.items():
         if value is None or key in omitted:
@@ -621,6 +669,9 @@ def _detail_content(event: TaskRunEvent, payload: dict[str, Any], summary: str) 
             lines.extend(["", "### System Prompt", f"```text\n{_compact_text(system_prompt)}\n```"])
         if prompt_messages is not None:
             lines.extend(["", "### Prompt Messages", f"```json\n{_json_block(prompt_messages)}\n```"])
+    provider_lines = _provider_request_detail_lines(payload)
+    if provider_lines:
+        lines.extend(["", "### Provider Request", *provider_lines])
     facts = _facts(payload)
     if facts:
         lines.extend(["", "### Facts", f"```json\n{json.dumps(facts, ensure_ascii=False, indent=2)}\n```"])

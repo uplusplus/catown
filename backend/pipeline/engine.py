@@ -19,6 +19,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -30,7 +31,6 @@ from models.database import (
     SessionLocal, ApprovalQueueItem, Chatroom, Pipeline, PipelineRun, PipelineStage,
     StageArtifact, PipelineMessage, Project,
 )
-from models.audit import LLMCall, ToolCall, Event
 from pipeline.config import pipeline_config_manager, StageConfig
 from llm.client import get_llm_client_for_agent, LLMClient
 from services.context_builder import (
@@ -47,6 +47,10 @@ from services.context_builder import (
 )
 from services.chat_prompt_builder import resolve_llm_context_window
 from services.model_context import context_window_from_provider
+from services.tool_capability_profiles import (
+    resolve_tool_capability_profile_name,
+    select_tools_for_capability_profile,
+)
 from services.approval_queue import (
     create_approval_queue_item,
     find_pending_queue_item,
@@ -118,7 +122,18 @@ from services.runner_lifecycle import (
     start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
-from services.runtime_event_helpers import build_context_compaction_callback, build_runtime_event_payload
+from services.runtime_event_helpers import (
+    build_context_compaction_callback,
+    build_runtime_event_payload,
+    should_emit_context_budget_event,
+)
+from services.audit_recorder import (
+    create_llm_call_record,
+    finalize_llm_call_error,
+    finalize_llm_call_success,
+    record_audit_event,
+    record_tool_call as record_audit_tool_call,
+)
 from services.tool_governance import build_blocked_tool_result, build_structured_tool_result, classify_tool_result, tool_manual_approval_reason, tool_result_succeeded
 from services.workflow_spec_contracts import compile_pipeline_template_to_workflow_spec
 from services.workflow_spec_policy import validate_and_project_workflow_spec_for_execution
@@ -255,6 +270,28 @@ def _append_pipeline_task_event(
         task_run,
         event_type,
         agent_name=agent_name,
+        summary=summary,
+        payload=payload,
+    )
+
+
+def _record_pipeline_audit_event(
+    db: Session,
+    *,
+    run_id: int | None,
+    event_type: EventType | str,
+    agent_name: str | None = None,
+    stage_name: str | None = None,
+    summary: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> Any:
+    event_type_value = event_type.value if isinstance(event_type, EventType) else str(event_type)
+    return record_audit_event(
+        db=db,
+        run_id=run_id,
+        event_type=event_type_value,
+        agent_name=agent_name,
+        stage_name=stage_name,
         summary=summary,
         payload=payload,
     )
@@ -849,9 +886,9 @@ TOOL_REGISTRY: Dict[str, Any] = {
 }
 
 
-def _build_tools_for_agent(agent_name: str) -> List[Dict]:
+def _build_tools_for_agent(agent_name: str, tool_names: Optional[List[str]] = None) -> List[Dict]:
     """为指定 Agent 构建 OpenAI function calling 工具列表"""
-    allowed = AGENT_TOOLS.get(agent_name, list(TOOL_REGISTRY.keys()))
+    allowed = tool_names if tool_names is not None else AGENT_TOOLS.get(agent_name, list(TOOL_REGISTRY.keys()))
     tools = []
     for tool_name in allowed:
         info = TOOL_REGISTRY.get(tool_name)
@@ -1469,15 +1506,15 @@ class PipelineEngine:
         logger.info(f"Gate approved: pipeline={pipeline_id}, stage={stage.stage_name}")
 
         # 写入 gate 审批事件
-        db.add(Event(
+        _record_pipeline_audit_event(
+            db,
             run_id=run.id,
             event_type=EventType.GATE_APPROVED,
             agent_name=None,
             stage_name=stage.stage_name,
             summary=f"Gate approved: {stage.display_name} by BOSS",
-            payload=json.dumps({"stage": stage.stage_name, "display_name": stage.display_name}, ensure_ascii=False),
-        ))
-        db.commit()
+            payload={"stage": stage.stage_name, "display_name": stage.display_name},
+        )
 
         await event_bus.emit("gate_approved", {
             "pipeline_id": pipeline.id,
@@ -1594,18 +1631,18 @@ class PipelineEngine:
         self._running_tasks[pipeline_id] = task
 
         # 写入 gate 拒绝 + 打回事件
-        db.add(Event(
+        _record_pipeline_audit_event(
+            db,
             run_id=run.id,
             event_type=EventType.GATE_REJECTED,
             agent_name=None,
             stage_name=stage.stage_name,
             summary=f"Gate rejected: {stage.display_name} → rolling back to {target_name}",
-            payload=json.dumps({
+            payload={
                 "rejected_stage": stage.stage_name,
                 "rollback_target": target_name,
-            }, ensure_ascii=False),
-        ))
-        db.commit()
+            },
+        )
 
         await event_bus.emit("gate_rejected", {
             "pipeline_id": pipeline.id,
@@ -1636,14 +1673,15 @@ class PipelineEngine:
         enqueue_message_delivery(db, msg)
 
         # 写入 BOSS 指令事件
-        db.add(Event(
+        _record_pipeline_audit_event(
+            db,
             run_id=run.id,
             event_type=EventType.BOSS_INSTRUCTION,
             agent_name=agent_name,
             stage_name=None,
             summary=f"BOSS → {agent_name}: {message[:100]}",
-            payload=json.dumps({"to_agent": agent_name, "content": message[:5000]}, ensure_ascii=False),
-        ))
+            payload={"to_agent": agent_name, "content": message[:5000]},
+        )
 
         db.commit()
         _append_pipeline_task_event(
@@ -1912,21 +1950,21 @@ class PipelineEngine:
 
         # 写入阶段开始事件
         active_skills = list(stage_policy.active_skills)
-        db.add(Event(
+        _record_pipeline_audit_event(
+            db,
             run_id=run.id,
             event_type=EventType.STAGE_START,
             agent_name=stage_policy.agent_name,
             stage_name=stage_policy.stage_name,
             summary=f"Stage: {stage_policy.display_name} ({stage_policy.agent_name})",
-            payload=json.dumps({
+            payload={
                 "gate": stage_policy.approval.kind,
                 "timeout_minutes": stage_policy.timeout_minutes,
                 "active_skills": active_skills,
                 "expected_artifacts": stage_policy.delivery.expected_artifacts,
                 "stage_policy": stage_policy.to_payload(),
-            }, ensure_ascii=False),
-        ))
-        db.commit()
+            },
+        )
         _append_pipeline_task_event(
             db,
             run,
@@ -2131,20 +2169,20 @@ class PipelineEngine:
 
                 # 写入阶段完成事件
                 duration_min = (stage.completed_at - stage.started_at).total_seconds() / 60 if stage.started_at else 0
-                db.add(Event(
+                _record_pipeline_audit_event(
+                    db,
                     run_id=run.id,
                     event_type=EventType.STAGE_END,
                     agent_name=stage_policy.agent_name,
                     stage_name=stage_policy.stage_name,
                     summary=f"Stage: {stage_policy.display_name} completed ({duration_min:.0f}min)",
-                    payload=json.dumps({
+                    payload={
                         "status": "completed",
                         "duration_min": round(duration_min, 1),
                         "output_summary": stage.output_summary[:500] if stage.output_summary else None,
                         "stage_policy": stage_policy.to_payload(),
-                    }, ensure_ascii=False),
-                ))
-                db.commit()
+                    },
+                )
                 _append_pipeline_task_event(
                     db,
                     run,
@@ -2178,21 +2216,21 @@ class PipelineEngine:
                         "Stage '%s' manual gate auto-approved by permissions.auto_approve_all",
                         stage_policy.stage_name,
                     )
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.GATE_AUTO_APPROVED,
                         agent_name=stage_policy.agent_name,
                         stage_name=stage_policy.stage_name,
                         summary=f"Gate: {stage_policy.display_name} auto-approved by permission policy",
-                        payload=json.dumps({
+                        payload={
                             "gate_type": stage_policy.approval.kind,
                             "stage": stage_policy.stage_name,
                             "display_name": stage_policy.display_name,
                             "stage_policy": stage_policy.to_payload(),
                             "auto_approve_all": True,
-                        }, ensure_ascii=False),
-                    ))
-                    db.commit()
+                        },
+                    )
                     _append_pipeline_task_event(
                         db,
                         run,
@@ -2231,21 +2269,21 @@ class PipelineEngine:
                     )
 
                     # 写入 gate 阻塞事件
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.GATE_BLOCKED,
                         agent_name=stage_policy.agent_name,
                         stage_name=stage_policy.stage_name,
                         summary=f"Gate: {stage_policy.display_name} — 等待人工审批",
-                        payload=json.dumps({
+                        payload={
                             "gate_type": stage_policy.approval.kind,
                             "stage": stage_policy.stage_name,
                             "display_name": stage_policy.display_name,
                             "stage_policy": stage_policy.to_payload(),
                             "queue_item_id": getattr(queue_item, "id", None),
-                        }, ensure_ascii=False),
-                    ))
-                    db.commit()
+                        },
+                    )
                     _append_pipeline_task_event(
                         db,
                         run,
@@ -2289,14 +2327,15 @@ class PipelineEngine:
 
                 # 写入超时/重试事件
                 if attempt < max_retries:
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.STAGE_RETRY,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} timeout, retry {attempt}/{max_retries}",
-                        payload=json.dumps({"attempt": attempt, "reason": "timeout"}, ensure_ascii=False),
-                    ))
+                        payload={"attempt": attempt, "reason": "timeout"},
+                    )
 
                 if attempt >= max_retries:
                     stage.status = "failed"
@@ -2304,15 +2343,15 @@ class PipelineEngine:
                     stage.completed_at = datetime.now()
                     db.commit()
 
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.TIMEOUT,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} failed (timeout after {max_retries} retries)",
-                        payload=json.dumps({"max_retries": max_retries, "reason": "timeout"}, ensure_ascii=False),
-                    ))
-                    db.commit()
+                        payload={"max_retries": max_retries, "reason": "timeout"},
+                    )
                     _append_pipeline_task_event(
                         db,
                         run,
@@ -2341,14 +2380,15 @@ class PipelineEngine:
 
                 # 写入错误/重试事件
                 if attempt < max_retries:
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.STAGE_RETRY,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} error, retry {attempt}/{max_retries}",
-                        payload=json.dumps({"attempt": attempt, "error": str(e)[:500]}, ensure_ascii=False),
-                    ))
+                        payload={"attempt": attempt, "error": str(e)[:500]},
+                    )
 
                 if attempt >= max_retries:
                     stage.status = "failed"
@@ -2356,15 +2396,15 @@ class PipelineEngine:
                     stage.completed_at = datetime.now()
                     db.commit()
 
-                    db.add(Event(
+                    _record_pipeline_audit_event(
+                        db,
                         run_id=run.id,
                         event_type=EventType.ERROR,
                         agent_name=stage_cfg.agent,
                         stage_name=stage_cfg.name,
                         summary=f"Stage: {stage_cfg.display_name} failed after {max_retries} retries",
-                        payload=json.dumps({"error": str(e)[:1000], "max_retries": max_retries}, ensure_ascii=False),
-                    ))
-                    db.commit()
+                        payload={"error": str(e)[:1000], "max_retries": max_retries},
+                    )
                     _append_pipeline_task_event(
                         db,
                         run,
@@ -2445,6 +2485,7 @@ class PipelineEngine:
     def _assemble_stage_messages(
         self,
         *,
+        db: Session,
         run: PipelineRun,
         stage_cfg: StageConfig,
         context: str,
@@ -2453,6 +2494,9 @@ class PipelineEngine:
         skills_config: Dict[str, Any],
         agent_skills: List[str],
         tool_names: List[str],
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        tool_schemas_before_filter: Optional[List[Dict[str, Any]]] = None,
+        tool_schema_filter: Optional[Dict[str, Any]] = None,
         turn_state: Optional[TurnContextState] = None,
         on_compaction: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> List[Dict[str, Any]]:
@@ -2488,10 +2532,13 @@ class PipelineEngine:
             developer_fragments=developer_fragments,
             user_fragments=user_fragments,
             current_input_messages=protocol_messages,
+            tool_schemas=tool_schemas,
+            tool_schemas_before_filter=tool_schemas_before_filter,
+            tool_schema_filter=tool_schema_filter,
             selector=selector,
         )
         diagnostics = assembly.selector_diagnostics if isinstance(assembly.selector_diagnostics, dict) else {}
-        if diagnostics.get("compacted") and on_compaction is not None:
+        if should_emit_context_budget_event(diagnostics) and on_compaction is not None:
             on_compaction(diagnostics)
         return assembly.to_messages()
 
@@ -2510,13 +2557,27 @@ class PipelineEngine:
         返回最终输出摘要
         """
         llm_client = get_llm_client_for_agent(stage_cfg.agent)
-        tools = _build_tools_for_agent(stage_cfg.agent)
+        raw_tool_names = AGENT_TOOLS.get(stage_cfg.agent, list(TOOL_REGISTRY.keys()))
+        profile_name = resolve_tool_capability_profile_name(
+            selector_profile="chat_interactive",
+            agent=SimpleNamespace(agent_type=stage_cfg.agent),
+            user_message=f"{stage_cfg.context_prompt or ''}\n\n{context or ''}",
+            mode="pipeline",
+        )
+        tool_selection = select_tools_for_capability_profile(
+            raw_tool_names,
+            profile_name=profile_name,
+            user_message=f"{stage_cfg.context_prompt or ''}\n\n{context or ''}",
+            mode="pipeline",
+        )
+        tool_names = tool_selection.active_tools
+        tools = _build_tools_for_agent(stage_cfg.agent, tool_names)
+        tools_before_filter = _build_tools_for_agent(stage_cfg.agent, raw_tool_names)
 
         # 加载 Agent 的 system_prompt（传入 stage_cfg 实现三级 Skill 注入）
         system_prompt = self._get_agent_system_prompt(stage_cfg.agent)
         agent_data = self._get_agent_config_data(stage_cfg.agent)
         agent_skills = agent_data.get("skills", []) if agent_data else []
-        tool_names = AGENT_TOOLS.get(stage_cfg.agent, list(TOOL_REGISTRY.keys()))
         skills_config = self._load_skills_config()
         final_content = ""
         stage._catown_blocked_tool = None
@@ -2549,6 +2610,7 @@ class PipelineEngine:
 
         def _assemble_pipeline_stage_messages(current_turn_state: TurnContextState) -> List[Dict[str, Any]]:
             return self._assemble_stage_messages(
+                db=db,
                 run=run,
                 stage_cfg=stage_cfg,
                 context=context,
@@ -2557,6 +2619,9 @@ class PipelineEngine:
                 skills_config=skills_config,
                 agent_skills=agent_skills,
                 tool_names=tool_names,
+                tool_schemas=tools,
+                tool_schemas_before_filter=tools_before_filter,
+                tool_schema_filter=tool_selection.to_metadata(),
                 turn_state=current_turn_state,
                 on_compaction=compaction_callback,
             )
@@ -2567,67 +2632,48 @@ class PipelineEngine:
 
         def _before_pipeline_llm_call(frame, current_turn_state):
             # 审计：预先创建 LLM call 记录，异常时也能落错误信息。
-            return {
-                "record": LLMCall(
-                    run_id=run.id,
-                    stage_id=stage.id,
-                    agent_name=stage_cfg.agent,
-                    turn_index=frame.turn_index,
-                    model=getattr(llm_client, "model", "unknown"),
-                    system_prompt=system_prompt[:50000] if system_prompt else None,
-                    messages=json.dumps(frame.messages[-10:], ensure_ascii=False)[:100000],
-                ),
-                "started_at": time.time(),
-            }
+            return create_llm_call_record(
+                db=db,
+                run_id=run.id,
+                stage_id=stage.id,
+                agent_name=stage_cfg.agent,
+                turn_index=frame.turn_index,
+                model=getattr(llm_client, "model", "unknown"),
+                system_prompt=system_prompt,
+                messages=frame.messages,
+            )
 
         async def _on_pipeline_llm_error(frame, exc, current_turn_state):
             call_state = frame.state if isinstance(frame.state, dict) else {}
-            llm_call_record = call_state.get("record")
-            if llm_call_record is None:
-                return
-            llm_call_record.error = str(exc)[:5000]
-            llm_call_record.duration_ms = int((time.time() - call_state.get("started_at", time.time())) * 1000)
-            db.add(llm_call_record)
-            db.commit()
+            finalize_llm_call_error(
+                db=db,
+                state=call_state,
+                error=exc,
+                agent_name=stage_cfg.agent,
+                stage_name=stage_cfg.name,
+                run_id=run.id,
+            )
 
         async def _on_pipeline_llm_response(frame, current_turn_state):
             call_state = frame.state if isinstance(frame.state, dict) else {}
-            llm_call_record = call_state.get("record")
-            if llm_call_record is None:
-                return
 
             content = frame.content
             normalized_tool_calls = frame.normalized_tool_calls
-            llm_call_record.response_content = content[:100000] if content else None
-            llm_call_record.response_tool_calls = json.dumps(
-                [_serialize_tool_call_preview(tc) for tc in normalized_tool_calls],
-                ensure_ascii=False,
-            ) if normalized_tool_calls else None
-            llm_call_record.duration_ms = int((time.time() - call_state.get("started_at", time.time())) * 1000)
-            if frame.usage:
-                llm_call_record.token_input = frame.usage.get("prompt_tokens", 0)
-                llm_call_record.token_output = frame.usage.get("completion_tokens", 0)
-            db.add(llm_call_record)
-            db.flush()
-            db.add(Event(
-                run_id=run.id,
-                event_type=EventType.LLM_CALL,
+            serialized_tool_calls = (
+                [_serialize_tool_call_preview(tc) for tc in normalized_tool_calls]
+                if normalized_tool_calls
+                else None
+            )
+            llm_call_record = finalize_llm_call_success(
+                db=db,
+                state=call_state,
+                content=content,
+                tool_calls=serialized_tool_calls,
+                usage=frame.usage,
                 agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
-                summary=(
-                    f"LLM #{frame.turn_index}: "
-                    f"{llm_call_record.token_input}in/{llm_call_record.token_output}out, "
-                    f"{llm_call_record.duration_ms}ms"
-                ),
-                payload=json.dumps({
-                    "turn": frame.turn_index,
-                    "model": llm_call_record.model,
-                    "tokens_in": llm_call_record.token_input,
-                    "tokens_out": llm_call_record.token_output,
-                    "duration_ms": llm_call_record.duration_ms,
-                    "content_preview": content[:200] if content else None,
-                }, ensure_ascii=False),
-            ))
+                run_id=run.id,
+            )
 
             # 广播 LLM 调用事件（SSE 扩展）— 含完整上下文供卡片展示
             await event_bus.emit("llm_call", {
@@ -2636,10 +2682,10 @@ class PipelineEngine:
                 "stage": stage_cfg.name,
                 "agent": stage_cfg.agent,
                 "turn": frame.turn_index,
-                "model": llm_call_record.model,
-                "tokens_in": llm_call_record.token_input,
-                "tokens_out": llm_call_record.token_output,
-                "duration_ms": llm_call_record.duration_ms,
+                "model": getattr(llm_call_record, "model", getattr(llm_client, "model", "unknown")),
+                "tokens_in": getattr(llm_call_record, "token_input", 0),
+                "tokens_out": getattr(llm_call_record, "token_output", 0),
+                "duration_ms": getattr(llm_call_record, "duration_ms", 0),
                 "system_prompt": system_prompt[:5000] if system_prompt else None,
                 "response": content[:3000] if content else None,
                 "tool_calls": [
@@ -2650,8 +2696,6 @@ class PipelineEngine:
                     for tc in normalized_tool_calls
                 ],
             })
-            db.commit()
-
             if content:
                 await event_bus.emit("agent_output", {
                     "pipeline_id": pipeline.id,
@@ -2718,38 +2762,20 @@ class PipelineEngine:
 
             call_state = frame.state if isinstance(frame.state, dict) else {}
             llm_call_record = call_state.get("record")
-            db.add(ToolCall(
+            record_audit_tool_call(
+                db=db,
                 llm_call_id=llm_call_record.id if llm_call_record is not None else None,
                 run_id=run.id,
                 stage_id=stage.id,
                 agent_name=stage_cfg.agent,
                 tool_name=fn_name,
-                arguments=json.dumps(fn_args, ensure_ascii=False)[:50000],
+                arguments=json.dumps(fn_args, ensure_ascii=False),
                 result_summary=tool_result_record.result[:500],
                 result_length=result_len,
                 success=success,
                 duration_ms=tool_duration,
-            ))
-            db.add(Event(
-                run_id=run.id,
-                event_type=EventType.TOOL_CALL,
-                agent_name=stage_cfg.agent,
                 stage_name=stage_cfg.name,
-                summary=f"{fn_name}({tool_result_record.status}, {result_len} chars, {tool_duration}ms)",
-                payload=json.dumps({
-                    "tool": fn_name,
-                    "args_keys": list(fn_args.keys()),
-                    "success": success,
-                    "status": tool_result_record.status,
-                    "blocked": tool_result_record.blocked,
-                    "blocked_kind": tool_result_record.blocked_kind,
-                    "blocked_reason": tool_result_record.blocked_reason,
-                    "result_length": result_len,
-                    "result_preview": tool_result_record.result[:200],
-                    "duration_ms": tool_duration,
-                }, ensure_ascii=False),
-            ))
-            db.commit()
+            )
 
             await event_bus.emit("tool_call", {
                 "pipeline_id": pipeline.id,

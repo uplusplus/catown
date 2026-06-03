@@ -30,7 +30,19 @@ from services.runner_lifecycle import (
     start_tool_call as record_tool_call_started,
     start_agent_turn as record_agent_turn_started,
 )
+from services.provider_sessions import (
+    ensure_provider_session,
+    extract_response_state,
+    serialize_provider_session,
+    touch_provider_session_request,
+    update_provider_session_response,
+)
+from services.provider_compaction import (
+    build_compaction_context_messages,
+    maybe_create_provider_or_local_compaction_checkpoint,
+)
 from services.runtime_event_helpers import build_runtime_event_payload
+from services.run_ledger import build_task_run_checkpoint_snapshot
 from services.stream_runtime_persistence import store_runtime_card
 from services.stream_turn_executor import iter_stream_turn_events
 from services.task_run_control import raise_if_task_run_cancelled
@@ -84,6 +96,7 @@ async def run_orchestration_agent_turn(
     """Execute one non-streaming agent turn for orchestration."""
 
     current_chatroom = db.query(Chatroom).filter(Chatroom.id == chatroom_id).first()
+    raise_if_task_run_cancelled(db, task_run, context=f"agent turn {agent_name_of(agent)}")
 
     deps.ensure_collaboration_context(agents, chatroom_id)
     runtime = await deps.prepare_chat_turn_runtime(
@@ -93,6 +106,7 @@ async def run_orchestration_agent_turn(
         checkpoint_snapshot=checkpoint_snapshot,
         previous_agent_work=extra_context,
         inter_agent_messages=inter_agent_messages or [],
+        user_message=user_message,
         recent_message_limit=6,
     )
     compaction_callback = deps.build_context_compaction_callback(
@@ -138,6 +152,7 @@ async def run_orchestration_agent_turn(
             client_turn_id=client_turn_id,
             tool_call_id=tool_call_id,
             turn=turn,
+            __catown_runtime_card_managed_by_stream=(tool_name == "run_shell"),
             progress_callback=progress_callback,
         )
 
@@ -249,6 +264,8 @@ async def iter_stream_orchestration_agent_turn_events(
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield stream turn events for one orchestrated agent turn."""
 
+    raise_if_task_run_cancelled(db, task_run, context=f"stream agent turn {agent_name_of(agent)}")
+
     deps.ensure_collaboration_context(agents, chatroom_id)
     runtime = await deps.prepare_chat_turn_runtime(
         agent=agent,
@@ -257,6 +274,7 @@ async def iter_stream_orchestration_agent_turn_events(
         checkpoint_snapshot=checkpoint_snapshot,
         previous_agent_work=previous_agent_work,
         inter_agent_messages=inter_agent_messages or [],
+        user_message=user_message,
         recent_message_limit=max(history_limit + 2, 6),
     )
     record_agent_turn_started(
@@ -274,6 +292,7 @@ async def iter_stream_orchestration_agent_turn_events(
 
     seen_request_turns: set[int] = set()
     seen_response_started_turns: set[int] = set()
+    provider_sessions_by_turn: dict[int, Any] = {}
 
     async def _record_stream_fact(frame: Any, event: dict[str, Any], _turn_state: TurnContextState) -> None:
         await _check_cancel()
@@ -282,6 +301,24 @@ async def iter_stream_orchestration_agent_turn_events(
         if event_type in {"agent_start", "request_sent"} and turn_index not in seen_request_turns:
             seen_request_turns.add(turn_index)
             step_id = f"llm:{runtime.agent_label}:{turn_index}"
+            provider_session = ensure_provider_session(
+                db,
+                task_run=task_run,
+                chatroom_id=chatroom_id,
+                project_id=getattr(project, "id", None),
+                agent_name=runtime.agent_label,
+                llm_client=runtime.llm_client,
+            )
+            previous_response_id = getattr(provider_session, "last_response_id", None)
+            provider_session = touch_provider_session_request(db, provider_session)
+            provider_sessions_by_turn[turn_index] = provider_session
+            provider_session_payload = serialize_provider_session(
+                provider_session,
+                previous_response_id=previous_response_id,
+            )
+            setattr(frame, "provider_session", provider_session_payload)
+            event["provider_session"] = provider_session_payload
+            event["provider_mode"] = provider_session_payload.get("provider_mode")
             record_llm_request_created(
                 db,
                 task_run,
@@ -296,6 +333,12 @@ async def iter_stream_orchestration_agent_turn_events(
                 ),
             )
             return
+        provider_session = provider_sessions_by_turn.get(turn_index)
+        if provider_session is not None:
+            provider_session_payload = serialize_provider_session(provider_session)
+            setattr(frame, "provider_session", provider_session_payload)
+            event.setdefault("provider_session", provider_session_payload)
+            event.setdefault("provider_mode", provider_session_payload.get("provider_mode"))
         if event_type in {"first_content", "first_chunk"} and turn_index not in seen_response_started_turns:
             seen_response_started_turns.add(turn_index)
             record_llm_response_started(
@@ -311,6 +354,18 @@ async def iter_stream_orchestration_agent_turn_events(
             )
             return
         if event_type == "done":
+            response_state = extract_response_state(event)
+            provider_session = update_provider_session_response(
+                db,
+                provider_sessions_by_turn.get(turn_index),
+                response_id=response_state.get("response_id"),
+                provider_conversation_id=response_state.get("provider_conversation_id"),
+                compact_checkpoint_id=response_state.get("compact_checkpoint_id"),
+            )
+            provider_session_payload = serialize_provider_session(provider_session)
+            setattr(frame, "provider_session", provider_session_payload)
+            event["provider_session"] = provider_session_payload
+            event["provider_mode"] = provider_session_payload.get("provider_mode")
             record_llm_response_completed(
                 db,
                 task_run,
@@ -322,7 +377,36 @@ async def iter_stream_orchestration_agent_turn_events(
                     "response_preview": str(event.get("full_content") or getattr(frame, "llm_content", "") or "")[:280],
                     "tool_call_count": len(event.get("tool_calls") or []),
                     "step_id": f"llm:{runtime.agent_label}:{turn_index}",
+                    "provider_mode": provider_session_payload.get("provider_mode"),
+                    "provider_session": provider_session_payload,
+                    "provider_request": event.get("provider_request") if isinstance(event.get("provider_request"), dict) else {},
                 },
+            )
+            try:
+                db.expire(task_run, ["events"])
+            except Exception:
+                pass
+            checkpoint_snapshot = build_task_run_checkpoint_snapshot(task_run)
+            latest_context_budget = (
+                checkpoint_snapshot.get("latest_context_budget_event")
+                if isinstance(checkpoint_snapshot.get("latest_context_budget_event"), dict)
+                else {}
+            )
+            compaction_messages = build_compaction_context_messages(
+                getattr(frame, "messages", None),
+                response_content=event.get("full_content") or getattr(frame, "llm_content", ""),
+                tool_calls=event.get("tool_calls"),
+            )
+            await maybe_create_provider_or_local_compaction_checkpoint(
+                db,
+                provider_session=provider_session,
+                task_run=task_run,
+                llm_client=runtime.llm_client,
+                messages=compaction_messages,
+                tools=runtime.tool_schemas,
+                checkpoint_snapshot=checkpoint_snapshot,
+                diagnostics=latest_context_budget,
+                agent_name=runtime.agent_label,
             )
 
     async def _execute_tool(
@@ -346,6 +430,7 @@ async def iter_stream_orchestration_agent_turn_events(
             client_turn_id=client_turn_id,
             tool_call_id=tool_call_id,
             turn=turn_index,
+            __catown_runtime_card_managed_by_stream=True,
             progress_callback=progress_callback,
         )
 

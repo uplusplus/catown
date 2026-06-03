@@ -3055,9 +3055,9 @@ function resolveTaskRunActorName(taskRun: TaskRunSummary, agents: AgentInfo[]) {
 }
 
 function buildTaskRunTraceDetailContent(event: TaskRunEvent) {
-  if (event.event_type === "context_compaction") {
-    const compactionDetail = buildContextCompactionDetail(event.payload, event.summary);
-    if (compactionDetail) return compactionDetail;
+  if (event.event_type === "context_budget_event" || event.event_type === "context_compaction") {
+    const contextBudgetDetail = buildContextBudgetDetail(event.payload, event.summary);
+    if (contextBudgetDetail) return contextBudgetDetail;
   }
 
   const sections = [markdownSection("Event", formatTaskRunEventType(event.event_type), { asMarkdown: true })];
@@ -3170,7 +3170,7 @@ function formatSourceList(values: string[]) {
   return values.length > 0 ? values.map((value) => `\`${value}\``).join(", ") : "none";
 }
 
-function buildContextCompactionDetail(payload: Record<string, unknown> | undefined, fallbackSummary?: string | null) {
+function buildContextBudgetDetail(payload: Record<string, unknown> | undefined, fallbackSummary?: string | null) {
   const root = readRecord(payload);
   const diagnostics = readRecord(root?.selector_diagnostics);
   if (!diagnostics) return "";
@@ -3204,7 +3204,7 @@ function buildContextCompactionDetail(payload: Record<string, unknown> | undefin
   ].filter(Boolean).join(" / ");
   const candidateText = candidateCount !== null && selectedCount !== null
     ? `${candidateCount} candidate fragments were reduced to ${selectedCount} selected fragments`
-    : "The context selector reduced the prompt context";
+    : "The context selector adjusted the prompt context";
   const tokenText = candidateTokens !== null && selectedTokens !== null
     ? `Token estimate changed from ${candidateTokens} to ${selectedTokens}.`
     : "";

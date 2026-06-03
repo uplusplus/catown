@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -197,8 +198,12 @@ async def test_prepare_chat_turn_runtime_builds_shared_runtime(monkeypatch):
 
     assert runtime.llm_client is llm_client
     assert runtime.agent_label == "Developer"
+    assert runtime.raw_available_tools == ["read_file"]
     assert runtime.available_tools == ["read_file"]
     assert runtime.tool_schemas == [{"name": "read_file"}]
+    assert runtime.tool_schemas_before_filter == [{"name": "read_file"}]
+    assert runtime.tool_schema_filter["profile_name"] == "code_debug"
+    assert runtime.tool_schema_filter["excluded_tool_count"] == 0
     assert runtime.tool_policy_pack["tool_names"] == ["read_file"]
     assert runtime.runtime_kwargs == {
         "chatroom_id": 11,
@@ -237,3 +242,67 @@ async def test_prepare_chat_turn_runtime_excludes_system_only_tools(monkeypatch)
 
     assert runtime.available_tools == ["read_file"]
     assert runtime.tool_schemas == [{"name": "read_file"}]
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_runtime_filters_tool_schemas_by_capability_profile(monkeypatch):
+    llm_client = SimpleNamespace(model="test-model")
+
+    async def fake_get_messages(chatroom_id, limit):
+        return []
+
+    monkeypatch.setattr("services.chat_runtime.get_llm_client_for_agent", lambda agent_type: llm_client)
+    monkeypatch.setattr("services.chat_runtime.chatroom_manager.get_messages", fake_get_messages)
+
+    from tools import tool_registry
+
+    all_tools = ["read_file", "run_shell", "browser", "screenshot", "web_search"]
+    monkeypatch.setattr(tool_registry, "list_agent_tools", lambda: all_tools)
+    monkeypatch.setattr(tool_registry, "get_schemas", lambda tool_names=None: [{"name": name} for name in (tool_names or [])])
+    monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": []})
+
+    agent = SimpleNamespace(id=7, name="Developer", agent_type="developer", tools=json.dumps(all_tools))
+
+    runtime = await prepare_chat_turn_runtime(
+        agent=agent,
+        chatroom_id=11,
+        project=None,
+        user_message="Fix the failing backend tests.",
+    )
+
+    assert runtime.raw_available_tools == all_tools
+    assert runtime.available_tools == ["read_file", "run_shell"]
+    assert runtime.tool_schemas == [{"name": "read_file"}, {"name": "run_shell"}]
+    assert runtime.tool_schemas_before_filter == [{"name": name} for name in all_tools]
+    assert runtime.tool_schema_filter["profile_name"] == "code_debug"
+    assert runtime.tool_schema_filter["excluded_tools"] == ["browser", "screenshot", "web_search"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_runtime_activates_browser_tool_group(monkeypatch):
+    llm_client = SimpleNamespace(model="test-model")
+
+    async def fake_get_messages(chatroom_id, limit):
+        return []
+
+    monkeypatch.setattr("services.chat_runtime.get_llm_client_for_agent", lambda agent_type: llm_client)
+    monkeypatch.setattr("services.chat_runtime.chatroom_manager.get_messages", fake_get_messages)
+
+    from tools import tool_registry
+
+    all_tools = ["read_file", "run_shell", "browser", "screenshot", "web_search"]
+    monkeypatch.setattr(tool_registry, "list_agent_tools", lambda: all_tools)
+    monkeypatch.setattr(tool_registry, "get_schemas", lambda tool_names=None: [{"name": name} for name in (tool_names or [])])
+    monkeypatch.setattr(tool_registry, "get_policy_pack", lambda tool_names: {"tool_names": tool_names, "tool_policies": []})
+
+    agent = SimpleNamespace(id=7, name="Developer", agent_type="developer", tools=json.dumps(all_tools))
+
+    runtime = await prepare_chat_turn_runtime(
+        agent=agent,
+        chatroom_id=11,
+        project=None,
+        user_message="Open the browser and capture a screenshot.",
+    )
+
+    assert runtime.tool_schema_filter["profile_name"] == "browser"
+    assert runtime.available_tools == ["read_file", "run_shell", "browser", "screenshot", "web_search"]

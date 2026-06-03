@@ -3,9 +3,12 @@
 Tool Base Classes and Registry
 """
 import copy
+import hashlib
 import inspect
 import json
 import os
+import re
+import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
@@ -19,6 +22,12 @@ from services.tool_execution_preferences import (
     authorization_matchers_for_tool,
     resolve_authorization_rule,
 )
+
+
+_CONSULT_STEP_ID_PATTERN = re.compile(r"^\[consult_step_id\]\s*(?P<step_id>\S+)\s*$", re.MULTILINE)
+_FILE_MONITOR_TOOL_NAMES = {"read_file", "write_file", "list_files", "delete_file", "search_files"}
+_TOOL_OUTPUT_ARTIFACT_THRESHOLD_CHARS = 2000
+_TOOL_OUTPUT_ARTIFACT_SKIP_TOOLS = {"run_shell"}
 
 
 class ToolSchema(BaseModel):
@@ -539,6 +548,136 @@ class BaseTool(ABC):
         return payload
 
 
+def _registry_tool_result_metadata(tool_name: str, kwargs: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    """Attach source-specific references after execution without changing tool APIs."""
+
+    result_text = str(result.get("result") if isinstance(result, dict) else result or "")
+    metadata: Dict[str, Any] = {}
+
+    consult_metadata = _registry_consult_agent_metadata(tool_name, kwargs, result_text)
+    if consult_metadata:
+        metadata.update(consult_metadata)
+
+    artifact_metadata = _registry_tool_output_artifact_metadata(tool_name, kwargs, result_text)
+    if artifact_metadata:
+        metadata.update(artifact_metadata)
+
+    return metadata
+
+
+def _registry_consult_agent_metadata(tool_name: str, kwargs: Dict[str, Any], result_text: str) -> Dict[str, Any]:
+    if tool_name not in {"consult_agent", "query_agent"}:
+        return {}
+
+    match = _CONSULT_STEP_ID_PATTERN.search(result_text)
+    consult_step_id = str(match.group("step_id")).strip() if match else ""
+    if not consult_step_id:
+        return {}
+
+    task_run_id = kwargs.get("task_run_id")
+    consult_metadata: Dict[str, Any] = {"consult_step_id": consult_step_id}
+    if isinstance(task_run_id, int):
+        consult_metadata["task_run_id"] = task_run_id
+    client_turn_id = str(kwargs.get("client_turn_id") or "").strip()
+    if client_turn_id:
+        consult_metadata["client_turn_id"] = client_turn_id
+    return {"consult_agent": consult_metadata}
+
+
+def _registry_tool_output_artifact_metadata(tool_name: str, kwargs: Dict[str, Any], result_text: str) -> Dict[str, Any]:
+    if tool_name in _TOOL_OUTPUT_ARTIFACT_SKIP_TOOLS:
+        return {}
+    if len(result_text) <= _TOOL_OUTPUT_ARTIFACT_THRESHOLD_CHARS:
+        return {}
+
+    try:
+        from config import settings
+
+        output_dir = Path(settings.STATE_DIR) / "tool_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(result_text.encode("utf-8", errors="replace")).hexdigest()
+        safe_tool = _registry_safe_name(tool_name)
+        timestamp_ms = int(time.time() * 1000)
+        path = output_dir / f"{timestamp_ms}-{safe_tool}-{digest[:12]}.txt"
+        path.write_text(result_text, encoding="utf-8")
+    except Exception:
+        return {}
+
+    artifact: Dict[str, Any] = {
+        "path": str(path),
+        "sha256": digest,
+        "chars": len(result_text),
+        "tool_name": str(tool_name or "tool"),
+    }
+    task_run_id = kwargs.get("task_run_id")
+    if isinstance(task_run_id, int):
+        artifact["task_run_id"] = task_run_id
+    tool_call_id = str(kwargs.get("tool_call_id") or "").strip()
+    if tool_call_id:
+        artifact["tool_call_id"] = tool_call_id
+    return {"tool_output_artifact": artifact}
+
+
+def _registry_safe_name(value: Any) -> str:
+    text = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "tool").strip().lower())
+    return text.strip("-") or "tool"
+
+
+def _registry_merge_metadata(result: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    if not metadata:
+        return result
+
+    enriched_result = dict(result)
+    existing_metadata = enriched_result.get("metadata") if isinstance(enriched_result.get("metadata"), dict) else {}
+    merged_metadata = dict(existing_metadata)
+    for key, value in metadata.items():
+        if isinstance(value, dict) and isinstance(merged_metadata.get(key), dict):
+            nested = dict(merged_metadata[key])
+            nested.update(value)
+            merged_metadata[key] = nested
+        else:
+            merged_metadata[key] = value
+    enriched_result["metadata"] = merged_metadata
+    return enriched_result
+
+
+def _registry_should_persist_file_runtime_card(tool_name: str, kwargs: Dict[str, Any]) -> bool:
+    if tool_name not in _FILE_MONITOR_TOOL_NAMES:
+        return False
+    if not isinstance(kwargs.get("chatroom_id"), int):
+        return False
+    if bool(kwargs.get("__catown_runtime_card_managed_by_stream")):
+        return False
+    return True
+
+
+def _registry_runtime_card_arguments(kwargs: Dict[str, Any]) -> str:
+    excluded_keys = {
+        "project_id",
+        "chatroom_id",
+        "agent_name",
+        "task_run_id",
+        "task_run_public_id",
+        "client_turn_id",
+        "chatroom_public_id",
+        "tool_call_id",
+        "turn",
+        "progress_callback",
+        "__catown_approval_granted",
+        "__catown_system_tool_call",
+        "__catown_runtime_card_managed_by_stream",
+    }
+    payload: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key in excluded_keys:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            payload[key] = value
+        else:
+            payload[key] = str(value)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class ToolRegistry:
     """Registry for managing tools"""
     
@@ -735,10 +874,38 @@ class ToolRegistry:
                 key: value for key, value in kwargs.items() if key in allowed_names
             }
         result = await execute_fn(**filtered_kwargs)
+        registry_metadata = _registry_tool_result_metadata(tool_name, filtered_kwargs, result)
         if isinstance(result, dict) and result.get("__catown_tool_result__") is True:
+            if registry_metadata:
+                result = _registry_merge_metadata(result, registry_metadata)
+            if _registry_should_persist_file_runtime_card(tool_name, kwargs):
+                from services.stream_runtime_persistence import store_runtime_card
+
+                await store_runtime_card(
+                    int(kwargs["chatroom_id"]),
+                    {
+                        "type": "tool_call",
+                        "source": "tool_registry",
+                        "agent": str(kwargs.get("agent_name") or "agent").strip() or "agent",
+                        "tool": str(tool_name or "tool").strip() or "tool",
+                        "arguments": _registry_runtime_card_arguments(filtered_kwargs),
+                        "success": bool(result.get("success")),
+                        "status": str(result.get("status") or ("succeeded" if result.get("success") else "failed")),
+                        "blocked": bool(result.get("blocked")),
+                        "blocked_kind": result.get("blocked_kind"),
+                        "blocked_reason": result.get("blocked_reason"),
+                        "result": str(result.get("result") or "(no output)"),
+                        "tool_call_id": kwargs.get("tool_call_id"),
+                        "client_turn_id": kwargs.get("client_turn_id"),
+                        "run_id": kwargs.get("task_run_id"),
+                        "task_run_id": kwargs.get("task_run_id"),
+                        "turn": kwargs.get("turn"),
+                        "metadata": dict(result.get("metadata") or {}) if isinstance(result.get("metadata"), dict) else {},
+                    },
+                )
             return result
         classification = classify_tool_result(tool_name, result)
-        return build_structured_tool_result(
+        structured_result = build_structured_tool_result(
             tool_name=tool_name,
             result_text=result,
             success=bool(classification.get("success")),
@@ -746,7 +913,34 @@ class ToolRegistry:
             blocked=bool(classification.get("blocked")),
             blocked_kind=classification.get("blocked_kind"),
             blocked_reason=classification.get("blocked_reason"),
+            metadata=registry_metadata,
         )
+        if _registry_should_persist_file_runtime_card(tool_name, kwargs):
+            from services.stream_runtime_persistence import store_runtime_card
+
+            await store_runtime_card(
+                int(kwargs["chatroom_id"]),
+                {
+                    "type": "tool_call",
+                    "source": "tool_registry",
+                    "agent": str(kwargs.get("agent_name") or "agent").strip() or "agent",
+                    "tool": str(tool_name or "tool").strip() or "tool",
+                    "arguments": _registry_runtime_card_arguments(filtered_kwargs),
+                    "success": bool(structured_result.get("success")),
+                    "status": str(structured_result.get("status") or ("succeeded" if structured_result.get("success") else "failed")),
+                    "blocked": bool(structured_result.get("blocked")),
+                    "blocked_kind": structured_result.get("blocked_kind"),
+                    "blocked_reason": structured_result.get("blocked_reason"),
+                    "result": str(structured_result.get("result") or "(no output)"),
+                    "tool_call_id": kwargs.get("tool_call_id"),
+                    "client_turn_id": kwargs.get("client_turn_id"),
+                    "run_id": kwargs.get("task_run_id"),
+                    "task_run_id": kwargs.get("task_run_id"),
+                    "turn": kwargs.get("turn"),
+                    "metadata": dict(structured_result.get("metadata") or {}) if isinstance(structured_result.get("metadata"), dict) else {},
+                },
+            )
+        return structured_result
 
     @staticmethod
     def _record_authorization_rule_audit(

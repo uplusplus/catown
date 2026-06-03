@@ -17,6 +17,15 @@ def build_context_compaction_projection(
     prompt = diagnostics.get("prompt") if isinstance(diagnostics.get("prompt"), dict) else {}
     prompt_total = prompt.get("total") if isinstance(prompt.get("total"), dict) else {}
     prompt_components = prompt.get("components") if isinstance(prompt.get("components"), dict) else {}
+    tool_output_budget = prompt.get("tool_output_budget") if isinstance(prompt.get("tool_output_budget"), dict) else {}
+    tool_schema_budget = prompt.get("tool_schema_budget") if isinstance(prompt.get("tool_schema_budget"), dict) else {}
+    token_categories = (
+        prompt.get("token_categories")
+        if isinstance(prompt.get("token_categories"), dict)
+        else diagnostics.get("token_categories")
+        if isinstance(diagnostics.get("token_categories"), dict)
+        else {}
+    )
     prompt_fragments = prompt.get("fragments") if isinstance(prompt.get("fragments"), list) else []
     reasons = diagnostics.get("reasons") if isinstance(diagnostics.get("reasons"), list) else []
     role_budgets = selector.get("max_tokens_by_role") if isinstance(selector.get("max_tokens_by_role"), dict) else {}
@@ -63,7 +72,10 @@ def build_context_compaction_projection(
         detail_summary_parts.append(f"reasons {reason_summary}")
 
     return {
-        "compacted": bool(diagnostics.get("compacted")),
+        "selection_changed": bool(diagnostics.get("selection_changed")),
+        "semantic_compaction": bool(diagnostics.get("semantic_compaction")),
+        "event_kind": _event_kind(diagnostics),
+        "context_pressure_kind": diagnostics.get("context_pressure_kind") or None,
         "dropped_count": int(summary.get("dropped_count") or 0),
         "truncated_count": int(summary.get("truncated_count") or 0),
         "candidate_count": int(summary.get("candidate_count") or 0),
@@ -87,9 +99,23 @@ def build_context_compaction_projection(
         "reason_summary": reason_summary,
         "prompt_total": prompt_total,
         "prompt_components": prompt_components,
+        "token_categories": token_categories,
+        "tool_output_budget": tool_output_budget,
+        "tool_schema_budget": tool_schema_budget,
         "prompt_fragments": prompt_fragments,
         "summary_text": fallback_summary if isinstance(fallback_summary, str) and fallback_summary.strip() else None,
     }
+
+
+def _event_kind(diagnostics: dict[str, Any]) -> str:
+    raw_event_kind = diagnostics.get("event_kind")
+    if isinstance(raw_event_kind, str) and raw_event_kind.strip():
+        return raw_event_kind.strip()
+    if diagnostics.get("semantic_compaction"):
+        return "semantic_compaction"
+    if diagnostics.get("selection_changed"):
+        return "selection_truncation"
+    return "selection_pass"
 
 
 def _format_reason_summary(reasons: list[Any]) -> str:

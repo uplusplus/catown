@@ -1,5 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Boxes, BrainCircuit, CheckCircle2, CircleDashed, Crown, FileText, Globe, Monitor, Server, UserRound, Wrench } from "lucide-react";
+import { Bot, Boxes, BrainCircuit, CheckCircle2, CircleDashed, Crown, FileText, Globe, Minimize2, Monitor, Server, UserRound, Wrench } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -34,13 +34,15 @@ import type {
   MonitorOverview,
   MonitorOverviewActivity,
   MonitorOverviewSummary,
-  MonitorCompactionItem,
-  MonitorContextCompactionsResponse,
+  MonitorContextBudgetItem,
+  MonitorContextBudgetEventsResponse,
+  MonitorContextOptimizationEvaluationResponse,
   MonitorProcessEntry,
   MonitorProcessesResponse,
   MonitorRuntimeDetail,
   MonitorUsageResponse,
   ProjectSummary,
+  TaskRunCompactionResponse,
   TaskRunDetail,
   TaskRunResumeResponse,
 } from "../types";
@@ -82,7 +84,7 @@ const MORE_PAGES = [
   { id: "skills", label: "Skills" },
   { id: "models", label: "Models" },
   { id: "runtime-map", label: "Runtime Map" },
-  { id: "compactions", label: "Compactions" },
+  { id: "context-budget", label: "Context Budget" },
   { id: "context", label: "Context" },
   { id: "subagents", label: "Subagents" },
   { id: "tasks", label: "Tasks" },
@@ -285,6 +287,12 @@ function formatCost(value: number | undefined) {
 
 function formatPercent(value: number | undefined, digits = 0) {
   return `${(value ?? 0).toFixed(digits)}%`;
+}
+
+function formatEvaluationMetricValue(metricName: string, value: number | null | undefined) {
+  if (value == null) return "--";
+  if (metricName.endsWith("_ratio")) return formatPercent(value * 100, 1);
+  return formatNumber(value);
 }
 
 function formatDuration(value: number | undefined) {
@@ -1420,7 +1428,7 @@ function normalizeMonitorOverviewRuntime(overview: MonitorOverview): MonitorOver
     ...overview,
     recent_runtime: mergeMonitorRuntime([], overview.recent_runtime),
     recent_messages: mergeMonitorMessages([], overview.recent_messages),
-    recent_compactions: [...(overview.recent_compactions ?? [])],
+    recent_context_budget_events: [...(overview.recent_context_budget_events ?? [])],
   };
 }
 
@@ -1433,14 +1441,14 @@ function applyOverviewActivitySnapshot(
       ...overview,
       recent_runtime: [],
       recent_messages: [],
-      recent_compactions: [],
+      recent_context_budget_events: [],
     });
   }
   return normalizeMonitorOverviewRuntime({
     ...overview,
     recent_runtime: activity.recent_runtime ?? [],
     recent_messages: activity.recent_messages ?? [],
-    recent_compactions: activity.recent_compactions ?? [],
+    recent_context_budget_events: activity.recent_context_budget_events ?? [],
   });
 }
 
@@ -1865,7 +1873,7 @@ function latestAgentTurnPreview(detail: TaskRunDetail | null | undefined) {
   return `${latestTurn.agent_name || "agent"}${MONITOR_META_SEPARATOR}${latestTurn.response_preview}`;
 }
 
-function formatCompactionScopeUsage(
+function formatContextBudgetScopeUsage(
   usage: Record<string, { candidate_count?: number | null; selected_count?: number | null; candidate_tokens?: number | null; selected_tokens?: number | null }> | null | undefined,
 ) {
   if (!usage) return "";
@@ -1876,32 +1884,36 @@ function formatCompactionScopeUsage(
   return parts.join(" / ");
 }
 
-function monitorCompactionPreview(item: MonitorCompactionItem) {
+function monitorContextBudgetPreview(item: MonitorContextBudgetItem) {
   return item.detail_summary
     || [
       `Candidates ${formatNumber(item.candidate_count ?? 0)} -> selected ${formatNumber(item.selected_count ?? 0)}`,
       item.max_fragments ? `max fragments ${item.max_fragments}` : "",
       item.max_tokens ? `max tokens ${formatNumber(item.max_tokens)}` : "",
       item.budget_summary || "",
-      item.scope_usage_summary || formatCompactionScopeUsage(item.scope_usage),
+      item.scope_usage_summary || formatContextBudgetScopeUsage(item.scope_usage),
     ].filter(Boolean).join(" | ");
 }
 
-function compactionComponentLabel(name: string) {
+function contextBudgetComponentLabel(name: string) {
   const labels: Record<string, string> = {
     system: "System prompt",
+    system_static: "System prompt",
     developer: "Developer context",
+    developer_context: "Developer context",
     user_context: "User context",
+    runtime_fragments: "Runtime fragments",
     history: "Recent history",
     current_input: "Current input",
+    tool_output_inline: "Inline tool output",
   };
   return labels[name] ?? name.replace(/_/g, " ");
 }
 
-function compactionComponentEntries(item: MonitorCompactionItem) {
-  const components = item.prompt_components;
+function contextBudgetComponentEntries(item: MonitorContextBudgetItem) {
+  const components = item.token_categories ?? item.prompt_components;
   if (!components) return [];
-  const order = ["system", "developer", "user_context", "history", "current_input"];
+  const order = ["system_static", "system", "developer_context", "developer", "runtime_fragments", "user_context", "history", "current_input", "tool_output_inline"];
   return Object.entries(components).sort(([left], [right]) => {
     const leftIndex = order.indexOf(left);
     const rightIndex = order.indexOf(right);
@@ -1912,30 +1924,30 @@ function compactionComponentEntries(item: MonitorCompactionItem) {
   });
 }
 
-function readCompactionReasonNumber(reason: Record<string, unknown>, key: string) {
+function readContextBudgetReasonNumber(reason: Record<string, unknown>, key: string) {
   const value = reason[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function readCompactionReasonText(reason: Record<string, unknown>, key: string) {
+function readContextBudgetReasonText(reason: Record<string, unknown>, key: string) {
   const value = reason[key];
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function readCompactionReasonSources(reason: Record<string, unknown>) {
+function readContextBudgetReasonSources(reason: Record<string, unknown>) {
   const sources = reason.sources;
   if (!Array.isArray(sources)) return [];
   return sources.map((source) => String(source)).filter(Boolean);
 }
 
-function describeCompactionReason(reason: Record<string, unknown>) {
-  const kind = readCompactionReasonText(reason, "kind") || "reason";
-  const limit = readCompactionReasonNumber(reason, "limit");
-  const candidate = readCompactionReasonNumber(reason, "candidate");
-  const selected = readCompactionReasonNumber(reason, "selected");
-  const count = readCompactionReasonNumber(reason, "count");
-  const role = readCompactionReasonText(reason, "role");
-  const scope = readCompactionReasonText(reason, "scope");
+function describeContextBudgetReason(reason: Record<string, unknown>) {
+  const kind = readContextBudgetReasonText(reason, "kind") || "reason";
+  const limit = readContextBudgetReasonNumber(reason, "limit");
+  const candidate = readContextBudgetReasonNumber(reason, "candidate");
+  const selected = readContextBudgetReasonNumber(reason, "selected");
+  const count = readContextBudgetReasonNumber(reason, "count");
+  const role = readContextBudgetReasonText(reason, "role");
+  const scope = readContextBudgetReasonText(reason, "scope");
   const subject = role || scope;
 
   if (kind === "max_fragments") {
@@ -1980,8 +1992,8 @@ function describeCompactionReason(reason: Record<string, unknown>) {
   };
 }
 
-function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
-  const componentEntries = compactionComponentEntries(item);
+function ContextBudgetEventDetail({ item }: { item: MonitorContextBudgetItem }) {
+  const componentEntries = contextBudgetComponentEntries(item);
   const fragmentEntries = item.prompt_fragments ?? [];
   const visibleFragments = fragmentEntries.slice(0, 18);
   const reasons = item.reasons ?? [];
@@ -1992,6 +2004,19 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
   const usageBand = item.usage_band;
   const usageBandLabel = usageBand?.band ? usageBand.band.toUpperCase() : "--";
   const usageRatio = typeof usageBand?.ratio === "number" ? usageBand.ratio * 100 : undefined;
+  const toolOutputBudget = item.tool_output_budget;
+  const toolOutputByTool = Object.entries(toolOutputBudget?.by_tool ?? {})
+    .sort(([, left], [, right]) => (right.estimated_saved_tokens ?? 0) - (left.estimated_saved_tokens ?? 0))
+    .slice(0, 8);
+  const toolSchemaBudget = item.tool_schema_budget;
+  const toolSchemaByTool = (toolSchemaBudget?.by_tool ?? [])
+    .slice()
+    .sort((left, right) => (right.tokens ?? 0) - (left.tokens ?? 0))
+    .slice(0, 8);
+  const toolSchemaExcludedByTool = (toolSchemaBudget?.excluded_by_tool ?? [])
+    .slice()
+    .sort((left, right) => (right.tokens ?? 0) - (left.tokens ?? 0))
+    .slice(0, 8);
 
   return (
     <div className="compaction-detail">
@@ -2006,6 +2031,24 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
           <span>Prompt total</span>
           <strong>{formatNumber(promptTokens)} tok</strong>
           <small>{formatBytes(item.prompt_total?.bytes)}</small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Tool output</span>
+          <strong>{formatNumber(toolOutputBudget?.estimated_saved_tokens)} tok saved</strong>
+          <small>
+            {toolOutputBudget?.summarized_message_count
+              ? `${formatNumber(toolOutputBudget.summarized_message_count)} summarized, ${formatPercent(toolOutputBudget.estimated_savings_pct, 1)}`
+              : "no summary savings"}
+          </small>
+        </div>
+        <div className="compaction-detail__metric">
+          <span>Tool schema</span>
+          <strong>{formatNumber(toolSchemaBudget?.tokens)} tok</strong>
+          <small>
+            {toolSchemaBudget?.estimated_saved_tokens
+              ? `${formatNumber(toolSchemaBudget.estimated_saved_tokens)} saved`
+              : `${formatNumber(toolSchemaBudget?.tool_count)} tools`}
+          </small>
         </div>
         <div className="compaction-detail__metric">
           <span>Selection</span>
@@ -2034,6 +2077,11 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
           <strong>{formatNumber(item.input_window || item.context_window)}</strong>
           <small>{item.reserved_completion_tokens ? `${formatNumber(item.reserved_completion_tokens)} reserved` : "input/context tokens"}</small>
         </div>
+        <div className="compaction-detail__metric">
+          <span>Event kind</span>
+          <strong>{item.event_kind ? titleCaseLabel(item.event_kind) : "--"}</strong>
+          <small>{item.context_pressure_kind ? titleCaseLabel(item.context_pressure_kind) : "pressure not captured"}</small>
+        </div>
       </div>
 
       <div className="compaction-detail__section">
@@ -2044,8 +2092,8 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
         {reasons.length ? (
           <div className="compaction-reason-list">
             {reasons.map((reason, index) => {
-              const described = describeCompactionReason(reason);
-              const sources = readCompactionReasonSources(reason);
+              const described = describeContextBudgetReason(reason);
+              const sources = readContextBudgetReasonSources(reason);
               return (
                 <div key={`${item.id}-reason-${index}`} className="compaction-reason">
                   <div className="compaction-reason__kind">{described.label}</div>
@@ -2061,7 +2109,7 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
             })}
           </div>
         ) : (
-          <div className="muted-block">{item.reason_summary || monitorCompactionPreview(item)}</div>
+          <div className="muted-block">{item.reason_summary || monitorContextBudgetPreview(item)}</div>
         )}
       </div>
 
@@ -2085,11 +2133,105 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
               <tbody>
                 {componentEntries.map(([name, size]) => (
                   <tr key={`${item.id}-${name}`}>
-                    <td>{compactionComponentLabel(name)}</td>
+                    <td>{contextBudgetComponentLabel(name)}</td>
                     <td>{formatNumber(size.tokens)}</td>
                     <td>{formatBytes(size.bytes)}</td>
                     <td>{promptTokens ? formatPercent(((size.tokens ?? 0) / promptTokens) * 100) : "--"}</td>
                     <td>{formatNumber(size.fragment_count ?? size.message_count)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {toolOutputByTool.length ? (
+        <div className="compaction-detail__section">
+          <div className="compaction-detail__section-head">
+            <strong>Tool Output Savings</strong>
+            <span>grouped by tool</span>
+          </div>
+          <div className="usage-table usage-table--compact compaction-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Saved</th>
+                  <th>Summaries</th>
+                  <th>Prompt</th>
+                  <th>Original</th>
+                </tr>
+              </thead>
+              <tbody>
+                {toolOutputByTool.map(([toolName, summary]) => (
+                  <tr key={`${item.id}-tool-output-${toolName}`}>
+                    <td>{toolName}</td>
+                    <td>{formatNumber(summary.estimated_saved_tokens)} tok</td>
+                    <td>{formatNumber(summary.summarized_message_count)} / {formatNumber(summary.message_count)}</td>
+                    <td>{formatNumber(summary.prompt_visible_tokens)} tok</td>
+                    <td>{formatNumber(summary.estimated_original_tokens)} tok</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {toolSchemaByTool.length ? (
+        <div className="compaction-detail__section">
+          <div className="compaction-detail__section-head">
+            <strong>Tool Schema Cost</strong>
+            <span>
+              {formatNumber(toolSchemaBudget?.tool_count)} active tools
+              {toolSchemaBudget?.filter?.profile_name ? ` / ${toolSchemaBudget.filter.profile_name}` : ""}
+            </span>
+          </div>
+          <div className="usage-table usage-table--compact compaction-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Tokens</th>
+                  <th>Bytes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {toolSchemaByTool.map((summary) => (
+                  <tr key={`${item.id}-tool-schema-${summary.tool_name}`}>
+                    <td>{summary.tool_name}</td>
+                    <td>{formatNumber(summary.tokens)}</td>
+                    <td>{formatBytes(summary.bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {toolSchemaExcludedByTool.length ? (
+        <div className="compaction-detail__section">
+          <div className="compaction-detail__section-head">
+            <strong>Tool Schema Filtered</strong>
+            <span>{formatNumber(toolSchemaBudget?.estimated_saved_tokens)} estimated tokens saved</span>
+          </div>
+          <div className="usage-table usage-table--compact compaction-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Saved</th>
+                  <th>Bytes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {toolSchemaExcludedByTool.map((summary) => (
+                  <tr key={`${item.id}-tool-schema-filtered-${summary.tool_name}`}>
+                    <td>{summary.tool_name}</td>
+                    <td>{formatNumber(summary.tokens)} tok</td>
+                    <td>{formatBytes(summary.bytes)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2134,21 +2276,21 @@ function CompactionEventDetail({ item }: { item: MonitorCompactionItem }) {
   );
 }
 
-function checkpointCompactionPreview(detail: TaskRunDetail | null | undefined) {
-  const latestCompaction = detail?.checkpoint_snapshot?.latest_compaction;
-  if (!latestCompaction?.event_id) return "No compaction event recorded.";
-  return latestCompaction.detail_summary
-    || latestCompaction.summary_text
+function checkpointContextBudgetPreview(detail: TaskRunDetail | null | undefined) {
+  const latestContextBudgetEvent = detail?.checkpoint_snapshot?.latest_context_budget_event;
+  if (!latestContextBudgetEvent?.event_id) return "No context budget event recorded.";
+  return latestContextBudgetEvent.detail_summary
+    || latestContextBudgetEvent.summary_text
     || [
-      `Dropped ${latestCompaction.dropped_count ?? 0}`,
-      `Truncated ${latestCompaction.truncated_count ?? 0}`,
-      latestCompaction.max_tokens ? `Budget ${latestCompaction.max_tokens} tokens` : "",
-      latestCompaction.budget_summary || "",
-      latestCompaction.scope_usage_summary || "",
-      latestCompaction.max_tokens_by_scope
-        ? `Scope budgets ${Object.entries(latestCompaction.max_tokens_by_scope).map(([scope, value]) => `${scope} ${value}`).join(" / ")}`
+      `Dropped ${latestContextBudgetEvent.dropped_count ?? 0}`,
+      `Truncated ${latestContextBudgetEvent.truncated_count ?? 0}`,
+      latestContextBudgetEvent.max_tokens ? `Budget ${latestContextBudgetEvent.max_tokens} tokens` : "",
+      latestContextBudgetEvent.budget_summary || "",
+      latestContextBudgetEvent.scope_usage_summary || "",
+      latestContextBudgetEvent.max_tokens_by_scope
+        ? `Scope budgets ${Object.entries(latestContextBudgetEvent.max_tokens_by_scope).map(([scope, value]) => `${scope} ${value}`).join(" / ")}`
         : "",
-      formatCompactionScopeUsage(latestCompaction.scope_usage),
+      formatContextBudgetScopeUsage(latestContextBudgetEvent.scope_usage),
     ].filter(Boolean).join(" | ");
 }
 
@@ -2654,7 +2796,7 @@ const FLOW_CAPABILITY_PRESETS: Record<
   memory: {
     nodeId: "flow-capability-memory",
     title: "Memory Store",
-    subtitle: "Recall, summaries and compaction",
+    subtitle: "Recall, summaries and context budget",
     kind: "memory",
     order: 5,
   },
@@ -3107,10 +3249,10 @@ function buildFlowTopologyGraph({
     agentDirectory.forEach((agent) => summary.configuredAgents.add(agent.name));
   }
 
-  const contextCompactions = overview?.system.stats.context_compactions ?? overview?.recent_compactions?.length ?? 0;
-  if (contextCompactions > 0) {
+  const contextBudgetEventCount = overview?.system.stats.context_budget_events ?? overview?.recent_context_budget_events?.length ?? 0;
+  if (contextBudgetEventCount > 0) {
     const summary = ensureFlowCapability(capabilitySummaries, "memory");
-    summary.calls = Math.max(summary.calls, contextCompactions);
+    summary.calls = Math.max(summary.calls, contextBudgetEventCount);
     summary.lastAt = Math.max(summary.lastAt, runtimeLastAt);
   }
 
@@ -3276,7 +3418,7 @@ function buildFlowTopologyGraph({
     .filter((summary) => {
       if (summary.key === "approval") return approvalQueueTotal > 0 || pendingApprovalCount > 0;
       if (summary.key === "subagents") return agentDirectory.length > 1 || activeCollaborators > 0 || pendingTasks > 0;
-      if (summary.key === "memory") return summary.calls > 0 || summary.configuredAgents.size > 0 || contextCompactions > 0;
+      if (summary.key === "memory") return summary.calls > 0 || summary.configuredAgents.size > 0 || contextBudgetEventCount > 0;
       return summary.calls > 0 || summary.configuredAgents.size > 0;
     })
     .sort((left, right) => {
@@ -3322,7 +3464,7 @@ function buildFlowTopologyGraph({
           : key === "memory"
             ? [
                 { label: "Calls", value: formatNumber(summary.calls) },
-                { label: "Compacts", value: formatNumber(contextCompactions) },
+                { label: "Budget events", value: formatNumber(contextBudgetEventCount) },
                 { label: "Agents", value: formatNumber(summary.configuredAgents.size) },
               ]
             : [
@@ -3389,7 +3531,7 @@ function buildFlowTopologyGraph({
           : key === "subagents"
             ? `${formatNumber(activeCollaborators)} live`
             : key === "memory"
-              ? `${formatNumber(contextCompactions)} compactions`
+              ? `${formatNumber(contextBudgetEventCount)} context budget events`
               : averageDuration(summary.durationTotal, summary.durationCount),
       volume: Math.max(summary.calls, key === "subagents" ? activeCollaborators + pendingTasks : 1),
       status,
@@ -4143,7 +4285,8 @@ export function MonitorTab() {
   const [taskRunsResponse, setTaskRunsResponse] = useState<MonitorTaskRunsResponse | null>(null);
   const [processesResponse, setProcessesResponse] = useState<MonitorProcessesResponse | null>(null);
   const [filesResponse, setFilesResponse] = useState<MonitorFilesResponse | null>(null);
-  const [contextCompactionsResponse, setContextCompactionsResponse] = useState<MonitorContextCompactionsResponse | null>(null);
+  const [contextBudgetEventsResponse, setContextBudgetEventsResponse] = useState<MonitorContextBudgetEventsResponse | null>(null);
+  const [contextOptimizationEvaluationResponse, setContextOptimizationEvaluationResponse] = useState<MonitorContextOptimizationEvaluationResponse | null>(null);
   const [approvalQueueResponse, setApprovalQueueResponse] = useState<MonitorApprovalQueueResponse | null>(null);
   const [approvalAuditResponse, setApprovalAuditResponse] = useState<MonitorApprovalAuditResponse | null>(null);
   const [auditOverviewResponse, setAuditOverviewResponse] = useState<MonitorAuditOverviewResponse | null>(null);
@@ -4204,6 +4347,9 @@ export function MonitorTab() {
   const [taskRunResumeLoading, setTaskRunResumeLoading] = useState<Record<number, boolean>>({});
   const [taskRunResumeErrors, setTaskRunResumeErrors] = useState<Record<number, string>>({});
   const [taskRunResumeMessages, setTaskRunResumeMessages] = useState<Record<number, string>>({});
+  const [taskRunCompactionLoading, setTaskRunCompactionLoading] = useState<Record<number, boolean>>({});
+  const [taskRunCompactionErrors, setTaskRunCompactionErrors] = useState<Record<number, string>>({});
+  const [taskRunCompactionMessages, setTaskRunCompactionMessages] = useState<Record<number, string>>({});
   const [approvalQueueActionLoading, setApprovalQueueActionLoading] = useState<Record<number, boolean>>({});
   const [approvalQueueActionErrors, setApprovalQueueActionErrors] = useState<Record<number, string>>({});
   const [approvalQueueActionMessages, setApprovalQueueActionMessages] = useState<Record<number, string>>({});
@@ -4434,9 +4580,9 @@ export function MonitorTab() {
   }, [activePage, historyRange]);
 
   useEffect(() => {
-    if (activePage !== "compactions" || contextCompactionsResponse) return;
-    void refreshContextCompactions();
-  }, [activePage, contextCompactionsResponse]);
+    if (activePage !== "context-budget" || contextBudgetEventsResponse) return;
+    void refreshContextBudgetEvents();
+  }, [activePage, contextBudgetEventsResponse]);
 
   useEffect(() => {
     if (activePage !== "audit") return;
@@ -5163,6 +5309,51 @@ export function MonitorTab() {
     [historyRange, taskRunResumeLoading],
   );
 
+  const compactTaskRun = useCallback(
+    async (summary: MonitorTaskRunSummary) => {
+      if (taskRunCompactionLoading[summary.id]) return;
+      setTaskRunCompactionLoading((current) => ({ ...current, [summary.id]: true }));
+      setTaskRunCompactionErrors((current) => {
+        const next = { ...current };
+        delete next[summary.id];
+        return next;
+      });
+      setTaskRunCompactionMessages((current) => {
+        const next = { ...current };
+        delete next[summary.id];
+        return next;
+      });
+
+      try {
+        const response: TaskRunCompactionResponse = await api.compactTaskRun(summary.id, {
+          reason: "explicit_admin_request",
+          agent_name: summary.target_agent_name || undefined,
+        });
+        const detail = await api.getTaskRunDetail(summary.id, TASK_RUN_EVENT_RENDER_LIMIT);
+        setTaskRunDetails((current) => ({ ...current, [summary.id]: detail }));
+        setTaskRunsResponse((current) =>
+          mergeMonitorTaskRunResponse(
+            current,
+            mergeTaskRunDetailIntoMonitorSummary(summary, detail),
+            historyRange,
+          ),
+        );
+        setTaskRunCompactionMessages((current) => ({
+          ...current,
+          [summary.id]: `Created ${titleCaseLabel(response.kind)} checkpoint ${response.compact_checkpoint_id}.`,
+        }));
+      } catch (nextError) {
+        setTaskRunCompactionErrors((current) => ({
+          ...current,
+          [summary.id]: nextError instanceof Error ? nextError.message : "Failed to create compaction checkpoint",
+        }));
+      } finally {
+        setTaskRunCompactionLoading((current) => ({ ...current, [summary.id]: false }));
+      }
+    },
+    [historyRange, taskRunCompactionLoading],
+  );
+
   const historyBuckets = useMemo(() => buildHourlyBuckets(brainEvents, historyRange), [brainEvents, historyRange]);
   const brainTimelineBuckets = useMemo(
     () => buildBrainTimelineBuckets(brainEvents, brainTimelineUnit),
@@ -5214,17 +5405,60 @@ export function MonitorTab() {
 
   const modelPrimary = modelRows[0]?.name ?? config?.global_llm?.default_model ?? "unknown";
   const contextWindow = resolveConfiguredContextWindow(config, modelRows[0]?.name ?? config?.global_llm?.default_model);
-  const contextCompactionEntries = contextCompactionsResponse?.entries ?? overview?.recent_compactions ?? [];
-  const latestCompaction = contextCompactionEntries[0];
+  const contextBudgetEntries = contextBudgetEventsResponse?.entries ?? overview?.recent_context_budget_events ?? [];
+  const latestContextBudgetEvent = contextBudgetEntries[0];
   const pendingApprovalCount = approvalQueueResponse?.counts.pending ?? overview?.system.stats.approval_queue_pending ?? 0;
   const approvalQueueTotal = approvalQueueResponse?.counts.all ?? overview?.system.stats.approval_queue_total ?? 0;
   const overviewTaskCounts = overview?.tasks.counts;
   const overviewTaskContext = overview?.tasks.context;
   const overviewUsageFiles = overview?.usage_window.files;
   const overviewTopSkills = overview?.usage_window.top_skills ?? [];
-  const overviewCompactionReasons = overview?.compactions.reasons ?? [];
+  const overviewContextBudgetReasons = overview?.context_budget.reasons ?? [];
+  const topToolOutputSavings = overview?.context_budget.tool_output_by_tool?.[0];
+  const topToolSchemaCost = overview?.context_budget.tool_schema_by_tool?.[0];
+  const topToolSchemaFiltered = overview?.context_budget.tool_schema_excluded_by_tool?.[0];
+  const contextBudgetSavingsTrendItems = useMemo(
+    () =>
+      (overview?.context_budget.trend ?? []).map((bucket) => ({
+        label: bucket.label,
+        value: (bucket.tool_output_saved_tokens ?? 0) + (bucket.tool_schema_saved_tokens ?? 0),
+        accent: "linear-gradient(180deg, #22c55e, #0f766e)",
+      })),
+    [overview?.context_budget.trend],
+  );
+  const contextBudgetSchemaRecommendations = overview?.context_budget.tool_schema_recommendations ?? [];
+  const contextOptimizationEvaluation = contextOptimizationEvaluationResponse?.evaluation;
+  const contextOptimizationMetricRows = useMemo(
+    () =>
+      Object.entries(contextOptimizationEvaluation?.metrics ?? {}).map(([name, metric]) => ({
+        name,
+        label: titleCaseLabel(name.replace(/_ratio$/g, "").replace(/_/g, " ")),
+        status: metric.status,
+        value: formatEvaluationMetricValue(name, metric.value),
+        target: metric.target.min != null
+          ? `>= ${formatEvaluationMetricValue(name, metric.target.min)}`
+          : metric.target.max != null
+            ? `<= ${formatEvaluationMetricValue(name, metric.target.max)}`
+            : "--",
+      })),
+    [contextOptimizationEvaluation?.metrics],
+  );
+  const toolOutputSavingsSubtitle = topToolOutputSavings
+    ? `${topToolOutputSavings.tool_name} ${formatNumber(topToolOutputSavings.estimated_saved_tokens)} tok`
+    : overview?.context_budget.avg_tool_output_savings_pct != null
+      ? `${formatPercent(overview.context_budget.avg_tool_output_savings_pct, 1)} avg`
+      : "no savings captured";
+  const toolSchemaCostSubtitle = topToolSchemaCost
+    ? `${topToolSchemaCost.tool_name} ${formatNumber(topToolSchemaCost.tokens)} tok`
+    : topToolSchemaFiltered
+      ? `${topToolSchemaFiltered.tool_name} filtered`
+    : `${formatNumber(overview?.context_budget.tool_schema_count)} tools`;
+  const toolSchemaSavedSubtitle = topToolSchemaFiltered
+    ? `${topToolSchemaFiltered.tool_name} ${formatNumber(topToolSchemaFiltered.tokens)} tok`
+    : "no filtered schemas";
   const overviewTopTaskAgents = overview?.tasks.by_agent ?? [];
   const overviewTopOutputs = overview?.tasks.artifacts.top_outputs ?? [];
+  const overviewProviderModes = overview?.usage_window.provider_modes ?? [];
   const overviewTaskStatusItems = useMemo(
     () => [
       { label: "Running", value: overviewTaskCounts?.running ?? 0, accent: "#2563eb" },
@@ -5303,6 +5537,25 @@ export function MonitorTab() {
       })),
     [overview],
   );
+  const overviewProviderModeItems = useMemo(
+    () =>
+      overviewProviderModes.slice(0, 6).map((item) => ({
+        label: titleCaseLabel(item.mode),
+        value: item.calls,
+        accent: item.state_reused > 0 ? "linear-gradient(90deg, #86efac, #16a34a)" : "linear-gradient(90deg, #67e8f9, #0891b2)",
+      })),
+    [overviewProviderModes],
+  );
+  const primaryProviderMode = overviewProviderModes[0]?.mode ? titleCaseLabel(overviewProviderModes[0].mode) : "Chat Completions";
+  const primaryProviderModeStats = overviewProviderModes[0];
+  const providerAvgFirstTokenMs = primaryProviderModeStats?.avg_first_content_ms ?? primaryProviderModeStats?.avg_first_chunk_ms ?? null;
+  const providerAvgCompletedMs = primaryProviderModeStats?.avg_completed_ms ?? null;
+  const providerStateReuseCount = overviewProviderModes.reduce((sum, item) => sum + item.state_reused, 0);
+  const providerStatefulDeltaCount = overviewProviderModes.reduce((sum, item) => sum + (item.stateful_delta_calls ?? 0), 0);
+  const providerOmittedInputItems = overviewProviderModes.reduce((sum, item) => sum + (item.omitted_input_items ?? 0), 0);
+  const providerOmittedInputTokens = overviewProviderModes.reduce((sum, item) => sum + (item.omitted_input_tokens ?? 0), 0);
+  const providerReportedInputTokens = overviewProviderModes.reduce((sum, item) => sum + (item.reported_input_tokens ?? 0), 0);
+  const providerReportedOutputTokens = overviewProviderModes.reduce((sum, item) => sum + (item.reported_output_tokens ?? 0), 0);
   const overviewTopAgentItems = useMemo(
     () =>
       overviewTopTaskAgents.slice(0, 6).map((item) => ({
@@ -5330,14 +5583,14 @@ export function MonitorTab() {
       })),
     [overviewUsageFiles],
   );
-  const overviewCompactionReasonItems = useMemo(
+  const overviewContextBudgetReasonItems = useMemo(
     () =>
-      overviewCompactionReasons.slice(0, 6).map((item) => ({
+      overviewContextBudgetReasons.slice(0, 6).map((item) => ({
         label: titleCaseLabel(item.reason),
         value: item.count,
         accent: "linear-gradient(90deg, #fbbf24, #d97706)",
       })),
-    [overviewCompactionReasons],
+    [overviewContextBudgetReasons],
   );
   const overviewHealthScore = useMemo(() => {
     const llmSuccess = overview?.llm.success_rate ?? 0;
@@ -5346,11 +5599,11 @@ export function MonitorTab() {
     return clamp(llmSuccess - approvalPendingPenalty - errorPenalty, 0, 1);
   }, [overview]);
   const overviewContextPressure = useMemo(
-    () => clamp(overviewTaskContext?.avg_usage_ratio ?? overview?.compactions.avg_usage_ratio ?? 0, 0, 1),
+    () => clamp(overviewTaskContext?.avg_usage_ratio ?? overview?.context_budget.avg_usage_ratio ?? 0, 0, 1),
     [overview, overviewTaskContext],
   );
-  const overviewCompactionPressure = useMemo(() => {
-    const perTask = overview?.compactions.avg_per_task_run ?? 0;
+  const overviewContextBudgetPressure = useMemo(() => {
+    const perTask = overview?.context_budget.avg_per_task_run ?? 0;
     return clamp(perTask / 3, 0, 1);
   }, [overview]);
   const overviewLatencyScore = useMemo(() => {
@@ -5665,14 +5918,18 @@ export function MonitorTab() {
     }
   }
 
-  async function refreshContextCompactions() {
+  async function refreshContextBudgetEvents() {
     setRefreshing(true);
     try {
-      const response = await api.getMonitorContextCompactions(160);
-      setContextCompactionsResponse(response);
+      const [response, evaluation] = await Promise.all([
+        api.getMonitorContextBudgetEvents(160),
+        api.getMonitorContextOptimizationEvaluation(160),
+      ]);
+      setContextBudgetEventsResponse(response);
+      setContextOptimizationEvaluationResponse(evaluation);
       setError("");
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Failed to load context compactions");
+      setError(nextError instanceof Error ? nextError.message : "Failed to load context budget events");
     } finally {
       setRefreshing(false);
     }
@@ -6318,7 +6575,7 @@ export function MonitorTab() {
           </div>
 
           <div className="card overview-pressure-card">
-            <SectionTitle title="Pressure Map" subtitle="Primary status rings for health, latency, context and compaction." />
+            <SectionTitle title="Pressure Map" subtitle="Primary status rings for health, latency, context and selector budget." />
             <div className="overview-ring-grid">
               <OverviewRingStat
                 label="Health"
@@ -6342,10 +6599,10 @@ export function MonitorTab() {
                 accent="#d97706"
               />
               <OverviewRingStat
-                label="Compaction"
-                ratio={overviewCompactionPressure}
-                valueText={overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}
-                detail={`${formatNumber(overview?.compactions.total)} total events`}
+                label="Budget Events"
+                ratio={overviewContextBudgetPressure}
+                valueText={overview?.context_budget.avg_per_task_run != null ? overview.context_budget.avg_per_task_run.toFixed(2) : "--"}
+                detail={`${formatNumber(overview?.context_budget.total)} total events`}
                 accent="#7c3aed"
               />
             </div>
@@ -6354,7 +6611,7 @@ export function MonitorTab() {
               Version {overview?.system.version ?? "--"}{MONITOR_META_SEPARATOR}captured {shortDate(overview?.captured_at)}
               </div>
               <div className="small-note">
-              Last request {formatTimeAgo(overview?.llm.last_request_at)}{MONITOR_META_SEPARATOR}last compaction {formatTimeAgo(overview?.compactions.last_compaction_at)}
+              Last request {formatTimeAgo(overview?.llm.last_request_at)}{MONITOR_META_SEPARATOR}last context event {formatTimeAgo(overview?.context_budget.last_event_at)}
               </div>
             </div>
           </div>
@@ -6385,8 +6642,14 @@ export function MonitorTab() {
                 <div>
                   <div className="overview-summary-card__eyebrow">Top models</div>
                   <OverviewRankBars items={overviewTopModelItems} />
+                  <div className="overview-summary-card__eyebrow" style={{ marginTop: 12 }}>Provider modes</div>
+                  <OverviewRankBars items={overviewProviderModeItems} />
                 </div>
                 <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Provider mode</span>
+                    <strong>{primaryProviderMode}</strong>
+                  </div>
                   <div className="metric-row">
                     <span>Primary model</span>
                     <strong>{modelPrimary}</strong>
@@ -6402,6 +6665,38 @@ export function MonitorTab() {
                   <div className="metric-row">
                     <span>Tool follow-ups</span>
                     <strong>{formatNumber(overview?.llm.tool_followups.calls)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>State reused</span>
+                    <strong>{formatNumber(providerStateReuseCount)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Delta inputs</span>
+                    <strong>{formatNumber(providerStatefulDeltaCount)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Input items omitted</span>
+                    <strong>{formatNumber(providerOmittedInputItems)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Input tokens omitted</span>
+                    <strong>{formatNumber(providerOmittedInputTokens)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Reported input</span>
+                    <strong>{formatNumber(providerReportedInputTokens)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Reported output</span>
+                    <strong>{formatNumber(providerReportedOutputTokens)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Avg first token</span>
+                    <strong>{providerAvgFirstTokenMs != null ? formatDuration(providerAvgFirstTokenMs) : "--"}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Avg completed</span>
+                    <strong>{providerAvgCompletedMs != null ? formatDuration(providerAvgCompletedMs) : "--"}</strong>
                   </div>
                 </div>
               </div>
@@ -6478,29 +6773,29 @@ export function MonitorTab() {
             </div>
 
             <div className="card overview-summary-card">
-              <SectionTitle title="Compactions" subtitle="How often context gets compressed and why." />
-              <OverviewBand title="Compaction reasons" items={overviewCompactionReasonItems} />
+              <SectionTitle title="Context Budget" subtitle="How often selector budgets adjust prompt context and why." />
+              <OverviewBand title="Budget reasons" items={overviewContextBudgetReasonItems} />
               <div className="overview-summary-card__split">
                 <div>
                   <div className="overview-summary-card__eyebrow">Reason ranks</div>
-                  <OverviewRankBars items={overviewCompactionReasonItems} />
+                  <OverviewRankBars items={overviewContextBudgetReasonItems} />
                 </div>
                 <div className="metric-list">
                   <div className="metric-row">
-                    <span>Total compactions</span>
-                    <strong>{formatNumber(overview?.compactions.total)}</strong>
+                    <span>Total budget events</span>
+                    <strong>{formatNumber(overview?.context_budget.total)}</strong>
                   </div>
                   <div className="metric-row">
                     <span>Avg interval</span>
-                    <strong>{overview?.compactions.avg_interval_minutes != null ? `${overview.compactions.avg_interval_minutes}m` : "--"}</strong>
+                    <strong>{overview?.context_budget.avg_interval_minutes != null ? `${overview.context_budget.avg_interval_minutes}m` : "--"}</strong>
                   </div>
                   <div className="metric-row">
                     <span>Avg per task</span>
-                    <strong>{overview?.compactions.avg_per_task_run != null ? overview.compactions.avg_per_task_run.toFixed(2) : "--"}</strong>
+                    <strong>{overview?.context_budget.avg_per_task_run != null ? overview.context_budget.avg_per_task_run.toFixed(2) : "--"}</strong>
                   </div>
                   <div className="metric-row">
                     <span>Avg usage</span>
-                    <strong>{overview?.compactions.avg_usage_ratio != null ? formatPercent(overview.compactions.avg_usage_ratio * 100, 1) : "--"}</strong>
+                    <strong>{overview?.context_budget.avg_usage_ratio != null ? formatPercent(overview.context_budget.avg_usage_ratio * 100, 1) : "--"}</strong>
                   </div>
                 </div>
               </div>
@@ -6548,6 +6843,15 @@ export function MonitorTab() {
                   <span>{item.chat_title}</span>
                   {item.agent ? <span>{item.agent}</span> : null}
                   {item.model ? <span>{item.model}</span> : null}
+                  {item.provider_mode ? <span>{titleCaseLabel(item.provider_mode)}</span> : null}
+                  {item.provider_request?.stateful_delta ? (
+                    <span>
+                      Delta {formatNumber(item.provider_request.sent_input_item_count)} / -{formatNumber(item.provider_request.omitted_input_item_count)}
+                      {item.provider_request.estimated_omitted_input_tokens != null
+                        ? `, -${formatNumber(item.provider_request.estimated_omitted_input_tokens)} tok`
+                        : ""}
+                    </span>
+                  ) : null}
                   {item.tool_name ? <span>{item.tool_name}</span> : null}
                   {item.duration_ms ? <span>{formatDuration(item.duration_ms)}</span> : null}
                   {item.tokens_in || item.tokens_out ? <span>{formatNumber(item.tokens_in)} / {formatNumber(item.tokens_out)} tok</span> : null}
@@ -7562,101 +7866,179 @@ export function MonitorTab() {
         <MonitorRuntimeMap overview={overview} agents={agents} />
       </section>
 
-      <section className={pageClass("compactions", "page--dashboard-wide")} id="page-compactions">
+      <section className={pageClass("context-budget", "page--dashboard-wide")} id="page-context-budget">
         <div className="refresh-bar" style={{ justifyContent: "space-between" }}>
           <div>
-            <div className="section-title">Context Compaction Ledger</div>
-            <div className="section-subtitle">Why compaction happened, and how large each prompt module was at the time.</div>
+            <div className="section-title">Context Budget Ledger</div>
+            <div className="section-subtitle">Why selector budgets changed the prompt, and how large each prompt module was at the time.</div>
           </div>
-          <button type="button" className="refresh-btn" onClick={() => void refreshContextCompactions()} disabled={refreshing}>
+          <button type="button" className="refresh-btn" onClick={() => void refreshContextBudgetEvents()} disabled={refreshing}>
             Refresh
           </button>
         </div>
 
         <div className="grid" style={{ marginBottom: 16 }}>
           <div className="card">
-            <div className="card-title">Compactions</div>
-            <div className="card-value">{formatNumber(contextCompactionsResponse?.counts.total ?? overview?.system.stats.context_compactions)}</div>
-            <div className="card-sub">{formatNumber(contextCompactionEntries.length)} shown</div>
+            <div className="card-title">Budget Events</div>
+            <div className="card-value">{formatNumber(contextBudgetEventsResponse?.counts.total ?? overview?.system.stats.context_budget_events)}</div>
+            <div className="card-sub">{formatNumber(contextBudgetEntries.length)} shown</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Semantic Compactions</div>
+            <div className="card-value">{formatNumber(overview?.system.stats.semantic_compactions)}</div>
+            <div className="card-sub">true context compression events</div>
           </div>
           <div className="card">
             <div className="card-title">Latest Prompt</div>
-            <div className="card-value">{formatNumber(latestCompaction?.prompt_total?.tokens)}</div>
-            <div className="card-sub">{formatBytes(latestCompaction?.prompt_total?.bytes)}{MONITOR_META_SEPARATOR}{formatNumber(latestCompaction?.prompt_total?.message_count)} messages</div>
+            <div className="card-value">{formatNumber(latestContextBudgetEvent?.prompt_total?.tokens)}</div>
+            <div className="card-sub">{formatBytes(latestContextBudgetEvent?.prompt_total?.bytes)}{MONITOR_META_SEPARATOR}{formatNumber(latestContextBudgetEvent?.prompt_total?.message_count)} messages</div>
           </div>
           <div className="card">
             <div className="card-title">Dropped / Truncated</div>
-            <div className="card-value">{formatNumber(contextCompactionsResponse?.counts.dropped ?? contextCompactionEntries.reduce((total, item) => total + (item.dropped_count ?? 0), 0))}</div>
-            <div className="card-sub">truncated {formatNumber(contextCompactionsResponse?.counts.truncated ?? contextCompactionEntries.reduce((total, item) => total + (item.truncated_count ?? 0), 0))}</div>
+            <div className="card-value">{formatNumber(contextBudgetEventsResponse?.counts.dropped ?? contextBudgetEntries.reduce((total, item) => total + (item.dropped_count ?? 0), 0))}</div>
+            <div className="card-sub">truncated {formatNumber(contextBudgetEventsResponse?.counts.truncated ?? contextBudgetEntries.reduce((total, item) => total + (item.truncated_count ?? 0), 0))}</div>
           </div>
           <div className="card">
             <div className="card-title">Configured Window</div>
             <div className="card-value">{formatNumber(contextWindow)}</div>
             <div className="card-sub">{modelPrimary}</div>
           </div>
+          <div className="card">
+            <div className="card-title">Tool Output Saved</div>
+            <div className="card-value">{formatNumber(overview?.context_budget.tool_output_saved_tokens)}</div>
+            <div className="card-sub">{toolOutputSavingsSubtitle}</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Tool Schema Cost</div>
+            <div className="card-value">{formatNumber(overview?.context_budget.tool_schema_tokens)}</div>
+            <div className="card-sub">{toolSchemaCostSubtitle}</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Tool Schema Saved</div>
+            <div className="card-value">{formatNumber(overview?.context_budget.tool_schema_saved_tokens)}</div>
+            <div className="card-sub">{toolSchemaSavedSubtitle}</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Evaluation</div>
+            <div className="card-value">{titleCaseLabel(contextOptimizationEvaluation?.overall_status ?? "needs_data")}</div>
+            <div className="card-sub">{formatNumber(contextOptimizationEvaluationResponse?.counts.returned)} budget events</div>
+          </div>
+        </div>
+
+        <div className="split-panels" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <SectionTitle title="Savings Trend" />
+            {contextBudgetSavingsTrendItems.length > 0 ? (
+              <BarChart items={contextBudgetSavingsTrendItems} className="bar-chart--compact" autoLabels />
+            ) : (
+              <div className="muted-block">No budget savings trend captured yet.</div>
+            )}
+          </div>
+          <div className="card">
+            <SectionTitle title="Schema Recommendations" />
+            {contextBudgetSchemaRecommendations.length > 0 ? (
+              <div className="simple-list">
+                {contextBudgetSchemaRecommendations.map((item, index) => {
+                  const subject = item.kind === "frequent_activation"
+                    ? item.group_name || "group"
+                    : item.tool_name || "tool";
+                  return (
+                    <div key={`${item.kind}-${subject}-${index}`} className="metric-row">
+                      <span title={`${item.agent_name || "agent"} / ${item.profile_name || "profile"} / ${item.mode || "mode"}`}>
+                        {subject}
+                      </span>
+                      <strong>
+                        {item.kind === "frequent_activation"
+                          ? `${formatNumber(item.event_count)} activations`
+                          : `${formatNumber(item.tokens)} tok`}
+                      </strong>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="muted-block">No schema recommendations captured yet.</div>
+            )}
+          </div>
+          <div className="card">
+            <SectionTitle title="Evaluation Metrics" />
+            {contextOptimizationMetricRows.length > 0 ? (
+              <div className="simple-list">
+                {contextOptimizationMetricRows.map((item) => (
+                  <div key={item.name} className="metric-row">
+                    <span title={item.name}>{item.label}</span>
+                    <strong>{item.value} / {item.target} ({titleCaseLabel(item.status)})</strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted-block">No evaluation metrics captured yet.</div>
+            )}
+          </div>
         </div>
 
         <div className="split-panels">
           <div className="card">
-            <SectionTitle title="Latest Prompt Composition" />
-            {latestCompaction?.prompt_components ? (
+            <SectionTitle title="Latest Token Categories" />
+            {(latestContextBudgetEvent?.token_categories ?? latestContextBudgetEvent?.prompt_components) ? (
               <div className="simple-list">
-                {Object.entries(latestCompaction.prompt_components).map(([name, size]) => (
+                {Object.entries(latestContextBudgetEvent.token_categories ?? latestContextBudgetEvent.prompt_components ?? {}).map(([name, size]) => (
                   <div key={name} className="metric-row">
-                    <span>{name.replace(/_/g, " ")}</span>
+                    <span>{contextBudgetComponentLabel(name)}</span>
                     <strong>{formatNumber(size.tokens)} tok{MONITOR_META_SEPARATOR}{formatBytes(size.bytes)}</strong>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="muted-block">No prompt-size diagnostics captured yet. New compaction events will include them.</div>
+              <div className="muted-block">No prompt-size diagnostics captured yet. New context budget events will include them.</div>
             )}
           </div>
           <div className="card">
             <SectionTitle title="Latest Reasons" />
-            {latestCompaction?.reasons?.length ? (
+            {latestContextBudgetEvent?.reasons?.length ? (
               <div className="simple-list">
-                {latestCompaction.reasons.map((reason, index) => (
-                  <div key={`${latestCompaction.id}-${index}`} className="simple-row">
+                {latestContextBudgetEvent.reasons.map((reason, index) => (
+                  <div key={`${latestContextBudgetEvent.id}-${index}`} className="simple-row">
                     <strong>{String(reason.kind || "reason").replace(/_/g, " ")}</strong>
                     <div className="small-note">{compactMonitorJson(reason, 260)}</div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="muted-block">{latestCompaction?.reason_summary || "No structured reason diagnostics captured yet."}</div>
+              <div className="muted-block">{latestContextBudgetEvent?.reason_summary || "No structured reason diagnostics captured yet."}</div>
             )}
           </div>
         </div>
 
         <div className="card" style={{ marginTop: 16 }}>
-          <SectionTitle title="Compaction Events" subtitle="Newest first. Expand an event to inspect module and fragment sizes." />
-          {contextCompactionEntries.length > 0 ? (
+          <SectionTitle title="Context Budget Events" subtitle="Newest first. Expand an event to inspect module and fragment sizes." />
+          {contextBudgetEntries.length > 0 ? (
             <div className="feed-list">
-              {contextCompactionEntries.map((item) => (
+              {contextBudgetEntries.map((item) => (
                 <details key={item.id} className="feed-item compaction-event-card">
                   <summary className="feed-head" style={{ cursor: "pointer" }}>
                     <div className={`feed-badge feed-badge--${item.truncated_count ? "warning" : "neutral"}`}>
                       drop {item.dropped_count ?? 0} / trunc {item.truncated_count ?? 0}
                     </div>
                     <span className="compaction-event-card__summary">
-                      <strong>{item.summary || `${item.agent_name || "agent"} compacted context`}</strong>
+                      <strong>{item.summary || `${item.agent_name || "agent"} adjusted context budget`}</strong>
                       <span className="small-note">
                         {formatTimeAgo(item.created_at)}
+                        {item.event_kind ? ` | ${item.event_kind.replace(/_/g, " ")}` : ""}
                         {item.prompt_total?.tokens ? ` | ${formatNumber(item.prompt_total.tokens)} prompt tokens` : ""}
                         {item.reason_summary ? ` | ${item.reason_summary}` : ""}
                       </span>
                     </span>
                   </summary>
                   <div className="feed-body compaction-event-card__body">
-                    <CompactionEventDetail item={item} />
+                    <ContextBudgetEventDetail item={item} />
                     <div className="compaction-event-card__legacy">
                     <div className="small-note" style={{ marginBottom: 6 }}>
                       {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
                       {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                     </div>
                     <div className="feed-preview">
-                      {item.reason_summary || monitorCompactionPreview(item)}
+                      {item.reason_summary || monitorContextBudgetPreview(item)}
                       {"\n"}Prompt: {formatNumber(item.prompt_total?.tokens)} tokens{MONITOR_META_SEPARATOR}{formatBytes(item.prompt_total?.bytes)}{MONITOR_META_SEPARATOR}selected {formatNumber(item.selected_tokens)} / candidate {formatNumber(item.candidate_tokens)} tokens
                     </div>
                     {item.prompt_components ? (
@@ -7715,7 +8097,7 @@ export function MonitorTab() {
               ))}
             </div>
           ) : (
-            <div className="muted-block">No compactions captured yet.</div>
+          <div className="muted-block">No context budget events captured yet.</div>
           )}
         </div>
       </section>
@@ -7764,8 +8146,8 @@ export function MonitorTab() {
                 <div className="kpi-card__value">{formatNumber(overview?.usage_window.llm_calls)}</div>
               </div>
               <div className="kpi-card">
-                <div className="kpi-card__label">Compactions</div>
-                <div className="kpi-card__value">{formatNumber(overview?.system.stats.context_compactions ?? overview?.recent_compactions?.length ?? 0)}</div>
+                <div className="kpi-card__label">Budget events</div>
+                <div className="kpi-card__value">{formatNumber(overview?.system.stats.context_budget_events ?? overview?.recent_context_budget_events?.length ?? 0)}</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-card__label">Active model</div>
@@ -7787,30 +8169,30 @@ export function MonitorTab() {
             </div>
           </div>
           <div className="card">
-            <SectionTitle title="Compaction History" />
-            {(overview?.recent_compactions ?? []).length > 0 ? (
+            <SectionTitle title="Context Budget History" />
+            {(overview?.recent_context_budget_events ?? []).length > 0 ? (
               <div className="feed-list">
-                {(overview?.recent_compactions ?? []).map((item) => (
+                {(overview?.recent_context_budget_events ?? []).map((item) => (
                   <div key={item.id} className="feed-item">
                     <div className={`feed-badge feed-badge--${item.truncated_count ? "warning" : "neutral"}`}>
                       drop {item.dropped_count ?? 0} / trunc {item.truncated_count ?? 0}
                     </div>
                     <div className="feed-body">
                       <div className="feed-head">
-                        <strong>{item.summary || `${item.agent_name || "agent"} compacted context`}</strong>
+                        <strong>{item.summary || `${item.agent_name || "agent"} adjusted context budget`}</strong>
                         <span className="small-note">{formatTimeAgo(item.created_at)}</span>
                       </div>
                       <div className="small-note" style={{ marginBottom: 6 }}>
                         {item.chat_title || "Unknown chat"} {item.project_name ? `${MONITOR_META_SEPARATOR}${item.project_name}` : ""}
                         {item.task_run_title ? `${MONITOR_META_SEPARATOR}${item.task_run_title}` : ""}
                       </div>
-                      <div className="feed-preview">{monitorCompactionPreview(item)}</div>
+                      <div className="feed-preview">{monitorContextBudgetPreview(item)}</div>
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="muted-block">No compactions captured yet.</div>
+              <div className="muted-block">No context budget events captured yet.</div>
             )}
           </div>
         </div>
@@ -8311,6 +8693,16 @@ export function MonitorTab() {
                         {taskRunResumeLoading[selectedTaskRunSummary.id] ? "Resuming..." : "Resume Run"}
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      className="refresh-btn"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                      disabled={Boolean(taskRunCompactionLoading[selectedTaskRunSummary.id])}
+                      onClick={() => void compactTaskRun(selectedTaskRunSummary)}
+                    >
+                      <Minimize2 size={14} aria-hidden="true" />
+                      {taskRunCompactionLoading[selectedTaskRunSummary.id] ? "Creating..." : "Create Checkpoint"}
+                    </button>
                   </div>
                 </div>
                 {taskRunResumeMessages[selectedTaskRunSummary.id] ? (
@@ -8318,9 +8710,19 @@ export function MonitorTab() {
                     {taskRunResumeMessages[selectedTaskRunSummary.id]}
                   </div>
                 ) : null}
+                {taskRunCompactionMessages[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunCompactionMessages[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
                 {taskRunResumeErrors[selectedTaskRunSummary.id] ? (
                   <div className="muted-block" style={{ marginTop: 12 }}>
                     {taskRunResumeErrors[selectedTaskRunSummary.id]}
+                  </div>
+                ) : null}
+                {taskRunCompactionErrors[selectedTaskRunSummary.id] ? (
+                  <div className="muted-block" style={{ marginTop: 12 }}>
+                    {taskRunCompactionErrors[selectedTaskRunSummary.id]}
                   </div>
                 ) : null}
                 {hasActiveRecoveryLease(selectedTaskRunRecoveryState) ? (
@@ -8559,8 +8961,8 @@ export function MonitorTab() {
                         </div>
                       </div>
                       <div className="simple-row">
-                        <strong>Latest Compaction</strong>
-                        <div className="small-note">{checkpointCompactionPreview(selectedTaskRunDetail)}</div>
+                        <strong>Latest Context Budget Event</strong>
+                        <div className="small-note">{checkpointContextBudgetPreview(selectedTaskRunDetail)}</div>
                       </div>
                       <div className="simple-row">
                         <strong>Scheduler Runtime</strong>

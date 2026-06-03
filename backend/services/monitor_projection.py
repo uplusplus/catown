@@ -616,6 +616,8 @@ def serialize_monitor_runtime_item(
     prompt_preview = extract_prompt_preview(card)
     response_preview = compact_preview(card.get("response") or card.get("result"))
     arguments_preview = compact_preview(card.get("arguments"))
+    provider_session = card.get("provider_session") if isinstance(card.get("provider_session"), dict) else {}
+    provider_request = card.get("provider_request") if isinstance(card.get("provider_request"), dict) else {}
     return {
         "id": runtime_message_id,
         "type": str(card.get("type") or "runtime"),
@@ -631,6 +633,9 @@ def serialize_monitor_runtime_item(
         "from_entity": from_entity,
         "to_entity": to_entity,
         "model": card.get("model"),
+        "provider_mode": card.get("provider_mode") or provider_session.get("provider_mode"),
+        "provider_session": provider_session,
+        "provider_request": provider_request,
         "tool_name": card.get("tool"),
         "tool_call_id": card.get("tool_call_id"),
         "success": card.get("success"),
@@ -741,7 +746,7 @@ def serialize_monitor_approval_queue_item(
     return payload
 
 
-def serialize_monitor_compaction_item(
+def serialize_monitor_context_budget_item(
     event: TaskRunEvent,
     *,
     task_run: TaskRun | None = None,
@@ -768,6 +773,58 @@ def serialize_monitor_compaction_item(
         **projection,
         "developer": diagnostics.get("developer") if isinstance(diagnostics.get("developer"), dict) else {},
         "user": diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {},
+        "payload": payload,
+    }
+
+
+def serialize_monitor_provider_compaction_item(
+    event: TaskRunEvent,
+    *,
+    task_run: TaskRun | None = None,
+    chat_title: str | None = None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    payload = parse_metadata(event.payload_json)
+    provider_compaction = (
+        payload.get("provider_compaction")
+        if isinstance(payload.get("provider_compaction"), dict)
+        else {}
+    )
+    provider_session = (
+        payload.get("provider_session")
+        if isinstance(payload.get("provider_session"), dict)
+        else {}
+    )
+    sections = (
+        provider_compaction.get("sections")
+        if isinstance(provider_compaction.get("sections"), dict)
+        else {}
+    )
+    diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
+    projection = build_context_compaction_projection(diagnostics, fallback_summary=event.summary)
+    return {
+        "id": event.id,
+        "task_run_id": event.task_run_id,
+        "chatroom_id": task_run.chatroom_id if task_run else None,
+        "project_id": task_run.project_id if task_run else None,
+        "chat_title": chat_title,
+        "project_name": project_name,
+        "run_kind": task_run.run_kind if task_run else None,
+        "task_run_title": task_run.title if task_run else None,
+        "task_run_status": task_run.status if task_run else None,
+        "agent_name": event.agent_name,
+        "event_type": event.event_type,
+        "summary": event.summary,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        **projection,
+        "compact_checkpoint_id": provider_compaction.get("id"),
+        "compaction_kind": provider_compaction.get("kind"),
+        "trigger_reason": provider_compaction.get("trigger_reason"),
+        "checkpoint_path": provider_compaction.get("path"),
+        "checkpoint_summary": provider_compaction.get("summary"),
+        "provider_session": provider_session,
+        "sections": sections,
+        "section_keys": list(sections.keys()),
         "payload": payload,
     }
 

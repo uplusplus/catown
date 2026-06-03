@@ -38,6 +38,13 @@ def reset_app_modules(module_names):
         clear_mappers()
     if "models.database" in requested and "models.audit" not in requested:
         requested.append("models.audit")
+    if "models.database" in requested:
+        for model_bound_service in (
+            "services.provider_compaction",
+            "services.provider_sessions",
+        ):
+            if model_bound_service not in requested:
+                requested.append(model_bound_service)
     ordered = sorted(
         requested,
         key=lambda module_name: (
@@ -155,6 +162,8 @@ def _reload_model_bound_service_modules(importlib_module):
         "services.task_run_watchdog",
         "services.user_visible_step_projection",
         "services.monitor_projection",
+        "services.provider_compaction",
+        "services.provider_sessions",
         "services.agent_lifecycle_runtime",
         "services.agent_action_runtime",
         "services.collaboration_dispatch_runtime",

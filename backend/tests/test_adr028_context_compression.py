@@ -114,7 +114,7 @@ class TestPhase1OutputFilter:
         from tools.output_filter import _ensure_filters_loaded, _FILTER_REGISTRY
         _ensure_filters_loaded()
         patterns = [p for p, _ in _FILTER_REGISTRY]
-        assert "git" in patterns
+        assert any(pattern == "git" or pattern.startswith("git ") for pattern in patterns)
 
     def test_test_filter_registered(self):
         """Test runner filter should be registered."""
@@ -156,7 +156,7 @@ class TestPhase1FilterIntegration:
 
     def test_apply_output_filter_calls_filter(self):
         """_apply_output_filter should call the filter module and return (output, stats)."""
-        with patch("services.run_shell_processes.filter_output") as mock_filter:
+        with patch("tools.output_filter.filter_output") as mock_filter:
             mock_result = MagicMock()
             mock_result.output = "filtered"
             mock_result.raw_tokens = 100
@@ -173,7 +173,7 @@ class TestPhase1FilterIntegration:
 
     def test_apply_output_filter_fallback_on_error(self):
         """_apply_output_filter should fallback to raw on error."""
-        with patch("services.run_shell_processes.filter_output", side_effect=Exception("fail")):
+        with patch("tools.output_filter.filter_output", side_effect=Exception("fail")):
             from services.run_shell_processes import _apply_output_filter
             output, stats = _apply_output_filter("git status", "raw output", 0)
             assert output == "raw output"
@@ -237,7 +237,7 @@ class TestPhase2ToolResultTruncation:
     """Phase 2: Verify tool result truncation."""
 
     def test_tool_result_truncated_at_threshold(self):
-        """Tool results should be truncated at 2000 chars."""
+        """Tool results should be summarized before entering prompt-visible protocol messages."""
         from services.turn_state import ToolResultRecord, _TOOL_RESULT_TRUNCATE_THRESHOLD
 
         long_result = "x" * 5000
@@ -249,6 +249,7 @@ class TestPhase2ToolResultTruncation:
         )
         message = record.to_message()
         assert len(message["content"]) < 5000
+        assert "[Tool Result Summary]" in message["content"]
         assert "[truncated for context budget]" in message["content"]
 
     def test_short_result_not_truncated(self):
@@ -296,9 +297,8 @@ class TestPhase3RatioProfiles:
         model_context.output_reserve = 0
 
         result = materialize_selector_profile_config(profile, model_context)
-        # 400K * 0.03 = 12000, but configured cap is 8000
-        # Should use min(8000, 12000) = 8000
-        assert result["max_tokens_cap"] == 8000
+        # 400K * 0.03 = 12000. Configured cap is a floor, not a ceiling.
+        assert result["max_tokens_cap"] == 12000
 
     def test_materialize_with_small_model(self):
         """For 128K model, ratio cap should be close to configured cap."""
@@ -315,9 +315,8 @@ class TestPhase3RatioProfiles:
         model_context.output_reserve = 0
 
         result = materialize_selector_profile_config(profile, model_context)
-        # 128K * 0.03 = 3840, configured cap is 8000
-        # Should use min(8000, 3840) = 3840
-        assert result["max_tokens_cap"] == 3840
+        # 128K * 0.03 = 3840, but the configured 8000 cap remains a floor.
+        assert result["max_tokens_cap"] == 8000
 
     def test_min_tokens_cap_floor(self):
         """For very small models, should use min_tokens_cap floor (3200)."""
@@ -435,7 +434,7 @@ class TestPhase5LLMSummarization:
         """Should fallback to truncation on LLM error."""
         from services.context_builder import summarize_for_context
 
-        with patch("services.context_builder.get_default_llm_client", side_effect=Exception("no LLM")):
+        with patch("llm.client.get_default_llm_client", side_effect=Exception("no LLM")):
             result = await summarize_for_context("Some text to summarize", max_tokens=50)
             # Should fallback to truncation
             assert isinstance(result, str)

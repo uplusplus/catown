@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 from dataclasses import dataclass
@@ -79,7 +80,8 @@ async def iter_stream_turn_events(
             await _maybe_await(before_event(frame, agent_start_event, turn_state))
         yield agent_start_event
 
-        async for event in _iter_with_heartbeat(llm_client.chat_stream(messages, tools or None)):
+        chat_stream_kwargs = _chat_stream_provider_kwargs(llm_client, frame)
+        async for event in _iter_with_heartbeat(llm_client.chat_stream(messages, tools or None, **chat_stream_kwargs)):
             if before_event is not None:
                 await _maybe_await(before_event(frame, event, turn_state))
             event_type = event["type"]
@@ -338,3 +340,29 @@ async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+def _chat_stream_provider_kwargs(llm_client: Any, frame: StreamTurnFrame) -> dict[str, Any]:
+    provider_session = getattr(frame, "provider_session", None)
+    if not isinstance(provider_session, dict):
+        return {}
+
+    try:
+        signature = inspect.signature(llm_client.chat_stream)
+    except (TypeError, ValueError):
+        return {}
+
+    supports_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    kwargs: dict[str, Any] = {}
+    if supports_kwargs or "provider_session" in signature.parameters:
+        kwargs["provider_session"] = provider_session
+    previous_response_id = (
+        provider_session.get("previous_response_id")
+        or provider_session.get("last_response_id")
+    )
+    if previous_response_id and (supports_kwargs or "previous_response_id" in signature.parameters):
+        kwargs["previous_response_id"] = previous_response_id
+    return kwargs

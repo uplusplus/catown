@@ -7132,11 +7132,11 @@ class TestCollaborationEndpoints:
         assert data["result_details"]["idle_seconds"] >= 120
 
 
-class TestTaskRunCompactionProjection:
-    def test_task_run_detail_surfaces_context_compaction_projection(self, client):
+class TestTaskRunContextBudgetProjection:
+    def test_task_run_detail_surfaces_context_budget_projection(self, client):
         import models.database as db_mod
 
-        project = client.post("/api/projects", json={"name": "Compaction Detail Projection"}).json()
+        project = client.post("/api/projects", json={"name": "Context Budget Detail Projection"}).json()
         chatroom_id = project["chatroom_id"]
 
         db = db_mod.SessionLocal()
@@ -7144,10 +7144,10 @@ class TestTaskRunCompactionProjection:
             task_run = db_mod.TaskRun(
                 chatroom_id=chatroom_id,
                 project_id=project["id"],
-                client_turn_id="turn-compaction-detail",
+                client_turn_id="turn-context-budget-detail",
                 run_kind="project_single_agent",
                 status="running",
-                title="Compaction detail projection",
+                title="Context budget detail projection",
             )
             db.add(task_run)
             db.commit()
@@ -7157,19 +7157,48 @@ class TestTaskRunCompactionProjection:
                 db_mod.TaskRunEvent(
                     task_run_id=task_run.id,
                     event_index=1,
-                    event_type="context_compaction",
+                    event_type="context_budget_event",
                     agent_name="analyst",
-                    summary="analyst compacted context.",
+                    summary="analyst adjusted context budget.",
                     payload_json=json.dumps(
                         {
-                            "compacted": True,
                             "selector_diagnostics": {
-                                "compacted": True,
+                                "selection_changed": True,
+                                "semantic_compaction": False,
+                                "event_kind": "selection_truncation",
                                 "selector": {
                                     "max_fragments": 12,
                                     "max_tokens": 3200,
                                     "max_tokens_by_role": {"developer": 1200, "user": 2000},
                                     "max_tokens_by_scope": {"run": 1800, "turn": 400},
+                                },
+                                "prompt": {
+                                    "tool_output_budget": {
+                                        "summarized_message_count": 1,
+                                        "estimated_saved_tokens": 1200,
+                                        "estimated_savings_pct": 66.7,
+                                        "by_tool": {
+                                            "run_shell": {
+                                                "message_count": 1,
+                                                "summarized_message_count": 1,
+                                                "estimated_saved_tokens": 1200,
+                                            }
+                                        },
+                                    },
+                                    "tool_schema_budget": {
+                                        "tokens": 180,
+                                        "tool_count": 1,
+                                        "original_tokens": 260,
+                                        "original_tool_count": 2,
+                                        "estimated_saved_tokens": 80,
+                                        "estimated_savings_pct": 30.8,
+                                        "by_tool": [
+                                            {"tool_name": "run_shell", "tokens": 180, "bytes": 720},
+                                        ],
+                                        "excluded_by_tool": [
+                                            {"tool_name": "browser", "tokens": 80, "bytes": 320},
+                                        ],
+                                    },
                                 },
                                 "summary": {
                                     "candidate_count": 9,
@@ -7207,13 +7236,93 @@ class TestTaskRunCompactionProjection:
             db.close()
 
         detail = client.get(f"/api/task-runs/{task_run_id}").json()
-        compaction_event = next(event for event in detail["events"] if event["event_type"] == "context_compaction")
+        context_budget_event = next(event for event in detail["events"] if event["event_type"] == "context_budget_event")
 
-        assert compaction_event["budget_summary"] == "roles developer 1200 / user 2000 | scopes run 1800 / turn 400"
-        assert "run 2/3 fragments, 1400/2200 tokens" in compaction_event["scope_usage_summary"]
-        assert "Candidates 9 -> selected 7" in compaction_event["detail_summary"]
-        assert compaction_event["max_tokens_by_scope"] == {"run": 1800, "turn": 400}
-        assert detail["checkpoint_snapshot"]["latest_compaction"]["detail_summary"] == compaction_event["detail_summary"]
+        assert context_budget_event["budget_summary"] == "roles developer 1200 / user 2000 | scopes run 1800 / turn 400"
+        assert "run 2/3 fragments, 1400/2200 tokens" in context_budget_event["scope_usage_summary"]
+        assert "Candidates 9 -> selected 7" in context_budget_event["detail_summary"]
+        assert context_budget_event["event_kind"] == "selection_truncation"
+        assert context_budget_event["selection_changed"] is True
+        assert context_budget_event["semantic_compaction"] is False
+        assert context_budget_event["max_tokens_by_scope"] == {"run": 1800, "turn": 400}
+        assert context_budget_event["tool_output_budget"]["estimated_saved_tokens"] == 1200
+        assert context_budget_event["tool_output_budget"]["by_tool"]["run_shell"]["estimated_saved_tokens"] == 1200
+        assert context_budget_event["tool_schema_budget"]["tokens"] == 180
+        assert context_budget_event["tool_schema_budget"]["estimated_saved_tokens"] == 80
+        assert context_budget_event["tool_schema_budget"]["by_tool"][0]["tool_name"] == "run_shell"
+        assert context_budget_event["tool_schema_budget"]["excluded_by_tool"][0]["tool_name"] == "browser"
+        assert detail["checkpoint_snapshot"]["latest_context_budget_event"]["detail_summary"] == context_budget_event["detail_summary"]
+        assert detail["checkpoint_snapshot"]["latest_context_budget_event"]["tool_schema_budget"]["estimated_saved_tokens"] == 80
+
+    def test_task_run_compact_endpoint_creates_local_checkpoint(self, client):
+        import models.database as db_mod
+
+        project = client.post("/api/projects", json={"name": "Explicit Compaction"}).json()
+        chatroom_id = project["chatroom_id"]
+
+        db = db_mod.SessionLocal()
+        try:
+            task_run = db_mod.TaskRun(
+                chatroom_id=chatroom_id,
+                project_id=project["id"],
+                client_turn_id="turn-explicit-compact",
+                run_kind="project_single_agent",
+                status="running",
+                title="Explicit compaction run",
+                user_request="Create an explicit compaction checkpoint.",
+                target_agent_name="analyst",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            provider_session = db_mod.LLMProviderSession(
+                chatroom_id=chatroom_id,
+                task_run_id=task_run.id,
+                project_id=project["id"],
+                agent_name="analyst",
+                provider_mode="responses_http",
+                provider_host="api.openai.com",
+                model_name="gpt-5.5",
+                status="active",
+                turn_count=1,
+            )
+            db.add(provider_session)
+            db.add(
+                db_mod.TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="agent_turn_completed",
+                    agent_name="analyst",
+                    summary="analyst completed a turn.",
+                    payload_json=json.dumps(
+                        {"response_preview": "Ready for explicit compaction."},
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+            task_run_id = task_run.id
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/api/task-runs/{task_run_id}/compact",
+            json={"reason": "explicit_admin_request", "agent_name": "analyst"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "ok"
+        assert payload["compact_checkpoint_id"].startswith("localcmp_")
+        assert payload["kind"] == "local_structured_summary"
+        assert "Create an explicit compaction checkpoint" in payload["sections"]["current_objective"]
+
+        detail = client.get(f"/api/task-runs/{task_run_id}").json()
+        compaction_event = next(event for event in detail["events"] if event["event_type"] == "context_compaction")
+        assert compaction_event["semantic_compaction"] is True
+        assert compaction_event["event_kind"] == "semantic_compaction"
+        assert compaction_event["payload"]["provider_compaction"]["id"] == payload["compact_checkpoint_id"]
+        assert compaction_event["payload"]["provider_session"]["provider_mode"] == "responses_http"
 
     def test_task_run_detail_surfaces_handoff_and_runtime_projection(self, client):
         import models.database as db_mod

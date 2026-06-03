@@ -457,7 +457,7 @@ async def test_run_agent_stage_rebuilds_messages_from_turn_state(fresh_db, tmp_p
             .order_by(fresh_db.TaskRunEvent.event_index.asc())
             .all()
         )
-        assert [event.event_type for event in task_events] == [
+        assert [event.event_type for event in task_events if event.event_type != "context_budget_event"] == [
             "agent_turn_started",
             "tool_call_started",
             "tool_round_recorded",
@@ -465,6 +465,7 @@ async def test_run_agent_stage_rebuilds_messages_from_turn_state(fresh_db, tmp_p
             "tool_round_recorded",
             "agent_turn_completed",
         ]
+        assert any(event.event_type == "context_budget_event" for event in task_events)
         assert task_events[-1].agent_name == "analyst"
         round_events = [event for event in task_events if event.event_type == "tool_round_recorded"]
         assert json.loads(round_events[0].payload_json)["tool_names"] == ["list_files"]
@@ -514,6 +515,166 @@ async def test_run_agent_stage_rebuilds_messages_from_turn_state(fresh_db, tmp_p
             for message in third_call_messages
         )
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stage_filters_llm_tool_schemas_without_narrowing_execution_authorization(fresh_db, tmp_path):
+    engine_mod = _reload_pipeline_engine()
+    from pipeline.config import StageConfig
+
+    fresh_db.Base.metadata.create_all(bind=fresh_db.engine)
+
+    db = fresh_db.SessionLocal()
+    original_allowed_tools = engine_mod.AGENT_TOOLS.get("analyst")
+    original_web_search = engine_mod.TOOL_REGISTRY["web_search"]["fn"]
+    try:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True)
+
+        project = fresh_db.Project(name="Pipeline Tool Schema Filter Project")
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        chatroom = fresh_db.Chatroom(
+            project_id=project.id,
+            title="Project Chat",
+            session_type="project-bound",
+        )
+        db.add(chatroom)
+        db.commit()
+        db.refresh(chatroom)
+
+        project.default_chatroom_id = chatroom.id
+        db.commit()
+        db.refresh(project)
+
+        task_run = fresh_db.TaskRun(
+            chatroom_id=chatroom.id,
+            project_id=project.id,
+            run_kind=engine_mod.PIPELINE_TASK_RUN_KIND,
+            status="running",
+            title="Inspect local implementation",
+            user_request="Inspect local implementation",
+            initiator="user",
+            target_agent_name="analyst",
+        )
+        db.add(task_run)
+        db.commit()
+        db.refresh(task_run)
+
+        pipeline = fresh_db.Pipeline(
+            project_id=project.id,
+            pipeline_name="default",
+            status="running",
+            current_stage_index=0,
+        )
+        db.add(pipeline)
+        db.commit()
+        db.refresh(pipeline)
+
+        run = fresh_db.PipelineRun(
+            pipeline_id=pipeline.id,
+            task_run_id=task_run.id,
+            run_number=1,
+            status="running",
+            input_requirement="Inspect local implementation",
+            workspace_path=str(workspace),
+            started_at=datetime.now(),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        stage = fresh_db.PipelineStage(
+            run_id=run.id,
+            stage_name="analysis",
+            display_name="Analysis",
+            stage_order=0,
+            agent_name="analyst",
+            status="running",
+            gate_type="auto",
+            started_at=datetime.now(),
+        )
+        db.add(stage)
+        db.commit()
+        db.refresh(stage)
+
+        engine_mod.AGENT_TOOLS["analyst"] = ["read_file", "run_shell", "web_search"]
+        engine_mod.TOOL_REGISTRY["web_search"]["fn"] = lambda workspace, query: f"stubbed web search for {query}"
+        seen_tools = []
+
+        async def scripted_chat_with_tools(messages, tools=None):
+            seen_tools.append(json.loads(json.dumps(tools or [], ensure_ascii=False)))
+            return {
+                "content": "Pipeline schema filtering complete.",
+                "tool_calls": None,
+            }
+
+        mock_llm = MagicMock()
+        mock_llm.model = "test-model"
+        mock_llm.chat_with_tools = scripted_chat_with_tools
+        engine_mod.get_llm_client_for_agent = lambda agent_name: mock_llm
+
+        engine = engine_mod.PipelineEngine()
+        stage_cfg = StageConfig(
+            name="analysis",
+            display_name="Analysis",
+            agent="analyst",
+            gate="auto",
+            timeout_minutes=5,
+            context_prompt="Inspect the local implementation",
+        )
+
+        summary = await engine._run_agent_stage(
+            db=db,
+            pipeline=pipeline,
+            run=run,
+            stage=stage,
+            stage_cfg=stage_cfg,
+            context="Read local files and run checks. No web lookup is needed.",
+        )
+
+        assert summary == "Pipeline schema filtering complete."
+        assert len(seen_tools) == 1
+        visible_tool_names = [tool["function"]["name"] for tool in seen_tools[0]]
+        assert visible_tool_names == ["read_file", "run_shell"]
+
+        web_result = await engine_mod._execute_tool(
+            "analyst",
+            run,
+            "web_search",
+            {"query": "catown"},
+            db=db,
+            stage_id=stage.id,
+        )
+        assert web_result["success"] is True
+        assert web_result["result"] == "stubbed web search for catown"
+
+        task_events = (
+            db.query(fresh_db.TaskRunEvent)
+            .filter(fresh_db.TaskRunEvent.task_run_id == task_run.id)
+            .order_by(fresh_db.TaskRunEvent.event_index.asc())
+            .all()
+        )
+        budget_payloads = [
+            json.loads(event.payload_json)
+            for event in task_events
+            if event.event_type == "context_budget_event"
+        ]
+        assert len(budget_payloads) == 1
+        schema_budget = budget_payloads[0]["selector_diagnostics"]["prompt"]["tool_schema_budget"]
+        assert schema_budget["filter"]["excluded_tools"] == ["web_search"]
+        assert schema_budget["estimated_saved_tokens"] > 0
+        assert schema_budget["filtered_tool_count"] == 1
+        assert schema_budget["excluded_by_tool"][0]["tool_name"] == "web_search"
+    finally:
+        engine_mod.TOOL_REGISTRY["web_search"]["fn"] = original_web_search
+        if original_allowed_tools is None:
+            engine_mod.AGENT_TOOLS.pop("analyst", None)
+        else:
+            engine_mod.AGENT_TOOLS["analyst"] = original_allowed_tools
         db.close()
 
 
@@ -633,13 +794,14 @@ async def test_run_agent_stage_records_blocked_tool_calls_in_ledger(fresh_db, tm
             .all()
         )
 
-        assert [event.event_type for event in task_events] == [
+        assert [event.event_type for event in task_events if event.event_type != "context_budget_event"] == [
             "agent_turn_started",
             "tool_call_started",
             "tool_round_recorded",
             "approval_queue_item_created",
             "tool_call_blocked",
         ]
+        assert any(event.event_type == "context_budget_event" for event in task_events)
 
         round_event = next(event for event in task_events if event.event_type == "tool_round_recorded")
         queue_event = next(event for event in task_events if event.event_type == "approval_queue_item_created")
@@ -1045,7 +1207,7 @@ async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path)
             .order_by(fresh_db.TaskRunEvent.event_index.asc())
             .all()
         )
-        assert [event.event_type for event in events] == [
+        assert [event.event_type for event in events if event.event_type != "context_budget_event"] == [
             "pipeline_stage_started",
             "agent_turn_started",
             "tool_call_started",
@@ -1054,6 +1216,7 @@ async def test_execute_stage_blocks_pipeline_on_blocked_tool(fresh_db, tmp_path)
             "tool_call_blocked",
             "pipeline_stage_blocked",
         ]
+        assert any(event.event_type == "context_budget_event" for event in events)
         started_payload = json.loads(events[0].payload_json)
         blocked_payload = json.loads(events[-1].payload_json)
         assert started_payload["checkpoint_snapshot"]["event_count"] == 0
@@ -1326,7 +1489,16 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
 
         workspace = tmp_path / "workspace"
         (workspace / "reports").mkdir(parents=True)
-        (workspace / "reports" / "summary.md").write_text("# Summary\n", encoding="utf-8")
+        (workspace / "reports" / "gate-report.md").write_text(
+            "Purpose: Validate gate fixture\n"
+            "Overview: Summary artifact for manual gate test.\n"
+            "Author: Catown Test\n"
+            "Created At: 2026-06-02 00:00:00\n"
+            "Modification Log:\n"
+            "- 2026-06-02 00:00:00 Initial test fixture.\n\n"
+            "# Summary\n",
+            encoding="utf-8",
+        )
 
         project = fresh_db.Project(name="Pipeline Policy Project")
         db.add(project)
@@ -1402,7 +1574,7 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
             agent="tester",
             gate="manual",
             timeout_minutes=9,
-            expected_artifacts=["reports/summary.md"],
+            expected_artifacts=["reports/gate-report.md"],
             context_prompt="Validate the delivery and stop for approval.",
             rollback_on_blocker=True,
             max_rollback_count=2,
@@ -1457,7 +1629,7 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
 
         assert started_payload["stage_policy"]["stage_name"] == "qa_gate"
         assert started_payload["stage_policy"]["approval"]["required"] is True
-        assert started_payload["stage_policy"]["delivery"]["expected_artifacts"] == ["reports/summary.md"]
+        assert started_payload["stage_policy"]["delivery"]["expected_artifacts"] == ["reports/gate-report.md"]
         assert started_payload["stage_policy"]["rollback"]["enabled"] is True
         assert started_payload["stage_policy"]["rollback"]["target_stage"] == "analysis"
         assert started_payload["stage_policy"]["metadata"]["tool_policy_summary"]["tool_count"] >= 1
@@ -1489,7 +1661,7 @@ async def test_execute_stage_emits_compiled_stage_policy_for_manual_gate(fresh_d
 
         artifacts = db.query(fresh_db.StageArtifact).filter(fresh_db.StageArtifact.stage_id == stage.id).all()
         assert len(artifacts) == 1
-        assert artifacts[0].file_path == "reports/summary.md"
+        assert artifacts[0].file_path == "reports/gate-report.md"
     finally:
         db.close()
 
@@ -1823,7 +1995,16 @@ async def test_approve_resolves_pipeline_gate_queue_item(fresh_db, tmp_path):
     try:
         workspace = tmp_path / "workspace"
         (workspace / "reports").mkdir(parents=True)
-        (workspace / "reports" / "summary.md").write_text("# Summary\n", encoding="utf-8")
+        (workspace / "reports" / "summary.md").write_text(
+            "Purpose: Validate gate fixture\n"
+            "Overview: Summary artifact for manual gate approval test.\n"
+            "Author: Catown Test\n"
+            "Created At: 2026-06-02 00:00:00\n"
+            "Modification Log:\n"
+            "- 2026-06-02 00:00:00 Initial test fixture.\n\n"
+            "# Summary\n",
+            encoding="utf-8",
+        )
 
         project = fresh_db.Project(name="Pipeline Gate Queue Project")
         db.add(project)

@@ -68,6 +68,9 @@ def build_orchestration_sync_turn_profile(
             recent_messages=runtime.recent_messages,
             user_message=user_message,
             available_tools=runtime.available_tools,
+            tool_schemas=runtime.tool_schemas,
+            tool_schemas_before_filter=getattr(runtime, "tool_schemas_before_filter", None),
+            tool_schema_filter=getattr(runtime, "tool_schema_filter", None),
             history_limit=4,
             standalone_note=standalone_note,
             runtime_context=runtime_context,
@@ -197,6 +200,9 @@ def build_orchestration_stream_turn_profile(
             recent_messages=runtime.recent_messages,
             user_message=user_message,
             available_tools=runtime.available_tools,
+            tool_schemas=runtime.tool_schemas,
+            tool_schemas_before_filter=getattr(runtime, "tool_schemas_before_filter", None),
+            tool_schema_filter=getattr(runtime, "tool_schema_filter", None),
             history_limit=history_limit,
             standalone_note=standalone_note,
             runtime_context=runtime_context,
@@ -278,6 +284,8 @@ def build_orchestration_stream_turn_profile(
             usage=raw_event.get("usage"),
             finish_reason=raw_event.get("finish_reason"),
             timings=raw_event.get("timings"),
+            provider_session=raw_event.get("provider_session") if isinstance(raw_event.get("provider_session"), dict) else None,
+            provider_request=raw_event.get("provider_request") if isinstance(raw_event.get("provider_request"), dict) else None,
         )
 
     return OrchestrationStreamTurnProfile(

@@ -5,6 +5,7 @@ LLM 客户端扩展测试
 """
 import gzip
 import httpx
+import json
 import os
 import pytest
 import sys
@@ -433,6 +434,821 @@ class TestLLMClientChatStream:
         assert done["timings"]["first_chunk_ms"] >= 0
         assert done["timings"]["first_tool_call_ms"] >= 0
         assert done["timings"]["tool_call_ready_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_responses_http_stream_sends_previous_response_id_and_maps_text(self):
+        from llm.client import LLMClient
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="resp_next", status="in_progress"),
+            )
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Hello",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_next",
+                    status="completed",
+                    previous_response_id="resp_prev",
+                    usage=SimpleNamespace(input_tokens=11, output_tokens=3, total_tokens=14),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "tool", "tool_call_id": "old_call", "content": "Old tool output"},
+                {"role": "user", "content": "Hi"},
+            ],
+            previous_response_id="resp_prev",
+        ):
+            events.append(event)
+
+        call_kwargs = client.client.responses.create.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-test"
+        assert call_kwargs["stream"] is True
+        assert call_kwargs["store"] is True
+        assert call_kwargs["previous_response_id"] == "resp_prev"
+        assert call_kwargs["instructions"] == "System rules"
+        assert call_kwargs["input"] == [{"role": "user", "content": "Hi"}]
+
+        assert any(event["type"] == "content" and event["delta"] == "Hello" for event in events)
+        done = next(event for event in events if event["type"] == "done")
+        assert done["response_id"] == "resp_next"
+        assert done["full_content"] == "Hello"
+        assert done["usage"] == {
+            "prompt_tokens": 11,
+            "completion_tokens": 3,
+            "total_tokens": 14,
+        }
+        assert done["provider_mode"] == "responses_http"
+        assert done["provider_request"]["omitted_input_item_count"] == 3
+        request_sent = next(event for event in events if event["type"] == "request_sent")
+        provider_request = request_sent["provider_request"]
+        assert {
+            key: provider_request[key]
+            for key in (
+                "stateful_delta",
+                "full_input_item_count",
+                "sent_input_item_count",
+                "omitted_input_item_count",
+            )
+        } == {
+            "stateful_delta": True,
+            "full_input_item_count": 4,
+            "sent_input_item_count": 1,
+            "omitted_input_item_count": 3,
+        }
+        assert provider_request["estimated_full_input_tokens"] > provider_request["estimated_sent_input_tokens"] > 0
+        assert provider_request["estimated_omitted_input_tokens"] == (
+            provider_request["estimated_full_input_tokens"] - provider_request["estimated_sent_input_tokens"]
+        )
+        assert provider_request["estimated_instruction_tokens"] > 0
+
+    @pytest.mark.asyncio
+    async def test_responses_http_retries_full_context_when_previous_response_id_is_unsupported(self):
+        from llm.client import LLMClient
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Fallback",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_fallback",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=21, output_tokens=2, total_tokens=23),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(
+            side_effect=[
+                Exception("previous_response_id is only supported on Responses WebSocket v2"),
+                mock_stream(),
+            ]
+        )
+        network_events = []
+        client._record_network_event = lambda **kwargs: network_events.append(kwargs)
+
+        events = []
+        async for event in client.chat_stream(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "user", "content": "Hi"},
+            ],
+            previous_response_id="resp_prev",
+        ):
+            events.append(event)
+
+        first_call = client.client.responses.create.call_args_list[0].kwargs
+        fallback_call = client.client.responses.create.call_args_list[1].kwargs
+        assert first_call["previous_response_id"] == "resp_prev"
+        assert first_call["input"] == [{"role": "user", "content": "Hi"}]
+        assert "previous_response_id" not in fallback_call
+        assert fallback_call["input"] == [
+            {"role": "user", "content": "Old question"},
+            {"role": "assistant", "content": "Old answer"},
+            {"role": "user", "content": "Hi"},
+        ]
+
+        done = next(event for event in events if event["type"] == "done")
+        assert done["full_content"] == "Fallback"
+        assert done["response_id"] == "resp_fallback"
+        assert done["provider_request"]["response_state_fallback"] is True
+        assert done["provider_request"]["response_state_fallback_reason"] == "previous_response_id_unsupported"
+        assert done["provider_request"]["stateful_delta"] is False
+        assert network_events[0]["metadata"]["response_state_fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_responses_websocket_sends_response_create_and_maps_text(self):
+        from llm.client import LLMClient
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+                self.events = [
+                    {"type": "response.created", "response": {"id": "resp_ws", "status": "in_progress"}},
+                    {"type": "response.output_text.delta", "delta": "Hello"},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_ws",
+                            "status": "completed",
+                            "previous_response_id": "resp_prev",
+                            "usage": {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11},
+                        },
+                    },
+                ]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.events:
+                    raise StopAsyncIteration
+                return json.dumps(self.events.pop(0))
+
+        fake_socket = FakeWebSocket()
+        connect_calls = []
+
+        def fake_connect(url, headers):
+            connect_calls.append((url, headers))
+            return fake_socket
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_websocket",
+        )
+        network_events = []
+        client._record_network_event = lambda **kwargs: network_events.append(kwargs)
+
+        with patch("llm.client._connect_responses_websocket", side_effect=fake_connect):
+            events = []
+            async for event in client.chat_stream(
+                [
+                    {"role": "system", "content": "System rules"},
+                    {"role": "user", "content": "Old question"},
+                    {"role": "assistant", "content": "Old answer"},
+                    {"role": "user", "content": "Hi"},
+                ],
+                previous_response_id="resp_prev",
+            ):
+                events.append(event)
+
+        assert connect_calls == [("wss://api.openai.com/v1/responses", {"Authorization": "Bearer test"})]
+        sent_event = json.loads(fake_socket.sent[0])
+        assert sent_event["type"] == "response.create"
+        assert sent_event["model"] == "gpt-test"
+        assert "stream" not in sent_event
+        assert sent_event["store"] is True
+        assert sent_event["previous_response_id"] == "resp_prev"
+        assert sent_event["instructions"] == "System rules"
+        assert sent_event["input"] == [{"role": "user", "content": "Hi"}]
+
+        assert any(event["type"] == "content" and event["delta"] == "Hello" for event in events)
+        done = next(event for event in events if event["type"] == "done")
+        assert done["provider_mode"] == "responses_websocket"
+        assert done["response_id"] == "resp_ws"
+        assert done["usage"] == {
+            "prompt_tokens": 9,
+            "completion_tokens": 2,
+            "total_tokens": 11,
+        }
+        assert network_events[0]["metadata"]["transport"] == "websocket"
+        assert network_events[0]["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_responses_websocket_maps_completed_output_text(self):
+        from llm.client import LLMClient
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+                self.events = [
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_ws_output",
+                            "status": "completed",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [
+                                        {"type": "output_text", "text": "Completed text"},
+                                    ],
+                                }
+                            ],
+                            "usage": {"input_tokens": 6, "output_tokens": 2, "total_tokens": 8},
+                        },
+                    },
+                ]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.events:
+                    raise StopAsyncIteration
+                return json.dumps(self.events.pop(0))
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_websocket",
+        )
+        client._record_network_event = lambda **_kwargs: None
+
+        with patch("llm.client._connect_responses_websocket", return_value=FakeWebSocket()):
+            events = []
+            async for event in client.chat_stream([{"role": "user", "content": "Hi"}]):
+                events.append(event)
+
+        done = next(event for event in events if event["type"] == "done")
+        assert done["response_id"] == "resp_ws_output"
+        assert done["full_content"] == "Completed text"
+        assert done["usage"] == {
+            "prompt_tokens": 6,
+            "completion_tokens": 2,
+            "total_tokens": 8,
+        }
+
+    @pytest.mark.asyncio
+    async def test_responses_compact_sends_full_context_and_returns_output_window(self):
+        from llm.client import LLMClient
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.compact = AsyncMock(
+            return_value=SimpleNamespace(
+                id="resp_compact",
+                status="completed",
+                output=[
+                    {"type": "compaction", "id": "cmp_123", "summary": "Old context compacted."},
+                    {"role": "assistant", "content": "Ready."},
+                ],
+                usage=SimpleNamespace(input_tokens=33, output_tokens=0, total_tokens=33),
+            )
+        )
+
+        result = await client.compact_responses_context(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "user", "content": "New question"},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+
+        call_kwargs = client.client.responses.compact.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-test"
+        assert call_kwargs["instructions"] == "System rules"
+        assert call_kwargs["input"] == [
+            {"role": "user", "content": "Old question"},
+            {"role": "assistant", "content": "Old answer"},
+            {"role": "user", "content": "New question"},
+        ]
+        assert call_kwargs["tools"][0]["name"] == "web_search"
+        assert result["id"] == "cmp_123"
+        assert result["response_id"] == "resp_compact"
+        assert result["usage"] == {
+            "prompt_tokens": 33,
+            "completion_tokens": 0,
+            "total_tokens": 33,
+        }
+        assert result["output"][0]["type"] == "compaction"
+
+    @pytest.mark.asyncio
+    async def test_responses_http_stream_reuses_compact_window_without_previous_response_id(self, tmp_path):
+        from llm.client import LLMClient
+
+        compact_payload_path = tmp_path / "providercmp_cmp_123.json"
+        compact_payload_path.write_text(
+            """
+            {
+              "id": "providercmp_cmp_123",
+              "kind": "provider_native_response_compaction",
+              "output": [
+                {"type": "compaction", "id": "cmp_123", "summary": "Older context."},
+                {"role": "assistant", "content": "Compacted answer."}
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Fresh",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_after_compact",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=12, output_tokens=2, total_tokens=14),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Old question"},
+                {"role": "assistant", "content": "Old answer"},
+                {"role": "user", "content": "New question"},
+            ],
+            provider_session={
+                "previous_response_id": "resp_before_compact",
+                "last_response_id": "resp_before_compact",
+                "compact_checkpoint_id": "providercmp_cmp_123",
+                "provider_compaction": {
+                    "id": "providercmp_cmp_123",
+                    "kind": "provider_native_response_compaction",
+                    "path": str(compact_payload_path),
+                    "ready_for_next_request": True,
+                },
+            },
+        ):
+            events.append(event)
+
+        call_kwargs = client.client.responses.create.call_args.kwargs
+        assert "previous_response_id" not in call_kwargs
+        assert call_kwargs["input"] == [
+            {"type": "compaction", "id": "cmp_123", "summary": "Older context."},
+            {"role": "assistant", "content": "Compacted answer."},
+            {"role": "user", "content": "New question"},
+        ]
+        request_sent = next(event for event in events if event["type"] == "request_sent")
+        provider_request = request_sent["provider_request"]
+        assert provider_request["compact_window_reused"] is True
+        assert provider_request["compact_checkpoint_id"] == "providercmp_cmp_123"
+        assert provider_request["compacted_input_item_count"] == 2
+        assert provider_request["sent_delta_item_count"] == 1
+        done = next(event for event in events if event["type"] == "done")
+        assert done["response_id"] == "resp_after_compact"
+        assert done["full_content"] == "Fresh"
+
+    @pytest.mark.asyncio
+    async def test_responses_http_compact_window_can_continue_with_tool_output(self, tmp_path):
+        from llm.client import LLMClient
+
+        compact_payload_path = tmp_path / "providercmp_cmp_tool.json"
+        compact_payload_path.write_text(
+            """
+            {
+              "id": "providercmp_cmp_tool",
+              "kind": "provider_native_response_compaction",
+              "output": [
+                {"type": "compaction", "id": "cmp_tool", "summary": "Older context."},
+                {
+                  "type": "function_call",
+                  "call_id": "call_search",
+                  "name": "web_search",
+                  "arguments": "{\\"query\\":\\"catown\\"}",
+                  "status": "completed"
+                }
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Tool output accepted",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_after_tool",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=16, output_tokens=3, total_tokens=19),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Run a search"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": '{"query":"catown"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_search",
+                    "name": "web_search",
+                    "content": "Search result summary",
+                },
+            ],
+            provider_session={
+                "previous_response_id": "resp_before_compact",
+                "last_response_id": "resp_before_compact",
+                "compact_checkpoint_id": "providercmp_cmp_tool",
+                "provider_compaction": {
+                    "id": "providercmp_cmp_tool",
+                    "kind": "provider_native_response_compaction",
+                    "path": str(compact_payload_path),
+                    "ready_for_next_request": True,
+                },
+            },
+        ):
+            events.append(event)
+
+        call_kwargs = client.client.responses.create.call_args.kwargs
+        assert "previous_response_id" not in call_kwargs
+        assert call_kwargs["input"] == [
+            {"type": "compaction", "id": "cmp_tool", "summary": "Older context."},
+            {
+                "type": "function_call",
+                "call_id": "call_search",
+                "name": "web_search",
+                "arguments": '{"query":"catown"}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_search",
+                "output": "Search result summary",
+            },
+        ]
+        request_sent = next(event for event in events if event["type"] == "request_sent")
+        provider_request = request_sent["provider_request"]
+        assert provider_request["compact_window_reused"] is True
+        assert provider_request["sent_delta_item_count"] == 1
+        assert next(event for event in events if event["type"] == "done")["response_id"] == "resp_after_tool"
+
+    @pytest.mark.asyncio
+    async def test_responses_http_compact_window_retry_keeps_canonical_input(self, tmp_path):
+        from llm.client import LLMClient
+
+        compact_payload_path = tmp_path / "providercmp_cmp_retry.json"
+        compact_payload_path.write_text(
+            """
+            {
+              "id": "providercmp_cmp_retry",
+              "kind": "provider_native_response_compaction",
+              "output": [
+                {"type": "compaction", "id": "cmp_retry", "summary": "Older context."},
+                {"role": "assistant", "content": "Compacted answer."}
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+        request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+        attempts = []
+
+        async def success_stream():
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Recovered",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_after_retry",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=13, output_tokens=2, total_tokens=15),
+                ),
+            )
+
+        async def mock_create_impl(**_kwargs):
+            attempts.append("call")
+            if len(attempts) == 1:
+                raise APITimeoutError(request=request) from httpx.ConnectTimeout("connect timeout")
+            return success_stream()
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        network_events = []
+        client._record_network_event = lambda **kwargs: network_events.append(kwargs)
+        client.client.responses.create = AsyncMock(side_effect=mock_create_impl)
+
+        with patch("llm.client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            events = []
+            async for event in client.chat_stream(
+                [
+                    {"role": "system", "content": "System rules"},
+                    {"role": "user", "content": "Old question"},
+                    {"role": "assistant", "content": "Old answer"},
+                    {"role": "user", "content": "New question"},
+                ],
+                provider_session={
+                    "previous_response_id": "resp_before_compact",
+                    "last_response_id": "resp_before_compact",
+                    "compact_checkpoint_id": "providercmp_cmp_retry",
+                    "provider_compaction": {
+                        "id": "providercmp_cmp_retry",
+                        "kind": "provider_native_response_compaction",
+                        "path": str(compact_payload_path),
+                        "ready_for_next_request": True,
+                    },
+                },
+            ):
+                events.append(event)
+
+        assert len(attempts) == 2
+        assert mock_sleep.await_count == 1
+        expected_input = [
+            {"type": "compaction", "id": "cmp_retry", "summary": "Older context."},
+            {"role": "assistant", "content": "Compacted answer."},
+            {"role": "user", "content": "New question"},
+        ]
+        for call in client.client.responses.create.call_args_list:
+            call_kwargs = call.kwargs
+            assert "previous_response_id" not in call_kwargs
+            assert call_kwargs["input"] == expected_input
+        request_sent = next(event for event in events if event["type"] == "request_sent")
+        assert request_sent["provider_request"]["compact_window_reused"] is True
+        assert network_events[0]["metadata"]["retry_phase"] == "pre_first_output"
+        done = next(event for event in events if event["type"] == "done")
+        assert done["response_id"] == "resp_after_retry"
+        assert done["full_content"] == "Recovered"
+
+    @pytest.mark.asyncio
+    async def test_responses_http_stateful_tool_round_sends_only_tool_outputs(self):
+        from llm.client import LLMClient
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.output_text.delta",
+                delta="Tool result received",
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_after_tool",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=4, total_tokens=8),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream(
+            [
+                {"role": "system", "content": "System rules"},
+                {"role": "user", "content": "Run a search"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_search",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": '{"query":"catown"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_search",
+                    "name": "web_search",
+                    "content": "Search result summary",
+                },
+            ],
+            previous_response_id="resp_tool_call",
+        ):
+            events.append(event)
+
+        call_kwargs = client.client.responses.create.call_args.kwargs
+        assert call_kwargs["previous_response_id"] == "resp_tool_call"
+        assert call_kwargs["input"] == [
+            {
+                "type": "function_call_output",
+                "call_id": "call_search",
+                "output": "Search result summary",
+            }
+        ]
+        request_sent = next(event for event in events if event["type"] == "request_sent")
+        provider_request = request_sent["provider_request"]
+        assert {
+            key: provider_request[key]
+            for key in (
+                "stateful_delta",
+                "full_input_item_count",
+                "sent_input_item_count",
+                "omitted_input_item_count",
+            )
+        } == {
+            "stateful_delta": True,
+            "full_input_item_count": 3,
+            "sent_input_item_count": 1,
+            "omitted_input_item_count": 2,
+        }
+        assert provider_request["estimated_full_input_tokens"] > provider_request["estimated_sent_input_tokens"] > 0
+        assert provider_request["estimated_omitted_input_tokens"] == (
+            provider_request["estimated_full_input_tokens"] - provider_request["estimated_sent_input_tokens"]
+        )
+        assert provider_request["estimated_instruction_tokens"] > 0
+
+    @pytest.mark.asyncio
+    async def test_responses_http_stream_maps_function_calls_and_tool_schema(self):
+        from llm.client import LLMClient
+
+        async def mock_stream():
+            yield SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(
+                    id="fc_1",
+                    type="function_call",
+                    call_id="call_search",
+                    name="web_search",
+                    arguments="",
+                ),
+            )
+            yield SimpleNamespace(
+                type="response.function_call_arguments.delta",
+                item_id="fc_1",
+                output_index=0,
+                delta='{"query"',
+            )
+            yield SimpleNamespace(
+                type="response.function_call_arguments.done",
+                item_id="fc_1",
+                output_index=0,
+                name="web_search",
+                arguments='{"query":"test"}',
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_tool",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=7, output_tokens=5, total_tokens=12),
+                ),
+            )
+
+        client = LLMClient(
+            base_url="https://api.openai.com/v1",
+            api_key="test",
+            model="gpt-test",
+            provider_mode="responses_http",
+        )
+        client.client.responses.create = AsyncMock(return_value=mock_stream())
+
+        events = []
+        async for event in client.chat_stream(
+            [{"role": "user", "content": "search"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the web",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        ):
+            events.append(event)
+
+        call_kwargs = client.client.responses.create.call_args.kwargs
+        assert call_kwargs["tools"] == [
+            {
+                "type": "function",
+                "name": "web_search",
+                "description": "Search the web",
+                "parameters": {"type": "object"},
+                "strict": False,
+            }
+        ]
+
+        tool_delta = next(event for event in events if event["type"] == "tool_call_delta")
+        assert tool_delta["tool_call_index"] == 0
+        assert tool_delta["tool_name"] == "web_search"
+        ready = next(event for event in events if event["type"] == "tool_call_ready")
+        assert ready["tool_calls"][0]["id"] == "call_search"
+        assert ready["tool_calls"][0]["function"]["arguments"] == '{"query":"test"}'
+        done = next(event for event in events if event["type"] == "done")
+        assert done["finish_reason"] == "tool_calls"
+        assert done["tool_calls"][0]["function"]["name"] == "web_search"
 
     @pytest.mark.asyncio
     async def test_stream_error(self):

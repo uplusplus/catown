@@ -26,7 +26,8 @@ import type {
   MonitorOverview,
   MonitorOverviewActivity,
   MonitorOverviewSummary,
-  MonitorContextCompactionsResponse,
+  MonitorContextBudgetEventsResponse,
+  MonitorContextOptimizationEvaluationResponse,
   MonitorUsageResponse,
   MultimodalConfigPayload,
   OrchestrationConfigPayload,
@@ -43,6 +44,7 @@ import type {
   SkillMarketplaceUpdateResponse,
   ProjectSummary,
   TaskActivityProjection,
+  TaskRunCompactionResponse,
   TaskRunDetail,
   TaskRunResumeResponse,
   TaskRunSummary,
@@ -375,6 +377,12 @@ export const api = {
       method: "POST",
     });
   },
+  compactTaskRun(taskRunId: number, payload?: { reason?: string; agent_name?: string }) {
+    return request<TaskRunCompactionResponse>(`/api/task-runs/${taskRunId}/compact`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
   cancelTaskRun(taskRunId: number, payload?: { note?: string; cancelled_by?: string }) {
     return request<Record<string, unknown>>(`/api/task-runs/${taskRunId}/cancel`, {
       method: "POST",
@@ -518,10 +526,13 @@ export const api = {
     return request<MonitorOverviewSummary>("/api/monitor/overview?range=24h");
   },
   getMonitorOverviewActivity() {
-    return request<MonitorOverviewActivity>("/api/monitor/overview/activity?runtime_limit=80&summary_window=96&message_limit=40&compaction_limit=16");
+    return request<MonitorOverviewActivity>("/api/monitor/overview/activity?runtime_limit=80&summary_window=96&message_limit=40&context_budget_limit=16");
   },
-  getMonitorContextCompactions(limit = 120) {
-    return request<MonitorContextCompactionsResponse>(`/api/monitor/context-compactions?limit=${limit}`);
+  getMonitorContextBudgetEvents(limit = 120) {
+    return request<MonitorContextBudgetEventsResponse>(`/api/monitor/context-budget-events?limit=${limit}`);
+  },
+  getMonitorContextOptimizationEvaluation(limit = 120) {
+    return request<MonitorContextOptimizationEvaluationResponse>(`/api/monitor/context-optimization-evaluation?limit=${limit}`);
   },
   getMonitorLogs(limit = 250) {
     return request<MonitorLogsResponse>(`/api/monitor/logs?limit=${limit}`);
@@ -656,7 +667,7 @@ export const api = {
     });
   },
   testConfig(agentName = DEFAULT_AGENT_TYPE) {
-    return request<{ status: string; agent: string; model: string; baseUrl: string }>(
+    return request<{ status: string; agent: string; model: string; baseUrl: string; provider_mode?: string; response_id?: string | null }>(
       `/api/config/test?agent_name=${encodeURIComponent(agentName)}`,
       {
         method: "POST",

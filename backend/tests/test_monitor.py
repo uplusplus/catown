@@ -118,11 +118,11 @@ class TestMonitorOverview:
         assert "tasks" in data
         assert "llm" in data
         assert "approvals" in data
-        assert "compactions" in data
+        assert "context_budget" in data
         assert "projections" in data["system"]
         assert "recent_runtime" not in data
         assert "recent_messages" not in data
-        assert "recent_compactions" not in data
+        assert "recent_context_budget_events" not in data
 
     def test_overview_activity_returns_base_shape(self, client):
         response = client.get("/api/monitor/overview/activity")
@@ -130,7 +130,7 @@ class TestMonitorOverview:
         data = response.json()
         assert "recent_runtime" in data
         assert "recent_messages" in data
-        assert "recent_compactions" in data
+        assert "recent_context_budget_events" in data
 
     def test_overview_includes_collaboration_summary(self, client):
         from agents.collaboration import CollaborationTask, TaskStatus, collaboration_coordinator
@@ -201,8 +201,32 @@ class TestMonitorOverview:
                     "tokens_in": 120,
                     "tokens_out": 48,
                     "duration_ms": 640,
+                    "timings": {
+                        "request_sent_ms": 4,
+                        "first_chunk_ms": 50,
+                        "first_content_ms": 75,
+                        "completed_ms": 640,
+                    },
                     "response": "Generated answer",
                     "raw_response": json.dumps({"id": "resp_123", "content": "Generated answer"}),
+                    "provider_mode": "responses_http",
+                    "provider_session": {
+                        "id": 7,
+                        "provider_mode": "responses_http",
+                        "previous_response_id": "resp_122",
+                        "last_response_id": "resp_123",
+                        "state_reused": True,
+                    },
+                    "provider_request": {
+                        "stateful_delta": True,
+                        "full_input_item_count": 4,
+                        "sent_input_item_count": 1,
+                        "omitted_input_item_count": 3,
+                        "estimated_full_input_tokens": 148,
+                        "estimated_sent_input_tokens": 32,
+                        "estimated_omitted_input_tokens": 116,
+                        "estimated_instruction_tokens": 9,
+                    },
                 }
             }
             tool_card = {
@@ -262,6 +286,24 @@ class TestMonitorOverview:
         assert data["usage_window"]["tool_errors"] >= 1
         assert data["usage_window"]["input_tokens"] >= 120
         assert data["usage_window"]["output_tokens"] >= 48
+        assert data["usage_window"]["provider_modes"][0] == {
+            "mode": "responses_http",
+            "calls": 1,
+            "state_reused": 1,
+            "with_response_id": 1,
+            "stateful_delta_calls": 1,
+            "sent_input_items": 1,
+            "omitted_input_items": 3,
+            "sent_input_tokens": 32,
+            "omitted_input_tokens": 116,
+            "instruction_tokens": 9,
+            "reported_input_tokens": 120,
+            "reported_output_tokens": 48,
+            "reported_total_tokens": 168,
+            "avg_first_chunk_ms": 50.0,
+            "avg_first_content_ms": 75.0,
+            "avg_completed_ms": 640.0,
+        }
         assert any(item["type"] == "llm_call" for item in activity["recent_runtime"])
         assert any(item["tool_name"] == "read_file" for item in activity["recent_runtime"])
         assert any(item["tool_name"] == "read_file" for item in data["usage_window"]["top_tools"])
@@ -278,6 +320,10 @@ class TestMonitorOverview:
         assert llm_runtime["brain_events"][0]["phase"] == "outbound"
         assert llm_runtime["turn"] == 1
         assert llm_runtime["client_turn_id"] == "turn-monitor-1"
+        assert llm_runtime["provider_mode"] == "responses_http"
+        assert llm_runtime["provider_session"]["previous_response_id"] == "resp_122"
+        assert llm_runtime["provider_request"]["omitted_input_item_count"] == 3
+        assert llm_runtime["provider_request"]["estimated_omitted_input_tokens"] == 116
         assert "Summarize the latest monitor status." in llm_runtime["prompt_preview"]
         assert "Generated answer" in llm_runtime["response_preview"]
 
@@ -511,6 +557,146 @@ class TestMonitorOverview:
         assert data["diagnostics"]["projection_health"]["status"] == "lagging"
         assert data["diagnostics"]["projection_health"]["missing"] >= 1
 
+    def test_files_endpoint_counts_all_matching_rows_before_limit(self, client):
+        from models.database import Chatroom, Message, Project, SessionLocal
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Files Count Project", status="active", workspace_path="/tmp/catown-files-count")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Files Count Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            for index in range(25):
+                db.add(
+                    Message(
+                        chatroom_id=chatroom.id,
+                        agent_id=None,
+                        content="tool_call",
+                        message_type="runtime_card",
+                        metadata_json=json.dumps(
+                            {
+                                "client_turn_id": f"turn-files-count-{index}",
+                                "card": {
+                                    "type": "tool_call",
+                                    "agent": "Developer",
+                                    "tool": "write_file",
+                                    "arguments": json.dumps({"file_path": f"src/file-{index}.py", "content": "print('ok')"}),
+                                    "success": True,
+                                    "status": "completed",
+                                    "result": f"[Write File] Wrote to 'src/file-{index}.py' successfully",
+                                    "duration_ms": 42,
+                                    "turn": 2,
+                                },
+                            }
+                        ),
+                    )
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/api/monitor/files?tool=write_file&limit=20&query=src/file-")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["total"] == 25
+        assert data["counts"]["writes"] == 25
+        assert data["counts"]["unique_paths"] == 25
+        assert len(data["entries"]) == 20
+        assert data["by_agent"] == [{"agent": "Developer", "count": 25}]
+
+    def test_files_endpoint_records_list_files_from_tool_registry_execution(self, client, tmp_path):
+        import asyncio
+        import services.stream_runtime_persistence as persistence_mod
+
+        from models.database import Chatroom, Project, SessionLocal
+        from tools import tool_registry
+        from tools.file_operations import reset_active_workspace, set_active_workspace
+
+        workspace = tmp_path / "list-files-workspace"
+        workspace.mkdir()
+        (workspace / "alpha.txt").write_text("alpha", encoding="utf-8")
+        (workspace / "beta.py").write_text("print('ok')", encoding="utf-8")
+
+        db = SessionLocal()
+        try:
+            project = Project(
+                name="List Files Project",
+                status="active",
+                workspace_path=str(workspace),
+            )
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="List Files Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+            project_id = project.id
+            chatroom_id = chatroom.id
+        finally:
+            db.close()
+
+        token = set_active_workspace(str(workspace))
+        try:
+            original_publish = persistence_mod.publish_runtime_card_event
+            persistence_mod.publish_runtime_card_event = AsyncMock()
+            try:
+                result = asyncio.run(
+                    tool_registry.execute(
+                        "list_files",
+                        directory=".",
+                        pattern="*.py",
+                        project_id=project_id,
+                        chatroom_id=chatroom_id,
+                        agent_name="Developer",
+                        client_turn_id="turn-list-files-registry",
+                        task_run_id=77,
+                        tool_call_id="call_list_files_registry",
+                        turn=3,
+                    )
+                )
+            finally:
+                persistence_mod.publish_runtime_card_event = original_publish
+        finally:
+            reset_active_workspace(token)
+
+        assert result["success"] is True
+
+        response = client.get("/api/monitor/files?tool=list_files&query=beta.py")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["total"] == 1
+        assert data["counts"]["lists"] == 1
+        assert data["counts"]["unique_paths"] == 1
+        assert data["by_tool"] == [{"tool_name": "list_files", "count": 1}]
+        assert data["by_agent"] == [{"agent": "Developer", "count": 1}]
+        entry = data["entries"][0]
+        assert entry["tool_name"] == "list_files"
+        assert entry["action"] == "list"
+        assert entry["file_path"] == "./*.py"
+        assert entry["project_name"] == "List Files Project"
+        assert entry["client_turn_id"] == "turn-list-files-registry"
+        assert entry["arguments"]["directory"] == "."
+        assert entry["arguments"]["pattern"] == "*.py"
+        assert data["diagnostics"]["projection_health"]["missing"] == 0
+
     def test_overview_marks_projection_lag_as_degraded(self, client):
         import models.database as db_mod
         from models.database import Chatroom, Project, SessionLocal
@@ -558,19 +744,19 @@ class TestMonitorOverview:
         assert data["system"]["stats"]["runtime_card_projection_missing"] >= 1
         assert data["system"]["projections"]["status"] == "lagging"
 
-    def test_overview_returns_recent_context_compactions(self, client):
+    def test_overview_returns_recent_context_budget_events(self, client):
         from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
 
         db = SessionLocal()
         try:
-            project = Project(name="Compaction Project", status="active")
+            project = Project(name="Context Budget Project", status="active")
             db.add(project)
             db.commit()
             db.refresh(project)
 
             chatroom = Chatroom(
                 project_id=project.id,
-                title="Compaction Chat",
+                title="Context Budget Chat",
                 session_type="project-bound",
                 is_visible_in_chat_list=True,
             )
@@ -583,7 +769,7 @@ class TestMonitorOverview:
                 project_id=project.id,
                 run_kind="chat_turn",
                 status="running",
-                title="Compaction run",
+                title="Context budget run",
                 user_request="Large context request",
                 initiator="user",
                 target_agent_name="analyst",
@@ -596,19 +782,59 @@ class TestMonitorOverview:
                 TaskRunEvent(
                     task_run_id=task_run.id,
                     event_index=1,
-                    event_type="context_compaction",
+                    event_type="context_budget_event",
                     agent_name="analyst",
-                    summary="analyst compacted context (dropped=2, truncated=1).",
+                    summary="analyst adjusted context budget (dropped=2, truncated=1).",
                     payload_json=json.dumps(
                         {
-                            "compacted": True,
                             "selector_diagnostics": {
-                                "compacted": True,
+                                "selection_changed": True,
+                                "semantic_compaction": False,
+                                "event_kind": "selection_truncation",
                                 "selector": {
                                     "max_fragments": 12,
                                     "max_tokens": 3200,
                                     "max_tokens_by_role": {"developer": 1200, "user": 2000},
                                     "max_tokens_by_scope": {"run": 1800, "turn": 400},
+                                },
+                                "prompt": {
+                                    "total": {
+                                        "tokens": 5000,
+                                    },
+                                    "tool_output_budget": {
+                                        "summarized_message_count": 1,
+                                        "estimated_original_tokens": 4000,
+                                        "prompt_visible_tokens": 1600,
+                                        "estimated_saved_tokens": 2400,
+                                        "estimated_savings_pct": 75.0,
+                                        "by_tool": {
+                                            "run_shell": {
+                                                "message_count": 1,
+                                                "summarized_message_count": 1,
+                                                "estimated_saved_tokens": 2400,
+                                            }
+                                        },
+                                    },
+                                    "tool_schema_budget": {
+                                        "tokens": 320,
+                                        "tool_count": 2,
+                                        "original_tokens": 500,
+                                        "original_tool_count": 3,
+                                        "estimated_saved_tokens": 180,
+                                        "estimated_savings_pct": 36.0,
+                                        "filter": {
+                                            "profile_name": "code_debug",
+                                            "mode": "chat_turn",
+                                            "activated_groups": ["file_editing"],
+                                        },
+                                        "by_tool": [
+                                            {"tool_name": "run_shell", "tokens": 220, "bytes": 880},
+                                            {"tool_name": "read_file", "tokens": 100, "bytes": 400},
+                                        ],
+                                        "excluded_by_tool": [
+                                            {"tool_name": "browser", "tokens": 180, "bytes": 720},
+                                        ],
+                                    },
                                 },
                                 "summary": {
                                     "candidate_count": 9,
@@ -647,26 +873,165 @@ class TestMonitorOverview:
         response = client.get("/api/monitor/overview")
         assert response.status_code == 200
         data = response.json()
-        assert data["system"]["stats"]["context_compactions"] >= 1
+        assert data["system"]["stats"]["context_budget_events"] >= 1
         activity_response = client.get("/api/monitor/overview/activity")
         assert activity_response.status_code == 200
         activity = activity_response.json()
 
         entry = next(
             item
-            for item in activity["recent_compactions"]
-            if item["summary"] == "analyst compacted context (dropped=2, truncated=1)."
+            for item in activity["recent_context_budget_events"]
+            if item["summary"] == "analyst adjusted context budget (dropped=2, truncated=1)."
         )
-        assert entry["chat_title"] == "Compaction Chat"
-        assert entry["project_name"] == "Compaction Project"
+        assert entry["chat_title"] == "Context Budget Chat"
+        assert entry["project_name"] == "Context Budget Project"
         assert entry["dropped_count"] == 2
         assert entry["truncated_count"] == 1
+        assert entry["event_kind"] == "selection_truncation"
+        assert entry["selection_changed"] is True
+        assert entry["semantic_compaction"] is False
         assert entry["max_tokens"] == 3200
         assert entry["max_tokens_by_role"] == {"developer": 1200, "user": 2000}
         assert entry["max_tokens_by_scope"] == {"run": 1800, "turn": 400}
         assert entry["scope_usage"]["run"]["selected_tokens"] == 1400
+        assert entry["tool_output_budget"]["estimated_saved_tokens"] == 2400
+        assert entry["tool_output_budget"]["by_tool"]["run_shell"]["estimated_saved_tokens"] == 2400
+        assert entry["tool_schema_budget"]["tokens"] == 320
+        assert entry["tool_schema_budget"]["estimated_saved_tokens"] == 180
+        assert entry["tool_schema_budget"]["by_tool"][0]["tool_name"] == "run_shell"
+        assert entry["tool_schema_budget"]["excluded_by_tool"][0]["tool_name"] == "browser"
+        assert data["context_budget"]["tool_output_by_tool"][0] == {
+            "tool_name": "run_shell",
+            "message_count": 1,
+            "summarized_message_count": 1,
+            "estimated_saved_tokens": 2400,
+        }
+        assert data["context_budget"]["tool_schema_tokens"] >= 320
+        assert data["context_budget"]["tool_schema_saved_tokens"] >= 180
+        assert data["context_budget"]["tool_schema_by_tool"][0]["tool_name"] == "run_shell"
+        assert data["context_budget"]["tool_schema_excluded_by_tool"][0]["tool_name"] == "browser"
+        assert data["context_budget"]["trend"][-1]["tool_output_saved_tokens"] >= 2400
+        assert data["context_budget"]["trend"][-1]["tool_schema_saved_tokens"] >= 180
+        assert data["context_budget"]["tool_schema_recommendations"][0] == {
+            "kind": "frequently_filtered",
+            "agent_name": "analyst",
+            "profile_name": "code_debug",
+            "mode": "chat_turn",
+            "tool_name": "browser",
+            "event_count": 1,
+            "tokens": 180,
+        }
         assert "roles developer 1200 / user 2000" in entry["budget_summary"]
         assert "run 2/3 fragments, 1400/2200 tokens" in entry["scope_usage_summary"]
+
+        evaluation_response = client.get("/api/monitor/context-optimization-evaluation")
+        assert evaluation_response.status_code == 200
+        evaluation = evaluation_response.json()
+        assert evaluation["counts"]["total"] >= 1
+        assert evaluation["counts"]["returned"] >= 1
+        assert evaluation["evaluation"]["overall_status"] == "needs_data"
+        assert evaluation["evaluation"]["observation"]["tool_heavy_event_count"] >= 1
+        assert evaluation["evaluation"]["metrics"]["false_early_semantic_compactions"]["value"] == 0
+        assert evaluation["evaluation"]["metrics"]["inline_tool_output_token_reduction_ratio"]["value"] == 0.6
+        assert evaluation["evaluation"]["metrics"]["average_input_token_reduction_ratio"]["value"] > 0.3
+
+    def test_compaction_checkpoints_endpoint_returns_provider_lineage(self, client):
+        from models.database import Chatroom, Project, SessionLocal, TaskRun, TaskRunEvent
+
+        db = SessionLocal()
+        try:
+            project = Project(name="Compaction Project", status="active")
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+
+            chatroom = Chatroom(
+                project_id=project.id,
+                title="Compaction Chat",
+                session_type="project-bound",
+                is_visible_in_chat_list=True,
+            )
+            db.add(chatroom)
+            db.commit()
+            db.refresh(chatroom)
+
+            task_run = TaskRun(
+                chatroom_id=chatroom.id,
+                project_id=project.id,
+                run_kind="chat_turn",
+                status="running",
+                title="Compaction run",
+                user_request="Inspect compaction lineage",
+                initiator="user",
+                target_agent_name="developer",
+            )
+            db.add(task_run)
+            db.commit()
+            db.refresh(task_run)
+
+            db.add(
+                TaskRunEvent(
+                    task_run_id=task_run.id,
+                    event_index=1,
+                    event_type="context_compaction",
+                    agent_name="developer",
+                    summary="developer created local compaction checkpoint localcmp_test (model_window_pressure).",
+                    payload_json=json.dumps(
+                        {
+                            "event_kind": "semantic_compaction",
+                            "semantic_compaction": True,
+                            "context_pressure_kind": "model_window_pressure",
+                            "selector_diagnostics": {
+                                "selection_changed": False,
+                                "semantic_compaction": True,
+                                "event_kind": "semantic_compaction",
+                                "context_pressure_kind": "model_window_pressure",
+                                "summary": {"dropped_count": 0, "truncated_count": 0},
+                            },
+                            "provider_session": {
+                                "id": 9,
+                                "provider_mode": "responses_http",
+                                "compact_checkpoint_id": "localcmp_test",
+                            },
+                            "provider_compaction": {
+                                "id": "localcmp_test",
+                                "kind": "local_structured_summary",
+                                "trigger_reason": "model_window_pressure",
+                                "path": "state/provider_compaction/localcmp_test.json",
+                                "summary": "Resume with compact state.",
+                                "sections": {
+                                    "current_objective": "Continue the task.",
+                                    "pending_steps": "Run validation.",
+                                },
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        overview_response = client.get("/api/monitor/overview")
+        assert overview_response.status_code == 200
+        assert overview_response.json()["system"]["stats"]["semantic_compactions"] >= 1
+
+        response = client.get("/api/monitor/compaction-checkpoints")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["counts"]["local_structured_summary"] >= 1
+        entry = next(item for item in data["entries"] if item["compact_checkpoint_id"] == "localcmp_test")
+        assert entry["chat_title"] == "Compaction Chat"
+        assert entry["project_name"] == "Compaction Project"
+        assert entry["semantic_compaction"] is True
+        assert entry["event_kind"] == "semantic_compaction"
+        assert entry["context_pressure_kind"] == "model_window_pressure"
+        assert entry["compaction_kind"] == "local_structured_summary"
+        assert entry["trigger_reason"] == "model_window_pressure"
+        assert entry["checkpoint_path"] == "state/provider_compaction/localcmp_test.json"
+        assert entry["provider_session"]["provider_mode"] == "responses_http"
+        assert entry["sections"]["pending_steps"] == "Run validation."
 
     def test_monitor_task_runs_returns_global_run_history(self, client):
         from models.database import Chatroom, Message, Project, SessionLocal, TaskRun, TaskRunEvent
@@ -2101,6 +2466,106 @@ class TestMonitorOverview:
                     "preview": f"internal {index}",
                 }
             )
+
+        response = client.get("/api/monitor/network?limit=20")
+        assert response.status_code == 200
+        payload = response.json()
+        urls = [entry["url"] for entry in payload["entries"]]
+        assert "https://example.com/v1/chat/completions" in urls
+        assert all(entry["category"] != "frontend_backend" for entry in payload["entries"])
+
+    def test_network_internal_traffic_is_memory_only(self, client):
+        from models.audit import MonitorNetworkRecord
+        from models.database import NetworkAuditSessionLocal
+        from monitoring import monitor_network_buffer
+
+        monitor_network_buffer.clear()
+        internal_event = monitor_network_buffer.append(
+            {
+                "category": "frontend_backend",
+                "source": "backend",
+                "protocol": "HTTP/1.1",
+                "from_entity": "Frontend (monitor)",
+                "to_entity": "Backend API",
+                "method": "GET",
+                "url": "http://localhost:8000/api/frontend-meta",
+                "host": "localhost",
+                "path": "/api/frontend-meta",
+                "status_code": 200,
+                "success": True,
+                "preview": "GET /api/frontend-meta",
+                "client_source": "monitor",
+            }
+        )
+
+        db = NetworkAuditSessionLocal()
+        try:
+            persisted = db.query(MonitorNetworkRecord).filter(MonitorNetworkRecord.path == "/api/frontend-meta").count()
+        finally:
+            db.close()
+
+        assert persisted == 0
+        hidden = client.get("/api/monitor/network?limit=20")
+        assert hidden.status_code == 200
+        assert hidden.json()["entries"] == []
+
+        visible = client.get("/api/monitor/network?limit=20&include_internal=true")
+        assert visible.status_code == 200
+        assert any(entry["id"] == internal_event["id"] and entry["path"] == "/api/frontend-meta" for entry in visible.json()["entries"])
+
+    def test_network_api_limits_visible_rows_after_sql_filtering(self, client):
+        from models.audit import MonitorNetworkRecord
+        from models.database import NetworkAuditSessionLocal
+
+        db = NetworkAuditSessionLocal()
+        try:
+            db.add(
+                MonitorNetworkRecord(
+                    category="backend_llm",
+                    source="backend",
+                    protocol="HTTPS",
+                    from_entity="developer",
+                    to_entity="LLM (example.com)",
+                    method="POST",
+                    url="https://example.com/v1/chat/completions",
+                    host="example.com",
+                    path="/v1/chat/completions",
+                    status_code=200,
+                    success=True,
+                    preview="visible llm",
+                    metadata_json=json.dumps(
+                        {
+                            "flow_id": "llm-http-visible",
+                            "flow_kind": "llm_http",
+                            "flow_seq": 1,
+                            "aggregated": False,
+                            "frame_type": "response_chunk",
+                        }
+                    ),
+                )
+            )
+            for index in range(2200):
+                db.add(
+                    MonitorNetworkRecord(
+                        category="frontend_backend",
+                        source="backend",
+                        protocol="HTTP/1.1",
+                        from_entity="Frontend (home)",
+                        to_entity="Backend API",
+                        method="GET",
+                        url=f"http://localhost:8000/api/frontend-meta?i={index}",
+                        host="localhost",
+                        path="/api/frontend-meta",
+                        status_code=200,
+                        success=True,
+                        preview=f"internal {index}",
+                        client_source="home",
+                        metadata_json=json.dumps({"aggregated": True}),
+                    )
+                )
+            db.commit()
+        finally:
+            db.close()
 
         response = client.get("/api/monitor/network?limit=20")
         assert response.status_code == 200

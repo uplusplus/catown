@@ -14,7 +14,9 @@ import type {
   PermissionsConfigPayload,
   PermissionRememberMatcher,
   PermissionRememberScope,
+  ProviderMode,
   SkillMarketplace,
+  ToolCapabilityProfileConfig,
   ToolAuthorizationRule,
   UiConfigPayload,
 } from "../types";
@@ -28,6 +30,7 @@ type ConfigTabProps = {
   onSaveGlobal: (payload: {
     provider: { baseUrl: string; apiKey: string; models: Array<{ id: string; name: string; contextWindow?: number }> };
     default_model: string;
+    runtime?: { provider_mode?: ProviderMode };
   }) => Promise<void>;
   onSaveAgent: (
     agentName: string,
@@ -39,6 +42,7 @@ type ConfigTabProps = {
         responsibilities?: string[];
         rules?: string[];
       };
+      runtime?: { provider_mode?: ProviderMode };
       soul?: {
         identity?: string;
         values?: string[];
@@ -65,6 +69,7 @@ type GlobalDraft = {
   apiKey: string;
   model: string;
   contextWindow: string;
+  providerMode: ProviderMode;
 };
 
 type OrchestrationDraft = {
@@ -80,9 +85,11 @@ type PermissionsDraft = {
 
 type ContextDraft = {
   selectorProfilesJson: string;
+  toolCapabilityProfilesJson: string;
 };
 
 type SelectorProfilesDraft = Record<string, ContextSelectorProfileConfig>;
+type ToolCapabilityProfilesDraft = Record<string, ToolCapabilityProfileConfig>;
 
 type UiDraft = {
   expandCurrentStepByDefault: boolean;
@@ -97,6 +104,7 @@ type AgentDraft = {
   apiKey: string;
   model: string;
   contextWindow: string;
+  providerMode: ProviderMode;
   roleTitle: string;
   responsibilities: string;
   rules: string;
@@ -123,9 +131,25 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   query_agent: "consult_agent",
 };
 
+const PROVIDER_MODE_OPTIONS: Array<{ value: ProviderMode; label: string; disabled?: boolean }> = [
+  { value: "chat_completions", label: "Chat Completions" },
+  { value: "responses_http", label: "Responses HTTP" },
+  { value: "responses_websocket", label: "Responses WebSocket" },
+];
+
 function canonicalToolName(toolName: string): string {
   const normalized = toolName.trim();
   return TOOL_NAME_ALIASES[normalized] ?? normalized;
+}
+
+function normalizeProviderMode(value: string | undefined | null): ProviderMode {
+  if (value === "responses_http" || value === "responses_websocket") return value;
+  return "chat_completions";
+}
+
+function providerModeLabel(value: string | undefined | null) {
+  const mode = normalizeProviderMode(value);
+  return PROVIDER_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? mode;
 }
 
 function canonicalToolNames(toolNames: string[]): string[] {
@@ -144,6 +168,7 @@ function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
       typeof modelConfig?.contextWindow === "number" && Number.isFinite(modelConfig.contextWindow) && modelConfig.contextWindow > 0
         ? String(Math.trunc(modelConfig.contextWindow))
         : "",
+    providerMode: normalizeProviderMode(config?.global_llm?.runtime?.provider_mode),
   };
 }
 
@@ -165,6 +190,7 @@ function buildPermissionsDraft(config: ConfigResponse | null): PermissionsDraft 
 function buildContextDraft(config: ConfigResponse | null): ContextDraft {
   return {
     selectorProfilesJson: JSON.stringify(config?.context?.selector_profiles ?? {}, null, 2),
+    toolCapabilityProfilesJson: JSON.stringify(config?.context?.tool_capability_profiles ?? {}, null, 2),
   };
 }
 
@@ -200,6 +226,7 @@ function buildAgentDraft(
       typeof providerModel?.contextWindow === "number" && Number.isFinite(providerModel.contextWindow) && providerModel.contextWindow > 0
         ? String(Math.trunc(providerModel.contextWindow))
         : "",
+    providerMode: normalizeProviderMode(agentConfig?.runtime?.provider_mode ?? effective?.provider_mode),
     roleTitle: agentConfig?.role?.title ?? "",
     responsibilities: (agentConfig?.role?.responsibilities ?? []).join("\n"),
     rules: (agentConfig?.role?.rules ?? []).join("\n"),
@@ -279,6 +306,14 @@ function parseSelectorProfilesJson(value: string): SelectorProfilesDraft {
     throw new Error("Selector profiles must be a JSON object.");
   }
   return parsed as SelectorProfilesDraft;
+}
+
+function parseToolCapabilityProfilesJson(value: string): ToolCapabilityProfilesDraft {
+  const parsed = JSON.parse(value || "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Tool capability profiles must be a JSON object.");
+  }
+  return parsed as ToolCapabilityProfilesDraft;
 }
 
 function previewText(value: string | undefined | null, fallback = "Not configured") {
@@ -635,6 +670,7 @@ function AgentGalleryCard({
   agentType,
   sourceLabel,
   modelLabel,
+  providerModeLabel,
   contextWindowLabel,
   roleTitle,
   identity,
@@ -651,6 +687,7 @@ function AgentGalleryCard({
   agentType: string;
   sourceLabel: string;
   modelLabel: string;
+  providerModeLabel: string;
   contextWindowLabel: string;
   roleTitle: string;
   identity: string;
@@ -682,6 +719,10 @@ function AgentGalleryCard({
         <div className="config-agent-overview__meta-item">
           <span>Source</span>
           <strong>{sourceLabel}</strong>
+        </div>
+        <div className="config-agent-overview__meta-item">
+          <span>Provider</span>
+          <strong>{providerModeLabel}</strong>
         </div>
         <div className="config-agent-overview__meta-item">
           <span>Role</span>
@@ -763,6 +804,7 @@ export function ConfigTab({
   const [globalApiKey, setGlobalApiKey] = useState("");
   const [globalModel, setGlobalModel] = useState("");
   const [globalContextWindow, setGlobalContextWindow] = useState("");
+  const [globalProviderMode, setGlobalProviderMode] = useState<ProviderMode>("chat_completions");
   const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
   const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
   const [contextDraft, setContextDraft] = useState<ContextDraft>(() => buildContextDraft(config));
@@ -872,6 +914,7 @@ export function ConfigTab({
     setGlobalApiKey(draft.apiKey);
     setGlobalModel(draft.model);
     setGlobalContextWindow(draft.contextWindow);
+    setGlobalProviderMode(draft.providerMode);
   }, [config]);
 
   useEffect(() => {
@@ -972,6 +1015,7 @@ export function ConfigTab({
     setGlobalApiKey(draft.apiKey);
     setGlobalModel(draft.model);
     setGlobalContextWindow(draft.contextWindow);
+    setGlobalProviderMode(draft.providerMode);
   }
 
   function startEditingGlobal() {
@@ -997,6 +1041,9 @@ export function ConfigTab({
         }],
       },
       default_model: globalModel.trim(),
+      runtime: {
+        provider_mode: globalProviderMode,
+      },
     };
 
     await onSaveGlobal(payload);
@@ -1045,7 +1092,7 @@ export function ConfigTab({
   }
 
   function updateContextProfiles(nextProfiles: SelectorProfilesDraft) {
-    setContextDraft({ selectorProfilesJson: JSON.stringify(nextProfiles, null, 2) });
+    setContextDraft((current) => ({ ...current, selectorProfilesJson: JSON.stringify(nextProfiles, null, 2) }));
     setContextDraftError("");
   }
 
@@ -1063,12 +1110,16 @@ export function ConfigTab({
   async function handleContextSubmit(event: FormEvent) {
     event.preventDefault();
     try {
-      const parsed = parseSelectorProfilesJson(contextDraft.selectorProfilesJson);
-      await onSaveContext({ selector_profiles: parsed });
+      const selectorProfiles = parseSelectorProfilesJson(contextDraft.selectorProfilesJson);
+      const toolCapabilityProfiles = parseToolCapabilityProfilesJson(contextDraft.toolCapabilityProfilesJson);
+      await onSaveContext({
+        selector_profiles: selectorProfiles,
+        tool_capability_profiles: toolCapabilityProfiles,
+      });
       setContextDraftError("");
       setEditingContext(false);
     } catch (nextError) {
-      setContextDraftError(nextError instanceof Error ? nextError.message : "Invalid selector profile JSON.");
+      setContextDraftError(nextError instanceof Error ? nextError.message : "Invalid context profile JSON.");
     }
   }
 
@@ -1113,6 +1164,9 @@ export function ConfigTab({
         }],
       },
       default_model: draft.model.trim(),
+      runtime: {
+        provider_mode: draft.providerMode,
+      },
       role: {
         title: draft.roleTitle.trim(),
         responsibilities: readMultilineList(draft.responsibilities),
@@ -1138,6 +1192,7 @@ export function ConfigTab({
         models: [],
       },
       default_model: "",
+      runtime: {},
     });
     setEditingAgents((current) => ({ ...current, [agentName]: false }));
   }
@@ -1188,6 +1243,7 @@ export function ConfigTab({
     () => [
       { label: "Base URL", value: previewText(config?.global_llm?.provider?.baseUrl, "Not set") },
       { label: "Model", value: previewText(config?.global_llm?.default_model, "Not set") },
+      { label: "Provider Mode", value: providerModeLabel(config?.global_llm?.runtime?.provider_mode) },
       {
         label: "Context Window",
         value: previewContextWindow(
@@ -1259,6 +1315,10 @@ export function ConfigTab({
     () => Object.entries(config?.context?.selector_profiles ?? {}).sort(([left], [right]) => left.localeCompare(right)),
     [config?.context?.selector_profiles],
   );
+  const toolCapabilityProfileRows = useMemo(
+    () => Object.entries(config?.context?.tool_capability_profiles ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    [config?.context?.tool_capability_profiles],
+  );
   const contextDraftProfiles = useMemo(() => {
     try {
       return Object.entries(parseSelectorProfilesJson(contextDraft.selectorProfilesJson))
@@ -1272,12 +1332,13 @@ export function ConfigTab({
       const chatProfile = config?.context?.selector_profiles?.chat_interactive;
       return [
         { label: "Profiles", value: String(contextProfileRows.length) },
+        { label: "Tool profiles", value: String(toolCapabilityProfileRows.length) },
         { label: "Interactive cap", value: previewBudgetValue(chatProfile?.max_tokens_cap, chatProfile?.max_tokens_cap_ratio) },
         { label: "Fragments", value: chatProfile?.max_fragments ? String(chatProfile.max_fragments) : "Not set" },
         { label: "Truncate", value: chatProfile?.truncate_to_budget === false ? "Disabled" : "Enabled" },
       ];
     },
-    [config?.context?.selector_profiles, contextProfileRows.length],
+    [config?.context?.selector_profiles, contextProfileRows.length, toolCapabilityProfileRows.length],
   );
   const uiPreviewItems = useMemo(
     () => [
@@ -1597,7 +1658,19 @@ export function ConfigTab({
                   rows={12}
                   value={contextDraft.selectorProfilesJson}
                   onChange={(event) => {
-                    setContextDraft({ selectorProfilesJson: event.target.value });
+                    setContextDraft((current) => ({ ...current, selectorProfilesJson: event.target.value }));
+                    setContextDraftError("");
+                  }}
+                  spellCheck={false}
+                />
+              </label>
+              <label className="settings-form__field">
+                <span>Tool capability profiles JSON</span>
+                <textarea
+                  rows={12}
+                  value={contextDraft.toolCapabilityProfilesJson}
+                  onChange={(event) => {
+                    setContextDraft((current) => ({ ...current, toolCapabilityProfilesJson: event.target.value }));
                     setContextDraftError("");
                   }}
                   spellCheck={false}
@@ -1605,14 +1678,14 @@ export function ConfigTab({
               </label>
               {contextDraftError ? <p className="small-note" style={{ color: "var(--danger, #ef4444)" }}>{contextDraftError}</p> : null}
               <p className="small-note">
-                Budgets are estimated tokens. Absolute caps and ratio caps can be combined; ratios are materialized from the resolved model input window.
+                Budgets are estimated tokens. Tool capability profiles define the active schema surface before each LLM request.
               </p>
             </form>
           ) : (
             <>
               <PreviewCard
                 title="Context selector"
-                subtitle="Runtime fragment budgets used before compaction events are emitted"
+                subtitle="Runtime fragment budgets used before context budget events are emitted"
                 items={contextPreviewItems}
                 onActivate={startEditingContext}
               />
@@ -1635,6 +1708,28 @@ export function ConfigTab({
                         <td>{profile.max_fragments ?? "--"}</td>
                         <td>{previewBudgetMap(profile.max_tokens_by_role, profile.max_tokens_by_role_ratio)}</td>
                         <td>{previewBudgetMap(profile.max_tokens_by_scope, profile.max_tokens_by_scope_ratio)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="usage-table" style={{ marginTop: 18 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tool Profile</th>
+                      <th>Always Tools</th>
+                      <th>Conditional Groups</th>
+                      <th>Mode</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {toolCapabilityProfileRows.map(([profileName, profile]) => (
+                      <tr key={profileName}>
+                        <td>{profileName}</td>
+                        <td>{previewList(profile.always_tools, "--", 6)}</td>
+                        <td>{Object.keys(profile.conditional_groups ?? {}).length}</td>
+                        <td>{profile.include_all ? "Include all" : "Filtered"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2038,6 +2133,16 @@ export function ConfigTab({
                   <input value={globalContextWindow} onChange={(event) => setGlobalContextWindow(event.target.value)} inputMode="numeric" placeholder="400000" />
                 </label>
                 <label className="config-inline-field settings-form__field">
+                  <span>Provider Mode</span>
+                  <select value={globalProviderMode} onChange={(event) => setGlobalProviderMode(normalizeProviderMode(event.target.value))}>
+                    {PROVIDER_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value} disabled={option.disabled}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="config-inline-field settings-form__field">
                   <span>API Key</span>
                   <input value={globalApiKey} onChange={(event) => setGlobalApiKey(event.target.value)} type="password" placeholder="sk-..." />
                 </label>
@@ -2228,6 +2333,16 @@ export function ConfigTab({
                       <span>Context Window</span>
                       <input value={draft.contextWindow} onChange={(event) => updateAgentDraft(agentType, { contextWindow: event.target.value })} inputMode="numeric" placeholder="400000" />
                     </label>
+                    <label>
+                      <span>Provider Mode</span>
+                      <select value={draft.providerMode} onChange={(event) => updateAgentDraft(agentType, { providerMode: normalizeProviderMode(event.target.value) })}>
+                        {PROVIDER_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value} disabled={option.disabled}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <label className="config-agent-card__key">
                       <span>API Key</span>
                       <input value={draft.apiKey} onChange={(event) => updateAgentDraft(agentType, { apiKey: event.target.value })} type="password" placeholder="(inherits global)" />
@@ -2277,6 +2392,7 @@ export function ConfigTab({
                   agentType={agentType}
                   sourceLabel={effective?.source || "global"}
                   modelLabel={previewText(agentConfig.default_model || effective?.model, "Inherit global")}
+                  providerModeLabel={providerModeLabel(agentConfig.runtime?.provider_mode ?? effective?.provider_mode)}
                   contextWindowLabel={previewContextWindow(configuredContextWindow, effective?.source === "global" ? "Inherit global" : "Not set")}
                   roleTitle={previewText(agentConfig.role?.title, "Not configured")}
                   identity={previewText(agentConfig.soul?.identity, "Not configured")}

@@ -18,6 +18,10 @@ from agents.identity import agent_name_of, agent_type_of
 from chatrooms.manager import chatroom_manager
 from llm.client import get_llm_client_for_agent
 from services.chat_prompt_builder import assemble_chat_messages as shared_assemble_chat_messages
+from services.tool_capability_profiles import (
+    resolve_tool_capability_profile_name,
+    select_tools_for_capability_profile,
+)
 from services.turn_state import TurnContextState, build_turn_state_from_checkpoint_snapshot
 
 
@@ -71,8 +75,11 @@ class PreparedChatTurnRuntime:
     llm_client: Any
     agent_label: str
     recent_messages: List[Any]
+    raw_available_tools: List[str]
     available_tools: List[str]
+    tool_schemas_before_filter: List[Dict[str, Any]]
     tool_schemas: List[Dict[str, Any]]
+    tool_schema_filter: Dict[str, Any]
     tool_policy_pack: Dict[str, Any]
     runtime_kwargs: Dict[str, Any]
     turn_state: TurnContextState
@@ -181,6 +188,11 @@ def assemble_runtime_chat_messages(
     recent_messages: Optional[List[Any]] = None,
     user_message: Any = "",
     available_tools: Optional[List[str]] = None,
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    tool_schemas_before_filter: Optional[List[Dict[str, Any]]] = None,
+    tool_schema_filter: Optional[Mapping[str, Any]] = None,
+    tool_capability_profile: Optional[str] = None,
+    tool_capability_mode: str = "chat",
     tool_policy_pack: Optional[Mapping[str, Any]] = None,
     history_limit: int = 5,
     history_visibility: str = "all",
@@ -193,9 +205,37 @@ def assemble_runtime_chat_messages(
     selector_profile: str = "chat_interactive",
     on_compaction: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
+    active_tools = list(available_tools or [])
+    schema_filter = dict(tool_schema_filter or {})
+    if active_tools and tool_schemas is None:
+        try:
+            from tools import tool_registry
+
+            profile_name = resolve_tool_capability_profile_name(
+                explicit_profile=tool_capability_profile,
+                selector_profile=selector_profile,
+                agent=agent,
+                user_message=user_message,
+                mode=tool_capability_mode,
+            )
+            selection = select_tools_for_capability_profile(
+                active_tools,
+                profile_name=profile_name,
+                user_message=user_message,
+                mode=tool_capability_mode,
+            )
+            active_tools = selection.active_tools
+            schema_filter = selection.to_metadata()
+            tool_schemas_before_filter = tool_registry.get_schemas(selection.original_tools)
+            tool_schemas = tool_registry.get_schemas(active_tools)
+            if tool_policy_pack is None:
+                tool_policy_pack = tool_registry.get_policy_pack(active_tools)
+        except Exception:
+            tool_schemas = None
+
     tool_guidance = ""
-    if available_tools:
-        tool_guidance = build_tool_prompt(available_tools, tool_policy_pack=tool_policy_pack, user_message=str(user_message or ""))
+    if active_tools:
+        tool_guidance = build_tool_prompt(active_tools, tool_policy_pack=tool_policy_pack, user_message=str(user_message or ""))
         if "When you need to use a tool" not in tool_guidance:
             tool_guidance += "\nWhen you need to use a tool, respond with a tool call and the system will execute it."
     return shared_assemble_chat_messages(
@@ -208,7 +248,10 @@ def assemble_runtime_chat_messages(
         agents=agents,
         recent_messages=recent_messages,
         user_message=user_message,
-        available_tools=available_tools,
+        available_tools=active_tools,
+        tool_schemas=tool_schemas,
+        tool_schemas_before_filter=tool_schemas_before_filter,
+        tool_schema_filter=schema_filter,
         tool_guidance=tool_guidance,
         history_limit=history_limit,
         history_visibility=history_visibility,
@@ -321,6 +364,9 @@ async def prepare_chat_turn_runtime(
     checkpoint_snapshot: Optional[Dict[str, Any]] = None,
     previous_agent_work: str = "",
     inter_agent_messages: Optional[List[Dict[str, Any]]] = None,
+    user_message: Any = "",
+    tool_capability_profile: Optional[str] = None,
+    tool_capability_mode: str = "chat",
     recent_message_limit: int = 10,
 ) -> PreparedChatTurnRuntime:
     from tools import tool_registry
@@ -328,7 +374,23 @@ async def prepare_chat_turn_runtime(
     llm_client = get_llm_client_for_agent(agent_type_of(agent))
     recent_messages = await chatroom_manager.get_messages(chatroom_id, limit=max(1, recent_message_limit))
     all_tool_names = tool_registry.list_agent_tools()
-    available_tools = resolve_agent_tool_names(agent, all_tool_names)
+    raw_available_tools = resolve_agent_tool_names(agent, all_tool_names)
+    profile_name = resolve_tool_capability_profile_name(
+        explicit_profile=tool_capability_profile,
+        selector_profile="",
+        agent=agent,
+        user_message=user_message,
+        mode=tool_capability_mode,
+    )
+    tool_selection = select_tools_for_capability_profile(
+        raw_available_tools,
+        profile_name=profile_name,
+        user_message=user_message,
+        mode=tool_capability_mode,
+    )
+    available_tools = tool_selection.active_tools
+    tool_schemas_before_filter = tool_registry.get_schemas(raw_available_tools)
+    tool_schemas = tool_registry.get_schemas(available_tools)
     turn_state = build_turn_state_from_checkpoint_snapshot(
         checkpoint_snapshot,
         previous_agent_work=previous_agent_work or "",
@@ -339,8 +401,11 @@ async def prepare_chat_turn_runtime(
         llm_client=llm_client,
         agent_label=agent_name_of(agent),
         recent_messages=recent_messages,
+        raw_available_tools=raw_available_tools,
         available_tools=available_tools,
-        tool_schemas=tool_registry.get_schemas(available_tools),
+        tool_schemas_before_filter=tool_schemas_before_filter,
+        tool_schemas=tool_schemas,
+        tool_schema_filter=tool_selection.to_metadata(),
         tool_policy_pack=tool_registry.get_policy_pack(available_tools),
         runtime_kwargs=build_tool_runtime_kwargs(agent, chatroom_id, project),
         turn_state=turn_state,

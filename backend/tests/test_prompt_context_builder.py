@@ -381,11 +381,7 @@ def test_runtime_user_fragments_are_structured_and_prioritized():
     )
 
     assert [fragment.source for fragment in fragments] == [
-        "project_context",
-        "project_status",
-        "chatroom_context",
-        "chat_routing",
-        "chatroom_lineage",
+        "project_chat_overview",
         "runtime_context",
         "team_members",
         "inter_agent_messages",
@@ -393,15 +389,14 @@ def test_runtime_user_fragments_are_structured_and_prioritized():
         "previous_agent_work",
     ]
     assert fragments[0].visibility == "global"
-    assert fragments[3].content.startswith("## Chat Routing")
-    assert "`@agent_name`" in fragments[3].content
-    assert "last non-empty paragraph" in fragments[3].content
-    assert "not routing instructions" in fragments[3].content
-    assert fragments[4].content.startswith("## Chat Lineage")
-    assert fragments[7].scope == "shared_fact"
-    assert "Current focus" not in fragments[1].content
-    assert "Blocking reason" not in fragments[1].content
-    assert "Latest summary" not in fragments[1].content
+    assert "## Chat Routing" in fragments[0].content
+    assert "`@agent_name`" in fragments[0].content
+    assert "last non-empty paragraph" in fragments[0].content
+    assert "## Chat Lineage" in fragments[0].content
+    assert fragments[3].scope == "shared_fact"
+    assert "Current focus" not in fragments[0].content
+    assert "Blocking reason" not in fragments[0].content
+    assert "Latest summary" not in fragments[0].content
 
 
 def test_operating_contract_requires_handoff_mentions_at_start_of_final_message():
@@ -427,10 +422,7 @@ def test_runtime_user_fragments_can_split_standalone_note_and_source_chat():
 
     assert [fragment.source for fragment in fragments] == [
         "standalone_note",
-        "project_context",
-        "chatroom_context",
-        "chat_routing",
-        "chatroom_lineage",
+        "project_chat_overview",
     ]
     assert fragments[0].content.startswith("## Session Instructions")
     assert "Source chat: #9 Main Chat" in fragments[-1].content
@@ -452,13 +444,29 @@ def test_context_selector_can_limit_runtime_fragments():
     ).to_messages()
 
     assert [fragment.source for fragment in selected] == [
-        "project_context",
-        "chatroom_context",
+        "project_chat_overview",
+        "runtime_context",
     ]
     assert messages == [
         {"role": "system", "content": "base identity"},
-        {"role": "user", "content": "## Current Project\n- Project ID: 1\n- Name: Catown"},
-        {"role": "user", "content": "## Current Chat\n- Chat ID: 2\n- Title: Chat"},
+        {
+            "role": "user",
+            "content": (
+                "## Current Project\n"
+                "- Project ID: 1\n"
+                "- Name: Catown\n\n"
+                "## Current Chat\n"
+                "- Chat ID: 2\n"
+                "- Title: Chat\n\n"
+                "## Chat Routing\n"
+                "- Messages are shared conversation events.\n"
+                "- Agent-to-agent: start the last non-empty paragraph with `@agent_name` mentions to trigger routing.\n"
+                "- Use chat mentions for notifications/handoffs; use tracked task tools for work that needs tracking.\n\n"
+                "## Chat Lineage\n"
+                "- Chat role: project-linked chat"
+            ),
+        },
+        {"role": "user", "content": "Runtime"},
     ]
 
 
@@ -706,11 +714,15 @@ def test_assembly_exposes_selector_compaction_diagnostics():
     )
 
     diagnostics = assembly.selector_diagnostics
-    assert diagnostics["compacted"] is True
+    assert diagnostics["selection_changed"] is True
+    assert diagnostics["event_kind"] == "selection_truncation"
+    assert diagnostics["semantic_compaction"] is False
+    assert diagnostics["context_pressure_kind"] in {"prompt_budget_pressure", "model_window_pressure"}
     assert diagnostics["developer"]["selected_count"] == 1
     assert diagnostics["user"]["truncated_count"] == 1
     assert diagnostics["summary"]["truncated_count"] == 1
     assert diagnostics["selector"]["max_tokens"] == 160
+    assert diagnostics["prompt"]["token_categories"]["runtime_fragments"]["tokens"] > 0
 
 
 def test_context_selector_can_derive_budget_from_context_window():
@@ -753,18 +765,18 @@ def test_chat_context_selector_applies_profile_fragment_caps_without_context_win
         base_system_prompt="identity",
     )
 
-    assert chat_selector.max_fragments == 12
-    assert fallback_selector.max_fragments == 10
-    assert query_selector.max_fragments == 11
-    assert chat_selector.max_tokens == 3200
-    assert fallback_selector.max_tokens == 2600
-    assert query_selector.max_tokens == 2200
-    assert chat_selector.max_tokens_by_role == {"developer": 1200, "user": 2000}
-    assert fallback_selector.max_tokens_by_role == {"developer": 900, "user": 1700}
-    assert query_selector.max_tokens_by_role == {"developer": 1000, "user": 1200}
-    assert chat_selector.max_tokens_by_scope["run"] == 1800
-    assert fallback_selector.max_tokens_by_scope["stage"] == 420
-    assert query_selector.max_tokens_by_scope["shared_fact"] == 240
+    assert chat_selector.max_fragments == 20
+    assert fallback_selector.max_fragments == 15
+    assert query_selector.max_fragments == 16
+    assert chat_selector.max_tokens == 8000
+    assert fallback_selector.max_tokens == 5000
+    assert query_selector.max_tokens == 4500
+    assert chat_selector.max_tokens_by_role == {"developer": 2500, "user": 5500}
+    assert fallback_selector.max_tokens_by_role == {"developer": 1800, "user": 3200}
+    assert query_selector.max_tokens_by_role == {"developer": 1800, "user": 2700}
+    assert chat_selector.max_tokens_by_scope["run"] == 4000
+    assert fallback_selector.max_tokens_by_scope["stage"] == 800
+    assert query_selector.max_tokens_by_scope["shared_fact"] == 400
 
 
 def test_chat_context_selector_uses_openai_reference_window_for_known_gpt_model():
@@ -775,7 +787,141 @@ def test_chat_context_selector_uses_openai_reference_window_for_known_gpt_model(
         base_system_prompt="identity",
     )
 
-    assert selector.max_tokens == 3200
+    assert selector.context_window == 1_047_576
+    assert selector.input_window == 1_014_808
+    assert selector.reserved_completion_tokens == 32_768
+    assert selector.max_tokens is not None
+    assert selector.max_tokens >= 30_000
+
+
+def test_chat_context_selector_materializes_large_window_budget_for_gpt_55():
+    selector = build_chat_context_selector(
+        profile="chat_interactive",
+        agent_name="unknown",
+        model_id="gpt-5.5",
+        base_system_prompt="identity",
+    )
+
+    assert selector.context_window == 1_050_000
+    assert selector.input_window == 922_000
+    assert selector.reserved_completion_tokens == 128_000
+    assert selector.max_tokens is not None
+    assert selector.max_tokens >= 25_000
+
+
+def test_first_turn_large_window_context_does_not_semantically_compact():
+    selector = build_chat_context_selector(
+        profile="chat_interactive",
+        agent_name="unknown",
+        model_id="gpt-5.5",
+        base_system_prompt="identity",
+        current_input_messages=[{"role": "user", "content": "Start the project."}],
+    )
+    fragment = ContextFragment(
+        role="user",
+        content="Project state is ready.",
+        scope=ContextScope.RUN,
+        visibility=ContextVisibility.GLOBAL,
+        source="project_state",
+        priority=20,
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="identity",
+        user_fragments=[fragment],
+        current_input_messages=[{"role": "user", "content": "Start the project."}],
+        selector=selector,
+    )
+
+    diagnostics = assembly.selector_diagnostics
+    assert diagnostics["selection_changed"] is False
+    assert diagnostics["semantic_compaction"] is False
+    assert diagnostics["event_kind"] == "selection_pass"
+    assert diagnostics["context_pressure_kind"] == "none"
+    assert diagnostics["prompt"]["token_categories"]["runtime_fragments"]["tokens"] > 0
+
+
+def test_assembly_reports_tool_schema_budget():
+    assembly = assemble_messages(
+        base_system_prompt="identity",
+        current_input_messages=[{"role": "user", "content": "run tests"}],
+        tool_schemas=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_shell",
+                    "description": "Run a command in the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                },
+            }
+        ],
+    )
+
+    prompt = assembly.selector_diagnostics["prompt"]
+    schema_budget = prompt["tool_schema_budget"]
+    assert assembly.selector_diagnostics["event_kind"] == "tool_schema_budget"
+    assert assembly.selector_diagnostics["context_pressure_kind"] == "tool_schema_budget"
+    assert prompt["token_categories"]["tool_schema"]["tokens"] == schema_budget["tokens"]
+    assert schema_budget["tool_count"] == 1
+    assert schema_budget["schema_count"] == 1
+    assert schema_budget["tokens"] > 0
+    assert schema_budget["by_tool"][0]["tool_name"] == "run_shell"
+    assert schema_budget["by_tool"][0]["tokens"] > 0
+
+
+def test_assembly_reports_tool_schema_filter_savings():
+    read_schema = {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read a file.",
+            "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]},
+        },
+    }
+    browser_schema = {
+        "type": "function",
+        "function": {
+            "name": "browser",
+            "description": "Control a browser and return page state.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "url": {"type": "string"},
+                    "selector": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        },
+    }
+
+    assembly = assemble_messages(
+        base_system_prompt="identity",
+        current_input_messages=[{"role": "user", "content": "read the file"}],
+        tool_schemas=[read_schema],
+        tool_schemas_before_filter=[read_schema, browser_schema],
+        tool_schema_filter={
+            "profile_name": "code_debug",
+            "original_tool_count": 2,
+            "active_tool_count": 1,
+            "excluded_tool_count": 1,
+            "active_tools": ["read_file"],
+            "excluded_tools": ["browser"],
+        },
+    )
+
+    schema_budget = assembly.selector_diagnostics["prompt"]["tool_schema_budget"]
+    assert assembly.selector_diagnostics["event_kind"] == "tool_schema_budget"
+    assert schema_budget["tool_count"] == 1
+    assert schema_budget["original_tool_count"] == 2
+    assert schema_budget["estimated_saved_tokens"] > 0
+    assert schema_budget["estimated_savings_pct"] > 0
+    assert schema_budget["filter"]["profile_name"] == "code_debug"
+    assert schema_budget["excluded_by_tool"][0]["tool_name"] == "browser"
 
 
 def test_context_selector_default_completion_reserve_scales_for_large_windows():
@@ -901,6 +1047,399 @@ def test_turn_state_fragments_keep_recent_protocol_and_summarize_older_tool_roun
         "list_files" not in json.dumps(message, ensure_ascii=False)
         for message in protocol_messages
     )
+
+
+def test_turn_state_protocol_message_summarizes_long_tool_result_with_reference():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    long_result = "\n".join(f"line {index}: {'x' * 80}" for index in range(120))
+    turn_state.record_tool_round(
+        assistant_content="Run the test suite.",
+        tool_calls=[
+            {
+                "id": "call_test",
+                "type": "function",
+                "function": {"name": "run_shell", "arguments": "{\"command\": \"pytest\"}"},
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_test",
+                tool_name="run_shell",
+                arguments="{\"command\": \"pytest\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "run_shell",
+                    "result": long_result,
+                    "success": False,
+                    "status": "failed",
+                    "metadata": {
+                        "output_filter": {"tee_path": "C:/tmp/catown-tee.log"},
+                        "tracked_process": {
+                            "token": "tracked-1",
+                            "log_path": "C:/tmp/run-shell.log",
+                        },
+                    },
+                },
+                success=False,
+            )
+        ],
+    )
+
+    protocol_messages = turn_state.protocol_messages()
+    tool_message = protocol_messages[-1]
+
+    assert tool_message["role"] == "tool"
+    assert len(tool_message["content"]) < 1600
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "[truncated for context budget]" in tool_message["content"]
+    assert "Full output tee: C:/tmp/catown-tee.log" in tool_message["content"]
+    assert "Tracked process log: C:/tmp/run-shell.log" in tool_message["content"]
+    assert "Tracked process token: tracked-1" in tool_message["content"]
+    assert "line 40:" not in tool_message["content"]
+    assert "line 119:" in tool_message["content"]
+
+    context_budget = turn_state.tool_rounds[0].tool_results[0].metadata["context_budget"]
+    assert context_budget["prompt_truncated"] is True
+    assert context_budget["stored_result_chars"] < context_budget["original_result_chars"]
+
+
+def test_turn_state_protocol_message_summarizes_long_consult_agent_result_with_reference():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    long_result = "\n".join(f"consult line {index}: {'x' * 80}" for index in range(120))
+    long_result = f"[Response from analyst (Analyst)]:\n{long_result}\n[consult_step_id] consult-analyst-1"
+    turn_state.record_tool_round(
+        assistant_content="Ask analyst for a focused read.",
+        tool_calls=[
+            {
+                "id": "call_consult",
+                "type": "function",
+                "function": {
+                    "name": "consult_agent",
+                    "arguments": "{\"target_agent\": \"analyst\", \"question\": \"What is the risk?\"}",
+                },
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_consult",
+                tool_name="consult_agent",
+                arguments="{\"target_agent\": \"analyst\", \"question\": \"What is the risk?\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "consult_agent",
+                    "result": long_result,
+                    "success": True,
+                    "status": "succeeded",
+                    "metadata": {
+                        "consult_agent": {
+                            "consult_step_id": "consult-analyst-1",
+                            "task_run_id": 42,
+                            "client_turn_id": "turn-42",
+                        }
+                    },
+                },
+            )
+        ],
+    )
+
+    tool_message = turn_state.protocol_messages()[-1]
+
+    assert tool_message["role"] == "tool"
+    assert len(tool_message["content"]) < 1700
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "Consult step: consult-analyst-1" in tool_message["content"]
+    assert "Consult task run: 42" in tool_message["content"]
+    assert "Consult client turn: turn-42" in tool_message["content"]
+    assert "consult line 40:" not in tool_message["content"]
+    assert "[consult_step_id] consult-analyst-1" in tool_message["content"]
+
+    context_budget = turn_state.tool_rounds[0].tool_results[0].metadata["context_budget"]
+    assert context_budget["full_output_refs"]["consult_step_id"] == "consult-analyst-1"
+    assert context_budget["prompt_truncated"] is True
+
+
+def test_turn_state_protocol_message_summarizes_long_tool_result_with_artifact_reference():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    long_result = "\n".join(f"browser line {index}: {'x' * 80}" for index in range(120))
+    turn_state.record_tool_round(
+        assistant_content="Read browser text.",
+        tool_calls=[
+            {
+                "id": "call_browser",
+                "type": "function",
+                "function": {"name": "browser", "arguments": "{\"action\": \"get_text\"}"},
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_browser",
+                tool_name="browser",
+                arguments="{\"action\": \"get_text\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "browser",
+                    "result": long_result,
+                    "success": True,
+                    "status": "succeeded",
+                    "metadata": {
+                        "tool_output_artifact": {
+                            "path": "C:/tmp/browser-output.txt",
+                            "sha256": "abc123",
+                            "chars": len(long_result),
+                            "tool_name": "browser",
+                        }
+                    },
+                },
+            )
+        ],
+    )
+
+    tool_message = turn_state.protocol_messages()[-1]
+
+    assert tool_message["role"] == "tool"
+    assert len(tool_message["content"]) < 1700
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "[truncated for context budget]" in tool_message["content"]
+    assert "Tool output artifact: C:/tmp/browser-output.txt" in tool_message["content"]
+    assert "Tool output sha256: abc123" in tool_message["content"]
+    assert "browser line 40:" not in tool_message["content"]
+    assert "browser line 119:" in tool_message["content"]
+
+    context_budget = turn_state.tool_rounds[0].tool_results[0].metadata["context_budget"]
+    assert context_budget["full_output_refs"]["tool_output_artifact_path"] == "C:/tmp/browser-output.txt"
+    assert context_budget["full_output_refs"]["tool_output_artifact_sha256"] == "abc123"
+    assert context_budget["prompt_truncated"] is True
+
+
+def test_turn_state_protocol_message_preserves_test_runner_signals_in_long_summary():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    long_result = "\n".join(
+        [
+            "collected 3 items",
+            "tests/test_widget.py::test_render FAILED",
+            "tests/test_widget.py::test_save PASSED",
+            "tests/test_widget.py::test_load PASSED",
+            "=================================== FAILURES ===================================",
+            "FAILED tests/test_widget.py::test_render - AssertionError: expected visible button",
+            "=========================== short test summary info ============================",
+            "FAILED tests/test_widget.py::test_render - AssertionError: expected visible button",
+            "1 failed, 2 passed in 0.42s",
+            "Exit code: 1",
+            *[f"pytest log line {index}: {'x' * 100}" for index in range(80)],
+        ]
+    )
+    turn_state.record_tool_round(
+        assistant_content="Run focused tests.",
+        tool_calls=[
+            {
+                "id": "call_pytest",
+                "type": "function",
+                "function": {
+                    "name": "run_shell",
+                    "arguments": "{\"command\": \"python -m pytest tests/test_widget.py\"}",
+                },
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_pytest",
+                tool_name="run_shell",
+                arguments="{\"command\": \"python -m pytest tests/test_widget.py\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "run_shell",
+                    "result": long_result,
+                    "success": False,
+                    "status": "failed",
+                    "metadata": {"output_filter": {"tee_path": "C:/tmp/pytest.log"}},
+                },
+                success=False,
+            )
+        ],
+    )
+
+    tool_message = turn_state.protocol_messages()[-1]
+
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "Key signals:" in tool_message["content"]
+    assert "- Command: python -m pytest tests/test_widget.py" in tool_message["content"]
+    assert "- Exit code: 1" in tool_message["content"]
+    assert "- Test status: failed" in tool_message["content"]
+    assert "- Counts: passed=2, failed=1" in tool_message["content"]
+    assert "Failure summary:" in tool_message["content"]
+    assert "- Failed tests: tests/test_widget.py::test_render" in tool_message["content"]
+    assert "expected visible button" in tool_message["content"]
+    assert "Full output tee: C:/tmp/pytest.log" in tool_message["content"]
+
+
+def test_turn_state_protocol_message_preserves_browser_signals_in_long_summary():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    page_text = "\n".join(f"Page paragraph {index}: {'x' * 90}" for index in range(80))
+    browser_result = json.dumps(
+        {
+            "success": True,
+            "page": {
+                "url": "https://example.test/dashboard",
+                "title": "Example Dashboard",
+            },
+            "response": {
+                "status": 200,
+            },
+            "screenshot_path": "C:/tmp/dashboard.png",
+            "text": page_text,
+        }
+    )
+    turn_state.record_tool_round(
+        assistant_content="Read browser text.",
+        tool_calls=[
+            {
+                "id": "call_browser",
+                "type": "function",
+                "function": {
+                    "name": "browser",
+                    "arguments": "{\"action\": \"get_text\", \"url\": \"https://example.test/dashboard\"}",
+                },
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_browser",
+                tool_name="browser",
+                arguments="{\"action\": \"get_text\", \"url\": \"https://example.test/dashboard\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "browser",
+                    "result": browser_result,
+                    "success": True,
+                    "status": "succeeded",
+                    "metadata": {
+                        "tool_output_artifact": {
+                            "path": "C:/tmp/browser-output.txt",
+                            "sha256": "abc123",
+                            "chars": len(browser_result),
+                            "tool_name": "browser",
+                        }
+                    },
+                },
+            )
+        ],
+    )
+
+    tool_message = turn_state.protocol_messages()[-1]
+
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "Key signals:" in tool_message["content"]
+    assert "- Action: get_text" in tool_message["content"]
+    assert "- URL: https://example.test/dashboard" in tool_message["content"]
+    assert "- Title: Example Dashboard" in tool_message["content"]
+    assert "- HTTP status: 200" in tool_message["content"]
+    assert f"- Text chars: {len(page_text)}" in tool_message["content"]
+    assert "- Output path: C:/tmp/dashboard.png" in tool_message["content"]
+    assert "Tool output artifact: C:/tmp/browser-output.txt" in tool_message["content"]
+
+
+def test_turn_state_protocol_message_preserves_search_results_in_long_summary():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    search_result = json.dumps(
+        {
+            "query": "catown context budget",
+            "results": [
+                {
+                    "title": "Catown Context Budget ADR",
+                    "url": "https://example.test/catown/context-budget",
+                },
+                {
+                    "title": "Catown Tool Output Savings",
+                    "url": "https://example.test/catown/tool-output",
+                },
+            ],
+            "content": "\n".join(f"search blob line {index}: {'x' * 90}" for index in range(80)),
+        }
+    )
+    turn_state.record_tool_round(
+        assistant_content="Search for context budget references.",
+        tool_calls=[
+            {
+                "id": "call_search",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": "{\"query\": \"catown context budget\"}",
+                },
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_search",
+                tool_name="web_search",
+                arguments="{\"query\": \"catown context budget\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "web_search",
+                    "result": search_result,
+                    "success": True,
+                    "status": "succeeded",
+                    "metadata": {},
+                },
+            )
+        ],
+    )
+
+    tool_message = turn_state.protocol_messages()[-1]
+
+    assert "[Tool Result Summary]" in tool_message["content"]
+    assert "Key signals:" in tool_message["content"]
+    assert "- Query: catown context budget" in tool_message["content"]
+    assert "- Top result: Catown Context Budget ADR - https://example.test/catown/context-budget" in tool_message["content"]
+    assert "- Top result: Catown Tool Output Savings - https://example.test/catown/tool-output" in tool_message["content"]
+    assert "search blob line 40:" not in tool_message["content"]
+
+
+def test_assembly_reports_tool_output_budget_savings():
+    turn_state = TurnContextState(max_protocol_rounds=1)
+    long_result = "\n".join(f"result line {index}: {'x' * 120}" for index in range(100))
+    turn_state.record_tool_round(
+        assistant_content="Run the build.",
+        tool_calls=[
+            {
+                "id": "call_build",
+                "type": "function",
+                "function": {"name": "run_shell", "arguments": "{\"command\": \"npm run build\"}"},
+            }
+        ],
+        tool_results=[
+            build_tool_result_record(
+                tool_call_id="call_build",
+                tool_name="run_shell",
+                arguments="{\"command\": \"npm run build\"}",
+                result={
+                    "__catown_tool_result__": True,
+                    "tool_name": "run_shell",
+                    "result": long_result,
+                    "success": True,
+                    "status": "succeeded",
+                    "metadata": {"output_filter": {"tee_path": "C:/tmp/build.log"}},
+                },
+            )
+        ],
+    )
+
+    assembly = assemble_messages(
+        base_system_prompt="base identity",
+        current_input_messages=turn_state.protocol_messages(),
+    )
+
+    diagnostics = assembly.selector_diagnostics
+    tool_budget = diagnostics["prompt"]["tool_output_budget"]
+    assert diagnostics["selection_changed"] is False
+    assert diagnostics["event_kind"] == "tool_output_budget"
+    assert diagnostics["context_pressure_kind"] == "tool_output_budget"
+    assert tool_budget["summarized_message_count"] == 1
+    assert tool_budget["original_chars"] > tool_budget["stored_chars"]
+    assert tool_budget["estimated_saved_tokens"] > 0
+    assert tool_budget["by_tool"]["run_shell"]["summarized_message_count"] == 1
+    assert tool_budget["by_tool"]["run_shell"]["original_chars"] > tool_budget["by_tool"]["run_shell"]["stored_chars"]
+    assert tool_budget["by_tool"]["run_shell"]["estimated_saved_tokens"] > 0
 
 
 def test_turn_state_can_be_seeded_from_checkpoint_snapshot():

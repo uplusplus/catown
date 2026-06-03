@@ -85,6 +85,13 @@ def build_llm_request_prompt_payload(
     if system_prompt:
         payload["system_prompt"] = system_prompt
 
+    provider_session = getattr(frame, "provider_session", None)
+    if isinstance(provider_session, dict):
+        payload["provider_session"] = provider_session
+        provider_mode = str(provider_session.get("provider_mode") or "").strip()
+        if provider_mode:
+            payload["provider_mode"] = provider_mode
+
     return payload
 
 

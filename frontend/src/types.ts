@@ -244,9 +244,12 @@ export type TaskRunCheckpointSnapshot = {
     response_preview?: string | null;
     created_at?: string | null;
   };
-  latest_compaction?: {
+  latest_context_budget_event?: {
     event_id?: number | null;
-    compacted?: boolean;
+    selection_changed?: boolean;
+    semantic_compaction?: boolean;
+    event_kind?: string | null;
+    context_pressure_kind?: string | null;
     dropped_count?: number | null;
     truncated_count?: number | null;
     candidate_count?: number | null;
@@ -262,6 +265,29 @@ export type TaskRunCheckpointSnapshot = {
     scope_usage_summary?: string | null;
     detail_summary?: string | null;
     summary_text?: string | null;
+    prompt_total?: {
+      bytes?: number;
+      tokens?: number;
+      message_count?: number;
+    };
+    prompt_components?: Record<string, {
+      bytes?: number;
+      tokens?: number;
+      chars?: number;
+      message_count?: number;
+      fragment_count?: number;
+    }>;
+    token_categories?: Record<string, {
+      bytes?: number;
+      tokens?: number;
+      chars?: number;
+      message_count?: number;
+      fragment_count?: number;
+    }>;
+    tool_output_budget?: ToolOutputBudgetSummary;
+    tool_schema_budget?: ToolSchemaBudgetSummary;
+    reasons?: Array<Record<string, unknown>>;
+    reason_summary?: string | null;
     created_at?: string | null;
   };
   latest_scheduler_runtime?: Record<string, unknown> | null;
@@ -322,7 +348,10 @@ export type TaskRunEvent = {
   agent_name?: string | null;
   message_id?: number | null;
   summary?: string | null;
-  compacted?: boolean;
+  selection_changed?: boolean;
+  semantic_compaction?: boolean;
+  event_kind?: string | null;
+  context_pressure_kind?: string | null;
   dropped_count?: number;
   truncated_count?: number;
   candidate_count?: number;
@@ -348,6 +377,29 @@ export type TaskRunEvent = {
   scope_usage_summary?: string | null;
   detail_summary?: string | null;
   summary_text?: string | null;
+  prompt_total?: {
+    bytes?: number;
+    tokens?: number;
+    message_count?: number;
+  };
+  prompt_components?: Record<string, {
+    bytes?: number;
+    tokens?: number;
+    chars?: number;
+    message_count?: number;
+    fragment_count?: number;
+  }>;
+  token_categories?: Record<string, {
+    bytes?: number;
+    tokens?: number;
+    chars?: number;
+    message_count?: number;
+    fragment_count?: number;
+  }>;
+  tool_output_budget?: ToolOutputBudgetSummary;
+  tool_schema_budget?: ToolSchemaBudgetSummary;
+  reasons?: Array<Record<string, unknown>>;
+  reason_summary?: string | null;
   from_agent?: string | null;
   to_agent?: string | null;
   from_step_id?: string | null;
@@ -700,7 +752,7 @@ export type AuditLlmDetailResponse = {
   tool_calls: AuditLlmToolCall[];
 };
 
-export type MonitorCompactionItem = {
+export type MonitorContextBudgetItem = {
   id: number;
   task_run_id?: number | null;
   chatroom_id?: number | null;
@@ -714,7 +766,10 @@ export type MonitorCompactionItem = {
   event_type: string;
   summary?: string | null;
   created_at?: string | null;
-  compacted?: boolean;
+  selection_changed?: boolean;
+  semantic_compaction?: boolean;
+  event_kind?: string | null;
+  context_pressure_kind?: string | null;
   dropped_count?: number;
   truncated_count?: number;
   candidate_count?: number;
@@ -743,6 +798,15 @@ export type MonitorCompactionItem = {
     message_count?: number;
     fragment_count?: number;
   }>;
+  token_categories?: Record<string, {
+    bytes?: number;
+    tokens?: number;
+    chars?: number;
+    message_count?: number;
+    fragment_count?: number;
+  }>;
+  tool_output_budget?: ToolOutputBudgetSummary;
+  tool_schema_budget?: ToolSchemaBudgetSummary;
   prompt_fragments?: Array<{
     role?: string;
     scope?: string;
@@ -759,7 +823,7 @@ export type MonitorCompactionItem = {
   payload?: Record<string, unknown>;
 };
 
-export type MonitorContextCompactionsResponse = {
+export type MonitorContextBudgetEventsResponse = {
   captured_at: string;
   limit: number;
   counts: {
@@ -768,7 +832,34 @@ export type MonitorContextCompactionsResponse = {
     dropped: number;
     truncated: number;
   };
-  entries: MonitorCompactionItem[];
+  entries: MonitorContextBudgetItem[];
+};
+
+export type ContextOptimizationMetricResult = {
+  value?: number | null;
+  status: "pass" | "fail" | "missing" | "needs_review" | string;
+  target: {
+    min?: number;
+    max?: number;
+  };
+};
+
+export type MonitorContextOptimizationEvaluationResponse = {
+  captured_at: string;
+  limit: number;
+  counts: {
+    total: number;
+    returned: number;
+  };
+  evaluation: {
+    kind: "context_optimization_evaluation";
+    overall_status: "pass" | "fail" | "needs_data" | "needs_review" | string;
+    observation?: {
+      event_count?: number;
+      tool_heavy_event_count?: number;
+    };
+    metrics: Record<string, ContextOptimizationMetricResult>;
+  };
 };
 
 export type TaskRunResumeResponse = {
@@ -777,6 +868,19 @@ export type TaskRunResumeResponse = {
   status: string;
   task_run_id: number;
   detail: TaskRunDetail;
+};
+
+export type TaskRunCompactionResponse = {
+  status: string;
+  task_run_id: number;
+  chatroom_id?: number | null;
+  compact_checkpoint_id: string;
+  kind: string;
+  path?: string | null;
+  summary?: string | null;
+  sections?: Record<string, string>;
+  output_item_count?: number | null;
+  usage?: Record<string, number>;
 };
 
 export type MessageStreamStep = {
@@ -903,6 +1007,9 @@ export type ConfigAgentDefinition = {
     models?: Array<{ id: string; name?: string; contextWindow?: number }>;
   };
   default_model?: string;
+  runtime?: {
+    provider_mode?: ProviderMode;
+  };
   role?: {
     title?: string;
     responsibilities?: string[];
@@ -938,9 +1045,22 @@ export type ContextSelectorProfileConfig = {
   min_tokens_for_truncation?: number;
 };
 
+export type ToolCapabilityGroupConfig = {
+  tools?: string[];
+  keywords?: string[];
+};
+
+export type ToolCapabilityProfileConfig = {
+  always_tools?: string[];
+  conditional_groups?: Record<string, ToolCapabilityGroupConfig>;
+  include_all?: boolean;
+};
+
 export type ConfigContextDefinition = {
   selector_profiles?: Record<string, ContextSelectorProfileConfig>;
   default_selector_profiles?: Record<string, ContextSelectorProfileConfig>;
+  tool_capability_profiles?: Record<string, ToolCapabilityProfileConfig>;
+  default_tool_capability_profiles?: Record<string, ToolCapabilityProfileConfig>;
 };
 
 export type ConfigUiDefinition = {
@@ -963,6 +1083,9 @@ export type ConfigResponse = {
       models?: Array<{ id: string; name?: string; contextWindow?: number }>;
     };
     default_model?: string;
+    runtime?: {
+      provider_mode?: ProviderMode;
+    };
   };
   orchestration?: ConfigOrchestrationDefinition;
   permissions?: ConfigPermissionsDefinition;
@@ -1009,6 +1132,7 @@ export type ConfigResponse = {
     {
       baseUrl?: string;
       model?: string;
+      provider_mode?: ProviderMode;
       source?: string;
       hasApiKey?: boolean;
       models?: string[];
@@ -1086,6 +1210,9 @@ export type GlobalConfigPayload = {
     models: Array<{ id: string; name: string; contextWindow?: number }>;
   };
   default_model: string;
+  runtime?: {
+    provider_mode?: ProviderMode;
+  };
 };
 
 export type AgentConfigPayload = {
@@ -1095,6 +1222,9 @@ export type AgentConfigPayload = {
     models: Array<{ id: string; name: string; contextWindow?: number }>;
   };
   default_model?: string;
+  runtime?: {
+    provider_mode?: ProviderMode;
+  };
   role?: {
     title?: string;
     responsibilities?: string[];
@@ -1118,6 +1248,7 @@ export type PermissionsConfigPayload = {
 
 export type ContextConfigPayload = {
   selector_profiles: Record<string, ContextSelectorProfileConfig>;
+  tool_capability_profiles: Record<string, ToolCapabilityProfileConfig>;
 };
 
 export type UiConfigPayload = ConfigUiDefinition;
@@ -1144,6 +1275,39 @@ export type MonitorAgentUsage = {
   estimated_cost_usd: number;
 };
 
+export type LlmProviderSessionSummary = {
+  id?: number;
+  chatroom_id?: number;
+  task_run_id?: number | null;
+  project_id?: number | null;
+  agent_name?: string | null;
+  provider_mode?: string;
+  provider_host?: string | null;
+  model_name?: string | null;
+  provider_conversation_id?: string | null;
+  previous_response_id?: string | null;
+  last_response_id?: string | null;
+  compact_checkpoint_id?: string | null;
+  status?: string;
+  turn_count?: number;
+  state_reused?: boolean;
+  last_used_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ProviderMode = "chat_completions" | "responses_http" | "responses_websocket";
+
+export type LlmProviderRequestSummary = {
+  stateful_delta?: boolean;
+  full_input_item_count?: number;
+  sent_input_item_count?: number;
+  omitted_input_item_count?: number;
+  estimated_full_input_tokens?: number;
+  estimated_sent_input_tokens?: number;
+  estimated_omitted_input_tokens?: number;
+  estimated_instruction_tokens?: number;
+};
+
 export type MonitorRuntimeItem = {
   id: number;
   type: string;
@@ -1159,6 +1323,9 @@ export type MonitorRuntimeItem = {
   from_entity?: string | null;
   to_entity?: string | null;
   model?: string | null;
+  provider_mode?: string | null;
+  provider_session?: LlmProviderSessionSummary | null;
+  provider_request?: LlmProviderRequestSummary | null;
   tool_name?: string | null;
   tool_call_id?: string | null;
   success?: boolean | null;
@@ -1529,7 +1696,8 @@ export type MonitorOverviewSummary = {
       runtime_card_projection_missing?: number;
       approval_queue_total?: number;
       approval_queue_pending?: number;
-      context_compactions?: number;
+      context_budget_events?: number;
+      semantic_compactions?: number;
     };
     features: Record<string, boolean>;
     collaboration: {
@@ -1562,6 +1730,24 @@ export type MonitorOverviewSummary = {
     };
     by_agent: MonitorAgentUsage[];
     top_tools: MonitorToolSummary[];
+    provider_modes?: Array<{
+      mode: string;
+      calls: number;
+      state_reused: number;
+      with_response_id: number;
+      stateful_delta_calls?: number;
+      sent_input_items?: number;
+      omitted_input_items?: number;
+      sent_input_tokens?: number;
+      omitted_input_tokens?: number;
+      instruction_tokens?: number;
+      reported_input_tokens?: number;
+      reported_output_tokens?: number;
+      reported_total_tokens?: number;
+      avg_first_chunk_ms?: number | null;
+      avg_first_content_ms?: number | null;
+      avg_completed_ms?: number | null;
+    }>;
     top_skills?: Array<{
       skill_name: string;
       inject_count: number;
@@ -1652,26 +1838,129 @@ export type MonitorOverviewSummary = {
       automatic: number;
     };
   };
-  compactions: {
+  context_budget: {
     total: number;
     task_runs: number;
     avg_interval_minutes?: number | null;
     avg_per_task_run?: number | null;
     avg_prompt_tokens?: number | null;
     avg_usage_ratio?: number | null;
+    tool_output_saved_tokens?: number;
+    avg_tool_output_savings_pct?: number | null;
+    tool_output_by_tool?: Array<{
+      tool_name: string;
+      message_count?: number;
+      summarized_message_count?: number;
+      estimated_saved_tokens?: number;
+    }>;
+    tool_schema_tokens?: number;
+    tool_schema_saved_tokens?: number;
+    tool_schema_count?: number;
+    tool_schema_by_tool?: Array<{
+      tool_name: string;
+      tokens?: number;
+      bytes?: number;
+      count?: number;
+    }>;
+    tool_schema_excluded_by_tool?: Array<{
+      tool_name: string;
+      tokens?: number;
+      bytes?: number;
+      count?: number;
+    }>;
+    trend?: Array<{
+      bucket: string;
+      label: string;
+      event_count: number;
+      tool_output_saved_tokens?: number;
+      tool_schema_tokens?: number;
+      tool_schema_saved_tokens?: number;
+      avg_prompt_tokens?: number | null;
+      avg_usage_ratio?: number | null;
+    }>;
+    tool_schema_recommendations?: Array<{
+      kind: "frequently_filtered" | "frequent_activation" | string;
+      agent_name?: string;
+      profile_name?: string;
+      mode?: string;
+      tool_name?: string;
+      group_name?: string;
+      event_count?: number;
+      tokens?: number;
+    }>;
     reasons: Array<{
       reason: string;
       count: number;
     }>;
-    last_compaction_at?: string | null;
+    last_event_at?: string | null;
   };
+};
+
+export type ToolOutputBudgetSummary = {
+  message_count?: number;
+  summarized_message_count?: number;
+  original_chars?: number;
+  stored_chars?: number;
+  prompt_visible_chars?: number;
+  estimated_original_tokens?: number;
+  prompt_visible_tokens?: number;
+  estimated_saved_tokens?: number;
+  estimated_savings_pct?: number;
+  by_tool?: Record<string, ToolOutputBudgetToolSummary>;
+};
+
+export type ToolOutputBudgetToolSummary = {
+  message_count?: number;
+  summarized_message_count?: number;
+  original_chars?: number;
+  stored_chars?: number;
+  prompt_visible_chars?: number;
+  estimated_original_tokens?: number;
+  prompt_visible_tokens?: number;
+  estimated_saved_tokens?: number;
+  estimated_savings_pct?: number;
+};
+
+export type ToolSchemaBudgetSummary = {
+  bytes?: number;
+  tokens?: number;
+  tool_count?: number;
+  schema_count?: number;
+  original_bytes?: number;
+  original_tokens?: number;
+  original_tool_count?: number;
+  original_schema_count?: number;
+  estimated_saved_tokens?: number;
+  estimated_savings_pct?: number;
+  filtered_tool_count?: number;
+  filtered_schema_count?: number;
+  filter?: {
+    profile_name?: string;
+    original_tool_count?: number;
+    active_tool_count?: number;
+    excluded_tool_count?: number;
+    active_tools?: string[];
+    excluded_tools?: string[];
+    activated_groups?: string[];
+    mode?: string;
+  };
+  by_tool?: Array<{
+    tool_name: string;
+    bytes?: number;
+    tokens?: number;
+  }>;
+  excluded_by_tool?: Array<{
+    tool_name: string;
+    bytes?: number;
+    tokens?: number;
+  }>;
 };
 
 export type MonitorOverviewActivity = {
   captured_at: string;
   recent_runtime: MonitorRuntimeItem[];
   recent_messages: MonitorMessageItem[];
-  recent_compactions: MonitorCompactionItem[];
+  recent_context_budget_events: MonitorContextBudgetItem[];
 };
 
 export type MonitorOverview = MonitorOverviewSummary & MonitorOverviewActivity;

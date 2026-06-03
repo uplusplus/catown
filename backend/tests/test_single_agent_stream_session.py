@@ -10,6 +10,7 @@ from services.single_agent_stream_session import (
     build_single_agent_stream_transport_context,
     iter_single_agent_stream_session,
 )
+from services.stream_turn_executor import iter_stream_turn_events
 
 
 class FakeLLMClient:
@@ -18,6 +19,25 @@ class FakeLLMClient:
     async def chat_stream(self, messages, tools):
         yield {"type": "content", "delta": "Hi"}
         yield {"type": "done", "full_content": "Hello world", "tool_calls": None}
+
+
+class ProviderAwareFakeLLMClient:
+    model = "responses-model"
+
+    def __init__(self):
+        self.calls = []
+
+    async def chat_stream(self, messages, tools, *, provider_session=None, previous_response_id=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "provider_session": provider_session,
+                "previous_response_id": previous_response_id,
+            }
+        )
+        yield {"type": "content", "delta": "OK"}
+        yield {"type": "done", "full_content": "OK", "tool_calls": None}
 
 
 @pytest.mark.asyncio
@@ -66,6 +86,57 @@ async def test_iter_single_agent_stream_session_renders_chunks_and_final_content
                 "client_turn_id": "turn-1",
             },
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_turn_events_passes_provider_session_to_chat_stream():
+    llm_client = ProviderAwareFakeLLMClient()
+
+    class EmptyTurnState:
+        def protocol_messages(self):
+            return []
+
+    async def before_event(frame, event, _turn_state):
+        if event["type"] == "agent_start":
+            provider_session = {
+                "provider_mode": "responses_http",
+                "previous_response_id": "resp_prev",
+            }
+            frame.provider_session = provider_session
+            event["provider_session"] = provider_session
+
+    events = [
+        event
+        async for event in iter_stream_turn_events(
+            llm_client=llm_client,
+            tools=None,
+            turn_state=EmptyTurnState(),
+            agent_name="Analyst",
+            client_turn_id="turn-1",
+            assemble_messages=lambda _turn_state: [{"role": "user", "content": "hello"}],
+            execute_tool=lambda *args, **kwargs: None,
+            build_llm_runtime_card=lambda *args, **kwargs: {"agent": "Analyst"},
+            snapshot_messages=lambda messages: list(messages),
+            preview_tool_calls=lambda raw_tool_calls: [],
+            format_prompt_messages=lambda messages: "formatted",
+            tool_result_success=lambda result: True,
+            before_event=before_event,
+            max_turns=1,
+        )
+    ]
+
+    assert any(event["type"] == "turn_complete" for event in events)
+    assert llm_client.calls == [
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": None,
+            "provider_session": {
+                "provider_mode": "responses_http",
+                "previous_response_id": "resp_prev",
+            },
+            "previous_response_id": "resp_prev",
+        }
     ]
 
 

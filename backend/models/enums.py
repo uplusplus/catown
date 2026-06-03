@@ -79,6 +79,7 @@ class EventType(str, enum.Enum):
 
     # ── Policy & context ─────────────────────────────────────────────────
     POLICY_DECISION_RECORDED = "policy_decision_recorded"
+    CONTEXT_BUDGET_EVENT = "context_budget_event"
     CONTEXT_COMPACTION = "context_compaction"
     USER_MESSAGE_SAVED = "user_message_saved"
 

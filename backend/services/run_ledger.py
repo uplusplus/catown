@@ -420,9 +420,9 @@ def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
         if isinstance(raw_payload.get("selector_diagnostics"), dict)
         else {}
     )
-    compaction_projection = (
+    context_budget_projection = (
         build_context_compaction_projection(diagnostics, fallback_summary=event.summary)
-        if event.event_type == "context_compaction"
+        if event.event_type in {"context_budget_event", "context_compaction"}
         else {}
     )
     runtime_snapshot = raw_payload.get("runtime") if isinstance(raw_payload.get("runtime"), dict) else None
@@ -458,7 +458,7 @@ def _serialize_task_run_event(event: TaskRunEvent) -> dict[str, Any]:
         "agent_name": event.agent_name,
         "message_id": event.message_id,
         "summary": event.summary,
-        **compaction_projection,
+        **context_budget_projection,
         **handoff_projection,
         **scheduler_plan_projection,
         "runtime_snapshot": runtime_snapshot,
@@ -510,7 +510,14 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
         (event for event in reversed(latest_turn_events) if event.event_type == "approval_queue_item_followup_triggered"),
         None,
     )
-    latest_compaction = next((event for event in reversed(events) if event.event_type == "context_compaction"), None)
+    latest_context_budget_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_type == "context_budget_event"
+        ),
+        None,
+    )
     latest_runtime_event = next(
         (
             event
@@ -525,15 +532,19 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
     latest_tool_round_payload = payload_by_event_id.get(latest_tool_round.id, {}) if latest_tool_round is not None else {}
     latest_tool_blocked_payload = payload_by_event_id.get(latest_tool_blocked.id, {}) if latest_tool_blocked is not None else {}
     latest_followup_payload = payload_by_event_id.get(latest_followup.id, {}) if latest_followup is not None else {}
-    latest_compaction_payload = payload_by_event_id.get(latest_compaction.id, {}) if latest_compaction is not None else {}
-    latest_compaction_diagnostics = (
-        latest_compaction_payload.get("selector_diagnostics")
-        if isinstance(latest_compaction_payload.get("selector_diagnostics"), dict)
+    latest_context_budget_payload = (
+        payload_by_event_id.get(latest_context_budget_event.id, {})
+        if latest_context_budget_event is not None
         else {}
     )
-    latest_compaction_projection = build_context_compaction_projection(
-        latest_compaction_diagnostics,
-        fallback_summary=latest_compaction.summary if latest_compaction is not None else None,
+    latest_context_budget_diagnostics = (
+        latest_context_budget_payload.get("selector_diagnostics")
+        if isinstance(latest_context_budget_payload.get("selector_diagnostics"), dict)
+        else {}
+    )
+    latest_context_budget_projection = build_context_compaction_projection(
+        latest_context_budget_diagnostics,
+        fallback_summary=latest_context_budget_event.summary if latest_context_budget_event is not None else None,
     )
     latest_runtime_payload = payload_by_event_id.get(latest_runtime_event.id, {}) if latest_runtime_event is not None else {}
     latest_subagent_event = next(
@@ -591,10 +602,14 @@ def build_task_run_checkpoint_snapshot(task_run: TaskRun | None) -> dict[str, An
             "response_preview": latest_agent_payload.get("response_preview") if isinstance(latest_agent_payload, dict) else None,
             "created_at": latest_agent_turn.created_at.isoformat() if latest_agent_turn and latest_agent_turn.created_at else None,
         },
-        "latest_compaction": {
-            "event_id": latest_compaction.id if latest_compaction is not None else None,
-            **latest_compaction_projection,
-            "created_at": latest_compaction.created_at.isoformat() if latest_compaction and latest_compaction.created_at else None,
+        "latest_context_budget_event": {
+            "event_id": latest_context_budget_event.id if latest_context_budget_event is not None else None,
+            **latest_context_budget_projection,
+            "created_at": (
+                latest_context_budget_event.created_at.isoformat()
+                if latest_context_budget_event and latest_context_budget_event.created_at
+                else None
+            ),
         },
         "latest_scheduler_runtime": latest_runtime_payload.get("runtime") if isinstance(latest_runtime_payload, dict) else None,
         "latest_subagent_step": (

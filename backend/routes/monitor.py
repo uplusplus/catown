@@ -11,10 +11,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Integer, desc, func
+from sqlalchemy import Integer, String, case, cast, desc, distinct, func, or_
 from sqlalchemy.orm import Session
 
-from models.audit import Event, LLMCall, ToolCall
+from models.audit import Event, LLMCall, MonitorNetworkRecord, ToolCall
 from models.database import (
     ApprovalAuditLog,
     ApprovalQueueItem,
@@ -35,10 +35,12 @@ from services.agent_lifecycle_runtime import get_runtime_collaboration_status
 from monitoring import monitor_log_buffer, monitor_network_buffer
 from services.approval_audit import list_approval_audit_logs, serialize_approval_audit_log
 from services.approval_queue import list_approval_queue_items
+from services.context_optimization_evaluation import evaluate_context_budget_event_observations
 from services.monitor_projection import (
     get_runtime_card_projection_health,
     serialize_monitor_approval_queue_item,
-    serialize_monitor_compaction_item,
+    serialize_monitor_context_budget_item,
+    serialize_monitor_provider_compaction_item,
     serialize_monitor_runtime_detail,
     serialize_monitor_runtime_item,
 )
@@ -74,7 +76,9 @@ TASK_RUN_STEP_SCAN_MIN = 200
 TASK_RUN_STEP_SCAN_MAX = 800
 OVERVIEW_ACTIVITY_RUNTIME_LIMIT = 80
 OVERVIEW_ACTIVITY_MESSAGE_LIMIT = 40
-OVERVIEW_ACTIVITY_COMPACTION_LIMIT = 16
+OVERVIEW_ACTIVITY_CONTEXT_BUDGET_LIMIT = 16
+CONTEXT_BUDGET_EVENT_TYPE = "context_budget_event"
+SEMANTIC_COMPACTION_EVENT_TYPE = "context_compaction"
 
 monitor_log_buffer.install()
 
@@ -194,6 +198,44 @@ def _include_network_entry(entry: dict[str, Any], *, include_internal: bool) -> 
     if _is_legacy_backend_llm_app_event(entry):
         return False
     return bool(entry.get("aggregated") is False or not entry.get("flow_id"))
+
+
+def is_internal_network_entry(entry: dict[str, Any]) -> bool:
+    return bool(
+        _is_frontend_backend_traffic(entry)
+        or _is_monitor_page_network(entry)
+        or _is_frontend_backend_heartbeat(entry)
+        or _is_frontend_meta_request(entry)
+    )
+
+
+def _persistable_network_entry(entry: dict[str, Any]) -> bool:
+    if is_internal_network_entry(entry):
+        return False
+    return not _is_legacy_backend_llm_app_event(entry)
+
+
+def _network_visibility_conditions(*, include_internal: bool):
+    metadata_json = MonitorNetworkRecord.metadata_json
+    flow_id_expr = func.json_extract(metadata_json, "$.flow_id")
+    aggregated_expr = func.json_extract(metadata_json, "$.aggregated")
+    visibility_filters = [
+        or_(flow_id_expr.is_(None), flow_id_expr == "", aggregated_expr == 0, aggregated_expr == "false"),
+    ]
+    if not include_internal:
+        visibility_filters.extend(
+            [
+                MonitorNetworkRecord.category != "frontend_backend",
+                ~MonitorNetworkRecord.path.like("/api/monitor%"),
+                MonitorNetworkRecord.path.notin_(["/monitor", "/monitor/", "/api/frontend-meta"]),
+                ~MonitorNetworkRecord.url.like("%/monitor%"),
+                ~MonitorNetworkRecord.url.like("%/api/monitor%"),
+                ~MonitorNetworkRecord.url.like("%/api/frontend-meta%"),
+                MonitorNetworkRecord.client_source != "monitor",
+                ~func.lower(MonitorNetworkRecord.from_entity).like("%frontend (monitor)%"),
+            ]
+        )
+    return visibility_filters
 
 
 def _filter_network_entries(entries: list[dict[str, Any]], *, include_internal: bool, limit: int) -> list[dict[str, Any]]:
@@ -329,6 +371,79 @@ def _file_monitor_item_from_projection(
         "result_preview": _compact_preview(card.get("result"), limit=320),
         "result_size": _file_monitor_result_size(card.get("result")),
     }
+
+
+def _file_monitor_agent_sql_expr():
+    return func.coalesce(
+        RuntimeCardProjection.agent_name,
+        func.json_extract(RuntimeCardProjection.card_json, "$.agent"),
+        func.json_extract(RuntimeCardProjection.card_json, "$.from_agent"),
+        "agent",
+    )
+
+
+def _file_monitor_path_sql_expr():
+    arguments_expr = func.coalesce(func.json_extract(RuntimeCardProjection.card_json, "$.arguments"), "{}")
+    base_path_expr = func.coalesce(
+        func.json_extract(arguments_expr, "$.file_path"),
+        func.json_extract(arguments_expr, "$.path"),
+        "",
+    )
+    directory_expr = func.coalesce(func.json_extract(arguments_expr, "$.directory"), ".")
+    list_pattern_expr = func.coalesce(func.json_extract(arguments_expr, "$.pattern"), "*")
+    search_pattern_expr = func.coalesce(func.json_extract(arguments_expr, "$.file_pattern"), "*")
+    list_path_expr = case(
+        (list_pattern_expr == "*", directory_expr),
+        else_=func.rtrim(directory_expr, "/").op("||")("/").op("||")(list_pattern_expr),
+    )
+    search_path_expr = case(
+        (search_pattern_expr == "*", directory_expr),
+        else_=func.rtrim(directory_expr, "/").op("||")("/").op("||")(search_pattern_expr),
+    )
+    return case(
+        (RuntimeCardProjection.tool_name.in_(["read_file", "write_file", "delete_file"]), base_path_expr),
+        (RuntimeCardProjection.tool_name == "list_files", list_path_expr),
+        (RuntimeCardProjection.tool_name == "search_files", search_path_expr),
+        else_=base_path_expr,
+    )
+
+
+def _file_monitor_projection_query(
+    db: Session,
+    *,
+    normalized_tool: str,
+    query_text: str,
+):
+    proj_filters = [
+        RuntimeCardProjection.card_type == "tool_call",
+        RuntimeCardProjection.tool_name.in_(sorted(FILE_MONITOR_TOOLS)),
+        RuntimeCardProjection.card_json.isnot(None),
+        RuntimeCardProjection.card_json != "",
+        func.json_valid(RuntimeCardProjection.card_json) == 1,
+    ]
+    if normalized_tool != "all":
+        proj_filters.append(RuntimeCardProjection.tool_name == normalized_tool)
+
+    projections = (
+        db.query(RuntimeCardProjection, Chatroom, Project)
+        .join(Chatroom, RuntimeCardProjection.chatroom_id == Chatroom.id)
+        .outerjoin(Project, Chatroom.project_id == Project.id)
+        .filter(*proj_filters)
+    )
+    if query_text:
+        like_pattern = f"%{query_text}%"
+        projections = projections.filter(
+            or_(
+                func.lower(func.coalesce(RuntimeCardProjection.agent_name, "")).like(like_pattern),
+                func.lower(func.coalesce(RuntimeCardProjection.tool_name, "")).like(like_pattern),
+                func.lower(func.coalesce(Chatroom.title, "")).like(like_pattern),
+                func.lower(func.coalesce(Project.name, "")).like(like_pattern),
+                func.lower(cast(RuntimeCardProjection.card_json, String)).like(like_pattern),
+                func.lower(func.coalesce(RuntimeCardProjection.preview, "")).like(like_pattern),
+                func.lower(func.coalesce(RuntimeCardProjection.response_preview, "")).like(like_pattern),
+            )
+        )
+    return projections
 
 
 def _metadata_client_turn_id(metadata: dict[str, Any]) -> str | None:
@@ -646,29 +761,29 @@ def _query_recent_message_activity(
     ]
 
 
-def _query_recent_compaction_activity(
+def _query_recent_context_budget_activity(
     db: Session,
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    recent_compaction_rows = (
+    recent_context_budget_rows = (
         db.query(TaskRunEvent, TaskRun, Chatroom, Project)
         .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
         .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
         .outerjoin(Project, TaskRun.project_id == Project.id)
-        .filter(TaskRunEvent.event_type == "context_compaction")
+        .filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE)
         .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
         .limit(limit)
         .all()
     )
     return [
-        serialize_monitor_compaction_item(
+        serialize_monitor_context_budget_item(
             event,
             task_run=task_run,
             chat_title=chatroom.title,
             project_name=project.name if project else None,
         )
-        for event, task_run, chatroom, project in recent_compaction_rows
+        for event, task_run, chatroom, project in recent_context_budget_rows
     ]
 
 
@@ -747,6 +862,90 @@ def _build_overview_usage_window(
         }
         for row in tool_rows
     ]
+
+    provider_mode_summary: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "calls": 0,
+            "state_reused": 0,
+            "with_response_id": 0,
+            "stateful_delta_calls": 0,
+            "sent_input_items": 0,
+            "omitted_input_items": 0,
+            "sent_input_tokens": 0,
+            "omitted_input_tokens": 0,
+            "instruction_tokens": 0,
+            "reported_input_tokens": 0,
+            "reported_output_tokens": 0,
+            "reported_total_tokens": 0,
+            "first_chunk_ms_total": 0,
+            "first_chunk_ms_count": 0,
+            "first_content_ms_total": 0,
+            "first_content_ms_count": 0,
+            "completed_ms_total": 0,
+            "completed_ms_count": 0,
+        }
+    )
+    provider_rows = (
+        db.query(RuntimeCardProjection.card_json)
+        .filter(
+            RuntimeCardProjection.created_at >= scan_start,
+            RuntimeCardProjection.card_type == "llm_call",
+            RuntimeCardProjection.card_json.isnot(None),
+        )
+        .all()
+    )
+    for (card_json,) in provider_rows:
+        try:
+            card = json.loads(card_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            card = {}
+        if not isinstance(card, dict):
+            continue
+        provider_session = (
+            card.get("provider_session")
+            if isinstance(card.get("provider_session"), dict)
+            else {}
+        )
+        provider_mode = str(
+            card.get("provider_mode")
+            or provider_session.get("provider_mode")
+            or "chat_completions"
+        ).strip() or "chat_completions"
+        entry = provider_mode_summary[provider_mode]
+        entry["calls"] += 1
+        if provider_session.get("state_reused"):
+            entry["state_reused"] += 1
+        if provider_session.get("last_response_id") or provider_session.get("previous_response_id"):
+            entry["with_response_id"] += 1
+        provider_request = (
+            card.get("provider_request")
+            if isinstance(card.get("provider_request"), dict)
+            else {}
+        )
+        if provider_request.get("stateful_delta"):
+            entry["stateful_delta_calls"] += 1
+        entry["sent_input_items"] += int(provider_request.get("sent_input_item_count") or 0)
+        entry["omitted_input_items"] += int(provider_request.get("omitted_input_item_count") or 0)
+        entry["sent_input_tokens"] += int(provider_request.get("estimated_sent_input_tokens") or 0)
+        entry["omitted_input_tokens"] += int(provider_request.get("estimated_omitted_input_tokens") or 0)
+        entry["instruction_tokens"] += int(provider_request.get("estimated_instruction_tokens") or 0)
+        reported_input_tokens = int(card.get("tokens_in") or 0)
+        reported_output_tokens = int(card.get("tokens_out") or 0)
+        entry["reported_input_tokens"] += reported_input_tokens
+        entry["reported_output_tokens"] += reported_output_tokens
+        entry["reported_total_tokens"] += reported_input_tokens + reported_output_tokens
+        timings = card.get("timings") if isinstance(card.get("timings"), dict) else {}
+        for source_key, total_key, count_key in (
+            ("first_chunk_ms", "first_chunk_ms_total", "first_chunk_ms_count"),
+            ("first_content_ms", "first_content_ms_total", "first_content_ms_count"),
+            ("completed_ms", "completed_ms_total", "completed_ms_count"),
+        ):
+            value = int(timings.get(source_key) or 0)
+            if value > 0:
+                entry[total_key] += value
+                entry[count_key] += 1
+    if not provider_mode_summary and llm_calls:
+        provider_mode_summary["chat_completions"]["calls"] = int(llm_calls)
 
     # Error count via SQL
     error_count = (
@@ -856,6 +1055,13 @@ def _build_overview_usage_window(
         "by_agent": by_agent,
         "top_tools": top_tools,
         "top_skills": top_skills,
+        "provider_modes": [
+            _provider_mode_usage_payload(mode, counts)
+            for mode, counts in sorted(
+                provider_mode_summary.items(),
+                key=lambda item: (-item[1]["calls"], item[0]),
+            )
+        ],
         "files": {
             "reads": file_summary_data["reads"],
             "writes": file_summary_data["writes"],
@@ -866,6 +1072,30 @@ def _build_overview_usage_window(
             "unique_paths": 0,
             "top_paths": [],
         },
+    }
+
+
+def _provider_mode_usage_payload(mode: str, counts: dict[str, int]) -> dict[str, Any]:
+    def average(total_key: str, count_key: str) -> float | None:
+        count = int(counts.get(count_key) or 0)
+        if count <= 0:
+            return None
+        return round(float(counts.get(total_key) or 0) / count, 1)
+
+    omitted_keys = {
+        "first_chunk_ms_total",
+        "first_chunk_ms_count",
+        "first_content_ms_total",
+        "first_content_ms_count",
+        "completed_ms_total",
+        "completed_ms_count",
+    }
+    return {
+        "mode": mode,
+        **{key: value for key, value in counts.items() if key not in omitted_keys},
+        "avg_first_chunk_ms": average("first_chunk_ms_total", "first_chunk_ms_count"),
+        "avg_first_content_ms": average("first_content_ms_total", "first_content_ms_count"),
+        "avg_completed_ms": average("completed_ms_total", "completed_ms_count"),
     }
 
 
@@ -943,23 +1173,25 @@ def _build_overview_task_summary(
     total_input = sum(int(row.token_input or 0) for row in llm_rows)
     total_output = sum(int(row.token_output or 0) for row in llm_rows)
 
-    compaction_rows = (
+    context_budget_rows = (
         db.query(TaskRunEvent)
         .filter(
             TaskRunEvent.task_run_id.in_(task_run_ids),
-            TaskRunEvent.event_type == "context_compaction",
+            TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE,
         )
         .all()
     )
     context_ratios: list[float] = []
     configured_windows: list[int] = []
-    for event in compaction_rows:
+    for event in context_budget_rows:
         payload = _parse_metadata(event.payload_json)
         diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
-        prompt_total = diagnostics.get("prompt_total") if isinstance(diagnostics.get("prompt_total"), dict) else {}
+        prompt = diagnostics.get("prompt") if isinstance(diagnostics.get("prompt"), dict) else {}
+        prompt_total = prompt.get("total") if isinstance(prompt.get("total"), dict) else {}
+        selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
         user_section = diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {}
         prompt_tokens = _coerce_int(prompt_total.get("tokens")) or 0
-        max_tokens = _coerce_int(diagnostics.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
+        max_tokens = _coerce_int(selector.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
         if max_tokens and max_tokens > 0 and prompt_tokens >= 0:
             context_ratios.append(prompt_tokens / max_tokens)
             configured_windows.append(max_tokens)
@@ -1136,10 +1368,10 @@ def _build_overview_approval_summary(db: Session) -> dict[str, Any]:
     }
 
 
-def _build_overview_compaction_summary(db: Session) -> dict[str, Any]:
+def _build_overview_context_budget_summary(db: Session) -> dict[str, Any]:
     rows = (
         db.query(TaskRunEvent)
-        .filter(TaskRunEvent.event_type == "context_compaction")
+        .filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE)
         .order_by(TaskRunEvent.created_at.asc(), TaskRunEvent.id.asc())
         .all()
     )
@@ -1151,13 +1383,39 @@ def _build_overview_compaction_summary(db: Session) -> dict[str, Any]:
             "avg_per_task_run": None,
             "avg_prompt_tokens": None,
             "avg_usage_ratio": None,
+            "tool_output_saved_tokens": 0,
+            "avg_tool_output_savings_pct": None,
+            "tool_output_by_tool": [],
+            "tool_schema_tokens": 0,
+            "tool_schema_saved_tokens": 0,
+            "tool_schema_count": 0,
+            "tool_schema_by_tool": [],
+            "tool_schema_excluded_by_tool": [],
+            "trend": [],
+            "tool_schema_recommendations": [],
             "reasons": [],
-            "last_compaction_at": None,
+            "last_event_at": None,
         }
 
     intervals: list[float] = []
     prompt_tokens: list[int] = []
     usage_ratios: list[float] = []
+    tool_output_saved_tokens = 0
+    tool_output_savings_pcts: list[float] = []
+    tool_output_by_tool: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "message_count": 0,
+            "summarized_message_count": 0,
+            "estimated_saved_tokens": 0,
+        }
+    )
+    tool_schema_tokens = 0
+    tool_schema_saved_tokens = 0
+    tool_schema_count = 0
+    tool_schema_by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"tokens": 0, "bytes": 0, "count": 0})
+    tool_schema_excluded_by_tool: dict[str, dict[str, int]] = defaultdict(lambda: {"tokens": 0, "bytes": 0, "count": 0})
+    trend_buckets: dict[str, dict[str, Any]] = {}
+    schema_recommendations: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     reason_counts: dict[str, int] = defaultdict(int)
     task_run_counts: dict[int, int] = defaultdict(int)
     previous_created_at: datetime | None = None
@@ -1170,20 +1428,167 @@ def _build_overview_compaction_summary(db: Session) -> dict[str, Any]:
             previous_created_at = row.created_at
         payload = _parse_metadata(row.payload_json)
         diagnostics = payload.get("selector_diagnostics") if isinstance(payload.get("selector_diagnostics"), dict) else {}
-        prompt_total = diagnostics.get("prompt_total") if isinstance(diagnostics.get("prompt_total"), dict) else {}
+        prompt = diagnostics.get("prompt") if isinstance(diagnostics.get("prompt"), dict) else {}
+        prompt_total = prompt.get("total") if isinstance(prompt.get("total"), dict) else {}
+        selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
         user_section = diagnostics.get("user") if isinstance(diagnostics.get("user"), dict) else {}
         prompt_token_value = _coerce_int(prompt_total.get("tokens"))
-        max_tokens = _coerce_int(diagnostics.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
+        max_tokens = _coerce_int(selector.get("max_tokens")) or _coerce_int(user_section.get("effective_input_tokens"))
         if prompt_token_value is not None:
             prompt_tokens.append(prompt_token_value)
         if prompt_token_value is not None and max_tokens and max_tokens > 0:
             usage_ratios.append(prompt_token_value / max_tokens)
+        trend_bucket = _context_budget_trend_bucket(row.created_at)
+        tool_output_budget = prompt.get("tool_output_budget") if isinstance(prompt.get("tool_output_budget"), dict) else {}
+        event_tool_output_saved_tokens = _coerce_int(tool_output_budget.get("estimated_saved_tokens")) or 0
+        tool_output_saved_tokens += event_tool_output_saved_tokens
+        savings_pct = tool_output_budget.get("estimated_savings_pct")
+        if isinstance(savings_pct, (int, float)):
+            tool_output_savings_pcts.append(float(savings_pct))
+        by_tool = tool_output_budget.get("by_tool") if isinstance(tool_output_budget.get("by_tool"), dict) else {}
+        for tool_name, payload in by_tool.items():
+            if not isinstance(payload, dict):
+                continue
+            normalized_tool_name = str(tool_name or "tool").strip() or "tool"
+            tool_entry = tool_output_by_tool[normalized_tool_name]
+            tool_entry["message_count"] += _coerce_int(payload.get("message_count")) or 0
+            tool_entry["summarized_message_count"] += _coerce_int(payload.get("summarized_message_count")) or 0
+            tool_entry["estimated_saved_tokens"] += _coerce_int(payload.get("estimated_saved_tokens")) or 0
+        tool_schema_budget = prompt.get("tool_schema_budget") if isinstance(prompt.get("tool_schema_budget"), dict) else {}
+        event_tool_schema_tokens = _coerce_int(tool_schema_budget.get("tokens")) or 0
+        event_tool_schema_saved_tokens = _coerce_int(tool_schema_budget.get("estimated_saved_tokens")) or 0
+        tool_schema_tokens += event_tool_schema_tokens
+        tool_schema_saved_tokens += event_tool_schema_saved_tokens
+        tool_schema_count += _coerce_int(tool_schema_budget.get("tool_count")) or 0
+        if trend_bucket:
+            bucket = trend_buckets.setdefault(
+                trend_bucket["bucket"],
+                {
+                    "bucket": trend_bucket["bucket"],
+                    "label": trend_bucket["label"],
+                    "event_count": 0,
+                    "tool_output_saved_tokens": 0,
+                    "tool_schema_tokens": 0,
+                    "tool_schema_saved_tokens": 0,
+                    "_prompt_token_sum": 0,
+                    "_prompt_token_count": 0,
+                    "_usage_ratio_sum": 0.0,
+                    "_usage_ratio_count": 0,
+                },
+            )
+            bucket["event_count"] += 1
+            bucket["tool_output_saved_tokens"] += event_tool_output_saved_tokens
+            bucket["tool_schema_tokens"] += event_tool_schema_tokens
+            bucket["tool_schema_saved_tokens"] += event_tool_schema_saved_tokens
+            if prompt_token_value is not None:
+                bucket["_prompt_token_sum"] += prompt_token_value
+                bucket["_prompt_token_count"] += 1
+            if prompt_token_value is not None and max_tokens and max_tokens > 0:
+                bucket["_usage_ratio_sum"] += prompt_token_value / max_tokens
+                bucket["_usage_ratio_count"] += 1
+        schema_filter = (
+            tool_schema_budget.get("filter")
+            if isinstance(tool_schema_budget.get("filter"), dict)
+            else {}
+        )
+        schema_profile_name = str(schema_filter.get("profile_name") or "default").strip() or "default"
+        schema_mode = str(schema_filter.get("mode") or "default").strip() or "default"
+        schema_agent = str(row.agent_name or "agent").strip() or "agent"
+        schema_by_tool = tool_schema_budget.get("by_tool") if isinstance(tool_schema_budget.get("by_tool"), list) else []
+        for item in schema_by_tool:
+            if not isinstance(item, dict):
+                continue
+            normalized_tool_name = str(item.get("tool_name") or "tool").strip() or "tool"
+            schema_entry = tool_schema_by_tool[normalized_tool_name]
+            schema_entry["tokens"] += _coerce_int(item.get("tokens")) or 0
+            schema_entry["bytes"] += _coerce_int(item.get("bytes")) or 0
+            schema_entry["count"] += 1
+        schema_excluded_by_tool = (
+            tool_schema_budget.get("excluded_by_tool")
+            if isinstance(tool_schema_budget.get("excluded_by_tool"), list)
+            else []
+        )
+        for item in schema_excluded_by_tool:
+            if not isinstance(item, dict):
+                continue
+            normalized_tool_name = str(item.get("tool_name") or "tool").strip() or "tool"
+            schema_entry = tool_schema_excluded_by_tool[normalized_tool_name]
+            excluded_tokens = _coerce_int(item.get("tokens")) or 0
+            schema_entry["tokens"] += excluded_tokens
+            schema_entry["bytes"] += _coerce_int(item.get("bytes")) or 0
+            schema_entry["count"] += 1
+            recommendation_key = (
+                "frequently_filtered",
+                schema_agent,
+                schema_profile_name,
+                schema_mode,
+                normalized_tool_name,
+            )
+            recommendation = schema_recommendations.setdefault(
+                recommendation_key,
+                {
+                    "kind": "frequently_filtered",
+                    "agent_name": schema_agent,
+                    "profile_name": schema_profile_name,
+                    "mode": schema_mode,
+                    "tool_name": normalized_tool_name,
+                    "event_count": 0,
+                    "tokens": 0,
+                },
+            )
+            recommendation["event_count"] += 1
+            recommendation["tokens"] += excluded_tokens
+        activated_groups = (
+            schema_filter.get("activated_groups")
+            if isinstance(schema_filter.get("activated_groups"), list)
+            else []
+        )
+        for group_name in activated_groups:
+            normalized_group_name = str(group_name or "group").strip() or "group"
+            recommendation_key = (
+                "frequent_activation",
+                schema_agent,
+                schema_profile_name,
+                schema_mode,
+                normalized_group_name,
+            )
+            recommendation = schema_recommendations.setdefault(
+                recommendation_key,
+                {
+                    "kind": "frequent_activation",
+                    "agent_name": schema_agent,
+                    "profile_name": schema_profile_name,
+                    "mode": schema_mode,
+                    "group_name": normalized_group_name,
+                    "event_count": 0,
+                    "tokens": 0,
+                },
+            )
+            recommendation["event_count"] += 1
         reasons = diagnostics.get("reasons") if isinstance(diagnostics.get("reasons"), list) else []
         for reason in reasons:
             if not isinstance(reason, dict):
                 continue
             name = str(reason.get("kind") or "unknown").strip() or "unknown"
             reason_counts[name] += 1
+
+    trend = []
+    for _, bucket in sorted(trend_buckets.items()):
+        prompt_token_count = int(bucket.pop("_prompt_token_count", 0))
+        prompt_token_sum = int(bucket.pop("_prompt_token_sum", 0))
+        usage_ratio_count = int(bucket.pop("_usage_ratio_count", 0))
+        usage_ratio_sum = float(bucket.pop("_usage_ratio_sum", 0.0))
+        bucket["avg_prompt_tokens"] = (
+            round(prompt_token_sum / prompt_token_count, 1)
+            if prompt_token_count
+            else None
+        )
+        bucket["avg_usage_ratio"] = (
+            round(usage_ratio_sum / usage_ratio_count, 4)
+            if usage_ratio_count
+            else None
+        )
+        trend.append(bucket)
 
     return {
         "total": len(rows),
@@ -1192,11 +1597,46 @@ def _build_overview_compaction_summary(db: Session) -> dict[str, Any]:
         "avg_per_task_run": round(len(rows) / len(task_run_counts), 2) if task_run_counts else None,
         "avg_prompt_tokens": round(sum(prompt_tokens) / len(prompt_tokens), 1) if prompt_tokens else None,
         "avg_usage_ratio": round(sum(usage_ratios) / len(usage_ratios), 4) if usage_ratios else None,
+        "tool_output_saved_tokens": tool_output_saved_tokens,
+        "avg_tool_output_savings_pct": (
+            round(sum(tool_output_savings_pcts) / len(tool_output_savings_pcts), 1)
+            if tool_output_savings_pcts
+            else None
+        ),
+        "tool_output_by_tool": [
+            {"tool_name": tool_name, **counts}
+            for tool_name, counts in sorted(
+                tool_output_by_tool.items(),
+                key=lambda item: (-item[1]["estimated_saved_tokens"], item[0]),
+            )[:8]
+        ],
+        "tool_schema_tokens": tool_schema_tokens,
+        "tool_schema_saved_tokens": tool_schema_saved_tokens,
+        "tool_schema_count": tool_schema_count,
+        "tool_schema_by_tool": [
+            {"tool_name": tool_name, **counts}
+            for tool_name, counts in sorted(
+                tool_schema_by_tool.items(),
+                key=lambda item: (-item[1]["tokens"], item[0]),
+            )[:8]
+        ],
+        "tool_schema_excluded_by_tool": [
+            {"tool_name": tool_name, **counts}
+            for tool_name, counts in sorted(
+                tool_schema_excluded_by_tool.items(),
+                key=lambda item: (-item[1]["tokens"], item[0]),
+            )[:8]
+        ],
+        "trend": trend[-24:],
+        "tool_schema_recommendations": sorted(
+            schema_recommendations.values(),
+            key=lambda item: (-int(item.get("tokens") or 0), -int(item.get("event_count") or 0), str(item.get("tool_name") or item.get("group_name") or "")),
+        )[:8],
         "reasons": [
             {"reason": reason, "count": count}
             for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
         ],
-        "last_compaction_at": rows[-1].created_at.isoformat() if rows[-1].created_at else None,
+        "last_event_at": rows[-1].created_at.isoformat() if rows[-1].created_at else None,
     }
 
 
@@ -1219,6 +1659,16 @@ def _coerce_int(value: Any) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _context_budget_trend_bucket(created_at: datetime | None) -> dict[str, str] | None:
+    if not created_at:
+        return None
+    bucket_at = created_at.replace(minute=0, second=0, microsecond=0)
+    return {
+        "bucket": bucket_at.isoformat(),
+        "label": bucket_at.strftime("%m-%d %H:%M"),
+    }
 
 
 def _runtime_card_matches_task_run(
@@ -1575,16 +2025,16 @@ async def get_monitor_network_events(
     query: str | None = Query(None, max_length=200),
     include_internal: bool = Query(False),
 ):
-    scan_limit = limit if include_internal else min(max(limit * 8, limit), NETWORK_SCAN_LIMIT)
     entries = monitor_network_buffer.list_entries(
-        limit=scan_limit,
+        limit=limit,
         category=_normalize_network_category(category),
         query=query,
+        include_internal=include_internal,
     )
     return {
         "captured_at": datetime.now().isoformat(),
         "latest_id": monitor_network_buffer.latest_id(),
-        "entries": _filter_network_entries(entries, include_internal=include_internal, limit=limit),
+        "entries": entries,
     }
 
 
@@ -1604,7 +2054,7 @@ async def stream_monitor_network_events(
     include_internal: bool = Query(False),
 ):
     normalized_category = _normalize_network_category(category)
-    scan_limit = LOG_STREAM_LIMIT if include_internal else NETWORK_SCAN_LIMIT
+    scan_limit = LOG_STREAM_LIMIT
 
     async def event_generator():
         last_seen_id = cursor
@@ -1623,15 +2073,11 @@ async def stream_monitor_network_events(
                 after_id=last_seen_id,
                 category=normalized_category,
                 query=query,
+                include_internal=include_internal,
             )
             if entries:
                 last_seen_id = max(last_seen_id, max(int(entry["id"]) for entry in entries))
-                filtered_entries = _filter_network_entries(
-                    entries,
-                    include_internal=include_internal,
-                    limit=LOG_STREAM_LIMIT,
-                )
-                for entry in reversed(filtered_entries):
+                for entry in reversed(entries[:LOG_STREAM_LIMIT]):
                     last_seen_id = max(last_seen_id, int(entry["id"]))
                     yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
                 idle_ticks = 0
@@ -2148,8 +2594,8 @@ async def get_monitor_approval_audit(
     }
 
 
-@router.get("/context-compactions")
-async def get_monitor_context_compactions(
+@router.get("/context-budget-events")
+async def get_monitor_context_budget_events(
     limit: int = Query(120, ge=10, le=500),
     db: Session = Depends(get_db),
 ):
@@ -2158,13 +2604,13 @@ async def get_monitor_context_compactions(
         .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
         .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
         .outerjoin(Project, TaskRun.project_id == Project.id)
-        .filter(TaskRunEvent.event_type == "context_compaction")
+        .filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE)
         .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
         .limit(limit)
         .all()
     )
     entries = [
-        serialize_monitor_compaction_item(
+        serialize_monitor_context_budget_item(
             event,
             task_run=task_run,
             chat_title=chatroom.title,
@@ -2172,7 +2618,7 @@ async def get_monitor_context_compactions(
         )
         for event, task_run, chatroom, project in rows
     ]
-    total = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
+    total = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE).count()
     return {
         "captured_at": datetime.now().isoformat(),
         "limit": limit,
@@ -2181,6 +2627,72 @@ async def get_monitor_context_compactions(
             "returned": len(entries),
             "dropped": sum(int(item.get("dropped_count") or 0) for item in entries),
             "truncated": sum(int(item.get("truncated_count") or 0) for item in entries),
+        },
+        "entries": entries,
+    }
+
+
+@router.get("/context-optimization-evaluation")
+async def get_monitor_context_optimization_evaluation(
+    limit: int = Query(120, ge=10, le=500),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(TaskRunEvent)
+        .filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE)
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(limit)
+        .all()
+    )
+    total = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE).count()
+    evaluation = evaluate_context_budget_event_observations(
+        [{"payload_json": row.payload_json} for row in rows],
+    )
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "limit": limit,
+        "counts": {
+            "total": total,
+            "returned": len(rows),
+        },
+        "evaluation": evaluation,
+    }
+
+
+@router.get("/compaction-checkpoints")
+async def get_monitor_compaction_checkpoints(
+    limit: int = Query(120, ge=10, le=500),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(TaskRunEvent, TaskRun, Chatroom, Project)
+        .join(TaskRun, TaskRunEvent.task_run_id == TaskRun.id)
+        .join(Chatroom, TaskRun.chatroom_id == Chatroom.id)
+        .outerjoin(Project, TaskRun.project_id == Project.id)
+        .filter(TaskRunEvent.event_type == SEMANTIC_COMPACTION_EVENT_TYPE)
+        .order_by(desc(TaskRunEvent.created_at), desc(TaskRunEvent.id))
+        .limit(limit)
+        .all()
+    )
+    entries = [
+        serialize_monitor_provider_compaction_item(
+            event,
+            task_run=task_run,
+            chat_title=chatroom.title,
+            project_name=project.name if project else None,
+        )
+        for event, task_run, chatroom, project in rows
+    ]
+    total = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == SEMANTIC_COMPACTION_EVENT_TYPE).count()
+    return {
+        "captured_at": datetime.now().isoformat(),
+        "limit": limit,
+        "counts": {
+            "total": total,
+            "returned": len(entries),
+            "local_structured_summary": sum(
+                1 for item in entries if item.get("compaction_kind") == "local_structured_summary"
+            ),
         },
         "entries": entries,
     }
@@ -2199,21 +2711,17 @@ async def get_monitor_files(
 
     projection_health = _projection_health_payload(db)
     query_text = query.strip().lower()
-    proj_filters = [
-        RuntimeCardProjection.card_type == "tool_call",
-        RuntimeCardProjection.tool_name.in_(sorted(FILE_MONITOR_TOOLS)),
-    ]
-    if normalized_tool != "all":
-        proj_filters.append(RuntimeCardProjection.tool_name == normalized_tool)
-
-    scan_limit = min(max(limit * 8, 400), 4000) if query_text else limit
+    projection_query = _file_monitor_projection_query(
+        db,
+        normalized_tool=normalized_tool,
+        query_text=query_text,
+    )
+    path_expr = _file_monitor_path_sql_expr()
+    agent_expr = _file_monitor_agent_sql_expr()
     projections = (
-        db.query(RuntimeCardProjection, Chatroom, Project)
-        .join(Chatroom, RuntimeCardProjection.chatroom_id == Chatroom.id)
-        .outerjoin(Project, Chatroom.project_id == Project.id)
-        .filter(*proj_filters)
+        projection_query
         .order_by(desc(RuntimeCardProjection.created_at), desc(RuntimeCardProjection.id))
-        .limit(scan_limit)
+        .limit(limit)
         .all()
     )
 
@@ -2235,47 +2743,35 @@ async def get_monitor_files(
         )
         if not entry:
             continue
-        if normalized_tool != "all" and entry["tool_name"] != normalized_tool:
-            continue
-        if query_text:
-            haystack = " ".join(
-                str(entry.get(key) or "")
-                for key in (
-                    "agent",
-                    "tool_name",
-                    "action",
-                    "file_path",
-                    "project_name",
-                    "chat_title",
-                    "arguments_preview",
-                    "result_preview",
-                )
-            ).lower()
-            if query_text not in haystack:
-                continue
         entries.append(entry)
-        if len(entries) >= limit:
-            break
 
-    action_counts: dict[str, int] = defaultdict(int)
-    tool_counts: dict[str, int] = defaultdict(int)
-    agent_counts: dict[str, int] = defaultdict(int)
-    touched_paths: set[str] = set()
-    write_count = 0
-    error_count = 0
-    for entry in entries:
-        action = str(entry.get("action") or "access")
-        tool_name = str(entry.get("tool_name") or "tool")
-        agent = str(entry.get("agent") or "agent")
-        action_counts[action] += 1
-        tool_counts[tool_name] += 1
-        agent_counts[agent] += 1
-        if entry.get("file_path"):
-            touched_paths.add(str(entry["file_path"]))
-        if action in {"write", "delete"}:
-            write_count += 1
-        if entry.get("success") is False:
-            error_count += 1
+    totals_row = projection_query.with_entities(
+        func.count(RuntimeCardProjection.id),
+        func.sum(case((RuntimeCardProjection.tool_name == "read_file", 1), else_=0)),
+        func.sum(case((RuntimeCardProjection.tool_name.in_(["write_file", "delete_file"]), 1), else_=0)),
+        func.sum(case((RuntimeCardProjection.tool_name == "list_files", 1), else_=0)),
+        func.sum(case((RuntimeCardProjection.tool_name == "search_files", 1), else_=0)),
+        func.sum(case((RuntimeCardProjection.tool_name == "delete_file", 1), else_=0)),
+        func.sum(case((RuntimeCardProjection.success.is_(False), 1), else_=0)),
+        func.count(distinct(case((path_expr != "", path_expr), else_=None))),
+    ).one()
+    total_count = int(totals_row[0] or 0)
+    reads_count = int(totals_row[1] or 0)
+    writes_count = int(totals_row[2] or 0)
+    lists_count = int(totals_row[3] or 0)
+    searches_count = int(totals_row[4] or 0)
+    deletes_count = int(totals_row[5] or 0)
+    error_count = int(totals_row[6] or 0)
+    unique_paths_count = int(totals_row[7] or 0)
+
+    tool_counts = projection_query.with_entities(
+        RuntimeCardProjection.tool_name,
+        func.count(RuntimeCardProjection.id),
+    ).group_by(RuntimeCardProjection.tool_name).all()
+    agent_counts = projection_query.with_entities(
+        agent_expr.label("agent"),
+        func.count(RuntimeCardProjection.id),
+    ).group_by(agent_expr).all()
 
     return {
         "captured_at": datetime.now().isoformat(),
@@ -2283,17 +2779,23 @@ async def get_monitor_files(
         "tool": normalized_tool,
         "query": query,
         "counts": {
-            "total": len(entries),
-            "reads": int(action_counts.get("read", 0)),
-            "writes": write_count,
-            "lists": int(action_counts.get("list", 0)),
-            "searches": int(action_counts.get("search", 0)),
-            "deletes": int(action_counts.get("delete", 0)),
+            "total": total_count,
+            "reads": reads_count,
+            "writes": writes_count,
+            "lists": lists_count,
+            "searches": searches_count,
+            "deletes": deletes_count,
             "errors": error_count,
-            "unique_paths": len(touched_paths),
+            "unique_paths": unique_paths_count,
         },
-        "by_tool": [{"tool_name": name, "count": count} for name, count in sorted(tool_counts.items())],
-        "by_agent": [{"agent": name, "count": count} for name, count in sorted(agent_counts.items())],
+        "by_tool": [
+            {"tool_name": str(name or "tool"), "count": int(count or 0)}
+            for name, count in sorted(tool_counts, key=lambda item: str(item[0] or "tool"))
+        ],
+        "by_agent": [
+            {"agent": str(name or "agent"), "count": int(count or 0)}
+            for name, count in sorted(agent_counts, key=lambda item: str(item[0] or "agent"))
+        ],
         "diagnostics": {
             "projection_health": projection_health,
             "scope": {
@@ -2321,13 +2823,14 @@ async def get_monitor_overview(
     runtime_card_count = db.query(Message).filter(Message.message_type == "runtime_card").count()
     projection_health = _projection_health_payload(db)
     latest_message = db.query(Message).order_by(desc(Message.created_at), desc(Message.id)).first()
-    context_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == "context_compaction").count()
+    context_budget_event_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == CONTEXT_BUDGET_EVENT_TYPE).count()
+    semantic_compaction_count = db.query(TaskRunEvent).filter(TaskRunEvent.event_type == SEMANTIC_COMPACTION_EVENT_TYPE).count()
     range_value = range if range in USAGE_RANGES else "24h"
     usage_window = _build_overview_usage_window(db, range_value=range_value)
     task_summary = _build_overview_task_summary(db, telemetry_db=telemetry_db, range_value=range_value)
     llm_summary = _build_overview_llm_summary(telemetry_db, range_value=range_value)
     approval_summary = _build_overview_approval_summary(db)
-    compaction_summary = _build_overview_compaction_summary(db)
+    context_budget_summary = _build_overview_context_budget_summary(db)
     return {
         "captured_at": datetime.now().isoformat(),
         "system": {
@@ -2345,7 +2848,8 @@ async def get_monitor_overview(
                 "runtime_card_projection_missing": projection_health["missing"],
                 "approval_queue_total": approval_summary["queue"]["total"],
                 "approval_queue_pending": approval_summary["queue"]["pending"],
-                "context_compactions": context_compaction_count,
+                "context_budget_events": context_budget_event_count,
+                "semantic_compactions": semantic_compaction_count,
             },
             "features": {
                 "llm_enabled": True,
@@ -2364,7 +2868,7 @@ async def get_monitor_overview(
         "tasks": task_summary,
         "llm": llm_summary,
         "approvals": approval_summary,
-        "compactions": compaction_summary,
+        "context_budget": context_budget_summary,
     }
 
 
@@ -2373,7 +2877,7 @@ async def get_monitor_overview_activity(
     runtime_limit: int = Query(OVERVIEW_ACTIVITY_RUNTIME_LIMIT, ge=12, le=160),
     summary_window: int = Query(96, ge=24, le=320),
     message_limit: int = Query(OVERVIEW_ACTIVITY_MESSAGE_LIMIT, ge=8, le=120),
-    compaction_limit: int = Query(OVERVIEW_ACTIVITY_COMPACTION_LIMIT, ge=4, le=64),
+    context_budget_limit: int = Query(OVERVIEW_ACTIVITY_CONTEXT_BUDGET_LIMIT, ge=4, le=64),
     db: Session = Depends(get_db),
 ):
     recent_runtime, _summary_messages = _query_recent_runtime_activity(
@@ -2382,12 +2886,12 @@ async def get_monitor_overview_activity(
         summary_window=summary_window,
     )
     recent_messages = _query_recent_message_activity(db, message_limit=message_limit)
-    recent_compactions = _query_recent_compaction_activity(db, limit=compaction_limit)
+    recent_context_budget_events = _query_recent_context_budget_activity(db, limit=context_budget_limit)
     return {
         "captured_at": datetime.now().isoformat(),
         "recent_runtime": recent_runtime,
         "recent_messages": recent_messages,
-        "recent_compactions": recent_compactions,
+        "recent_context_budget_events": recent_context_budget_events,
     }
 
 

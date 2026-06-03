@@ -113,6 +113,57 @@ class TestLoadAgentProvider:
         assert result["api_key"] == "analyst-key"
         assert result["model"] == "analyst-model"
 
+    def test_provider_mode_inherits_global_and_allows_agent_override(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "agents.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "global_llm": {
+                        "provider": {
+                            "baseUrl": "http://global-api.example.com/v1",
+                            "apiKey": "global-key",
+                            "models": [{"id": "global-model"}],
+                        },
+                        "default_model": "global-model",
+                        "runtime": {"provider_mode": "responses_http"},
+                    },
+                    "agents": {
+                        "analyst": {
+                            "provider": {
+                                "baseUrl": "http://analyst-api.example.com/v1",
+                                "apiKey": "analyst-key",
+                                "models": [{"id": "analyst-model"}],
+                            },
+                            "default_model": "analyst-model",
+                        },
+                        "developer": {
+                            "provider": {
+                                "baseUrl": "http://developer-api.example.com/v1",
+                                "apiKey": "developer-key",
+                                "models": [{"id": "developer-model"}],
+                            },
+                            "default_model": "developer-model",
+                            "runtime": {"provider_mode": "chat_completions"},
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_CONFIG_FILE", str(config_file))
+        if 'config' in sys.modules:
+            del sys.modules['config']
+        if 'llm.client' in sys.modules:
+            del sys.modules['llm.client']
+
+        from llm.client import _load_agent_provider
+
+        inherited = _load_agent_provider("analyst")
+        overridden = _load_agent_provider("developer")
+
+        assert inherited["provider_mode"] == "responses_http"
+        assert overridden["provider_mode"] == "chat_completions"
+
     def test_agent_empty_provider_fallback_global(self, agents_config_file, monkeypatch):
         """provider 为空的 Agent fallback 到 global_llm"""
         monkeypatch.setenv("AGENT_CONFIG_FILE", agents_config_file)
@@ -550,3 +601,38 @@ class TestConfigAPIEndpoints:
         r = client.get("/api/config")
         assert r.json()["agent_llm_configs"]["coder"]["baseUrl"] == "http://roundtrip.com/v1"
         assert r.json()["agent_llm_configs"]["coder"]["source"] == "global"
+
+    def test_test_config_uses_responses_websocket_provider_mode(self, client_with_config):
+        client, config_file = client_with_config
+
+        with open(config_file, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        saved["agents"]["assistant"]["runtime"] = {"provider_mode": "responses_websocket"}
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(saved, f)
+
+        created_clients = []
+
+        class FakeLLMClient:
+            def __init__(self, **kwargs):
+                created_clients.append(kwargs)
+
+            async def chat_stream(self, messages):
+                yield {"type": "done", "response_id": "resp_ws_test"}
+
+        with patch("routes.api.LLMClient", FakeLLMClient):
+            response = client.post("/api/config/test", params={"agent_name": "assistant"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["provider_mode"] == "responses_websocket"
+        assert payload["response_id"] == "resp_ws_test"
+        assert created_clients == [
+            {
+                "base_url": "http://assistant.com/v1",
+                "api_key": "asst-key",
+                "model": "gpt-3.5-turbo",
+                "agent_name": "valet",
+                "provider_mode": "responses_websocket",
+            }
+        ]

@@ -122,7 +122,18 @@ async def test_run_orchestration_agent_turn_records_lifecycle_and_saves_message(
             return [{"role": "user", "content": kwargs["user_message"]}]
 
         async def save_message(**kwargs):
-            saved = SimpleNamespace(id=42, created_at=datetime.now(), **kwargs)
+            message = fresh_db.Message(
+                chatroom_id=kwargs["chatroom_id"],
+                agent_id=kwargs["agent_id"],
+                content=kwargs["content"],
+                message_type=kwargs["message_type"],
+                metadata_json=json.dumps(kwargs["metadata"], ensure_ascii=False),
+                created_at=datetime.now(),
+            )
+            db.add(message)
+            db.commit()
+            db.refresh(message)
+            saved = SimpleNamespace(id=message.id, created_at=message.created_at, **kwargs)
             saved_messages.append(saved)
             return saved
 
@@ -157,12 +168,13 @@ async def test_run_orchestration_agent_turn_records_lifecycle_and_saves_message(
         )
 
         assert content == "Implemented the requested orchestration slice."
-        assert message.id == 42
+        assert message.id == saved_messages[0].id
         assert saved_messages[0].metadata == {"client_turn_id": "turn-1"}
         assert collaboration_calls == [(1, chatroom.id)]
         assert memory_jobs == [(agent.id, "Implement this.", content)]
         event_types = [event.event_type for event in task_run.events]
         assert event_types == ["agent_turn_started", "agent_turn_completed"]
+        assert task_run.events[-1].message_id == message.id
     finally:
         db.close()
 
