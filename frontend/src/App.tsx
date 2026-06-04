@@ -79,9 +79,9 @@ const CONFIG_SECTION_META: Record<
   },
   framework: {
     sidebarLabel: "Framework LLM",
-    sidebarDescription: "Runtime-owned LLM and explicit fallback",
+    sidebarDescription: "Optional runtime LLM override and fallback",
     title: "Framework LLM",
-    subtitle: "Configure Catown's own maintenance LLM separately from agent business providers.",
+    subtitle: "Optionally override Catown's own maintenance LLM, otherwise use the main LLM.",
   },
   skills: {
     sidebarLabel: "Skills",
@@ -2254,6 +2254,7 @@ function App() {
     () => findAgentByType(agents, DEFAULT_AGENT_TYPE) ?? agents[0] ?? null,
     [agents],
   );
+  const frameworkOverrideConfigured = Boolean(config?.framework_llm?.provider?.baseUrl && config?.framework_llm?.default_model);
   const settingsSections = useMemo(
     () => [
       {
@@ -2266,7 +2267,7 @@ function App() {
         id: "framework" as const,
         label: CONFIG_SECTION_META.framework.sidebarLabel,
         description: CONFIG_SECTION_META.framework.sidebarDescription,
-        badge: config?.framework_llm?.fallback?.enabled ? "fallback on" : "isolated",
+        badge: frameworkOverrideConfigured ? "override" : "main LLM",
       },
       {
         id: "skills" as const,
@@ -2310,7 +2311,7 @@ function App() {
         description: CONFIG_SECTION_META.interface.sidebarDescription,
       },
     ],
-    [agents, config?.context?.selector_profiles, config?.framework_llm?.fallback?.enabled, config?.multimodal?.max_upload_size_bytes],
+    [agents, config?.context?.selector_profiles, config?.multimodal?.max_upload_size_bytes, frameworkOverrideConfigured],
   );
   const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
   const appShellStyle = useMemo(

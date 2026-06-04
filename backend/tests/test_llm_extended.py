@@ -1508,6 +1508,19 @@ class TestLLMClientNetworkCapture:
 
         assert result == "fallback ok"
 
+    def test_get_framework_llm_client_uses_main_client_without_override(self, monkeypatch):
+        import llm.client as llm_mod
+
+        class MainLLM:
+            pass
+
+        main_client = MainLLM()
+        llm_mod.clear_client_cache()
+        monkeypatch.setattr(llm_mod, "_load_framework_provider", lambda: None)
+        monkeypatch.setattr(llm_mod, "get_llm_client", lambda: main_client)
+
+        assert llm_mod.get_framework_llm_client() is main_client
+
     @pytest.mark.asyncio
     async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
         from llm.client import LLMClient

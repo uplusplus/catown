@@ -327,7 +327,7 @@ class TestLoadFrameworkProvider:
         assert result["api_key"] == "framework-key-123"
         assert result["model"] == "framework-model-7b"
 
-    def test_framework_provider_does_not_fallback_to_global(self, tmp_path, monkeypatch):
+    def test_framework_provider_returns_none_when_override_missing(self, tmp_path, monkeypatch):
         config_file = tmp_path / "agents.json"
         config_file.write_text(
             json.dumps(

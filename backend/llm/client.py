@@ -2372,7 +2372,7 @@ def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
 
 
 def _load_framework_provider(data: Dict = None) -> Optional[Dict[str, str]]:
-    """Load the dedicated framework provider without agent/global fallback."""
+    """Load the dedicated framework provider override, if configured."""
     if data is None:
         config_file = settings.AGENT_CONFIG_FILE
         if not os.path.exists(config_file):
@@ -2454,16 +2454,16 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
 
 
 def get_framework_llm_client() -> LLMClient:
-    """Get the dedicated LLM client for Catown framework maintenance tasks."""
+    """Get the LLM client for Catown framework maintenance tasks."""
     global _framework_client
     if _framework_client is not None:
         return _framework_client
 
     provider = _load_framework_provider()
     if not provider:
-        raise RuntimeError(
-            f"No framework LLM provider configured. Please configure framework_llm in {settings.AGENT_CONFIG_FILE}"
-        )
+        _framework_client = get_llm_client()
+        logger.info("No framework LLM override configured; using main LLM client")
+        return _framework_client
 
     _framework_client = LLMClient(
         base_url=provider["base_url"],
@@ -2498,7 +2498,7 @@ def get_framework_fallback_llm_client() -> Optional[LLMClient]:
 
 
 async def chat_framework_llm(messages: List[Dict[str, Any]], **kwargs) -> str:
-    """Call the framework LLM, using only the configured framework fallback on failure."""
+    """Call the framework LLM path, using the configured framework fallback on failure."""
     try:
         return await get_framework_llm_client().chat(messages, **kwargs)
     except Exception as primary_exc:

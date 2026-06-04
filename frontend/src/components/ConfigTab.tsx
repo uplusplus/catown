@@ -1359,19 +1359,23 @@ export function ConfigTab({
   const frameworkPreviewItems = useMemo(
     () => {
       const fallbackEnabled = config?.framework_llm?.fallback?.enabled === true;
+      const frameworkOverrideConfigured = Boolean(config?.framework_llm?.provider?.baseUrl && config?.framework_llm?.default_model);
       return [
-        { label: "Base URL", value: previewText(config?.framework_llm?.provider?.baseUrl, "Not set") },
-        { label: "Model", value: previewText(config?.framework_llm?.default_model, "Not set") },
-        { label: "Provider Mode", value: providerModeLabel(config?.framework_llm?.runtime?.provider_mode) },
+        { label: "Primary Source", value: frameworkOverrideConfigured ? "Framework override" : "Main LLM" },
+        { label: "Base URL", value: frameworkOverrideConfigured ? previewText(config?.framework_llm?.provider?.baseUrl, "Not set") : "Uses main LLM" },
+        { label: "Model", value: frameworkOverrideConfigured ? previewText(config?.framework_llm?.default_model, "Not set") : "Uses main LLM" },
+        { label: "Provider Mode", value: frameworkOverrideConfigured ? providerModeLabel(config?.framework_llm?.runtime?.provider_mode) : "Main LLM" },
         {
           label: "Context Window",
-          value: previewContextWindow(
-            config?.framework_llm?.provider?.models?.find((model) => model.id === config?.framework_llm?.default_model)?.contextWindow
-              ?? config?.framework_llm?.provider?.models?.[0]?.contextWindow,
-            "Not set",
-          ),
+          value: frameworkOverrideConfigured
+            ? previewContextWindow(
+                config?.framework_llm?.provider?.models?.find((model) => model.id === config?.framework_llm?.default_model)?.contextWindow
+                  ?? config?.framework_llm?.provider?.models?.[0]?.contextWindow,
+                "Not set",
+              )
+            : "Main LLM",
         },
-        { label: "API Key", value: previewSecret(config?.framework_llm?.provider?.apiKey, "Not set") },
+        { label: "API Key", value: frameworkOverrideConfigured ? previewSecret(config?.framework_llm?.provider?.apiKey, "Not set") : "Main LLM" },
         { label: "Fallback", value: fallbackEnabled ? "Enabled" : "Disabled" },
         {
           label: "Fallback Model",
@@ -2130,10 +2134,9 @@ export function ConfigTab({
   }
 
   if (activeSection === "framework") {
+    const frameworkOverrideConfigured = Boolean(config?.framework_llm?.provider?.baseUrl && config?.framework_llm?.default_model);
     const frameworkSaveDisabled =
       saving
-      || !frameworkDraft.baseUrl.trim()
-      || !frameworkDraft.model.trim()
       || (
         frameworkDraft.fallbackEnabled
         && (!frameworkDraft.fallbackBaseUrl.trim() || !frameworkDraft.fallbackModel.trim())
@@ -2147,7 +2150,7 @@ export function ConfigTab({
               <h2>Framework LLM Config</h2>
             </div>
             <div className="config-header-actions">
-              <span className="soft-pill">Agent-isolated</span>
+              <span className="soft-pill">{frameworkOverrideConfigured ? "Framework override" : "Uses main LLM"}</span>
               <span className={`soft-pill ${config?.framework_llm?.fallback?.enabled ? "soft-pill--success" : ""}`}>
                 {config?.framework_llm?.fallback?.enabled ? "Fallback enabled" : "Fallback disabled"}
               </span>
@@ -2241,7 +2244,7 @@ export function ConfigTab({
                     </label>
                   </div>
                   <p className="small-note">
-                    Used by Catown framework maintenance work such as memory extraction. This path never silently falls back to agent or global LLM providers.
+                    Used by Catown framework maintenance work such as memory extraction. Leave Base URL or Model empty to use the main LLM.
                   </p>
                 </div>
 
@@ -2319,7 +2322,7 @@ export function ConfigTab({
             <div className="config-side-stack">
               <PreviewCard
                 title="Framework LLM"
-                subtitle="Dedicated provider for Catown framework-owned LLM work"
+                subtitle="Optional override for Catown framework-owned LLM work"
                 items={frameworkPreviewItems}
                 onActivate={startEditingFramework}
               />

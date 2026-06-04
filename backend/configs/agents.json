@@ -15,17 +15,11 @@
   },
   "framework_llm": {
     "provider": {
-      "baseUrl": "http://localhost:11434/v1",
-      "apiKey": "ollama",
-      "models": [
-        {
-          "id": "qwen2.5:7b-instruct",
-          "name": "Qwen2.5 7B Instruct (local framework)",
-          "contextWindow": 32768
-        }
-      ]
+      "baseUrl": "",
+      "apiKey": "",
+      "models": []
     },
-    "default_model": "qwen2.5:7b-instruct",
+    "default_model": "",
     "runtime": {
       "provider_mode": "chat_completions"
     },
