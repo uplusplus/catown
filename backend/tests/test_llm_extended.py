@@ -1490,6 +1490,25 @@ class TestLLMClientNetworkCapture:
         assert events[0]["metadata"]["frame_type"] == "request"
 
     @pytest.mark.asyncio
+    async def test_chat_framework_llm_uses_configured_fallback(self, monkeypatch):
+        import llm.client as llm_mod
+
+        class FailingLLM:
+            async def chat(self, messages, **kwargs):
+                raise RuntimeError("primary down")
+
+        class FallbackLLM:
+            async def chat(self, messages, **kwargs):
+                return "fallback ok"
+
+        monkeypatch.setattr(llm_mod, "get_framework_llm_client", lambda: FailingLLM())
+        monkeypatch.setattr(llm_mod, "get_framework_fallback_llm_client", lambda: FallbackLLM())
+
+        result = await llm_mod.chat_framework_llm([{"role": "user", "content": "extract"}])
+
+        assert result == "fallback ok"
+
+    @pytest.mark.asyncio
     async def test_capture_http_response_decodes_gzip_chunks_for_monitor(self):
         from llm.client import LLMClient
 

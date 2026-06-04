@@ -78,6 +78,34 @@ def _merge_missing_dict_values(src: dict, dst: dict) -> bool:
     return changed
 
 
+def _ensure_top_level_config(config_file: Path, key: str) -> None:
+    """Backfill a bundled top-level config section into an existing runtime config."""
+    if not config_file.exists():
+        return
+    src_file = DEFAULT_CONFIG_SOURCE_DIR / config_file.name
+    if not src_file.exists():
+        return
+    try:
+        with src_file.open("r", encoding="utf-8-sig") as f:
+            src_data = json.load(f)
+        with config_file.open("r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(src_data, dict) or not isinstance(data, dict):
+        return
+    if key not in src_data:
+        return
+    changed = False
+    if key not in data:
+        data[key] = src_data[key]
+        changed = True
+    elif isinstance(src_data.get(key), dict) and isinstance(data.get(key), dict):
+        changed = _merge_missing_dict_values(src_data[key], data[key])
+    if changed:
+        config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _ensure_agent_tool(config_file: Path, agent_name: str, tool_name: str) -> None:
     """Add a newly introduced tool to an existing runtime agent config."""
     if not config_file.exists():
@@ -325,6 +353,7 @@ class Settings:
         if "AGENT_CONFIG_FILE" not in os.environ:
             agent_config_path = Path(self.AGENT_CONFIG_FILE)
             _copy_file_if_missing(DEFAULT_CONFIG_SOURCE_DIR / "agents.json", agent_config_path)
+            _ensure_top_level_config(agent_config_path, "framework_llm")
             _ensure_agent_tool(agent_config_path, "valet", "skill_manager")
             _ensure_agent_tools(agent_config_path, "valet", ["analyze_image", "analyze_document"])
             _ensure_agent_tools(agent_config_path, "analyst", ["analyze_image", "analyze_document"])

@@ -7,6 +7,7 @@ import type {
   ChatProcessEntry,
   ConfigResponse,
   ContextConfigPayload,
+  FrameworkConfigPayload,
   GlobalConfigPayload,
   GitHubProjectImportPayload,
   MonitorLogsResponse,
@@ -621,6 +622,12 @@ export const api = {
   },
   saveGlobalConfig(payload: GlobalConfigPayload) {
     return request<{ message: string }>("/api/config/global", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+  saveFrameworkConfig(payload: FrameworkConfigPayload) {
+    return request<{ message: string }>("/api/config/framework", {
       method: "PUT",
       body: JSON.stringify(payload),
     });

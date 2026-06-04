@@ -13,6 +13,41 @@
     },
     "default_model": "gpt-5.4-mini"
   },
+  "framework_llm": {
+    "provider": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "ollama",
+      "models": [
+        {
+          "id": "qwen2.5:7b-instruct",
+          "name": "Qwen2.5 7B Instruct (local framework)",
+          "contextWindow": 32768
+        }
+      ]
+    },
+    "default_model": "qwen2.5:7b-instruct",
+    "runtime": {
+      "provider_mode": "chat_completions"
+    },
+    "fallback": {
+      "enabled": false,
+      "provider": {
+        "baseUrl": "https://your-framework-fallback-endpoint.example/v1",
+        "apiKey": "${FRAMEWORK_LLM_FALLBACK_API_KEY}",
+        "models": [
+          {
+            "id": "gpt-5.4-mini",
+            "name": "Framework fallback model",
+            "contextWindow": 400000
+          }
+        ]
+      },
+      "default_model": "gpt-5.4-mini",
+      "runtime": {
+        "provider_mode": "chat_completions"
+      }
+    }
+  },
   "orchestration": {
     "sidecar_agent_types": [
       "tester"

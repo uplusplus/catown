@@ -24,6 +24,7 @@ import type {
   ConfigSection,
   ConfigResponse,
   ContextConfigPayload,
+  FrameworkConfigPayload,
   GlobalConfigPayload,
   MessageItem,
   MessageStreamStep,
@@ -75,6 +76,12 @@ const CONFIG_SECTION_META: Record<
     sidebarDescription: "Models, roles, tools, skills, and defaults",
     title: "Agent management",
     subtitle: "Manage provider defaults, roles, souls, tools, and per-agent runtime behavior.",
+  },
+  framework: {
+    sidebarLabel: "Framework LLM",
+    sidebarDescription: "Runtime-owned LLM and explicit fallback",
+    title: "Framework LLM",
+    subtitle: "Configure Catown's own maintenance LLM separately from agent business providers.",
   },
   skills: {
     sidebarLabel: "Skills",
@@ -2256,6 +2263,12 @@ function App() {
         badge: `${agents.length}`,
       },
       {
+        id: "framework" as const,
+        label: CONFIG_SECTION_META.framework.sidebarLabel,
+        description: CONFIG_SECTION_META.framework.sidebarDescription,
+        badge: config?.framework_llm?.fallback?.enabled ? "fallback on" : "isolated",
+      },
+      {
         id: "skills" as const,
         label: CONFIG_SECTION_META.skills.sidebarLabel,
         description: CONFIG_SECTION_META.skills.sidebarDescription,
@@ -2297,7 +2310,7 @@ function App() {
         description: CONFIG_SECTION_META.interface.sidebarDescription,
       },
     ],
-    [agents, config?.context?.selector_profiles, config?.multimodal?.max_upload_size_bytes],
+    [agents, config?.context?.selector_profiles, config?.framework_llm?.fallback?.enabled, config?.multimodal?.max_upload_size_bytes],
   );
   const activeConfigMeta = CONFIG_SECTION_META[activeConfigSection];
   const appShellStyle = useMemo(
@@ -4993,6 +5006,24 @@ function App() {
     }
   }
 
+  async function handleSaveFramework(payload: FrameworkConfigPayload) {
+    try {
+      setSavingConfig(true);
+      setError("");
+      await api.saveFrameworkConfig(payload);
+      const [refreshed, refreshedRules] = await Promise.all([api.getConfig(), api.getToolAuthorizationRules()]);
+      setConfig(refreshed);
+      setAuthorizationRules(refreshedRules);
+      setNotice("Framework LLM config saved.");
+      pushEvent("Framework LLM config saved", "success");
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to save framework LLM config");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
   async function handleSaveOrchestration(payload: { sidecar_agent_types: string[] }) {
     try {
       setSavingConfig(true);
@@ -5390,6 +5421,7 @@ function App() {
             saving={savingConfig}
             onBackToChat={() => setActiveTab("chat")}
             onSaveGlobal={handleSaveGlobal}
+            onSaveFramework={handleSaveFramework}
             onSaveOrchestration={handleSaveOrchestration}
             onSavePermissions={handleSavePermissions}
             onSaveContext={handleSaveContext}

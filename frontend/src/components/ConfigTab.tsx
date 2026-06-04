@@ -10,6 +10,7 @@ import type {
   ContextSelectorProfileConfig,
   ConfigResponse,
   ConfigSection,
+  FrameworkConfigPayload,
   MultimodalConfigPayload,
   PermissionsConfigPayload,
   PermissionRememberMatcher,
@@ -32,6 +33,7 @@ type ConfigTabProps = {
     default_model: string;
     runtime?: { provider_mode?: ProviderMode };
   }) => Promise<void>;
+  onSaveFramework: (payload: FrameworkConfigPayload) => Promise<void>;
   onSaveAgent: (
     agentName: string,
     payload: {
@@ -70,6 +72,15 @@ type GlobalDraft = {
   model: string;
   contextWindow: string;
   providerMode: ProviderMode;
+};
+
+type FrameworkDraft = GlobalDraft & {
+  fallbackEnabled: boolean;
+  fallbackBaseUrl: string;
+  fallbackApiKey: string;
+  fallbackModel: string;
+  fallbackContextWindow: string;
+  fallbackProviderMode: ProviderMode;
 };
 
 type OrchestrationDraft = {
@@ -169,6 +180,35 @@ function buildGlobalDraft(config: ConfigResponse | null): GlobalDraft {
         ? String(Math.trunc(modelConfig.contextWindow))
         : "",
     providerMode: normalizeProviderMode(config?.global_llm?.runtime?.provider_mode),
+  };
+}
+
+function buildFrameworkDraft(config: ConfigResponse | null): FrameworkDraft {
+  const provider = config?.framework_llm?.provider;
+  const defaultModel = config?.framework_llm?.default_model ?? provider?.models?.[0]?.id ?? "";
+  const modelConfig = provider?.models?.find((model) => model.id === defaultModel) ?? provider?.models?.[0];
+  const fallback = config?.framework_llm?.fallback;
+  const fallbackProvider = fallback?.provider;
+  const fallbackModel = fallback?.default_model ?? fallbackProvider?.models?.[0]?.id ?? "";
+  const fallbackModelConfig = fallbackProvider?.models?.find((model) => model.id === fallbackModel) ?? fallbackProvider?.models?.[0];
+  return {
+    baseUrl: provider?.baseUrl ?? "",
+    apiKey: provider?.apiKey ?? "",
+    model: defaultModel,
+    contextWindow:
+      typeof modelConfig?.contextWindow === "number" && Number.isFinite(modelConfig.contextWindow) && modelConfig.contextWindow > 0
+        ? String(Math.trunc(modelConfig.contextWindow))
+        : "",
+    providerMode: normalizeProviderMode(config?.framework_llm?.runtime?.provider_mode),
+    fallbackEnabled: fallback?.enabled ?? false,
+    fallbackBaseUrl: fallbackProvider?.baseUrl ?? "",
+    fallbackApiKey: fallbackProvider?.apiKey ?? "",
+    fallbackModel,
+    fallbackContextWindow:
+      typeof fallbackModelConfig?.contextWindow === "number" && Number.isFinite(fallbackModelConfig.contextWindow) && fallbackModelConfig.contextWindow > 0
+        ? String(Math.trunc(fallbackModelConfig.contextWindow))
+        : "",
+    fallbackProviderMode: normalizeProviderMode(fallback?.runtime?.provider_mode),
   };
 }
 
@@ -789,6 +829,7 @@ export function ConfigTab({
   saving,
   onBackToChat,
   onSaveGlobal,
+  onSaveFramework,
   onSaveOrchestration,
   onSavePermissions,
   onSaveContext,
@@ -805,6 +846,7 @@ export function ConfigTab({
   const [globalModel, setGlobalModel] = useState("");
   const [globalContextWindow, setGlobalContextWindow] = useState("");
   const [globalProviderMode, setGlobalProviderMode] = useState<ProviderMode>("chat_completions");
+  const [frameworkDraft, setFrameworkDraft] = useState<FrameworkDraft>(() => buildFrameworkDraft(config));
   const [orchestrationDraft, setOrchestrationDraft] = useState<OrchestrationDraft>(() => buildOrchestrationDraft(config));
   const [permissionsDraft, setPermissionsDraft] = useState<PermissionsDraft>(() => buildPermissionsDraft(config));
   const [contextDraft, setContextDraft] = useState<ContextDraft>(() => buildContextDraft(config));
@@ -814,6 +856,7 @@ export function ConfigTab({
   const [syncToAllAgents, setSyncToAllAgents] = useState(true);
   const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDraft>>({});
   const [editingGlobal, setEditingGlobal] = useState(false);
+  const [editingFramework, setEditingFramework] = useState(false);
   const [editingOrchestration, setEditingOrchestration] = useState(false);
   const [editingContext, setEditingContext] = useState(false);
   const [editingAgents, setEditingAgents] = useState<Record<string, boolean>>({});
@@ -915,6 +958,10 @@ export function ConfigTab({
     setGlobalModel(draft.model);
     setGlobalContextWindow(draft.contextWindow);
     setGlobalProviderMode(draft.providerMode);
+  }, [config]);
+
+  useEffect(() => {
+    setFrameworkDraft(buildFrameworkDraft(config));
   }, [config]);
 
   useEffect(() => {
@@ -1055,6 +1102,58 @@ export function ConfigTab({
     }
 
     setEditingGlobal(false);
+  }
+
+  function resetFrameworkDraft() {
+    setFrameworkDraft(buildFrameworkDraft(config));
+  }
+
+  function startEditingFramework() {
+    resetFrameworkDraft();
+    setEditingFramework(true);
+  }
+
+  function cancelEditingFramework() {
+    resetFrameworkDraft();
+    setEditingFramework(false);
+  }
+
+  async function handleFrameworkSubmit(event: FormEvent) {
+    event.preventDefault();
+    await onSaveFramework({
+      provider: {
+        baseUrl: frameworkDraft.baseUrl.trim(),
+        apiKey: frameworkDraft.apiKey.trim(),
+        models: [{
+          id: frameworkDraft.model.trim(),
+          name: frameworkDraft.model.trim(),
+          contextWindow: readPositiveInteger(frameworkDraft.contextWindow),
+        }],
+      },
+      default_model: frameworkDraft.model.trim(),
+      runtime: {
+        provider_mode: frameworkDraft.providerMode,
+      },
+      fallback: {
+        enabled: frameworkDraft.fallbackEnabled,
+        provider: {
+          baseUrl: frameworkDraft.fallbackBaseUrl.trim(),
+          apiKey: frameworkDraft.fallbackApiKey.trim(),
+          models: frameworkDraft.fallbackModel.trim()
+            ? [{
+                id: frameworkDraft.fallbackModel.trim(),
+                name: frameworkDraft.fallbackModel.trim(),
+                contextWindow: readPositiveInteger(frameworkDraft.fallbackContextWindow),
+              }]
+            : [],
+        },
+        default_model: frameworkDraft.fallbackModel.trim(),
+        runtime: {
+          provider_mode: frameworkDraft.fallbackProviderMode,
+        },
+      },
+    });
+    setEditingFramework(false);
   }
 
   function resetOrchestrationDraft() {
@@ -1256,6 +1355,35 @@ export function ConfigTab({
       { label: "Sync Policy", value: syncToAllAgents ? "Save global + fan out to agents" : "Save global only" },
     ],
     [config, syncToAllAgents],
+  );
+  const frameworkPreviewItems = useMemo(
+    () => {
+      const fallbackEnabled = config?.framework_llm?.fallback?.enabled === true;
+      return [
+        { label: "Base URL", value: previewText(config?.framework_llm?.provider?.baseUrl, "Not set") },
+        { label: "Model", value: previewText(config?.framework_llm?.default_model, "Not set") },
+        { label: "Provider Mode", value: providerModeLabel(config?.framework_llm?.runtime?.provider_mode) },
+        {
+          label: "Context Window",
+          value: previewContextWindow(
+            config?.framework_llm?.provider?.models?.find((model) => model.id === config?.framework_llm?.default_model)?.contextWindow
+              ?? config?.framework_llm?.provider?.models?.[0]?.contextWindow,
+            "Not set",
+          ),
+        },
+        { label: "API Key", value: previewSecret(config?.framework_llm?.provider?.apiKey, "Not set") },
+        { label: "Fallback", value: fallbackEnabled ? "Enabled" : "Disabled" },
+        {
+          label: "Fallback Model",
+          value: fallbackEnabled ? previewText(config?.framework_llm?.fallback?.default_model, "Not set") : "Disabled",
+        },
+        {
+          label: "Fallback Provider",
+          value: fallbackEnabled ? previewText(config?.framework_llm?.fallback?.provider?.baseUrl, "Not set") : "Disabled",
+        },
+      ];
+    },
+    [config],
   );
   const orchestrationPreviewItems = useMemo(
     () => [
@@ -1996,6 +2124,207 @@ export function ConfigTab({
               onActivate={() => undefined}
             />
           </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (activeSection === "framework") {
+    const frameworkSaveDisabled =
+      saving
+      || !frameworkDraft.baseUrl.trim()
+      || !frameworkDraft.model.trim()
+      || (
+        frameworkDraft.fallbackEnabled
+        && (!frameworkDraft.fallbackBaseUrl.trim() || !frameworkDraft.fallbackModel.trim())
+      );
+    return (
+      <section className="panel-grid panel-grid--config panel-grid--config-fluid">
+        <div className={`panel-card panel-card--full ${editingFramework ? "is-editing" : ""}`}>
+          <div className="panel-card-header">
+            <div>
+              <p className="eyebrow">Framework Uplink</p>
+              <h2>Framework LLM Config</h2>
+            </div>
+            <div className="config-header-actions">
+              <span className="soft-pill">Agent-isolated</span>
+              <span className={`soft-pill ${config?.framework_llm?.fallback?.enabled ? "soft-pill--success" : ""}`}>
+                {config?.framework_llm?.fallback?.enabled ? "Fallback enabled" : "Fallback disabled"}
+              </span>
+              <div className="config-actions-row config-actions-row--header">
+                {editingFramework ? (
+                  <>
+                    <button
+                      type="submit"
+                      form="framework-llm-config-form"
+                      className="primary-button compact-button"
+                      disabled={frameworkSaveDisabled}
+                    >
+                      {saving ? "Saving..." : "Save"}
+                    </button>
+                    <button type="button" className="secondary-button compact-button" onClick={cancelEditingFramework} disabled={saving}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="primary-button compact-button" onClick={startEditingFramework} disabled={saving}>
+                    Edit
+                  </button>
+                )}
+                <button type="button" className="secondary-button compact-button" onClick={() => void onReload()} disabled={saving}>
+                  Reload
+                </button>
+                <button type="button" className="secondary-button compact-button" onClick={onBackToChat}>
+                  Back
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {editingFramework ? (
+            <form id="framework-llm-config-form" className="project-form project-form--compact config-form settings-form" onSubmit={handleFrameworkSubmit}>
+              <div className="config-side-stack">
+                <div className="config-side-section">
+                  <div className="config-side-section__head">
+                    <div>
+                      <p className="eyebrow">Primary</p>
+                      <h3>Framework-owned LLM</h3>
+                    </div>
+                  </div>
+                  <div className="config-toolbar-row settings-form__row">
+                    <label className="config-inline-field config-inline-field--wide settings-form__field">
+                      <span>Base URL</span>
+                      <input
+                        value={frameworkDraft.baseUrl}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, baseUrl: event.target.value }))}
+                        placeholder="http://localhost:11434/v1"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Model</span>
+                      <input
+                        value={frameworkDraft.model}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, model: event.target.value }))}
+                        placeholder="qwen2.5:7b-instruct"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Context Window</span>
+                      <input
+                        value={frameworkDraft.contextWindow}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, contextWindow: event.target.value }))}
+                        inputMode="numeric"
+                        placeholder="32768"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Provider Mode</span>
+                      <select
+                        value={frameworkDraft.providerMode}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, providerMode: normalizeProviderMode(event.target.value) }))}
+                      >
+                        {PROVIDER_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value} disabled={option.disabled}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>API Key</span>
+                      <input
+                        value={frameworkDraft.apiKey}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                        type="password"
+                        placeholder="ollama"
+                      />
+                    </label>
+                  </div>
+                  <p className="small-note">
+                    Used by Catown framework maintenance work such as memory extraction. This path never silently falls back to agent or global LLM providers.
+                  </p>
+                </div>
+
+                <div className="config-side-section">
+                  <div className="config-side-section__head">
+                    <div>
+                      <p className="eyebrow">Explicit Fallback</p>
+                      <h3>Framework fallback provider</h3>
+                    </div>
+                  </div>
+                  <label className="config-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={frameworkDraft.fallbackEnabled}
+                      onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackEnabled: event.target.checked }))}
+                    />
+                    <span>Enable fallback only for framework LLM calls</span>
+                  </label>
+                  <div className="config-toolbar-row settings-form__row">
+                    <label className="config-inline-field config-inline-field--wide settings-form__field">
+                      <span>Fallback Base URL</span>
+                      <input
+                        value={frameworkDraft.fallbackBaseUrl}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackBaseUrl: event.target.value }))}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Fallback Model</span>
+                      <input
+                        value={frameworkDraft.fallbackModel}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackModel: event.target.value }))}
+                        placeholder="gpt-5.4-mini"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Fallback Context</span>
+                      <input
+                        value={frameworkDraft.fallbackContextWindow}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackContextWindow: event.target.value }))}
+                        inputMode="numeric"
+                        placeholder="128000"
+                      />
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Fallback Mode</span>
+                      <select
+                        value={frameworkDraft.fallbackProviderMode}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackProviderMode: normalizeProviderMode(event.target.value) }))}
+                      >
+                        {PROVIDER_MODE_OPTIONS.map((option) => (
+                          <option key={`fallback-${option.value}`} value={option.value} disabled={option.disabled}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="config-inline-field settings-form__field">
+                      <span>Fallback API Key</span>
+                      <input
+                        value={frameworkDraft.fallbackApiKey}
+                        onChange={(event) => setFrameworkDraft((current) => ({ ...current, fallbackApiKey: event.target.value }))}
+                        type="password"
+                        placeholder="sk-..."
+                      />
+                    </label>
+                  </div>
+                  <p className="small-note">
+                    Fallback is inactive unless enabled. When disabled, Catown preserves these fields but does not use them.
+                  </p>
+                </div>
+              </div>
+            </form>
+          ) : (
+            <div className="config-side-stack">
+              <PreviewCard
+                title="Framework LLM"
+                subtitle="Dedicated provider for Catown framework-owned LLM work"
+                items={frameworkPreviewItems}
+                onActivate={startEditingFramework}
+              />
+            </div>
+          )}
         </div>
       </section>
     );

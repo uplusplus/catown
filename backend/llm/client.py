@@ -353,6 +353,8 @@ def _runtime_config_from_payload(
 
 
 _client_cache: Dict[str, "LLMClient"] = {}
+_framework_client: Optional["LLMClient"] = None
+_framework_fallback_client: Optional["LLMClient"] = None
 
 # 旧测试夹具仍会直接注入这个全局 mock。
 _llm_client: Optional["LLMClient"] = None
@@ -2288,6 +2290,34 @@ def _resolve_env_vars(value: str) -> str:
     return value
 
 
+def _provider_from_config_section(
+    section: Dict[str, Any] | None,
+    *,
+    fallback: Dict[str, Any] | None = None,
+) -> Optional[Dict[str, str]]:
+    if not isinstance(section, dict):
+        return None
+    provider = section.get("provider", {})
+    if not isinstance(provider, dict):
+        return None
+    base_url = provider.get("baseUrl", "")
+    api_key = _resolve_env_vars(provider.get("apiKey", ""))
+    model = section.get("default_model", "")
+    if not model:
+        models = provider.get("models", [])
+        if models:
+            model = models[0].get("id", "")
+    if not base_url or not model:
+        return None
+    runtime = _runtime_config_from_payload(section, fallback=fallback)
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        **runtime,
+    }
+
+
 def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
     """
     从 agents.json 加载指定 Agent 的 provider 配置
@@ -2311,26 +2341,12 @@ def _load_agent_provider(agent_name: str) -> Optional[Dict[str, str]]:
         if agent_data is None and agent_type == DEFAULT_AGENT_TYPE:
             agent_data = agents.get("assistant")
         if agent_data:
-            provider = agent_data.get("provider", {})
-            if provider:
-                base_url = provider.get("baseUrl", "")
-                api_key = _resolve_env_vars(provider.get("apiKey", ""))
-                model = agent_data.get("default_model", "")
-                if not model:
-                    models = provider.get("models", [])
-                    if models:
-                        model = models[0].get("id", "")
-                if base_url and model:
-                    runtime = _runtime_config_from_payload(
-                        agent_data,
-                        fallback=data.get("global_llm", {}),
-                    )
-                    return {
-                        "base_url": base_url,
-                        "api_key": api_key,
-                        "model": model,
-                        **runtime,
-                    }
+            resolved = _provider_from_config_section(
+                agent_data,
+                fallback=data.get("global_llm", {}),
+            )
+            if resolved is not None:
+                return resolved
 
         # fallback: 全局 LLM 配置
         return _load_global_provider(data)
@@ -2352,19 +2368,41 @@ def _load_global_provider(data: Dict = None) -> Optional[Dict[str, str]]:
         except Exception:
             return None
 
-    global_cfg = data.get("global_llm", {})
-    provider = global_cfg.get("provider", {})
-    base_url = provider.get("baseUrl", "")
-    api_key = _resolve_env_vars(provider.get("apiKey", ""))
-    model = global_cfg.get("default_model", "")
-    if not model:
-        models = provider.get("models", [])
-        if models:
-            model = models[0].get("id", "")
-    if base_url and model:
-        runtime = _runtime_config_from_payload(global_cfg)
-        return {"base_url": base_url, "api_key": api_key, "model": model, **runtime}
-    return None
+    return _provider_from_config_section(data.get("global_llm", {}))
+
+
+def _load_framework_provider(data: Dict = None) -> Optional[Dict[str, str]]:
+    """Load the dedicated framework provider without agent/global fallback."""
+    if data is None:
+        config_file = settings.AGENT_CONFIG_FILE
+        if not os.path.exists(config_file):
+            return None
+        try:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+    return _provider_from_config_section(data.get("framework_llm", {}))
+
+
+def _load_framework_fallback_provider(data: Dict = None) -> Optional[Dict[str, str]]:
+    """Load the explicitly configured framework fallback provider, if enabled."""
+    if data is None:
+        config_file = settings.AGENT_CONFIG_FILE
+        if not os.path.exists(config_file):
+            return None
+        try:
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+    framework_cfg = data.get("framework_llm", {}) if isinstance(data, dict) else {}
+    fallback_cfg = framework_cfg.get("fallback", {}) if isinstance(framework_cfg, dict) else {}
+    if not isinstance(fallback_cfg, dict) or fallback_cfg.get("enabled") is not True:
+        return None
+    return _provider_from_config_section(fallback_cfg)
 
 
 def get_llm_client_for_agent(agent_name: str) -> LLMClient:
@@ -2415,9 +2453,68 @@ def get_llm_client_for_agent(agent_name: str) -> LLMClient:
     )
 
 
+def get_framework_llm_client() -> LLMClient:
+    """Get the dedicated LLM client for Catown framework maintenance tasks."""
+    global _framework_client
+    if _framework_client is not None:
+        return _framework_client
+
+    provider = _load_framework_provider()
+    if not provider:
+        raise RuntimeError(
+            f"No framework LLM provider configured. Please configure framework_llm in {settings.AGENT_CONFIG_FILE}"
+        )
+
+    _framework_client = LLMClient(
+        base_url=provider["base_url"],
+        api_key=provider["api_key"],
+        model=provider["model"],
+        agent_name="framework",
+        provider_mode=provider.get("provider_mode"),
+    )
+    logger.info("Created framework LLM client: %s / %s", provider["base_url"], provider["model"])
+    return _framework_client
+
+
+def get_framework_fallback_llm_client() -> Optional[LLMClient]:
+    """Return the optional framework fallback LLM client."""
+    global _framework_fallback_client
+    if _framework_fallback_client is not None:
+        return _framework_fallback_client
+
+    provider = _load_framework_fallback_provider()
+    if not provider:
+        return None
+
+    _framework_fallback_client = LLMClient(
+        base_url=provider["base_url"],
+        api_key=provider["api_key"],
+        model=provider["model"],
+        agent_name="framework-fallback",
+        provider_mode=provider.get("provider_mode"),
+    )
+    logger.info("Created framework fallback LLM client: %s / %s", provider["base_url"], provider["model"])
+    return _framework_fallback_client
+
+
+async def chat_framework_llm(messages: List[Dict[str, Any]], **kwargs) -> str:
+    """Call the framework LLM, using only the configured framework fallback on failure."""
+    try:
+        return await get_framework_llm_client().chat(messages, **kwargs)
+    except Exception as primary_exc:
+        fallback = get_framework_fallback_llm_client()
+        if fallback is None:
+            raise
+        logger.warning(
+            "Framework LLM failed; using configured framework fallback: %s",
+            primary_exc,
+        )
+        return await fallback.chat(messages, **kwargs)
+
+
 def get_default_llm_client() -> LLMClient:
     """
-    获取默认 LLM 客户端（用于无 Agent 上下文的场景，如记忆提取）
+    获取默认 LLM 客户端（用于无 Agent 上下文的兼容场景）
 
     配置来源：agents.json 中第一个有 provider 的 Agent
     """
@@ -2522,7 +2619,9 @@ def _get_first_provider() -> Optional[Dict[str, str]]:
 
 def clear_client_cache():
     """清空客户端缓存（配置更新后调用）"""
-    global _default_client
+    global _default_client, _framework_client, _framework_fallback_client
     _client_cache.clear()
     _default_client = None
+    _framework_client = None
+    _framework_fallback_client = None
     logger.info("LLM client cache cleared")

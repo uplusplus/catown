@@ -141,19 +141,18 @@ async def test_extract_agent_memories_labels_llm_call_context(monkeypatch):
 
     recorded = {}
 
-    class FakeLLM:
-        async def chat(self, messages, **kwargs):
-            context = get_active_llm_network_audit_context()
-            recorded["messages"] = messages
-            recorded["kwargs"] = kwargs
-            recorded["context"] = {
-                "call_purpose": context.call_purpose,
-                "purpose_label": context.purpose_label,
-                "metadata": dict(context.metadata),
-            }
-            return "[]"
+    async def fake_chat_framework_llm(messages, **kwargs):
+        context = get_active_llm_network_audit_context()
+        recorded["messages"] = messages
+        recorded["kwargs"] = kwargs
+        recorded["context"] = {
+            "call_purpose": context.call_purpose,
+            "purpose_label": context.purpose_label,
+            "metadata": dict(context.metadata),
+        }
+        return "[]"
 
-    monkeypatch.setattr(llm_client, "get_llm_client_for_agent", lambda agent_type: FakeLLM())
+    monkeypatch.setattr(llm_client, "chat_framework_llm", fake_chat_framework_llm)
 
     persisted = await extract_agent_memories(
         7,

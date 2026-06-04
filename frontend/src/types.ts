@@ -1,5 +1,14 @@
 export type AppTab = "chat" | "projects" | "config";
-export type ConfigSection = "agents" | "skills" | "tools" | "memory" | "permissions" | "context" | "multimodal" | "interface";
+export type ConfigSection =
+  | "agents"
+  | "framework"
+  | "skills"
+  | "tools"
+  | "memory"
+  | "permissions"
+  | "context"
+  | "multimodal"
+  | "interface";
 
 export type AgentSoul = {
   identity?: string;
@@ -1075,18 +1084,27 @@ export type ConfigMultimodalDefinition = {
   max_allowed_upload_size_bytes?: number;
 };
 
-export type ConfigResponse = {
-  global_llm?: {
-    provider?: {
-      baseUrl?: string;
-      apiKey?: string;
-      models?: Array<{ id: string; name?: string; contextWindow?: number }>;
-    };
-    default_model?: string;
-    runtime?: {
-      provider_mode?: ProviderMode;
-    };
+export type ConfigLlmProviderDefinition = {
+  provider?: {
+    baseUrl?: string;
+    apiKey?: string;
+    models?: Array<{ id: string; name?: string; contextWindow?: number }>;
   };
+  default_model?: string;
+  runtime?: {
+    provider_mode?: ProviderMode;
+  };
+};
+
+export type ConfigFrameworkLlmDefinition = ConfigLlmProviderDefinition & {
+  fallback?: ConfigLlmProviderDefinition & {
+    enabled?: boolean;
+  };
+};
+
+export type ConfigResponse = {
+  global_llm?: ConfigLlmProviderDefinition;
+  framework_llm?: ConfigFrameworkLlmDefinition;
   orchestration?: ConfigOrchestrationDefinition;
   permissions?: ConfigPermissionsDefinition;
   context?: ConfigContextDefinition;
@@ -1212,6 +1230,12 @@ export type GlobalConfigPayload = {
   default_model: string;
   runtime?: {
     provider_mode?: ProviderMode;
+  };
+};
+
+export type FrameworkConfigPayload = GlobalConfigPayload & {
+  fallback?: GlobalConfigPayload & {
+    enabled: boolean;
   };
 };
 

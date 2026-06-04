@@ -10039,6 +10039,7 @@ async def get_config():
             "has_api_key": bool(os.getenv("LLM_API_KEY", ""))
         },
         "global_llm": {},
+        "framework_llm": {},
         "features": {
             "llm_enabled": True,
             "websocket_enabled": True,
@@ -10074,6 +10075,7 @@ async def get_config():
 
             # 全局 LLM 配置
             config["global_llm"] = agents_config.get("global_llm", {})
+            config["framework_llm"] = agents_config.get("framework_llm", {})
             config["orchestration"] = _effective_orchestration_config(agents_config)
             config["permissions"] = _effective_permissions_config(agents_config)
             config["ui"] = _effective_ui_config(agents_config)
@@ -10225,6 +10227,30 @@ async def update_global_llm_config(config: Dict[str, Any]):
         return {"message": "Global LLM config updated", "global_llm": config}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
+
+
+@router.put("/config/framework")
+async def update_framework_llm_config(config: Dict[str, Any]):
+    """Update the dedicated framework LLM config stored in agents.json."""
+    config_file = Path(settings.AGENT_CONFIG_FILE)
+    try:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+        else:
+            data = {"agents": {}}
+
+        data["framework_llm"] = config
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        clear_client_cache()
+
+        return {"message": "Framework LLM config updated", "framework_llm": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update framework LLM config: {e}")
 
 
 @router.put("/config/orchestration")

@@ -33,6 +33,27 @@ def agents_config_file(tmp_path):
             },
             "default_model": "global-model-7b"
         },
+        "framework_llm": {
+            "provider": {
+                "baseUrl": "http://framework-api.example.com/v1",
+                "apiKey": "framework-key-123",
+                "models": [
+                    {"id": "framework-model-7b", "name": "Framework Model 7B"}
+                ]
+            },
+            "default_model": "framework-model-7b",
+            "fallback": {
+                "enabled": True,
+                "provider": {
+                    "baseUrl": "http://framework-fallback.example.com/v1",
+                    "apiKey": "framework-fallback-key",
+                    "models": [
+                        {"id": "framework-fallback-model", "name": "Framework Fallback Model"}
+                    ]
+                },
+                "default_model": "framework-fallback-model"
+            }
+        },
         "agents": {
             "analyst": {
                 "soul": {
@@ -287,6 +308,106 @@ class TestLoadGlobalProvider:
         assert result is None
 
 
+class TestLoadFrameworkProvider:
+    """framework_llm provider loading tests."""
+
+    def test_load_framework_provider_is_independent(self, agents_config_file, monkeypatch):
+        monkeypatch.setenv("AGENT_CONFIG_FILE", agents_config_file)
+        if 'config' in sys.modules:
+            del sys.modules['config']
+        if 'llm.client' in sys.modules:
+            del sys.modules['llm.client']
+
+        from llm.client import _load_framework_provider
+
+        result = _load_framework_provider()
+
+        assert result is not None
+        assert result["base_url"] == "http://framework-api.example.com/v1"
+        assert result["api_key"] == "framework-key-123"
+        assert result["model"] == "framework-model-7b"
+
+    def test_framework_provider_does_not_fallback_to_global(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "agents.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "global_llm": {
+                        "provider": {
+                            "baseUrl": "http://global-api.example.com/v1",
+                            "apiKey": "global-key",
+                            "models": [{"id": "global-model"}],
+                        },
+                        "default_model": "global-model",
+                    },
+                    "agents": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_CONFIG_FILE", str(config_file))
+        if 'config' in sys.modules:
+            del sys.modules['config']
+        if 'llm.client' in sys.modules:
+            del sys.modules['llm.client']
+
+        from llm.client import _load_framework_provider
+
+        assert _load_framework_provider() is None
+
+    def test_load_framework_fallback_provider_is_explicit(self, agents_config_file, monkeypatch):
+        monkeypatch.setenv("AGENT_CONFIG_FILE", agents_config_file)
+        if 'config' in sys.modules:
+            del sys.modules['config']
+        if 'llm.client' in sys.modules:
+            del sys.modules['llm.client']
+
+        from llm.client import _load_framework_fallback_provider
+
+        result = _load_framework_fallback_provider()
+
+        assert result is not None
+        assert result["base_url"] == "http://framework-fallback.example.com/v1"
+        assert result["api_key"] == "framework-fallback-key"
+        assert result["model"] == "framework-fallback-model"
+
+    def test_disabled_framework_fallback_provider_returns_none(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "agents.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "framework_llm": {
+                        "provider": {
+                            "baseUrl": "http://framework-api.example.com/v1",
+                            "apiKey": "framework-key",
+                            "models": [{"id": "framework-model"}],
+                        },
+                        "default_model": "framework-model",
+                        "fallback": {
+                            "enabled": False,
+                            "provider": {
+                                "baseUrl": "http://disabled-fallback.example.com/v1",
+                                "apiKey": "disabled-key",
+                                "models": [{"id": "disabled-model"}],
+                            },
+                            "default_model": "disabled-model",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AGENT_CONFIG_FILE", str(config_file))
+        if 'config' in sys.modules:
+            del sys.modules['config']
+        if 'llm.client' in sys.modules:
+            del sys.modules['llm.client']
+
+        from llm.client import _load_framework_fallback_provider
+
+        assert _load_framework_fallback_provider() is None
+
+
 class TestGetFirstProvider:
     """_get_first_provider 测试 — 优先 Agent，兜底 global"""
 
@@ -367,6 +488,23 @@ class TestConfigAPIEndpoints:
                     "models": [{"id": "gpt-4", "name": "GPT-4"}]
                 },
                 "default_model": "gpt-4"
+            },
+            "framework_llm": {
+                "provider": {
+                    "baseUrl": "http://framework.com/v1",
+                    "apiKey": "framework-key",
+                    "models": [{"id": "qwen-local", "name": "Qwen Local"}]
+                },
+                "default_model": "qwen-local",
+                "fallback": {
+                    "enabled": False,
+                    "provider": {
+                        "baseUrl": "http://framework-fallback.com/v1",
+                        "apiKey": "framework-fallback-key",
+                        "models": [{"id": "fallback-model", "name": "Fallback Model"}]
+                    },
+                    "default_model": "fallback-model"
+                }
             },
             "agents": {
                 "assistant": {
@@ -463,6 +601,9 @@ class TestConfigAPIEndpoints:
         assert "global_llm" in data
         assert data["global_llm"]["provider"]["baseUrl"] == "http://global.com/v1"
         assert data["global_llm"]["default_model"] == "gpt-4"
+        assert data["framework_llm"]["provider"]["baseUrl"] == "http://framework.com/v1"
+        assert data["framework_llm"]["default_model"] == "qwen-local"
+        assert data["framework_llm"]["fallback"]["enabled"] is False
         assert data["orchestration"]["sidecar_agent_types"] == ["tester"]
 
     def test_get_config_agent_source_field(self, client_with_config):
@@ -501,6 +642,37 @@ class TestConfigAPIEndpoints:
             saved = json.load(f)
         assert saved["global_llm"]["provider"]["baseUrl"] == "http://new-global.com/v1"
         assert saved["global_llm"]["default_model"] == "claude-3"
+
+    def test_put_framework_config(self, client_with_config):
+        """PUT /config/framework updates the dedicated framework LLM config."""
+        client, config_file = client_with_config
+
+        r = client.put("/api/config/framework", json={
+            "provider": {
+                "baseUrl": "http://framework-new.com/v1",
+                "apiKey": "framework-new-key",
+                "models": [{"id": "qwen-local-14b"}]
+            },
+            "default_model": "qwen-local-14b",
+            "fallback": {
+                "enabled": True,
+                "provider": {
+                    "baseUrl": "http://framework-fallback-new.com/v1",
+                    "apiKey": "framework-fallback-new-key",
+                    "models": [{"id": "fallback-remote"}]
+                },
+                "default_model": "fallback-remote"
+            }
+        })
+        assert r.status_code == 200
+        assert "framework_llm" in r.json()
+
+        with open(config_file, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        assert saved["framework_llm"]["provider"]["baseUrl"] == "http://framework-new.com/v1"
+        assert saved["framework_llm"]["default_model"] == "qwen-local-14b"
+        assert saved["framework_llm"]["fallback"]["enabled"] is True
+        assert saved["framework_llm"]["fallback"]["provider"]["baseUrl"] == "http://framework-fallback-new.com/v1"
 
     def test_put_agent_config(self, client_with_config):
         """PUT /config/agent/{name} 更新 Agent 配置"""

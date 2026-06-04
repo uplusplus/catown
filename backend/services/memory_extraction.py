@@ -128,12 +128,11 @@ async def extract_agent_memories(
     """Extract durable memories for one agent turn response."""
 
     try:
-        from llm.client import get_llm_client_for_agent
+        from llm.client import chat_framework_llm
         from models.database import Memory, get_db
         from services.llm_network_context import llm_network_audit_context
 
         normalized_agent_type = normalize_agent_type(agent_type)
-        llm = get_llm_client_for_agent(normalized_agent_type)
         with llm_network_audit_context(
             call_purpose="memory_extraction",
             purpose_label="memory extraction",
@@ -142,7 +141,7 @@ async def extract_agent_memories(
                 "memory_extraction": True,
             },
         ):
-            result = await llm.chat(
+            result = await chat_framework_llm(
                 build_memory_extraction_messages(
                     agent_type=agent_type,
                     user_message=user_message,
