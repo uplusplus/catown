@@ -78,6 +78,30 @@ def _merge_missing_dict_values(src: dict, dst: dict) -> bool:
     return changed
 
 
+def _clear_legacy_framework_llm_default(section: object) -> bool:
+    """Remove the previous auto-seeded local framework override so main LLM is the default."""
+    if not isinstance(section, dict):
+        return False
+    provider = section.get("provider")
+    if not isinstance(provider, dict):
+        return False
+    models = provider.get("models")
+    is_legacy_default = (
+        provider.get("baseUrl") == "http://localhost:11434/v1"
+        and provider.get("apiKey") == "ollama"
+        and section.get("default_model") == "qwen2.5:7b-instruct"
+        and isinstance(models, list)
+        and len(models) == 1
+        and isinstance(models[0], dict)
+        and models[0].get("id") == "qwen2.5:7b-instruct"
+    )
+    if not is_legacy_default:
+        return False
+    section["provider"] = {"baseUrl": "", "apiKey": "", "models": []}
+    section["default_model"] = ""
+    return True
+
+
 def _ensure_top_level_config(config_file: Path, key: str) -> None:
     """Backfill a bundled top-level config section into an existing runtime config."""
     if not config_file.exists():
@@ -102,6 +126,8 @@ def _ensure_top_level_config(config_file: Path, key: str) -> None:
         changed = True
     elif isinstance(src_data.get(key), dict) and isinstance(data.get(key), dict):
         changed = _merge_missing_dict_values(src_data[key], data[key])
+    if key == "framework_llm" and _clear_legacy_framework_llm_default(data.get(key)):
+        changed = True
     if changed:
         config_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 

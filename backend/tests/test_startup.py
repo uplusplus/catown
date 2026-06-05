@@ -30,6 +30,9 @@ def _make_app(tmp_path):
     os.environ["LLM_MODEL"] = "test-model"
     os.environ["LOG_LEVEL"] = "WARNING"
     os.environ["DATABASE_URL"] = str(tmp_path / "test.db")
+    os.environ["TELEMETRY_DATABASE_URL"] = str(tmp_path / "telemetry.db")
+    os.environ["NETWORK_AUDIT_DATABASE_URL"] = str(tmp_path / "network_audit.db")
+    os.environ["NETWORK_AUDIT_PAYLOADS_DIR"] = str(tmp_path / "network-audit-payloads")
 
     modules_to_clear = [
         'main', 'config', 'models.database', 'agents.registry',

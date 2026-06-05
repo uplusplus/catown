@@ -124,6 +124,67 @@ def test_existing_runtime_agent_config_gets_knowledge_graph_tools(tmp_path, monk
     assert "knowledge_graph" not in agent_config["agents"]["analyst"]["tools"]
 
 
+def test_existing_runtime_framework_llm_legacy_default_is_cleared(tmp_path, monkeypatch):
+    import config
+
+    runtime_agents = tmp_path / "agents.json"
+    runtime_agents.write_text(
+        json.dumps(
+            {
+                "framework_llm": {
+                    "provider": {
+                        "baseUrl": "http://localhost:11434/v1",
+                        "apiKey": "ollama",
+                        "models": [{"id": "qwen2.5:7b-instruct"}],
+                    },
+                    "default_model": "qwen2.5:7b-instruct",
+                },
+                "agents": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config._ensure_top_level_config(runtime_agents, "framework_llm")
+
+    agent_config = json.loads(runtime_agents.read_text(encoding="utf-8"))
+    framework_llm = agent_config["framework_llm"]
+    assert framework_llm["provider"]["baseUrl"] == ""
+    assert framework_llm["provider"]["apiKey"] == ""
+    assert framework_llm["provider"]["models"] == []
+    assert framework_llm["default_model"] == ""
+
+
+def test_existing_runtime_framework_llm_custom_override_is_preserved(tmp_path, monkeypatch):
+    import config
+
+    runtime_agents = tmp_path / "agents.json"
+    runtime_agents.write_text(
+        json.dumps(
+            {
+                "framework_llm": {
+                    "provider": {
+                        "baseUrl": "http://custom-framework.example/v1",
+                        "apiKey": "custom-key",
+                        "models": [{"id": "custom-framework-model"}],
+                    },
+                    "default_model": "custom-framework-model",
+                },
+                "agents": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config._ensure_top_level_config(runtime_agents, "framework_llm")
+
+    agent_config = json.loads(runtime_agents.read_text(encoding="utf-8"))
+    framework_llm = agent_config["framework_llm"]
+    assert framework_llm["provider"]["baseUrl"] == "http://custom-framework.example/v1"
+    assert framework_llm["provider"]["apiKey"] == "custom-key"
+    assert framework_llm["default_model"] == "custom-framework-model"
+
+
 def test_explicit_config_override_is_not_seeded(tmp_path, monkeypatch):
     catown_home = tmp_path / "catown-home"
     custom_agents = tmp_path / "custom" / "agents.json"
