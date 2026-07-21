@@ -63,6 +63,34 @@ def _is_path_within_workspace(base_workspace: str, path: str) -> bool:
         return False
 
 
+def _catown_state_dir() -> Optional[str]:
+    """Return the resolved Catown state directory, or None if unavailable."""
+    try:
+        from config import settings
+        return str(settings.STATE_DIR)
+    except Exception:
+        catown_home = os.path.expanduser(os.path.join("~", ".catown"))
+        state = os.path.join(catown_home, "state")
+        return state if os.path.isdir(state) else None
+
+
+def _is_catown_readable_system_path(path: str) -> bool:
+    """Check if path is inside a Catown system directory that agents may read.
+
+    Currently allows:
+      - <STATE_DIR>/tool_outputs/   (auto-generated tool output artifacts)
+    """
+    try:
+        real_path = os.path.realpath(path)
+        state_dir = _catown_state_dir()
+        if not state_dir:
+            return False
+        tool_outputs_dir = os.path.realpath(os.path.join(state_dir, "tool_outputs"))
+        return os.path.commonpath([real_path, tool_outputs_dir]) == tool_outputs_dir
+    except Exception:
+        return False
+
+
 class ReadFileTool(BaseTool):
     """Tool for reading file contents"""
     
@@ -127,8 +155,11 @@ class ReadFileTool(BaseTool):
         return _resolve_workspace_path(_effective_workspace(self.workspace), file_path)
     
     def _is_safe_path(self, path: str) -> bool:
-        """Check if path is within workspace"""
-        return _is_path_within_workspace(_effective_workspace(self.workspace), path)
+        """Check if path is within workspace or is a Catown system-readable path."""
+        if _is_path_within_workspace(_effective_workspace(self.workspace), path):
+            return True
+        # Allow reading auto-generated tool output artifacts from system state dir.
+        return _is_catown_readable_system_path(path)
     
     def _get_parameters_schema(self) -> dict:
         return {
